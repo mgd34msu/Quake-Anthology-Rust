@@ -43,7 +43,9 @@ fn snap_imports_keep_x87_ties_zero_sign_and_integer_indefinite_results() {
             let context = CallContext {
                 native_rules: qa_core::primitives::RuleSetId::Quake3,
                 trace_rules: qa_core::primitives::RuleSetId::Quake3,
-                sound_rules: qa_core::primitives::RuleSetId::Quake3,
+                sound_policy: qa_gameplay::rules::sound_policy(
+                    qa_core::primitives::RuleSetId::Quake3,
+                ),
                 server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),
@@ -246,7 +248,9 @@ fn session_dispatch_calls_snap_import_from_qvm_game_and_cgame() {
             context: CallContext {
                 native_rules: qa_core::primitives::RuleSetId::Quake3,
                 trace_rules: qa_core::primitives::RuleSetId::Quake3,
-                sound_rules: qa_core::primitives::RuleSetId::Quake3,
+                sound_policy: qa_gameplay::rules::sound_policy(
+                    qa_core::primitives::RuleSetId::Quake3,
+                ),
                 server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),

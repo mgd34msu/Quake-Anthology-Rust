@@ -19,7 +19,7 @@ fn context(module: ModuleId, native_rules: RuleSetId) -> CallContext {
         server_frame: 17,
         native_rules,
         trace_rules: RuleSetId::Quake2,
-        sound_rules: RuleSetId::Quake3,
+        sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
         console: Context {
             source: RuleSetId::Quake2Rerelease,
             ..Context::default()
@@ -171,7 +171,7 @@ fn cold_registration_waits_for_real_loop_binding_and_keeps_independent_source_ro
         assert!(drain(services, consumer).is_empty());
         let bank = bank();
         attach(services, context, &bank);
-        context.sound_rules = RuleSetId::Quake2;
+        context.sound_policy = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
         context.console.source = RuleSetId::QuakeWorld;
         assert_eq!(
             services
@@ -191,7 +191,10 @@ fn cold_registration_waits_for_real_loop_binding_and_keeps_independent_source_ro
         let event = sound(record);
         assert_eq!(event.sound, bank.find("sound/misc/loop.wav").unwrap());
         assert_eq!(event.source_ordinal, Some(ordinal));
-        assert_eq!(event.spatial_rules, RuleSetId::Quake3);
+        assert_eq!(
+            event.spatial,
+            qa_gameplay::rules::sound_policy(RuleSetId::Quake3)
+        );
         assert_eq!(event.action, SoundAction::StartLoop);
         assert_eq!(
             event.position.0.map(f32::to_bits),

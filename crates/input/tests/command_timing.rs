@@ -1,3 +1,5 @@
+#[path = "support/console.rs"]
+mod support;
 use qa_core::{
     primitives::{CommandIntent, Vec3, WeaponId},
     sys_events::{EventKind, EventTime, SeatId, SysEvent},
@@ -6,7 +8,14 @@ use qa_input::{Input, Target, UserCmdBuilder};
 struct Sink;
 impl Target for Sink {
     fn character(&mut self, _: SeatId, _: char) {}
-    fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+    fn command(
+        &mut self,
+        _: SeatId,
+        _: EventTime,
+        _: Option<qa_core::sys_events::KeySource>,
+        _: &str,
+    ) {
+    }
 }
 #[test]
 fn command_duration_keeps_submillisecond_precision_and_saturates_the_native_width() {
@@ -42,7 +51,11 @@ fn first_time_event_excludes_startup_and_builder_has_no_seat_or_history() {
         &mut Sink,
     );
     assert_eq!(
-        input.build_frame(EventTime(5_000_000_000), [127; 3], [0.022; 2])[0].duration_ms,
+        input.build_frame_with_policy(
+            EventTime(5_000_000_000),
+            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+        )[0]
+        .duration_ms,
         0
     );
     input.dispatch(
@@ -53,7 +66,11 @@ fn first_time_event_excludes_startup_and_builder_has_no_seat_or_history() {
         &mut Sink,
     );
     assert_eq!(
-        input.build_frame(EventTime(5_020_000_000), [127; 3], [0.022; 2])[0].duration_ms,
+        input.build_frame_with_policy(
+            EventTime(5_020_000_000),
+            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+        )[0]
+        .duration_ms,
         20
     );
     let intent = CommandIntent {

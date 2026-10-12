@@ -153,7 +153,7 @@ impl Transmit {
             snapshot_flight: None,
             packet: [0; PACKET_BYTES],
             pending: None,
-            reply_allowed: true,
+            reply_allowed: !policy.reply_per_packet || endpoint == Endpoint::Client,
         })
     }
     fn retire(&mut self) {
@@ -544,6 +544,9 @@ impl Channel {
                     tx.started = tx.flight_records != 0;
                 }
                 tx.state.sequence = tx.state.sequence.wrapping_add(1);
+                if self.policy.reply_per_packet && self.endpoint == Endpoint::Server {
+                    tx.reply_allowed = false;
+                }
             }
             Commit::Fragment {
                 length,
@@ -560,6 +563,9 @@ impl Channel {
                     tx.state.sequence = tx.state.sequence.wrapping_add(1);
                     tx.state.fragment_bytes = 0;
                     tx.fragment_pending = false;
+                    if self.policy.reply_per_packet && self.endpoint == Endpoint::Server {
+                        tx.reply_allowed = false;
+                    }
                     if !self.policy.fragment_inclusive {
                         tx.state.fragment_offset = 0;
                     }

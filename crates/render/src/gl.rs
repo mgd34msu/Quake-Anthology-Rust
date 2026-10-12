@@ -7,7 +7,8 @@ use crate::assets::{
     Sampler, Sky, Stage, TcGen, TextureIntensity, Vertex, Wrap,
 };
 use crate::scene::{
-    BlendPhase, Command, CommandList, Draw2d, DrawKind, Refdef, SceneEntity, Span, Viewport,
+    BlendPhase, Command, CommandList, Draw2d, DrawItem, DrawKind, Refdef, SceneEntity, Span,
+    Viewport,
 };
 use crate::shader::{AlphaGen, RgbGen, StageBlend};
 use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyBatches, SkyClip};
@@ -731,7 +732,8 @@ impl GlBackend {
                     for item in list.draws(view.scene.draws) {
                         match item.kind {
                             DrawKind::Surface => self.world_surface(
-                                list.surface(item.index),
+                                *item,
+                                list,
                                 assets,
                                 &projection,
                                 inputs,
@@ -1168,10 +1170,13 @@ impl GlBackend {
         far: f32,
         stats: &mut BackendStats,
     ) {
-        let (Some(model), Some(&mesh)) = (
-            assets.model(entity.model),
-            self.meshes.get(entity.model.0 as usize),
-        ) else {
+        let Some(model_id) = entity.model.mesh() else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let (Some(model), Some(&mesh)) =
+            (assets.model(model_id), self.meshes.get(model_id.0 as usize))
+        else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -1199,11 +1204,7 @@ impl GlBackend {
             return;
         }
         let matrix = multiply(projection, &model_matrix(entity));
-        inputs.view_origin = crate::stage::entity_view_origin(inputs.view_origin, entity);
-        inputs.entity_color = entity.color;
-        inputs.entity_texcoord = entity.shader_texcoord;
-        inputs.entity_shader_time = entity.shader_time;
-        inputs.lighting = entity.lighting;
+        inputs = inputs.for_entity(entity);
         self.bind_vao(self.model_vao);
         let [current, previous] = frames
             .offsets()
@@ -1237,15 +1238,21 @@ impl GlBackend {
         self.set_depth_hack(false);
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The one surface draw uses its packet instance, static binding and view inputs."
+    )]
     fn world_surface(
         &mut self,
-        surface: &crate::scene::SurfaceRef,
+        item: DrawItem,
+        list: &CommandList,
         assets: &Assets,
         projection: &[f32; 16],
         mut inputs: DrawInputs,
         far: f32,
         stats: &mut BackendStats,
     ) {
+        let surface = list.surface(item.index);
         let Some(world) = assets.world(surface.world) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
@@ -1254,8 +1261,13 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        let Some((material_id, _)) = crate::scene::item_material_lightmap(list, assets, item)
+        else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
         let (Some(material), Some(&mesh)) = (
-            assets.material(binding.material),
+            assets.material(material_id),
             self.meshes.get(world.mesh.0 as usize),
         ) else {
             stats.rejected = stats.rejected.saturating_add(1);
@@ -1269,14 +1281,20 @@ impl GlBackend {
             return;
         }
         if let Some(Sky::Cube { .. }) = material.settings.sky {
-            self.draw_sky(binding.material, assets, projection, inputs, far, stats);
+            self.draw_sky(material_id, assets, projection, inputs, far, stats);
             stats.surfaces = stats.surfaces.saturating_add(1);
             return;
+        }
+        let entity = surface.entity.map(|index| list.entity(index));
+        let matrix = entity.map(|entity| multiply(projection, &model_matrix(entity)));
+        let projection = matrix.as_ref().unwrap_or(projection);
+        if let Some(entity) = entity {
+            inputs = inputs.for_entity(entity);
         }
         inputs.lightmap = binding.lightmap;
         inputs.texture_scale = binding.texture_scale;
         self.bind_vao(self.static_vao);
-        self.set_depth_hack(false);
+        self.set_depth_hack(entity.is_some_and(|entity| entity.depth_hack));
         for stage in &material.stages {
             if !self.stage(*stage, material.settings, inputs, projection, true, false) {
                 stats.rejected = stats.rejected.saturating_add(1);
@@ -1298,6 +1316,7 @@ impl GlBackend {
         stats.triangles = stats
             .triangles
             .saturating_add(binding.mesh_indices.count / 3);
+        self.set_depth_hack(false);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2071,3 +2090,7 @@ fn pack_deforms(deforms: [DeformOp; 3]) -> ([i32; 3], [[f32; 4]; 6]) {
     }
     (kinds, data)
 }
+
+#[cfg(test)]
+#[path = "../tests/gl_math/oracle.rs"]
+mod tests;

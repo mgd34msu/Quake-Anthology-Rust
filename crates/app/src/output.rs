@@ -526,7 +526,7 @@ pub fn dispatch(
             {
                 connection.output = Some(resumed);
             }
-            if let Some(snapshot) = runtime.local_snapshots[slot].as_mut() {
+            if let Some(snapshot) = runtime.snapshots[slot].as_mut() {
                 snapshot.output = resumed;
             }
             // Rebuild discrete HUD state from CLIENT on its next publication.

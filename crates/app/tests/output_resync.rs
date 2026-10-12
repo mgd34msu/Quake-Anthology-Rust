@@ -87,6 +87,9 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
         host.runtime
             .print_event(Some(stalled), PrintKind::Center, format_args!("leased"));
         host.frame(&mut source, true);
+        // Admit the local command queued in CLIENT before blocking SERVER
+        // transport, including QW's native request/reply grant.
+        host.drain(&mut FrameResult::default());
         let lease = host.runtime.server.clients[stalled.0 as usize]
             .hud
             .centerprint
@@ -191,7 +194,7 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
         assert_ne!(old, new, "{protocol:?}");
         assert!(!host.runtime.server.events.needs_resync(new));
         assert_eq!(
-            host.runtime.local_snapshots[stalled.0 as usize]
+            host.runtime.snapshots[stalled.0 as usize]
                 .as_ref()
                 .unwrap()
                 .output,
@@ -243,7 +246,7 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
                 .movement[0],
             77.0
         );
-        let before = host.runtime.local_snapshots[stalled.0 as usize]
+        let before = host.runtime.snapshots[stalled.0 as usize]
             .as_ref()
             .unwrap()
             .applied;
@@ -255,12 +258,17 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
             .player
             .health = 137;
         assert!(
-            host.runtime
-                .send_local_snapshot(stalled, EventTime::from_milliseconds(500), None)
+            host.runtime.send_snapshot(
+                stalled,
+                EventTime::from_milliseconds(500),
+                None,
+                &mut Source::default()
+            ),
+            "{protocol:?}"
         );
         host.drain(&mut FrameResult::default());
         assert!(
-            host.runtime.local_snapshots[stalled.0 as usize]
+            host.runtime.snapshots[stalled.0 as usize]
                 .as_ref()
                 .unwrap()
                 .applied

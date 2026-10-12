@@ -1070,7 +1070,7 @@ fn qc_sound(
     let event = SoundEvent {
         sound,
         source_ordinal: Some(ordinal),
-        spatial_rules: c.context.sound_rules,
+        spatial: c.context.sound_policy,
         entity: Some(SoundEmitter::Entity(entity)),
         position,
         channel: (channel & 7) as u16,
@@ -1532,7 +1532,7 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool, const WIDE: bool>(
         SoundEvent {
             sound,
             source_ordinal: Some(c.arg(index)? as u32),
-            spatial_rules: c.context.sound_rules,
+            spatial: c.context.sound_policy,
             entity,
             position,
             client: None,

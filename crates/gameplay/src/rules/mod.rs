@@ -1,8 +1,11 @@
 pub mod appearance;
 pub mod movement;
+pub mod presentation;
 pub mod q1;
 pub mod q2;
 pub mod q3;
+mod sound;
+pub use sound::sound_policy;
 
 use qa_core::primitives::{LinkOrder, RuleSetId};
 use std::num::NonZeroU32;
@@ -31,6 +34,21 @@ pub fn frame_duration(rules: RuleSetId) -> Option<FrameDuration> {
         bounds: [0.001, 0.1],
         override_cvar: "host_framerate",
     })
+}
+
+/// Native SERVER clock arithmetic, selected independently of module format.
+#[derive(Clone, Copy)]
+pub struct FrameClock {
+    pub accumulate: bool,
+    pub narrow_span: bool,
+    pub advance_before: bool,
+}
+pub const fn frame_clock(rules: RuleSetId) -> FrameClock {
+    FrameClock {
+        accumulate: matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld),
+        narrow_span: matches!(rules, RuleSetId::QuakeWorld),
+        advance_before: matches!(rules, RuleSetId::QuakeWorld),
+    }
 }
 
 /// QC map inhibition is a module rule, independent of the map's file syntax.

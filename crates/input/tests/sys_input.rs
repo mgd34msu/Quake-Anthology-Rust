@@ -1,24 +1,26 @@
+use support::RoutedInput as Input;
+#[path = "support/console.rs"]
+mod support;
 use qa_core::{
     primitives::buttons,
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent},
 };
-use qa_input::{Action, Binding, Input, Target};
+use qa_input::{Action, Binding, Target};
 #[derive(Default)]
 struct Sink {
-    presses: u32,
-    releases: u32,
     characters: String,
 }
 impl Target for Sink {
     fn character(&mut self, _: SeatId, value: char) {
         self.characters.push(value);
     }
-    fn command(&mut self, _: SeatId, _: EventTime, text: &str) {
-        match text.split_whitespace().next().unwrap() {
-            "+edge" => self.presses += 1,
-            "-edge" => self.releases += 1,
-            _ => panic!(),
-        }
+    fn command(
+        &mut self,
+        _: SeatId,
+        _: EventTime,
+        _: Option<qa_core::sys_events::KeySource>,
+        _: &str,
+    ) {
     }
 }
 fn key(input: &mut Input, sink: &mut Sink, ms: u64, code: u16, down: bool, repeat: bool) {
@@ -56,7 +58,14 @@ fn physical_holds_survive_consumption_repeats_and_duplicate_releases() {
             true
         }
         fn character(&mut self, _: SeatId, _: char) {}
-        fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+        fn command(
+            &mut self,
+            _: SeatId,
+            _: EventTime,
+            _: Option<qa_core::sys_events::KeySource>,
+            _: &str,
+        ) {
+        }
     }
     let mut input = Input::load();
     input.seed(EventTime(0));
@@ -200,7 +209,10 @@ fn removing_one_held_device_preserves_other_seats_and_focus_clears_all() {
     assert!(input.assign(DeviceId::Controller(42), second));
 }
 fn frame(input: &mut Input, ms: u64) -> [qa_core::primitives::UserCmd; 4] {
-    input.build_frame(EventTime(ms * 1_000_000), [200; 3], [0.022; 2])
+    input.build_frame_with_policy(
+        EventTime(ms * 1_000_000),
+        &[support::elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT],
+    )
 }
 #[test]
 fn repeated_down_preserves_partial_frame_time_and_two_keys_hold_one_action() {
@@ -236,7 +248,10 @@ fn command_edges_and_focus_loss_do_not_stick() {
     key(&mut input, &mut sink, 1, 10, true, false);
     key(&mut input, &mut sink, 2, 10, true, true);
     key(&mut input, &mut sink, 3, 10, false, false);
-    assert_eq!((sink.presses, sink.releases), (1, 1));
+    assert_eq!(
+        (input.router.host.presses, input.router.host.releases),
+        (1, 1)
+    );
     key(&mut input, &mut sink, 4, 26, true, false);
     assert!(input.bind(
         26,
@@ -272,7 +287,10 @@ fn command_edges_and_focus_loss_do_not_stick() {
         },
         &mut sink,
     );
-    assert_eq!((sink.presses, sink.releases), (2, 2));
+    assert_eq!(
+        (input.router.host.presses, input.router.host.releases),
+        (2, 2)
+    );
 }
 #[test]
 fn two_devices_route_independently_and_disconnect_releases_actions() {
@@ -306,7 +324,8 @@ fn two_devices_route_independently_and_disconnect_releases_actions() {
     );
     let commands = frame(&mut input, 20);
     assert_eq!(commands[0].movement, [200.0, 0.0, 0.0]);
-    assert_eq!(commands[1].movement, [0.0, 100.0, 0.0]);
+    // Native Q2 input also represents the controller's jump button as upmove.
+    assert_eq!(commands[1].movement, [0.0, 100.0, 200.0]);
     assert_eq!(commands[0].buttons & buttons::JUMP, 0);
     assert_eq!(commands[1].buttons & buttons::JUMP, buttons::JUMP);
     input.dispatch(
@@ -316,7 +335,9 @@ fn two_devices_route_independently_and_disconnect_releases_actions() {
         },
         &mut sink,
     );
-    assert_eq!(frame(&mut input, 40)[1].movement, [0.0; 3]);
+    // The released jump contributes its five held milliseconds to this frame.
+    assert_eq!(frame(&mut input, 40)[1].movement, [0.0, 0.0, 50.0]);
+    assert_eq!(frame(&mut input, 60)[1].movement, [0.0; 3]);
 }
 
 #[test]

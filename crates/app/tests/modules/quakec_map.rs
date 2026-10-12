@@ -159,7 +159,7 @@ fn host_for_map(
             module,
             native_rules: rules,
             trace_rules: RuleSetId::Quake3,
-            sound_rules: RuleSetId::Quake2,
+            sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
             server_frame: 0,
             clock: ThinkTime::module_clock(rules),
             console: Context {

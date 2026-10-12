@@ -100,7 +100,9 @@ fn abi_call(
                 context: CallContext {
                     native_rules: qa_core::primitives::RuleSetId::Quake3,
                     trace_rules: qa_core::primitives::RuleSetId::Quake3,
-                    sound_rules: qa_core::primitives::RuleSetId::Quake3,
+                    sound_policy: qa_gameplay::rules::sound_policy(
+                        qa_core::primitives::RuleSetId::Quake3
+                    ),
                     module: ModuleId(7),
                     clock: ThinkTime::Milliseconds(0),
                     server_frame: 0,
@@ -177,10 +179,11 @@ fn queued_q3_weapon_selection_uses_the_registry_for_independent_seats_and_module
                     assert_eq!(memory.read(base, 128).unwrap(), &[0xa5; 128]);
                 }
             }
-            let commands = host
-                .runtime
-                .input
-                .build_frame(host.time, [127; 3], [0.022; 2]);
+            let commands = host.runtime.input.build_frame_with_policy(
+                host.time,
+                &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3);
+                    qa_core::sys_events::SeatId::COUNT],
+            );
             assert_eq!([commands[0].weapon, commands[1].weapon], selected);
             commands
         } else {
@@ -305,10 +308,11 @@ fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
             |_| [number, u64::from(1.0f32.to_bits())],
         );
     }
-    let commands =
-        host.runtime
-            .input
-            .build_frame(EventTime::from_milliseconds(16), [127; 3], [0.022; 2]);
+    let commands = host.runtime.input.build_frame_with_policy(
+        EventTime::from_milliseconds(16),
+        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3);
+            qa_core::sys_events::SeatId::COUNT],
+    );
     assert_eq!(
         [commands[0].weapon, commands[1].weapon],
         [Some(rail), Some(bfg)]
@@ -335,10 +339,11 @@ fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
             .unwrap(),
         clients[0]
     );
-    let commands =
-        host.runtime
-            .input
-            .build_frame(EventTime::from_milliseconds(32), [127; 3], [0.022; 2]);
+    let commands = host.runtime.input.build_frame_with_policy(
+        EventTime::from_milliseconds(32),
+        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3);
+            qa_core::sys_events::SeatId::COUNT],
+    );
     assert_eq!([commands[0].weapon, commands[1].weapon], [None, Some(bfg)]);
     abi_call(
         &mut host,
@@ -348,9 +353,10 @@ fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
         SeatId::new(1).unwrap(),
         |_| [256, u64::from(1.0f32.to_bits())],
     );
-    let commands =
-        host.runtime
-            .input
-            .build_frame(EventTime::from_milliseconds(48), [127; 3], [0.022; 2]);
+    let commands = host.runtime.input.build_frame_with_policy(
+        EventTime::from_milliseconds(48),
+        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3);
+            qa_core::sys_events::SeatId::COUNT],
+    );
     assert_eq!([commands[0].weapon, commands[1].weapon], [None, None]);
 }

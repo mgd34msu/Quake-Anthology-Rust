@@ -10,6 +10,22 @@ pub use numbers::{
 
 use std::fmt::{self, Write};
 
+/// First unquoted semicolon or requested native line separator.
+pub fn command_separator(bytes: &[u8], newline: bool, carriage_return: bool) -> usize {
+    let mut quoted = false;
+    bytes
+        .iter()
+        .position(|&byte| {
+            if byte == b'"' {
+                quoted = !quoted;
+            }
+            (!quoted && byte == b';')
+                || (newline && byte == b'\n')
+                || (carriage_return && byte == b'\r')
+        })
+        .unwrap_or(bytes.len())
+}
+
 /// A strict native string requires a terminator within the supplied boundary.
 pub fn terminated(bytes: &[u8]) -> Option<&[u8]> {
     bytes

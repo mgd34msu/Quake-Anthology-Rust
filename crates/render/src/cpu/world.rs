@@ -593,6 +593,7 @@ impl WorldRaster {
         let mut max_vertices = 3usize;
         let mut max_edges = 0usize;
         let mut stage_capacity = 0usize;
+        let mut instance_capacity = PrepareCapacity::default();
         let skies: Vec<_> = assets
             .materials()
             .iter()
@@ -620,7 +621,8 @@ impl WorldRaster {
             return Err("invalid CPU scene draw capacity");
         }
         for world in assets.worlds() {
-            offsets.push(surfaces.len());
+            let surface_offset = surfaces.len();
+            offsets.push(surface_offset);
             let geometry = world.geometry();
             let boundary_offset = rgba.len();
             boundary_offsets.push(boundary_offset);
@@ -711,13 +713,12 @@ impl WorldRaster {
                 if let Some(info) = surfaces.last_mut() {
                     info.sky = super::sky::Source::load(material, assets);
                 }
+                let reference_stages = loops
+                    .len()
+                    .checked_mul(material.stages.len())
+                    .ok_or("world stage count overflow")?;
                 stage_capacity = stage_capacity
-                    .checked_add(
-                        loops
-                            .len()
-                            .checked_mul(material.stages.len())
-                            .ok_or("world stage count overflow")?,
-                    )
+                    .checked_add(reference_stages)
                     .ok_or("world stage count overflow")?;
                 boundaries = boundaries
                     .checked_add(loops.len())
@@ -758,12 +759,50 @@ impl WorldRaster {
                     info.raster_empty = raster_empty;
                     info.preparation = PrepareCapacity {
                         primitives: loops.len(),
-                        stages: loops.len() * material.stages.len(),
+                        stages: reference_stages,
                         coverage: reference_coverage,
                     };
                 }
             }
+            // Reserve repeated inline-model output at load. Model zero is the
+            // static map already counted above; each candidate is bounded by
+            // both entity slots and the scene's surface-reference capacity.
+            for model in geometry.models.iter().skip(1) {
+                let model_surfaces = geometry
+                    .surfaces
+                    .get(model.surfaces.range())
+                    .ok_or("invalid inline-model surface range")?;
+                if model_surfaces.is_empty() {
+                    continue;
+                }
+                let mut footprint = PrepareCapacity::default();
+                for surface_index in model.surfaces.range() {
+                    footprint = footprint
+                        .checked_add(surfaces[surface_offset + surface_index].preparation)
+                        .ok_or("inline-model preparation count overflow")?;
+                }
+                let copies = limits
+                    .scene
+                    .entities
+                    .min(limits.scene.surfaces / model_surfaces.len());
+                let repeated = footprint
+                    .checked_mul(copies)
+                    .ok_or("inline-model preparation count overflow")?;
+                instance_capacity.primitives =
+                    instance_capacity.primitives.max(repeated.primitives);
+                instance_capacity.stages = instance_capacity.stages.max(repeated.stages);
+                instance_capacity.coverage = instance_capacity.coverage.max(repeated.coverage);
+            }
         }
+        boundaries = boundaries
+            .checked_add(instance_capacity.primitives)
+            .ok_or("instance polygon count overflow")?;
+        stage_capacity = stage_capacity
+            .checked_add(instance_capacity.stages)
+            .ok_or("instance stage count overflow")?;
+        max_edges = max_edges
+            .checked_add(instance_capacity.coverage)
+            .ok_or("instance coverage count overflow")?;
         let sky_boundaries = sky_count
             .checked_mul(super::sky::CLOUD_BOUNDARIES + super::sky::BOX_BOUNDARIES)
             .ok_or("sky polygon count overflow")?;
@@ -1020,6 +1059,7 @@ impl WorldPrepare {
             camera,
             references,
             references.first().map(|r| r.world),
+            list,
             assets,
             evaluator,
             RgbaInput::Live {
@@ -1139,6 +1179,11 @@ impl WorldPrepare {
                     }
                     if item.kind == DrawKind::Surface {
                         let reference = list.surface(item.index);
+                        if reference.entity.is_some_and(|index| {
+                            camera.for_world_entity(list.entity(index)).is_none()
+                        }) {
+                            return false;
+                        }
                         if self
                             .catalog
                             .surface_info(reference.world, reference.surface)
@@ -1343,6 +1388,7 @@ impl SurfacePrepare {
         camera: &Camera,
         references: &[SurfaceRef],
         first_world: Option<WorldId>,
+        list: &CommandList,
         assets: &Assets,
         evaluator: &StageEvaluator,
         mut rgba: RgbaInput<'_>,
@@ -1364,7 +1410,20 @@ impl SurfacePrepare {
                 .is_some_and(|world| world.geometry().partition == GeometryPartition::SplitBsp)
         });
         for (reference_index, reference) in references.iter().enumerate() {
-            certified &= Some(reference.world) == first_world;
+            certified &= Some(reference.world) == first_world && reference.entity.is_none();
+            let view_camera = camera;
+            let entity = reference.entity.map(|index| list.entity(index));
+            let local_camera;
+            let camera = if let Some(entity) = entity {
+                let Some(local) = view_camera.for_world_entity(entity) else {
+                    self.reject(stats);
+                    continue;
+                };
+                local_camera = local;
+                &local_camera
+            } else {
+                view_camera
+            };
             let Some(world) = assets.world(reference.world) else {
                 self.reject(stats);
                 continue;
@@ -1377,7 +1436,8 @@ impl SurfacePrepare {
                 self.reject(stats);
                 continue;
             };
-            let Some(material) = assets.material(binding.material) else {
+            let material_id = entity.and_then(|e| e.material).unwrap_or(binding.material);
+            let Some(material) = assets.material(material_id) else {
                 self.reject(stats);
                 continue;
             };
@@ -1389,15 +1449,15 @@ impl SurfacePrepare {
                 self.reject(stats);
                 continue;
             };
-            if info.raster_empty {
+            if info.raster_empty && material.settings.deforms.iter().all(Option::is_none) {
                 continue;
             }
             if material.settings.sky.is_some() {
-                if self.catalog.sky_enabled(binding.material) && camera.rgb() {
+                if self.catalog.sky_enabled(material_id) && camera.rgb() {
                     stats.surfaces = stats.surfaces.saturating_add(1);
                     continue;
                 }
-                let Some(source) = info.sky else {
+                let Some(source) = info.sky.filter(|_| material_id == binding.material) else {
                     self.reject(stats);
                     continue;
                 };
@@ -1428,8 +1488,9 @@ impl SurfacePrepare {
             let inputs = DrawInputs {
                 lightmap: binding.lightmap,
                 texture_scale: binding.texture_scale,
-                ..DrawInputs::for_view(&camera.refdef)
+                ..DrawInputs::for_view(&view_camera.refdef)
             };
+            let inputs = entity.map_or(inputs, |entity| inputs.for_entity(entity));
             let Ok(base) = evaluator.prepare(&material.stages[0], material.settings, inputs) else {
                 self.reject(stats);
                 continue;
@@ -1501,7 +1562,7 @@ impl SurfacePrepare {
                     self.reject(stats);
                     break;
                 }
-                let current = if native.is_none() {
+                let current = if native.is_none() && material_id == binding.material {
                     self.catalog.current_rgba(reference.world, boundary, assets)
                 } else {
                     None
@@ -1530,7 +1591,7 @@ impl SurfacePrepare {
                 };
                 let product = if let Some((index, recipe)) = current {
                     if rgba
-                        .resolve(index, recipe, &camera.refdef, evaluator)
+                        .resolve(index, recipe, &view_camera.refdef, evaluator)
                         .is_none()
                     {
                         primitive.rgba = None;
@@ -3053,6 +3114,22 @@ struct PrepareCapacity {
     stages: usize,
     coverage: usize,
 }
+impl PrepareCapacity {
+    fn checked_add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            primitives: self.primitives.checked_add(other.primitives)?,
+            stages: self.stages.checked_add(other.stages)?,
+            coverage: self.coverage.checked_add(other.coverage)?,
+        })
+    }
+    fn checked_mul(self, count: usize) -> Option<Self> {
+        Some(Self {
+            primitives: self.primitives.checked_mul(count)?,
+            stages: self.stages.checked_mul(count)?,
+            coverage: self.coverage.checked_mul(count)?,
+        })
+    }
+}
 impl SurfacePrepare {
     fn capacity_bytes(&self) -> usize {
         self.clip.capacity_bytes()
@@ -3075,14 +3152,7 @@ impl SurfacePrepare {
             let info = self
                 .catalog
                 .surface_info(reference.world, reference.surface)?;
-            let primitives = total.primitives.checked_add(info.preparation.primitives)?;
-            let stages = total.stages.checked_add(info.preparation.stages)?;
-            let coverage = total.coverage.checked_add(info.preparation.coverage)?;
-            total = PrepareCapacity {
-                primitives,
-                stages,
-                coverage,
-            };
+            total = total.checked_add(info.preparation)?;
         }
         Some(total)
     }

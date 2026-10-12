@@ -53,7 +53,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let context = CallContext {
                     native_rules: qa_core::primitives::RuleSetId::Quake3,
                     trace_rules: qa_core::primitives::RuleSetId::Quake3,
-                    sound_rules: qa_core::primitives::RuleSetId::Quake3,
+                    sound_policy: qa_gameplay::rules::sound_policy(
+                        qa_core::primitives::RuleSetId::Quake3,
+                    ),
                     server_frame: 0,
                     module: ModuleId(1 + i % 2),
                     clock: ThinkTime::Seconds(2.0 + frame as f64 + i as f64 / 64.0),

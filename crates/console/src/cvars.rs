@@ -623,6 +623,7 @@ impl Cvars {
     /// name/value table. Registration uses capacity reserved at registry load.
     pub fn native_view(&mut self, mut view: View) -> Result<u32, WriteError> {
         view.context.event_time = None;
+        view.context.key_source = None;
         let binding = view.binding as usize;
         let mut cursor = self.native_heads[binding];
         while let Some(index) = cursor {
@@ -732,6 +733,22 @@ impl Cvars {
     }
     pub fn is_explicit(&self, handle: CvarHandle) -> bool {
         self.values[handle.0 as usize].explicit
+    }
+    /// Cached native-role value only when explicitly set or registered by that engine.
+    pub fn native_number(&self, handle: CvarHandle, source: RuleSetId) -> Option<f32> {
+        self.native_setting_available(handle, source)
+            .then(|| self.value_in(handle, source))
+    }
+    pub fn native_integer(&self, handle: CvarHandle, source: RuleSetId) -> Option<i32> {
+        self.native_setting_available(handle, source)
+            .then(|| self.integer_in(handle, source))
+    }
+    pub fn explicit_number(&self, handle: CvarHandle, source: RuleSetId) -> Option<f32> {
+        self.is_explicit(handle)
+            .then(|| self.value_in(handle, source))
+    }
+    fn native_setting_available(&self, handle: CvarHandle, source: RuleSetId) -> bool {
+        self.is_explicit(handle) || self.native_default_available(handle, source)
     }
     pub fn default_available(&self, handle: CvarHandle, source: RuleSetId) -> bool {
         if self.values[handle.0 as usize].module_defaults[source as usize].is_some() {
@@ -1320,6 +1337,7 @@ impl Cvars {
                     dedicated: self.context.dedicated,
                     seat: qa_core::sys_events::SeatId::FIRST,
                     event_time: None,
+                    key_source: None,
                 };
                 let view = View {
                     handle: self.slot(binding.row as usize, binding.seat),

@@ -46,7 +46,7 @@ impl FrameHost {
     ) -> Option<Vec3> {
         let projection = self
             .runtime
-            .local_snapshots
+            .snapshots
             .get(client.0 as usize)?
             .as_ref()?
             .entity_projection();
@@ -70,7 +70,7 @@ impl FrameHost {
         // movement rule or provider kind must not select client sound recipes.
         let Some(snapshot) = self
             .runtime
-            .local_snapshots
+            .snapshots
             .get(client.0 as usize)
             .and_then(Option::as_ref)
         else {
@@ -80,7 +80,7 @@ impl FrameHost {
         let Some(resources) = self.runtime.client_resources[client.0 as usize].as_ref() else {
             return;
         };
-        let sound_rules = resources.state.sound_rules();
+        let sound_policy = resources.state.sound_policy();
         let Some(position) = self.cue_position(client, flash.entity, current) else {
             return;
         };
@@ -94,7 +94,7 @@ impl FrameHost {
             if let Some(sound) = self.muzzle_sounds.choose(recipe) {
                 self.present_sound(SoundEvent {
                     sound,
-                    spatial_rules: sound_rules,
+                    spatial: sound_policy,
                     entity: Some(SoundEmitter::Native {
                         namespace: ResourceNamespace::Client(client),
                         slot: i32::from(flash.entity),
@@ -119,7 +119,7 @@ impl FrameHost {
         static_sound: bool,
     ) -> Option<SoundEvent> {
         let lifetime = self.runtime.server.clients.get(client.0 as usize)?.entity;
-        let (sound, sound_rules, static_emitter) = {
+        let (sound, sound_policy, static_emitter) = {
             let resources = &mut self
                 .runtime
                 .client_resources
@@ -133,7 +133,7 @@ impl FrameHost {
             };
             (
                 resources.sound(u32::from(wire.index))?,
-                resources.sound_rules(),
+                resources.sound_policy(),
                 static_emitter,
             )
         };
@@ -156,7 +156,7 @@ impl FrameHost {
         };
         Some(SoundEvent {
             sound,
-            spatial_rules: sound_rules,
+            spatial: sound_policy,
             entity,
             channel: u16::from(wire.channel),
             position,

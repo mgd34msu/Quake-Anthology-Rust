@@ -181,7 +181,7 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
         prediction.body.velocity
     );
     assert!(
-        host.runtime.local_snapshots[id.0 as usize]
+        host.runtime.snapshots[id.0 as usize]
             .as_ref()
             .unwrap()
             .applied

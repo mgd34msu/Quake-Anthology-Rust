@@ -2,11 +2,13 @@ use qa_network::{
     commands::packet::Protocol,
     outputs::{self, ConfigCommandReader, Error},
 };
+mod support;
 
 #[test]
 fn module_storage_layout_does_not_enable_missing_native_wire_adapters() {
     for protocol in [Protocol::NetQuake15] {
         assert_eq!(protocol.config_layout(), None);
+        assert_eq!(protocol.resource_layout().resources[0].count, 256);
         assert_eq!(
             qa_core::configstrings::ConfigLayout::for_rules(protocol.rule_set()).count,
             576,
@@ -24,6 +26,7 @@ fn module_storage_layout_does_not_enable_missing_native_wire_adapters() {
                 protocol.rule_set()
             )),
         );
+        assert_eq!(protocol.config_layout(), Some(protocol.resource_layout()));
     }
 }
 
@@ -236,6 +239,7 @@ fn connected_qw_resources_and_static_sound_share_the_native_service_stream() {
     let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 4).unwrap();
     let mut client = Channel::load(protocol.channel(), Endpoint::Client, 8192, 4).unwrap();
     let mut commands = Commands::load(protocol);
+    support::admit_qw_reply(&mut server, 1);
     // Multirow sound list, model row, lightstyle, persistent sound, then print.
     let payload = b"\x2e\0first.wav\0second.wav\0\0\0\x2d\0maps/start.bsp\0\0\0\x0c\0m\0\x1d\x08\0\xf0\xff\x18\0\x02\xff\x40\x08\x02after\0";
     server.queue_reliable(payload).unwrap();

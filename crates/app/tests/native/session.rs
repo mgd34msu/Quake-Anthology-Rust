@@ -276,7 +276,7 @@ fn request(
         context: CallContext {
             native_rules: rules,
             trace_rules: rules,
-            sound_rules: rules,
+            sound_policy: qa_gameplay::rules::sound_policy(rules),
             server_frame: 0,
             module: id,
             clock: ThinkTime::Milliseconds(0),
@@ -2150,7 +2150,7 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
         } else {
             RuleSetId::QuakeWorld
         };
-        request.context.sound_rules = RuleSetId::Quake;
+        request.context.sound_policy = qa_gameplay::rules::sound_policy(RuleSetId::Quake);
     }
     let mut host = FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
@@ -2428,9 +2428,9 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 .unwrap();
             runtime.server.clients[id.0 as usize].player.movement_rules = RuleSetId::Quake3;
             runtime.server.clients[id.0 as usize].player.trace_rules = RuleSetId::Quake;
-            runtime.local_snapshots[id.0 as usize] = Some(qa_app::snapshots::LocalSnapshot::load(
+            runtime.snapshots[id.0 as usize] = Some(qa_app::snapshots::SnapshotBinding::load(
                 id,
-                qa_core::sys_events::SeatId::FIRST,
+                Some(qa_core::sys_events::SeatId::FIRST),
                 runtime.server.clients[id.0 as usize].output.unwrap(),
                 qa_network::commands::packet::Protocol::Quake2_34,
                 1,
@@ -2958,7 +2958,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let context = CallContext {
             native_rules: rules,
             trace_rules: rules,
-            sound_rules: rules,
+            sound_policy: qa_gameplay::rules::sound_policy(rules),
             server_frame: 0x1_1234_5678,
             module: ModuleId(1),
             clock: ThinkTime::Milliseconds(0),
@@ -4597,7 +4597,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             |game: &mut Game, slot: usize, arguments: &[u64], sound_rules: RuleSetId| {
                 let mut sound_context = context;
                 sound_context.console.source = RuleSetId::Quake3;
-                sound_context.sound_rules = sound_rules;
+                sound_context.sound_policy = qa_gameplay::rules::sound_policy(sound_rules);
                 let code = native_import_code(
                     pointers[slot],
                     arguments,
@@ -4689,10 +4689,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         }
         assert_eq!(sounds.len(), 5);
         assert_eq!(
-            sounds
-                .iter()
-                .map(|sound| sound.spatial_rules)
-                .collect::<Vec<_>>(),
+            sounds.iter().map(|sound| sound.spatial).collect::<Vec<_>>(),
             [
                 RuleSetId::Quake,
                 RuleSetId::Quake3,
@@ -4700,6 +4697,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 RuleSetId::Quake,
                 RuleSetId::Quake
             ]
+            .map(qa_gameplay::rules::sound_policy)
         );
         assert_eq!(sounds[0].position, source);
         assert_eq!(sounds[2].position, source);

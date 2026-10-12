@@ -209,3 +209,14 @@ fn integer_prefix_accepts_raw_suffixes_and_saturates_native_signed_limits() {
         assert_eq!(atoi_prefix(bytes), expected, "{bytes:?}");
     }
 }
+
+#[test]
+fn native_command_separator_has_one_quote_rule_and_explicit_line_modes() {
+    use qa_core::text::command_separator;
+    assert_eq!(command_separator(b"echo \"a;b\";next", false, false), 10);
+    assert_eq!(command_separator(b"echo \"a;b", false, false), 9);
+    assert_eq!(command_separator(b"echo \"a\nb\"", false, false), 10);
+    assert_eq!(command_separator(b"echo \"a\nb\"", true, false), 7);
+    assert_eq!(command_separator(b"echo\rnext", true, false), 9);
+    assert_eq!(command_separator(b"echo\rnext", true, true), 4);
+}

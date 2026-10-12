@@ -10,6 +10,7 @@ use qa_network::{
     outputs::{self, STATIC_ENTITY_BYTES},
 };
 use std::ops::ControlFlow;
+mod support;
 
 // Original CL_ParseBaseline: four bytes then short-coordinate/byte-angle pairs.
 const STATIC: [u8; STATIC_ENTITY_BYTES] = [20, 7, 3, 2, 4, 247, 255, 255, 162, 0, 64, 1, 4, 128];
@@ -145,6 +146,9 @@ fn literal_static_entities_traverse_native_channel_in_service_order_without_snap
             )
             .unwrap();
         let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
+        if protocol == Protocol::QuakeWorld28 {
+            support::admit_qw_reply(&mut server, 1);
+        }
         let mut payload = STATIC.to_vec();
         payload.push(8);
         if protocol == Protocol::QuakeWorld28 {

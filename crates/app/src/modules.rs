@@ -42,9 +42,7 @@ pub enum Program {
 }
 pub struct QuakeCProgram {
     vm: Box<quakec::Vm>,
-    physics: Option<QwPhysics>,
     map: Option<QuakeCMap>,
-    duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
 }
 /// A loaded world and its retained native entity source are paired explicitly.
 pub struct QuakeCMap {
@@ -60,9 +58,7 @@ impl Program {
     pub fn quakec(vm: quakec::Vm, map: Option<QuakeCMap>) -> Self {
         Self::QuakeC(QuakeCProgram {
             vm: Box::new(vm),
-            physics: None,
             map,
-            duration: None,
         })
     }
     fn entry(&self) -> fn(&mut FrameHost, ModuleId, u32, CallbackCall) -> bool {
@@ -211,30 +207,28 @@ impl Counts {
 }
 struct Module {
     request: ModuleRequest,
-    storage: ServiceStorage,
     scratch: qa_world::collision::TraceScratch,
     unknown: UnknownCalls,
     counts: Counts,
     state: State,
     client_api: Option<Q2Clients>,
+    clock: qa_gameplay::rules::FrameClock,
+    physics: Option<QwPhysics>,
+    duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
 }
 impl Module {
     fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
-        if matches!(self.request.program, Program::QuakeC(_)) {
+        if self.request.phase == Phase::Server && self.clock.accumulate {
             self.request.context.clock
         } else {
             self.request.context.clock.at(queued)
         }
     }
-    fn sound_resources(&self) -> Option<qa_core::primitives::IndexSpan> {
-        self.storage
-            .resources(self.request.context.module)
-            .map(|ranges| ranges[1])
-    }
 }
 pub struct Modules {
     functions: Arc<FunctionTable<FrameHost>>,
     rows: Box<[Option<Module>]>,
+    storage: ServiceStorage,
 }
 impl Modules {
     fn row(&self, id: ModuleId) -> Option<&Module> {
@@ -242,6 +236,10 @@ impl Modules {
     }
     fn row_mut(&mut self, id: ModuleId) -> Option<&mut Module> {
         self.rows.get_mut(id.0 as usize)?.as_mut()
+    }
+    fn parts_mut(&mut self, id: ModuleId) -> Option<(&mut Module, &mut ServiceStorage)> {
+        let row = self.rows.get_mut(id.0 as usize)?.as_mut()?;
+        Some((row, &mut self.storage))
     }
 }
 impl FrameHost {
@@ -298,6 +296,19 @@ impl FrameHost {
             .unwrap_or(0);
         let mut rows: Box<[Option<Module>]> =
             std::iter::repeat_with(|| None).take(capacity).collect();
+        let services: Vec<_> = requests
+            .iter()
+            .map(|request| {
+                (
+                    request.context.module,
+                    request.configstrings,
+                    request.context.native_rules,
+                    request.files,
+                )
+            })
+            .collect();
+        let mut storage = ServiceStorage::load_modules(&services, &host.console.cvars)
+            .map_err(|e| format!("module services: {e:?}"))?;
         for mut request in requests {
             let index = usize::from(request.context.module.0);
             let entity = host
@@ -351,40 +362,6 @@ impl FrameHost {
                         call: quakec_entry,
                     },
                 );
-                if request.timing_rules == RuleSetId::QuakeWorld {
-                    qc.physics = Some(QwPhysics {
-                        minimum: host
-                            .console
-                            .cvars
-                            .find("sv_mintic")
-                            .ok_or("missing QW minimum tick cvar")?,
-                        maximum: host
-                            .console
-                            .cvars
-                            .find("sv_maxtic")
-                            .ok_or("missing QW maximum tick cvar")?,
-                        last: None,
-                    });
-                }
-                if request.rate == TickRate::FrameDriven
-                    && let Some(policy) = qa_gameplay::rules::frame_duration(request.timing_rules)
-                {
-                    qc.duration = Some((
-                        policy,
-                        host.console
-                            .cvars
-                            .bind(
-                                policy.override_cvar,
-                                qa_console::views::Context {
-                                    source: request.timing_rules,
-                                    role: qa_console::views::Role::Engine,
-                                    side: qa_console::catalog::Scope::Server,
-                                    ..qa_console::views::Context::default()
-                                },
-                            )
-                            .ok_or("missing module frame duration cvar")?,
-                    ));
-                }
                 if let Some(map) = &qc.map {
                     let source = host
                         .runtime
@@ -397,6 +374,46 @@ impl FrameHost {
                     request.context.clock = ThinkTime::Seconds(1.0);
                 }
             }
+            let clock = qa_gameplay::rules::frame_clock(request.timing_rules);
+            let physics = if request.timing_rules == RuleSetId::QuakeWorld {
+                Some(QwPhysics {
+                    minimum: host
+                        .console
+                        .cvars
+                        .find("sv_mintic")
+                        .ok_or("missing QW minimum tick cvar")?,
+                    maximum: host
+                        .console
+                        .cvars
+                        .find("sv_maxtic")
+                        .ok_or("missing QW maximum tick cvar")?,
+                    last: None,
+                })
+            } else {
+                None
+            };
+            let duration = if request.rate == TickRate::FrameDriven {
+                qa_gameplay::rules::frame_duration(request.timing_rules)
+                    .map(|policy| {
+                        let view = host
+                            .console
+                            .cvars
+                            .bind(
+                                policy.override_cvar,
+                                qa_console::views::Context {
+                                    source: request.timing_rules,
+                                    role: qa_console::views::Role::Engine,
+                                    side: qa_console::catalog::Scope::Server,
+                                    ..qa_console::views::Context::default()
+                                },
+                            )
+                            .ok_or("missing module frame duration cvar")?;
+                        Ok::<_, &str>((policy, view))
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Program::Native { vm, .. } = &request.program
                 && request
@@ -406,16 +423,6 @@ impl FrameHost {
             {
                 return Err("invalid native export".into());
             }
-            let mut storage = ServiceStorage::load_native(
-                &[(
-                    request.context.module,
-                    request.configstrings,
-                    request.context.native_rules,
-                )],
-                request.files,
-                &host.console.cvars,
-            )
-            .map_err(|e| format!("module services: {e:?}"))?;
             if let Program::QuakeC(qc) = &mut request.program {
                 qc.vm
                     .seed_entities(
@@ -471,17 +478,20 @@ impl FrameHost {
             }
             rows[index] = Some(Module {
                 request,
-                storage,
                 scratch: host.runtime.geometry.scratch(),
                 unknown: UnknownCalls::load(256).map_err(|e| e.to_string())?,
                 counts: Counts::default(),
                 state,
                 client_api: None,
+                clock,
+                physics,
+                duration,
             });
         }
         host.modules = Some(Modules {
             functions: Arc::new(functions),
             rows,
+            storage,
         });
         host.configure_output_resources();
         Ok(host)
@@ -502,9 +512,13 @@ impl FrameHost {
     ) -> Result<(), String> {
         if let Some(modules) = &self.modules {
             for row in modules.rows.iter().flatten() {
-                if let Some(sounds) = row.sound_resources() {
+                if let Some(sounds) = modules
+                    .storage
+                    .resources(row.request.context.module)
+                    .map(|ranges| ranges[1])
+                {
                     for ordinal in sounds.range().skip(1) {
-                        let (name, _) = row
+                        let (name, _) = modules
                             .storage
                             .configstring(row.request.context.module, ordinal)
                             .map_err(|e| format!("native sound precache: {e:?}"))?;
@@ -519,7 +533,9 @@ impl FrameHost {
     }
     /// Resolve native ordinals and client cue resources after PCM loading.
     pub fn bind_sounds(&mut self, bank: &Arc<qa_audio::Bank>) -> Result<(), String> {
-        self.muzzle_sounds.bind(bank);
+        self.muzzle_sounds
+            .bind(bank)
+            .map_err(|e| format!("muzzle sound binding: {e:?}"))?;
         for resources in self.runtime.client_resources.iter_mut().flatten() {
             if !resources.state.bind_sounds(bank) {
                 return Err("client sound binding failed".into());
@@ -527,8 +543,13 @@ impl FrameHost {
         }
         if let Some(modules) = &mut self.modules {
             for row in modules.rows.iter_mut().flatten() {
-                if let Some(sounds) = row.sound_resources() {
-                    row.storage
+                if let Some(sounds) = modules
+                    .storage
+                    .resources(row.request.context.module)
+                    .map(|ranges| ranges[1])
+                {
+                    modules
+                        .storage
                         .bind_sound_bank(row.request.context.module, sounds, Arc::clone(bank))
                         .map_err(|e| format!("native sound binding: {e:?}"))?;
                 }
@@ -548,7 +569,7 @@ impl FrameHost {
             }
             let mut context = row.request.context;
             context.clock = row.time(self.time);
-            if row
+            if modules
                 .storage
                 .publish_initial_signon(&mut self.runtime.server, context)
                 .is_err()
@@ -772,18 +793,16 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     let (Some(modules), cvars) = (host.modules.as_mut(), &host.console.cvars) else {
         return;
     };
-    let Some(row) = modules.row_mut(module) else {
+    let Some((row, storage)) = modules.parts_mut(module) else {
         return;
     };
     // qsrc advances the SERVER frame number after RunFrame. Loading calls
     // retain zero; completed ticks are visible to later imports and shutdown.
-    let _ = row.storage.reset_message(module);
+    let _ = storage.reset_message(module);
     row.request.context.server_frame = tick.index - 1;
     let quakec = matches!(row.request.program, Program::QuakeC(_));
     let mut step = qa_core::sys_events::EventTime(tick.end.since(tick.start)).seconds();
-    if let Program::QuakeC(qc) = &row.request.program
-        && let Some((policy, view)) = qc.duration
-    {
+    if let Some((policy, view)) = row.duration {
         let forced = f64::from(cvars.numeric(view).unwrap_or(0.0));
         step = if forced > 0.0 {
             forced
@@ -794,14 +813,14 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     // Native sv.time is an accumulator, not the platform's absolute epoch.
     // QW SV_Frame takes a float duration; NQ advances its double after physics.
     let previous = row.request.context.clock;
-    let advance = if row.request.timing_rules == RuleSetId::QuakeWorld {
+    let advance = if row.clock.narrow_span {
         f64::from(step as f32)
     } else {
         step
     };
     let next = ThinkTime::Seconds(previous.seconds() + advance);
-    let time = if quakec {
-        if row.request.timing_rules == RuleSetId::QuakeWorld {
+    let time = if row.clock.accumulate {
+        if row.clock.advance_before {
             row.request.context.clock = next;
             next
         } else {
@@ -811,13 +830,11 @@ fn frame(host: &mut FrameHost, tick: Tick) {
         row.request.context.clock.at(tick.end)
     };
     let mut physics_due = true;
-    if let Program::QuakeC(qc) = &mut row.request.program
-        && let Some(physics) = &mut qc.physics
-    {
+    if let Some(physics) = &mut row.physics {
         let last = *physics.last.get_or_insert(previous);
         step = time.seconds() - last.seconds();
-        let minimum = cvars.value_in(physics.minimum, RuleSetId::QuakeWorld);
-        let maximum = cvars.value_in(physics.maximum, RuleSetId::QuakeWorld);
+        let minimum = cvars.value_in(physics.minimum, row.request.timing_rules);
+        let maximum = cvars.value_in(physics.maximum, row.request.timing_rules);
         if step < f64::from(minimum) {
             physics_due = false;
         } else {
@@ -835,7 +852,7 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     }
     if let Some(row) = host.module_row_mut(module) {
         row.request.context.server_frame = tick.index;
-        if quakec {
+        if row.clock.accumulate {
             row.request.context.clock = next;
         }
     }
@@ -940,19 +957,19 @@ fn quakec_noclip(
     entity: EntityId,
     step: f32,
 ) -> Result<(), qa_compat::services::CallError> {
-    let row = host
+    let (row, storage) = host
         .modules
         .as_mut()
-        .and_then(|modules| modules.row_mut(module))
+        .and_then(|modules| modules.parts_mut(module))
         .ok_or(qa_compat::services::CallError::Entity)?;
     let Program::QuakeC(qc) = &mut row.request.program else {
         return Err(qa_compat::services::CallError::Entity);
     };
     let native = native_self(&host.runtime, entity, module, &qc.vm)
         .ok_or(qa_compat::services::CallError::Entity)?;
-    let mut services =
-        host.runtime
-            .engine_services(&mut host.console, &mut row.storage, &mut row.scratch);
+    let mut services = host
+        .runtime
+        .engine_services(&mut host.console, storage, &mut row.scratch);
     qc.vm
         .advance_noclip(&mut services, row.request.context, native, step)
 }
@@ -977,10 +994,10 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         } => (time, arguments, client, command),
         _ => return false,
     };
-    let Some(row) = host
+    let Some((row, storage)) = host
         .modules
         .as_mut()
-        .and_then(|modules| modules.row_mut(module))
+        .and_then(|modules| modules.parts_mut(module))
     else {
         return false;
     };
@@ -990,9 +1007,9 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
     if matches!(row.request.program, Program::QuakeC(_)) {
         return false;
     }
-    let mut services =
-        host.runtime
-            .engine_services(&mut host.console, &mut row.storage, &mut row.scratch);
+    let mut services = host
+        .runtime
+        .engine_services(&mut host.console, storage, &mut row.scratch);
     row.counts.calls += 1;
     let call_context = context(row.request.context, time);
     let result = match &mut row.request.program {
@@ -1082,10 +1099,10 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     else {
         return false;
     };
-    let Some(row) = host
+    let Some((row, storage)) = host
         .modules
         .as_mut()
-        .and_then(|modules| modules.row_mut(module))
+        .and_then(|modules| modules.parts_mut(module))
     else {
         return false;
     };
@@ -1100,9 +1117,9 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     if qc.vm.prepare_call(native, world, time, phase).is_err() {
         return false;
     }
-    let mut services =
-        host.runtime
-            .engine_services(&mut host.console, &mut row.storage, &mut row.scratch);
+    let mut services = host
+        .runtime
+        .engine_services(&mut host.console, storage, &mut row.scratch);
     let mut calls = QuakeCCalls {
         services: &mut services,
         table: &QUAKEC,

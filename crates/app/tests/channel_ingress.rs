@@ -1,6 +1,6 @@
 use qa_app::{
     Runtime,
-    host::{FrameHost, FrameSource},
+    host::{FrameHost, FrameResult, FrameSource},
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
@@ -71,21 +71,33 @@ fn host(policy: Policy) -> Result<(FrameHost, [ClientId; 2]), String> {
                             .then_some(runtime.server.clients[id.0 as usize].output)
                             .flatten(),
                         pending_output: None,
-                        commands: None,
+                        commands: (policy == channel::QUAKEWORLD && endpoint == Endpoint::Server)
+                            .then(|| {
+                                qa_network::commands::connection::Commands::load(
+                                    qa_network::commands::packet::Protocol::QuakeWorld28,
+                                )
+                            }),
                     },
                 )
                 .map_err(|e| format!("bind {e:?}"))?;
         }
     }
-    Ok((
-        FrameHost::load(
-            Console::new(Context::default()).map_err(|e| format!("console {e:?}"))?,
-            runtime,
-            TickRate::FrameDriven,
-            vec![],
-        )?,
-        clients,
-    ))
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).map_err(|e| format!("console {e:?}"))?,
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )?;
+    if policy == channel::QUAKEWORLD {
+        // A real native request grants each QW server's first reply. This is
+        // a queued drain, without an additional physical intake.
+        for client in clients {
+            send(&mut host, client, Endpoint::Client)?;
+        }
+        host.drain(&mut FrameResult::default());
+        assert_eq!(host.runtime.network.command_errors, 0);
+    }
+    Ok((host, clients))
 }
 fn publish(
     host: &mut FrameHost,
@@ -329,22 +341,29 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
                 host.runtime
                     .send_local_command(client, &Default::default(), EventTime(0))
             );
-            host.frame(&mut Clock::default(), true); // native reply waits for the first admitted move
         }
         let before = host.runtime.prediction[0].player.body.position;
+        assert_eq!(before, Vec3::default());
         assert!(
             host.runtime
-                .send_local_snapshot(client, EventTime(1_001_000_000), None)
+                .network
+                .get(client, Endpoint::Client)
+                .ok_or("CLIENT channel")?
+                .channel
+                .current_snapshot()
+                .is_none()
         );
-        assert_eq!(host.runtime.prediction[0].player.body.position, before);
         assert_eq!(
-            host.runtime.local_snapshots[0]
-                .as_ref()
-                .ok_or("binding")?
-                .applied,
+            host.runtime.snapshots[0].as_ref().ok_or("binding")?.applied,
             0
         );
-        let mut clock = Clock::default();
+        // SERVER publishes through the connection binding after its first
+        // intake, and CLIENT can only import the resulting queued Packet.
+        // QW's queued move above supplies the native reply sequence.
+        let mut clock = Clock {
+            time: 991_000_000,
+            ..Default::default()
+        };
         let frame = host.frame(&mut clock, true);
         assert_eq!((frame.drains, clock.polls), (2, 2));
         let predicted = &host.runtime.prediction[0].player;
@@ -372,10 +391,7 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
             }
         );
         assert_eq!(
-            host.runtime.local_snapshots[0]
-                .as_ref()
-                .ok_or("binding")?
-                .applied,
+            host.runtime.snapshots[0].as_ref().ok_or("binding")?.applied,
             1
         );
         assert_eq!(host.runtime.network.command_errors, 0);
@@ -416,7 +432,11 @@ fn blocked_local_snapshot_retries_exact_prepared_state_before_new_publication() 
             .map_err(|e| format!("{e:?}"))?;
     }
     host.runtime.server.clients[0].player.body.position.0[0] = 12.375;
-    assert!(!host.runtime.send_local_snapshot(client, EventTime(0), None));
+    assert!(
+        !host
+            .runtime
+            .send_snapshot(client, EventTime(0), None, &mut Clock::default())
+    );
     let channel = &host
         .runtime
         .network
@@ -427,10 +447,12 @@ fn blocked_local_snapshot_retries_exact_prepared_state_before_new_publication() 
     let sequence = channel.send_state().sequence;
     host.runtime.loopback.clear_client(client);
     host.runtime.server.clients[0].player.body.position.0[0] = 99.;
-    assert!(
-        host.runtime
-            .send_local_snapshot(client, EventTime(100_000_000), None)
-    );
+    assert!(host.runtime.send_snapshot(
+        client,
+        EventTime(100_000_000),
+        None,
+        &mut Clock::default()
+    ));
     let channel = &host
         .runtime
         .network
@@ -460,7 +482,10 @@ fn delayed_local_snapshot_cannot_mutate_a_reused_client_lifetime() -> Result<(),
     use qa_network::commands::packet::Protocol;
     let (mut host, client) = local_host(Protocol::Quake2_34)?;
     host.runtime.server.clients[0].player.body.position.0[0] = 123.125;
-    assert!(host.runtime.send_local_snapshot(client, EventTime(0), None));
+    assert!(
+        host.runtime
+            .send_snapshot(client, EventTime(0), None, &mut Clock::default())
+    );
     assert!(host.runtime.server.disconnect(client));
     assert_eq!(
         host.runtime
@@ -472,10 +497,7 @@ fn delayed_local_snapshot_cannot_mutate_a_reused_client_lifetime() -> Result<(),
     host.frame(&mut Clock::default(), true);
     assert_eq!(host.runtime.prediction[0].player.body.position, before);
     assert_eq!(
-        host.runtime.local_snapshots[0]
-            .as_ref()
-            .ok_or("binding")?
-            .applied,
+        host.runtime.snapshots[0].as_ref().ok_or("binding")?.applied,
         0
     );
     Ok(())
@@ -559,10 +581,12 @@ fn repro_connections_use_negotiated_qport_and_frame_clock_with_native_feedback()
                 .map_err(|e| e.to_string())?;
         }
         host.runtime.server.clients[0].player.body.position.0[0] = 12.375;
-        assert!(
-            host.runtime
-                .send_local_snapshot(client, EventTime(1_001_000_000), None)
-        );
+        assert!(host.runtime.send_snapshot(
+            client,
+            EventTime(1_001_000_000),
+            None,
+            &mut Clock::default()
+        ));
         let channel = &host
             .runtime
             .network
@@ -573,7 +597,10 @@ fn repro_connections_use_negotiated_qport_and_frame_clock_with_native_feedback()
             channel.current_snapshot().map(|frame| frame.sequence()),
             Some(20)
         );
-        let mut clock = Clock::default();
+        let mut clock = Clock {
+            time: 991_000_000,
+            ..Default::default()
+        };
         host.frame(&mut clock, true);
         let connection = host
             .runtime
@@ -605,6 +632,7 @@ fn repro_connections_use_negotiated_qport_and_frame_clock_with_native_feedback()
             host.runtime
                 .send_local_command(client, &command, EventTime(1_050_000_000))
         );
+        clock.time = 1_040_000_000;
         host.frame(&mut clock, true);
         let connection = host
             .runtime
@@ -673,8 +701,8 @@ fn unsent_and_duplicate_acks_cannot_retire_output() -> Result<(), String> {
         headers::QUAKEWORLD,
         headers::Direction::ToServer,
         headers::Header {
-            sequence: 1,
-            acknowledgement: 1,
+            sequence: 2,
+            acknowledgement: 2,
             reliable_ack: true,
             ..headers::Header::default()
         },
@@ -686,7 +714,8 @@ fn unsent_and_duplicate_acks_cannot_retire_output() -> Result<(), String> {
         .loopback
         .send(Endpoint::Client, client, &packet[..n])
         .map_err(|e| format!("send {e:?}"))?;
-    host.frame(&mut clock, true);
+    // Consume the forged ACK before any output submission can start a flight.
+    host.drain(&mut FrameResult::default());
     assert_eq!(acks(&host, client)?, 0);
     send(&mut host, client, Endpoint::Server)?;
     host.frame(&mut clock, true);
@@ -695,8 +724,8 @@ fn unsent_and_duplicate_acks_cannot_retire_output() -> Result<(), String> {
         headers::QUAKEWORLD,
         headers::Direction::ToServer,
         headers::Header {
-            sequence: 2,
-            acknowledgement: 1,
+            sequence: 3,
+            acknowledgement: 2,
             reliable_ack: true,
             ..headers::Header::default()
         },

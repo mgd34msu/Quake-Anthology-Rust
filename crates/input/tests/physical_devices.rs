@@ -1,10 +1,13 @@
+use support::RoutedInput as Input;
+#[path = "support/console.rs"]
+mod support;
 use qa_core::{
     primitives::{UserCmd, buttons},
     sys_events::{
         DeviceId, EventKind, EventTime, MAX_INPUT_DEVICES, SeatId, SysEvent, key_catchers,
     },
 };
-use qa_input::{Input, Target};
+use qa_input::Target;
 
 #[derive(Default)]
 struct Sink {
@@ -14,7 +17,14 @@ impl Target for Sink {
     fn character(&mut self, seat: SeatId, value: char) {
         self.text.push((seat, value));
     }
-    fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+    fn command(
+        &mut self,
+        _: SeatId,
+        _: EventTime,
+        _: Option<qa_core::sys_events::KeySource>,
+        _: &str,
+    ) {
+    }
 }
 fn event(input: &mut Input, sink: &mut Sink, ms: u64, kind: EventKind<'_>) {
     input.dispatch(
@@ -40,7 +50,10 @@ fn key(input: &mut Input, sink: &mut Sink, ms: u64, id: u32, code: u16, down: bo
     );
 }
 fn frame(input: &mut Input, ms: u64) -> [UserCmd; SeatId::COUNT] {
-    input.build_frame(EventTime::from_milliseconds(ms), [200; 3], [0.022; 2])
+    input.build_frame_with_policy(
+        EventTime::from_milliseconds(ms),
+        &[support::elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT],
+    )
 }
 
 #[test]

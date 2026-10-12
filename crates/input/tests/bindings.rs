@@ -1,10 +1,19 @@
+use support::RoutedInput as Input;
+#[path = "support/console.rs"]
+mod support;
 use qa_core::sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent};
-use qa_input::{Input, Target, keys};
+use qa_input::{Target, keys};
 #[derive(Default)]
 struct Sink(Vec<(SeatId, String)>);
 impl Target for Sink {
     fn character(&mut self, _: SeatId, _: char) {}
-    fn command(&mut self, seat: SeatId, _: EventTime, text: &str) {
+    fn command(
+        &mut self,
+        seat: SeatId,
+        _: EventTime,
+        _: Option<qa_core::sys_events::KeySource>,
+        text: &str,
+    ) {
         self.0.push((seat, text.to_owned()));
     }
 }
@@ -69,12 +78,18 @@ fn command_bindings_keep_release_metadata_quote_spans_and_capacity_atomicity() {
         [
             (SeatId::FIRST, "+edge 10 10".to_owned()),
             (SeatId::FIRST, "echo \"a;b\"".to_owned()),
+            (SeatId::FIRST, "+jump 10 10".to_owned()),
             (SeatId::FIRST, "-edge 10 20".to_owned()),
-            (SeatId::FIRST, "echo \"a;b\"".to_owned())
+            (SeatId::FIRST, "echo \"a;b\"".to_owned()),
+            (SeatId::FIRST, "-jump 10 20".to_owned())
         ]
     );
     assert_ne!(
-        input.build_frame(EventTime(30_000_000), [127; 3], [0.022; 2])[0].buttons
+        input.build_frame_with_policy(
+            EventTime(30_000_000),
+            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+        )[0]
+        .buttons
             & qa_core::primitives::buttons::JUMP,
         0
     );
@@ -106,7 +121,11 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
         );
     }
     assert_eq!(
-        input.build_frame(EventTime(40_000_000), [127; 3], [0.022; 2])[0].movement[0],
+        input.build_frame_with_policy(
+            EventTime(40_000_000),
+            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+        )[0]
+        .movement[0],
         127.0
     );
     input.dispatch(
@@ -120,7 +139,7 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
         },
         &mut sink,
     );
-    assert_eq!(sink.0.len(), 2);
+    assert_eq!(sink.0.len(), 5);
     input.dispatch(
         SysEvent {
             time: EventTime(50_000_000),
@@ -129,7 +148,11 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
         &mut sink,
     );
     assert_eq!(
-        input.build_frame(EventTime(60_000_000), [127; 3], [0.022; 2])[0].movement,
+        input.build_frame_with_policy(
+            EventTime(60_000_000),
+            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+        )[0]
+        .movement,
         [0.0; 3]
     );
 }

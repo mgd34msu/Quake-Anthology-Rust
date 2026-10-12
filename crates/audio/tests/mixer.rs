@@ -33,7 +33,7 @@ fn listener(client: u32, origin: Vec3) -> Option<Listener> {
 fn event(m: &Mixer) -> SoundEvent {
     SoundEvent {
         sound: m.bank.find("SOUND\\TEST.WAV").unwrap(),
-        spatial_rules: RuleSetId::Quake,
+        spatial: qa_gameplay::rules::sound_policy(RuleSetId::Quake),
         entity: None,
         channel: 0,
         position: Vec3::default(),
@@ -60,13 +60,15 @@ fn finite_samples_finish_once_and_keep_native_fixed_gain() {
 fn shared_native_spatial_policies_preserve_channel_side_and_full_volume_self() {
     for (rules, right) in [
         (RuleSetId::Quake, 1224),
+        (RuleSetId::QuakeWorld, 1224),
         (RuleSetId::Quake2, 692),
+        (RuleSetId::Quake2Rerelease, 692),
         (RuleSetId::Quake3, 740),
     ] {
         let mut m = mixer(vec![1024], None, 2);
         m.listen(&[listener(0, Vec3::default())], 1.0);
         let mut e = event(&m);
-        e.spatial_rules = rules;
+        e.spatial = qa_gameplay::rules::sound_policy(rules);
         e.position = Vec3([400.0, 0.0, 0.0]);
         e.attenuation = 1.0;
         assert!(m.sound(e));
@@ -85,14 +87,14 @@ fn shared_native_spatial_policies_preserve_channel_side_and_full_volume_self() {
 }
 
 #[test]
-fn one_precached_pcm_supports_independent_spatial_rules_on_simultaneous_voices() {
+fn one_precached_pcm_supports_independent_spatial_policies_on_simultaneous_voices() {
     let mut m = mixer(vec![1024; 2], None, 2);
     m.listen(&[listener(0, Vec3::default())], 1.0);
     let mut e = event(&m);
     e.position = Vec3([400.0, 0.0, 0.0]);
     e.attenuation = 1.0;
     for rules in [RuleSetId::Quake, RuleSetId::Quake2] {
-        e.spatial_rules = rules;
+        e.spatial = qa_gameplay::rules::sound_policy(rules);
         assert!(m.sound(e));
     }
     let mut pcm = [0; 2];
@@ -103,7 +105,7 @@ fn one_precached_pcm_supports_independent_spatial_rules_on_simultaneous_voices()
 }
 
 #[test]
-fn updating_loop_spatial_rules_preserves_its_pcm_cursor() {
+fn updating_loop_spatial_policy_preserves_its_pcm_cursor() {
     let mut m = mixer(vec![1024, 2048, 3072], None, 1);
     m.listen(&[listener(0, Vec3::default())], 1.0);
     let mut e = event(&m);
@@ -119,12 +121,30 @@ fn updating_loop_spatial_rules_preserves_its_pcm_cursor() {
     assert!(m.sound(e));
     assert!(m.paint(&mut pcm));
     assert_eq!(pcm, [0, 1224]);
-    e.spatial_rules = RuleSetId::Quake2;
+    e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
     assert!(m.sound(e));
     assert!(m.paint(&mut pcm));
     assert_eq!(pcm, [0, 2 * 692]);
     assert_eq!(m.counts.started, 1);
     assert_eq!(m.counts.replaced, 0);
+}
+
+#[test]
+fn spatialization_uses_capability_data_without_a_game_selector() {
+    let mut m = mixer(vec![1024], None, 1);
+    m.listen(&[listener(0, Vec3::default())], 1.0);
+    let mut e = event(&m);
+    e.spatial = SpatialPolicy {
+        distance_offset: 80.0,
+        distance_scale: 0.001,
+        separation: 0.25,
+    };
+    e.position = Vec3([400.0, 0.0, 0.0]);
+    e.attenuation = 1.0;
+    assert!(m.sound(e));
+    let mut pcm = [0; 2];
+    assert!(m.paint(&mut pcm));
+    assert_eq!(pcm, [0, 344]);
 }
 
 #[test]
@@ -375,7 +395,7 @@ fn native_self_relative_gain_uses_the_client_voice_namespace() {
     );
     let mut e = event(&m);
     e.entity = Some(own);
-    e.spatial_rules = RuleSetId::Quake2;
+    e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
     e.position = Vec3([400.0, 0.0, 0.0]);
     e.attenuation = 1.0;
     let mut pcm = [0; 2];
@@ -399,7 +419,7 @@ fn native_client_voice_tracks_without_restarting_and_retains_missing_pose() {
     let mut m = mixer(vec![1024; 4], None, 1);
     m.listen(&[listener(7, Vec3::default())], 1.0);
     let mut e = event(&m);
-    e.spatial_rules = RuleSetId::Quake2;
+    e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
     e.entity = Some(SoundEmitter::Native {
         namespace: ResourceNamespace::Client(ClientId(7)),
         slot: 19,
@@ -458,7 +478,7 @@ fn fixed_and_non_client_emitters_never_resolve_client_poses() {
         let mut m = mixer(vec![1024; 2], None, 1);
         m.listen(&[listener(7, Vec3::default())], 1.0);
         let mut e = event(&m);
-        e.spatial_rules = RuleSetId::Quake2;
+        e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
         e.entity = entity;
         e.position = Vec3([400.0, 0.0, 0.0]);
         e.positioned = positioned;
@@ -482,7 +502,7 @@ fn moving_voices_keep_native_connection_namespace() {
     );
     for client in [ClientId(7), ClientId(9)] {
         let mut e = event(&m);
-        e.spatial_rules = RuleSetId::Quake2;
+        e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
         e.entity = Some(SoundEmitter::Native {
             namespace: ResourceNamespace::Client(client),
             slot: 19,

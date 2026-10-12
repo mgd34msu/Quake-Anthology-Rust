@@ -440,6 +440,30 @@ fn stalled_peer_progress(unsent: bool) {
         reliable: 0,
         unsent,
     };
+    // Each QW peer first admits a native request. Later healthy ACK packets
+    // grant its next reply; the stalled peer never submits another request.
+    for slot in 0..2 {
+        let packet = source.peers[slot]
+            .prepare(None, EventTime(0))
+            .unwrap()
+            .unwrap();
+        if slot == 1 {
+            source.ack_length = packet.bytes.len();
+            source.ack[..source.ack_length].copy_from_slice(packet.bytes);
+        } else {
+            host.queue
+                .push(SysEvent {
+                    time: EventTime(0),
+                    kind: EventKind::Packet {
+                        socket: 0,
+                        from: Peer::Socket("127.0.0.1:1000".parse().unwrap()),
+                        bytes: packet.bytes,
+                    },
+                })
+                .unwrap();
+        }
+        source.peers[slot].submitted(EventTime(0)).unwrap();
+    }
     let mut disconnected = 0;
     let mut overflow = 0;
     let mut resync_retired = 0;

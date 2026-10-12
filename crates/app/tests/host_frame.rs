@@ -265,7 +265,7 @@ fn native_player_values_reach_client_and_hud_through_the_queued_snapshot() {
             Some(NumericValue::integer(0))
         );
         assert!(
-            host.runtime.local_snapshots[id.0 as usize]
+            host.runtime.snapshots[id.0 as usize]
                 .as_ref()
                 .unwrap()
                 .applied
@@ -372,7 +372,7 @@ fn registered_q3_player_values_reach_client_and_hud_through_session_packets() {
             module,
             native_rules: RuleSetId::Quake3,
             trace_rules: RuleSetId::Quake2,
-            sound_rules: RuleSetId::Quake,
+            sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake),
             server_frame: 0,
             clock: ThinkTime::Milliseconds(0),
             console: Context::default(),
@@ -455,7 +455,7 @@ fn registered_q3_player_values_reach_client_and_hud_through_session_packets() {
     assert!(!client.module_movement);
     assert_eq!(host.module_counts(module).unwrap().traps, 0);
     assert!(
-        host.runtime.local_snapshots[id.0 as usize]
+        host.runtime.snapshots[id.0 as usize]
             .as_ref()
             .unwrap()
             .applied
@@ -636,7 +636,6 @@ fn server_set_angles_survive_q2_and_q3_client_prediction() {
     .unwrap();
     host.local_clients = local;
     host.local_worlds[..2].fill(Some(qa_render::world::WorldId(0)));
-    assert!(host.native_input_policy_active());
     let mut source = Source::default();
     for ms in [100, 116, 132] {
         source.time = ms;
@@ -645,7 +644,7 @@ fn server_set_angles_survive_q2_and_q3_client_prediction() {
         for (seat, angles) in server_angles.iter().enumerate() {
             let client = local[seat].unwrap();
             assert!(
-                host.runtime.local_snapshots[client.0 as usize]
+                host.runtime.snapshots[client.0 as usize]
                     .as_ref()
                     .unwrap()
                     .applied

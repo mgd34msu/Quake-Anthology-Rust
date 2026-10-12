@@ -16,7 +16,7 @@ fn context(module: u16, rules: RuleSetId, order: LinkOrder) -> CallContext {
     CallContext {
         native_rules: rules,
         trace_rules: rules,
-        sound_rules: rules,
+        sound_policy: qa_gameplay::rules::sound_policy(rules),
         server_frame: 0,
         module: ModuleId(module),
         clock: ThinkTime::Seconds(2.0),
@@ -33,8 +33,14 @@ fn context(module: u16, rules: RuleSetId, order: LinkOrder) -> CallContext {
 fn module_messages_are_independent_and_rejected_appends_preserve_the_prefix() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage =
-        ServiceStorage::load(&[(ModuleId(1), 0), (ModuleId(2), 0)], 0, &console.cvars).unwrap();
+    let mut storage = ServiceStorage::load_modules(
+        &[
+            (ModuleId(1), 0, RuleSetId::Quake, 0),
+            (ModuleId(2), 0, RuleSetId::Quake3, 0),
+        ],
+        &console.cvars,
+    )
+    .unwrap();
     let mut scratch = runtime.geometry.scratch();
     let observer = runtime
         .server
@@ -648,6 +654,111 @@ fn module_file_handles_are_scoped_and_read_ranges_through_the_existing_vfs() {
             (ENGINE_CALLS.file_read)(&mut services, ModuleId(1), handle, &mut out),
             Err(CallError::File)
         );
+    }
+    std::fs::remove_file(directory.join("module.txt")).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn shared_module_storage_preserves_native_ranges_handles_and_independent_capacity() {
+    let directory =
+        std::env::temp_dir().join(format!("qa-shared-module-storage-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("module.txt"), b"native file bytes").unwrap();
+    let mut runtime = Runtime::load(1, []).unwrap();
+    runtime.vfs.mount_directory(&directory, 0).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let first = ModuleId(4);
+    let second = ModuleId(9);
+    let q1 = qa_core::configstrings::ConfigLayout::for_rules(RuleSetId::Quake);
+    let q3 = qa_core::configstrings::ConfigLayout::for_rules(RuleSetId::Quake3);
+    let mut storage = ServiceStorage::load_modules(
+        &[
+            (first, q1.count, q1.rules, 1),
+            (second, q3.count, q3.rules, 1),
+        ],
+        &console.cvars,
+    )
+    .unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    (ENGINE_CALLS.configstring)(&mut services, first, 1, b"\xffq1").unwrap();
+    (ENGINE_CALLS.configstring)(&mut services, second, 1, b"\x80q3").unwrap();
+    assert_eq!(
+        services.storage.configstring(first, 1).unwrap().0,
+        b"\xffq1"
+    );
+    assert_eq!(
+        services.storage.configstring(second, 1).unwrap().0,
+        b"\x80q3"
+    );
+    assert_eq!(services.storage.resources(first).unwrap(), q1.resources);
+    assert_eq!(services.storage.resources(second).unwrap(), q3.resources);
+    let first_revision = services.storage.config_revision(first).unwrap();
+    let style = q1.style_index(0).unwrap();
+    assert_eq!(
+        (ENGINE_CALLS.configstring)(&mut services, first, style, &[b'm'; 64]),
+        Err(CallError::Text)
+    );
+    assert_eq!(
+        services.storage.config_revision(first).unwrap(),
+        first_revision
+    );
+    assert_eq!(
+        services.storage.configstring(second, 1).unwrap().0,
+        b"\x80q3"
+    );
+    {
+        let first_handle = (ENGINE_CALLS.file_open)(&mut services, first, b"module.txt")
+            .unwrap()
+            .0;
+        assert_eq!(first_handle, 1);
+        assert_eq!(
+            (ENGINE_CALLS.file_open)(&mut services, first, b"module.txt"),
+            Err(CallError::Capacity)
+        );
+        let second_handle = (ENGINE_CALLS.file_open)(&mut services, second, b"module.txt")
+            .unwrap()
+            .0;
+        assert_eq!(second_handle, 1);
+        let mut out = [0; 6];
+        assert_eq!(
+            (ENGINE_CALLS.file_read)(&mut services, first, first_handle, &mut out).unwrap(),
+            6
+        );
+        assert_eq!(&out, b"native");
+        assert_eq!(
+            (ENGINE_CALLS.file_read)(&mut services, first, first_handle, &mut out).unwrap(),
+            6
+        );
+        assert_eq!(&out, b" file ");
+        assert_eq!(
+            (ENGINE_CALLS.file_read)(&mut services, second, second_handle, &mut out).unwrap(),
+            6
+        );
+        assert_eq!(&out, b"native");
+        assert_eq!(
+            (ENGINE_CALLS.file_open)(&mut services, ModuleId(10), b"module.txt"),
+            Err(CallError::File)
+        );
+        (ENGINE_CALLS.file_close)(&mut services, first, first_handle).unwrap();
+        assert_eq!(
+            (ENGINE_CALLS.file_read)(&mut services, first, first_handle, &mut out),
+            Err(CallError::File)
+        );
+        assert_eq!(
+            (ENGINE_CALLS.file_read)(&mut services, second, second_handle, &mut out).unwrap(),
+            6
+        );
+        assert_eq!(&out, b" file ");
+        assert_eq!(
+            (ENGINE_CALLS.file_open)(&mut services, first, b"module.txt")
+                .unwrap()
+                .0,
+            1
+        );
+        (ENGINE_CALLS.file_close)(&mut services, first, first_handle).unwrap();
+        (ENGINE_CALLS.file_close)(&mut services, second, second_handle).unwrap();
     }
     std::fs::remove_file(directory.join("module.txt")).unwrap();
     std::fs::remove_dir(directory).unwrap();

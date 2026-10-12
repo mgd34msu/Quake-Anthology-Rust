@@ -9,3 +9,4 @@ qa-core = { path = "../core" }
 
 [dev-dependencies]
 qa-formats = { path = "../formats" }
+qa-gameplay = { path = "../gameplay" }

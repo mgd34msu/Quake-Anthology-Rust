@@ -62,6 +62,17 @@ fn host(protocol: Protocol, clients: usize) -> Result<(FrameHost, ClientId), Str
         protocol,
         0,
     )?;
+    assert!(runtime.server.bind_client_native(
+        client,
+        NativeEntity {
+            module: MODULE,
+            slot: if protocol == Protocol::Quake3_68 {
+                0
+            } else {
+                1
+            },
+        }
+    ));
     Ok((
         FrameHost::load(
             Console::new(Context::default()).map_err(|error| error.to_string())?,
@@ -71,6 +82,21 @@ fn host(protocol: Protocol, clients: usize) -> Result<(FrameHost, ClientId), Str
         )?,
         client,
     ))
+}
+
+// These fixtures choose the exact encoded snapshot and optional visibility
+// inputs. The shared queued consumer imports it without scheduling another
+// SERVER publication; full automatic frames are covered by snapshot_connections.
+fn dispatch(host: &mut FrameHost, time: EventTime) -> qa_app::host::FrameResult {
+    host.queue
+        .push(SysEvent {
+            time,
+            kind: EventKind::Time,
+        })
+        .unwrap();
+    let mut result = qa_app::host::FrameResult::default();
+    host.drain(&mut result);
+    result
 }
 
 fn add(
@@ -117,7 +143,7 @@ fn transmit(
 ) -> Result<u32, String> {
     let runtime = &mut host.runtime;
     let player = &runtime.server.clients[client.0 as usize];
-    let binding = runtime.local_snapshots[client.0 as usize]
+    let binding = runtime.snapshots[client.0 as usize]
         .as_mut()
         .ok_or("binding")?;
     let channel = &mut runtime
@@ -184,7 +210,7 @@ fn transmit(
 }
 
 fn records(host: &FrameHost, client: ClientId) -> Result<Vec<(u32, EntityRecord)>, String> {
-    let binding = host.runtime.local_snapshots[client.0 as usize]
+    let binding = host.runtime.snapshots[client.0 as usize]
         .as_ref()
         .ok_or("binding")?;
     let frame = host
@@ -232,13 +258,12 @@ fn netquake_and_quakeworld_project_entities_through_the_same_source_path() -> Re
             protocol.rule_set(),
             Vec3([12.375, -24.625, 48.125]),
         );
-        let mut clock = Clock::default();
         if protocol == Protocol::QuakeWorld28 {
             assert!(
                 host.runtime
                     .send_local_command(client, &Default::default(), EventTime(0))
             );
-            host.frame(&mut clock, true);
+            dispatch(&mut host, EventTime(1_000_000_000));
         }
         transmit(
             &mut host,
@@ -257,7 +282,7 @@ fn netquake_and_quakeworld_project_entities_through_the_same_source_path() -> Re
                 .current_snapshot()
                 .is_none()
         );
-        host.frame(&mut clock, true);
+        dispatch(&mut host, EventTime(1_000_000_000));
         let rows = records(&host, client)?;
         let record = rows.iter().find(|(number, _)| *number == 42).unwrap().1;
         assert_eq!(record.position, Vec3([12.375, -24.625, 48.125]));
@@ -306,9 +331,8 @@ fn entity_updates_and_removals_reach_client_only_through_queued_native_snapshots
                 .current_snapshot()
                 .is_none()
         );
-        let mut clock = Clock::default();
-        let result = host.frame(&mut clock, true);
-        assert_eq!(result.drains, 2);
+        let result = dispatch(&mut host, EventTime(1_000_000_000));
+        assert_eq!(result.drains, 1);
         let initial = records(&host, client)?;
         let record = initial.iter().find(|(number, _)| *number == 42).unwrap().1;
         assert_eq!(record.position, Vec3([12.375, -24.625, 48.125]));
@@ -328,7 +352,7 @@ fn entity_updates_and_removals_reach_client_only_through_queued_native_snapshots
             None,
         )?;
         assert_eq!(records(&host, client)?, initial);
-        host.frame(&mut clock, true);
+        dispatch(&mut host, EventTime(1_100_000_000));
         let updated = records(&host, client)?;
         let record = updated.iter().find(|(number, _)| *number == 42).unwrap().1;
         assert_eq!(
@@ -349,7 +373,7 @@ fn entity_updates_and_removals_reach_client_only_through_queued_native_snapshots
             None,
             None,
         )?;
-        host.frame(&mut clock, true);
+        dispatch(&mut host, EventTime(1_200_000_000));
         assert!(
             records(&host, client)?
                 .iter()
@@ -421,8 +445,7 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
         host.runtime
             .send_local_command(client, &Default::default(), EventTime(0))
     );
-    let mut clock = Clock::default();
-    host.frame(&mut clock, true);
+    dispatch(&mut host, EventTime(1_000_000_000));
     let first = transmit(
         &mut host,
         client,
@@ -431,7 +454,7 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
         None,
         None,
     )?;
-    host.frame(&mut clock, true);
+    dispatch(&mut host, EventTime(1_000_000_000));
     let rows = records(&host, client)?;
     let row = rows.iter().find(|(number, _)| *number == 2).unwrap().1;
     assert_eq!(row.position, Vec3([48., 12., 24.]));
@@ -455,7 +478,7 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
         host.runtime
             .send_local_command(client, &Default::default(), EventTime(1_100_000_000))
     );
-    host.frame(&mut clock, true);
+    dispatch(&mut host, EventTime(1_100_000_000));
     transmit(
         &mut host,
         client,
@@ -464,7 +487,7 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
         None,
         None,
     )?;
-    host.frame(&mut clock, true);
+    dispatch(&mut host, EventTime(1_100_000_000));
     assert!(
         records(&host, client)?
             .iter()
@@ -504,7 +527,6 @@ fn native_namespace_wins_over_foreign_handles_and_generation_reuse() -> Result<(
         Vec3([60., 0., 0.]),
     );
     host.runtime.server.entities.columns.flags[hidden.slot as usize] = 1;
-    let mut clock = Clock::default();
     let first = transmit(
         &mut host,
         client,
@@ -513,7 +535,7 @@ fn native_namespace_wins_over_foreign_handles_and_generation_reuse() -> Result<(
         None,
         None,
     )?;
-    host.frame(&mut clock, true);
+    dispatch(&mut host, EventTime(1_000_000_000));
     let rows = records(&host, client)?;
     assert_eq!(
         rows.iter()
@@ -532,10 +554,7 @@ fn native_namespace_wins_over_foreign_handles_and_generation_reuse() -> Result<(
     assert_ne!(foreign_number, 2);
     assert!(rows.iter().all(|(number, _)| *number != 99));
     assert_eq!(
-        host.runtime.local_snapshots[0]
-            .as_ref()
-            .unwrap()
-            .view_entity(),
+        host.runtime.snapshots[0].as_ref().unwrap().view_entity(),
         Some(1)
     );
     assert!(
@@ -563,7 +582,7 @@ fn native_namespace_wins_over_foreign_handles_and_generation_reuse() -> Result<(
         None,
         None,
     )?;
-    host.frame(&mut clock, true);
+    dispatch(&mut host, EventTime(1_100_000_000));
     let rows = records(&host, client)?;
     assert!(rows.iter().all(|(number, _)| *number != foreign_number));
     assert_eq!(
@@ -626,13 +645,12 @@ fn oversized_worlds_select_a_native_packet_without_publishing_failed_trials() ->
                 Vec3([22.5, 45., 67.5]);
             entities.push(entity);
         }
-        let mut clock = Clock::default();
         if protocol == Protocol::QuakeWorld28 {
             assert!(
                 host.runtime
                     .send_local_command(client, &Default::default(), EventTime(0))
             );
-            host.frame(&mut clock, true);
+            dispatch(&mut host, EventTime(1_000_000_000));
         }
         let first = transmit(
             &mut host,
@@ -660,7 +678,7 @@ fn oversized_worlds_select_a_native_packet_without_publishing_failed_trials() ->
                 .previous_snapshot()
                 .is_none()
         );
-        host.frame(&mut clock, true);
+        dispatch(&mut host, EventTime(1_000_000_000));
         let before = records(&host, client).map_err(|error| format!("{protocol:?}: first {error}; packets={} delivered={} malformed={} command_errors={}",
             host.runtime.network.packets, host.runtime.network.delivered,
             host.runtime.network.malformed, host.runtime.network.command_errors))?;
@@ -670,7 +688,7 @@ fn oversized_worlds_select_a_native_packet_without_publishing_failed_trials() ->
             "{protocol:?}: {visible}"
         );
         assert!(
-            host.runtime.local_snapshots[0]
+            host.runtime.snapshots[0]
                 .as_ref()
                 .unwrap()
                 .entity_rejections()
@@ -686,7 +704,7 @@ fn oversized_worlds_select_a_native_packet_without_publishing_failed_trials() ->
                 &Default::default(),
                 EventTime(1_100_000_000)
             ));
-            host.frame(&mut clock, true);
+            dispatch(&mut host, EventTime(1_100_000_000));
         }
         let second = transmit(
             &mut host,
@@ -707,7 +725,7 @@ fn oversized_worlds_select_a_native_packet_without_publishing_failed_trials() ->
             channel.previous_snapshot().map(|frame| frame.sequence()),
             Some(first)
         );
-        host.frame(&mut clock, true);
+        dispatch(&mut host, EventTime(1_100_000_000));
         let after = records(&host, client).map_err(|error| format!("{protocol:?}: second {error}; packets={} delivered={} malformed={} command_errors={}",
             host.runtime.network.packets, host.runtime.network.delivered,
             host.runtime.network.malformed, host.runtime.network.command_errors))?;
@@ -776,7 +794,7 @@ fn bounding_box_pvs_and_area_bits_keep_the_protocol_visibility_contract() -> Res
         let world = visibility();
         let mut scratch = LeafScratch::new(world.node_count() + 1);
         let mut row = vec![0; world.pvs().row_bytes()];
-        host.runtime.local_snapshots[0]
+        host.runtime.snapshots[0]
             .as_mut()
             .unwrap()
             .load_visibility(&world);
@@ -817,8 +835,7 @@ fn bounding_box_pvs_and_area_bits_keep_the_protocol_visibility_contract() -> Res
             Some((&world, &mut scratch, &mut row)),
             Some(&portals),
         )?;
-        let mut clock = Clock::default();
-        host.frame(&mut clock, true);
+        dispatch(&mut host, EventTime(1_000_000_000));
         let rows = records(&host, client)?;
         assert!(rows.iter().any(|(number, _)| *number == 42));
         assert!(rows.iter().all(|(number, _)| *number != 43));
@@ -852,7 +869,7 @@ fn bounding_box_pvs_and_area_bits_keep_the_protocol_visibility_contract() -> Res
             Some((&world, &mut scratch, &mut row)),
             Some(&portals),
         )?;
-        host.frame(&mut clock, true);
+        dispatch(&mut host, EventTime(1_100_000_000));
         let frame = host
             .runtime
             .network
@@ -966,20 +983,21 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
     )?;
     // Keep the native receive/output binding valid. The fixture controls
     // snapshot publication, so mark this queued-time SERVER frame as sent.
-    host.runtime.local_snapshots[client.0 as usize]
+    host.runtime.snapshots[client.0 as usize]
         .as_mut()
         .unwrap()
         .submitted(0);
     host.frame(&mut source, true);
     assert_eq!(source.mixes, 1);
-    let binding = host.runtime.local_snapshots[client.0 as usize]
-        .as_ref()
-        .unwrap();
+    let binding = host.runtime.snapshots[client.0 as usize].as_ref().unwrap();
     assert_eq!(binding.applied, 1);
-    assert_eq!(binding.interpolation().time, ThinkTime::Milliseconds(900));
+    assert_eq!(
+        binding.interpolation().unwrap().time,
+        ThinkTime::Milliseconds(900)
+    );
     assert!(source.mixer.sound(qa_core::primitives::SoundEvent {
         sound,
-        spatial_rules: RuleSetId::Quake2,
+        spatial: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
         client: Some(client),
         entity: Some(qa_core::primitives::SoundEmitter::Native {
             namespace: ResourceNamespace::Client(client),
@@ -1002,18 +1020,19 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
     // Native Q2 begins one 100ms interval behind the first snapshot. Advance
     // 125ms of queued time from 900ms to the new interval's 25% point, 1025ms.
     source.clock.0 = 125_000_000;
-    host.runtime.local_snapshots[client.0 as usize]
+    host.runtime.snapshots[client.0 as usize]
         .as_mut()
         .unwrap()
         .submitted(1);
     host.frame(&mut source, true);
     assert_eq!(source.mixes, 2);
-    let binding = host.runtime.local_snapshots[client.0 as usize]
-        .as_ref()
-        .unwrap();
+    let binding = host.runtime.snapshots[client.0 as usize].as_ref().unwrap();
     assert_eq!(binding.applied, 2);
-    assert_eq!(binding.interpolation().time, ThinkTime::Milliseconds(1025));
-    assert_eq!(binding.interpolation().fraction, 0.25);
+    assert_eq!(
+        binding.interpolation().unwrap().time,
+        ThinkTime::Milliseconds(1025)
+    );
+    assert_eq!(binding.interpolation().unwrap().fraction, 0.25);
     assert_eq!(
         host.client_entities_inputs()[0]
             .unwrap()
@@ -1029,12 +1048,13 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
     source.clock.0 = 175_000_000;
     host.frame(&mut source, true);
     assert_eq!(source.mixes, 3);
-    let binding = host.runtime.local_snapshots[client.0 as usize]
-        .as_ref()
-        .unwrap();
+    let binding = host.runtime.snapshots[client.0 as usize].as_ref().unwrap();
     assert_eq!(binding.applied, 2);
-    assert_eq!(binding.interpolation().time, ThinkTime::Milliseconds(1075));
-    assert_eq!(binding.interpolation().fraction, 0.75);
+    assert_eq!(
+        binding.interpolation().unwrap().time,
+        ThinkTime::Milliseconds(1075)
+    );
+    assert_eq!(binding.interpolation().unwrap().fraction, 0.75);
     assert_eq!(
         host.client_entities_inputs()[0]
             .unwrap()

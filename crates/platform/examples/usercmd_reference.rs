@@ -1,4 +1,6 @@
 //! Original command arithmetic and mixed human/bot builder qualification.
+#[path = "../../input/tests/support/console.rs"]
+mod input_console;
 use qa_core::{
     primitives::{CommandIntent, RuleSetId},
     sys_events::EventTime,
@@ -61,11 +63,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 fn heap_input() -> Result<(), Box<dyn std::error::Error>> {
+    use input_console::RoutedInput as Input;
     use qa_core::{
         primitives::buttons,
         sys_events::{DeviceId, EventKind, SeatId, SysEvent},
     };
-    use qa_input::{Input, Target};
+    use qa_input::Target;
     use qa_platform::allocations::{begin_frame, end_frame};
     struct Sink;
     impl Target for Sink {
@@ -73,7 +76,14 @@ fn heap_input() -> Result<(), Box<dyn std::error::Error>> {
             control == 900
         }
         fn character(&mut self, _: SeatId, _: char) {}
-        fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+        fn command(
+            &mut self,
+            _: SeatId,
+            _: EventTime,
+            _: Option<qa_core::sys_events::KeySource>,
+            _: &str,
+        ) {
+        }
     }
     let mut input = Input::load();
     input.seed(EventTime(0));
@@ -220,7 +230,10 @@ fn view(qw: bool) -> Result<(), Box<dyn std::error::Error>> {
             SeatId::FIRST,
             Action::MouseLook,
             (3..6).contains(&(frame % 83)),
-            Some(1),
+            Some(qa_core::sys_events::KeySource {
+                device: qa_core::sys_events::DeviceId::Keyboard(0),
+                control: 1,
+            }),
             time,
         );
         input.build_frame_with_policy(time, &[policy; SeatId::COUNT]);

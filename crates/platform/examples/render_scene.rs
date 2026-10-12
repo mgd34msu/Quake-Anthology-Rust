@@ -123,7 +123,7 @@ impl Fixture {
         for seat in 0..2 {
             frame.clear_scene();
             if !frame.add_entity(SceneEntity {
-                model: self.model,
+                model: self.model.into(),
                 ..SceneEntity::default()
             }) || !frame.add_poly(self.poly_material, &self.poly)
                 || !frame.add_light(Light {

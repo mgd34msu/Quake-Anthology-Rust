@@ -15,6 +15,7 @@ use qa_network::{
     snapshots::{self, Entity, Frame, Q3Ring, Ring},
     states::{self, ENTITY_WORDS, PLAYER_WORDS},
 };
+mod support;
 
 fn native_player_context() -> PlayerContext {
     PlayerContext {
@@ -1270,17 +1271,39 @@ fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() 
     // No transport admission yet: a delta response to that unsent request must
     // not borrow a conveniently retained base and invent an accepted frame.
     qw_store(&mut ring, 5, &[qw_entity(3, 5.)])?;
-    qw_reply(
-        &mut server,
-        &mut connections,
-        &ring,
-        5,
-        Some((4, 4)),
-        true,
+    assert!(
+        server
+            .prepare_output(EventTime(4))
+            .map_err(|_| Error::Context)?
+            .is_none()
+    );
+    // A misbehaving peer can still send an unsolicited native response. The
+    // production SERVER refuses it; CLIENT must also reject its unsubmitted base.
+    let mut response = [0; 1400];
+    let mut writer = Writer::new(&mut response, Encoding::Bytes);
+    snapshots::write_qw(&mut writer, &ring, 5, Some((4, 4)))?;
+    let mut packet = [0; 1400];
+    let length = qa_network::headers::encode(
+        qa_network::headers::QUAKEWORLD,
+        qa_network::headers::Direction::ToClient,
+        qa_network::headers::Header {
+            sequence: 5,
+            ..Default::default()
+        },
+        writer.bytes(),
+        &mut packet,
+    )
+    .map_err(|_| Error::Context)?;
+    connections.receive(
+        Endpoint::Client.socket(),
+        Peer::Loopback(ClientId(0)),
+        &packet[..length],
+        EventTime(4),
         |_, _, incoming| {
             assert!(!matches!(incoming, Incoming::Snapshot(_)));
+            std::ops::ControlFlow::Continue(())
         },
-    )?;
+    );
     let client = connections
         .get(ClientId(0), Endpoint::Client)
         .ok_or(Error::Context)?;
@@ -1300,12 +1323,12 @@ fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() 
         qw_move(&mut connections, &mut server, &mut commands, true)?,
         Some(4)
     );
-    assert_eq!(server.send_state().sequence, 6);
+    assert_eq!(server.send_state().sequence, 5);
     assert!(
         server
             .prepare_output(EventTime(5))
             .map_err(|_| Error::Context)?
-            .is_none()
+            .is_some()
     );
     assert_eq!(
         qw_move(&mut connections, &mut server, &mut commands, true)?,
@@ -1856,6 +1879,7 @@ fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protoco
     let mut server = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
         .map_err(|_| Error::Context)?;
     server.configure_snapshots(Protocol::QuakeWorld28)?;
+    support::admit_qw_reply(&mut server, 1);
     let entities = [qw_entity(3, 1.)];
     let frame = Frame {
         sequence: 1,

@@ -1,5 +1,7 @@
 //! Client composition uses the same scene packets for either renderer.
 pub mod console;
+pub mod hud;
+pub mod text;
 use crate::{
     client_scene::{ClientSceneInput, SceneCounts},
     host::ClientView,
@@ -171,6 +173,7 @@ pub struct Sample {
     pub visible_surfaces: u32,
     pub client_scene: SceneCounts,
     pub console: console::ConsoleStats,
+    pub hud: hud::HudStats,
 }
 #[expect(
     clippy::large_enum_variant,
@@ -217,6 +220,7 @@ pub struct Renderer {
     recorded_rendered_frames: u64,
     draw_failed: bool,
     console: console::ConsoleAssets,
+    hud: [Option<hud::HudAssets>; 5],
 }
 impl Renderer {
     /// Assets are frozen while a backend and its packets reference them.
@@ -229,6 +233,7 @@ impl Renderer {
         worlds: Vec<LoadedWorld>,
         bands: Option<RasterBands>,
         console: console::ConsoleAssets,
+        hud: [Option<hud::HudAssets>; 5],
     ) -> Result<Self, String> {
         let mut scenes: Vec<Option<WorldScene>> =
             (0..assets.worlds().len()).map(|_| None).collect();
@@ -259,15 +264,26 @@ impl Renderer {
                 .checked_mul(SeatId::COUNT)
                 .ok_or("scene surface capacity")?,
         );
+        let hud_capacity = hud
+            .iter()
+            .flatten()
+            .map(hud::HudAssets::command_capacity)
+            .max()
+            .unwrap_or(0)
+            .checked_mul(SeatId::COUNT)
+            .ok_or("HUD scene capacity")?;
         limits.commands = limits
             .commands
             .checked_add(console.command_capacity())
+            .and_then(|count| count.checked_add(hud_capacity))
             .ok_or("console scene capacity")?;
         limits.vertices = limits
             .vertices
             .checked_add(
                 console
                     .command_capacity()
+                    .checked_add(hud_capacity)
+                    .ok_or("HUD vertex capacity")?
                     .checked_mul(6)
                     .ok_or("console vertex capacity")?,
             )
@@ -328,6 +344,7 @@ impl Renderer {
             recorded_rendered_frames: 0,
             draw_failed: false,
             console,
+            hud,
         })
     }
     /// Last backend-rendered frame workload, with lifetime cache counters.
@@ -364,6 +381,7 @@ impl Renderer {
         &mut self,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<ClientSceneInput<'_>>; SeatId::COUNT],
+        hud: &[Option<hud::HudView<'_>>; SeatId::COUNT],
         console: qa_console::presentation::ConsoleView<'_>,
     ) {
         self.sample = Sample::default();
@@ -395,7 +413,10 @@ impl Renderer {
                 rejected += 1;
                 continue;
             };
-            let refdef = view_refdef(*client, viewport, self.kind);
+            let mut refdef = view_refdef(*client, viewport, self.kind);
+            if let Some(hud) = hud[seat] {
+                self.sample.hud += hud.apply_lightstyles(&mut refdef);
+            }
             // Native snapshot areas use at most 255 bytes. This bounded stack
             // scratch is shared by visibility and the copied scene command.
             let mut area_mask = [0; 256];
@@ -424,6 +445,13 @@ impl Renderer {
             if !world_added || !frame.render_scene(refdef, hidden_areas, &self.assets) {
                 rejected += 1;
             }
+            if let Some(hud) = hud[seat] {
+                if let Some(assets) = self.hud[hud.rules as usize].as_mut() {
+                    self.sample.hud += assets.append(&mut frame, &self.assets, hud, refdef);
+                } else if hud.show_text {
+                    self.sample.hud.missing_font += 1;
+                }
+            }
         }
         self.sample.console = self.console.append(
             &mut frame,
@@ -434,6 +462,7 @@ impl Renderer {
             matches!(self.kind, Kind::Cpu),
         );
         rejected += self.sample.console.rejected;
+        rejected += self.sample.hud.rejected;
         let packet = frame.finish();
         self.sample.frontend_ns = timer.elapsed().as_nanos() as u64;
         let timer = Stopwatch::start();

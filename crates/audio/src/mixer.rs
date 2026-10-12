@@ -3,39 +3,11 @@ use qa_core::{
     math,
     names::NameTable,
     primitives::{
-        ClientId, Pcm, ResourceNamespace, RuleSetId, SoundAction, SoundEmitter, SoundEvent,
-        SoundId, Vec3,
+        ClientId, Pcm, ResourceNamespace, SoundAction, SoundEmitter, SoundEvent, SoundId, Vec3,
     },
 };
 use std::{num::NonZeroU32, sync::Arc};
 
-#[derive(Clone, Copy)]
-struct SpatialPolicy {
-    distance_offset: f32,
-    distance_scale: f32,
-    separation: f32,
-}
-impl SpatialPolicy {
-    fn load(rules: RuleSetId) -> Self {
-        match rules {
-            RuleSetId::Quake | RuleSetId::QuakeWorld => Self {
-                distance_offset: 0.0,
-                distance_scale: 0.001,
-                separation: 1.0,
-            },
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => Self {
-                distance_offset: 80.0,
-                distance_scale: 0.001,
-                separation: 0.5,
-            },
-            RuleSetId::Quake3 => Self {
-                distance_offset: 80.0,
-                distance_scale: 1.0 / (1250.0 - 80.0),
-                separation: 0.5,
-            },
-        }
-    }
-}
 pub struct Bank {
     names: NameTable,
     samples: Box<[Option<Pcm>]>,
@@ -100,7 +72,6 @@ pub struct Listener {
 }
 struct Voice {
     event: SoundEvent,
-    policy: SpatialPolicy,
     frame: usize,
     gain: [i64; 2],
     begin: Option<u64>,
@@ -225,7 +196,6 @@ impl Mixer {
                 && voice.begin.is_none()
             {
                 voice.event = event;
-                voice.policy = SpatialPolicy::load(event.spatial_rules);
                 return true;
             }
         }
@@ -244,7 +214,6 @@ impl Mixer {
         self.counts.replaced += u64::from(replacement.is_some());
         self.voices[index] = Some(Voice {
             event,
-            policy: SpatialPolicy::load(event.spatial_rules),
             frame: 0,
             gain: [0; 2],
             begin,
@@ -314,7 +283,7 @@ impl Mixer {
                 .filter(|l| voice.event.applies_to_client(l.client))
             {
                 listeners += 1;
-                let gain = gains(voice.event, listener, &voice.policy);
+                let gain = gains(voice.event, listener);
                 for (to, from) in voice.gain.iter_mut().zip(gain) {
                     *to += i64::from(from);
                 }
@@ -370,7 +339,7 @@ impl Mixer {
         true
     }
 }
-fn gains(event: SoundEvent, listener: &Listener, policy: &SpatialPolicy) -> [i32; 2] {
+fn gains(event: SoundEvent, listener: &Listener) -> [i32; 2] {
     let master = (event.volume * 255.0) as i32;
     if event.attenuation == 0.0
         || event
@@ -383,8 +352,10 @@ fn gains(event: SoundEvent, listener: &Listener, policy: &SpatialPolicy) -> [i32
     let mut direction = delta;
     let distance = math::normalize(&mut direction);
     let dot = listener.right.dot(direction);
-    let distance =
-        (distance - policy.distance_offset).max(0.0) * event.attenuation * policy.distance_scale;
-    [1.0 - dot, 1.0 + dot]
-        .map(|pan| (master as f32 * ((1.0 - distance) * pan * policy.separation)).max(0.0) as i32)
+    let distance = (distance - event.spatial.distance_offset).max(0.0)
+        * event.attenuation
+        * event.spatial.distance_scale;
+    [1.0 - dot, 1.0 + dot].map(|pan| {
+        (master as f32 * ((1.0 - distance) * pan * event.spatial.separation)).max(0.0) as i32
+    })
 }

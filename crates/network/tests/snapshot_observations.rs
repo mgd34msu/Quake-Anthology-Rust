@@ -13,6 +13,7 @@ use qa_network::{
     snapshots::{Frame, ReceivedFrame},
     states,
 };
+mod support;
 
 fn source(frame: u32) -> SnapshotObservation {
     SnapshotObservation {
@@ -288,6 +289,9 @@ fn different_protocol_ack_fields_project_the_same_native_provider_observation() 
         let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
         channel.configure_snapshots(protocol).unwrap();
         publish_protocol(&mut channel, protocol, sequence);
+        if protocol == Protocol::QuakeWorld28 {
+            support::admit_qw_reply(&mut channel, sequence);
+        }
         channel
             .prepare_snapshot(sequence, Some(source(4)), b"snapshot", EventTime(1))
             .unwrap()
@@ -403,6 +407,7 @@ fn qw_suffix_provenance_uses_only_delta_records_before_native_abort() {
         channel.configure_snapshots(protocol).unwrap();
         for (sequence, observation) in [(302, source(4)), (304, source(8))] {
             publish_protocol(&mut channel, protocol, sequence);
+            support::admit_qw_reply(&mut channel, sequence);
             channel
                 .prepare_snapshot(sequence, Some(observation), b"snapshot", EventTime(1))
                 .unwrap()
@@ -415,12 +420,29 @@ fn qw_suffix_provenance_uses_only_delta_records_before_native_abort() {
             delta_request: Some(46),
         };
         let mut bytes = [0; 1400];
-        let length = packet::write(&mut bytes, &movement, 1, Key::default()).unwrap();
+        let sequence = 305;
+        let length = packet::write(&mut bytes, &movement, sequence, Key::default()).unwrap();
         bytes[length..length + 3].copy_from_slice(&[stop, 5, 48]);
+        let mut wire = [0; 1400];
+        let length = headers::encode(
+            headers::QUAKEWORLD,
+            Direction::ToServer,
+            Header {
+                sequence,
+                ..Default::default()
+            },
+            &bytes[..length + 3],
+            &mut wire,
+        )
+        .unwrap();
+        let received = channel.receive(&wire[..length], EventTime(2)).unwrap();
+        let Delivery::Payload(body) = received.delivery else {
+            panic!("native request")
+        };
         let mut commands = Commands::load(protocol);
-        let length = commands.stage(&bytes[..length + 3]).unwrap();
+        let length = commands.stage(body).unwrap();
         let mut observed = Vec::new();
-        let result = commands.decode(length, 1, 10, &mut channel, None, |incoming| {
+        let result = commands.decode(length, sequence, 10, &mut channel, None, |incoming| {
             if let Incoming::Command { observation, .. } = incoming {
                 observed.push(observation);
             }

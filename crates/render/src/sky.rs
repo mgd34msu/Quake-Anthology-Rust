@@ -50,15 +50,20 @@ pub(crate) fn for_each_sky_triangle(
                     visit(material, SkySubmission::MissingSurface);
                     continue;
                 };
+                let entity = reference.entity.map(|index| list.entity(index));
                 for triangle in world.geometry().indices[surface.indices.range()].chunks_exact(3) {
-                    let points = [triangle[0], triangle[1], triangle[2]]
-                        .map(|index| world.geometry().vertices[index as usize].vertex.position);
+                    let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
+                        let position = world.geometry().vertices[index as usize].vertex.position;
+                        entity.map_or(position, |entity| {
+                            math::transform_point(entity.origin, entity.axes, position)
+                        })
+                    });
                     visit(material, SkySubmission::Triangle(points));
                 }
             }
             DrawKind::Entity => {
                 let entity = list.entity(item.index);
-                let Some(model) = assets.model(entity.model) else {
+                let Some(model) = entity.model.mesh().and_then(|model| assets.model(model)) else {
                     continue;
                 };
                 let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp)

@@ -39,6 +39,7 @@ pub trait FrameSource {
         &mut self,
         _views: &[Option<ClientView>; SeatId::COUNT],
         _scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
+        _huds: &[Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT],
         _console: qa_console::presentation::ConsoleView<'_>,
     ) {
     }
@@ -111,9 +112,10 @@ impl FrameSource for LiveFrame<'_> {
         &mut self,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
+        huds: &[Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT],
         console: qa_console::presentation::ConsoleView<'_>,
     ) {
-        self.renderer.frame(views, scenes, console);
+        self.renderer.frame(views, scenes, huds, console);
     }
 }
 
@@ -362,10 +364,14 @@ impl FrameHost {
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
         self.publish_module_configs();
         self.publish_module_signon();
-        for id in self.local_clients.into_iter().flatten() {
+        for index in 0..self.runtime.snapshots.len() {
+            if self.runtime.snapshots[index].is_none() {
+                continue;
+            }
+            let id = ClientId(index as u32);
             let observation = self.snapshot_observation(id, server_time);
             self.runtime
-                .send_local_snapshot(id, server_time, observation);
+                .send_snapshot(id, server_time, observation, source);
         }
         // Immediate server->client packets take this path in the same frame.
         source.request_mouse_capture(self.mouse_capture_requested());
@@ -389,6 +395,7 @@ impl FrameHost {
         source.render(
             &self.client_views(),
             &self.client_scene_inputs(),
+            &self.client_hud_inputs(),
             qa_console::presentation::ConsoleView {
                 editor: &self.console.editor,
                 scrollback: &self.console.scrollback,
@@ -427,11 +434,7 @@ impl FrameHost {
     ) -> [Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT] {
         std::array::from_fn(|seat| {
             let (client, _, _) = self.local_seat(seat)?;
-            let snapshot = self
-                .runtime
-                .local_snapshots
-                .get(client.0 as usize)?
-                .as_ref()?;
+            let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
             let channel = &self
                 .runtime
                 .network
@@ -442,7 +445,7 @@ impl FrameHost {
                 current: channel.current_snapshot(),
                 previous: channel.previous_snapshot(),
                 projection: snapshot.entity_projection(),
-                interpolation: snapshot.interpolation(),
+                interpolation: snapshot.interpolation()?,
             })
         })
     }
@@ -465,11 +468,7 @@ impl FrameHost {
             let (_, _, player) = self.local_seat(seat)?;
             let entities = entities[seat]?;
             let client = entities.client;
-            let snapshot = self
-                .runtime
-                .local_snapshots
-                .get(client.0 as usize)?
-                .as_ref()?;
+            let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
             let resources = self
                 .runtime
                 .client_resources
@@ -502,8 +501,37 @@ impl FrameHost {
         })
     }
 
+    pub fn client_hud_inputs(&self) -> [Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT] {
+        std::array::from_fn(|seat| {
+            let (client, row, _) = self.local_seat(seat)?;
+            let resources = self
+                .runtime
+                .client_resources
+                .get(client.0 as usize)?
+                .as_ref()?;
+            let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
+            Some(crate::renderer::hud::HudView {
+                hud: &row.hud,
+                texts: &self.runtime.server.events.texts,
+                configs: &resources.state.configs,
+                layout: resources.state.layout,
+                values: &self.runtime.catalog.hud.values,
+                rules: row.client_rules,
+                time: self.time,
+                style_time: if snapshot.protocol
+                    == qa_network::commands::packet::Protocol::QuakeWorld28
+                {
+                    qa_core::primitives::ThinkTime::Seconds(0.0).at(self.time)
+                } else {
+                    snapshot.interpolation()?.time
+                },
+                show_text: self.console.editor.seat().is_none(),
+            })
+        })
+    }
+
     fn advance_client_presentation(&mut self) {
-        for snapshot in self.runtime.local_snapshots.iter_mut().flatten() {
+        for snapshot in self.runtime.snapshots.iter_mut().flatten() {
             if let Some(connection) = self
                 .runtime
                 .network
@@ -528,9 +556,6 @@ impl FrameHost {
         Some((client, row, &self.runtime.prediction.get(seat)?.player))
     }
 
-    pub fn native_input_policy_active(&self) -> bool {
-        self.runtime.collision.is_some() && self.local_clients.iter().any(Option::is_some)
-    }
     fn mouse_capture_requested(&self) -> bool {
         !self.runtime.quit
             && self.console.editor.seat().is_none()
@@ -555,7 +580,7 @@ impl FrameHost {
             Some(qa_audio::Listener {
                 client,
                 entity: Some(
-                    self.runtime.local_snapshots[client.0 as usize]
+                    self.runtime.snapshots[client.0 as usize]
                         .as_ref()
                         .and_then(|snapshot| snapshot.view_entity())
                         .map_or(
@@ -603,12 +628,12 @@ impl FrameHost {
             match endpoint {
                 qa_core::loopback::Endpoint::Client => {
                     let server = &self.runtime.server;
-                    if let Some(binding) = self.runtime.local_snapshots[id.0 as usize].as_ref()
+                    if let Some(binding) = self.runtime.snapshots[id.0 as usize].as_ref()
+                        && let Some(seat) = binding.seat()
                         && server.clients[id.0 as usize].connection
                             == Some(qa_session::clients::Connection::Local)
                         && server.clients[id.0 as usize].output == Some(binding.output)
                     {
-                        let seat = binding.seat;
                         match incoming {
                             Incoming::Print(print) => {
                                 let _ = self.runtime.server.events.print_level_bytes(
@@ -652,7 +677,7 @@ impl FrameHost {
                             }
                             incoming => {
                                 if let Some(binding) =
-                                    self.runtime.local_snapshots[id.0 as usize].as_mut()
+                                    self.runtime.snapshots[id.0 as usize].as_mut()
                                 {
                                     binding.apply(
                                         incoming,
@@ -805,7 +830,7 @@ impl FrameHost {
                             events: &mut self.runtime.server.events,
                             time: event.time,
                         };
-                        target.command(seat, event.time, text);
+                        target.command(seat, event.time, None, text);
                     }
                     EventKind::Packet {
                         socket,
@@ -841,7 +866,7 @@ impl FrameHost {
                 self.runtime.prediction[seat].player.movement_rules
             })
         });
-        let policies = self.native_input_policy_active().then(|| {
+        let policies = {
             std::array::from_fn(|seat| {
                 let mut policy = self.input_handles.policy(&self.console.cvars, rules[seat]);
                 if self.local_clients[seat].is_some() {
@@ -850,16 +875,11 @@ impl FrameHost {
                 }
                 policy
             })
-        });
-        let mut commands = if let Some(policies) = &policies {
-            self.runtime
-                .input
-                .build_frame_with_policy(self.time, policies)
-        } else {
-            self.runtime
-                .input
-                .build_frame(self.time, [127; 3], [0.022; 2])
         };
+        let mut commands = self
+            .runtime
+            .input
+            .build_frame_with_policy(self.time, &policies);
         for (seat, command) in commands.iter_mut().enumerate() {
             *command = qa_movement::prepare_command(rules[seat], *command);
         }
@@ -887,8 +907,7 @@ impl FrameHost {
                     );
                     prediction.advance(commands[seat], &mut trace);
                     prediction.player.movement.tuning = base;
-                    if let Some(policies) = &policies
-                        && let Some(seat_id) = SeatId::new(seat as u8)
+                    if let Some(seat_id) = SeatId::new(seat as u8)
                         && let Some(angles) = self.runtime.input.drift_view(
                             seat_id,
                             self.time,
@@ -973,13 +992,21 @@ impl Target for ConsoleInput<'_> {
             let _ = self.events.console_bytes(b"Console input line is full\n");
         }
     }
-    fn command(&mut self, seat: SeatId, time: EventTime, text: &str) {
+    fn command(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        source: Option<qa_core::sys_events::KeySource>,
+        text: &str,
+    ) {
         let context = qa_console::views::Context {
             seat,
             event_time: Some(time),
+            key_source: source,
             ..self.console.cvars.context()
         };
         if let Err(error) = self.console.append_line(text, context) {
+            self.events.reject_publication();
             let _ = self
                 .events
                 .console_formatted(format_args!("Input command: {error:?}\n"));

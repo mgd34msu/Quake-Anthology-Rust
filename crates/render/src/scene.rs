@@ -195,9 +195,28 @@ impl Default for Refdef {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneModel {
+    Mesh(ModelId),
+    World { world: WorldId, surfaces: Span },
+}
+impl From<ModelId> for SceneModel {
+    fn from(model: ModelId) -> Self {
+        Self::Mesh(model)
+    }
+}
+impl SceneModel {
+    pub fn mesh(self) -> Option<ModelId> {
+        match self {
+            Self::Mesh(model) => Some(model),
+            Self::World { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SceneEntity {
-    pub model: ModelId,
+    pub model: SceneModel,
     pub origin: Vec3,
     pub axes: [Vec3; 3],
     pub non_normalized_axes: bool,
@@ -213,13 +232,16 @@ pub struct SceneEntity {
 }
 impl SceneEntity {
     pub fn material(&self, assets: &Assets) -> Option<MaterialId> {
-        Some(self.material.unwrap_or(assets.model(self.model)?.material))
+        Some(
+            self.material
+                .unwrap_or(assets.model(self.model.mesh()?)?.material),
+        )
     }
 }
 impl Default for SceneEntity {
     fn default() -> Self {
         Self {
-            model: ModelId(0),
+            model: SceneModel::Mesh(ModelId(0)),
             origin: Vec3::default(),
             axes: [
                 Vec3([1.0, 0.0, 0.0]),
@@ -275,6 +297,9 @@ pub struct SurfaceRef {
     /// View-local position in the one sorted draw list. Exact-depth ties use
     /// the later draw, matching the shared LEQUAL stage order.
     pub draw_rank: u32,
+    /// Absolute index in this packet's one copied entity arena. Static world
+    /// visibility keeps None; inline geometry borrows its instance inputs.
+    pub entity: Option<u32>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DrawKind {
@@ -570,14 +595,35 @@ impl Frame {
         self.first = self.current();
     }
     pub fn add_entity(&mut self, entity: SceneEntity) -> bool {
-        if self.list.entity_count == self.list.entities.len()
-            || self.list.draw_count == self.list.draws.len()
-        {
+        if self.list.entity_count == self.list.entities.len() {
             self.list.rejected += 1;
             return false;
         }
+        match entity.model {
+            SceneModel::Mesh(_) => {
+                if self.list.draw_count == self.list.draws.len() {
+                    self.list.rejected += 1;
+                    return false;
+                }
+                self.draw(DrawKind::Entity, self.list.entity_count as u32);
+            }
+            SceneModel::World { world, surfaces } => {
+                if surfaces.first.checked_add(surfaces.count).is_none() {
+                    self.list.rejected += 1;
+                    return false;
+                }
+                let index = self.list.entity_count as u32;
+                if !self.add_surfaces(surfaces.range().map(|surface| SurfaceRef {
+                    world,
+                    surface: surface as u32,
+                    entity: Some(index),
+                    ..SurfaceRef::default()
+                })) {
+                    return false;
+                }
+            }
+        }
         self.list.entities[self.list.entity_count] = entity;
-        self.draw(DrawKind::Entity, self.list.entity_count as u32);
         self.list.entity_count += 1;
         true
     }
@@ -616,28 +662,32 @@ impl Frame {
     /// Copy the one frontend visibility result into this owned packet. Both
     /// consumers receive these ids and the CPU's original BSP depth keys.
     pub fn add_world(&mut self, world: WorldId, surfaces: &[VisibleSurface]) -> bool {
-        if surfaces.len() > self.list.surfaces.len() - self.list.surface_count
-            || surfaces.len() > self.list.draws.len() - self.list.draw_count
+        self.add_surfaces(surfaces.iter().map(|source| SurfaceRef {
+            world,
+            surface: source.surface,
+            depth_key: source.depth_key,
+            ..SurfaceRef::default()
+        }))
+    }
+    fn add_surfaces(&mut self, surfaces: impl ExactSizeIterator<Item = SurfaceRef>) -> bool {
+        let count = surfaces.len();
+        if count > self.list.surfaces.len() - self.list.surface_count
+            || count > self.list.draws.len() - self.list.draw_count
         {
             self.list.rejected += 1;
             return false;
         }
         let first = self.list.surface_count;
-        for (target, source) in self.list.surfaces[first..first + surfaces.len()]
+        for (target, source) in self.list.surfaces[first..first + count]
             .iter_mut()
             .zip(surfaces)
         {
-            *target = SurfaceRef {
-                world,
-                surface: source.surface,
-                depth_key: source.depth_key,
-                draw_rank: 0,
-            };
+            *target = source;
         }
-        for index in first..first + surfaces.len() {
+        for index in first..first + count {
             self.draw(DrawKind::Surface, index as u32);
         }
-        self.list.surface_count += surfaces.len();
+        self.list.surface_count += count;
         true
     }
     fn draw(&mut self, kind: DrawKind, index: u32) {
@@ -726,7 +776,11 @@ pub(crate) fn item_material_lightmap(
         DrawKind::Surface => {
             let surface = list.surface(draw.index);
             let binding = assets.surface_binding(surface.world, surface.surface)?;
-            Some((binding.material, binding.lightmap.0))
+            let material = surface
+                .entity
+                .and_then(|index| list.entity(index).material)
+                .unwrap_or(binding.material);
+            Some((material, binding.lightmap.0))
         }
         DrawKind::Entity => Some((list.entity(draw.index).material(assets)?, 0)),
         DrawKind::Poly => Some((list.poly(draw.index).material, 0)),
@@ -734,10 +788,10 @@ pub(crate) fn item_material_lightmap(
 }
 fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawKey> {
     let (material, lightmap) = item_material_lightmap(list, assets, draw)?;
-    let instance = if draw.kind == DrawKind::Entity {
-        draw.index
-    } else {
-        u32::MAX
+    let instance = match draw.kind {
+        DrawKind::Entity => draw.index,
+        DrawKind::Surface => list.surface(draw.index).entity.unwrap_or(u32::MAX),
+        DrawKind::Poly => u32::MAX,
     };
     Some(DrawKey {
         sort: assets.material(material)?.settings.sort,

@@ -154,3 +154,55 @@ fn published_hot_views_match_native_projections_after_coupled_and_seat_changes()
         }
     }
 }
+
+#[test]
+fn native_numeric_admission_and_cached_views_do_not_retain_physical_origins() {
+    let mut vars = qa_console::cvars::Cvars::new().unwrap();
+    let spectator = vars.find("sv_spectatormaxspeed").unwrap();
+    assert_eq!(
+        vars.native_number(spectator, qa_core::primitives::RuleSetId::Quake2),
+        None
+    );
+    assert_eq!(
+        vars.native_number(spectator, qa_core::primitives::RuleSetId::QuakeWorld),
+        Some(500.0)
+    );
+    vars.set_text(spectator, "740.75").unwrap();
+    vars.reset_lookup_count();
+    assert_eq!(
+        vars.native_number(spectator, qa_core::primitives::RuleSetId::Quake2),
+        Some(740.75)
+    );
+    assert_eq!(
+        vars.native_integer(spectator, qa_core::primitives::RuleSetId::Quake2),
+        Some(740)
+    );
+    assert_eq!(
+        vars.explicit_number(spectator, qa_core::primitives::RuleSetId::Quake2),
+        Some(740.75)
+    );
+    assert_eq!(vars.lookup_count(), 0);
+    vars.reset(spectator);
+    assert_eq!(
+        vars.explicit_number(spectator, qa_core::primitives::RuleSetId::QuakeWorld),
+        None
+    );
+    assert_eq!(
+        vars.native_number(spectator, qa_core::primitives::RuleSetId::Quake2),
+        None
+    );
+    let context = qa_console::views::Context {
+        key_source: Some(qa_core::sys_events::KeySource {
+            device: qa_core::sys_events::DeviceId::Keyboard(42),
+            control: 26,
+        }),
+        event_time: Some(qa_core::sys_events::EventTime(10)),
+        ..qa_console::views::Context::default()
+    };
+    let first = vars.bind("cg_fov", context).unwrap();
+    let native = vars.native_view(first).unwrap();
+    let second = vars
+        .bind("cg_fov", qa_console::views::Context::default())
+        .unwrap();
+    assert_eq!(vars.native_view(second).unwrap(), native);
+}

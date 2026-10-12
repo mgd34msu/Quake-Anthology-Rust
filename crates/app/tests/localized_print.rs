@@ -57,7 +57,9 @@ fn localized_native_prints_share_ring_routing_and_checked_argument_memory() {
                         context: CallContext {
                             native_rules: RuleSetId::Quake2Rerelease,
                             trace_rules: RuleSetId::Quake2Rerelease,
-                            sound_rules: RuleSetId::Quake2Rerelease,
+                            sound_policy: qa_gameplay::rules::sound_policy(
+                                RuleSetId::Quake2Rerelease,
+                            ),
                             server_frame: 0,
                             module: ModuleId(1),
                             clock: ThinkTime::Milliseconds(0),

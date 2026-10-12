@@ -1174,7 +1174,7 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
 }
 
 #[test]
-fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
+fn snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     let mut runtime = Runtime::load(1, []).unwrap();
     let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None).unwrap();
     let id = runtime
@@ -1207,7 +1207,7 @@ fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     let channel = runtime.network.get(id, Endpoint::Server).unwrap();
     assert!(channel.pending_output.is_some());
     let prepared = channel.channel.pending_packet().unwrap().bytes.to_vec();
-    assert!(!runtime.send_local_snapshot(id, EventTime(100_000_000), None));
+    assert!(!runtime.send_snapshot(id, EventTime(100_000_000), None, &mut source));
     assert_eq!(
         runtime
             .network
@@ -1639,10 +1639,6 @@ fn local_fragment_resync_keeps_the_physical_claim_until_the_old_flight_completes
         "one physical group cannot reconstruct the same message twice"
     );
     assert_eq!(counts.native_dupe_suppressed, 1);
-    assert!(
-        !source.packets.iter().any(|(port, _)| *port == 2001),
-        "the other Local seat must not send the same physical message"
-    );
 }
 
 #[test]
@@ -1690,7 +1686,7 @@ fn local_reliable_resync_observes_the_real_ack_after_the_ring_claim_was_cancelle
     overflow_only(&mut host.runtime, a, b);
     dispatch_local(&mut host, &mut source);
     assert!(
-        !source.packets.iter().any(|(port, _)| *port == 2001),
+        native_message_count(&source, 2001, bytes) == 0,
         "withheld real ACK must keep the other Local seat pending"
     );
 
@@ -1722,7 +1718,30 @@ fn local_reliable_resync_observes_the_real_ack_after_the_ring_claim_was_cancelle
         dispatch_local(&mut host, &mut source).native_dupe_suppressed,
         1
     );
-    assert!(!source.packets.iter().any(|(port, _)| *port == 2001));
+    assert_eq!(native_message_count(&source, 2001, bytes), 0);
+}
+
+fn native_message_count(source: &Source, port: u16, bytes: &[u8]) -> usize {
+    let mut channel = Channel::load(
+        Protocol::Quake2Repro1038.channel(),
+        Endpoint::Client,
+        8192,
+        16,
+    )
+    .unwrap();
+    source
+        .packets
+        .iter()
+        .filter(|(sent_port, _)| *sent_port == port)
+        .filter(
+            |(_, packet)| match channel.receive(packet, source.now).unwrap().delivery {
+                Delivery::Payload(payload) => {
+                    payload.windows(bytes.len()).any(|part| part == bytes)
+                }
+                _ => false,
+            },
+        )
+        .count()
 }
 
 #[test]

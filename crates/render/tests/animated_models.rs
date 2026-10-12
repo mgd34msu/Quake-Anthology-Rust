@@ -264,7 +264,7 @@ fn indexed_animated_models_use_selected_positions_current_normals_and_native_col
                 .register_model(&expected, &indices, material)
                 .unwrap();
             let entity = SceneEntity {
-                model,
+                model: model.into(),
                 frame: 1,
                 old_frame: 0,
                 back_lerp: back,
@@ -279,7 +279,7 @@ fn indexed_animated_models_use_selected_positions_current_normals_and_native_col
             let explicit = render_presentation(
                 &assets,
                 SceneEntity {
-                    model: fixed,
+                    model: fixed.into(),
                     frame: 0,
                     old_frame: 0,
                     back_lerp: 0.0,
@@ -426,7 +426,7 @@ fn cpu_animated_images_and_depth_match_explicit_interpolated_meshes() {
             .register_model(&expected, &indices, material)
             .unwrap();
         let entity = SceneEntity {
-            model: animated,
+            model: animated.into(),
             frame: 1,
             old_frame: 0,
             back_lerp: back,
@@ -442,7 +442,7 @@ fn cpu_animated_images_and_depth_match_explicit_interpolated_meshes() {
         let fixed_image = render(
             &assets,
             SceneEntity {
-                model: fixed,
+                model: fixed.into(),
                 frame: 0,
                 old_frame: 0,
                 back_lerp: 0.0,
@@ -478,7 +478,7 @@ fn cpu_rejects_bad_frame_selection_once_before_drawing() {
             ..SceneEntity::default()
         },
         SceneEntity {
-            model: ModelId(u32::MAX),
+            model: ModelId(u32::MAX).into(),
             ..SceneEntity::default()
         },
     ] {

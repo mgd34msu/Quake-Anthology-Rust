@@ -206,6 +206,40 @@ impl Camera {
     fn screen_center(&self) -> [f32; 2] {
         self.screen_center
     }
+    fn for_world_entity(&self, entity: &SceneEntity) -> Option<Self> {
+        if !entity.origin.is_finite()
+            || entity.non_normalized_axes
+            || entity.depth_hack
+            || entity
+                .axes
+                .iter()
+                .any(|axis| !axis.is_finite() || (axis.dot(*axis) - 1.0).abs() > 1.0e-4)
+            || [(0, 1), (0, 2), (1, 2)]
+                .into_iter()
+                .any(|(a, b)| entity.axes[a].dot(entity.axes[b]).abs() > 1.0e-4)
+        {
+            return None;
+        }
+        let origin =
+            qa_core::math::inverse_transform_point(entity.origin, entity.axes, self.refdef.origin);
+        let axes = self
+            .refdef
+            .axes
+            .map(|axis| qa_core::math::inverse_transform_point(Vec3::default(), entity.axes, axis));
+        if !origin.is_finite() || !axes.iter().all(|axis| axis.is_finite()) {
+            return None;
+        }
+        Some(Self {
+            refdef: Refdef {
+                origin,
+                axes,
+                ..self.refdef
+            },
+            tangent: self.tangent,
+            screen_scale: self.screen_scale,
+            screen_center: self.screen_center,
+        })
+    }
     fn gradient(&self, axis: Vec3, factor: f32, form: GradientForm) -> world::Affine {
         let scale = self.screen_scale();
         let center = self.screen_center();
@@ -569,7 +603,7 @@ impl CpuBackend {
         assets: &Assets,
         stats: &mut BackendStats,
     ) {
-        let Some(model) = assets.model(entity.model) else {
+        let Some(model) = entity.model.mesh().and_then(|id| assets.model(id)) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -589,15 +623,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
-        let local_view = crate::stage::entity_view_origin(camera.refdef.origin, entity);
-        let inputs = DrawInputs {
-            entity_color: entity.color,
-            entity_texcoord: entity.shader_texcoord,
-            entity_shader_time: entity.shader_time,
-            lighting: entity.lighting,
-            view_origin: local_view,
-            ..DrawInputs::for_view(&camera.refdef)
-        };
+        let inputs = DrawInputs::for_view(&camera.refdef).for_entity(entity);
         self.mesh_stages(
             camera,
             material,

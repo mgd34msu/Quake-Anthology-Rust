@@ -16,6 +16,7 @@ pub struct Context {
     pub dedicated: bool,
     pub seat: qa_core::sys_events::SeatId,
     pub event_time: Option<qa_core::sys_events::EventTime>,
+    pub key_source: Option<qa_core::sys_events::KeySource>,
 }
 impl Default for Context {
     fn default() -> Self {
@@ -26,6 +27,7 @@ impl Default for Context {
             dedicated: false,
             seat: qa_core::sys_events::SeatId::FIRST,
             event_time: None,
+            key_source: None,
         }
     }
 }

@@ -68,7 +68,7 @@ pub struct CallContext {
     /// Collision behaviour belongs to the calling trace role.
     pub trace_rules: RuleSetId,
     /// Spatial sound behaviour belongs to the emitting role.
-    pub sound_rules: RuleSetId,
+    pub sound_policy: qa_core::primitives::SpatialPolicy,
     pub console: Context,
     pub allocation: AllocationPolicy,
     pub link_order: LinkOrder,
@@ -84,6 +84,7 @@ struct ConfigRange {
     lifetime: Option<EntityId>,
     native_rules: RuleSetId,
     span: IndexSpan,
+    files: Option<IndexSpan>,
     resources: Option<[IndexSpan; 3]>,
     message: Box<[u8]>,
     written: usize,
@@ -126,7 +127,9 @@ impl ServiceStorage {
         cvars: &Cvars,
     ) -> Result<Self, CallError> {
         Self::load_with(
-            configs.iter().map(|&(module, count)| (module, count, None)),
+            configs
+                .iter()
+                .map(|&(module, count)| (module, count, None, None)),
             files,
             cvars,
         )
@@ -139,20 +142,38 @@ impl ServiceStorage {
         Self::load_with(
             configs
                 .iter()
-                .map(|&(module, count, rules)| (module, count, Some(rules))),
+                .map(|&(module, count, rules)| (module, count, Some(rules), None)),
+            files,
+            cvars,
+        )
+    }
+    /// One shared store, with native handles scoped to each module's reserved
+    /// range. A module cannot consume another module's load-sized capacity.
+    pub fn load_modules(
+        modules: &[(ModuleId, usize, RuleSetId, usize)],
+        cvars: &Cvars,
+    ) -> Result<Self, CallError> {
+        let files = modules.iter().try_fold(0usize, |total, row| {
+            total.checked_add(row.3).ok_or(CallError::Capacity)
+        })?;
+        Self::load_with(
+            modules
+                .iter()
+                .map(|&(module, count, rules, files)| (module, count, Some(rules), Some(files))),
             files,
             cvars,
         )
     }
     fn load_with(
-        configs: impl Iterator<Item = (ModuleId, usize, Option<RuleSetId>)>,
+        configs: impl Iterator<Item = (ModuleId, usize, Option<RuleSetId>, Option<usize>)>,
         files: usize,
         cvars: &Cvars,
     ) -> Result<Self, CallError> {
         let mut total = 0usize;
+        let mut first_file = 0usize;
         let mut ranges = Vec::new();
         let mut capacities = Vec::new();
-        for (module, count, native_rules) in configs {
+        for (module, count, native_rules, module_files) in configs {
             let layout = native_rules.map(ConfigLayout::for_rules);
             let resources = if count == 0 {
                 None
@@ -180,6 +201,20 @@ impl ServiceStorage {
                         .ok_or(CallError::ConfigString)?,
                 );
             }
+            let file_span = if let Some(count) = module_files {
+                let end = first_file.checked_add(count).ok_or(CallError::Capacity)?;
+                if end > files || end > 65535 {
+                    return Err(CallError::Capacity);
+                }
+                let span = IndexSpan {
+                    first: first_file as u32,
+                    count: count as u32,
+                };
+                first_file = end;
+                Some(span)
+            } else {
+                None
+            };
             ranges.push(ConfigRange {
                 module,
                 lifetime: None,
@@ -189,6 +224,7 @@ impl ServiceStorage {
                     first: u32::try_from(total).map_err(|_| CallError::Capacity)?,
                     count: u32::try_from(count).map_err(|_| CallError::Capacity)?,
                 },
+                files: file_span,
                 message: vec![0; NATIVE_PAYLOAD_BYTES].into_boxed_slice(),
                 written: 0,
                 revision: 0,
@@ -227,6 +263,29 @@ impl ServiceStorage {
     }
     fn range_mut(&mut self, module: ModuleId) -> Option<&mut ConfigRange> {
         self.ranges.iter_mut().find(|range| range.module == module)
+    }
+    fn file_span(&self, module: ModuleId) -> Result<IndexSpan, CallError> {
+        if let Some(span) = self.range(module).and_then(|range| range.files) {
+            return Ok(span);
+        }
+        // Scoped module loads only admit their registered namespaces. The
+        // standalone loader retains its shared owner-checked handle pool.
+        if self
+            .ranges
+            .first()
+            .is_some_and(|range| range.files.is_some())
+        {
+            return Err(CallError::File);
+        }
+        Ok(IndexSpan {
+            first: 0,
+            count: self.files.len() as u32,
+        })
+    }
+    fn file_index(&self, module: ModuleId, handle: u32) -> Result<usize, CallError> {
+        self.file_span(module)?
+            .get(handle.wrapping_sub(1) as usize)
+            .ok_or(CallError::File)
     }
     pub fn bind_lifetime(&mut self, module: ModuleId, lifetime: EntityId) -> Result<(), CallError> {
         let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
@@ -1214,27 +1273,28 @@ impl EngineServices<'_> {
     pub fn file_open(&mut self, owner: ModuleId, path: &[u8]) -> Result<(u32, u64), CallError> {
         let reference = self.vfs.open(path).ok_or(CallError::File)?;
         let length = self.vfs.length(reference).map_err(|_| CallError::File)?;
-        let slot = self
-            .storage
-            .files
+        let span = self.storage.file_span(owner)?;
+        let ordinal = self.storage.files[span.range()]
             .iter()
             .position(Option::is_none)
             .ok_or(CallError::Capacity)?;
+        let slot = span.first as usize + ordinal;
         self.storage.files[slot] = Some(OpenFile {
             owner,
             reference,
             cursor: 0,
         });
-        Ok((slot as u32 + 1, length))
+        Ok((ordinal as u32 + 1, length))
     }
     pub fn file_length(&self, path: &[u8]) -> Result<u64, CallError> {
         let reference = self.vfs.open(path).ok_or(CallError::File)?;
         self.vfs.length(reference).map_err(|_| CallError::File)
     }
     fn file(&mut self, owner: ModuleId, handle: u32) -> Result<&mut OpenFile, CallError> {
+        let slot = self.storage.file_index(owner, handle)?;
         self.storage
             .files
-            .get_mut(handle.wrapping_sub(1) as usize)
+            .get_mut(slot)
             .and_then(Option::as_mut)
             .filter(|f| f.owner == owner)
             .ok_or(CallError::File)
@@ -1282,7 +1342,8 @@ impl EngineServices<'_> {
     }
     pub fn file_close(&mut self, owner: ModuleId, handle: u32) -> Result<(), CallError> {
         self.file(owner, handle)?;
-        self.storage.files[handle as usize - 1] = None;
+        let slot = self.storage.file_index(owner, handle)?;
+        self.storage.files[slot] = None;
         Ok(())
     }
 }

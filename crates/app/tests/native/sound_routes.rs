@@ -439,7 +439,7 @@ impl FrameSource for AudioSource {
             assert_eq!(sound.entity, Some(entity));
         }
         if let Some(rules) = self.sound_rules[client.0 as usize] {
-            assert_eq!(sound.spatial_rules, rules);
+            assert_eq!(sound.spatial, qa_gameplay::rules::sound_policy(rules));
         }
         self.played.push((client, sound.sound, sound.entity));
         self.sounds[client.0 as usize] += 1;
@@ -486,7 +486,7 @@ pub(super) fn remote_native_emitters_keep_the_module_entity_channel() {
                 }),
             )
             .unwrap();
-        assert!(runtime.local_snapshots[remote.0 as usize].is_none());
+        assert!(runtime.snapshots[remote.0 as usize].is_none());
         let peer = RemotePeer::load(remote, protocol, 2);
         let mut channel =
             qa_network::channel::Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
@@ -682,25 +682,37 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
                 .as_ref()
                 .unwrap()
                 .state
-                .sound_rules(),
-            rules
+                .sound_policy(),
+            qa_gameplay::rules::sound_policy(rules)
         );
         assert_eq!(
             host.runtime.client_resources[1]
                 .as_ref()
                 .unwrap()
                 .state
-                .sound_rules(),
-            RuleSetId::Quake3
+                .sound_policy(),
+            qa_gameplay::rules::sound_policy(RuleSetId::Quake3)
         );
         host.frame(&mut source, true);
         // Transmit the older reliable flight, allow queued CLIENT receipt, and
         // leave its genuine native ACK withheld at the client endpoint.
-        assert!(
-            host.runtime
-                .send_local_snapshot(ids[0], EventTime(1_000_000), None)
+        let _ = host.runtime.send_snapshot(
+            ids[0],
+            EventTime(1_000_000),
+            None,
+            &mut AudioSource::default(),
         );
         host.drain(&mut Default::default());
+        assert!(
+            host.runtime
+                .network
+                .get(ids[0], Endpoint::Server)
+                .unwrap()
+                .channel
+                .send_state()
+                .reliable_bytes
+                > 0
+        );
         let old_calls = host.module_counts(ModuleId(1)).unwrap().calls;
         host.call_module_export(
             ModuleId(1),

@@ -1010,13 +1010,30 @@ pub enum SoundEmitter {
     },
 }
 
+/// Spatial capability parameters selected at the emitting role's boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpatialPolicy {
+    pub distance_offset: f32,
+    pub distance_scale: f32,
+    pub separation: f32,
+}
+impl Default for SpatialPolicy {
+    fn default() -> Self {
+        Self {
+            distance_offset: 0.0,
+            distance_scale: 0.0,
+            separation: 1.0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SoundEvent {
     pub sound: SoundId,
     /// The source boundary's ordinal, retained without replacing PCM identity.
     pub source_ordinal: Option<u32>,
     /// Spatial behavior belongs to this emission, independently of shared PCM.
-    pub spatial_rules: RuleSetId,
+    pub spatial: SpatialPolicy,
     pub entity: Option<SoundEmitter>,
     pub channel: u16,
     pub position: Vec3,

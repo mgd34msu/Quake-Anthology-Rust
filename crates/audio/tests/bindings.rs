@@ -152,6 +152,39 @@ fn bank_reattachment_clears_old_handles_even_when_numeric_ids_are_reused() {
 }
 
 #[test]
+fn decoded_paths_use_shared_bindings_and_keep_zero_reserved_after_reattachment() {
+    let first = bank(&["sound/weapons/blastf1a.wav"]);
+    let second = bank(&["sound/other.wav"]);
+    let mut bindings = SoundBindings::load(2);
+    bindings.attach(&first);
+    let blaster = first.find("sound/weapons/blastf1a.wav").unwrap();
+    bindings
+        .bind_path(Some(&first), 1, b"sound/weapons/blastf1a.wav")
+        .unwrap();
+    assert_eq!(bindings.sound(1), Some(blaster));
+    assert_eq!(bindings.ordinal(blaster), Some(1));
+    bindings
+        .bind_path(Some(&first), 0, b"sound/weapons/blastf1a.wav")
+        .unwrap();
+    assert_eq!(bindings.sound(0), None);
+    assert_eq!(
+        bindings.bind_path(Some(&first), 1, b"sound/\xff.wav"),
+        Err(SoundBindingError::Text)
+    );
+    assert_eq!(bindings.sound(1), Some(blaster));
+    bindings.attach(&second);
+    bindings
+        .bind_path(Some(&second), 1, b"sound/weapons/blastf1a.wav")
+        .unwrap();
+    assert_eq!(bindings.sound(1), None);
+    assert_eq!(bindings.ordinal(blaster), None);
+    bindings
+        .bind_path(Some(&second), 1, b"sound/other.wav")
+        .unwrap();
+    assert_eq!(bindings.sound(1), second.find("sound/other.wav"));
+}
+
+#[test]
 fn q3_full_paths_and_q2_bare_paths_bind_the_same_loaded_sample() {
     use qa_core::primitives::RuleSetId;
     let bank = bank(&["sound/a.wav", "music/c.wav"]);

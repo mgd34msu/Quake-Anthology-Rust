@@ -13,26 +13,27 @@ use std::{num::NonZeroU32, sync::Arc};
 
 /// Client cue recipes hold numeric bindings into the one PCM bank.
 pub(crate) struct MuzzleSounds {
-    ids: [Option<qa_core::primitives::SoundId>; qa_gameplay::rules::q2::sounds::PATHS.len()],
+    bindings: qa_audio::SoundBindings,
     random: qa_core::random::Random,
 }
 impl Default for MuzzleSounds {
     fn default() -> Self {
         Self {
-            ids: [None; qa_gameplay::rules::q2::sounds::PATHS.len()],
+            bindings: qa_audio::SoundBindings::load(
+                qa_gameplay::rules::q2::sounds::PATHS.len() + 1,
+            ),
             random: qa_core::random::Random::new(5489),
         }
     }
 }
 impl MuzzleSounds {
-    pub(crate) fn bind(&mut self, bank: &Bank) {
-        for (id, path) in self
-            .ids
-            .iter_mut()
-            .zip(qa_gameplay::rules::q2::sounds::PATHS)
-        {
-            *id = bank.find(path);
+    pub(crate) fn bind(&mut self, bank: &Bank) -> Result<(), qa_audio::SoundBindingError> {
+        self.bindings.attach(bank);
+        for (index, path) in qa_gameplay::rules::q2::sounds::PATHS.iter().enumerate() {
+            self.bindings
+                .bind_path(Some(bank), index as u32 + 1, path.as_bytes())?;
         }
+        Ok(())
     }
     pub(crate) fn choose(
         &mut self,
@@ -43,10 +44,7 @@ impl MuzzleSounds {
         } else {
             0
         };
-        self.ids
-            .get((recipe.choices.first + offset) as usize)
-            .copied()
-            .flatten()
+        self.bindings.sound(recipe.choices.first + offset + 1)
     }
 }
 
@@ -136,7 +134,7 @@ pub fn load_bank(
         }
         Ok(())
     })?;
-    if host.runtime.local_snapshots.iter().flatten().any(|client| {
+    if host.runtime.snapshots.iter().flatten().any(|client| {
         matches!(
             client.protocol,
             qa_network::commands::packet::Protocol::Quake2_34
@@ -212,7 +210,7 @@ pub fn play(
                 qa_core::events::OutputTarget::Presentation,
                 FrameEvent::Sound(SoundEvent {
                     sound,
-                    spatial_rules: context.source,
+                    spatial: qa_gameplay::rules::sound_policy(context.source),
                     entity: None,
                     channel: 0,
                     position: Vec3::default(),

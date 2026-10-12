@@ -53,6 +53,13 @@ pub enum DeviceId {
     Controller(i32),
 }
 
+/// Physical control identity retained through queued command expansion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeySource {
+    pub device: DeviceId,
+    pub control: u16,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SeatId(u8);
 impl SeatId {

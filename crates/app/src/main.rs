@@ -724,7 +724,9 @@ fn run() -> Result<(), String> {
     let client_profiles: Vec<_> = host
         .client_model_sources()
         .into_iter()
-        .filter_map(|(client, source)| profiles[source as usize].map(|profile| (client, profile)))
+        .filter_map(|(client, source)| {
+            profiles[source as usize].map(|profile| (client, profile, render_world))
+        })
         .collect();
     let (mut assets, models) = host
         .runtime
@@ -774,6 +776,32 @@ fn run() -> Result<(), String> {
         width as u32,
         height as u32,
     )?;
+    let mut hud_assets = std::array::from_fn(|_| None);
+    for rules in local_clients
+        .iter()
+        .flatten()
+        .map(|id| host.runtime.server.clients[id.0 as usize].client_rules)
+    {
+        if hud_assets[rules as usize].is_some() {
+            continue;
+        }
+        let font = if rules == console_rules {
+            console_assets.font_assets()
+        } else {
+            qa_app::renderer::console::FontAssets::load(
+                &host.runtime.vfs,
+                &mut assets,
+                rules,
+                palettes[rules as usize],
+                qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
+            )?
+        };
+        hud_assets[rules as usize] = Some(qa_app::renderer::hud::HudAssets::from_font(
+            rules,
+            font,
+            width as u32,
+        )?);
+    }
     let mut renderer = Renderer::load(
         renderer_kind,
         &window,
@@ -783,6 +811,7 @@ fn run() -> Result<(), String> {
         loaded_world.into_iter().collect(),
         cpu_bands,
         console_assets,
+        hud_assets,
     )?;
     if matches!(renderer_kind, Kind::Cpu) {
         host.console.cvars.set_latch_active(band_cvar, true);
@@ -790,6 +819,7 @@ fn run() -> Result<(), String> {
     renderer.frame(
         &host.client_views(),
         &host.client_scene_inputs(),
+        &host.client_hud_inputs(),
         qa_console::presentation::ConsoleView {
             editor: &host.console.editor,
             scrollback: &host.console.scrollback,
@@ -816,7 +846,7 @@ fn run() -> Result<(), String> {
             renderer.sample.stats.triangles,
             renderer.sample.stats.rejected,
             imported_profile.consumed(),
-            host.native_input_policy_active()
+            local_clients.iter().any(Option::is_some)
         );
     }
     println!(

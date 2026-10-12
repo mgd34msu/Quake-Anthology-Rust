@@ -284,10 +284,11 @@ fn snapshot_frames_for_protocol(protocol: qa_network::commands::packet::Protocol
         .snapshot_observation(latest_sequence)
         .unwrap();
     stale.module_lifetime.generation += 1;
-    assert!(host.runtime.send_local_snapshot(
+    assert!(host.runtime.send_snapshot(
         client,
         EventTime::from_milliseconds(2500),
-        Some(stale)
+        Some(stale),
+        &mut source
     ));
     host.runtime.loopback.clear_client(client);
     let connection = host

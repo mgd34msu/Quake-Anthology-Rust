@@ -61,7 +61,9 @@ fn qvm_spawn_tokens_use_session_dispatch_and_explicit_module_syntax() {
                 context: CallContext {
                     native_rules: qa_core::primitives::RuleSetId::Quake3,
                     trace_rules: qa_core::primitives::RuleSetId::Quake3,
-                    sound_rules: qa_core::primitives::RuleSetId::Quake3,
+                    sound_policy: qa_gameplay::rules::sound_policy(
+                        qa_core::primitives::RuleSetId::Quake3,
+                    ),
                     server_frame: 0,
                     module,
                     clock: ThinkTime::Milliseconds(0),
@@ -250,7 +252,9 @@ fn lifecycle_host_in(
             context: CallContext {
                 native_rules: qa_core::primitives::RuleSetId::Quake3,
                 trace_rules: qa_core::primitives::RuleSetId::Quake3,
-                sound_rules: qa_core::primitives::RuleSetId::Quake3,
+                sound_policy: qa_gameplay::rules::sound_policy(
+                    qa_core::primitives::RuleSetId::Quake3,
+                ),
                 server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),
@@ -603,7 +607,9 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             context: CallContext {
                 native_rules: qa_core::primitives::RuleSetId::Quake3,
                 trace_rules: qa_core::primitives::RuleSetId::Quake3,
-                sound_rules: qa_core::primitives::RuleSetId::Quake3,
+                sound_policy: qa_gameplay::rules::sound_policy(
+                    qa_core::primitives::RuleSetId::Quake3,
+                ),
                 server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),
@@ -634,7 +640,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             context: CallContext {
                 native_rules: RuleSetId::Quake,
                 trace_rules: RuleSetId::Quake,
-                sound_rules: RuleSetId::Quake,
+                sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake),
                 server_frame: 0,
                 module: ModuleId(2),
                 clock: ThinkTime::Seconds(0.0),
@@ -743,7 +749,7 @@ fn quakec_runtime_host(rules: RuleSetId, vm: Vm, mut runtime: Runtime) -> FrameH
             context: CallContext {
                 native_rules: rules,
                 trace_rules: rules,
-                sound_rules: rules,
+                sound_policy: qa_gameplay::rules::sound_policy(rules),
                 server_frame: 0,
                 module,
                 clock: ThinkTime::module_clock(rules),
@@ -1116,7 +1122,7 @@ fn with_quakec_calls(
         context: CallContext {
             native_rules: rules,
             trace_rules: rules,
-            sound_rules: rules,
+            sound_policy: qa_gameplay::rules::sound_policy(rules),
             module: ModuleId(1),
             clock: ThinkTime::Seconds(0.0),
             server_frame: 0,
@@ -1933,6 +1939,137 @@ fn host_ticks_both_program_types_at_independent_rates_and_drains_the_shared_comm
         7.0
     );
     assert_eq!(source.polls, 4);
+}
+
+#[test]
+fn scheduling_role_selects_clock_arithmetic_and_phase_independently_of_program_format() {
+    use qa_formats::program::qvm::Opcode;
+    let mut runtime = Runtime::load(4, []).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let qw_view = console
+        .cvars
+        .bind(
+            "sv_mintic",
+            Context {
+                source: RuleSetId::QuakeWorld,
+                ..Context::default()
+            },
+        )
+        .unwrap();
+    console.cvars.force_write(qw_view, "0.01").unwrap();
+    let requests = [RuleSetId::Quake, RuleSetId::QuakeWorld, RuleSetId::Quake3]
+        .into_iter()
+        .enumerate()
+        .map(|(index, timing_rules)| {
+            let module = ModuleId(index as u16 + 1);
+            let anchor = runtime
+                .server
+                .entities
+                .allocate(ThinkTime::Seconds(1.0), module, AllocationPolicy::q3(0))
+                .unwrap()
+                .id;
+            let (native_rules, program, entries) = if index == 2 {
+                let bytes = quakec_program::program_with_definitions(
+                    &[(Return, 35, 0, 0)],
+                    &[0, 1],
+                    &[(2, 35, b"time")],
+                    &[],
+                    1,
+                    64,
+                );
+                let vm = Vm::load(
+                    Image::parse(&bytes, Some(5927)).unwrap(),
+                    Layout {
+                        entities: 64,
+                        header_bytes: 16,
+                        extra_string_bytes: 0,
+                        state_step: 0.1,
+                    },
+                )
+                .unwrap();
+                (RuleSetId::Quake, Program::quakec(vm, None), vec![1])
+            } else {
+                // vmMain's first supplied argument is the native clock in ms.
+                let vm = service_program::program(
+                    &[
+                        (Opcode::Enter, 64),
+                        (Opcode::Local, 76),
+                        (Opcode::Load4, 0),
+                        (Opcode::Leave, 64),
+                    ],
+                    &[0; 16],
+                );
+                (
+                    RuleSetId::Quake3,
+                    Program::Qvm {
+                        vm: Box::new(vm),
+                        imports: &Q3_SERVER,
+                    },
+                    vec![0],
+                )
+            };
+            ModuleRequest {
+                context: CallContext {
+                    module,
+                    clock: ThinkTime::Seconds(1.0),
+                    server_frame: 0,
+                    native_rules,
+                    trace_rules: RuleSetId::Quake2,
+                    sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
+                    console: Context::default(),
+                    allocation: AllocationPolicy::q3(0),
+                    link_order: LinkOrder::Head,
+                },
+                phase: Phase::Server,
+                timing_rules,
+                rate: TickRate::FrameDriven,
+                anchor,
+                program,
+                entries,
+                frame: Export::clocked(CallbackId(0)),
+                prepare: Vec::new(),
+                initialize: Vec::new(),
+                api: None,
+                shutdown: Vec::new(),
+                instruction_budget: 100,
+                configstrings: 0,
+                files: 0,
+                entity_source: None,
+            }
+        })
+        .collect();
+    let mut host =
+        FrameHost::load_modules(console, runtime, TickRate::FrameDriven, requests).unwrap();
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    host.frame(&mut source, true);
+    for (time, nq, qw) in [(12_345_678, 1000, 1012), (23_000_300, 1012, 1023)] {
+        source.time = EventTime(time);
+        host.frame(&mut source, true);
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::Qvm(nq))
+        );
+        assert_eq!(
+            host.module_counts(ModuleId(2)).unwrap().last_result,
+            Some(ModuleResult::Qvm(qw))
+        );
+        assert_eq!(
+            host.module_counts(ModuleId(3)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([
+                (EventTime(time).seconds() as f32).to_bits(),
+                0,
+                0,
+            ]))
+        );
+    }
+    for module in [ModuleId(1), ModuleId(2), ModuleId(3)] {
+        let counts = host.module_counts(module).unwrap();
+        assert_eq!((counts.calls, counts.traps, counts.rejected), (2, 0, 0));
+    }
+    assert_eq!(source.polls, 6);
 }
 #[test]
 fn an_executed_unsupported_quakec_builtin_traps_without_poisoning_the_next_entry() {

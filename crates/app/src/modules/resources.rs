@@ -18,7 +18,7 @@ impl FrameHost {
                 continue;
             }
             let rules = row.request.context.native_rules;
-            let Some(models) = row
+            let Some(models) = modules
                 .storage
                 .resources(row.request.context.module)
                 .map(|resources| resources[0])
@@ -26,7 +26,9 @@ impl FrameHost {
                 continue;
             };
             for index in models.range().skip(1) {
-                if let Ok((text, _)) = row.storage.configstring(row.request.context.module, index)
+                if let Ok((text, _)) = modules
+                    .storage
+                    .configstring(row.request.context.module, index)
                     && !text.is_empty()
                     && !text.starts_with(b"*")
                 {
@@ -60,12 +62,18 @@ impl FrameHost {
     pub fn set_model_catalog(
         &mut self,
         models: std::sync::Arc<crate::model_assets::ModelCatalog>,
-        profiles: impl IntoIterator<Item = (ClientId, crate::model_assets::ModelProfile)>,
+        profiles: impl IntoIterator<
+            Item = (
+                ClientId,
+                crate::model_assets::ModelProfile,
+                Option<qa_render::world::WorldId>,
+            ),
+        >,
     ) {
         for resources in self.runtime.client_resources.iter_mut().flatten() {
             resources.state.models.reset();
         }
-        for (client, profile) in profiles {
+        for (client, profile, world) in profiles {
             let Some(resources) = self
                 .runtime
                 .client_resources
@@ -78,6 +86,7 @@ impl FrameHost {
                 &resources.state.configs,
                 &models,
                 profile,
+                world,
             ));
         }
         self.runtime.models = Some(models);
@@ -134,7 +143,8 @@ impl FrameHost {
                 .flatten()
                 .filter(|row| row.state == State::Running)
                 .any(|row| {
-                    row.storage
+                    modules
+                        .storage
                         .config_revision(row.request.context.module)
                         .is_ok_and(|revision| {
                             publication.begin(row.request.context.module, revision)
@@ -153,7 +163,7 @@ impl FrameHost {
                 let source = ConfigLayout::for_rules(row.request.context.native_rules);
                 for native_index in 0..row.request.configstrings.min(source.count) {
                     let Ok((text, revision)) =
-                        row.storage.configstring(client.module, native_index)
+                        modules.storage.configstring(client.module, native_index)
                     else {
                         continue;
                     };
@@ -165,7 +175,7 @@ impl FrameHost {
                     let mut sample = None;
                     if is_sound {
                         let ordinal = native_index - source.resources[1].first as usize;
-                        sample = row
+                        sample = modules
                             .storage
                             .sound_id(client.module, source.resources[1], ordinal as i32)
                             .ok()
@@ -240,12 +250,15 @@ impl FrameHost {
                     row.state == State::Running && row.request.context.module != client.module
                 }) {
                     let module = row.request.context.module;
-                    let Some(sounds) = row.storage.resources(module).map(|resources| resources[1])
+                    let Some(sounds) = modules
+                        .storage
+                        .resources(module)
+                        .map(|resources| resources[1])
                     else {
                         continue;
                     };
                     for ordinal in 1..sounds.count {
-                        let Some(sound) = row
+                        let Some(sound) = modules
                             .storage
                             .sound_id(module, sounds, ordinal as i32)
                             .ok()
@@ -300,7 +313,9 @@ impl FrameHost {
                     .flatten()
                     .filter(|row| row.state == State::Running)
                 {
-                    if let Ok(revision) = row.storage.config_revision(row.request.context.module) {
+                    if let Ok(revision) =
+                        modules.storage.config_revision(row.request.context.module)
+                    {
                         publication.finish(row.request.context.module, revision);
                     }
                 }

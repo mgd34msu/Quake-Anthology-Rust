@@ -89,6 +89,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 dedicated: false,
                 seat: qa_core::sys_events::SeatId::FIRST,
                 event_time: None,
+
+                key_source: None,
             };
             let detail = (header[3] != 0).then_some(detail.as_str());
             response(

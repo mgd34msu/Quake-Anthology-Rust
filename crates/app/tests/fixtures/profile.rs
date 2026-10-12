@@ -95,3 +95,29 @@ fn profile_writes_reuse_alias_views_and_count_bounded_or_protected_failures() {
     );
     assert_eq!((report.cvars, report.unsupported), (2, 2));
 }
+
+#[test]
+fn input_handle_native_role_defaults_and_explicit_numeric_truth_share_cvars() {
+    let mut vars = Cvars::new().unwrap();
+    let handles = InputHandles::load(&vars).unwrap();
+    vars.reset_lookup_count();
+    let q1 = handles.policy(&vars, RuleSetId::Quake);
+    let q3 = handles.policy(&vars, RuleSetId::Quake3);
+    assert!(!q1.always_run);
+    assert!(q3.always_run);
+    assert_eq!(q1.rules, RuleSetId::Quake);
+    assert_eq!(q3.rules, RuleSetId::Quake3);
+    assert_eq!(vars.lookup_count(), 0);
+    let run = vars.find("cl_run").unwrap();
+    let back = vars.find("cl_backspeed").unwrap();
+    let forward = vars.find("cl_forwardspeed").unwrap();
+    vars.set_text(run, "0.5").unwrap();
+    vars.set_text(forward, "351.5").unwrap();
+    vars.reset_lookup_count();
+    assert!(handles.policy(&vars, RuleSetId::Quake).always_run);
+    assert!(!handles.policy(&vars, RuleSetId::Quake3).always_run);
+    assert_eq!(handles.policy(&vars, RuleSetId::Quake2).back_speed, 351.5);
+    assert_eq!(vars.lookup_count(), 0);
+    vars.set_text(back, "77.5").unwrap();
+    assert_eq!(handles.policy(&vars, RuleSetId::Quake2).back_speed, 77.5);
+}

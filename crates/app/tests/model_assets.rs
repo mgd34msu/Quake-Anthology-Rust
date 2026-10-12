@@ -62,7 +62,7 @@ fn render_indexed(
     let mut frontend = qa_render::FrontEnd::load(Default::default()).unwrap();
     let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
     assert!(frame.add_entity(qa_render::SceneEntity {
-        model: binding.model,
+        model: binding.model.into(),
         material: Some(binding.material),
         origin: Vec3([0.0, -24.0, -36.0]),
         lighting: Some(qa_render::stage::EntityLighting {
@@ -1349,4 +1349,129 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
         catalog.bounds(b"maps/start.bsp", RuleSetId::Quake),
         Some(native_bounds)
     );
+}
+
+#[test]
+fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
+    use qa_app::client_scene::{ClientModelBindings, ClientSceneInput};
+    use qa_core::{
+        configstrings::{ConfigLayout, ConfigStrings},
+        primitives::{
+            ClientId, EntityAppearance, EntityRecord, ModelRef, PlayerState, ResourceNamespace,
+        },
+    };
+    use qa_gameplay::rules::appearance::AliasRoll;
+    use qa_network::{
+        commands::packet::Protocol,
+        projection::{EntityProjection, PlayerProjection},
+    };
+    let _fixture = support::Fixture::models();
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let first = world(&mut assets, 0.0);
+    let second = world(&mut assets, 100.0);
+    let profile = native_profile(RuleSetId::Quake2, palette);
+    let builder =
+        ModelCatalogBuilder::new(assets, [profile], [first, second], ModelLimits::default())
+            .unwrap();
+    let (assets, catalog) = builder.finish();
+    let layout = ConfigLayout::QUAKE2;
+    let mut configs =
+        ConfigStrings::load((0..layout.count).map(|index| layout.capacity(index).unwrap()))
+            .unwrap();
+    configs
+        .set(layout.resources[0].get(50).unwrap(), b"*1")
+        .unwrap();
+    let client = ClientId(7);
+    let mut bindings = ClientModelBindings::load(client, layout);
+    assert_eq!(bindings.bind_all(&configs, &catalog, profile, None), 1);
+    let projection = EntityProjection::load(Protocol::Quake2_34);
+    let player_projection = PlayerProjection::load(Protocol::Quake2_34, &[]);
+    let player = PlayerState::default();
+    let mut record = EntityRecord {
+        position: Vec3([12.0, 24.0, 48.0]),
+        angles: Vec3([0.0, 45.0, 0.0]),
+        appearance: EntityAppearance {
+            source: RuleSetId::Quake2,
+            models: [
+                ModelRef::native(ResourceNamespace::Client(client), 50),
+                None,
+                None,
+                None,
+            ],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for selected in [first, second] {
+        assert_eq!(
+            bindings.bind_all(&configs, &catalog, profile, Some(selected)),
+            0
+        );
+        let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
+        let mut frame = front.begin_frame([0; 4]).unwrap();
+        let input = ClientSceneInput {
+            client,
+            current: None,
+            previous: None,
+            projection: &projection,
+            player_projection: &player_projection,
+            bindings: &bindings,
+            models: &catalog,
+            static_entities: std::slice::from_ref(&record),
+            player: &player,
+            alias_roll: AliasRoll::default(),
+            interpolation: Default::default(),
+            gun_animation: None,
+            gun_previous: None,
+            view_entity: None,
+        };
+        let counts = input.append(&mut frame, &assets, &qa_render::Refdef::default(), false);
+        assert_eq!(
+            (counts.models, counts.missing_models, counts.rejected),
+            (1, 0, 0)
+        );
+        let packet = frame.finish();
+        let entity = packet.entity(0);
+        let qa_render::SceneModel::World { world, surfaces } = entity.model else {
+            panic!("inline became a mesh")
+        };
+        assert_eq!(world, selected);
+        assert_eq!(
+            surfaces,
+            catalog.resolve_inline(selected, 1).unwrap().surfaces
+        );
+        assert_eq!(entity.origin, record.position);
+        assert_eq!(entity.material, None);
+    }
+    record.appearance.models[0] = ModelRef::native(ResourceNamespace::Client(ClientId(8)), 50);
+    let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    let input = ClientSceneInput {
+        client,
+        current: None,
+        previous: None,
+        projection: &projection,
+        player_projection: &player_projection,
+        bindings: &bindings,
+        models: &catalog,
+        static_entities: std::slice::from_ref(&record),
+        player: &player,
+        alias_roll: AliasRoll::default(),
+        interpolation: Default::default(),
+        gun_animation: None,
+        gun_previous: None,
+        view_entity: None,
+    };
+    assert_eq!(
+        input
+            .append(&mut frame, &assets, &qa_render::Refdef::default(), false)
+            .missing_models,
+        1
+    );
+    bindings.reset();
+    configs
+        .set(layout.resources[0].get(50).unwrap(), b"*1")
+        .unwrap();
+    assert!(!bindings.config_changed(layout.resources[0].get(50).unwrap(), &configs, &catalog));
 }

@@ -27,6 +27,7 @@ pub enum ScriptError {
 }
 pub trait Host {
     fn print(&mut self, text: Output<'_>);
+    fn reject_input(&mut self, _count: u64) {}
     fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError>;
     fn quit(&mut self);
     fn input(&mut self) -> &mut Input;
@@ -372,17 +373,16 @@ impl<H: Host> Console<H> {
         }
         args.join(2, &mut self.joined)?;
         let time = context.event_time.unwrap_or_else(|| host.input_time());
+        let mut output = BindOutput {
+            buffer: &mut self.buffer,
+            context,
+            rejected: None,
+            rejected_count: 0,
+        };
         host.input()
-            .bind_text(
-                control,
-                self.joined.as_str(),
-                time,
-                &mut BindOutput {
-                    buffer: &mut self.buffer,
-                    context,
-                },
-            )
-            .map_err(CommandError::Bind)
+            .bind_text(control, self.joined.as_str(), time, &mut output)
+            .map_err(CommandError::Bind)?;
+        output.finish(host)
     }
     fn unbind(
         &mut self,
@@ -395,16 +395,14 @@ impl<H: Host> Console<H> {
         }
         let control = keys::parse(args.get(1)).ok_or(CommandError::Bind(BindError::Control))?;
         let time = context.event_time.unwrap_or_else(|| host.input_time());
-        host.input().bind(
-            control,
-            None,
-            time,
-            &mut BindOutput {
-                buffer: &mut self.buffer,
-                context,
-            },
-        );
-        Ok(())
+        let mut output = BindOutput {
+            buffer: &mut self.buffer,
+            context,
+            rejected: None,
+            rejected_count: 0,
+        };
+        host.input().bind(control, None, time, &mut output);
+        output.finish(host)
     }
     fn unbind_all(
         &mut self,
@@ -413,15 +411,16 @@ impl<H: Host> Console<H> {
         context: Context,
     ) -> Result<(), CommandError> {
         let time = context.event_time.unwrap_or_else(|| host.input_time());
-        host.input().unbind_all(
-            time,
-            &mut BindOutput {
-                buffer: &mut self.buffer,
-                context,
-            },
-        );
-        Ok(())
+        let mut output = BindOutput {
+            buffer: &mut self.buffer,
+            context,
+            rejected: None,
+            rejected_count: 0,
+        };
+        host.input().unbind_all(time, &mut output);
+        output.finish(host)
     }
+
     fn bind_list(
         &mut self,
         host: &mut H,
@@ -452,8 +451,13 @@ impl<H: Host> Console<H> {
         action: qa_input::Action,
     ) -> Result<(), CommandError> {
         let name = args.get(0);
-        let key = (!args.get(1).is_empty()).then(|| crate::numbers::integer(args.get(1)) as u16);
-        let time = if args.get(2).is_empty() {
+        let key = context.key_source.or_else(|| {
+            (!args.get(1).is_empty()).then(|| qa_core::sys_events::KeySource {
+                device: qa_core::sys_events::DeviceId::Keyboard(0),
+                control: crate::numbers::integer(args.get(1)) as u16,
+            })
+        });
+        let time = if context.key_source.is_some() || args.get(2).is_empty() {
             context.event_time.unwrap_or_else(|| host.input_time())
         } else {
             EventTime::from_milliseconds(crate::numbers::integer(args.get(2)) as u32 as u64)
@@ -711,17 +715,38 @@ fn write_binding(binding: &Binding, output: &mut impl Write) {
 struct BindOutput<'a> {
     buffer: &'a mut CommandBuffer,
     context: Context,
+    rejected: Option<TextError>,
+    rejected_count: u64,
 }
 impl Target for BindOutput<'_> {
     fn character(&mut self, _: SeatId, _: char) {}
-    fn command(&mut self, seat: SeatId, time: EventTime, text: &str) {
-        let _ = self.buffer.append_line(
+    fn command(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        key_source: Option<qa_core::sys_events::KeySource>,
+        text: &str,
+    ) {
+        let result = self.buffer.append_line(
             text,
             Context {
                 seat,
+                key_source,
                 event_time: Some(time),
                 ..self.context
             },
         );
+        if let Err(error) = result {
+            self.rejected.get_or_insert(error);
+            self.rejected_count += 1;
+        }
+    }
+}
+
+impl BindOutput<'_> {
+    fn finish(self, host: &mut impl Host) -> Result<(), CommandError> {
+        host.reject_input(self.rejected_count);
+        self.rejected
+            .map_or(Ok(()), |error| Err(CommandError::Text(error)))
     }
 }

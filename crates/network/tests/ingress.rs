@@ -8,6 +8,7 @@ use qa_network::{
     headers::{self, Direction, Header},
     ingress::{BindError, Connection, Connections, Incoming, Route},
 };
+mod support;
 
 #[test]
 fn q2_native_ack_survives_a_rejected_fragment_body() -> Result<(), String> {
@@ -515,6 +516,9 @@ fn qport_routing_keeps_native_ack_receipts_with_the_selected_peer() -> Result<()
             channel
                 .queue_reliable(b"retained")
                 .map_err(|e| e.to_string())?;
+            if policy == channel::QUAKEWORLD {
+                support::admit_qw_reply(&mut channel, 1);
+            }
             assert!(
                 channel
                     .prepare(None, EventTime(0))
@@ -547,7 +551,7 @@ fn qport_routing_keeps_native_ack_receipts_with_the_selected_peer() -> Result<()
                 format,
                 Direction::ToServer,
                 Header {
-                    sequence: 1,
+                    sequence: 2,
                     acknowledgement: 1,
                     reliable_ack: true,
                     qport,

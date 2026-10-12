@@ -1,6 +1,7 @@
 //! CLIENT-owned snapshot values become copied entries in the shared scene list.
 use crate::model_assets::{
-    ModelBinding, ModelCatalog, ModelMaterialPolicy, ModelProfile, ModelRegistrationId,
+    InlineBinding, ModelBinding, ModelCatalog, ModelMaterialPolicy, ModelProfile,
+    ModelRegistrationId,
 };
 use crate::snapshots::{GunAnimation, Interpolation};
 use qa_core::{
@@ -15,7 +16,19 @@ use qa_network::{
     projection::{EntityProjection, EntityRecord, PlayerProjection},
     snapshots::{Frame as SnapshotFrame, ReceivedFrame},
 };
-use qa_render::{Assets, Frame, Refdef, SceneEntity};
+use qa_render::{Assets, Frame, Refdef, SceneEntity, SceneModel, world::WorldId};
+
+#[derive(Clone, Copy)]
+enum ClientModel {
+    Mesh(ModelRegistrationId),
+    Inline(InlineBinding),
+}
+
+#[derive(Clone, Copy)]
+enum SceneBinding {
+    Mesh(ModelBinding),
+    Inline(InlineBinding),
+}
 
 /// Only derived numeric asset bindings live here. Accepted entity values and
 /// history remain in the connection's existing snapshot ring.
@@ -23,7 +36,8 @@ pub struct ClientModelBindings {
     client: ClientId,
     range: IndexSpan,
     profile: Option<ModelProfile>,
-    registrations: Box<[Option<ModelRegistrationId>]>,
+    world: Option<WorldId>,
+    registrations: Box<[Option<ClientModel>]>,
 }
 impl ClientModelBindings {
     pub fn load(client: ClientId, layout: ConfigLayout) -> Self {
@@ -32,6 +46,7 @@ impl ClientModelBindings {
             client,
             range,
             profile: None,
+            world: None,
             registrations: vec![None; range.count as usize].into_boxed_slice(),
         }
     }
@@ -39,6 +54,7 @@ impl ClientModelBindings {
     /// Disconnect/rebinding clears all weak references into the old catalog.
     pub fn reset(&mut self) {
         self.profile = None;
+        self.world = None;
         self.registrations.fill(None);
     }
 
@@ -68,13 +84,23 @@ impl ClientModelBindings {
         let Ok(path) = std::str::from_utf8(row.text) else {
             return false;
         };
+        if let Some(index) = path.strip_prefix('*') {
+            let Some(binding) = index.parse::<u32>().ok().and_then(|index| {
+                self.world
+                    .and_then(|world| models.resolve_inline(world, index))
+            }) else {
+                return false;
+            };
+            self.registrations[ordinal] = Some(ClientModel::Inline(binding));
+            return true;
+        }
         let Some(registration) = self
             .profile
             .and_then(|profile| models.registration(path, profile))
         else {
             return false;
         };
-        self.registrations[ordinal] = Some(registration);
+        self.registrations[ordinal] = Some(ClientModel::Mesh(registration));
         true
     }
 
@@ -83,9 +109,11 @@ impl ClientModelBindings {
         configs: &ConfigStrings,
         models: &ModelCatalog,
         profile: ModelProfile,
+        world: Option<WorldId>,
     ) -> u32 {
         self.reset();
         self.profile = Some(profile);
+        self.world = world;
         self.range.range().fold(0, |missing, index| {
             missing + u32::from(!self.config_changed(index, configs, models))
         })
@@ -98,6 +126,19 @@ impl ClientModelBindings {
         models: &ModelCatalog,
         policy: ModelMaterialPolicy,
     ) -> Option<ModelBinding> {
+        match self.resolve_scene(reference, skin, models, policy)? {
+            SceneBinding::Mesh(binding) => Some(binding),
+            SceneBinding::Inline(_) => None,
+        }
+    }
+
+    fn resolve_scene(
+        &self,
+        reference: ModelRef,
+        skin: i32,
+        models: &ModelCatalog,
+        policy: ModelMaterialPolicy,
+    ) -> Option<SceneBinding> {
         if reference.namespace != ResourceNamespace::Client(self.client) {
             return None;
         }
@@ -106,7 +147,12 @@ impl ClientModelBindings {
             .get(reference.ordinal as usize)
             .copied()
             .flatten()?;
-        models.binding(registration, u32::try_from(skin).unwrap_or(0), policy)
+        match registration {
+            ClientModel::Mesh(registration) => models
+                .binding(registration, u32::try_from(skin).unwrap_or(0), policy)
+                .map(SceneBinding::Mesh),
+            ClientModel::Inline(binding) => Some(SceneBinding::Inline(binding)),
+        }
     }
 }
 
@@ -408,7 +454,7 @@ impl ClientSceneInput<'_> {
             let Some(reference) = *reference else {
                 continue;
             };
-            let Some(binding) = self.bindings.resolve(
+            let Some(binding) = self.bindings.resolve_scene(
                 reference,
                 record.appearance.skin,
                 self.models,
@@ -420,45 +466,56 @@ impl ClientSceneInput<'_> {
                 counts.missing_models += 1;
                 continue;
             };
-            let Some(model) = assets.model(binding.model) else {
-                counts.missing_models += 1;
-                continue;
-            };
-            let current_frame = native_frame(record.appearance.frame, model.frame_count());
-            let old_frame = if capabilities.state_old_frame {
-                native_frame(record.appearance.native.old_frame, model.frame_count())
-            } else {
-                previous
-                    .filter(|old| old.appearance.models[slot] == Some(reference))
-                    .map_or(current_frame, |old| {
-                        native_frame(old.appearance.frame, model.frame_count())
-                    })
-            };
-            let angles = alias_pose_angles(
-                binding.rules,
-                pose.angles,
-                record.velocity,
-                pose.qw_player,
-                software,
-                self.alias_roll,
-            );
-            let axes = angle_vectors(angles)
-                .axes()
-                .map(|axis| axis * capabilities.scale);
-            let entity = SceneEntity {
-                model: binding.model,
-                material: Some(binding.material),
+            let mut entity = SceneEntity {
                 origin: pose.origin,
-                axes,
                 non_normalized_axes: capabilities.scale != 1.0,
                 color: [255, 255, 255, (capabilities.alpha * 255.0) as u8],
-                frame: current_frame,
-                old_frame,
-                back_lerp: 1.0 - fraction,
                 depth_hack: capabilities.depth_hack,
-                lighting: Some(native_lighting(binding.rules, angles)),
                 ..SceneEntity::default()
             };
+            let angles = match binding {
+                SceneBinding::Inline(binding) => {
+                    entity.model = SceneModel::World {
+                        world: binding.world,
+                        surfaces: binding.surfaces,
+                    };
+                    pose.angles
+                }
+                SceneBinding::Mesh(binding) => {
+                    let Some(model) = assets.model(binding.model) else {
+                        counts.missing_models += 1;
+                        continue;
+                    };
+                    let current_frame = native_frame(record.appearance.frame, model.frame_count());
+                    let old_frame = if capabilities.state_old_frame {
+                        native_frame(record.appearance.native.old_frame, model.frame_count())
+                    } else {
+                        previous
+                            .filter(|old| old.appearance.models[slot] == Some(reference))
+                            .map_or(current_frame, |old| {
+                                native_frame(old.appearance.frame, model.frame_count())
+                            })
+                    };
+                    let angles = alias_pose_angles(
+                        binding.rules,
+                        pose.angles,
+                        record.velocity,
+                        pose.qw_player,
+                        software,
+                        self.alias_roll,
+                    );
+                    entity.model = binding.model.into();
+                    entity.material = Some(binding.material);
+                    entity.frame = current_frame;
+                    entity.old_frame = old_frame;
+                    entity.back_lerp = 1.0 - fraction;
+                    entity.lighting = Some(native_lighting(binding.rules, angles));
+                    angles
+                }
+            };
+            entity.axes = angle_vectors(angles)
+                .axes()
+                .map(|axis| axis * capabilities.scale);
             let added = frame.add_entity(entity);
             counts.models += u32::from(added);
             counts.rejected += u32::from(!added);
@@ -568,7 +625,7 @@ impl ClientSceneInput<'_> {
             (current_frame, 0.0)
         };
         let entity = SceneEntity {
-            model: binding.model,
+            model: binding.model.into(),
             material: Some(binding.material),
             origin: refdef.origin + offset + (weapon.offset - offset) * fraction,
             axes: angle_vectors(angles).axes(),

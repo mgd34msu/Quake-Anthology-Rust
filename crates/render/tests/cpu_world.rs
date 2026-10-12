@@ -133,7 +133,7 @@ fn cloud_grid_stages_draw_once_across_world_and_poly_sources() {
         });
         assert!(frame.add_poly(cloud, &vertices));
         assert!(frame.add_entity(qa_render::SceneEntity {
-            model,
+            model: model.into(),
             ..qa_render::SceneEntity::default()
         }));
         assert!(frame.render_scene(
@@ -2102,7 +2102,7 @@ fn coincident_entity_and_world_obey_the_same_shared_draw_order() {
             }]
         ));
         assert!(frame.add_entity(qa_render::SceneEntity {
-            model,
+            model: model.into(),
             ..qa_render::SceneEntity::default()
         }));
         assert!(frame.render_scene(

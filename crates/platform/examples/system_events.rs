@@ -1,5 +1,8 @@
+use input_console::RoutedInput as Input;
+#[path = "../../input/tests/support/console.rs"]
+mod input_console;
 use qa_core::sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEventQueue};
-use qa_input::{Input, Target};
+use qa_input::Target;
 use qa_network::ingress::Connections;
 use qa_platform::{EventPump, Stopwatch};
 use std::{hint::black_box, net::UdpSocket};
@@ -17,7 +20,14 @@ impl Target for Sink {
     fn character(&mut self, _: SeatId, _: char) {
         self.chars += 1;
     }
-    fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+    fn command(
+        &mut self,
+        _: SeatId,
+        _: EventTime,
+        _: Option<qa_core::sys_events::KeySource>,
+        _: &str,
+    ) {
+    }
 }
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -90,7 +100,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => input.dispatch(event, &mut sink),
             }
         }
-        let commands = input.build_frame(frame_time, [200; 3], [0.022; 2]);
+        let commands = input.build_frame_with_policy(
+            frame_time,
+            &[input_console::elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT],
+        );
         black_box(commands);
         let elapsed = timer.elapsed().as_nanos();
         let counts = end_frame();

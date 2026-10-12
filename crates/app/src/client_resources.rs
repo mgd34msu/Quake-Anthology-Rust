@@ -2,7 +2,9 @@
 use crate::{client_scene::ClientModelBindings, model_assets::ModelCatalog};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
-    primitives::{ClientId, EntityRecord, ModelRef, ModuleId, ResourceNamespace, RuleSetId},
+    primitives::{
+        ClientId, EntityRecord, ModelRef, ModuleId, ResourceNamespace, RuleSetId, SpatialPolicy,
+    },
 };
 use qa_network::commands::packet::Protocol;
 
@@ -16,7 +18,7 @@ pub struct ResourceState {
     pub layout: ConfigLayout,
     pub rejected: u64,
     sounds: qa_audio::SoundBindings,
-    sound_rules: RuleSetId,
+    sound_policy: SpatialPolicy,
     static_sounds: u32,
     static_entities: Box<[EntityRecord]>,
     static_entity_count: usize,
@@ -41,7 +43,7 @@ impl ClientResources {
                 layout,
                 rejected: 0,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
-                sound_rules,
+                sound_policy: qa_gameplay::rules::sound_policy(sound_rules),
                 static_sounds: 0,
                 static_entities: vec![
                     EntityRecord::default();
@@ -122,13 +124,13 @@ impl ResourceState {
             slot,
         })
     }
-    pub fn sound_rules(&self) -> RuleSetId {
-        self.sound_rules
+    pub fn sound_policy(&self) -> SpatialPolicy {
+        self.sound_policy
     }
     /// Sound presentation is selected at connection/profile load, independently
     /// of the legacy protocol's resource and message layout.
-    pub fn set_sound_rules(&mut self, rules: RuleSetId) {
-        self.sound_rules = rules;
+    pub fn set_sound_policy(&mut self, policy: SpatialPolicy) {
+        self.sound_policy = policy;
     }
     pub fn sound(&self, ordinal: u32) -> Option<qa_core::primitives::SoundId> {
         self.sounds.sound(ordinal)

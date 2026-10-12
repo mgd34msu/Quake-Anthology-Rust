@@ -75,7 +75,7 @@ fn q3_file_imports_seek_shared_handles_with_native_long_widths_and_eof() {
             let mut context = CallContext {
                 native_rules: RuleSetId::Quake3,
                 trace_rules: RuleSetId::Quake3,
-                sound_rules: RuleSetId::Quake3,
+                sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),
                 server_frame: 0,

@@ -48,7 +48,7 @@ enum SignonRecord {
 #[derive(Clone, Copy)]
 struct Registration {
     native: SignonRecord,
-    spatial_rules: RuleSetId,
+    spatial: qa_core::primitives::SpatialPolicy,
     /// A Stop retains a real sample that was successfully published, even if
     /// its native resource row was later overwritten or cleared.
     published_sound: Option<SoundId>,
@@ -57,7 +57,7 @@ impl Default for Registration {
     fn default() -> Self {
         Self {
             native: SignonRecord::Sound(AmbientSound::default()),
-            spatial_rules: RuleSetId::default(),
+            spatial: qa_core::primitives::SpatialPolicy::default(),
             published_sound: None,
         }
     }
@@ -150,7 +150,7 @@ impl ServiceStorage {
         let row = registry.rows.get_mut(slot).ok_or(CallError::Capacity)?;
         *row = Registration {
             native,
-            spatial_rules: context.sound_rules,
+            spatial: context.sound_policy,
             published_sound: None,
         };
         registry.length += 1;
@@ -310,7 +310,7 @@ fn publish(
                 let event = SoundEvent {
                     sound,
                     source_ordinal: Some(native.source_ordinal),
-                    spatial_rules: row.spatial_rules,
+                    spatial: row.spatial,
                     entity: Some(SoundEmitter::Static {
                         namespace: ResourceNamespace::Module(context.module),
                         lifetime,

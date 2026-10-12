@@ -43,7 +43,7 @@ pub struct Runtime {
     /// Loaded geometry is independent of every player's movement rules.
     pub collision: Option<WorldCollision>,
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
-    pub local_snapshots: Box<[Option<snapshots::LocalSnapshot>]>,
+    pub snapshots: Box<[Option<snapshots::SnapshotBinding>]>,
     pub client_resources: Box<[Option<client_resources::ClientResources>]>,
     pub native_numbers: Box<[output_namespace::NativeNumbers]>,
     pub(crate) config_publications: Box<[client_resources::ConfigPublication]>,
@@ -218,7 +218,7 @@ impl Runtime {
                     value_slots,
                 ),
             }),
-            local_snapshots: std::iter::repeat_with(|| None).take(max_clients).collect(),
+            snapshots: std::iter::repeat_with(|| None).take(max_clients).collect(),
             loopback,
             input: qa_input::Input::load(),
             input_time: qa_core::sys_events::EventTime::default(),
@@ -254,35 +254,6 @@ impl Runtime {
         self.network.unbind(id);
         self.input.reset_usercmd_value(seat);
         self.loopback.clear_client(id);
-        for endpoint in [
-            qa_core::loopback::Endpoint::Client,
-            qa_core::loopback::Endpoint::Server,
-        ] {
-            self.network
-                .bind(
-                    id,
-                    endpoint,
-                    qa_network::ingress::Connection {
-                        route: qa_network::ingress::Route {
-                            socket: endpoint.socket(),
-                            peer: qa_core::sys_events::Peer::Loopback(id),
-                        },
-                        channel: qa_network::channel::Channel::load(
-                            protocol.channel(),
-                            endpoint,
-                            8192,
-                            16,
-                        )
-                        .map_err(|e| e.to_string())?,
-                        output: (endpoint == qa_core::loopback::Endpoint::Server)
-                            .then_some(self.server.clients[id.0 as usize].output)
-                            .flatten(),
-                        pending_output: None,
-                        commands: Some(qa_network::commands::connection::Commands::load(protocol)),
-                    },
-                )
-                .map_err(|e| format!("local channel {e:?}"))?;
-        }
         let client = &mut self.server.clients[id.0 as usize];
         client.client_rules = policy.client;
         client.link_order = qa_gameplay::rules::link_order(policy.client);
@@ -311,33 +282,90 @@ impl Runtime {
             client.link_order,
             qa_world::area::LinkIntent::Explicit,
         );
-        self.local_snapshots[id.0 as usize] = Some(snapshots::LocalSnapshot::load(
+        for endpoint in [
+            qa_core::loopback::Endpoint::Client,
+            qa_core::loopback::Endpoint::Server,
+        ] {
+            let connection = qa_network::ingress::Connection {
+                route: qa_network::ingress::Route {
+                    socket: endpoint.socket(),
+                    peer: qa_core::sys_events::Peer::Loopback(id),
+                },
+                channel: qa_network::channel::Channel::load(protocol.channel(), endpoint, 8192, 16)
+                    .map_err(|e| e.to_string())?,
+                output: None,
+                pending_output: None,
+                commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+            };
+            if endpoint == qa_core::loopback::Endpoint::Server {
+                self.bind_server_connection(id, connection, native_client, Some(seat))?;
+            } else {
+                self.network
+                    .bind(id, endpoint, connection)
+                    .map_err(|e| format!("local channel {e:?}"))?;
+            }
+        }
+        self.input.set_view_angles(seat, spawn.angles);
+        Ok(id)
+    }
+
+    /// A connected native channel supplies its client number explicitly.
+    /// Local and remote SERVERs share the same serializer and number owner;
+    /// only a local connection creates CLIENT presentation resources.
+    pub fn bind_server_connection(
+        &mut self,
+        id: ClientId,
+        mut connection: qa_network::ingress::Connection,
+        native_client: u32,
+        seat: Option<qa_core::sys_events::SeatId>,
+    ) -> Result<(), String> {
+        let slot = id.0 as usize;
+        let client = self.server.clients.get(slot).ok_or("client slot")?;
+        if !matches!(
+            (client.connection, seat),
+            (Some(Connection::Local), Some(_)) | (Some(Connection::Remote), None)
+        ) {
+            return Err("CLIENT seat must belong to a local connection".into());
+        }
+        let protocol = connection
+            .commands
+            .as_ref()
+            .ok_or("connection needs native command policy")?
+            .protocol;
+        let output = client.output.ok_or("client output consumer")?;
+        let mut binding = snapshots::SnapshotBinding::load(
             id,
             seat,
-            client.output.ok_or("local output consumer")?,
+            output,
             protocol,
             native_client,
             &self.catalog.hud.values,
-        ));
-        let self_entity = client.entity;
+        );
         if let Some(visibility) = self
             .collision
             .as_ref()
             .and_then(|world| world.visibility.as_deref())
         {
-            if let Some(snapshot) = self.local_snapshots[id.0 as usize].as_mut() {
-                snapshot.load_visibility(visibility);
-            }
+            binding.load_visibility(visibility);
         }
-        self.client_resources[id.0 as usize] =
-            client_resources::ClientResources::load(id, protocol, policy.client)?;
-        self.config_publications[id.0 as usize].reset();
-        self.native_numbers[id.0 as usize].configure(protocol);
-        self.native_numbers[id.0 as usize].reset();
-        self.native_numbers[id.0 as usize].set_native_clients(self.server.clients.len() as u32);
-        self.native_numbers[id.0 as usize].set_self(self_entity, native_client, protocol);
-        self.input.set_view_angles(seat, spawn.angles);
-        Ok(id)
+        let resources = if seat.is_some() {
+            client_resources::ClientResources::load(id, protocol, client.client_rules)?
+        } else {
+            None
+        };
+        let self_entity = client.entity;
+        connection.output = Some(output);
+        self.network
+            .bind(id, qa_core::loopback::Endpoint::Server, connection)
+            .map_err(|e| format!("server channel {e:?}"))?;
+        self.snapshots[slot] = Some(binding);
+        self.client_resources[slot] = resources;
+        self.config_publications[slot].reset();
+        self.native_numbers[slot].configure(protocol);
+        self.native_numbers[slot].reset();
+        self.native_numbers[slot].set_native_clients(self.server.clients.len() as u32);
+        self.native_numbers[slot].set_self(self_entity, native_client, protocol);
+        Ok(())
     }
 
     /// Commands are submitted only after native framing and queued ingress.
@@ -382,21 +410,22 @@ impl Runtime {
         .complete
     }
 
-    /// SERVER snapshots use the same native framing/loopback/Packet path as
+    /// SERVER snapshots use the same native framing and queued Packet path as
     /// commands. A rejected transport retains its exact prepared bytes.
-    pub fn send_local_snapshot(
+    pub fn send_snapshot(
         &mut self,
         id: ClientId,
         time: qa_core::sys_events::EventTime,
         observation: Option<qa_core::primitives::SnapshotObservation>,
+        source: &mut impl host::FrameSource,
     ) -> bool {
         use qa_core::loopback::Endpoint;
         use qa_network::channel::Unreliable;
         let client = &self.server.clients[id.0 as usize];
-        let Some(binding) = self.local_snapshots[id.0 as usize].as_mut() else {
+        let Some(binding) = self.snapshots[id.0 as usize].as_mut() else {
             return false;
         };
-        if client.connection != Some(Connection::Local) || client.output != Some(binding.output) {
+        if client.connection.is_none() || client.output != Some(binding.output) {
             return false;
         }
         let Some(connection) = self.network.get_mut(id, Endpoint::Server) else {
@@ -408,13 +437,16 @@ impl Runtime {
         let mut bytes = &mut *self.output_bytes;
         let native_module = self.server.entities.columns.native_entity[client.entity.slot as usize]
             .map(|native| native.module);
-        let model_limit = self.client_resources[id.0 as usize]
-            .as_ref()
-            .map_or(0, |resources| resources.state.layout.resources[0].count);
-        let mut resolve_model =
-            |reference| client_resources::model_ordinal(reference, native_module, id, model_limit);
+        let model_limit = binding.protocol.resource_layout().resources[0].count;
+        let mut resolve_model = |reference| {
+            client_resources::model_ordinal(reference, Some(client.module), id, model_limit)
+        };
         let collision = &mut self.collision;
-        transport::send(
+        let route = connection.route;
+        let mut dropped = false;
+        let mut snapshot_completed = false;
+        let control_only = std::cell::Cell::new(false);
+        let submitted = transport::send(
             &mut connection.channel,
             time,
             binding,
@@ -426,7 +458,11 @@ impl Runtime {
                 } else {
                     let sequence = binding.sequence(channel, time);
                     if !binding.needs_send(channel, sequence) {
-                        return false;
+                        control_only.set(true);
+                        return channel.has_output()
+                            && channel
+                                .prepare_output(time)
+                                .is_ok_and(|packet| packet.is_some());
                     }
                     let delta = connection
                         .commands
@@ -466,25 +502,30 @@ impl Runtime {
                     else {
                         return false;
                     };
-                    if packet.unreliable != Unreliable::Deferred {
+                    if packet.unreliable == Unreliable::Included {
                         binding.pending = Some(sequence);
                     }
                     true
                 }
             },
-            |bytes| self.loopback.send(Endpoint::Server, id, bytes).is_ok(),
-            |_, binding, disposition| {
-                if disposition != Unreliable::Deferred
+            |bytes| transport::admit_output(&mut self.loopback, source, route, bytes),
+            |channel, binding, disposition| {
+                if disposition == Unreliable::Dropped {
+                    binding.pending = None;
+                    dropped = true;
+                    true
+                } else if !channel.pending_fragments()
                     && let Some(sequence) = binding.pending.take()
                 {
                     binding.submitted(sequence);
+                    snapshot_completed = true;
                     true
                 } else {
-                    false
+                    control_only.get() && !channel.pending_fragments()
                 }
             },
-        )
-        .complete
+        );
+        submitted.complete && snapshot_completed && !dropped
     }
 
     /// Shared print service for console and gameplay/module callers.
@@ -507,6 +548,11 @@ impl Host for Runtime {
     }
     fn print(&mut self, text: std::fmt::Arguments<'_>) {
         self.print_event(None, PrintKind::Console, text);
+    }
+    fn reject_input(&mut self, count: u64) {
+        for _ in 0..count {
+            self.server.events.reject_publication();
+        }
     }
     fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError> {
         let file = self.vfs.open(path.as_bytes()).ok_or(ScriptError::Missing)?;

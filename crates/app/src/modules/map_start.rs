@@ -14,29 +14,27 @@ fn edit<R>(
         CallContext,
     ) -> Result<R, ServiceError>,
 ) -> Result<R, ServiceError> {
-    let row = host
+    let (row, storage) = host
         .modules
         .as_mut()
-        .and_then(|m| m.row_mut(module))
+        .and_then(|m| m.parts_mut(module))
         .ok_or(ServiceError::Aborted)?;
     let Program::QuakeC(qc) = &mut row.request.program else {
         return Err(ServiceError::Aborted);
     };
-    let mut services =
-        host.runtime
-            .engine_services(&mut host.console, &mut row.storage, &mut row.scratch);
+    let mut services = host
+        .runtime
+        .engine_services(&mut host.console, storage, &mut row.scratch);
     call(qc, &mut services, row.request.context)
 }
 
 impl FrameHost {
     pub(super) fn initialize_quakec_map(&mut self, module: ModuleId) -> Result<(), CallError> {
         self.start_quakec_map(module).map_err(|error| {
-            if let Some(row) = self.modules.as_mut().and_then(|m| m.row_mut(module)) {
-                let mut services = self.runtime.engine_services(
-                    &mut self.console,
-                    &mut row.storage,
-                    &mut row.scratch,
-                );
+            if let Some((row, storage)) = self.modules.as_mut().and_then(|m| m.parts_mut(module)) {
+                let mut services =
+                    self.runtime
+                        .engine_services(&mut self.console, storage, &mut row.scratch);
                 let _ = (ENGINE_CALLS.console_formatted)(
                     &mut services,
                     format_args!("module {}: map startup: {error:?}\n", module.0),

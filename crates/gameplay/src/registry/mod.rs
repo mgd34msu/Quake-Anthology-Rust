@@ -159,11 +159,17 @@ impl Registry {
         let name = |value: &str| names.find(value.as_bytes()).ok_or(RegistryError::Name);
         let mut items = Vec::with_capacity(sources.len());
         let mut weapons = Vec::new();
+        let source_names = sources
+            .iter()
+            .map(|item| name(item.classname))
+            .collect::<Result<Vec<_>, _>>()?;
         let source_id = |provenance: RuleSetId, classname: &str| {
+            let folded = names.find_folded(classname.as_bytes())?;
             sources
                 .iter()
-                .position(|item| {
-                    item.source == provenance && item.classname.eq_ignore_ascii_case(classname)
+                .zip(&source_names)
+                .position(|(item, &id)| {
+                    item.source == provenance && names.folded(id) == Some(folded)
                 })
                 .map(|index| ItemId(index as u32 + 1))
         };
@@ -173,7 +179,7 @@ impl Registry {
                 id,
                 source: source.source,
                 native: source.native,
-                classname: name(source.classname)?,
+                classname: source_names[index],
                 kind: source.kind,
                 amount: source.amount,
                 maximum: source.maximum,

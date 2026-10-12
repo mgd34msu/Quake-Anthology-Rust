@@ -44,8 +44,9 @@ fn main() -> Result<(), String> {
         consumers.push(output);
         let policy = match slot % 5 {
             0 => channel::NETQUAKE,
-            1 => channel::QUAKEWORLD,
-            2 => channel::QUAKE2,
+            // This raw-payload probe has no native command decoder. Use the
+            // shared QW/Q2 header with Q2's unrequested transmit policy.
+            1 | 2 => channel::QUAKE2,
             3 => channel::q2_new(true),
             _ => channel::QUAKE3,
         };
@@ -200,7 +201,7 @@ fn main() -> Result<(), String> {
     }
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"16 mixed peers, two queued-memory drains, prepare/submit, SysEventQueue dispatch and native NQ/QW/Q2 output ACK retirement; Q3 framing only; no workers, physical intake or gameplay\",\"warmup\":60,\"frames\":600,\"packets\":{},\"payloads\":{payloads},\"retired_records\":{retired},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"16 mixed peers, two queued-memory drains, prepare/submit, SysEventQueue dispatch and native NQ/Q2 output ACK retirement; shared QW/Q2 header, Q3 framing only; no workers, physical intake or gameplay\",\"warmup\":60,\"frames\":600,\"packets\":{},\"payloads\":{payloads},\"retired_records\":{retired},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"median_ns\":{},\"p99_ns\":{}}}",
         peers.packets,
         counts.allocations,
         counts.reallocations,

@@ -1,10 +1,20 @@
 //! Extracted original key/button comparisons; never starts SDL or a map.
+use input_console::RoutedInput as Input;
+#[path = "../../input/tests/support/console.rs"]
+mod input_console;
 use qa_core::sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent};
-use qa_input::{Input, Target, keys};
+use qa_input::{Target, keys};
 struct Sink;
 impl Target for Sink {
     fn character(&mut self, _: SeatId, _: char) {}
-    fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+    fn command(
+        &mut self,
+        _: SeatId,
+        _: EventTime,
+        _: Option<qa_core::sys_events::KeySource>,
+        _: &str,
+    ) {
+    }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("key names path")?;
@@ -49,7 +59,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         time += u64::from(duration);
-        let command = input.build_frame(EventTime(time * 1_000_000), [200; 3], [0.022; 2])[0];
+        let command = input.build_frame_with_policy(
+            EventTime(time * 1_000_000),
+            &[input_console::elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT],
+        )[0];
         println!("F {}", command.movement[0]);
     }
     Ok(())

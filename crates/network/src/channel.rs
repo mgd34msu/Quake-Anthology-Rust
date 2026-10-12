@@ -21,6 +21,7 @@ pub struct Policy {
     fragment_payload: usize,
     fragment_inclusive: bool,
     command_ack: bool,
+    reply_per_packet: bool,
 }
 pub const NETQUAKE: Policy = Policy {
     format: headers::NETQUAKE,
@@ -31,12 +32,17 @@ pub const NETQUAKE: Policy = Policy {
     fragment_payload: 0,
     fragment_inclusive: false,
     command_ack: false,
+    reply_per_packet: false,
 };
 pub const QUAKEWORLD: Policy = Policy {
     reliable_bias: 1,
+    reply_per_packet: true,
     ..q2_old(QPort::Short)
 };
-pub const QUAKE2: Policy = QUAKEWORLD;
+pub const QUAKE2: Policy = Policy {
+    reply_per_packet: false,
+    ..QUAKEWORLD
+};
 pub const QUAKE3: Policy = Policy {
     format: headers::QUAKE3,
     datagram: false,
@@ -46,6 +52,7 @@ pub const QUAKE3: Policy = Policy {
     fragment_payload: 1300,
     fragment_inclusive: true,
     command_ack: true,
+    reply_per_packet: false,
 };
 pub const fn q2_old(qport: QPort) -> Policy {
     Policy {
@@ -57,6 +64,7 @@ pub const fn q2_old(qport: QPort) -> Policy {
         fragment_payload: 0,
         fragment_inclusive: false,
         command_ack: false,
+        reply_per_packet: false,
     }
 }
 pub const fn q2_new(qport_present: bool) -> Policy {
@@ -69,6 +77,7 @@ pub const fn q2_new(qport_present: bool) -> Policy {
         fragment_payload: 1300,
         fragment_inclusive: false,
         command_ack: false,
+        reply_per_packet: false,
     }
 }
 

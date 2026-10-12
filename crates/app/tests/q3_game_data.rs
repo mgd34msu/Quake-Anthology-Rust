@@ -38,7 +38,7 @@ fn context() -> CallContext {
         module: ModuleId(1),
         native_rules: RuleSetId::Quake3,
         trace_rules: RuleSetId::Quake,
-        sound_rules: RuleSetId::Quake2,
+        sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
         server_frame: 0,
         clock: ThinkTime::Milliseconds(0),
         console: Context::default(),

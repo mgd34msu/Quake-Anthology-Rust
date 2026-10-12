@@ -25,12 +25,6 @@ pub const ACTION_NAMES: &[ActionName] = names![
     "button10" => FollowMe, "button11" => Any, "button12" => Extra12,
     "button13" => Extra13, "button14" => Extra14,
 ];
-pub fn action(name: &str) -> Option<Action> {
-    ACTION_NAMES
-        .iter()
-        .find(|entry| entry.name.eq_ignore_ascii_case(name))
-        .map(|entry| entry.action)
-}
 pub fn action_name(action: Action) -> &'static str {
     ACTION_NAMES
         .iter()
@@ -47,7 +41,6 @@ pub enum BindError {
 pub(crate) struct Part {
     pub start: u16,
     pub end: u16,
-    pub action: Option<Action>,
     pub button: bool,
 }
 pub struct Binding {
@@ -67,7 +60,6 @@ impl Binding {
         binding.parts[0] = Part {
             start: 0,
             end: binding.text.as_str().len() as u16,
-            action: Some(action),
             button: true,
         };
         binding
@@ -83,30 +75,20 @@ impl Binding {
         };
         binding.text.set(text).map_err(|_| BindError::TooLong)?;
         let mut start = 0;
-        let mut quoted = false;
-        for (at, byte) in text
-            .bytes()
-            .enumerate()
-            .chain(std::iter::once((text.len(), b';')))
-        {
-            if byte == b'"' {
-                quoted = !quoted;
+        while start < text.len() {
+            let end =
+                start + qa_core::text::command_separator(&text.as_bytes()[start..], false, false);
+            let clause = text[start..end].trim_matches(|c: char| c.is_ascii() && c <= ' ');
+            if !clause.is_empty() {
+                let first = clause.as_ptr() as usize - text.as_ptr() as usize;
+                binding.parts[binding.count] = Part {
+                    start: first as u16,
+                    end: (first + clause.len()) as u16,
+                    button: clause.starts_with('+'),
+                };
+                binding.count += 1;
             }
-            if byte == b';' && !quoted || at == text.len() {
-                let clause = text[start..at].trim_matches(|c: char| c.is_ascii() && c <= ' ');
-                if !clause.is_empty() {
-                    let first = clause.as_ptr() as usize - text.as_ptr() as usize;
-                    let button = clause.starts_with('+');
-                    binding.parts[binding.count] = Part {
-                        start: first as u16,
-                        end: (first + clause.len()) as u16,
-                        action: clause.strip_prefix('+').and_then(action),
-                        button,
-                    };
-                    binding.count += 1;
-                }
-                start = at + 1;
-            }
+            start = end + 1;
         }
         Ok(binding)
     }

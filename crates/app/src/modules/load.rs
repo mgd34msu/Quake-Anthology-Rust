@@ -134,7 +134,7 @@ fn call_context(
     CallContext {
         native_rules: rules,
         trace_rules: rules,
-        sound_rules: rules,
+        sound_policy: qa_gameplay::rules::sound_policy(rules),
         server_frame: 0,
         module,
         clock,
@@ -178,11 +178,11 @@ pub fn load_q3(
             }
             Q3Role::Cgame(seat) => {
                 let (index, binding) = runtime
-                    .local_snapshots
+                    .snapshots
                     .iter()
                     .enumerate()
                     .filter_map(|(index, row)| row.as_ref().map(|row| (index, row)))
-                    .find(|(_, row)| row.seat == seat)
+                    .find(|(_, row)| row.seat() == Some(seat))
                     .ok_or("cgame needs a connected local seat")?;
                 if binding.protocol != qa_network::commands::packet::Protocol::Quake3_68 {
                     return Err("cgame needs a Q3 native client protocol".into());

@@ -4,7 +4,7 @@ mod support;
 use qa_app::{
     client_scene::{ClientEntities, ClientModelBindings, ClientSceneInput},
     model_assets::{ModelCatalog, ModelLimits, ModelMaterialPolicy, ModelProfile, ModelRequest},
-    snapshots::{GunAnimation, Interpolation, LocalSnapshot, PresentationClock},
+    snapshots::{GunAnimation, Interpolation, PresentationClock, SnapshotBinding},
 };
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
@@ -77,7 +77,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
         resources
             .state
             .models
-            .bind_all(&resources.state.configs, &models, request.profile()),
+            .bind_all(&resources.state.configs, &models, request.profile(), None),
         0
     );
     let mut source_edict = EntityRecord {
@@ -240,7 +240,7 @@ fn static_entity_admission_and_scene_capacity_reject_without_growing() {
         resources
             .state
             .models
-            .bind_all(&resources.state.configs, &models, profile),
+            .bind_all(&resources.state.configs, &models, profile, None),
         0
     );
     for position in [Vec3([1.0, 2.0, 3.0]), Vec3([4.0, 5.0, 6.0])] {
@@ -296,7 +296,7 @@ fn connection_model_names_bind_once_and_reset_with_their_owner() {
     let index = ConfigLayout::QUAKE2.resources[0].get(50).unwrap();
     configs.set(index, b"models/test/tris.md2").unwrap();
     let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
-    assert_eq!(bindings.bind_all(&configs, &catalog, profile), 0);
+    assert_eq!(bindings.bind_all(&configs, &catalog, profile, None), 0);
     let policy = ModelMaterialPolicy::default();
     let selected = bindings
         .resolve(reference(client), 1, &catalog, policy)
@@ -345,7 +345,7 @@ fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallbac
     foreign.palette = Some(target);
     foreign.image_settings =
         qa_render::material::resources::ImageSettings::native(RuleSetId::Quake);
-    let (assets, catalog) = ModelCatalog::load(
+    let (_assets, catalog) = ModelCatalog::load(
         &fixture.vfs,
         assets,
         [native, foreign],
@@ -360,11 +360,17 @@ fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallbac
     // Wire resource layout does not select source or upload policy.
     let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
     let policy = ModelMaterialPolicy::default();
-    assert_eq!(bindings.bind_all(&configs, &catalog, native.profile()), 0);
+    assert_eq!(
+        bindings.bind_all(&configs, &catalog, native.profile(), None),
+        0
+    );
     let native_binding = bindings
         .resolve(reference(client), 1, &catalog, policy)
         .unwrap();
-    assert_eq!(bindings.bind_all(&configs, &catalog, foreign.profile()), 0);
+    assert_eq!(
+        bindings.bind_all(&configs, &catalog, foreign.profile(), None),
+        0
+    );
     let foreign_binding = bindings
         .resolve(reference(client), 1, &catalog, policy)
         .unwrap();
@@ -379,7 +385,7 @@ fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallbac
     );
     let mut absent = foreign.profile();
     absent.source_rules = RuleSetId::Quake3;
-    assert_eq!(bindings.bind_all(&configs, &catalog, absent), 1);
+    assert_eq!(bindings.bind_all(&configs, &catalog, absent, None), 1);
     assert_eq!(
         bindings.resolve(reference(client), 1, &catalog, policy),
         None
@@ -406,7 +412,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         )
         .unwrap();
     let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
-    assert_eq!(bindings.bind_all(&configs, &catalog, profile), 0);
+    assert_eq!(bindings.bind_all(&configs, &catalog, profile, None), 0);
     let projection = EntityProjection::load(Protocol::Quake2_34);
     let player_projection = PlayerProjection::load(Protocol::Quake2_34, &[]);
     let mut ring = Q2Ring::load(8, 1024, 32, None).unwrap();
@@ -686,7 +692,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
             )
             .unwrap();
         let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
-        assert_eq!(bindings.bind_all(&configs, &catalog, profile), 0);
+        assert_eq!(bindings.bind_all(&configs, &catalog, profile, None), 0);
         let player = PlayerState::default();
         let input = ClientSceneInput {
             client,
@@ -812,9 +818,9 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
     let values = qa_ui::values::ValueLayout::load(&[]).unwrap();
     let mut output = EventRing::load(8, 1, 4, 64).unwrap();
     let consumer = output.bind(OutputTarget::Client(client)).unwrap();
-    let mut snapshot = LocalSnapshot::load(
+    let mut snapshot = SnapshotBinding::load(
         client,
-        SeatId::FIRST,
+        Some(SeatId::FIRST),
         consumer,
         Protocol::Quake2Repro1038,
         0,
@@ -856,7 +862,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
         );
         assert_eq!(player.view_weapon.frame, gunframe);
         // No CLIENT phase has advanced yet, even after two changes in a drain.
-        assert_eq!(snapshot.interpolation(), Interpolation::default());
+        assert_eq!(snapshot.interpolation(), Some(Interpolation::default()));
         let (changed, previous) = match sequence {
             3 => (75, None),
             4 => (100, Some(3)),
@@ -892,7 +898,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         )
         .unwrap();
     let mut bindings = ClientModelBindings::load(client, layout);
-    assert_eq!(bindings.bind_all(&configs, &catalog, profile), 0);
+    assert_eq!(bindings.bind_all(&configs, &catalog, profile, None), 0);
     let projection = EntityProjection::load(Protocol::Quake2Repro1038);
     let player_projection = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
     let mut ring = Q2ReproRing::load(4, 8192, 0, None).unwrap();
@@ -1185,7 +1191,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
     );
     assert!(mixer.sound(qa_core::primitives::SoundEvent {
         sound,
-        spatial_rules: RuleSetId::Quake2,
+        spatial: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
         entity: Some(qa_core::primitives::SoundEmitter::Native {
             namespace: ResourceNamespace::Client(client),
             slot: 12,

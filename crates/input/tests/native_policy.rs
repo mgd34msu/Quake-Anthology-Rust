@@ -10,14 +10,24 @@ use qa_input::{Action, Input, InputPolicy, Target};
 struct Sink;
 impl Target for Sink {
     fn character(&mut self, _: SeatId, _: char) {}
-    fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+    fn command(
+        &mut self,
+        _: SeatId,
+        _: EventTime,
+        _: Option<qa_core::sys_events::KeySource>,
+        _: &str,
+    ) {
+    }
 }
 fn held(input: &mut Input, action: Action, down: bool, ms: u64) {
     input.button(
         SeatId::FIRST,
         action,
         down,
-        Some(action as u16),
+        Some(qa_core::sys_events::KeySource {
+            device: qa_core::sys_events::DeviceId::Keyboard(0),
+            control: action as u16,
+        }),
         EventTime(ms * 1_000_000),
     );
 }

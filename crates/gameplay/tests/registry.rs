@@ -276,3 +276,32 @@ fn q3_command_weapon_mapping_drops_foreign_and_unrepresentable_values() {
     registry.weapons[id.0 as usize - 1].native = 256;
     assert_eq!(registry.command_weapon_number(Some(id)), 0);
 }
+
+#[test]
+fn ammo_links_use_fold_groups_without_merging_exact_classname_identities() {
+    let canonical = NameTable::load(Registry::names_needed()).unwrap();
+    let variants = NameTable::load(
+        [b"ITEM_SHELLS".as_slice(), b"AMMO_SHELLS".as_slice()]
+            .into_iter()
+            .chain(Registry::names_needed()),
+    )
+    .unwrap();
+    let original = Registry::load(&canonical).unwrap();
+    let mixed = Registry::load(&variants).unwrap();
+    for (old, new) in original.weapons.iter().zip(&mixed.weapons) {
+        assert_eq!(
+            (old.id, old.source, old.native, old.ammo),
+            (new.id, new.source, new.native, new.ammo)
+        );
+    }
+    assert_ne!(variants.find(b"item_shells"), variants.find(b"ITEM_SHELLS"));
+    assert_eq!(
+        mixed.classname(RuleSetId::Quake, variants.find(b"ITEM_SHELLS").unwrap()),
+        None
+    );
+    assert!(
+        mixed
+            .classname(RuleSetId::Quake, variants.find(b"item_shells").unwrap())
+            .is_some()
+    );
+}

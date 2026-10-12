@@ -1,4 +1,4 @@
-//! Native local snapshot submission and CLIENT field application.
+//! One connection snapshot producer, with optional local CLIENT presentation.
 use qa_core::{
     events::OutputConsumerId,
     primitives::{ClientId, EntityAppearance, PlayerState, ResourceNamespace, ThinkTime},
@@ -59,25 +59,32 @@ fn player_context(
 
 /// Connection policy and projection metadata; player storage remains in the
 /// existing SERVER array and independently owned CLIENT prediction state.
-pub struct LocalSnapshot {
+pub struct SnapshotBinding {
     pub client: ClientId,
-    pub seat: SeatId,
     pub output: OutputConsumerId,
     pub protocol: Protocol,
     pub applied: u64,
     pub rejected: u64,
     native_client: u32,
     projection: PlayerProjection,
-    presentation: PresentationClock,
-    presentation_sequence: Option<u32>,
-    gun_animation: Option<GunAnimation>,
-    context: PlayerContext,
+    presentation: Option<ClientPresentation>,
     entities: entities::EntityScratch,
     last_sent: Option<u32>,
     pub pending: Option<u32>,
 }
 
-impl LocalSnapshot {
+struct ClientPresentation {
+    seat: SeatId,
+    clock: PresentationClock,
+    sequence: Option<u32>,
+    gun_animation: Option<GunAnimation>,
+    context: PlayerContext,
+}
+
+impl SnapshotBinding {
+    pub fn seat(&self) -> Option<SeatId> {
+        self.presentation.as_ref().map(|client| client.seat)
+    }
     pub fn native_client(&self) -> u32 {
         self.native_client
     }
@@ -90,11 +97,15 @@ impl LocalSnapshot {
     pub fn player_projection(&self) -> &PlayerProjection {
         &self.projection
     }
-    pub fn interpolation(&self) -> Interpolation {
-        self.presentation.sample()
+    pub fn interpolation(&self) -> Option<Interpolation> {
+        self.presentation
+            .as_ref()
+            .map(|client| client.clock.sample())
     }
     pub fn gun_animation(&self) -> Option<GunAnimation> {
-        self.gun_animation
+        self.presentation
+            .as_ref()
+            .and_then(|client| client.gun_animation)
     }
     /// Called once at the CLIENT phase, after queued packets have been accepted.
     /// Retained player and weapon words stay in the channel's single ring.
@@ -103,6 +114,9 @@ impl LocalSnapshot {
         channel: &Channel,
         queued: qa_core::sys_events::EventTime,
     ) {
+        let Some(client) = self.presentation.as_mut() else {
+            return;
+        };
         let Some(current) = channel.current_snapshot() else {
             return;
         };
@@ -112,7 +126,7 @@ impl LocalSnapshot {
             Protocol::Quake2Repro1038 => channel.q2_repro_frame_ms(),
             _ => None,
         };
-        self.presentation.advance(
+        client.clock.advance(
             queued,
             current.time(),
             previous.map(ReceivedFrame::time),
@@ -131,7 +145,7 @@ impl LocalSnapshot {
     }
     pub fn load(
         client: ClientId,
-        seat: SeatId,
+        seat: Option<SeatId>,
         output: OutputConsumerId,
         protocol: Protocol,
         native_client: u32,
@@ -140,20 +154,22 @@ impl LocalSnapshot {
         let native = values.native(states::player_value_layout(protocol).0);
         Self {
             client,
-            seat,
             output,
             protocol,
             applied: 0,
             rejected: 0,
             native_client,
             projection: PlayerProjection::load_values(protocol, &native.stats, &native.persistent),
-            presentation: PresentationClock::default(),
-            presentation_sequence: None,
-            gun_animation: None,
-            context: PlayerContext {
-                client_number: Some(native_client),
-                ..Default::default()
-            },
+            presentation: seat.map(|seat| ClientPresentation {
+                seat,
+                clock: PresentationClock::default(),
+                sequence: None,
+                gun_animation: None,
+                context: PlayerContext {
+                    client_number: Some(native_client),
+                    ..Default::default()
+                },
+            }),
             entities: entities::EntityScratch::load(protocol),
             last_sent: None,
             pending: None,
@@ -361,6 +377,9 @@ impl LocalSnapshot {
         player: &mut PlayerState,
         numbers: &crate::output_namespace::NativeNumbers,
     ) {
+        let Some(client) = self.presentation.as_mut() else {
+            return;
+        };
         let (words, snapshot): (Option<&[u32]>, Option<ReceivedFrame<'_>>) = match incoming {
             Incoming::Snapshot(frame) => match (self.protocol, frame) {
                 (Protocol::NetQuake15, ReceivedFrame::NetQuake(_))
@@ -381,19 +400,19 @@ impl LocalSnapshot {
         };
         if let Some(words) = words {
             if let Some(frame) = snapshot
-                && self.presentation_sequence != Some(frame.sequence())
+                && client.sequence != Some(frame.sequence())
             {
                 // Capture each accepted transition before importing it into
                 // CLIENT. Several snapshots may arrive in one physical drain.
-                let previous = self.presentation_sequence.replace(frame.sequence());
+                let previous = client.sequence.replace(frame.sequence());
                 if let Some(weapon) = self
                     .projection
                     .view_weapon(words, ResourceNamespace::Client(self.client))
-                    && (self.gun_animation.is_none()
+                    && (client.gun_animation.is_none()
                         || weapon.frame != player.view_weapon.frame
                         || weapon.model != player.view_weapon.model)
                 {
-                    self.gun_animation = Some(GunAnimation {
+                    client.gun_animation = Some(GunAnimation {
                         changed_at: frame.time(),
                         previous,
                     });
@@ -404,7 +423,7 @@ impl LocalSnapshot {
             if self.projection.apply(
                 words,
                 player,
-                &mut self.context,
+                &mut client.context,
                 ResourceNamespace::Client(self.client),
                 |number| numbers.entity(number),
             ) {

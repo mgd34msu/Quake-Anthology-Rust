@@ -196,6 +196,9 @@ impl ConfigLayout {
     pub fn style_index(self, ordinal: usize) -> Option<usize> {
         self.lights.get(ordinal)
     }
+    pub fn statusbar(self) -> Option<usize> {
+        self.statusbar.get(0)
+    }
     /// Maximum text bytes, excluding the native trailing NUL.
     pub fn capacity(self, index: usize) -> Option<usize> {
         if index >= self.count {

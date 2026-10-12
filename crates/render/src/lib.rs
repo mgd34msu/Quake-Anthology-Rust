@@ -16,7 +16,7 @@ pub use assets::{Assets, ImageId, MaterialId, ModelId, PaletteId, Vertex};
 pub use scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame, FrontEnd,
     Light, LightStyle, Limits, PaletteOperation, PaletteShift, PaletteTransform, PerspectiveStep,
-    Refdef, SceneEntity, Viewport,
+    Refdef, SceneEntity, SceneModel, Viewport,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -120,18 +120,11 @@ impl CommandBuffer {
         line: &mut FixedText<N>,
     ) -> Option<(Context, Result<(), TextError>)> {
         let span = *self.spans.first()?;
-        let mut quoted = false;
-        let end = self.text[..span.end]
-            .iter()
-            .position(|&b| {
-                if b == b'"' {
-                    quoted = !quoted;
-                }
-                (!quoted && b == b';')
-                    || b == b'\n'
-                    || (span.context.source == RuleSetId::Quake3 && b == b'\r')
-            })
-            .unwrap_or(span.end);
+        let end = qa_core::text::command_separator(
+            &self.text[..span.end],
+            true,
+            span.context.source == RuleSetId::Quake3,
+        );
         let result = line
             .set(std::str::from_utf8(&self.text[..end]).unwrap_or(""))
             .map_err(|_| TextError::TooLong);

@@ -128,7 +128,14 @@ fn control(input: &Value) -> Option<u16> {
 struct ColdTarget;
 impl Target for ColdTarget {
     fn character(&mut self, _: SeatId, _: char) {}
-    fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+    fn command(
+        &mut self,
+        _: SeatId,
+        _: EventTime,
+        _: Option<qa_core::sys_events::KeySource>,
+        _: &str,
+    ) {
+    }
 }
 fn seat(
     console: &mut Console<Runtime>,
@@ -424,20 +431,21 @@ impl InputHandles {
         let source = rules;
         let mut policy = InputPolicy::native(rules);
         let value = |index: usize, fallback: f32| {
-            let number = vars.value_in(self.0[index], source);
-            if number.is_finite() { number } else { fallback }
+            vars.native_number(self.0[index], source)
+                .filter(|number| number.is_finite())
+                .unwrap_or(fallback)
         };
         policy.speed = [
             value(0, policy.speed[0]),
             value(2, policy.speed[1]),
             value(3, policy.speed[2]),
         ];
-        policy.back_speed = if !vars.is_explicit(self.0[1])
-            && !matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld)
-        {
-            policy.speed[0]
-        } else {
+        policy.back_speed = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
             value(1, policy.back_speed)
+        } else {
+            vars.explicit_number(self.0[1], source)
+                .filter(|number| number.is_finite())
+                .unwrap_or(policy.speed[0])
         };
         policy.angle_speed = [
             value(4, policy.angle_speed[0]),
@@ -445,14 +453,13 @@ impl InputHandles {
         ];
         policy.angle_multiplier = value(6, policy.angle_multiplier);
         policy.move_multiplier = value(7, policy.move_multiplier);
-        policy.always_run = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld)
-            && !vars.is_explicit(self.0[8])
-        {
-            false
-        } else if !matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-            vars.integer_in(self.0[8], source) != 0
+        policy.always_run = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+            vars.explicit_number(self.0[8], source)
+                .filter(|number| number.is_finite())
+                .is_some_and(|number| number != 0.0)
         } else {
-            value(8, if policy.always_run { 1.0 } else { 0.0 }) != 0.0
+            vars.native_integer(self.0[8], source)
+                .map_or(policy.always_run, |number| number != 0)
         };
         policy.sensitivity = value(9, policy.sensitivity);
         policy.acceleration = value(10, policy.acceleration);
@@ -463,12 +470,14 @@ impl InputHandles {
         policy.mouse_side = value(13, policy.mouse_side);
         policy.mouse_forward = value(14, policy.mouse_forward);
         policy.filter = if rules == RuleSetId::Quake3 {
-            vars.integer_in(self.0[15], source) != 0
+            vars.native_integer(self.0[15], source)
+                .is_some_and(|number| number != 0)
         } else {
             value(15, 0.0) != 0.0
         };
         policy.freelook = if rules == RuleSetId::Quake3 {
-            vars.integer_in(self.0[16], source) != 0
+            vars.native_integer(self.0[16], source)
+                .map_or(policy.freelook, |number| number != 0)
         } else {
             value(16, 1.0) != 0.0
         };

@@ -164,9 +164,22 @@ impl SoundBindings {
         name: &[u8],
         rules: RuleSetId,
     ) -> Result<(), SoundBindingError> {
-        let sound = match bank.zip(sound_path(name, rules)?) {
-            Some((bank, path)) => bank
-                .find(std::str::from_utf8(path.as_bytes()).map_err(|_| SoundBindingError::Text)?),
+        match sound_path(name, rules)? {
+            Some(path) => self.bind_path(bank, ordinal, path.as_bytes()),
+            None => self.set(ordinal, None),
+        }
+    }
+    /// Register an already decoded VFS path through the same numeric bindings.
+    pub fn bind_path(
+        &mut self,
+        bank: Option<&Bank>,
+        ordinal: u32,
+        path: &[u8],
+    ) -> Result<(), SoundBindingError> {
+        let sound = match bank {
+            Some(bank) => {
+                bank.find(std::str::from_utf8(path).map_err(|_| SoundBindingError::Text)?)
+            }
             None => None,
         };
         self.set(ordinal, sound)

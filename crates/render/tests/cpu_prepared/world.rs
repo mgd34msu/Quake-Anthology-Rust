@@ -12,6 +12,9 @@ use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 #[path = "tiled.rs"]
 mod tiled;
 
+#[path = "instances.rs"]
+mod instances;
+
 fn fixture_world(
     assets: &mut Assets,
     depth: f32,
@@ -2603,7 +2606,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
         }]
     ));
     assert!(frame.add_entity(crate::scene::SceneEntity {
-        model,
+        model: model.into(),
         color: [127, 255, 191, 255],
         ..crate::scene::SceneEntity::default()
     }));
@@ -2638,7 +2641,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
         }]
     ));
     assert!(frame.add_entity(crate::scene::SceneEntity {
-        model,
+        model: model.into(),
         color: [255, 127, 191, 255],
         ..crate::scene::SceneEntity::default()
     }));
@@ -2756,7 +2759,7 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
     }
     for model in [sky_model, external_model] {
         assert!(frame.add_entity(crate::scene::SceneEntity {
-            model,
+            model: model.into(),
             ..crate::scene::SceneEntity::default()
         }));
     }

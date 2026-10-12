@@ -264,9 +264,10 @@ impl Connections {
             Ok(received) => {
                 if let Delivery::Payload(payload) = received.delivery {
                     self.delivered += 1;
-                    if !payload.is_empty()
-                        && endpoint == Endpoint::Server
+                    if endpoint == Endpoint::Server
                         && let Some(commands) = &mut connection.commands
+                        && (!payload.is_empty()
+                            || commands.protocol == crate::commands::packet::Protocol::QuakeWorld28)
                     {
                         let sequence = received.header.sequence;
                         let length = commands.stage(payload);

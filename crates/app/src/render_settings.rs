@@ -9,11 +9,7 @@ pub fn image_settings(vars: &Cvars, source: RuleSetId) -> Result<ImageSettings, 
     }
     let number = |name, fallback| -> Result<f32, &'static str> {
         let handle = vars.find(name).ok_or("missing image cvar")?;
-        let value = if vars.is_explicit(handle) || vars.native_default_available(handle, source) {
-            vars.value_in(handle, source)
-        } else {
-            fallback
-        };
+        let value = vars.native_number(handle, source).unwrap_or(fallback);
         if value.is_finite() {
             Ok(value)
         } else {
@@ -22,13 +18,7 @@ pub fn image_settings(vars: &Cvars, source: RuleSetId) -> Result<ImageSettings, 
     };
     let integer = |name, fallback| -> Result<i32, &'static str> {
         let handle = vars.find(name).ok_or("missing image cvar")?;
-        Ok(
-            if vars.is_explicit(handle) || vars.native_default_available(handle, source) {
-                vars.integer_in(handle, source)
-            } else {
-                fallback
-            },
-        )
+        Ok(vars.native_integer(handle, source).unwrap_or(fallback))
     };
     let gamma = number("r_gamma", 1.0)?;
     // tr_image.c:R_SetColorMappings clamps the native Q3 gamma value before

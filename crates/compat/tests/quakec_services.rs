@@ -253,7 +253,7 @@ fn with_collision_services(
         context: CallContext {
             native_rules: rules,
             trace_rules: rules,
-            sound_rules: rules,
+            sound_policy: qa_gameplay::rules::sound_policy(rules),
             module: ModuleId(1),
             clock: ThinkTime::Seconds(3.0),
             server_frame: 0,
@@ -618,7 +618,7 @@ fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules(
                 .storage
                 .bind_sound_bank(calls.context.module, sounds, bank)
                 .unwrap();
-            calls.context.sound_rules = RuleSetId::Quake3;
+            calls.context.sound_policy = qa_gameplay::rules::sound_policy(RuleSetId::Quake3);
             let consumer = calls
                 .services
                 .server
@@ -648,7 +648,10 @@ fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules(
             };
             assert_eq!(event.sound, sound);
             assert_eq!(event.entity, Some(SoundEmitter::Entity(id)));
-            assert_eq!(event.spatial_rules, RuleSetId::Quake3);
+            assert_eq!(
+                event.spatial,
+                qa_gameplay::rules::sound_policy(RuleSetId::Quake3)
+            );
             assert_eq!(
                 event.position,
                 if rules == RuleSetId::Quake {

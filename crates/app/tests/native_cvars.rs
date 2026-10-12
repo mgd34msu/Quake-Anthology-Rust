@@ -38,7 +38,7 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
         let context = CallContext {
             native_rules: rules,
             trace_rules: rules,
-            sound_rules: rules,
+            sound_policy: qa_gameplay::rules::sound_policy(rules),
             server_frame: 0,
             module: ModuleId(1),
             clock: ThinkTime::Milliseconds(0),

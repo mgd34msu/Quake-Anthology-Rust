@@ -172,17 +172,20 @@ impl FrameHost {
         {
             let snapshot = self
                 .runtime
-                .local_snapshots
+                .snapshots
                 .get(id.0 as usize)
                 .and_then(Option::as_ref)
                 .ok_or("native client needs connection metadata")?;
             let native_client = snapshot.native_client();
-            let seat = snapshot.seat;
+            let seat = snapshot.seat();
             let row = self.module_row(api.module).ok_or("missing client module")?;
             if row.state != State::Running || native_client >= 256 {
                 return Err("client module unavailable or native slot out of range".into());
             }
-            let maxclients = row
+            let maxclients = self
+                .modules
+                .as_ref()
+                .ok_or("missing client module")?
                 .storage
                 .max_clients(&self.console.cvars, row.request.context.native_rules);
             if native_client >= maxclients.max(0) as u32 {
@@ -243,7 +246,9 @@ impl FrameHost {
                 // Q2 ClientBegin owns spawn facing through ps.pmove.delta_angles.
                 // Like CL_ClearState, begin with zero command angles rather
                 // than adding the walk-through host's map-facing seed again.
-                self.runtime.input.set_view_angles(seat, Vec3::default());
+                if let Some(seat) = seat {
+                    self.runtime.input.set_view_angles(seat, Vec3::default());
+                }
                 Ok(native_client)
             })();
             if result.is_err() {
@@ -491,7 +496,7 @@ impl FrameHost {
                 *local = None;
             }
         }
-        self.runtime.local_snapshots[id.0 as usize] = None;
+        self.runtime.snapshots[id.0 as usize] = None;
         self.runtime.client_resources[id.0 as usize] = None;
         self.runtime.config_publications[id.0 as usize].reset();
         self.runtime.native_numbers[id.0 as usize].reset();

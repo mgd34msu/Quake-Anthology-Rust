@@ -1,5 +1,6 @@
 //! Console assets are registered once; the shared scene owns all 2D commands.
-use qa_console::presentation::{Cell, ConsoleView, Layout, Style};
+use super::text::BitmapFont;
+use qa_console::presentation::{ConsoleView, Layout, Style};
 use qa_content::vfs::Vfs;
 use qa_core::primitives::RuleSetId;
 use qa_formats::{
@@ -52,7 +53,7 @@ impl ConsoleAssets {
         height: u32,
     ) -> Result<Self, String> {
         let q3 = rules == RuleSetId::Quake3;
-        let glyph_height = if q3 { 16 } else { 8 };
+        let glyph_height = qa_gameplay::rules::presentation::text_rules(rules).glyph_height;
         let height = (height / 2).max(glyph_height * 3);
         let (input_offset, log_offset) = match rules {
             RuleSetId::Quake | RuleSetId::QuakeWorld => (16, 24),
@@ -105,13 +106,15 @@ impl ConsoleAssets {
         }
         let mut images = Images::new(vfs, assets, rules, rules, settings, None)
             .map_err(|error| format!("console images: {error:?}"))?;
+        install(
+            &mut console.font,
+            "native bitmap font",
+            register_font(&mut images, vfs, rules, console.palette),
+        );
         if q3 {
             let catalog = material::load_catalog(vfs)
                 .map_err(|error| format!("console shaders: {error:?}"))?;
-            for (name, slot) in [
-                ("gfx/2d/bigchars", &mut console.font),
-                ("console", &mut console.background),
-            ] {
+            for (name, slot) in [("console", &mut console.background)] {
                 let result = if let Some(definition) = catalog.find_canonical(name) {
                     compile_definition(definition, &mut images)
                         .map_err(|error| format!("{error:?}"))
@@ -129,28 +132,6 @@ impl ConsoleAssets {
         } else if let Some(palette) = console.palette {
             if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
                 let mut reader = ArchiveReader::default();
-                let font = vfs
-                    .read_file(b"gfx.wad", 16 * 1024 * 1024, &mut reader)
-                    .map_err(|error| format!("{error:?}"))
-                    .and_then(|bytes| {
-                        let wad = Wad::parse(&bytes).map_err(|error| format!("{error:?}"))?;
-                        let index = wad.find(b"conchars").ok_or("missing conchars")?;
-                        let WadImage::Image(image) =
-                            wad.image(index).map_err(|error| format!("{error:?}"))?
-                        else {
-                            return Err("conchars is not a bitmap".into());
-                        };
-                        indexed_material(
-                            &mut images,
-                            "console/conchars",
-                            &image,
-                            palette,
-                            Some(0),
-                            None,
-                        )
-                        .map_err(str::to_owned)
-                    });
-                install(&mut console.font, "gfx.wad:conchars", font);
                 let background = vfs
                     .read_file(b"gfx/conback.lmp", 16 * 1024 * 1024, &mut reader)
                     .map_err(|error| format!("{error:?}"))
@@ -173,10 +154,7 @@ impl ConsoleAssets {
                     });
                 install(&mut console.background, "gfx/conback.lmp", background);
             } else {
-                for (path, mask, slot) in [
-                    ("pics/conchars.pcx", Some(255), &mut console.font),
-                    ("pics/conback.pcx", None, &mut console.background),
-                ] {
+                for (path, mask, slot) in [("pics/conback.pcx", None, &mut console.background)] {
                     let sampler = bitmap_sampler();
                     let result = images
                         .indexed_pcx(
@@ -213,6 +191,16 @@ impl ConsoleAssets {
     }
     pub fn command_capacity(&self) -> usize {
         (self.layout.rows() + 1) * self.layout.columns() + 3
+    }
+    pub fn font_assets(&self) -> FontAssets {
+        FontAssets {
+            font: self.font.map(|material| BitmapFont {
+                material,
+                height: self.glyph_height,
+            }),
+            palette: self.palette,
+            native: self.rules != RuleSetId::Quake2Rerelease,
+        }
     }
     pub fn append(
         &mut self,
@@ -293,24 +281,30 @@ impl ConsoleAssets {
             return counts;
         };
         counts.non_native_font += u32::from(self.rules == RuleSetId::Quake2Rerelease);
+        let font = BitmapFont {
+            material: font,
+            height: self.glyph_height,
+        };
         for (row, cells) in self.layout.lines() {
-            append_line(
+            let text = font.cells(
                 frame,
-                font,
                 cells,
-                self.body_y + row as u32 * self.glyph_height,
-                self.glyph_height,
-                &mut counts,
+                8,
+                (self.body_y + row as u32 * self.glyph_height) as i64,
+                refdef.viewport,
             );
+            counts.glyphs += text.glyphs;
+            counts.rejected += text.rejected;
         }
-        append_line(
+        let text = font.cells(
             frame,
-            font,
             self.layout.input(),
-            self.input_y,
-            self.glyph_height,
-            &mut counts,
+            8,
+            self.input_y as i64,
+            refdef.viewport,
         );
+        counts.glyphs += text.glyphs;
+        counts.rejected += text.rejected;
         counts
     }
     fn background_color(&self, height: u32, software: bool) -> [u8; 4] {
@@ -334,6 +328,91 @@ fn install(slot: &mut Option<MaterialId>, name: &str, result: Result<MaterialId,
             qa_console::logger::console(format_args!("console {name} unavailable: {error}\n"))
         }
     }
+}
+/// Cold registration shared by console and independently selected HUD roles.
+#[derive(Clone, Copy)]
+pub struct FontAssets {
+    pub font: Option<BitmapFont>,
+    pub palette: Option<PaletteId>,
+    pub native: bool,
+}
+impl FontAssets {
+    pub fn load(
+        vfs: &Vfs,
+        assets: &mut Assets,
+        rules: RuleSetId,
+        mut palette: Option<PaletteId>,
+        settings: ImageSettings,
+    ) -> Result<Self, String> {
+        if palette.is_none()
+            && let Some(source) = PaletteSource::native(rules)
+        {
+            palette = load_palette(vfs, assets, source).ok();
+        }
+        let mut images = Images::new(vfs, assets, rules, rules, settings, None)
+            .map_err(|error| format!("HUD images: {error:?}"))?;
+        let mut font = None;
+        install(
+            &mut font,
+            "native bitmap font",
+            register_font(&mut images, vfs, rules, palette),
+        );
+        Ok(Self {
+            font: font.map(|material| BitmapFont {
+                material,
+                height: qa_gameplay::rules::presentation::text_rules(rules).glyph_height,
+            }),
+            palette,
+            native: rules != RuleSetId::Quake2Rerelease,
+        })
+    }
+}
+fn register_font(
+    images: &mut Images<'_>,
+    vfs: &Vfs,
+    rules: RuleSetId,
+    palette: Option<PaletteId>,
+) -> Result<MaterialId, String> {
+    if rules == RuleSetId::Quake3 {
+        let catalog =
+            material::load_catalog(vfs).map_err(|error| format!("console shaders: {error:?}"))?;
+        let name = "gfx/2d/bigchars";
+        if let Some(definition) = catalog.find_canonical(name) {
+            return compile_definition(definition, images).map_err(|error| format!("{error:?}"));
+        }
+        let image = images
+            .raster(name, ImageUse::pic(), None)
+            .map_err(|error| format!("{error:?}"))?;
+        return bitmap_material(images, name, image.id, image.sampler, None).map_err(str::to_owned);
+    }
+    let palette = palette.ok_or("native font palette unavailable")?;
+    if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+        let mut reader = ArchiveReader::default();
+        let bytes = vfs
+            .read_file(b"gfx.wad", 16 * 1024 * 1024, &mut reader)
+            .map_err(|error| format!("{error:?}"))?;
+        let wad = Wad::parse(&bytes).map_err(|error| format!("{error:?}"))?;
+        let index = wad.find(b"conchars").ok_or("missing conchars")?;
+        let WadImage::Image(image) = wad.image(index).map_err(|error| format!("{error:?}"))? else {
+            return Err("conchars is not a bitmap".into());
+        };
+        return indexed_material(images, "console/conchars", &image, palette, Some(0), None)
+            .map_err(str::to_owned);
+    }
+    let sampler = bitmap_sampler();
+    let image = images
+        .indexed_pcx(
+            "pics/conchars.pcx",
+            palette,
+            Some(255),
+            None,
+            ImageUse {
+                sampler,
+                ..ImageUse::pic()
+            },
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    bitmap_material(images, "pics/conchars.pcx", image, sampler, None).map_err(str::to_owned)
 }
 fn bitmap_sampler() -> Sampler {
     Sampler {
@@ -387,38 +466,4 @@ fn indexed_material(
         .map_err(|_| "console image settings")?;
     images.assets.prepare_image(id, params)?;
     bitmap_material(images, name, id, bitmap_sampler(), blend)
-}
-fn append_line(
-    frame: &mut Frame,
-    font: MaterialId,
-    cells: &[Cell],
-    y: u32,
-    height: u32,
-    counts: &mut ConsoleStats,
-) {
-    const COLORS: [[u8; 4]; 8] = [
-        [0, 0, 0, 255],
-        [255, 0, 0, 255],
-        [0, 255, 0, 255],
-        [255, 255, 0, 255],
-        [0, 0, 255, 255],
-        [0, 255, 255, 255],
-        [255, 0, 255, 255],
-        [255; 4],
-    ];
-    for (column, cell) in cells.iter().enumerate() {
-        if cell.glyph & 127 == b' ' {
-            continue;
-        }
-        let s = f32::from(cell.glyph & 15) * 0.0625;
-        let t = f32::from(cell.glyph >> 4) * 0.0625;
-        let accepted = frame.draw_2d(Draw2d {
-            rect: [((column + 1) * 8) as f32, y as f32, 8.0, height as f32],
-            texcoords: [s, t, s + 0.0625, t + 0.0625],
-            color: COLORS[usize::from(cell.color)],
-            material: font,
-        });
-        counts.glyphs += u32::from(accepted);
-        counts.rejected += u32::from(!accepted);
-    }
 }

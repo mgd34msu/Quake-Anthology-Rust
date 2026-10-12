@@ -23,7 +23,7 @@ fn send_payload(host: &mut FrameHost, client: ClientId, body: &[u8]) {
 }
 
 fn send_cue(host: &mut FrameHost, client: ClientId, cue: qa_network::outputs::Cue) {
-    let protocol = host.runtime.local_snapshots[client.0 as usize]
+    let protocol = host.runtime.snapshots[client.0 as usize]
         .as_ref()
         .unwrap()
         .protocol;
@@ -60,7 +60,7 @@ fn client_position(host: &FrameHost, client: ClientId, slot: u32) -> Vec3 {
         ));
         record.position
     }
-    let projection = host.runtime.local_snapshots[client.0 as usize]
+    let projection = host.runtime.snapshots[client.0 as usize]
         .as_ref()
         .unwrap()
         .entity_projection();
@@ -90,9 +90,7 @@ fn accept_client_resources_and_pose(
 ) -> Vec3 {
     use qa_core::loopback::Endpoint;
     host.runtime.sound_bank = Some(std::sync::Arc::clone(bank));
-    let binding = host.runtime.local_snapshots[client.0 as usize]
-        .as_ref()
-        .unwrap();
+    let binding = host.runtime.snapshots[client.0 as usize].as_ref().unwrap();
     let protocol = binding.protocol;
     let native_slot = binding.native_client() + 1;
     let resource = host.runtime.client_resources[client.0 as usize]
@@ -125,7 +123,10 @@ fn accept_client_resources_and_pose(
         .current_snapshot()
         .map_or(0, |frame| frame.time().milliseconds());
     let time = EventTime::from_milliseconds(u64::try_from(previous).unwrap() + 100);
-    assert!(host.runtime.send_local_snapshot(client, time, None));
+    assert!(
+        host.runtime
+            .send_snapshot(client, time, None, &mut Source { time, polls: 0 })
+    );
     host.queue
         .push(SysEvent {
             time,
@@ -158,7 +159,10 @@ impl FrameSource for Audio {
     fn present(&mut self) {}
     fn sound(&mut self, event: SoundEvent) -> bool {
         assert_eq!(event.client, Some(self.client));
-        assert_eq!(event.spatial_rules, self.sound_rules);
+        assert_eq!(
+            event.spatial,
+            qa_gameplay::rules::sound_policy(self.sound_rules)
+        );
         match self.count {
             0 => {
                 assert_eq!(event.entity, Some(self.entity));
@@ -226,7 +230,7 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
 ) {
     use qa_core::primitives::NativeEntity;
     use qa_network::outputs::{Cue, Sound};
-    let protocol = host.runtime.local_snapshots[client.0 as usize]
+    let protocol = host.runtime.snapshots[client.0 as usize]
         .as_ref()
         .unwrap()
         .protocol;
@@ -267,16 +271,16 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         .counters(output)
         .unwrap()
         .submissions;
-    let prior_sound_rules = host.runtime.client_resources[client.0 as usize]
+    let prior_sound_policy = host.runtime.client_resources[client.0 as usize]
         .as_ref()
         .unwrap()
         .state
-        .sound_rules();
+        .sound_policy();
     host.runtime.client_resources[client.0 as usize]
         .as_mut()
         .unwrap()
         .state
-        .set_sound_rules(RuleSetId::Quake3);
+        .set_sound_policy(qa_gameplay::rules::sound_policy(RuleSetId::Quake3));
     let mut audio = Audio {
         mixer: qa_audio::Mixer::load(bank, 8, 1),
         client,
@@ -372,7 +376,7 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         .as_mut()
         .unwrap()
         .state
-        .set_sound_rules(prior_sound_rules);
+        .set_sound_policy(prior_sound_policy);
     host.runtime.server.entities.columns.position[entity.slot as usize] = server_origin;
     host.runtime.server.clients[client.0 as usize]
         .player
@@ -407,7 +411,10 @@ impl FrameSource for MuzzleAudio {
         let expected = &self.expected[self.audio.count];
         assert!(expected.choices.contains(&event.sound));
         assert_eq!(event.client, Some(self.audio.client));
-        assert_eq!(event.spatial_rules, self.audio.sound_rules);
+        assert_eq!(
+            event.spatial,
+            qa_gameplay::rules::sound_policy(self.audio.sound_rules)
+        );
         assert_eq!(event.entity, Some(self.audio.entity));
         assert_eq!(event.position, self.audio.origin);
         assert_eq!(
@@ -438,7 +445,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         commands::packet::Protocol,
         outputs::{Cue, MuzzleFlash, MuzzleFormat},
     };
-    let rr = host.runtime.local_snapshots[client.0 as usize]
+    let rr = host.runtime.snapshots[client.0 as usize]
         .as_ref()
         .unwrap()
         .protocol
@@ -472,16 +479,16 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         .player
         .movement_rules = RuleSetId::Quake3;
     host.runtime.server.clients[client.0 as usize].client_rules = RuleSetId::Quake;
-    let prior_sound_rules = host.runtime.client_resources[client.0 as usize]
+    let prior_sound_policy = host.runtime.client_resources[client.0 as usize]
         .as_ref()
         .unwrap()
         .state
-        .sound_rules();
+        .sound_policy();
     host.runtime.client_resources[client.0 as usize]
         .as_mut()
         .unwrap()
         .state
-        .set_sound_rules(RuleSetId::Quake3);
+        .set_sound_policy(qa_gameplay::rules::sound_policy(RuleSetId::Quake3));
     let mut audio = MuzzleAudio {
         audio: Audio {
             mixer: qa_audio::Mixer::load(std::sync::Arc::clone(&bank), 64, 1),
@@ -700,7 +707,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         .as_mut()
         .unwrap()
         .state
-        .set_sound_rules(prior_sound_rules);
+        .set_sound_policy(prior_sound_policy);
     host.runtime.server.entities.columns.position[entity.slot as usize] = server_origin;
     host.runtime.server.clients[client.0 as usize]
         .player

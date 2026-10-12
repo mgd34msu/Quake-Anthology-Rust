@@ -30,14 +30,17 @@ impl Protocol {
             Self::Quake3_68 => RuleSetId::Quake3,
         }
     }
+    /// Native resource limits exist even when signon uses resource lists rather
+    /// than configstrings.
+    pub const fn resource_layout(self) -> qa_core::configstrings::ConfigLayout {
+        qa_core::configstrings::ConfigLayout::for_rules(self.rule_set())
+    }
     /// Storage availability does not imply a native configstring wire adapter.
     /// NQ serverinfo resource lists still require their native signon adapter.
     pub const fn config_layout(self) -> Option<qa_core::configstrings::ConfigLayout> {
         match self {
             Self::NetQuake15 => None,
-            _ => Some(qa_core::configstrings::ConfigLayout::for_rules(
-                self.rule_set(),
-            )),
+            _ => Some(self.resource_layout()),
         }
     }
     /// Native wire limits are independent of a module's resource storage.

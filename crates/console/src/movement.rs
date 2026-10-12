@@ -56,24 +56,15 @@ impl MovementHandles {
         }
         // Q3 clamps the cvar at its game/cgame settings boundary. The movement
         // entry retains its wider bound for directly supplied module tuning.
-        let fixed = if base.fixed_step_ms != 0 {
-            None
-        } else if vars.is_explicit(self.fixed) {
-            Some(vars.integer_in(self.fixed, rules) != 0)
-        } else if vars.native_default_available(self.fixed, rules) {
-            Some(vars.integer_in(self.fixed, rules) != 0)
-        } else {
-            None
-        };
+        let fixed = (base.fixed_step_ms == 0)
+            .then(|| vars.native_integer(self.fixed, rules))
+            .flatten()
+            .map(|value| value != 0);
         if let Some(enabled) = fixed {
             tuning.fixed_step_ms = if enabled {
-                let msec = if vars.is_explicit(self.fixed_msec)
-                    || vars.native_default_available(self.fixed_msec, rules)
-                {
-                    vars.integer_in(self.fixed_msec, rules)
-                } else {
-                    i32::from(base.fixed_step_ms.max(8))
-                };
+                let msec = vars
+                    .native_integer(self.fixed_msec, rules)
+                    .unwrap_or_else(|| i32::from(base.fixed_step_ms.max(8)));
                 msec.clamp(8, 33) as u16
             } else {
                 0
@@ -86,8 +77,5 @@ impl MovementHandles {
 fn number(vars: &Cvars, handle: CvarHandle, rules: RuleSetId, base: Option<f32>) -> Option<f32> {
     // Native modules have already applied cvars and per-player modifiers such
     // as haste or trigger gravity before passing their movement input.
-    base.or_else(|| {
-        (vars.is_explicit(handle) || vars.native_default_available(handle, rules))
-            .then(|| vars.value_in(handle, rules))
-    })
+    base.or_else(|| vars.native_number(handle, rules))
 }

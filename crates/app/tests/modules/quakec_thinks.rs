@@ -153,7 +153,7 @@ fn request(
             context: CallContext {
                 native_rules: rules,
                 trace_rules: RuleSetId::Quake3,
-                sound_rules: RuleSetId::Quake2,
+                sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
                 server_frame: 0,
                 module,
                 clock: ThinkTime::module_clock(rules),
@@ -259,7 +259,10 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
             assert!(self.count < 2);
             assert_eq!(event.sound, self.sample);
             assert_eq!(event.action, SoundAction::StartLoop);
-            assert_eq!(event.spatial_rules, RuleSetId::Quake);
+            assert_eq!(
+                event.spatial,
+                qa_gameplay::rules::sound_policy(RuleSetId::Quake)
+            );
             assert_eq!(event.client, Some(self.client));
             assert!(event.positioned);
             assert_eq!(
@@ -354,7 +357,7 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
             .as_mut()
             .unwrap()
             .state
-            .set_sound_rules(RuleSetId::Quake);
+            .set_sound_policy(qa_gameplay::rules::sound_policy(RuleSetId::Quake));
         let (mut request, _) = request(
             &mut runtime,
             module,
@@ -423,7 +426,10 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
                 assert_eq!(event.action, SoundAction::StartLoop);
                 assert_eq!(event.sound, sound);
                 assert_eq!(event.source_ordinal, Some(1));
-                assert_eq!(event.spatial_rules, RuleSetId::Quake2);
+                assert_eq!(
+                    event.spatial,
+                    qa_gameplay::rules::sound_policy(RuleSetId::Quake2)
+                );
                 assert_eq!(record.delivery.unwrap().source, rules);
                 assert!(record.delivery.unwrap().reliable);
                 starts += 1;
@@ -823,7 +829,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
                 .unwrap();
         }
         let (assets, catalog) = host.runtime.model_loader.take().unwrap().finish();
-        host.set_model_catalog(Arc::new(catalog), [(client, profile)]);
+        host.set_model_catalog(Arc::new(catalog), [(client, profile, None)]);
         let bank = Arc::new(qa_audio::Bank::load(NonZeroU32::new(44100).unwrap(), vec![]).unwrap());
         host.runtime.sound_bank = Some(Arc::clone(&bank));
         host.bind_sounds(&bank).unwrap();

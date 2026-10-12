@@ -59,10 +59,13 @@ fn queued_window_text_reaches_the_one_console_and_repeat_edits_do_not_move() {
             .value(host.console.cvars.find("cg_fov").unwrap()),
         123.0
     );
-    let command =
-        host.runtime
-            .input
-            .build_frame(EventTime::from_milliseconds(20), [200; 3], [0.022; 2])[0];
+    // This fixture selects the native Q2 input policy: console capture produces
+    // no movement or action bits. Q3 intentionally emits its native TALK bit.
+    let command = host.runtime.input.build_frame_with_policy(
+        EventTime::from_milliseconds(20),
+        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake2);
+            qa_core::sys_events::SeatId::COUNT],
+    )[0];
     assert_eq!(command.movement, [0.0; 3]);
     assert_eq!(command.buttons, 0);
     // A key first pressed in the console does not acquire a game binding when
@@ -72,10 +75,13 @@ fn queued_window_text_reaches_the_one_console_and_repeat_edits_do_not_move() {
     key(&mut host, 26, true, false, 23);
     push(&mut host, EventKind::Time, 40);
     host.drain(&mut Default::default());
-    let command =
-        host.runtime
-            .input
-            .build_frame(EventTime::from_milliseconds(40), [200; 3], [0.022; 2])[0];
+    // Both native and custom bindings now execute through the queued console.
+    host.console.execute_frame(&mut host.runtime);
+    let command = host.runtime.input.build_frame_with_policy(
+        EventTime::from_milliseconds(40),
+        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake2);
+            qa_core::sys_events::SeatId::COUNT],
+    )[0];
     assert!(command.movement[0] > 0.0);
 }
 

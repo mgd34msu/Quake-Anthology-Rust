@@ -88,7 +88,16 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
                 .0[0],
             expected
         );
-        input.button(SeatId::FIRST, Action::MouseLook, true, Some(1), time);
+        input.button(
+            SeatId::FIRST,
+            Action::MouseLook,
+            true,
+            Some(qa_core::sys_events::KeySource {
+                device: qa_core::sys_events::DeviceId::Keyboard(0),
+                control: 1,
+            }),
+            time,
+        );
         input.center_view(SeatId::FIRST);
         let time = EventTime(80_000_000);
         input.build_frame_with_policy(time, &[policy; SeatId::COUNT]);

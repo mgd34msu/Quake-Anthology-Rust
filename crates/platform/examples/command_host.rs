@@ -153,7 +153,7 @@ fn main() -> Result<(), String> {
     }
     if heap_only {
         let applied = std::array::from_fn::<_, 4, _>(|slot| {
-            host.runtime.local_snapshots[slot]
+            host.runtime.snapshots[slot]
                 .as_ref()
                 .map_or(0, |binding| binding.applied)
         });

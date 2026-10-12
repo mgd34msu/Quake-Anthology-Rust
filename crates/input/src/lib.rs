@@ -1,7 +1,7 @@
 //! One device binding table and usercmd builder, independent of map/game rules.
 use qa_core::{
     primitives::{RuleSetId, UserCmd, Vec3, WeaponId, buttons},
-    sys_events::{DeviceId, EventKind, EventTime, MAX_INPUT_DEVICES, SeatId, SysEvent},
+    sys_events::{DeviceId, EventKind, EventTime, KeySource, MAX_INPUT_DEVICES, SeatId, SysEvent},
 };
 
 pub mod bindings;
@@ -55,12 +55,7 @@ pub trait Target {
         false
     }
     fn character(&mut self, seat: SeatId, value: char);
-    fn command(&mut self, seat: SeatId, time: EventTime, text: &str);
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct KeySource {
-    device: DeviceId,
-    control: u16,
+    fn command(&mut self, seat: SeatId, time: EventTime, source: Option<KeySource>, text: &str);
 }
 #[derive(Clone, Copy, Default)]
 struct Button {
@@ -149,7 +144,7 @@ impl Seat {
 /// Cached command tuning; map geometry and module formats never select it.
 #[derive(Clone, Copy, Debug)]
 pub struct InputPolicy {
-    pub rules: Option<RuleSetId>,
+    pub rules: RuleSetId,
     pub speed: [f32; 3],
     pub back_speed: f32,
     pub angle_speed: [f32; 2],
@@ -204,7 +199,6 @@ enum Center {
 }
 #[derive(Clone, Copy)]
 enum PitchClamp {
-    None,
     Fixed { pitch: [f32; 2], roll: f32 },
     RelativeToPrevious(f32),
     DeltaAngle(f32),
@@ -307,7 +301,7 @@ impl InputPolicy {
     pub fn native(rules: RuleSetId) -> Self {
         let data = INPUT_RULES[rules as usize];
         Self {
-            rules: Some(rules),
+            rules,
             speed: data.speed,
             back_speed: 200.0,
             angle_speed: [140.0, data.pitch_speed],
@@ -332,18 +326,7 @@ impl InputPolicy {
         self.command_rules().pitch_drift
     }
     pub(crate) fn command_rules(self) -> CommandRules {
-        self.rules.map_or(
-            CommandRules {
-                key_state: KeyState::Elapsed,
-                yaw_anglemod: false,
-                lookspring: Lookspring::NotFreelookAndEnabled,
-                center: Center::DeltaPitch,
-                pitch_clamp: PitchClamp::None,
-                pitch_drift: false,
-                ..Q1_INPUT
-            },
-            |rules| INPUT_RULES[rules as usize],
-        )
+        INPUT_RULES[self.rules as usize]
     }
 }
 #[derive(Clone, Copy)]
@@ -404,7 +387,6 @@ pub struct Input {
     seats: [Seat; SeatId::COUNT],
     previous: Option<EventTime>,
     frame_ns: u64,
-    freelook: [bool; SeatId::COUNT],
     text_seat: SeatId,
     rejected_devices: u64,
 }
@@ -434,7 +416,6 @@ impl Input {
             seats: [Seat::default(); SeatId::COUNT],
             previous: None,
             frame_ns: 0,
-            freelook: [true; SeatId::COUNT],
             text_seat: SeatId::FIRST,
             rejected_devices: 0,
         };
@@ -630,7 +611,7 @@ impl Input {
         seat: SeatId,
         action: Action,
         down: bool,
-        key: Option<u16>,
+        key: Option<KeySource>,
         time: EventTime,
     ) {
         let button = &mut self.seats[seat.index()].actions[action as usize];
@@ -640,17 +621,14 @@ impl Input {
             // Keep an impulse pressed and accumulated elapsed time this frame.
         } else {
             button.set(
-                KeySource {
+                key.unwrap_or(KeySource {
                     device: DeviceId::Keyboard(0),
-                    control: key.unwrap_or(u16::MAX),
-                },
+                    control: u16::MAX,
+                }),
                 down,
                 time,
             );
         }
-    }
-    pub fn set_freelook(&mut self, seat: SeatId, enabled: bool) {
-        self.freelook[seat.index()] = enabled;
     }
     fn remove(&mut self, id: DeviceId, time: EventTime) {
         for seat in &mut self.seats {
@@ -856,16 +834,7 @@ impl Input {
             for part in &binding.parts[..binding.count] {
                 button_seen |= part.button;
                 let text = &binding.text.as_str()[part.start as usize..part.end as usize];
-                if let Some(action) = part.action {
-                    self.seats[seat.index()].actions[action as usize].set(
-                        KeySource {
-                            device: id,
-                            control,
-                        },
-                        down,
-                        time,
-                    );
-                } else if part.button {
+                if part.button {
                     let mut command = FixedText::<1088>::default();
                     if down {
                         let _ = command.write_str(text);
@@ -878,41 +847,28 @@ impl Input {
                         device_index * CONTROLS + control as usize,
                         time.milliseconds()
                     );
-                    target.command(seat, time, command.as_str());
+                    target.command(
+                        seat,
+                        time,
+                        Some(KeySource {
+                            device: id,
+                            control,
+                        }),
+                        command.as_str(),
+                    );
                 } else if down || button_seen {
-                    target.command(seat, time, text);
+                    target.command(
+                        seat,
+                        time,
+                        Some(KeySource {
+                            device: id,
+                            control,
+                        }),
+                        text,
+                    );
                 }
             }
         }
-    }
-    pub fn build_frame(
-        &mut self,
-        time: EventTime,
-        speed: [i16; 3],
-        mouse_scale: [f32; 2],
-    ) -> [UserCmd; SeatId::COUNT] {
-        let policies = std::array::from_fn(|seat| InputPolicy {
-            rules: None,
-            speed: speed.map(f32::from),
-            back_speed: f32::from(speed[0]),
-            angle_speed: [140.0; 2],
-            angle_multiplier: 1.0,
-            move_multiplier: 1.0,
-            always_run: false,
-            sensitivity: 1.0,
-            acceleration: 0.0,
-            mouse_scale,
-            mouse_side: 0.0,
-            mouse_forward: 0.0,
-            filter: false,
-            freelook: self.freelook[seat],
-            look_strafe: false,
-            delta_pitch: 0.0,
-            lookspring: false,
-            center_speed: 500.0,
-            center_delay: 0.15,
-        });
-        self.build_frame_with_policy(time, &policies)
     }
     pub fn build_frame_with_policy(
         &mut self,
@@ -1062,7 +1018,6 @@ impl Input {
                 intent.mouse_movement[1] = mouse[1];
             }
             match rules.pitch_clamp {
-                PitchClamp::None => {}
                 PitchClamp::Fixed { pitch, .. } => {
                     seat.angles.0[0] = seat.angles.0[0].clamp(pitch[0], pitch[1]);
                 }

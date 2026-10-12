@@ -1,4 +1,5 @@
 use qa_core::primitives::{Bounds, Vec3};
+use qa_render::SceneModel;
 use qa_render::assets::{MaterialSettings, Stage};
 use qa_render::scene::DrawKind;
 use qa_render::scene::Span;
@@ -685,7 +686,7 @@ fn invalid_frozen_handles_only_drop_the_affected_draw() {
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_poly(MaterialId(999), &[Vertex::default(); 3]));
     assert!(frame.add_entity(SceneEntity {
-        model: qa_render::ModelId(999),
+        model: qa_render::ModelId(999).into(),
         ..SceneEntity::default()
     }));
     assert!(frame.add_world(WorldId(999), &[VisibleSurface::default()]));
@@ -760,4 +761,138 @@ fn automatic_draw_capacity_is_checked_before_allocation() {
         })
         .is_err()
     );
+}
+
+#[test]
+fn inline_surface_submission_owns_one_pose_and_keeps_per_face_bindings() {
+    let mut assets = Assets::load().unwrap();
+    let low = material(&mut assets, "inline/low", 2.0);
+    let high = material(&mut assets, "inline/high", 7.0);
+    let id = world(
+        &mut assets,
+        &[
+            SurfaceMaterial {
+                material: high,
+                ..Default::default()
+            },
+            SurfaceMaterial {
+                material: low,
+                ..Default::default()
+            },
+        ],
+    );
+    let mut front = FrontEnd::load(Limits {
+        entities: 2,
+        surfaces: 5,
+        ..Limits::default()
+    })
+    .unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    let mut entity = SceneEntity {
+        model: SceneModel::World {
+            world: id,
+            surfaces: Span { first: 0, count: 2 },
+        },
+        origin: Vec3([13.0, 21.0, 34.0]),
+        color: [1, 2, 3, 4],
+        shader_time: 0.25,
+        ..SceneEntity::default()
+    };
+    assert!(frame.add_entity(entity));
+    entity.origin = Vec3([100.0; 3]);
+    assert!(frame.add_world(
+        id,
+        &[VisibleSurface {
+            surface: 1,
+            depth_key: 19
+        }]
+    ));
+    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    frame.clear_scene();
+    entity.material = Some(high);
+    assert!(frame.add_entity(entity));
+    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    let packet = frame.finish();
+    let Command::View(first) = packet.commands()[1] else {
+        panic!()
+    };
+    let Command::View(second) = packet.commands()[2] else {
+        panic!()
+    };
+    assert_eq!(first.scene.entities.count, 1);
+    assert_eq!(packet.entity(0).origin, Vec3([13.0, 21.0, 34.0]));
+    assert_eq!(packet.entity(0).color, [1, 2, 3, 4]);
+    assert_eq!(packet.entity(1).origin, Vec3([100.0; 3]));
+    assert_eq!(
+        packet
+            .surfaces(first.scene.surfaces)
+            .iter()
+            .map(|s| s.entity)
+            .collect::<Vec<_>>(),
+        [Some(0), Some(0), None]
+    );
+    assert_eq!(
+        packet
+            .surfaces(second.scene.surfaces)
+            .iter()
+            .map(|s| s.entity)
+            .collect::<Vec<_>>(),
+        [Some(1), Some(1)]
+    );
+    let order: Vec<_> = packet
+        .draws(first.scene.draws)
+        .iter()
+        .map(|draw| packet.surface(draw.index).surface)
+        .collect();
+    assert_eq!(order, [1, 1, 0]);
+    assert!(front.recycle(packet).is_ok());
+}
+
+#[test]
+fn inline_surface_capacity_failure_leaves_entity_and_draw_arenas_unchanged() {
+    let mut assets = Assets::load().unwrap();
+    let id = world(&mut assets, &[SurfaceMaterial::default(); 2]);
+    for limits in [
+        Limits {
+            surfaces: 1,
+            ..Limits::default()
+        },
+        Limits {
+            draws: 1,
+            ..Limits::default()
+        },
+    ] {
+        let mut front = FrontEnd::load(limits).unwrap();
+        let mut frame = front.begin_frame([0; 4]).unwrap();
+        let instance = SceneEntity {
+            model: SceneModel::World {
+                world: id,
+                surfaces: Span { first: 0, count: 2 },
+            },
+            ..SceneEntity::default()
+        };
+        assert!(!frame.add_entity(instance));
+        assert!(frame.add_entity(SceneEntity {
+            model: SceneModel::World {
+                world: id,
+                surfaces: Span { first: 1, count: 1 }
+            },
+            ..instance
+        }));
+        assert!(frame.render_scene(Refdef::default(), &[], &assets));
+        let packet = frame.finish();
+        let Command::View(view) = packet.commands()[1] else {
+            panic!()
+        };
+        assert_eq!(
+            (
+                view.scene.entities.count,
+                view.scene.surfaces.count,
+                view.scene.draws.count
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(packet.surface(0).entity, Some(0));
+        assert_eq!(packet.rejected, 1);
+    }
 }

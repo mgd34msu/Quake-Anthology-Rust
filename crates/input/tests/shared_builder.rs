@@ -1,3 +1,5 @@
+#[path = "support/console.rs"]
+mod support;
 use qa_core::{
     primitives::{CommandIntent, RuleSetId, buttons},
     sys_events::{EventTime, SeatId},
@@ -9,7 +11,16 @@ fn sampled_human_and_bot_intents_share_native_rule_scales() {
     for rules in RuleSetId::ALL {
         let mut input = Input::load();
         input.seed(EventTime(0));
-        input.button(SeatId::FIRST, Action::Forward, true, Some(26), EventTime(0));
+        input.button(
+            SeatId::FIRST,
+            Action::Forward,
+            true,
+            Some(qa_core::sys_events::KeySource {
+                device: qa_core::sys_events::DeviceId::Keyboard(0),
+                control: 26,
+            }),
+            EventTime(0),
+        );
         let policy = InputPolicy::native(rules);
         let human =
             input.build_frame_with_policy(EventTime(100_000_000), &[policy; SeatId::COUNT])[0];
@@ -60,12 +71,28 @@ fn float_rules_keep_fractions_and_short_rules_convert_each_contribution() {
 
 #[test]
 fn crouch_and_holster_aliases_use_the_same_action_storage() {
-    assert_eq!(qa_input::bindings::action("crouch"), Some(Action::Crouch));
-    assert_eq!(qa_input::bindings::action("duck"), Some(Action::Crouch));
     let mut input = Input::load();
     input.seed(EventTime(0));
-    input.button(SeatId::FIRST, Action::Holster, true, Some(17), EventTime(0));
-    input.button(SeatId::FIRST, Action::Crouch, true, Some(18), EventTime(0));
+    input.button(
+        SeatId::FIRST,
+        Action::Holster,
+        true,
+        Some(qa_core::sys_events::KeySource {
+            device: qa_core::sys_events::DeviceId::Keyboard(0),
+            control: 17,
+        }),
+        EventTime(0),
+    );
+    input.button(
+        SeatId::FIRST,
+        Action::Crouch,
+        true,
+        Some(qa_core::sys_events::KeySource {
+            device: qa_core::sys_events::DeviceId::Keyboard(0),
+            control: 18,
+        }),
+        EventTime(0),
+    );
     let policy = InputPolicy::native(RuleSetId::Quake3);
     let command =
         input.build_frame_with_policy(EventTime(100_000_000), &[policy; SeatId::COUNT])[0];

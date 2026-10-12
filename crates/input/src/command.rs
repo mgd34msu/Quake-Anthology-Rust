@@ -69,21 +69,8 @@ impl UserCmdBuilder {
             movement[0] = add(movement[0], axes[0] * speeds[0] * multiplier);
             movement[1] = add(movement[1], axes[1] * speeds[1] * multiplier);
         }
-        let movement = std::array::from_fn(|axis| {
-            let [low, high] = rules.key_limit.unwrap_or_else(|| {
-                if policy.rules.is_none() {
-                    [-policy.speed[axis], policy.speed[axis]]
-                } else {
-                    [f32::MIN, f32::MAX]
-                }
-            });
-            let value = movement[axis].clamp(low, high);
-            if policy.rules.is_none() {
-                crate::Accumulation::Int.narrow(value)
-            } else {
-                value
-            }
-        });
+        let [low, high] = rules.key_limit.unwrap_or([f32::MIN, f32::MAX]);
+        let movement = movement.map(|value| value.clamp(low, high));
         let mut buttons = intent.buttons;
         if rules.key_scale.is_some() {
             if running {

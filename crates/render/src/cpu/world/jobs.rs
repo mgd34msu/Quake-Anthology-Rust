@@ -66,6 +66,7 @@ pub fn run_cpu_job(job: &mut CpuJob<'_>) {
                 work.camera,
                 work.references,
                 work.first_world,
+                work.list,
                 work.assets,
                 work.evaluator,
                 super::RgbaInput::Ready(work.rgba),
@@ -106,6 +107,7 @@ struct PrepareWork<'a> {
     chunk: &'a mut super::SurfacePrepare,
     references: &'a [super::SurfaceRef],
     first_world: Option<super::WorldId>,
+    list: &'a super::CommandList,
     rgba: &'a [Option<super::super::rgba::Prepared>],
     camera: &'a Camera,
     assets: &'a Assets,
@@ -172,6 +174,7 @@ impl WorldRaster {
                         chunk: lane,
                         references: &references[range],
                         first_world,
+                        list,
                         rgba: &self.prepare.rgba_prepared,
                         camera,
                         assets,
@@ -198,10 +201,10 @@ impl WorldRaster {
             .lanes
             .iter()
             .try_fold(super::PrepareCapacity::default(), |total, lane| {
-                Some(super::PrepareCapacity {
-                    primitives: total.primitives.checked_add(lane.primitive_count)?,
-                    stages: total.stages.checked_add(lane.stage_count)?,
-                    coverage: total.coverage.checked_add(lane.coverage_count)?,
+                total.checked_add(super::PrepareCapacity {
+                    primitives: lane.primitive_count,
+                    stages: lane.stage_count,
+                    coverage: lane.coverage_count,
                 })
             });
         if self.lanes.iter().any(|lane| lane.capacity_exhausted)

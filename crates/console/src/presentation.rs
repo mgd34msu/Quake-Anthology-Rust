@@ -173,23 +173,34 @@ impl Layout {
         }
     }
     fn prepare_log(&mut self, view: ConsoleView<'_>) {
+        self.prepare_bytes(view.scrollback.chunks(view.texts).flat_map(chunk_bytes));
+    }
+    /// HUD notification rows share console wrapping, colors and native glyph bits.
+    /// Columns may shrink within the load-reserved row capacity for split views.
+    pub fn prepare_text_chunks<'a>(
+        &mut self,
+        chunks: impl Iterator<Item = &'a [u8]> + Clone,
+        columns: usize,
+    ) -> Result<(), &'static str> {
+        if columns < 2 || columns > self.input.len() {
+            return Err("text columns exceed load capacity");
+        }
+        self.columns = columns;
+        self.revision = None;
+        self.prepare_bytes(chunks.flat_map(chunk_bytes));
+        Ok(())
+    }
+    pub fn prepare_text(&mut self, text: &[u8], columns: usize) -> Result<(), &'static str> {
+        self.prepare_text_chunks(std::iter::once(text), columns)
+    }
+    fn prepare_bytes(&mut self, bytes: impl Iterator<Item = (bool, u8)> + Clone) {
         self.cells.fill(Cell::default());
         let mut row = 0;
         let mut column = 0;
         let mut color = 7;
         let mut glyph_mask = 0;
         let mut word_start = true;
-        let mut bytes = view
-            .scrollback
-            .chunks(view.texts)
-            .flat_map(|chunk| {
-                chunk
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .map(|(index, byte)| (index == 0, byte))
-            })
-            .peekable();
+        let mut bytes = bytes.peekable();
         while let Some((first, byte)) = bytes.next() {
             if first && !self.style.colors {
                 glyph_mask = if matches!(byte, 1 | 2) { 128 } else { 0 };
@@ -264,4 +275,12 @@ impl Layout {
     pub fn input(&self) -> &[Cell] {
         &self.input
     }
+}
+
+fn chunk_bytes(bytes: &[u8]) -> impl Iterator<Item = (bool, u8)> + Clone + '_ {
+    bytes
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, byte)| (index == 0, byte))
 }

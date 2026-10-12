@@ -1,0 +1,191 @@
+#![allow(dead_code)]
+use qa_console::{
+    command_text::Arguments,
+    commands::{CommandError, Console, Host, ScriptError},
+    views::Context,
+};
+use qa_core::sys_events::{EventTime, KeySource, SeatId};
+use qa_input::{Input, InputPolicy};
+
+#[derive(Default)]
+pub struct Capture {
+    input: Input,
+    pub presses: u32,
+    pub releases: u32,
+}
+impl Host for Capture {
+    fn input(&mut self) -> &mut Input {
+        &mut self.input
+    }
+    fn input_time(&self) -> EventTime {
+        EventTime::default()
+    }
+    fn print(&mut self, _: std::fmt::Arguments<'_>) {}
+    fn read_script(&mut self, _: &str, _: &mut [u8]) -> Result<usize, ScriptError> {
+        Err(ScriptError::Missing)
+    }
+    fn quit(&mut self) {}
+}
+fn edge(
+    _: &mut Console<Capture>,
+    host: &mut Capture,
+    args: &Arguments<'_>,
+    _: Context,
+) -> Result<(), CommandError> {
+    if args.get(0).starts_with('+') {
+        host.presses += 1;
+    } else {
+        host.releases += 1;
+    }
+    Ok(())
+}
+pub struct Router {
+    pub console: Console<Capture>,
+    pub host: Capture,
+}
+impl Default for Router {
+    fn default() -> Self {
+        let mut console = Console::new(Context::default()).unwrap();
+        assert!(console.register("+edge", edge));
+        assert!(console.register("-edge", edge));
+        Self {
+            console,
+            host: Capture::default(),
+        }
+    }
+}
+impl Router {
+    pub fn command(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        key_source: Option<KeySource>,
+        text: &str,
+    ) {
+        self.console
+            .append_line(
+                text,
+                Context {
+                    seat,
+                    event_time: Some(time),
+                    key_source,
+                    ..Context::default()
+                },
+            )
+            .unwrap();
+    }
+    pub fn execute(&mut self, input: &mut Input) {
+        std::mem::swap(input, &mut self.host.input);
+        self.console.execute_frame(&mut self.host);
+        std::mem::swap(input, &mut self.host.input);
+    }
+}
+pub fn keyboard(control: u16) -> KeySource {
+    KeySource {
+        device: qa_core::sys_events::DeviceId::Keyboard(0),
+        control,
+    }
+}
+pub fn elapsed_policy(speed: f32) -> InputPolicy {
+    let mut policy = InputPolicy::native(qa_core::primitives::RuleSetId::Quake2);
+    policy.speed = [speed; 3];
+    policy.back_speed = speed;
+    policy.sensitivity = 1.0;
+    policy.mouse_side = 0.0;
+    policy.mouse_forward = 0.0;
+    policy.angle_multiplier = 1.0;
+    policy.move_multiplier = 1.0;
+    policy
+}
+
+pub struct RoutedInput {
+    input: Input,
+    pub router: Router,
+}
+impl RoutedInput {
+    pub fn load() -> Self {
+        Self {
+            input: Input::load(),
+            router: Router::default(),
+        }
+    }
+    pub fn dispatch(
+        &mut self,
+        event: qa_core::sys_events::SysEvent<'_>,
+        target: &mut impl qa_input::Target,
+    ) {
+        self.input.dispatch(
+            event,
+            &mut Routing {
+                router: &mut self.router,
+                observer: target,
+            },
+        );
+        self.router.execute(&mut self.input);
+    }
+    pub fn bind(
+        &mut self,
+        control: u16,
+        binding: Option<qa_input::Binding>,
+        time: EventTime,
+        target: &mut impl qa_input::Target,
+    ) -> bool {
+        let result = self.input.bind(
+            control,
+            binding,
+            time,
+            &mut Routing {
+                router: &mut self.router,
+                observer: target,
+            },
+        );
+        self.router.execute(&mut self.input);
+        result
+    }
+    pub fn bind_text(
+        &mut self,
+        control: u16,
+        text: &str,
+        time: EventTime,
+        target: &mut impl qa_input::Target,
+    ) -> Result<(), qa_input::BindError> {
+        let result = self.input.bind_text(
+            control,
+            text,
+            time,
+            &mut Routing {
+                router: &mut self.router,
+                observer: target,
+            },
+        );
+        self.router.execute(&mut self.input);
+        result
+    }
+}
+impl std::ops::Deref for RoutedInput {
+    type Target = Input;
+    fn deref(&self) -> &Input {
+        &self.input
+    }
+}
+impl std::ops::DerefMut for RoutedInput {
+    fn deref_mut(&mut self) -> &mut Input {
+        &mut self.input
+    }
+}
+struct Routing<'a, T> {
+    router: &'a mut Router,
+    observer: &'a mut T,
+}
+impl<T: qa_input::Target> qa_input::Target for Routing<'_, T> {
+    fn key(&mut self, seat: SeatId, control: u16, down: bool, repeat: bool) -> bool {
+        self.observer.key(seat, control, down, repeat)
+    }
+    fn character(&mut self, seat: SeatId, value: char) {
+        self.observer.character(seat, value);
+    }
+    fn command(&mut self, seat: SeatId, time: EventTime, source: Option<KeySource>, text: &str) {
+        self.router.command(seat, time, source, text);
+        self.observer.command(seat, time, source, text);
+    }
+}
