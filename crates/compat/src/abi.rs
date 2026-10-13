@@ -123,6 +123,25 @@ fn register_shader<const MIPMAPS: bool>(c: &mut Invocation<'_, '_, '_>) -> Resul
     (ENGINE_CALLS.register_shader)(c.services, name, c.context.native_rules, MIPMAPS)
         .map(|handle| handle as u32 as u64)
 }
+fn register_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.null_pointer(0)? {
+        return Ok(0);
+    }
+    let name = c.memory.cstring(c.required_pointer(0)?)?;
+    (ENGINE_CALLS.register_model)(c.services, name, c.context.native_rules)
+        .map(|handle| handle as u32 as u64)
+}
+fn renderer_model_bounds(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let handle = c.arg(0)? as u32 as i32;
+    let mins = c.required_pointer(1)?;
+    let maxs = c.required_pointer(2)?;
+    c.memory.read(mins, 12)?;
+    c.memory.read(maxs, 12)?;
+    let bounds = (ENGINE_CALLS.registered_model_bounds)(c.services, handle).unwrap_or_default();
+    c.memory.write_vec3(mins, bounds.mins)?;
+    c.memory.write_vec3(maxs, bounds.maxs)?;
+    Ok(0)
+}
 
 enum CallValue {
     Word(u64),
@@ -451,6 +470,8 @@ const fn client() -> CallTable {
     t.entries[32] = client_audio!(client_sound::position);
     t.entries[33] = client_audio!(client_sound::listener);
     t.entries[34] = scalar!(register_sound);
+    t.entries[36] = scalar!(register_model);
+    t.entries[47] = scalar!(renderer_model_bounds);
     t.entries[39] = scalar!(register_shader::<true>);
     t.entries[49] = scalar!(renderer_configuration);
     t.entries[50] = scalar!(client_game_state);
@@ -488,12 +509,14 @@ const fn ui() -> CallTable {
     t.entries[13] = scalar!(file_open);
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
+    t.entries[18] = scalar!(register_model);
     t.entries[31] = scalar!(register_sound);
     t.entries[32] = scalar!(client_sound::local::<true>);
     t.entries[43] = scalar!(renderer_configuration);
     t.entries[86] = scalar!(file_seek);
     t.entries[50] = scalar!(q3_cvar_register);
     t.entries[51] = scalar!(q3_cvar_update);
+    t.entries[56] = scalar!(renderer_model_bounds);
     t
 }
 // Original Q3 1.32 import ordinals. Game/UI commands carry an execution mode;

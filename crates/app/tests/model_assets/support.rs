@@ -136,6 +136,14 @@ pub fn md2() -> Vec<u8> {
     bytes
 }
 
+pub fn md3() -> Vec<u8> {
+    let mut bytes = include_bytes!("../../../formats/tests/fixtures/models/mesh.md3").to_vec();
+    let frames = i32::from_le_bytes(bytes[92..96].try_into().unwrap()) as usize;
+    // Keep frame zero native, but make the all-frame bounds distinguishable.
+    bytes[frames + 56 + 12..frames + 56 + 16].copy_from_slice(&100.0f32.to_le_bytes());
+    bytes
+}
+
 pub fn md2_skin(path: &[u8]) -> Vec<u8> {
     assert!(path.len() < 64);
     let mut bytes = md2();

@@ -94,6 +94,8 @@ impl From<qa_session::clients::ClientInfoError> for CallError {
 pub trait ModelLookup {
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
     fn shader_handle(&self, name: &[u8]) -> Option<i32>;
+    fn model_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
+    fn model_bounds(&self, handle: i32) -> Option<Bounds>;
 }
 pub trait ModelLoader: ModelLookup {
     fn precache(&mut self, vfs: &Vfs, path: &[u8], source: RuleSetId) -> Result<Bounds, CallError>;
@@ -104,6 +106,15 @@ pub trait ModelLoader: ModelLookup {
         source: RuleSetId,
         mipmaps: bool,
     ) -> Result<i32, CallError>;
+    fn register_model(
+        &mut self,
+        vfs: &Vfs,
+        name: &[u8],
+        source: RuleSetId,
+    ) -> Result<i32, CallError> {
+        self.precache(vfs, name, source)?;
+        self.model_handle(name, source).ok_or(CallError::File)
+    }
 }
 
 /// Sound registration extends the one bank only during cold module loading.
@@ -956,6 +967,8 @@ pub struct EngineCallTable {
     ) -> Result<(), CallError>,
     pub local_sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<(), CallError>,
     pub register_sound: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
+    pub register_model: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
+    pub registered_model_bounds: fn(&EngineServices<'_>, i32) -> Option<Bounds>,
     pub registered_sound:
         fn(&EngineServices<'_>, i32) -> Result<Option<qa_core::primitives::SoundId>, CallError>,
     pub static_entity:
@@ -1142,6 +1155,15 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .map_err(|_| CallError::Capacity)
     },
     register_sound: |s, sample, source| s.register_sound(sample, source),
+    register_model: |s, name, source| s.register_model(name, source),
+    registered_model_bounds: |s, handle| {
+        if let Some(loader) = s.model_loader.as_deref() {
+            loader.model_bounds(handle)
+        } else {
+            s.model_lookup
+                .and_then(|lookup| lookup.model_bounds(handle))
+        }
+    },
     registered_sound: |s, handle| Ok(s.registered_bank()?.registered_sound(handle)),
     ambient: |s, context, sound| {
         let result = s.storage.register_ambient(context, sound);
@@ -1387,14 +1409,36 @@ impl EngineServices<'_> {
                 .registered_handle(sample)
                 .ok_or(CallError::File)
         };
+        self.registration_result("sound", result)
+    }
+    fn registration_result(
+        &mut self,
+        kind: &str,
+        result: Result<i32, CallError>,
+    ) -> Result<i32, CallError> {
         match result {
             Ok(handle) => Ok(handle),
             Err(error @ (CallError::File | CallError::Capacity | CallError::Text)) => {
-                Self::registration_diagnostic(&mut self.server.events, "sound", error);
+                Self::registration_diagnostic(&mut self.server.events, kind, error);
                 Ok(0)
             }
             Err(error) => Err(error),
         }
+    }
+    pub fn register_model(&mut self, name: &[u8], source: RuleSetId) -> Result<i32, CallError> {
+        if name.is_empty() {
+            return Ok(0);
+        }
+        let result = if name.len() >= 64 {
+            Err(CallError::Text)
+        } else if let Some(loader) = self.model_loader.as_deref_mut() {
+            loader.register_model(self.vfs, name, source)
+        } else {
+            self.model_lookup
+                .and_then(|lookup| lookup.model_handle(name, source))
+                .ok_or(CallError::File)
+        };
+        self.registration_result("model", result)
     }
     pub fn register_shader(
         &mut self,
@@ -1414,14 +1458,7 @@ impl EngineServices<'_> {
                 .and_then(|lookup| lookup.shader_handle(name))
                 .ok_or(CallError::File)
         };
-        match result {
-            Ok(handle) => Ok(handle),
-            Err(error @ (CallError::File | CallError::Capacity | CallError::Text)) => {
-                Self::registration_diagnostic(&mut self.server.events, "shader", error);
-                Ok(0)
-            }
-            Err(error) => Err(error),
-        }
+        self.registration_result("shader", result)
     }
     pub fn effect(
         &mut self,

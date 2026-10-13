@@ -400,6 +400,12 @@ struct Models {
     fail: bool,
 }
 impl ModelLookup for Models {
+    fn model_handle(&self, _: &[u8], _: RuleSetId) -> Option<i32> {
+        None
+    }
+    fn model_bounds(&self, _: i32) -> Option<Bounds> {
+        None
+    }
     fn shader_handle(&self, _: &[u8]) -> Option<i32> {
         None
     }

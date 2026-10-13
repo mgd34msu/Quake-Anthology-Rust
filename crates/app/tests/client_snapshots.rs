@@ -47,7 +47,7 @@ fn qvm_with_renderer(imports: &'static qa_compat::abi::CallTable, renderer: i32)
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..12 {
+    for command in 0..14 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
@@ -111,12 +111,33 @@ fn qvm_with_renderer(imports: &'static qa_compat::abi::CallTable, renderer: i32)
                 (Call, 0),
             ]),
             11 => operations.extend([(Const, 128), (Arg, 8), (Const, -40), (Call, 0)]),
+            12 | 13 => {
+                operations.extend([(Local, 76), (Load4, 0), (Arg, 8)]);
+                if command == 13 {
+                    operations.extend([
+                        (Local, 80),
+                        (Load4, 0),
+                        (Arg, 12),
+                        (Local, 84),
+                        (Load4, 0),
+                        (Arg, 16),
+                    ]);
+                }
+                let ordinal = match (renderer, command) {
+                    (49, 12) => 36,
+                    (49, _) => 47,
+                    (_, 12) => 18,
+                    _ => 56,
+                };
+                operations.extend([(Const, -ordinal - 1), (Call, 0)]);
+            }
             _ => unreachable!(),
         }
         operations.push((Leave, 64));
     }
     let mut data = [0; 256];
     data[128..140].copy_from_slice(b"ui/cold.tga\0");
+    data[192..208].copy_from_slice(b"models/test.md2\0");
     (
         Program::Qvm {
             vm: Box::new(service_program::program(&operations, &data)),
@@ -152,7 +173,7 @@ fn native_with_renderer(
     pe_text(&mut file, 0x1800, &[0xc3]);
     let mut vm = Vm::map_image(
         Image::parse(&file, None, LoadRole::Library).unwrap(),
-        &(0..12)
+        &(0..14)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -167,7 +188,7 @@ fn native_with_renderer(
     let output = vm.process.base() + 0x2000;
     let callback = vm.import_callback();
     let mut code = Vec::new();
-    for command in 0..12u8 {
+    for command in 0..14u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
@@ -196,6 +217,20 @@ fn native_with_renderer(
                 8 => 53,
                 10 => renderer,
                 11 => 39,
+                12 => {
+                    if renderer == 49 {
+                        36
+                    } else {
+                        18
+                    }
+                }
+                13 => {
+                    if renderer == 49 {
+                        47
+                    } else {
+                        56
+                    }
+                }
                 _ => 51,
             };
             code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
@@ -215,6 +250,7 @@ fn native_with_renderer(
     assert!(code.len() < 0x800);
     vm.process.memory_mut().unwrap()[0x1800..0x1800 + code.len()].copy_from_slice(&code);
     vm.process.memory_mut().unwrap()[0x4000..0x400c].copy_from_slice(b"ui/cold.tga\0");
+    vm.process.memory_mut().unwrap()[0x5000..0x5010].copy_from_slice(b"models/test.md2\0");
     (
         Program::Native {
             vm: Box::new(vm),
@@ -307,7 +343,7 @@ fn host_with_initializer(
             rate: TickRate::FrameDriven,
             anchor,
             program,
-            entries: (0..12).collect(),
+            entries: (0..14).collect(),
             frame: Export {
                 client: Some(client),
                 ..Export::clocked(CallbackId(6))
@@ -1685,6 +1721,87 @@ fn registration_wait_rejects_unreceived_state_instead_of_freezing_it() {
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
 }
 
+fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
+    use qa_app::model_assets::{ModelCatalogBuilder, ModelProfile};
+    use qa_compat::services::ModelLookup;
+    let bytes = model_files::md2_skin(b"textures/body.tga");
+    let expected = qa_formats::model::Model::parse(&bytes).unwrap().bounds;
+    let mut files = model_files::Fixture::new(&[
+        ("models/test.md2", bytes),
+        (
+            "textures/body.tga",
+            model_files::tga(2, 2, &[[50, 60, 70, 255]; 4]),
+        ),
+    ]);
+    let (mut host, _, output) = host(factory, 1);
+    host.runtime.vfs = std::mem::take(&mut files.vfs);
+    let profile = ModelProfile {
+        source_rules: RuleSetId::Quake3,
+        rules: RuleSetId::Quake3,
+        source_palette: None,
+        palette: None,
+        image_settings: qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+    };
+    host.runtime.model_loader = Some(
+        ModelCatalogBuilder::new(
+            qa_render::Assets::load().unwrap(),
+            [profile],
+            [],
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let path = if output == QVM_OUTPUT {
+        192
+    } else {
+        output + 0x3000
+    };
+    let handle = call(&mut host, 0, 12, &[path]).unwrap();
+    assert!(handle > 0);
+    files.remove("models/test.md2");
+    files.remove("textures/body.tga");
+    assert_eq!(call(&mut host, 0, 12, &[path]), Ok(handle));
+    let (_, catalog) = host.runtime.model_loader.take().unwrap().finish();
+    assert_eq!(
+        catalog.model_handle(b"models/test.md2", RuleSetId::Quake3),
+        Some(handle as i32)
+    );
+    assert!(catalog.registration("models/test.md2", profile).is_some());
+    host.set_model_catalog(std::sync::Arc::new(catalog), []);
+    assert_eq!(call(&mut host, 0, 12, &[path]), Ok(handle));
+    // The two checked destinations retain native mins-then-maxs write order.
+    for (mins, maxs) in [(output + 16, output + 32), (output + 48, output + 48)] {
+        assert_eq!(call(&mut host, 0, 13, &[handle as u64, mins, maxs]), Ok(0));
+        for axis in 0..3 {
+            let mins_value = if mins == maxs {
+                expected.maxs
+            } else {
+                expected.mins
+            };
+            assert_eq!(
+                word(&mut host, 0, mins + axis * 4),
+                mins_value.0[axis as usize].to_bits()
+            );
+            assert_eq!(
+                word(&mut host, 0, maxs + axis * 4),
+                expected.maxs.0[axis as usize].to_bits()
+            );
+        }
+    }
+    for bad in [0, u32::MAX, i32::MAX as u32] {
+        assert_eq!(
+            call(&mut host, 0, 13, &[bad as u64, output + 16, output + 32]),
+            Ok(0)
+        );
+        for axis in 0..3 {
+            assert_eq!(word(&mut host, 0, output + 16 + axis * 4), 0);
+            assert_eq!(word(&mut host, 0, output + 32 + axis * 4), 0);
+        }
+    }
+    assert_eq!(call(&mut host, 0, 12, &[0]), Ok(0));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+}
+
 fn renderer_configuration_uses_shared_services(factory: fn() -> (Program, u64)) {
     use qa_core::presentation::{DisplayConfiguration, RendererConfiguration};
     let (mut host, _, output) = host(factory, 1);
@@ -1754,12 +1871,16 @@ fn main() {
     }
     renderer_configuration_uses_shared_services(qvm);
     renderer_configuration_uses_shared_services(qvm_ui_renderer);
+    model_registration_uses_shared_services(qvm);
+    model_registration_uses_shared_services(qvm_ui_renderer);
     queued_startup_keeps_registration_open(qvm);
     registration_wait_rejects_unreceived_state_instead_of_freezing_it();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         renderer_configuration_uses_shared_services(native);
         renderer_configuration_uses_shared_services(native_ui_renderer);
+        model_registration_uses_shared_services(native);
+        model_registration_uses_shared_services(native_ui_renderer);
         queued_startup_keeps_registration_open(native);
     }
     accepted_connection_snapshot_bytes(qvm);

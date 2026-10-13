@@ -6,6 +6,12 @@ pub struct ShaderLoader {
     pub calls: Vec<(Vec<u8>, RuleSetId, bool)>,
 }
 impl qa_compat::services::ModelLookup for ShaderLoader {
+    fn model_handle(&self, _: &[u8], _: qa_core::primitives::RuleSetId) -> Option<i32> {
+        None
+    }
+    fn model_bounds(&self, _: i32) -> Option<qa_core::primitives::Bounds> {
+        None
+    }
     fn bounds(&self, _: &[u8], _: RuleSetId) -> Option<qa_core::primitives::Bounds> {
         None
     }

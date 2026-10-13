@@ -180,6 +180,7 @@ struct ShaderProfileBinding {
 pub struct ModelMetadata {
     pub format: ModelFormat,
     pub bounds: Bounds,
+    pub renderer_bounds: Bounds,
 }
 #[derive(Clone)]
 struct FileError {
@@ -453,6 +454,12 @@ impl ModelCatalogBuilder {
             .map(|model| ModelMetadata {
                 format: model.format,
                 bounds: model.bounds,
+                // R_ModelBounds exposes the first MD3 frame, rather than the
+                // all-frame box used by model loading and collision adapters.
+                renderer_bounds: match model.format {
+                    ModelFormat::Md3 | ModelFormat::Mdc => model.frames[0].bounds,
+                    _ => model.bounds,
+                },
             });
         self.files[name.0 as usize] = match &metadata {
             Ok(metadata) => ModelFile::Ready(*metadata),
@@ -738,12 +745,52 @@ fn file_lookup<'a>(
     let name = names.find_path(std::str::from_utf8(path).ok()?)?;
     files.get(name.0 as usize)
 }
+fn model_handle(
+    names: &NameTable,
+    files: &[ModelFile],
+    models: &[IndexSpan],
+    registrations: &[RegisteredProfile],
+    path: &[u8],
+    source: RuleSetId,
+) -> Option<i32> {
+    let name = names.find_path(std::str::from_utf8(path).ok()?)?;
+    let file = files.get(name.0 as usize)?;
+    file.bounds()?;
+    if !matches!(file, ModelFile::LoadedWorld { .. })
+        && !models.get(name.0 as usize)?.range().any(|index| {
+            let entry = &registrations[index];
+            entry.profile.source_rules == source && entry.skins.is_some()
+        })
+    {
+        return None;
+    }
+    i32::try_from(name.0).ok().filter(|&handle| handle > 0)
+}
+fn model_bounds(files: &[ModelFile], handle: i32) -> Option<Bounds> {
+    match files.get(usize::try_from(handle).ok()?)? {
+        ModelFile::Ready(metadata) => Some(metadata.renderer_bounds),
+        file => file.bounds(),
+    }
+}
 impl ModelLookup for ModelCatalogBuilder {
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
         file_lookup(&self.names, &self.files, path)?.bounds()
     }
     fn shader_handle(&self, name: &[u8]) -> Option<i32> {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
+    }
+    fn model_handle(&self, path: &[u8], source: RuleSetId) -> Option<i32> {
+        model_handle(
+            &self.names,
+            &self.files,
+            &self.models,
+            &self.registrations,
+            path,
+            source,
+        )
+    }
+    fn model_bounds(&self, handle: i32) -> Option<Bounds> {
+        model_bounds(&self.files, handle)
     }
 }
 impl ModelLoader for ModelCatalogBuilder {
@@ -776,6 +823,19 @@ impl ModelLookup for ModelCatalog {
     }
     fn shader_handle(&self, name: &[u8]) -> Option<i32> {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
+    }
+    fn model_handle(&self, path: &[u8], source: RuleSetId) -> Option<i32> {
+        model_handle(
+            &self.names,
+            &self.files,
+            &self.models,
+            &self.registrations,
+            path,
+            source,
+        )
+    }
+    fn model_bounds(&self, handle: i32) -> Option<Bounds> {
+        model_bounds(&self.files, handle)
     }
 }
 impl ModelCatalog {

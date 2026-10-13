@@ -39,6 +39,96 @@ fn shader_profile(presentation: RuleSetId) -> ModelProfile {
 }
 
 #[test]
+fn native_model_handles_share_file_registration_and_bounds() {
+    let bytes = support::md2_skin(b"textures/body.tga");
+    let parsed = qa_formats::model::Model::parse(&bytes).unwrap();
+    let native_bounds = parsed.bounds;
+    let fixture = support::Fixture::new(&[
+        ("models/test.md2", bytes),
+        (
+            "textures/body.tga",
+            support::tga(2, 2, &[[80, 30, 10, 255]; 4]),
+        ),
+    ]);
+    let profile = shader_profile(RuleSetId::Quake3);
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = builder
+        .register_model(&fixture.vfs, b"models/test.md2", RuleSetId::Quake3)
+        .unwrap();
+    assert!(handle > 0);
+    assert_eq!(builder.model_bounds(handle), Some(native_bounds));
+    fixture.remove("models/test.md2");
+    fixture.remove("textures/body.tga");
+    assert_eq!(
+        builder.register_model(&fixture.vfs, b"MODELS\\TEST.MD2", RuleSetId::Quake3),
+        Ok(handle)
+    );
+    let (_, catalog) = builder.finish();
+    assert_eq!(catalog.capacity().registrations, 1);
+    assert_eq!(
+        catalog.model_handle(b"models/test.md2", RuleSetId::Quake3),
+        Some(handle)
+    );
+    assert_eq!(
+        catalog.model_handle(b"models/test.md2", RuleSetId::Quake2),
+        None
+    );
+    assert_eq!(catalog.model_bounds(handle), Some(native_bounds));
+    assert_eq!(catalog.model_bounds(0), None);
+    assert_eq!(catalog.model_bounds(-1), None);
+    assert_eq!(catalog.model_bounds(i32::MAX), None);
+    assert!(catalog.registration("models/test.md2", profile).is_some());
+}
+
+#[test]
+fn unsupported_model_registration_keeps_native_bounds_without_a_render_handle() {
+    let bytes = support::md3();
+    let parsed = qa_formats::model::Model::parse(&bytes).unwrap();
+    let bounds = parsed.bounds;
+    let first_frame = parsed.frames[0].bounds;
+    assert_ne!(bounds, first_frame);
+    let fixture = support::Fixture::new(&[("models/test.md3", bytes)]);
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [shader_profile(RuleSetId::Quake3)],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        builder.precache(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
+        Ok(bounds)
+    );
+    assert_eq!(
+        builder.register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
+        Err(qa_compat::services::CallError::File)
+    );
+    fixture.remove("models/test.md3");
+    assert_eq!(
+        builder.register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
+        Err(qa_compat::services::CallError::File)
+    );
+    let (_, catalog) = builder.finish();
+    assert_eq!(
+        catalog
+            .metadata(b"models/test.md3")
+            .unwrap()
+            .renderer_bounds,
+        first_frame
+    );
+    assert_eq!(
+        catalog.model_handle(b"models/test.md3", RuleSetId::Quake3),
+        None
+    );
+}
+
+#[test]
 fn native_shader_first_registration_keeps_mips_display_and_exact_profiles() {
     for mipmaps in [false, true] {
         let fixture =
