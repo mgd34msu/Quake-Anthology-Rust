@@ -67,6 +67,7 @@ fn emit(host: &mut FrameHost, tick: Tick) {
         position: Vec3::default(),
         direction: Vec3::default(),
         count: 1,
+        ..EffectEvent::default()
     }));
 }
 #[test]
@@ -588,6 +589,7 @@ fn stalled_peer_progress(unsent: bool) {
                 position: Vec3::default(),
                 direction: Vec3::default(),
                 count: 1,
+                ..EffectEvent::default()
             }))
             .unwrap();
     }

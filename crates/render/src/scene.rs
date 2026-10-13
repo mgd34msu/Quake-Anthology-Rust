@@ -284,12 +284,62 @@ pub struct Draw2d {
     pub color: [u8; 4],
     pub material: MaterialId,
 }
+/// Backend appearance data, independent of the effect's source recipe.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ParticlePresentation {
+    /// Native software point footprint; GL uses the original facing triangle.
+    Square { pixel_aspect: f32 },
+    /// A material-backed, camera-facing square with the requested world size.
+    Card,
+}
+impl Default for ParticlePresentation {
+    fn default() -> Self {
+        Self::Square { pixel_aspect: 1.0 }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneParticle {
+    pub position: Vec3,
+    pub color: u8,
+    pub alpha: u8,
+    pub palette: PaletteId,
+    pub material: MaterialId,
+    pub size: f32,
+    pub presentation: ParticlePresentation,
+}
+impl Default for SceneParticle {
+    fn default() -> Self {
+        Self {
+            position: Vec3::default(),
+            color: 0,
+            alpha: 255,
+            palette: PaletteId(0),
+            material: MaterialId(0),
+            size: 1.0,
+            presentation: ParticlePresentation::default(),
+        }
+    }
+}
+impl SceneParticle {
+    fn is_valid(self) -> bool {
+        self.position.is_finite()
+            && self.size.is_finite()
+            && self.size > 0.0
+            && match self.presentation {
+                ParticlePresentation::Square { pixel_aspect } => {
+                    pixel_aspect.is_finite() && pixel_aspect > 0.0
+                }
+                ParticlePresentation::Card => true,
+            }
+    }
+}
 pub use qa_core::primitives::IndexSpan as Span;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SceneRanges {
     pub entities: Span,
     pub polys: Span,
     pub lights: Span,
+    pub particles: Span,
     pub surfaces: Span,
     pub draws: Span,
 }
@@ -368,6 +418,7 @@ pub struct Limits {
     pub polys: usize,
     pub vertices: usize,
     pub lights: usize,
+    pub particles: usize,
     pub area_bytes: usize,
     pub surfaces: usize,
     /// Zero derives the sum of payload capacities at load time.
@@ -393,6 +444,7 @@ impl Default for Limits {
             polys: 8192,
             vertices: 65536,
             lights: 256,
+            particles: 2048,
             area_bytes: 8192,
             surfaces: 65536,
             draws: 0,
@@ -406,6 +458,7 @@ pub struct CommandList {
     polys: Box<[Poly]>,
     vertices: Box<[Vertex]>,
     lights: Box<[Light]>,
+    particles: Box<[SceneParticle]>,
     area_bytes: Box<[u8]>,
     surfaces: Box<[SurfaceRef]>,
     draws: Box<[DrawItem]>,
@@ -414,6 +467,7 @@ pub struct CommandList {
     poly_count: usize,
     vertex_count: usize,
     light_count: usize,
+    particle_count: usize,
     area_count: usize,
     surface_count: usize,
     draw_count: usize,
@@ -430,6 +484,7 @@ impl CommandList {
             polys: vec![Poly::default(); l.polys].into_boxed_slice(),
             vertices: vec![Vertex::default(); l.vertices].into_boxed_slice(),
             lights: vec![Light::default(); l.lights].into_boxed_slice(),
+            particles: vec![SceneParticle::default(); l.particles].into_boxed_slice(),
             area_bytes: vec![0; l.area_bytes].into_boxed_slice(),
             surfaces: vec![SurfaceRef::default(); l.surfaces].into_boxed_slice(),
             draws: vec![DrawItem::default(); l.draws].into_boxed_slice(),
@@ -438,6 +493,7 @@ impl CommandList {
             poly_count: 0,
             vertex_count: 0,
             light_count: 0,
+            particle_count: 0,
             area_count: 0,
             surface_count: 0,
             draw_count: 0,
@@ -461,6 +517,9 @@ impl CommandList {
     }
     pub fn lights(&self, range: Span) -> &[Light] {
         &self.lights[range.range()]
+    }
+    pub fn particles(&self, range: Span) -> &[SceneParticle] {
+        &self.particles[range.range()]
     }
     pub fn hidden_areas(&self, range: Span) -> &[u8] {
         &self.area_bytes[range.range()]
@@ -486,6 +545,7 @@ impl CommandList {
         self.poly_count = 0;
         self.vertex_count = 0;
         self.light_count = 0;
+        self.particle_count = 0;
         self.area_count = 0;
         self.surface_count = 0;
         self.draw_count = 0;
@@ -514,6 +574,7 @@ impl FrontEnd {
             limits.polys,
             limits.vertices,
             limits.lights,
+            limits.particles,
             limits.area_bytes,
             limits.surfaces,
             limits.draws,
@@ -584,6 +645,10 @@ impl Frame {
             },
             lights: Span {
                 first: self.list.light_count as u32,
+                count: 0,
+            },
+            particles: Span {
+                first: self.list.particle_count as u32,
                 count: 0,
             },
             surfaces: Span {
@@ -669,6 +734,15 @@ impl Frame {
         self.list.light_count += 1;
         true
     }
+    pub fn add_particle(&mut self, particle: SceneParticle) -> bool {
+        if self.list.particle_count == self.list.particles.len() || !particle.is_valid() {
+            self.list.rejected += 1;
+            return false;
+        }
+        self.list.particles[self.list.particle_count] = particle;
+        self.list.particle_count += 1;
+        true
+    }
     /// Copy the one frontend visibility result into this owned packet. Both
     /// consumers receive these ids and the CPU's original BSP depth keys.
     pub fn add_world(
@@ -737,6 +811,20 @@ impl Frame {
         }
         self.list.draw_count = valid;
         native_draw_sort(&mut self.list.draws[first_draw..valid]);
+        let first_particle = self.first.particles.first as usize;
+        let mut valid_particles = first_particle;
+        for index in first_particle..self.list.particle_count {
+            let particle = self.list.particles[index];
+            if assets.palette(particle.palette).is_some()
+                && assets.material(particle.material).is_some()
+            {
+                self.list.particles[valid_particles] = particle;
+                valid_particles += 1;
+            } else {
+                self.list.rejected += 1;
+            }
+        }
+        self.list.particle_count = valid_particles;
         for (rank, draw) in self.list.draws[first_draw..valid].iter().enumerate() {
             if draw.kind == DrawKind::Surface {
                 self.list.surfaces[draw.index as usize].draw_rank = rank as u32;
@@ -755,6 +843,10 @@ impl Frame {
             lights: Span {
                 count: current.lights.first - self.first.lights.first,
                 ..self.first.lights
+            },
+            particles: Span {
+                count: current.particles.first - self.first.particles.first,
+                ..self.first.particles
             },
             surfaces: Span {
                 count: current.surfaces.first - self.first.surfaces.first,

@@ -81,6 +81,7 @@ pub struct SnapshotBinding {
     native_client: u32,
     projection: PlayerProjection,
     player_stats: Q3StatLayout,
+    particles: Option<qa_core::effects::NativeParticleBindings>,
     presentation: Option<ClientPresentation>,
     entities: entities::EntityScratch,
     last_sent: Option<u32>,
@@ -99,6 +100,20 @@ struct ClientPresentation {
 }
 
 impl SnapshotBinding {
+    pub fn bind_particles(&mut self, catalog: &qa_core::effects::EffectCatalog) {
+        self.particles = catalog.native_particles(self.protocol.rule_set());
+    }
+    pub fn particle_event(
+        &self,
+        particle: qa_network::outputs::Particle,
+    ) -> Option<qa_core::primitives::EffectEvent> {
+        Some(self.particles?.event(
+            particle.position,
+            particle.direction,
+            particle.color,
+            particle.count,
+        ))
+    }
     pub fn seat(&self) -> Option<SeatId> {
         self.presentation.as_ref().map(|client| client.seat)
     }
@@ -314,6 +329,7 @@ impl SnapshotBinding {
                 Q3StatLayout::BASE,
             ),
             player_stats: Q3StatLayout::BASE,
+            particles: None,
             presentation: seat.map(|seat| ClientPresentation {
                 seat,
                 appearance: qa_gameplay::rules::appearance::policy(protocol.rule_set()),

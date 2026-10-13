@@ -478,7 +478,7 @@ pub fn write_cue(protocol: Protocol, cue: Cue, output: &mut [u8]) -> Result<usiz
     Ok(writer.size())
 }
 
-fn read_position(reader: &mut Reader<'_>, float: bool) -> Result<Vec3, Error> {
+pub(super) fn read_position(reader: &mut Reader<'_>, float: bool) -> Result<Vec3, Error> {
     let mut position = Vec3::default();
     for value in &mut position.0 {
         *value = if float {
@@ -490,7 +490,11 @@ fn read_position(reader: &mut Reader<'_>, float: bool) -> Result<Vec3, Error> {
     Ok(position)
 }
 
-fn write_position(writer: &mut Writer<'_>, position: Vec3, float: bool) -> Result<(), Error> {
+pub(super) fn write_position(
+    writer: &mut Writer<'_>,
+    position: Vec3,
+    float: bool,
+) -> Result<(), Error> {
     for value in position.0 {
         if float {
             writer.write_float(value)?;

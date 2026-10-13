@@ -7,8 +7,8 @@ use crate::assets::{
     Sampler, Sky, Stage, TcGen, TextureIntensity, Vertex, Wrap,
 };
 use crate::scene::{
-    BlendPhase, Command, CommandList, Draw2d, DrawItem, DrawKind, Refdef, SceneEntity, Span,
-    Viewport,
+    BlendPhase, Command, CommandList, Draw2d, DrawItem, DrawKind, Refdef, SceneEntity,
+    SceneParticle, Span, Viewport,
 };
 use crate::shader::{AlphaGen, RgbGen, StageBlend};
 use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyBatches, SkyClip};
@@ -807,6 +807,16 @@ impl GlBackend {
                             }
                         }
                     }
+                    for particle in list.particles(view.scene.particles) {
+                        self.particle(
+                            *particle,
+                            &view.refdef,
+                            assets,
+                            &projection,
+                            inputs,
+                            &mut stats,
+                        );
+                    }
                     if view.refdef.blend_phase == BlendPhase::AfterView {
                         self.tint(view.refdef.viewport, view.refdef.blend, &mut stats);
                     }
@@ -1250,6 +1260,46 @@ impl GlBackend {
         }
         stats.triangles = stats.triangles.saturating_add(mesh.count as u32 / 3);
         self.set_depth_hack(false);
+    }
+
+    fn particle(
+        &mut self,
+        particle: SceneParticle,
+        view: &Refdef,
+        assets: &Assets,
+        projection: &[f32; 16],
+        inputs: DrawInputs,
+        stats: &mut BackendStats,
+    ) {
+        let Some(vertices) = assets
+            .palette(particle.palette)
+            .and_then(|palette| crate::particles::gl_vertices(particle, view, palette))
+        else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let vertices = vertices.vertices();
+        let Some(first) = self.upload(vertices) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        if !self.draw_dynamic(
+            assets,
+            particle.material,
+            first,
+            vertices.len(),
+            projection,
+            inputs,
+            true,
+            false,
+        ) {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
+        stats.triangles = stats.triangles.saturating_add(vertices.len() as u32 - 2);
+        if let Some(material) = assets.material(particle.material) {
+            stats.stages = stats.stages.saturating_add(material.stages.len() as u32);
+        }
     }
 
     #[expect(

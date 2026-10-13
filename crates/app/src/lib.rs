@@ -503,6 +503,7 @@ impl Runtime {
             native_client,
             &self.catalog.hud.values,
         );
+        binding.bind_particles(&self.catalog.registry.effects);
         if let Some(visibility) = self
             .collision
             .as_ref()

@@ -6,6 +6,7 @@ use qa_core::{
     names::NameTable,
     primitives::{CallbackId, ItemId, NameId, PlayerState, RuleSetId, WeaponId},
 };
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemKind {
@@ -79,6 +80,7 @@ pub struct AmmoConversion {
     pub denominator: i32,
 }
 pub struct Registry {
+    pub effects: Arc<qa_core::effects::EffectCatalog>,
     pub items: Box<[ItemDef]>,
     pub weapons: Box<[WeaponDef]>,
     pub ammo_conversions: Box<[AmmoConversion]>,
@@ -258,6 +260,7 @@ impl Registry {
         ammo_conversions.sort_unstable_by_key(|link| (link.source.0, link.target.0));
         ammo_conversions.dedup_by_key(|link| (link.source.0, link.target.0));
         Ok(Self {
+            effects: Arc::new(crate::effects::native_catalog()),
             items: items.into_boxed_slice(),
             weapons: weapons.into_boxed_slice(),
             ammo_conversions: ammo_conversions.into_boxed_slice(),

@@ -197,7 +197,7 @@ impl Pcm {
         self.loop_end.unwrap_or_else(|| self.frames())
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EffectId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NameId(pub u32);
@@ -1377,12 +1377,22 @@ pub enum SoundAction {
     /// Remove only voices received during one canonical CLIENT connection.
     RetireClient,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EffectEvent {
     pub effect: EffectId,
     pub position: Vec3,
     pub direction: Vec3,
     pub count: u16,
+    pub color: u8,
+    pub time: crate::sys_events::EventTime,
+    pub client: Option<ClientId>,
+    /// Canonical receiving CLIENT connection; SERVER emissions have no value.
+    pub client_lifetime: Option<EntityId>,
+}
+impl EffectEvent {
+    pub fn applies_to_client(self, client: ClientId) -> bool {
+        self.client.is_none_or(|recipient| recipient == client)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrintKind {

@@ -211,6 +211,10 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
 pub struct Renderer {
     frontend: FrontEnd,
     assets: Assets,
+    effects: qa_render::effects::Effects,
+    effect_clients: [Option<qa_render::effects::EffectClient>; SeatId::COUNT],
+    effect_time: qa_core::sys_events::EventTime,
+    effect_gravity: f32,
     backend: Backend,
     scenes: Box<[Option<WorldScene>]>,
     kind: Kind,
@@ -234,6 +238,7 @@ impl Renderer {
         bands: Option<RasterBands>,
         console: console::ConsoleAssets,
         hud: [Option<hud::HudAssets>; 5],
+        effects: qa_render::effects::Effects,
     ) -> Result<Self, String> {
         let mut scenes: Vec<Option<WorldScene>> =
             (0..assets.worlds().len()).map(|_| None).collect();
@@ -259,6 +264,10 @@ impl Renderer {
             return Err("missing loaded world geometry".into());
         }
         let mut limits = Limits::default();
+        limits.particles = effects
+            .capacity()
+            .checked_mul(SeatId::COUNT)
+            .ok_or("particle scene capacity")?;
         limits.surfaces = limits.surfaces.max(
             max_surfaces
                 .checked_mul(SeatId::COUNT)
@@ -335,6 +344,10 @@ impl Renderer {
         Ok(Self {
             frontend,
             assets,
+            effects,
+            effect_clients: [None; SeatId::COUNT],
+            effect_time: qa_core::sys_events::EventTime::default(),
+            effect_gravity: 800.0,
             backend,
             scenes: scenes.into_boxed_slice(),
             kind,
@@ -346,6 +359,44 @@ impl Renderer {
             console,
             hud,
         })
+    }
+    pub fn effect(&mut self, event: qa_core::primitives::EffectEvent) -> bool {
+        self.effects.accept(event)
+    }
+    pub fn set_effect_clients(
+        &mut self,
+        clients: [Option<qa_render::effects::EffectClient>; SeatId::COUNT],
+        time: qa_core::sys_events::EventTime,
+        gravity: f32,
+    ) {
+        self.effects.synchronize(&clients);
+        self.effect_clients = clients;
+        self.effect_time = time;
+        self.effect_gravity = gravity;
+    }
+    fn effect_phase(
+        &mut self,
+        action: fn(
+            &mut qa_render::effects::Effects,
+            qa_core::primitives::ClientId,
+            qa_core::primitives::EntityId,
+            qa_core::sys_events::EventTime,
+            f32,
+        ) -> bool,
+    ) {
+        for (seat, client) in self.effect_clients.iter().enumerate() {
+            let Some(client) = client else { continue };
+            if self.effect_clients[..seat].contains(&Some(*client)) {
+                continue;
+            }
+            action(
+                &mut self.effects,
+                client.client,
+                client.lifetime,
+                self.effect_time,
+                self.effect_gravity,
+            );
+        }
     }
     /// Last backend-rendered frame workload, with lifetime cache counters.
     pub fn cpu_world_stats(&self) -> Option<qa_render::cpu::WorldStats> {
@@ -386,10 +437,12 @@ impl Renderer {
     ) {
         self.sample = Sample::default();
         self.draw_failed = false;
+        self.effect_phase(qa_render::effects::Effects::begin_frame);
         let timer = Stopwatch::start();
         let Some(mut frame) = self.frontend.begin_frame([18, 26, 34, 255]) else {
             self.sample.stats.rejected += 1;
             self.draw_failed = true;
+            self.effect_phase(qa_render::effects::Effects::finish_frame);
             return;
         };
         let count = views.iter().filter(|view| view.is_some()).count();
@@ -442,6 +495,10 @@ impl Renderer {
                     matches!(self.kind, Kind::Cpu),
                 );
             }
+            if let Some(effect_client) = self.effect_clients[seat] {
+                self.effects
+                    .append(&mut frame, effect_client.client, effect_client.lifetime);
+            }
             if !world_added || !frame.render_scene(refdef, hidden_areas, &self.assets) {
                 rejected += 1;
             }
@@ -489,6 +546,7 @@ impl Renderer {
         if self.frontend.recycle(packet).is_err() {
             self.sample.stats.rejected += 1;
         }
+        self.effect_phase(qa_render::effects::Effects::finish_frame);
     }
     pub fn present(&mut self, window: &mut Window) {
         if self.draw_failed {

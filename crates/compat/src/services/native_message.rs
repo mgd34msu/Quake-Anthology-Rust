@@ -1,4 +1,4 @@
-//! Native staging is decoded once into shared sound and print records.
+//! Native staging enters the shared sound, effect and print records.
 use super::{CallError, EngineServices};
 use qa_core::{
     events::{EventStorageError, FrameEvent},
@@ -9,10 +9,14 @@ use qa_core::{
 };
 use qa_network::{
     commands::packet::Protocol,
-    outputs::{self, Cue, NativeService, Print, Sound},
+    outputs::{self, Cue, NativeService, Particle, Print, Sound},
 };
 
 enum Part<'a> {
+    Particle {
+        offset: usize,
+        wire: Particle,
+    },
     Sound {
         offset: usize,
         wire: Sound,
@@ -44,17 +48,25 @@ impl<'a> Parts<'a> {
     }
 }
 impl<'a> Iterator for Parts<'a> {
-    type Item = Part<'a>;
+    type Item = Result<Part<'a>, CallError>;
     fn next(&mut self) -> Option<Self::Item> {
         let offset = self.next;
         let bytes = self.bytes.get(offset..).filter(|bytes| !bytes.is_empty())?;
-        let Ok((service, length)) = outputs::read_native_service(self.protocol, bytes) else {
-            self.next = self.bytes.len();
-            // An unknown-length tail remains opaque, never guessed.
-            return Some(Part::Native { offset, bytes });
+        let (service, length) = match outputs::read_native_service(self.protocol, bytes) {
+            Ok(value) => value,
+            Err(outputs::Error::Unsupported) => {
+                self.next = self.bytes.len();
+                // An unknown-length tail remains opaque, never guessed.
+                return Some(Ok(Part::Native { offset, bytes }));
+            }
+            Err(_) => {
+                self.next = self.bytes.len();
+                return Some(Err(CallError::Memory));
+            }
         };
         self.next += length;
-        Some(match service {
+        Some(Ok(match service {
+            NativeService::Particle(wire) => Part::Particle { offset, wire },
             NativeService::Cue(Cue::Sound(wire) | Cue::StaticSound(wire)) => Part::Sound {
                 offset,
                 wire,
@@ -65,7 +77,10 @@ impl<'a> Iterator for Parts<'a> {
                 // a producer's string ends. Keep an undecodable continuation
                 // with these raw pages so a rejected prefix cannot send it alone.
                 let opaque_tail = length < bytes.len()
-                    && outputs::read_native_service(self.protocol, &bytes[length..]).is_err();
+                    && matches!(
+                        outputs::read_native_service(self.protocol, &bytes[length..]),
+                        Err(outputs::Error::Unsupported)
+                    );
                 let wire = if opaque_tail {
                     self.next = self.bytes.len();
                     bytes
@@ -83,7 +98,7 @@ impl<'a> Iterator for Parts<'a> {
                 offset,
                 bytes: &bytes[..length],
             },
-        })
+        }))
     }
 }
 
@@ -106,7 +121,7 @@ pub(super) fn publish(
                 }
                 let mut parts = Parts::new(protocol, &row.message[position..row.written]);
                 let ordinal = match parts.next() {
-                    Some(Part::Sound { wire, .. }) => Some(wire.index),
+                    Some(Ok(Part::Sound { wire, .. })) => Some(wire.index),
                     _ => None,
                 };
                 (ordinal, parts.next)
@@ -129,11 +144,28 @@ pub(super) fn publish(
     let wire_length = row.written;
     let (wire, metadata) = row.message.split_at_mut(wire_length);
     let protocol = Protocol::native(delivery.source);
+    let particles = s.registry.effects.native_particles(delivery.source);
     let mut captured = 0;
     let mut count = 0;
     let mut rejected_sounds = 0;
     for part in Parts::new(protocol, wire) {
+        let part = match part {
+            Ok(part) => part,
+            Err(error) => {
+                row.written = 0;
+                s.server.events.reject_publication();
+                return Err(error);
+            }
+        };
         match part {
+            Part::Particle { .. } => {
+                if particles.is_none() {
+                    row.written = 0;
+                    s.server.events.reject_publication();
+                    return Err(CallError::Unsupported);
+                }
+                count += 1;
+            }
             Part::Sound { wire, .. } => {
                 if row
                     .sound_bindings
@@ -189,7 +221,22 @@ pub(super) fn publish(
             .publish_group(count, |group| {
                 let mut capture_start = 0;
                 for part in Parts::new(protocol, wire) {
-                    match part {
+                    match part.map_err(|_| EventStorageError::TextCapacity)? {
+                        Part::Particle { offset, wire } => {
+                            let binding = particles.ok_or(EventStorageError::TextCapacity)?;
+                            group.push_delivered(
+                                NativeDelivery {
+                                    component: offset as u32,
+                                    ..delivery
+                                },
+                                FrameEvent::Effect(binding.event(
+                                    wire.position,
+                                    wire.direction,
+                                    wire.color,
+                                    wire.count,
+                                )),
+                            )?;
+                        }
                         Part::Sound {
                             offset,
                             wire,

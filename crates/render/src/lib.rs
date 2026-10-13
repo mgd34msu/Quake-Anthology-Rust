@@ -3,9 +3,11 @@ mod affine;
 pub mod assets;
 pub mod cpu;
 pub mod edges;
+pub mod effects;
 pub mod gl;
 pub mod lightmap;
 pub mod material;
+pub mod particles;
 pub mod scene;
 pub mod shader;
 pub mod sky;
@@ -15,8 +17,9 @@ pub mod world;
 pub use assets::{Assets, ImageId, MaterialId, ModelId, PaletteId, Vertex};
 pub use scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame, FrontEnd,
-    Light, LightStyle, Limits, PaletteOperation, PaletteShift, PaletteTransform, PerspectiveStep,
-    Refdef, SceneEntity, SceneModel, Viewport,
+    Light, LightStyle, Limits, PaletteOperation, PaletteShift, PaletteTransform,
+    ParticlePresentation, PerspectiveStep, Refdef, SceneEntity, SceneModel, SceneParticle,
+    Viewport,
 };
 pub use world::WorldPresentationId;
 

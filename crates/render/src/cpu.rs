@@ -9,6 +9,7 @@ use crate::assets::{
 use crate::shader::{Cull, StageBlend};
 use crate::stage::{DrawInputs, PreparedStage, StageEvaluator, alpha_pass, blend_pixel};
 mod indexed;
+mod particles;
 mod rgba;
 mod sky;
 mod span;
@@ -521,6 +522,14 @@ impl CpuBackend {
                         }
                         draw_rank += 1;
                     }
+                    particles::draw(
+                        &camera,
+                        self.frame.width,
+                        list.particles(view.scene.particles),
+                        assets,
+                        self.frame.buffers(),
+                        &mut stats,
+                    );
                     if camera.refdef.blend_phase == BlendPhase::AfterView {
                         self.view_blend(&camera.refdef, false, assets);
                     }

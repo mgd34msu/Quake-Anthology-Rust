@@ -63,6 +63,7 @@ fn sorted_items(assets: &Assets, materials: &[MaterialId], keys: &[usize]) -> Ve
         polys: count,
         vertices: count * 3,
         lights: 1,
+        particles: 1,
         area_bytes: 1,
         surfaces: 1,
         draws: count,

@@ -322,6 +322,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         position: Vec3::default(),
                         direction: Vec3::default(),
                         count: 20,
+                        ..EffectEvent::default()
                     }));
             }
         }

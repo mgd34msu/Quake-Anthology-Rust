@@ -610,7 +610,8 @@ impl Commands {
                         };
                         self.delta_request = snapshot;
                     }
-                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26 | 29)
+                    (Protocol::NetQuake15, 18)
+                    | (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26 | 29)
                     | (
                         Protocol::Quake2_34 | Protocol::Quake2Repro1038,
                         1 | 2 | 4 | 9 | 10 | 15 | 32,
@@ -626,6 +627,9 @@ impl Commands {
                             }),
                             crate::outputs::NativeService::Print(print) => {
                                 consume(Incoming::Print(print))
+                            }
+                            crate::outputs::NativeService::Particle(particle) => {
+                                consume(Incoming::Particle(particle))
                             }
                             crate::outputs::NativeService::Nop => {}
                         }

@@ -749,6 +749,7 @@ fn absent_presentation_backends_drop_once_and_leave_peer_delivery_and_ticks_runn
             position: Vec3::default(),
             direction: Vec3::default(),
             count: 1,
+            ..EffectEvent::default()
         }))
         .unwrap();
     publish(

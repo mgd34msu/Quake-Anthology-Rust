@@ -351,6 +351,7 @@ fn rejected_poly_and_view_leave_existing_payloads_intact() {
         polys: 1,
         vertices: 3,
         lights: 1,
+        particles: 1,
         area_bytes: 2,
         surfaces: 1,
         draws: 0,

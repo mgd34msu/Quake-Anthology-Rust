@@ -413,6 +413,7 @@ pub fn dispatch(
                                 }
                             }
                             FrameEvent::Sound(_)
+                            | FrameEvent::Effect(_)
                             | FrameEvent::StaticEntity(_)
                             | FrameEvent::PlayerValue { .. }
                             | FrameEvent::SetAngles(_) => {
@@ -431,6 +432,7 @@ pub fn dispatch(
                                             &mut runtime.native_numbers[slot],
                                             &runtime.config_publications[slot],
                                             runtime.catalog.hud.values.native(delivery.source),
+                                            &runtime.catalog.registry.effects,
                                             &mut runtime.output_native_bytes,
                                         )
                                     });
@@ -704,11 +706,28 @@ fn encode_record(
     numbers: &mut crate::output_namespace::NativeNumbers,
     publication: &crate::client_resources::ConfigPublication,
     source_values: &qa_ui::values::NativeValues,
+    effects: &qa_core::effects::EffectCatalog,
     output: &mut [u8],
 ) -> Result<usize, qa_network::outputs::Error> {
     use crate::client_resources::ResourceReadiness;
     use qa_network::{commands::packet::Protocol, outputs::Error};
     match event {
+        FrameEvent::Effect(event) => {
+            let count = effects
+                .native_particles(delivery.source)
+                .and_then(|binding| binding.wire_count(event))
+                .ok_or(Error::Unsupported)?;
+            return qa_network::outputs::particle(
+                protocol,
+                qa_network::outputs::Particle {
+                    position: event.position,
+                    direction: event.direction,
+                    color: event.color,
+                    count,
+                },
+                output,
+            );
+        }
         FrameEvent::PlayerValue { id, value } => {
             let index = source_values
                 .stats

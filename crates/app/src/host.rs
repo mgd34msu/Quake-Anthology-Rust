@@ -63,6 +63,13 @@ pub trait FrameSource {
     fn effect(&mut self, _event: EffectEvent) -> bool {
         false
     }
+    fn effect_clients(
+        &mut self,
+        _clients: &[Option<qa_render::effects::EffectClient>; SeatId::COUNT],
+        _time: EventTime,
+        _gravity: f32,
+    ) {
+    }
     /// Native encoding, sequencing and ACKs belong to the shared Channel.
     /// This primitive transport reports only datagram admission, never an ACK.
     fn send_packet(&mut self, _socket: u16, _to: std::net::SocketAddr, _bytes: &[u8]) -> bool {
@@ -76,6 +83,17 @@ pub struct LiveFrame<'a> {
     pub audio: &'a mut crate::audio::Output,
 }
 impl FrameSource for LiveFrame<'_> {
+    fn effect(&mut self, event: EffectEvent) -> bool {
+        self.renderer.effect(event)
+    }
+    fn effect_clients(
+        &mut self,
+        clients: &[Option<qa_render::effects::EffectClient>; SeatId::COUNT],
+        time: EventTime,
+        gravity: f32,
+    ) {
+        self.renderer.set_effect_clients(*clients, time, gravity);
+    }
     fn sound(&mut self, event: SoundEvent) -> bool {
         self.audio.mixer.sound(event)
     }
@@ -161,6 +179,7 @@ pub struct FrameHost {
     center_time: CvarHandle,
     pub(crate) team_chats_only: CvarHandle,
     volume: CvarHandle,
+    particle_gravity: CvarHandle,
     mouse_enabled: CvarHandle,
     previous: Option<EventTime>,
     loop_client_cursor: usize,
@@ -214,6 +233,7 @@ impl FrameHost {
         }
         console.register("play", crate::audio::play);
         let volume = console.cvars.find("s_volume").ok_or("missing s_volume")?;
+        let particle_gravity = console.cvars.find("g_gravity").ok_or("missing g_gravity")?;
         let mouse_enabled = console.cvars.find("in_mouse").ok_or("missing in_mouse")?;
         let developer = console.cvars.find("developer").ok_or("missing developer")?;
         let maxfps = console
@@ -284,6 +304,7 @@ impl FrameHost {
             center_time,
             team_chats_only,
             volume,
+            particle_gravity,
             mouse_enabled,
             previous: None,
             loop_client_cursor: 0,
@@ -695,6 +716,20 @@ impl FrameHost {
     }
 
     fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
+        let effect_clients = std::array::from_fn(|seat| {
+            let (client, row, _) = self.local_seat(seat)?;
+            Some(qa_render::effects::EffectClient {
+                client,
+                lifetime: row.entity,
+            })
+        });
+        source.effect_clients(
+            &effect_clients,
+            self.time,
+            self.console
+                .cvars
+                .value_in(self.particle_gravity, qa_core::primitives::RuleSetId::Quake),
+        );
         let listeners = std::array::from_fn(|seat| {
             let (client, row, player) = self.local_seat(seat)?;
             if self.runtime.snapshots[client.0 as usize]
@@ -798,6 +833,21 @@ impl FrameHost {
                                 );
                             }
                             Incoming::Cue { cue, current } => self.received_cue(id, cue, current),
+                            Incoming::Particle(particle) => {
+                                if let Some(mut event) = self.runtime.snapshots[id.0 as usize]
+                                    .as_ref()
+                                    .and_then(|binding| binding.particle_event(particle))
+                                {
+                                    event.client = Some(id);
+                                    event.client_lifetime =
+                                        Some(server.clients[id.0 as usize].entity);
+                                    event.time = time;
+                                    let _ = self.runtime.server.events.push_to(
+                                        qa_core::events::OutputTarget::Presentation,
+                                        qa_core::events::FrameEvent::Effect(event),
+                                    );
+                                }
+                            }
                             Incoming::StaticEntity(entity) => {
                                 if let Some(resources) =
                                     self.runtime.client_resources[id.0 as usize].as_mut()

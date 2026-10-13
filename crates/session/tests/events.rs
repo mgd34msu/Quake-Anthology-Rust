@@ -59,6 +59,7 @@ fn independent_module_dispatch_routes_all_types_once_and_retires_only_after_both
         position: Vec3::default(),
         direction: Vec3::default(),
         count: 20,
+        ..EffectEvent::default()
     }))
     .unwrap();
     ring.push(FrameEvent::PlayerValue {

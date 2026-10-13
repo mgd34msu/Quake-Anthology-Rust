@@ -473,6 +473,10 @@ impl EventRing {
                         ) => sound.applies_to_client(id),
                         (
                             Some(OutputTarget::Client(id) | OutputTarget::Local(id)),
+                            FrameEvent::Effect(effect),
+                        ) => effect.applies_to_client(id),
+                        (
+                            Some(OutputTarget::Client(id) | OutputTarget::Local(id)),
                             FrameEvent::Print(p),
                         ) => p.client.is_none_or(|to| to == id),
                         (

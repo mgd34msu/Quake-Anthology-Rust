@@ -78,6 +78,7 @@ fn main() -> Result<(), &'static str> {
                     position: Vec3::default(),
                     direction: Vec3::default(),
                     count: 10,
+                    ..EffectEvent::default()
                 }))
                 .map_err(|_| "publish")?;
             events

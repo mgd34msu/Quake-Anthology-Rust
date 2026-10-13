@@ -535,6 +535,7 @@ fn fair_pressure_reset_and_voice_rejection() {
                         position: Vec3::default(),
                         direction: Vec3::default(),
                         count: 1,
+                        ..EffectEvent::default()
                     }),
                 )
                 .unwrap();

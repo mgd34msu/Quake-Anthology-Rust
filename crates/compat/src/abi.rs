@@ -607,6 +607,17 @@ const fn quakec() -> CallTable {
     t.entries[43] = scalar!(absolute::<false>, Some(scalar));
     t.entries[45] = scalar!(cvar_number::<false>, Some(strings));
     t.entries[46] = scalar!(command_append, Some(strings.void()));
+    t.entries[48] = scalar!(
+        qc_particle,
+        Some(QcSignature::new(
+            QcArgc::Fixed(4),
+            QcArgs::Mixed {
+                vectors: 3,
+                strings: 0,
+            },
+            false,
+        ))
+    );
     t.entries[51] = value!(vector_angles, vector);
     t.entries[68] = Some(CallEntry {
         handler: Handler::QuakeC(qc_precache_file),
@@ -851,6 +862,33 @@ fn lightstyle(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text = c.memory.cstring(c.pointer(1)?)?;
     (ENGINE_CALLS.lightstyle)(c.services, c.context.module, ordinal, text)?;
     Ok(0)
+}
+fn qc_particle(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let binding = c
+        .services
+        .registry
+        .effects
+        .native_particles(c.context.native_rules)
+        .ok_or(CallError::Unsupported)?;
+    let position = qc_vector(c.arguments, 0)?;
+    let direction = qc_vector(c.arguments, 3)?;
+    let color = crate::numbers::native_integer(float::<false>(c, 6)?) as u8;
+    let count = crate::numbers::native_integer(float::<false>(c, 7)?) as u8;
+    let delivery = native_delivery::<false>(
+        c,
+        qa_core::primitives::NativeTarget::All,
+        position,
+        false,
+        0,
+    );
+    match (ENGINE_CALLS.effect)(
+        c.services,
+        delivery,
+        binding.event(position, direction, color, count),
+    ) {
+        Ok(_) | Err(CallError::Capacity) => Ok(0),
+        Err(error) => Err(error),
+    }
 }
 fn qc_precache<const MODEL: bool>(
     c: &mut QuakeCCalls<'_, '_>,

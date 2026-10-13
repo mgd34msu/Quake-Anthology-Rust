@@ -7,6 +7,7 @@ use qa_core::primitives::{PrintKind, RuleSetId};
 
 mod configstrings;
 mod cues;
+mod particles;
 mod player_values;
 mod static_entities;
 pub use configstrings::{
@@ -15,6 +16,7 @@ pub use configstrings::{
 };
 use cues::project_cue;
 pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, sound, write_cue};
+pub use particles::{Particle, particle, read_particle};
 pub use player_values::{
     PLAYER_VALUE_SLOTS, player_value, read_player_value, read_set_angles, separate_player_values,
     set_angles,
@@ -51,6 +53,7 @@ fn read_text<'a>(protocol: Protocol, reader: &mut Reader<'a>) -> Result<&'a [u8]
 /// Unknown opcodes stop the stream: their payload length cannot be inferred.
 pub enum NativeService<'a> {
     Cue(Cue),
+    Particle(Particle),
     Print(Print<'a>),
     Nop,
 }
@@ -59,6 +62,10 @@ pub fn read_native_service(
     bytes: &[u8],
 ) -> Result<(NativeService<'_>, usize), Error> {
     match (protocol, bytes.first().copied().ok_or(Error::Truncated)?) {
+        (Protocol::NetQuake15, 18) => {
+            let (particle, length) = read_particle(protocol, bytes)?;
+            Ok((NativeService::Particle(particle), length))
+        }
         (Protocol::NetQuake15 | Protocol::QuakeWorld28, 29)
         | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 1 | 2 | 9 | 32) => {
             let (cue, length) = read_cue(protocol, bytes)?;
@@ -132,6 +139,7 @@ pub fn native(
             NativeService::Cue(cue) => project(cue, offset)
                 .and_then(|cue| project_cue(protocol, cue))
                 .and_then(|cue| write_cue(protocol, cue, target)),
+            NativeService::Particle(value) => particle(protocol, value, target),
             NativeService::Print(value) => print(
                 protocol,
                 value.kind,

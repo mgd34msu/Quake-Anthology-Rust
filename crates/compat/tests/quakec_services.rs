@@ -162,6 +162,121 @@ fn entity(calls: &QuakeCCalls<'_, '_>, vm: &Vm, value: u32) -> EntityId {
 fn with_services(rules: RuleSetId, run: impl FnOnce(&mut QuakeCCalls<'_, '_>)) {
     with_model_services(rules, None, run);
 }
+
+#[test]
+fn native_qc_particle_uses_four_arguments_catalog_ids_and_delivered_output() {
+    use qa_core::events::{FrameEvent, OutputSubmission};
+    with_services(RuleSetId::Quake, |calls| {
+        let bytes = quakec_program::program(
+            &[(Opcode::Call4, 28, 0, 0), (Opcode::Return, 1, 0, 0)],
+            &[0, 1, -48],
+        );
+        let mut vm = Vm::load(
+            Image::parse(&bytes, Some(5927)).unwrap(),
+            Layout {
+                entities: 4,
+                header_bytes: 16,
+                extra_string_bytes: 128,
+                state_step: 0.1,
+            },
+        )
+        .unwrap();
+        vm.image.globals[28] = 2;
+        vm.image.globals[1] = 0x12345678;
+        let client = calls
+            .services
+            .server
+            .connect(qa_session::clients::Connection::Remote, ModuleId(2), None)
+            .unwrap();
+        let consumer = calls.services.server.clients[client.0 as usize]
+            .output
+            .unwrap();
+        let presentation = calls.services.server.presentation;
+        calls.context.console.source = RuleSetId::Quake2;
+        calls.context.trace_rules = RuleSetId::Quake3;
+        calls.platform_time = EventTime::from_milliseconds(4321);
+        let binding = calls
+            .services
+            .registry
+            .effects
+            .native_particles(RuleSetId::Quake)
+            .unwrap();
+        let origin = Vec3([-0.25, 2.125, 17.0]);
+        let direction = Vec3([-100.0, 8.0, -0.0625]);
+        for (color, count, color_byte, count_byte, particles) in [
+            (515.875f32, 255.75f32, 3, 255, 1024),
+            (-1.875f32, 258.75f32, 255, 2, 2),
+        ] {
+            parameters(
+                &mut vm,
+                &[
+                    &origin.0.map(f32::to_bits),
+                    &direction.0.map(f32::to_bits),
+                    &[color.to_bits(), 0xfeedface, 0xdeadbeef],
+                    &[count.to_bits(), 0xabcdef01, 0x76543210],
+                ],
+            );
+            assert_eq!(calls.call(&mut vm, 48, 3), Err(Trap::Builtin));
+            assert_eq!(vm.call(calls, 1, 32, false).unwrap()[0], 0x12345678);
+            let ring = &mut calls.services.server.events;
+            let mut batch = ring.batch(consumer).unwrap();
+            let record = ring.next(&mut batch).unwrap();
+            let FrameEvent::Effect(event) = record.event else {
+                panic!("common particle effect")
+            };
+            let expected = binding.event(origin, direction, color_byte, count_byte);
+            assert_eq!(event.effect, expected.effect);
+            assert_eq!(event.count, particles);
+            assert_eq!(event.position, origin);
+            assert_eq!(event.direction, direction);
+            assert_eq!(event.color, color_byte);
+            assert_eq!(event.time, EventTime(0));
+            assert_eq!((event.client, event.client_lifetime), (None, None));
+            let delivery = record.delivery.unwrap();
+            assert_eq!(delivery.module, ModuleId(1));
+            assert_eq!(delivery.source, RuleSetId::Quake);
+            assert_eq!(delivery.target, NativeTarget::All);
+            assert_eq!(delivery.origin, origin);
+            assert!(!delivery.reliable);
+            let mut local = ring.batch(presentation).unwrap();
+            assert!(ring.next(&mut local).is_none());
+            assert!(ring.next(&mut batch).is_none());
+            assert!(ring.submit(consumer, record.sequence, OutputSubmission::BestEffort));
+            assert!(ring.is_empty());
+        }
+        assert_eq!(vm.image.globals[1], 0x12345678);
+    });
+}
+
+#[test]
+fn native_qc_particle_rejects_other_native_roles_only_when_executed() {
+    use qa_core::events::OutputTarget;
+    for source in [
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        with_services(source, |calls| {
+            let mut vm = vm(4);
+            let consumer = calls
+                .services
+                .server
+                .events
+                .bind(OutputTarget::Client(ClientId(0)))
+                .unwrap();
+            calls.context.console.source = RuleSetId::Quake;
+            parameters(
+                &mut vm,
+                &[&[0; 3], &[0; 3], &[7.0f32.to_bits()], &[4.0f32.to_bits()]],
+            );
+            assert_eq!(calls.call(&mut vm, 48, 4), Err(Trap::Builtin));
+            let mut batch = calls.services.server.events.batch(consumer).unwrap();
+            assert!(calls.services.server.events.next(&mut batch).is_none());
+            assert_eq!(calls.call(&mut vm, 36, 1), Ok(()));
+        });
+    }
+}
 fn with_model_services(
     rules: RuleSetId,
     model_loader: Option<&mut Models>,
@@ -2559,6 +2674,154 @@ fn stage_native_message(calls: &mut QuakeCCalls<'_, '_>, bytes: &[u8]) {
         (ENGINE_CALLS.message_bits)(calls.services, ModuleId(1), u32::from(byte), 8).unwrap();
     }
 }
+
+#[test]
+fn staged_native_particles_share_the_atomic_print_group_and_catalog_binding() {
+    use qa_core::events::{FrameEvent, OutputSubmission};
+    with_services(RuleSetId::Quake, |calls| {
+        let client = calls
+            .services
+            .server
+            .connect(qa_session::clients::Connection::Remote, ModuleId(2), None)
+            .unwrap();
+        let consumer = calls.services.server.clients[client.0 as usize]
+            .output
+            .unwrap();
+        // svc_print, svc_particle with signed coordinate/direction bytes,
+        // then another print. Each service retains source order and offset.
+        let wire = [
+            8, b'p', 0, 18, 0xfe, 0xff, 0x11, 0, 0, 0, 0x80, 0x7f, 0xff, 255, 7, 8, b'q', 0,
+        ];
+        stage_native_message(calls, &wire);
+        let mut delivery = native_message_delivery(RuleSetId::Quake);
+        delivery.target = NativeTarget::Client(client);
+        delivery.reliable = false;
+        (ENGINE_CALLS.native_message)(calls.services, delivery, calls.context.sound_policy)
+            .unwrap();
+        let binding = calls
+            .services
+            .registry
+            .effects
+            .native_particles(RuleSetId::Quake)
+            .unwrap();
+        let ring = &mut calls.services.server.events;
+        let mut batch = ring.batch(consumer).unwrap();
+        for (component, text) in [(0, Some(b'p')), (3, None), (15, Some(b'q'))] {
+            let record = ring.next(&mut batch).unwrap();
+            assert_eq!(record.delivery.unwrap().component, component);
+            assert_eq!(
+                record.delivery.unwrap().target,
+                NativeTarget::Client(client)
+            );
+            match record.event {
+                FrameEvent::Effect(event) => {
+                    let expected = binding.event(
+                        Vec3([-0.25, 2.125, 0.0]),
+                        Vec3([-8.0, 7.9375, -0.0625]),
+                        7,
+                        255,
+                    );
+                    assert_eq!(event.effect, expected.effect);
+                    assert_eq!(event.count, 1024);
+                    assert_eq!(event.position, expected.position);
+                    assert_eq!(event.direction, expected.direction);
+                    assert_eq!(event.color, 7);
+                    assert_eq!((event.client, event.client_lifetime), (None, None));
+                    assert_eq!(event.time, EventTime(0));
+                }
+                FrameEvent::Print(print) => {
+                    let PrintText::Native {
+                        wire, text: span, ..
+                    } = print.text
+                    else {
+                        panic!("native print")
+                    };
+                    let mut scratch = [0; 8];
+                    let bytes = ring.texts.copy_payload(wire, &mut scratch).unwrap();
+                    assert_eq!(&bytes[span.range()], &[text.unwrap()]);
+                }
+                _ => panic!("recognized particle must have one common owner"),
+            }
+            assert!(ring.submit(consumer, record.sequence, OutputSubmission::BestEffort));
+        }
+        assert!(ring.next(&mut batch).is_none());
+        assert!(ring.is_empty());
+        assert_eq!(
+            (ENGINE_CALLS.native_message)(calls.services, delivery, calls.context.sound_policy)
+                .unwrap(),
+            None
+        );
+    });
+}
+
+#[test]
+fn malformed_or_overfull_particle_staging_publishes_no_prefix_and_consumes_once() {
+    use qa_core::events::OutputTarget;
+    with_services(RuleSetId::Quake, |calls| {
+        let consumer = calls
+            .services
+            .server
+            .events
+            .bind(OutputTarget::Client(ClientId(0)))
+            .unwrap();
+        let particle = [18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 7];
+        for length in 1..particle.len() {
+            stage_native_message(calls, &[8, b'p', 0]);
+            stage_native_message(calls, &particle[..length]);
+            let before = calls.services.server.events.sequence_range();
+            let counters = calls.services.server.events.counters(consumer);
+            assert_eq!(
+                (ENGINE_CALLS.native_message)(
+                    calls.services,
+                    native_message_delivery(RuleSetId::Quake),
+                    calls.context.sound_policy,
+                ),
+                Err(CallError::Memory)
+            );
+            assert_eq!(calls.services.server.events.sequence_range(), before);
+            assert_eq!(calls.services.server.events.counters(consumer), counters);
+            assert!(!calls.services.server.events.needs_resync(consumer));
+            assert_eq!(
+                (ENGINE_CALLS.native_message)(
+                    calls.services,
+                    native_message_delivery(RuleSetId::Quake),
+                    calls.context.sound_policy,
+                )
+                .unwrap(),
+                None
+            );
+        }
+        stage_native_message(calls, &particle);
+        for _ in 0..calls.services.server.events.capacity() {
+            stage_native_message(calls, &[1]);
+        }
+        let before = calls.services.server.events.sequence_range();
+        assert_eq!(
+            (ENGINE_CALLS.native_message)(
+                calls.services,
+                native_message_delivery(RuleSetId::Quake),
+                calls.context.sound_policy,
+            ),
+            Err(CallError::Capacity)
+        );
+        assert_eq!(calls.services.server.events.sequence_range(), before);
+        assert!(!calls.services.server.events.needs_resync(consumer));
+        assert_eq!(
+            calls.services.server.events.rejected_publications(),
+            particle.len() as u64
+        );
+        assert_eq!(
+            (ENGINE_CALLS.native_message)(
+                calls.services,
+                native_message_delivery(RuleSetId::Quake),
+                calls.context.sound_policy,
+            )
+            .unwrap(),
+            None
+        );
+    });
+}
+
 fn bind_native_message_sound(calls: &mut QuakeCCalls<'_, '_>) -> SoundId {
     let rate = std::num::NonZeroU32::new(44100).unwrap();
     let bank = std::sync::Arc::new(

@@ -93,6 +93,7 @@ pub enum Incoming<'a> {
     Print(crate::outputs::Print<'a>),
     ConfigString(crate::outputs::ConfigString<'a>),
     StaticEntity(qa_core::primitives::EntityRecord),
+    Particle(crate::outputs::Particle),
     Cue {
         cue: crate::outputs::Cue,
         current: Option<crate::snapshots::ReceivedFrame<'a>>,

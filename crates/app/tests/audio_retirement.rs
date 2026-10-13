@@ -130,6 +130,7 @@ fn effect() -> FrameEvent {
         position: Vec3::default(),
         direction: Vec3::default(),
         count: 1,
+        ..EffectEvent::default()
     })
 }
 

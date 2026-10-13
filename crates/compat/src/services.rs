@@ -937,7 +937,7 @@ pub struct EngineCallTable {
         IndexSpan,
         i32,
     ) -> Result<Option<qa_core::primitives::SoundId>, CallError>,
-    pub effect: fn(&mut EngineServices<'_>, EffectEvent) -> Result<u64, CallError>,
+    pub effect: fn(&mut EngineServices<'_>, NativeDelivery, EffectEvent) -> Result<u64, CallError>,
     pub trace: fn(
         &mut EngineServices<'_>,
         TraceQuery<'_>,
@@ -1107,7 +1107,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         result
     },
     sound_id: |s, module, range, index| s.sound_id(module, range, index),
-    effect: |s, e| s.effect(e),
+    effect: |s, d, e| s.effect(d, e),
     trace: |s, q, native| s.trace(q, native),
     clip: |s, q, target| s.clip(q, target),
     point_contents: |s, p, rules, pass, native| s.point_contents(p, rules, pass, native),
@@ -1340,10 +1340,14 @@ impl EngineServices<'_> {
             Err(error) => Err(error),
         }
     }
-    pub fn effect(&mut self, event: EffectEvent) -> Result<u64, CallError> {
+    pub fn effect(
+        &mut self,
+        delivery: NativeDelivery,
+        event: EffectEvent,
+    ) -> Result<u64, CallError> {
         self.server
             .events
-            .push(FrameEvent::Effect(event))
+            .push_delivered(delivery, FrameEvent::Effect(event))
             .map_err(|_| CallError::Capacity)
     }
     pub fn trace(
