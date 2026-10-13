@@ -52,6 +52,8 @@ fn fixture(capacity: usize) -> (Runtime, Source) {
                     channels: PcmChannels::Mono,
                     samples: vec![1000; 4],
                     loop_start: Some(0),
+                    loop_end: None,
+                    loop_invalid: false,
                 },
             )],
         )

@@ -991,11 +991,6 @@ fn separate_stats_and_set_angles_reach_client_state_only_through_queued_native_p
             host.frame(&mut source, true);
         }
         let player = &host.runtime.prediction[0].player;
-        assert_eq!(
-            player.values.get(binding.id),
-            Some(NumericValue::integer(333))
-        );
-        assert_eq!(player.values.get(foreign.id), Some(NumericValue::default()));
         // NQ's later clientdata carries authoritative armor separately; QW
         // playerinfo has no armor field and retains its stat service value.
         let armor = if protocol == Protocol::NetQuake15 {
@@ -1003,6 +998,11 @@ fn separate_stats_and_set_angles_reach_client_state_only_through_queued_native_p
         } else {
             333
         };
+        assert_eq!(
+            player.values.get(binding.id),
+            Some(NumericValue::integer(armor))
+        );
+        assert_eq!(player.values.get(foreign.id), Some(NumericValue::default()));
         assert_eq!(player.armor, armor);
         assert_eq!(player.view_angles, angles);
         assert_eq!(
@@ -1015,7 +1015,7 @@ fn separate_stats_and_set_angles_reach_client_state_only_through_queued_native_p
         );
         assert_eq!(
             host.runtime.server.clients[0].hud.values.get(binding.id),
-            Some(NumericValue::integer(333))
+            Some(NumericValue::integer(armor))
         );
         assert_eq!(host.runtime.server.clients[0].hud.armor, armor);
         assert!(host.runtime.network.delivered > 0);

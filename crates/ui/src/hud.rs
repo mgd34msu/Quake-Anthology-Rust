@@ -86,6 +86,61 @@ impl HudBindings {
             binding.import(&mut player.values, bits)
         }
     }
+    pub fn native_packet_fits(
+        &self,
+        rules: qa_core::primitives::RuleSetId,
+        player: &PlayerState,
+    ) -> bool {
+        let values = self.values.native(rules);
+        let Some(items) = values.items else {
+            return true;
+        };
+        let Some(native) = self.native_players[rules as usize].as_ref() else {
+            return false;
+        };
+        native.fits(player)
+            && items.export(&player.values).is_some()
+            && qa_core::primitives::NQ_PACKET_STATS.iter().all(|&index| {
+                values
+                    .stats
+                    .get(index)
+                    .and_then(|binding| binding.export(&player.values))
+                    .is_some()
+            })
+    }
+    /// Packet fields have already entered their load-bound bank rows through
+    /// the native projection. NQ's mask is independent of ordinary stat 15.
+    pub fn import_native_packet(
+        &self,
+        rules: qa_core::primitives::RuleSetId,
+        client: qa_core::primitives::ClientId,
+        player: &mut PlayerState,
+        time: qa_core::sys_events::EventTime,
+    ) -> bool {
+        if !self.native_packet_fits(rules, player) {
+            return false;
+        }
+        let values = self.values.native(rules);
+        let Some(items) = values.items else {
+            return true;
+        };
+        let Some(native) = self.native_players[rules as usize].as_ref() else {
+            return false;
+        };
+        let namespace = qa_core::primitives::ResourceNamespace::Client(client);
+        for index in qa_core::primitives::NQ_PACKET_STATS {
+            let Some(bits) = values.stats[index].export(&player.values) else {
+                return false;
+            };
+            if !native.import(None, namespace, index, bits, player, time) {
+                return false;
+            }
+        }
+        let Some(bits) = items.export(&player.values) else {
+            return false;
+        };
+        native.import_items(None, bits, player, time)
+    }
     pub fn apply(&self, state: &mut HudState, change: HudChange) -> bool {
         if !state.inventory.apply(change) {
             return false;

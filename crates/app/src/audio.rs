@@ -166,12 +166,7 @@ impl SoundLoader {
         }
         Arc::new(self.bank)
     }
-    fn read(
-        &mut self,
-        vfs: &qa_content::vfs::Vfs,
-        sound: qa_core::primitives::SoundId,
-        source: RuleSetId,
-    ) {
+    fn read(&mut self, vfs: &qa_content::vfs::Vfs, sound: qa_core::primitives::SoundId) {
         // The path is borrowed from the sole canonical name row. No second
         // normalized path or PCM catalog is built by this loader.
         let Some(path) = self.bank.name(sound) else {
@@ -188,13 +183,8 @@ impl SoundLoader {
                 return;
             }
         };
-        let policy = if source == RuleSetId::Quake3 {
-            qa_formats::sound::WavPolicy::Quake3
-        } else {
-            qa_formats::sound::WavPolicy::Quake
-        };
         self.decodes += 1;
-        let result = qa_formats::sound::decode(&bytes, policy)
+        let result = qa_formats::sound::decode(&bytes, qa_formats::sound::WavPolicy::Shared)
             .map_err(|error| format!("sound decode: {error:?}"))
             .and_then(|pcm| self.bank.admit(sound, pcm));
         if let Err(message) = result {
@@ -208,7 +198,6 @@ impl SoundLoader {
         &mut self,
         vfs: &qa_content::vfs::Vfs,
         path: &[u8],
-        source: RuleSetId,
     ) -> Result<Attempt, qa_compat::services::CallError> {
         if let Some(sound) = self.bank.attempted(path) {
             // The default name is reserved before its first load. Completed
@@ -216,7 +205,7 @@ impl SoundLoader {
             let first =
                 self.bank.sample(sound).is_none() && self.failures[sound.0 as usize].is_none();
             if first {
-                self.read(vfs, sound, source);
+                self.read(vfs, sound);
             }
             return Ok(Attempt { sound, first });
         }
@@ -224,7 +213,7 @@ impl SoundLoader {
             .bank
             .attempt(path)
             .map_err(|_| qa_compat::services::CallError::Capacity)?;
-        self.read(vfs, sound, source);
+        self.read(vfs, sound);
         Ok(Attempt { sound, first: true })
     }
     /// Explicit precaches are full VFS paths. Optional missing files warn once;
@@ -237,8 +226,11 @@ impl SoundLoader {
         required: bool,
     ) -> Result<Option<String>, String> {
         let attempt = self
-            .attempt(vfs, path, source)
+            .attempt(vfs, path)
             .map_err(|error| format!("sound registration: {error:?}"))?;
+        if self.invalid_loops(attempt.sound, source) {
+            return Err("sound decode: invalid native loop metadata".into());
+        }
         match self.failures[attempt.sound.0 as usize].as_ref() {
             Some(failure) if required || failure.kind == FailureKind::Decode => {
                 Err(failure.message.clone())
@@ -264,6 +256,9 @@ impl SoundLoader {
     ) -> Result<(), qa_compat::services::CallError> {
         use qa_compat::services::CallError;
         let pcm = self.bank.sample(sound).ok_or(CallError::File)?;
+        if self.invalid_loops(sound, source) {
+            return Err(CallError::File);
+        }
         if source == RuleSetId::Quake3 && pcm.channels != qa_core::primitives::PcmChannels::Mono {
             // Native Q3 S_LoadSound rejects stereo effects. Its failed handle
             // stays occupied while common stereo PCM remains available.
@@ -273,6 +268,9 @@ impl SoundLoader {
             return Err(CallError::File);
         }
         Ok(())
+    }
+    fn invalid_loops(&self, sound: qa_core::primitives::SoundId, source: RuleSetId) -> bool {
+        source != RuleSetId::Quake3 && self.bank.sample(sound).is_some_and(|pcm| pcm.loop_invalid)
     }
     fn precache_native(
         &mut self,
@@ -297,7 +295,7 @@ impl qa_compat::services::SoundRegistrar for SoundLoader {
     ) -> Result<i32, qa_compat::services::CallError> {
         use qa_compat::services::CallError;
         if source == RuleSetId::Quake3 {
-            let default = self.attempt(vfs, Bank::DEFAULT_SOUND, source)?;
+            let default = self.attempt(vfs, Bank::DEFAULT_SOUND)?;
             // A missing/rejected default does not prevent another native sample.
             let _ = self.validate_registration(Bank::DEFAULT_SOUND, default.sound, source);
         }
@@ -315,7 +313,7 @@ impl qa_compat::services::SoundRegistrar for SoundLoader {
         self.bank
             .attempt_registration(sample, Some(path.as_bytes()))
             .map_err(|_| CallError::Capacity)?;
-        let attempt = self.attempt(vfs, path.as_bytes(), source)?;
+        let attempt = self.attempt(vfs, path.as_bytes())?;
         self.validate_registration(sample, attempt.sound, source)?;
         self.bank.registered_handle(sample).ok_or(CallError::File)
     }
@@ -329,7 +327,10 @@ impl qa_compat::services::SoundRegistrar for SoundLoader {
         let Some(path) = qa_audio::sound_path(sample, source).map_err(|_| CallError::Text)? else {
             return Ok(None);
         };
-        let attempt = self.attempt(vfs, path.as_bytes(), source)?;
+        let attempt = self.attempt(vfs, path.as_bytes())?;
+        if self.invalid_loops(attempt.sound, source) {
+            return Err(CallError::File);
+        }
         self.bank
             .sample(attempt.sound)
             .map(|_| Some(attempt.sound))
@@ -483,6 +484,7 @@ pub fn play(
                     bus: qa_core::primitives::SoundBus::Local,
                     queued_at: context.event_time.unwrap_or(runtime.input_time),
                     spatial: qa_gameplay::rules::sound_policy(context.source),
+                    playback: qa_gameplay::rules::native_sound_playback(context.source),
                     entity: None,
                     channel: 0,
                     position: Vec3::default(),

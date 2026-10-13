@@ -64,6 +64,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             channels: PcmChannels::Mono,
             samples,
             loop_start: None,
+            loop_end: None,
+            loop_invalid: false,
         };
         let pcm = qa_audio::prepare(source, output, false).map_err(|e| format!("{e:?}"))?;
         let count = u32::from_le_bytes(expected[out..out + 4].try_into()?) as usize;

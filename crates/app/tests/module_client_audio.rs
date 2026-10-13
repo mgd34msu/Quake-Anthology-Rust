@@ -162,6 +162,8 @@ fn fixture(
                     channels: PcmChannels::Mono,
                     samples: vec![3500; 256],
                     loop_start: None,
+                    loop_end: None,
+                    loop_invalid: false,
                 },
             )],
         )

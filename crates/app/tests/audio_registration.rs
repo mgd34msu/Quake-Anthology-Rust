@@ -6,7 +6,10 @@ use qa_audio::{Bank, SoundBindings};
 use qa_compat::services::{CallError, SoundRegistrar};
 use qa_content::vfs::Vfs;
 use qa_core::primitives::RuleSetId;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files {
@@ -377,4 +380,184 @@ fn native_config_precache_does_not_claim_a_client_engine_handle() {
     assert_eq!(loader.bank().name(q3), Some(b"a.wav".as_slice()));
     assert_ne!(q2, q3);
     assert_eq!(loader.reads, 3);
+}
+
+#[test]
+fn first_source_never_discards_another_roles_waveform_or_native_loop_interval() {
+    use qa_audio::{Listener, Mixer};
+    use qa_core::primitives::*;
+    for q3_first in [false, true] {
+        let files = Files::new(&[
+            ("sound/feedback/hit.wav", support::wav()),
+            ("sound/shared.wav", support::cue_wav()),
+        ]);
+        let mut loader = SoundLoader::load(4, 256).unwrap();
+        let (q1, native) = if q3_first {
+            let native = loader
+                .register(&files.vfs, b"sound/shared.wav", RuleSetId::Quake3)
+                .unwrap();
+            let q1 = loader
+                .precache(&files.vfs, b"shared.wav", RuleSetId::Quake)
+                .unwrap()
+                .unwrap();
+            (q1, native)
+        } else {
+            let q1 = loader
+                .precache(&files.vfs, b"shared.wav", RuleSetId::Quake)
+                .unwrap()
+                .unwrap();
+            let native = loader
+                .register(&files.vfs, b"sound/shared.wav", RuleSetId::Quake3)
+                .unwrap();
+            (q1, native)
+        };
+        assert_eq!(loader.bank().registered_sound(native), Some(q1));
+        assert_eq!((loader.reads, loader.decodes), (2, 2));
+        files.vfs.take_lookup_count();
+        assert_eq!(
+            loader
+                .precache(&files.vfs, b"shared.wav", RuleSetId::Quake2)
+                .unwrap(),
+            Some(q1)
+        );
+        assert_eq!(
+            loader.register(&files.vfs, b"sound/shared.wav", RuleSetId::Quake3),
+            Ok(native)
+        );
+        assert_eq!(files.vfs.take_lookup_count(), 0);
+        let bank = loader.finish();
+        let pcm = bank.sample(q1).unwrap();
+        assert_eq!(pcm.samples, [1024, -2048, 4096, 7777]);
+        assert_eq!(
+            (
+                pcm.frames(),
+                pcm.cue_frames(),
+                pcm.loop_start,
+                pcm.loop_end,
+                pcm.loop_invalid
+            ),
+            (4, 3, Some(1), Some(3), false)
+        );
+
+        let mut q3 = Mixer::load(Arc::clone(&bank), 1, 1);
+        assert!(q3.sound(SoundEvent {
+            sound: q1,
+            volume: 1.0,
+            bus: SoundBus::Local,
+            playback: qa_gameplay::rules::native_sound_playback(RuleSetId::Quake3),
+            ..SoundEvent::default()
+        }));
+        let mut output = [0; 12];
+        assert!(q3.paint(&mut output));
+        let native_sample = |sample: i16| (((i64::from(sample) * (127 * 255)) >> 8) >> 8) as i16;
+        let expected: Vec<_> = [1024, -2048, 4096, 7777, 0, 0]
+            .into_iter()
+            .flat_map(|sample| [native_sample(sample); 2])
+            .collect();
+        assert_eq!(output.as_slice(), expected, "Q3 first={q3_first}");
+        let mut q1_mixer = Mixer::load(Arc::clone(&bank), 1, 1);
+        q1_mixer.listen(
+            &[Some(Listener {
+                client: ClientId(0),
+                entity: None,
+                origin: Vec3::default(),
+                right: Vec3([1.0, 0.0, 0.0]),
+                negate_dot: false,
+            })],
+            1.0,
+        );
+        assert!(q1_mixer.sound(SoundEvent {
+            sound: q1,
+            volume: 1.0,
+            ..SoundEvent::default()
+        }));
+        assert!(q1_mixer.paint(&mut output));
+        let expected: Vec<_> = [1024, -2048, 4096, -2048, 4096, -2048]
+            .into_iter()
+            .flat_map(|sample| [((i64::from(sample) * 255) >> 8) as i16; 2])
+            .collect();
+        assert_eq!(output.as_slice(), expected, "Q1 first={q3_first}");
+    }
+}
+
+#[test]
+fn malformed_optional_cues_reject_quake_without_poisoning_q3_in_either_order() {
+    use qa_core::primitives::*;
+    for q3_first in [false, true] {
+        for malformed in 0..3 {
+            let mut wav = support::cue_wav();
+            let cue = wav.windows(4).position(|word| word == b"cue ").unwrap();
+            match malformed {
+                0 => wav[cue + 32..cue + 36].copy_from_slice(&999u32.to_le_bytes()),
+                1 => wav[cue + 8..cue + 12].copy_from_slice(&2u32.to_le_bytes()),
+                _ => {
+                    wav.extend(b"LIST");
+                    wav.extend(200u32.to_le_bytes());
+                    wav.extend(b"mark");
+                }
+            }
+            let length = wav.len() as u32 - 8;
+            wav[4..8].copy_from_slice(&length.to_le_bytes());
+            let files = Files::new(&[
+                ("sound/feedback/hit.wav", support::wav()),
+                ("sound/shared.wav", wav),
+            ]);
+            let mut loader = SoundLoader::load(4, 256).unwrap();
+            let native = if q3_first {
+                let native = loader
+                    .register(&files.vfs, b"sound/shared.wav", RuleSetId::Quake3)
+                    .unwrap();
+                assert_eq!(
+                    loader.precache(&files.vfs, b"shared.wav", RuleSetId::Quake),
+                    Err(CallError::File)
+                );
+                native
+            } else {
+                assert_eq!(
+                    loader.precache(&files.vfs, b"shared.wav", RuleSetId::Quake),
+                    Err(CallError::File)
+                );
+                loader
+                    .register(&files.vfs, b"sound/shared.wav", RuleSetId::Quake3)
+                    .unwrap()
+            };
+            let sound = loader.bank().registered_sound(native).unwrap();
+            let pcm = loader.bank().sample(sound).unwrap();
+            assert_eq!(pcm.samples, [1024, -2048, 4096, 7777]);
+            assert_eq!(
+                (pcm.loop_start, pcm.loop_end, pcm.loop_invalid),
+                (None, None, true)
+            );
+            assert!(
+                loader
+                    .precache_path(&files.vfs, b"sound/shared.wav", RuleSetId::Quake, true)
+                    .is_err()
+            );
+            files.vfs.take_lookup_count();
+            assert_eq!(
+                loader.register(&files.vfs, b"sound/shared.wav", RuleSetId::Quake3),
+                Ok(native)
+            );
+            assert_eq!(files.vfs.take_lookup_count(), 0);
+            assert_eq!((loader.reads, loader.decodes), (2, 2));
+            let bank = loader.finish();
+            let mut mixer = qa_audio::Mixer::load(bank, 1, 0);
+            assert!(!mixer.sound(SoundEvent {
+                sound,
+                volume: 1.0,
+                ..SoundEvent::default()
+            }));
+            assert!(mixer.sound(SoundEvent {
+                sound,
+                volume: 1.0,
+                bus: SoundBus::Local,
+                playback: qa_gameplay::rules::native_sound_playback(RuleSetId::Quake3),
+                ..SoundEvent::default()
+            }));
+            let mut output = [0; 12];
+            assert!(mixer.paint(&mut output));
+            assert_ne!(&output[6..8], &[0, 0]);
+            assert_eq!(&output[8..], &[0; 4]);
+        }
+    }
 }

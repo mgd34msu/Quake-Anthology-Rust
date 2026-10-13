@@ -71,6 +71,8 @@ enum Source {
     CommandAge,
     IdealPitch,
     BodyYaw,
+    /// A native-only value lives in the common bank through a cold binding.
+    NativeValue,
 }
 #[derive(Clone, Copy)]
 enum Convert {
@@ -113,10 +115,16 @@ static NQ: &[Field] = &[
     f(5, Velocity(1), Bits),
     f(6, Punch(2), Bits),
     f(7, Velocity(2), Bits),
+    f(8, NativeValue, Bits),
     f(9, WeaponFrame, IntegerFloat),
     f(10, Armor, IntegerFloat),
     f(11, WeaponModel, Bits),
     f(12, Health, IntegerFloat),
+    f(13, NativeValue, IntegerFloat),
+    f(14, NativeValue, IntegerFloat),
+    f(15, NativeValue, IntegerFloat),
+    f(16, NativeValue, IntegerFloat),
+    f(17, NativeValue, IntegerFloat),
     f(18, Weapon, Bits),
     f(19, Grounded, Bits),
     f(20, InWater, Bits),
@@ -237,8 +245,8 @@ pub struct PlayerProjection {
     flags: [u32; 8],
     flag_mask: u32,
     client_limit: u32,
-    bindings: Box<[(usize, ValueBinding)]>,
-    write_bindings: Box<[(usize, ValueBinding)]>,
+    bindings: Box<[Field<ValueBinding>]>,
+    write_bindings: Box<[Field<ValueBinding>]>,
     pub dropped_bindings: usize,
 }
 impl PlayerProjection {
@@ -265,8 +273,9 @@ impl PlayerProjection {
         protocol: Protocol,
         stats: &[ValueBinding],
         persistent: &[ValueBinding],
+        items: Option<ValueBinding>,
     ) -> Self {
-        Self::load_value_fields(protocol, stats, persistent, false)
+        Self::load_value_fields(protocol, stats, persistent, items, false)
     }
     /// Native module stats enter their ordinal bank rows without importing
     /// movement/view columns, whose capability roles remain independent.
@@ -275,28 +284,54 @@ impl PlayerProjection {
         stats: &[ValueBinding],
         persistent: &[ValueBinding],
     ) -> Self {
-        Self::load_value_fields(protocol, stats, persistent, true)
+        Self::load_value_fields(protocol, stats, persistent, None, true)
     }
     fn load_value_fields(
         protocol: Protocol,
         stats: &[ValueBinding],
         persistent: &[ValueBinding],
+        items: Option<ValueBinding>,
         stats_only: bool,
     ) -> Self {
         let (_, spans) = states::player_value_layout(protocol);
-        let bindings: Vec<_> = spans
-            .into_iter()
-            .zip([stats, persistent])
-            .flat_map(|(span, bindings)| span.range().zip(bindings.iter().copied()))
+        let bindings: Vec<_> = stats
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, binding)| {
+                states::player_stat_word(protocol, index).map(|word| (word, binding))
+            })
+            .chain(spans[1].range().zip(persistent.iter().copied()))
+            .chain(
+                items
+                    .filter(|_| protocol == Protocol::NetQuake15)
+                    .map(|binding| (8, binding)),
+            )
             .collect();
         let mut projection = Self::load_fields(protocol, &bindings, stats_only);
-        projection.dropped_bindings += stats.len() + persistent.len() - bindings.len();
+        projection.dropped_bindings +=
+            stats.len() + persistent.len() + usize::from(items.is_some()) - bindings.len();
+        for field in &mut projection.bindings {
+            if protocol == Protocol::NetQuake15 {
+                field.convert = NQ
+                    .iter()
+                    .find(|native| native.word == field.word)
+                    .map_or(Bits, |native| native.convert);
+            }
+        }
+        projection.write_bindings = projection.bindings.clone();
         if !stats_only {
             projection.write_bindings = projection
                 .bindings
                 .iter()
                 .copied()
-                .filter(|(word, _)| !projection.fields.iter().any(|field| field.word == *word))
+                .filter(|binding| {
+                    !projection.fields.iter().any(|field| {
+                        field.word == binding.word
+                            && !matches!(field.source, NativeValue)
+                            && !(protocol == Protocol::NetQuake15 && matches!(field.source, Weapon))
+                    })
+                })
                 .collect();
         }
         projection
@@ -352,6 +387,11 @@ impl PlayerProjection {
             .iter()
             .copied()
             .filter(|(word, _)| *word < words)
+            .map(|(word, source)| Field {
+                word,
+                source,
+                convert: Bits,
+            })
             .collect();
         Self {
             protocol,
@@ -473,13 +513,22 @@ impl PlayerProjection {
             let word = self.value(field.source, player, context, &mut resolve_model);
             out[field.word] = field.convert.export(word);
         }
-        for &(word, binding) in &self.write_bindings {
-            if let Some(value) = binding.export(&player.values) {
-                out[word] = if binding.width == ValueWidth::Signed16 {
+        for field in &self.write_bindings {
+            if self.protocol == Protocol::NetQuake15
+                && context.weapon_number.is_some()
+                && NQ
+                    .iter()
+                    .any(|native| native.word == field.word && matches!(native.source, Weapon))
+            {
+                continue;
+            }
+            if let Some(value) = field.source.export(&player.values) {
+                let value = if field.source.width == ValueWidth::Signed16 {
                     value as i16 as i32 as u32
                 } else {
                     value
                 };
+                out[field.word] = field.convert.export(value);
             }
         }
         true
@@ -502,6 +551,13 @@ impl PlayerProjection {
         let Some(words) = words.get(..self.words) else {
             return false;
         };
+        if self
+            .bindings
+            .iter()
+            .any(|field| field.source.id.0 as usize >= player.values.capacity())
+        {
+            return false;
+        }
         for field in &self.fields {
             let word = words[field.word];
             let value = field.convert.import(word);
@@ -606,11 +662,13 @@ impl PlayerProjection {
                 IdealPitch => player.ideal_pitch = f32::from_bits(value),
                 // QW body yaw is an input to command sanitization, not a field
                 // received in playerinfo. Its decoded placeholder is unused.
-                BodyYaw => {}
+                BodyYaw | NativeValue => {}
             }
         }
-        for &(word, binding) in &self.bindings {
-            binding.import(&mut player.values, words[word]);
+        for field in &self.bindings {
+            field
+                .source
+                .import(&mut player.values, field.convert.import(words[field.word]));
         }
         true
     }
@@ -728,6 +786,7 @@ impl PlayerProjection {
             CommandAge => c.command_age_ms.min(255),
             IdealPitch => p.ideal_pitch.to_bits(),
             BodyYaw => c.body_yaw.to_bits(),
+            NativeValue => 0,
         }
     }
 }

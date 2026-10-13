@@ -59,6 +59,61 @@ fn native_cue_mark_trims_pcm_but_q3_ignores_loop_metadata() {
     assert_eq!(standard.frames, 8);
     assert_eq!(standard.loop_start, Some(2));
 }
+
+#[test]
+fn shared_decode_retains_full_waveform_and_independent_native_cue_extent() {
+    let bytes = wav(8, 1);
+    let shared = Wav::parse(&bytes, WavPolicy::Shared).unwrap();
+    assert_eq!(shared.frames, 8);
+    assert_eq!(
+        (shared.loop_start, shared.loop_end, shared.loop_invalid),
+        (Some(2), Some(5), false)
+    );
+    let pcm = shared.decode();
+    assert_eq!(pcm.frames(), 8);
+    assert_eq!(pcm.cue_frames(), 5);
+    assert_eq!(
+        pcm.samples,
+        Wav::parse(&bytes, WavPolicy::Quake3)
+            .unwrap()
+            .decode()
+            .samples
+    );
+    assert_eq!(
+        &pcm.samples[..5],
+        Wav::parse(&bytes, WavPolicy::Quake)
+            .unwrap()
+            .decode()
+            .samples
+    );
+}
+
+#[test]
+fn shared_decode_preserves_ignored_bad_metadata_without_accepting_native_cues() {
+    for malformed in 0..4 {
+        let mut bytes = wav(16, 1);
+        let cue = bytes.windows(4).position(|word| word == b"cue ").unwrap();
+        match malformed {
+            0 => bytes[cue + 32..cue + 36].copy_from_slice(&999u32.to_le_bytes()),
+            1 => bytes[cue + 8..cue + 12].copy_from_slice(&2u32.to_le_bytes()),
+            2 => chunk(&mut bytes, b"smpl", &[0; 16]),
+            _ => {
+                bytes.extend(b"LIST");
+                bytes.extend(200u32.to_le_bytes());
+                bytes.extend(b"mark");
+            }
+        }
+        let size = bytes.len() as u32 - 8;
+        bytes[4..8].copy_from_slice(&size.to_le_bytes());
+        let shared = Wav::parse(&bytes, WavPolicy::Shared).unwrap().decode();
+        assert_eq!(shared.frames(), 8);
+        assert_eq!(
+            (shared.loop_start, shared.loop_end, shared.loop_invalid),
+            (None, None, true)
+        );
+        assert!(Wav::parse(&bytes, WavPolicy::Quake).is_err());
+    }
+}
 #[test]
 fn stereo_and_24bit_convert_once_with_native_high_word() {
     let a = Wav::parse(&wav(16, 2), WavPolicy::Quake).unwrap().decode();

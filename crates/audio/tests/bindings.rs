@@ -18,6 +18,8 @@ fn bank(names: &[&str]) -> Bank {
                         channels: PcmChannels::Mono,
                         samples: vec![1],
                         loop_start: None,
+                        loop_end: None,
+                        loop_invalid: false,
                     },
                 )
             })
@@ -220,6 +222,8 @@ fn byte_path_bindings_resolve_non_utf8_registered_sound_without_a_second_codec()
             channels: PcmChannels::Mono,
             samples: vec![7],
             loop_start: None,
+            loop_end: None,
+            loop_invalid: false,
         },
     )
     .unwrap();

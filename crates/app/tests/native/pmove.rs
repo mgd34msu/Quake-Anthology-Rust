@@ -364,6 +364,8 @@ pub(super) fn commands_move_a_native_client_once() {
                                 channels: qa_core::primitives::PcmChannels::Mono,
                                 samples: vec![12000; 22050],
                                 loop_start: None,
+                                loop_end: None,
+                                loop_invalid: false,
                             },
                         )
                     })

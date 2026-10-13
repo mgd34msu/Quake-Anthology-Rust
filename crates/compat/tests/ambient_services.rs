@@ -106,6 +106,8 @@ fn bank() -> Arc<qa_audio::Bank> {
                         channels: PcmChannels::Mono,
                         samples: vec![1000, 2000, 1000],
                         loop_start,
+                        loop_end: None,
+                        loop_invalid: false,
                     },
                 )
             })

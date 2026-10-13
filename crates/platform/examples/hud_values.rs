@@ -98,7 +98,8 @@ fn bench() -> Result<(), Box<dyn std::error::Error>> {
     }
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"64 shared HUD snapshots with192 numeric values each; no native module or HUD drawing\",\"warmup\":60,\"frames\":600,\"allocations_or_reallocations\":{allocations},\"requested_bytes\":{bytes},\"allocation_positive_control\":1,\"checksum\":{checksum},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"64 shared HUD snapshots with {} numeric values each; no native module or HUD drawing\",\"warmup\":60,\"frames\":600,\"allocations_or_reallocations\":{allocations},\"requested_bytes\":{bytes},\"allocation_positive_control\":1,\"checksum\":{checksum},\"median_ns\":{},\"p99_ns\":{}}}",
+        runtime.catalog.hud.values.capacity(),
         (samples[299] + samples[300]) / 2,
         samples[593]
     );

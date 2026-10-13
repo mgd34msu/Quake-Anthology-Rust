@@ -1,4 +1,4 @@
-//! Cached QuakeWorld client ABI over the existing entity/player owners.
+//! Cached QC player publication and QuakeWorld client lifecycle ABI.
 use super::{Vm, definition};
 use crate::services::{CallContext, CallError, EngineServices};
 use qa_core::primitives::{
@@ -50,6 +50,12 @@ impl ClientGlobals {
             Err(CallError::Unsupported)
         }
     }
+    fn publication_rules(&self) -> Result<RuleSetId, CallError> {
+        match self.rules {
+            Some(rules @ (RuleSetId::Quake | RuleSetId::QuakeWorld)) => Ok(rules),
+            _ => Err(CallError::Unsupported),
+        }
+    }
     fn callback(&self, event: ClientCallback) -> Result<usize, CallError> {
         self.require()?;
         let index = match event {
@@ -69,7 +75,6 @@ impl ClientGlobals {
 
 impl Vm {
     pub fn client_count(&self) -> Result<usize, CallError> {
-        self.client_globals.require()?;
         self.projection.quakec_client_count()
     }
     pub fn bind_client(
@@ -87,18 +92,28 @@ impl Vm {
         vars: &qa_console::cvars::Cvars,
         registry: &qa_gameplay::registry::Registry,
     ) -> Result<(), CallError> {
-        self.client_globals.require()?;
+        let source = self.client_globals.publication_rules()?;
         let handle = |name| vars.find(name).ok_or(CallError::Cvar);
         self.client_globals.settings = Some([
             handle("sv_maxspeed")?,
             handle("cl_rollangle")?,
             handle("cl_rollspeed")?,
         ]);
-        self.projection.quakec_bind_client_registry(registry)
+        self.projection
+            .quakec_bind_client_registry(registry, source)
     }
-    pub fn bind_player_values(&mut self, stats: &[ValueBinding]) -> Result<(), CallError> {
-        self.client_globals.require()?;
-        self.projection.quakec_bind_player_values(stats)
+    pub fn bind_player_values(
+        &mut self,
+        stats: &[ValueBinding],
+        items: Option<ValueBinding>,
+    ) -> Result<(), CallError> {
+        let source = self.client_globals.publication_rules()?;
+        let items = if source == RuleSetId::QuakeWorld {
+            stats.get(15).copied()
+        } else {
+            items
+        };
+        self.projection.quakec_bind_player_values(stats, items)
     }
     pub fn client_callback(&self, event: ClientCallback) -> Result<CallbackId, CallError> {
         let global = self.client_globals.callback(event)?;

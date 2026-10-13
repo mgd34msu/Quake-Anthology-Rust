@@ -612,6 +612,8 @@ fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules(
                             channels: PcmChannels::Mono,
                             samples: vec![1000; 4],
                             loop_start: None,
+                            loop_end: None,
+                            loop_invalid: false,
                         },
                     )],
                 )
@@ -2569,6 +2571,8 @@ fn bind_native_message_sound(calls: &mut QuakeCCalls<'_, '_>) -> SoundId {
                     channels: PcmChannels::Mono,
                     samples: vec![100; 4],
                     loop_start: None,
+                    loop_end: None,
+                    loop_invalid: false,
                 },
             )],
         )

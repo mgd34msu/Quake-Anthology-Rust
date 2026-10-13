@@ -83,7 +83,15 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
         .unwrap();
         host.local_clients[..2].copy_from_slice(&ids.map(Some));
         let mut source = Source::default();
-        host.runtime.prediction[0].player.inventory.item_counts[1] = 4;
+        // Keep a foreign inventory row; NQ's later clientdata legitimately
+        // replaces its own item mask while preserving this independent row.
+        let item = host
+            .runtime
+            .catalog
+            .registry
+            .native_item(RuleSetId::Quake2, 1)
+            .unwrap();
+        host.runtime.prediction[0].player.inventory.item_counts[item.0 as usize] = 4;
         host.runtime
             .print_event(Some(stalled), PrintKind::Center, format_args!("leased"));
         host.frame(&mut source, true);
@@ -223,7 +231,7 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
             host.runtime.server.clients[stalled.0 as usize]
                 .hud
                 .inventory
-                .item_counts[1],
+                .item_counts[item.0 as usize],
             4
         );
         assert_eq!(

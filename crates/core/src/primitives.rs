@@ -183,10 +183,18 @@ pub struct Pcm {
     pub channels: PcmChannels,
     pub samples: Vec<i16>,
     pub loop_start: Option<usize>,
+    /// Exclusive native cue/LIST extent, independent of the full waveform.
+    pub loop_end: Option<usize>,
+    /// Optional metadata was malformed. The waveform remains available to
+    /// capabilities that ignore cues; cue-aware admission rejects it.
+    pub loop_invalid: bool,
 }
 impl Pcm {
     pub fn frames(&self) -> usize {
         self.samples.len() / self.channels as usize
+    }
+    pub fn cue_frames(&self) -> usize {
+        self.loop_end.unwrap_or_else(|| self.frames())
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1154,6 +1162,8 @@ pub struct LoopPlayback {
     pub origin: LoopOrigin,
     /// Native CLIENT imports latch their audible mix only on Respatialize.
     pub latched: bool,
+    /// Use the native cue/LIST sample extent rather than the full waveform.
+    pub cue_extent: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1574,13 +1584,49 @@ pub enum ValueWidth {
     Signed32,
     Float32,
 }
+/// Native arrays and extra packet fields reserve rows in the same value bank.
+/// `items` is a clientdata field, independent of the native stat ordinals.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeValueLayout {
+    pub stats: u32,
+    pub persistent: u32,
+    pub width: ValueWidth,
+    pub items: bool,
+}
+/// Stat ordinals supplied by NQ clientdata, independently of separate updates.
+pub const NQ_PACKET_STATS: [usize; 10] = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 /// Native stat/persistent counts and module value widths, in RuleSetId order.
-pub const NATIVE_VALUE_LAYOUT: [(u32, u32, ValueWidth); 5] = [
-    (32, 0, ValueWidth::Signed32),
-    (32, 0, ValueWidth::Signed32),
-    (32, 0, ValueWidth::Signed16),
-    (64, 0, ValueWidth::Signed16),
-    (16, 16, ValueWidth::Signed32),
+pub const NATIVE_VALUE_LAYOUT: [NativeValueLayout; 5] = [
+    NativeValueLayout {
+        stats: 32,
+        persistent: 0,
+        width: ValueWidth::Signed32,
+        items: true,
+    },
+    NativeValueLayout {
+        stats: 32,
+        persistent: 0,
+        width: ValueWidth::Signed32,
+        items: false,
+    },
+    NativeValueLayout {
+        stats: 32,
+        persistent: 0,
+        width: ValueWidth::Signed16,
+        items: false,
+    },
+    NativeValueLayout {
+        stats: 64,
+        persistent: 0,
+        width: ValueWidth::Signed16,
+        items: false,
+    },
+    NativeValueLayout {
+        stats: 16,
+        persistent: 16,
+        width: ValueWidth::Signed32,
+        items: false,
+    },
 ];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueReset {

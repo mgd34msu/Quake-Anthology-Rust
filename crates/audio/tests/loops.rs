@@ -20,6 +20,8 @@ fn mixer(samples: &[i16], loop_start: Option<usize>, voices: usize) -> Mixer {
                 channels: PcmChannels::Mono,
                 samples: samples.to_vec(),
                 loop_start,
+                loop_end: None,
+                loop_invalid: false,
             },
         )],
     )
@@ -145,6 +147,69 @@ fn native_loops_use_painted_time_and_full_sample_wrap_ignoring_wav_cues() {
         assert!(mixer.paint(&mut output[..2]));
         assert_eq!(output[..2], [expected(203); 2]);
         assert_eq!(mixer.counts.started, 1);
+    }
+}
+
+#[test]
+fn shared_waveform_retains_independent_cue_and_full_painted_loop_periods() {
+    let rate = NonZeroU32::new(44_100).unwrap();
+    let bank = Arc::new(
+        Bank::load(
+            rate,
+            vec![(
+                "sound/loop.wav".into(),
+                Pcm {
+                    rate,
+                    channels: PcmChannels::Mono,
+                    samples: vec![101, 203, 307, 409],
+                    loop_start: Some(1),
+                    loop_end: Some(3),
+                    loop_invalid: false,
+                },
+            )],
+        )
+        .unwrap(),
+    );
+    for (source, sequence, gain, scale) in [
+        (RuleSetId::Quake2, [101, 203, 307, 101, 203, 307], 127, 256),
+        (RuleSetId::Quake3, [101, 203, 307, 409, 101, 203], 63, 255),
+    ] {
+        let mut mixer = Mixer::load(Arc::clone(&bank), 1, 1);
+        listen(&mut mixer, 1.0);
+        assert!(mixer.sound(native_loop(&mixer, source, 4)));
+        let mut output = [0; 12];
+        assert!(mixer.paint(&mut output));
+        let expected: Vec<_> = sequence
+            .into_iter()
+            .flat_map(|sample| [integer_sample(sample, gain, 1.0, scale); 2])
+            .collect();
+        assert_eq!(output.as_slice(), expected, "{source:?}");
+    }
+    assert_eq!(
+        bank.sample(bank.find("sound/loop.wav").unwrap())
+            .unwrap()
+            .samples,
+        [101, 203, 307, 409]
+    );
+    let mut mixed = Mixer::load(bank, 2, 1);
+    listen(&mut mixed, 1.0);
+    let full = native_loop(&mixed, RuleSetId::Quake3, 4);
+    let mut cue = native_loop(&mixed, RuleSetId::Quake3, 5);
+    cue.looping.as_mut().unwrap().cue_extent = true;
+    assert!(mixed.sound(full));
+    assert!(mixed.sound(cue));
+    let mut output = [0; 12];
+    assert!(mixed.paint(&mut output));
+    let first_shift = |sample: i16| (i64::from(sample) * (63 * 255)) >> 8;
+    for (frame, (full, cue)) in output.chunks_exact(2).zip(
+        [101, 203, 307, 409, 101, 203]
+            .into_iter()
+            .zip([101, 203, 307, 101, 203, 307]),
+    ) {
+        assert_eq!(
+            frame,
+            [((first_shift(full) + first_shift(cue)) >> 8) as i16; 2]
+        );
     }
 }
 
@@ -340,6 +405,8 @@ fn changing_a_native_loop_pcm_reuses_only_its_emitter_voice() {
                         channels: PcmChannels::Mono,
                         samples: vec![value],
                         loop_start: None,
+                        loop_end: None,
+                        loop_invalid: false,
                     },
                 )
             })

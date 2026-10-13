@@ -486,6 +486,7 @@ fn client_loop_controls_are_never_reinterpreted_as_native_static_sound() {
         clamp_pan: false,
         origin: LoopOrigin::Accepted,
         latched: false,
+        cue_extent: true,
     };
     for protocol in [
         Protocol::NetQuake15,

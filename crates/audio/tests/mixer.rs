@@ -13,6 +13,8 @@ fn mixer(pcm: Vec<i16>, loop_start: Option<usize>, voices: usize) -> Mixer {
                 channels: PcmChannels::Mono,
                 samples: pcm,
                 loop_start,
+                loop_end: None,
+                loop_invalid: false,
             },
         )],
     )

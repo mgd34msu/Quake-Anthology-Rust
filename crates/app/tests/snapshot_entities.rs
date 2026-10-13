@@ -1239,6 +1239,8 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
                 channels: qa_core::primitives::PcmChannels::Mono,
                 samples: vec![1024; 8],
                 loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
             },
         )],
     )?;

@@ -176,6 +176,8 @@ fn pcm(rate: NonZeroU32) -> Pcm {
         channels: PcmChannels::Mono,
         samples: vec![1000, -1000],
         loop_start: None,
+        loop_end: None,
+        loop_invalid: false,
     }
 }
 

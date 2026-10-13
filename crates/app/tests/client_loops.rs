@@ -62,6 +62,8 @@ fn fixture(
                         channels: PcmChannels::Mono,
                         samples: vec![1000, -500, 2000, 300, -1700],
                         loop_start: Some(2),
+                        loop_end: None,
+                        loop_invalid: false,
                     },
                 ),
                 (
@@ -71,6 +73,8 @@ fn fixture(
                         channels: PcmChannels::Mono,
                         samples: vec![8000, -4000, 6000, 2400],
                         loop_start: None,
+                        loop_end: None,
+                        loop_invalid: false,
                     },
                 ),
             ],

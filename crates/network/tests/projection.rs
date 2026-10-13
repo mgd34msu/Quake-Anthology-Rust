@@ -10,6 +10,143 @@ use qa_network::{
 };
 
 #[test]
+fn nq_clientdata_sparse_values_keep_native_wire_and_raw_items()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{ModelRef, ModuleId, ResourceNamespace};
+    let stats: Vec<_> = (0..32)
+        .map(|index| ValueBinding {
+            id: ValueId(index),
+            width: ValueWidth::Signed32,
+            reset: ValueReset::Life,
+        })
+        .collect();
+    let items = ValueBinding {
+        id: ValueId(32),
+        width: ValueWidth::Signed32,
+        reset: ValueReset::Life,
+    };
+    let projection = PlayerProjection::load_values(Protocol::NetQuake15, &stats, &[], Some(items));
+    let mut source = PlayerState::with_capacity(0, 0, 33);
+    source.health = -12;
+    source.armor = 55;
+    source.view_offset.0[2] = 22.0;
+    source.view_weapon.frame = 6;
+    source.view_weapon.model = ModelRef::native(ResourceNamespace::Module(ModuleId(7)), 9);
+    for (index, value) in [
+        (0, 777),
+        (2, 999),
+        (3, 17),
+        (4, 888),
+        (5, 999),
+        (6, 42),
+        (7, 0),
+        (8, 255),
+        (9, 1),
+        (10, 999),
+        (15, 0xffff_ffff),
+    ] {
+        assert!(stats[index].import(&mut source.values, value));
+    }
+    assert!(items.import(&mut source.values, 0xa801_2345));
+    let context = PlayerContext {
+        weapon_number: Some(32),
+        ..Default::default()
+    };
+    let mut words = [0; states::NQ_PLAYER_WORDS];
+    assert!(projection.reduce(&source, &context, &mut words, |model| Some(model.ordinal)));
+    let mut bytes = [0; 64];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    states::write_nq_player(&mut writer, &words)?;
+    let length = writer.size();
+    // Native svc_clientdata, flags, items, optional frame/armor/model, then
+    // signed health, current ammo, four ammo counts and active weapon.
+    assert_eq!(
+        &bytes[..length],
+        &[
+            15, 0, 0x72, 0x45, 0x23, 1, 0xa8, 6, 55, 9, 0xf4, 0xff, 17, 42, 0, 255, 1, 32
+        ]
+    );
+    let decoded =
+        states::read_nq_player(&mut Reader::new(&bytes[..length], Encoding::Bytes), false)?;
+    let mut destination = PlayerState::with_capacity(0, 0, 33);
+    destination.movement_rules = RuleSetId::Quake3;
+    destination.trace_rules = RuleSetId::Quake2;
+    destination.body.position = Vec3([123.0; 3]);
+    destination.view_angles = Vec3([45.0; 3]);
+    stats[1].import(&mut destination.values, 19);
+    stats[15].import(&mut destination.values, 77);
+    assert!(projection.apply(
+        &decoded,
+        &mut destination,
+        &mut PlayerContext::default(),
+        ResourceNamespace::Client(qa_core::primitives::ClientId(3)),
+        |_| None
+    ));
+    assert_eq!(items.export(&destination.values), Some(0xa801_2345));
+    for (index, value) in [
+        (0, (-12i32) as u32),
+        (2, 9),
+        (3, 17),
+        (4, 55),
+        (5, 6),
+        (6, 42),
+        (7, 0),
+        (8, 255),
+        (9, 1),
+        (10, 32),
+    ] {
+        assert_eq!(stats[index].export(&destination.values), Some(value));
+    }
+    assert_eq!(stats[1].export(&destination.values), Some(19));
+    assert_eq!(stats[15].export(&destination.values), Some(77));
+    assert_eq!(
+        (destination.movement_rules, destination.trace_rules),
+        (RuleSetId::Quake3, RuleSetId::Quake2)
+    );
+    assert_eq!(destination.body.position, Vec3([123.0; 3]));
+    assert_eq!(destination.view_angles, Vec3([45.0; 3]));
+    stats[10].import(&mut source.values, 2);
+    assert!(projection.reduce(
+        &source,
+        &PlayerContext::default(),
+        &mut words,
+        |model| Some(model.ordinal)
+    ));
+    assert_eq!(words[18], 2);
+    Ok(())
+}
+
+#[test]
+fn nq_clientdata_binding_capacity_rejects_before_common_fields_change() {
+    let stats: Vec<_> = (0..32)
+        .map(|index| ValueBinding {
+            id: ValueId(index),
+            width: ValueWidth::Signed32,
+            reset: ValueReset::Life,
+        })
+        .collect();
+    let items = ValueBinding {
+        id: ValueId(32),
+        width: ValueWidth::Signed32,
+        reset: ValueReset::Life,
+    };
+    let projection = PlayerProjection::load_values(Protocol::NetQuake15, &stats, &[], Some(items));
+    let mut target = PlayerState::with_capacity(0, 0, 32);
+    target.health = 81;
+    target.armor = 53;
+    target.body.velocity = Vec3([12.0; 3]);
+    assert!(!projection.apply(
+        &[0; states::NQ_PLAYER_WORDS],
+        &mut target,
+        &mut PlayerContext::default(),
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| None
+    ));
+    assert_eq!((target.health, target.armor), (81, 53));
+    assert_eq!(target.body.velocity, Vec3([12.0; 3]));
+}
+
+#[test]
 fn numeric_stat_projection_preserves_independent_body_view_and_movement_state() {
     for protocol in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
         let mut source = player();
@@ -124,7 +261,7 @@ fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values(
                 })
                 .collect()
         });
-        let projection = PlayerProjection::load_values(protocol, &bindings[0], &bindings[1]);
+        let projection = PlayerProjection::load_values(protocol, &bindings[0], &bindings[1], None);
         let mut source = player();
         source.values = qa_core::primitives::ValueBank::load(first as usize);
         source.health = 123;
@@ -737,6 +874,17 @@ fn import_bindings_use_the_one_value_bank_and_short_records_do_not_mutate() {
     words[48] = 65534;
     words[8] = (-17i32) as u32;
     words[20] = 1023;
+    assert!(!projection.apply(
+        &words,
+        &mut p,
+        &mut c,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| None
+    ));
+    assert_eq!(p.health, 9876);
+    assert_eq!(p.body.position, Vec3([999.; 3]));
+    assert_eq!(p.values.get(ValueId(2)), Some(NumericValue::integer(0)));
+    let projection = PlayerProjection::load(Protocol::Quake3_68, &[(48, binding), (1000, binding)]);
     assert!(projection.apply(
         &words,
         &mut p,

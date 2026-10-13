@@ -539,17 +539,12 @@ impl FrameHost {
                         .map_err(|e| format!("module player values: {e:?}"))?;
                 }
                 Program::QuakeC(qc) => {
-                    if request.context.native_rules == RuleSetId::QuakeWorld {
-                        qc.vm
-                            .bind_player_values(&values.stats)
-                            .map_err(|e| format!("module player values: {e:?}"))?;
-                        qc.vm
-                            .bind_client_settings(
-                                &host.console.cvars,
-                                &host.runtime.catalog.registry,
-                            )
-                            .map_err(|e| format!("module client settings: {e:?}"))?;
-                    }
+                    qc.vm
+                        .bind_player_values(&values.stats, values.items)
+                        .map_err(|e| format!("module player values: {e:?}"))?;
+                    qc.vm
+                        .bind_client_settings(&host.console.cvars, &host.runtime.catalog.registry)
+                        .map_err(|e| format!("module client settings: {e:?}"))?;
                 }
             }
             let state = if !request.prepare.is_empty()

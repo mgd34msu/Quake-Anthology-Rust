@@ -272,7 +272,12 @@ impl SnapshotBinding {
             applied: 0,
             rejected: 0,
             native_client,
-            projection: PlayerProjection::load_values(protocol, &native.stats, &native.persistent),
+            projection: PlayerProjection::load_values(
+                protocol,
+                &native.stats,
+                &native.persistent,
+                native.items,
+            ),
             presentation: seat.map(|seat| ClientPresentation {
                 seat,
                 appearance: qa_gameplay::rules::appearance::policy(protocol.rule_set()),
@@ -505,6 +510,8 @@ impl SnapshotBinding {
         incoming: Incoming<'_>,
         player: &mut PlayerState,
         numbers: &crate::output_namespace::NativeNumbers,
+        hud: &qa_ui::hud::HudBindings,
+        time: qa_core::sys_events::EventTime,
     ) {
         let Some(client) = self.presentation.as_mut() else {
             return;
@@ -528,6 +535,10 @@ impl SnapshotBinding {
             _ => (None, None),
         };
         if let Some(words) = words {
+            if !hud.native_packet_fits(self.protocol.rule_set(), player) {
+                self.rejected += 1;
+                return;
+            }
             if let Some(frame) = snapshot
                 && client.sequence != Some(frame.sequence())
             {
@@ -555,7 +566,8 @@ impl SnapshotBinding {
                 &mut client.context,
                 ResourceNamespace::Client(self.client),
                 |number| numbers.entity(number),
-            ) {
+            ) && hud.import_native_packet(self.protocol.rule_set(), self.client, player, time)
+            {
                 self.applied += 1;
             } else {
                 self.rejected += 1;

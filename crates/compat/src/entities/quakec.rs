@@ -14,6 +14,7 @@ struct ClientFields {
     ammo: Option<usize>,
     ammo_counts: [Option<usize>; 4],
     items: Option<usize>,
+    items2: Option<usize>,
     weapon: Option<usize>,
     weapon_model: Option<usize>,
     weapon_frame: Option<usize>,
@@ -33,6 +34,7 @@ struct ClientFields {
     max_speed: Option<usize>,
     touch: Option<usize>,
     stats: [Option<qa_core::primitives::ValueBinding>; 32],
+    items_binding: Option<qa_core::primitives::ValueBinding>,
     extra_stats: [Option<u32>; 4],
     server_flags: u32,
     player_stats: Option<qa_gameplay::registry::NativePlayerBindings>,
@@ -53,6 +55,7 @@ impl ClientFields {
             ]
             .map(|name| field(name, 2)),
             items: field(b"items", 2),
+            items2: field(b"items2", 2),
             weapon: field(b"weapon", 2),
             weapon_model: field(b"weaponmodel", 1),
             weapon_frame: field(b"weaponframe", 2),
@@ -72,6 +75,7 @@ impl ClientFields {
             max_speed: field(b"maxspeed", 2),
             touch: field(b"touch", 6),
             stats: [None; 32],
+            items_binding: None,
             extra_stats: [None; 4],
             server_flags: 0,
             player_stats: None,
@@ -417,11 +421,7 @@ impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
 
 impl EntityProjection {
     pub(crate) fn quakec_client_count(&self) -> Result<usize, CallError> {
-        let layout = self.quakec_layout()?;
-        if !layout.integer_motion {
-            return Err(CallError::Unsupported);
-        }
-        layout.client_edicts.ok_or(CallError::Entity)
+        self.quakec_layout()?.client_edicts.ok_or(CallError::Entity)
     }
     pub(crate) fn quakec_check_address(
         &self,
@@ -457,6 +457,7 @@ impl EntityProjection {
     pub(crate) fn quakec_bind_player_values(
         &mut self,
         stats: &[qa_core::primitives::ValueBinding],
+        items: Option<qa_core::primitives::ValueBinding>,
     ) -> Result<(), CallError> {
         self.quakec_client_count()?;
         let mut layout = self.quakec_layout()?;
@@ -466,6 +467,7 @@ impl EntityProjection {
         for (to, value) in layout.client.stats.iter_mut().zip(stats) {
             *to = Some(*value);
         }
+        layout.client.items_binding = items;
         self.schema = EntitySchema::QuakeC(layout);
         Ok(())
     }
@@ -483,11 +485,15 @@ impl EntityProjection {
     pub(crate) fn quakec_bind_client_registry(
         &mut self,
         registry: &qa_gameplay::registry::Registry,
+        source: RuleSetId,
     ) -> Result<(), CallError> {
         self.quakec_client_count()?;
         let mut layout = self.quakec_layout()?;
         layout.client.player_stats =
-            qa_gameplay::registry::NativePlayerBindings::load(RuleSetId::QuakeWorld, registry);
+            qa_gameplay::registry::NativePlayerBindings::load(source, registry);
+        if source != RuleSetId::Quake {
+            layout.client.items2 = None;
+        }
         self.schema = EntitySchema::QuakeC(layout);
         Ok(())
     }
@@ -1630,9 +1636,6 @@ impl EntityProjection {
             return Ok(());
         }
         let layout = self.quakec_layout()?;
-        if !layout.integer_motion {
-            return Ok(());
-        }
         let fields = layout.client;
         let number = |field: Option<usize>| {
             field
@@ -1645,6 +1648,7 @@ impl EntityProjection {
         let armor_type = number(fields.armor_type)?;
         let frags = integer(fields.frags)?;
         let items = integer(fields.items)?.map(|value| value as u32);
+        let items2 = integer(fields.items2)?.map(|value| value as u32);
         let weapon = integer(fields.weapon)?.map(|value| value as u32);
         let ammo = fields.ammo_counts.map(integer);
         let current_ammo = integer(fields.ammo)?;
@@ -1724,15 +1728,25 @@ impl EntityProjection {
             stats[10] = Some(value);
         }
         stats[11..15].copy_from_slice(&fields.extra_stats);
-        if let Some(items) = items {
-            stats[15] = Some(items | fields.server_flags.wrapping_shl(28));
-        }
+        let items = items.map(|items| {
+            items
+                | items2.map_or_else(
+                    || fields.server_flags.wrapping_shl(28),
+                    |items2| items2.wrapping_shl(23),
+                )
+        });
         let player = &mut services.server.clients[id.0 as usize].player;
         if fields
             .stats
             .into_iter()
             .flatten()
             .any(|binding| binding.id.0 as usize >= player.values.capacity())
+        {
+            return Err(CallError::Capacity);
+        }
+        if fields
+            .items_binding
+            .is_some_and(|binding| binding.id.0 as usize >= player.values.capacity())
         {
             return Err(CallError::Capacity);
         }
@@ -1752,6 +1766,16 @@ impl EntityProjection {
                 ) {
                     return Err(CallError::Capacity);
                 }
+            }
+            if let Some(items) = items
+                && !native_stats.import_items(
+                    fields.items_binding,
+                    items,
+                    player,
+                    services.server.world_time,
+                )
+            {
+                return Err(CallError::Capacity);
             }
         }
         if let Some(value) = armor_type {

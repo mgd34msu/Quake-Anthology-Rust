@@ -8,7 +8,7 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
     let names = NameTable::load(Registry::names_needed()).unwrap();
     let registry = Registry::load(&names).unwrap();
     let bindings = HudBindings::load(&registry, &[]).unwrap();
-    assert_eq!(bindings.values.capacity(), 192);
+    assert_eq!(bindings.values.capacity(), 193);
     let mut player =
         PlayerState::with_capacity(registry.items.len() + 1, 16, bindings.values.capacity());
     let mut state = bindings.state(16, NameId(1));
@@ -65,8 +65,8 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
     player.reset();
     state.reset(&mut texts);
     assert!(texts.get(text).is_none());
-    assert_eq!(player.values.capacity(), 192);
-    assert_eq!(state.values.capacity(), 192);
+    assert_eq!(player.values.capacity(), 193);
+    assert_eq!(state.values.capacity(), 193);
     assert_eq!(held.export(&player.values), Some(0));
 }
 
@@ -88,11 +88,42 @@ fn extension_float_bits_and_capacity_failures_are_independent_of_native_rules() 
         layout.reset_life(&mut source);
         assert_eq!(field.export(&source), Some(bits));
     }
-    let mut small = ValueBank::load(192);
+    let mut small = ValueBank::load(layout.capacity() - 1);
     assert_eq!(small.copy_from(&source), 1);
     assert_eq!(field.export(&small), None);
     assert!(!field.import(&mut small, 1));
     assert!(NativeValues::load(RuleSetId::Quake3, ValueId(u32::MAX)).is_none());
     let module = NativeValues::load(RuleSetId::Quake2, ValueId(0)).unwrap();
     assert_eq!(module.stats[18].id, ValueId(18));
+}
+
+#[test]
+fn netquake_clientdata_mask_has_its_own_life_binding_without_moving_native_ordinals() {
+    let layout = ValueLayout::load(&[]).unwrap();
+    let nq = layout.native(RuleSetId::Quake);
+    let qw = layout.native(RuleSetId::QuakeWorld);
+    let q3 = layout.native(RuleSetId::Quake3);
+    assert_eq!(nq.stats.len(), 32);
+    assert!(nq.persistent.is_empty());
+    let items = nq.items.unwrap();
+    assert_eq!(items.id, ValueId(32));
+    assert_ne!(items.id, nq.stats[15].id);
+    assert_ne!(items.id, qw.stats[0].id);
+    assert_eq!(qw.stats[0].id, ValueId(33));
+    assert!(
+        RuleSetId::ALL
+            .into_iter()
+            .filter(|rules| *rules != RuleSetId::Quake)
+            .all(|rules| layout.native(rules).items.is_none())
+    );
+    let mut bank = ValueBank::load(layout.capacity());
+    nq.stats[15].import(&mut bank, 0xffff_ffff);
+    items.import(&mut bank, 0xa801_2345);
+    qw.stats[15].import(&mut bank, 2 | 256);
+    q3.persistent[15].import(&mut bank, 0x8123_4567);
+    nq.reset_life(&mut bank);
+    assert_eq!(items.export(&bank), Some(0));
+    assert_eq!(nq.stats[15].export(&bank), Some(0));
+    assert_eq!(qw.stats[15].export(&bank), Some(2 | 256));
+    assert_eq!(q3.persistent[15].export(&bank), Some(0x8123_4567));
 }

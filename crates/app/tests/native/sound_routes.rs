@@ -540,6 +540,8 @@ pub(super) fn remote_native_emitters_keep_the_module_entity_channel() {
                                 channels: PcmChannels::Mono,
                                 samples: vec![1024; 2],
                                 loop_start: None,
+                                loop_end: None,
+                                loop_invalid: false,
                             },
                         )
                     })
@@ -653,6 +655,8 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
                                 channels: PcmChannels::Mono,
                                 samples: vec![1000; 2],
                                 loop_start: None,
+                                loop_end: None,
+                                loop_invalid: false,
                             },
                         )
                     })
@@ -852,6 +856,8 @@ pub(super) fn unsupported_resource_names_drop_only_the_unrepresentable_client_de
                             channels: PcmChannels::Mono,
                             samples: vec![1; 2],
                             loop_start: None,
+                            loop_end: None,
+                            loop_invalid: false,
                         },
                     )
                 })
@@ -935,6 +941,8 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
                                 channels: PcmChannels::Mono,
                                 samples: vec![1024; 2],
                                 loop_start: None,
+                                loop_end: None,
+                                loop_invalid: false,
                             },
                         )
                     })
@@ -1079,6 +1087,8 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                                 channels: PcmChannels::Mono,
                                 samples: vec![1024; 2],
                                 loop_start: None,
+                                loop_end: None,
+                                loop_invalid: false,
                             },
                         )
                     })
@@ -1375,6 +1385,8 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
                                 channels: PcmChannels::Mono,
                                 samples: vec![1024; 2],
                                 loop_start: None,
+                                loop_end: None,
+                                loop_invalid: false,
                             },
                         )
                     })
@@ -1608,6 +1620,8 @@ pub(super) fn split_seat_native_dupes_wait_for_ack_and_play_once() {
                     channels: PcmChannels::Mono,
                     samples: vec![1000; 2],
                     loop_start: None,
+                    loop_end: None,
+                    loop_invalid: false,
                 },
             )],
         )

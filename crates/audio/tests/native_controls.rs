@@ -22,6 +22,8 @@ fn mixer(voices: usize) -> Mixer {
                     channels: PcmChannels::Mono,
                     samples: vec![1001; 128],
                     loop_start: Some(5),
+                    loop_end: None,
+                    loop_invalid: false,
                 },
             ),
             (
@@ -31,6 +33,8 @@ fn mixer(voices: usize) -> Mixer {
                     channels: PcmChannels::Mono,
                     samples: vec![-1001; 128],
                     loop_start: None,
+                    loop_end: None,
+                    loop_invalid: false,
                 },
             ),
         ],

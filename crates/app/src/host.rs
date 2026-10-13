@@ -820,6 +820,8 @@ impl FrameHost {
                                         incoming,
                                         &mut self.runtime.prediction[seat.index()].player,
                                         &self.runtime.native_numbers[id.0 as usize],
+                                        &self.runtime.catalog.hud,
+                                        time,
                                     );
                                 }
                             }

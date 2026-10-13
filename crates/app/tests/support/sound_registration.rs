@@ -22,3 +22,22 @@ pub fn wav_channels(channels: u16) -> Vec<u8> {
     }
     bytes
 }
+
+/// Full waveform has four frames; the native Quake cue interval is [1,3).
+pub fn cue_wav() -> Vec<u8> {
+    let mut bytes = wav();
+    bytes[50..52].copy_from_slice(&7777i16.to_le_bytes());
+    bytes.extend(b"cue ");
+    bytes.extend(28u32.to_le_bytes());
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend([0; 20]);
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend(b"LIST");
+    bytes.extend(24u32.to_le_bytes());
+    bytes.extend([0; 16]);
+    bytes.extend(2u32.to_le_bytes());
+    bytes.extend(b"mark");
+    let length = bytes.len() as u32 - 8;
+    bytes[4..8].copy_from_slice(&length.to_le_bytes());
+    bytes
+}

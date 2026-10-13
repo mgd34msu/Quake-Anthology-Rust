@@ -66,6 +66,7 @@ const FIELDS: &[(u16, u16, &[u8])] = &[
     (2, 63, b"skin"),
     (2, 64, b"effects"),
     (3, 65, b"avelocity"),
+    (2, 68, b"items2"),
 ];
 
 fn vm(mutate: impl FnOnce(&mut Image)) -> Vm {
@@ -166,6 +167,13 @@ fn with_client(
     vm: &mut Vm,
     run: impl FnOnce(&mut Vm, &mut EngineServices<'_>, CallContext, u32, ClientId),
 ) {
+    with_native_client(vm, RuleSetId::QuakeWorld, run)
+}
+fn with_native_client(
+    vm: &mut Vm,
+    source: RuleSetId,
+    run: impl FnOnce(&mut Vm, &mut EngineServices<'_>, CallContext, u32, ClientId),
+) {
     let mut names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
     let registry = qa_gameplay::registry::Registry::load(&names).unwrap();
     let mut server = Server::load(
@@ -174,14 +182,14 @@ fn with_client(
         registry.items.len() + 1,
         32,
         registry.weapons.len() + 1,
-        32,
+        33,
     )
     .unwrap();
     let context = CallContext {
         module: ModuleId(4),
         clock: ThinkTime::Seconds(10.0),
         server_frame: 1,
-        native_rules: RuleSetId::QuakeWorld,
+        native_rules: source,
         trace_rules: RuleSetId::Quake2,
         sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
         console: Context {
@@ -200,25 +208,31 @@ fn with_client(
         module: context.module,
         slot: 0,
     });
-    vm.seed_entities(&server.entities, context.module, context.native_rules, 2)
-        .unwrap();
-    bind_callbacks(vm);
     let native_identity = NativeEntity {
         module: context.module,
-        slot: 17,
+        slot: if source == RuleSetId::QuakeWorld {
+            17
+        } else {
+            2
+        },
     };
     let client = server
         .connect(Connection::Local, context.module, Some(native_identity))
         .unwrap();
     let entity = server.clients[client.0 as usize].entity;
-    assert_ne!(entity.slot, 17);
-    vm.bind_client(&server.entities, native_identity, entity)
+    assert_ne!(entity.slot as i32, native_identity.slot);
+    vm.seed_entities(&server.entities, context.module, context.native_rules, 2)
         .unwrap();
+    bind_callbacks(vm);
+    if source == RuleSetId::QuakeWorld {
+        vm.bind_client(&server.entities, native_identity, entity)
+            .unwrap();
+    }
     let player = &mut server.clients[client.0 as usize].player;
     player.movement_rules = RuleSetId::Quake3;
     player.trace_rules = RuleSetId::Quake2;
     qa_movement::set_bounds(player);
-    let native = 17 * vm.stride as u32;
+    let native = native_identity.slot as u32 * vm.stride as u32;
     let mut cvars = Cvars::new().unwrap();
     vm.bind_client_settings(&cvars, &registry).unwrap();
     let values: Vec<_> = (0..32)
@@ -228,7 +242,15 @@ fn with_client(
             reset: ValueReset::Life,
         })
         .collect();
-    vm.bind_player_values(&values).unwrap();
+    vm.bind_player_values(
+        &values,
+        (source == RuleSetId::Quake).then_some(ValueBinding {
+            id: ValueId(32),
+            width: ValueWidth::Signed32,
+            reset: ValueReset::Life,
+        }),
+    )
+    .unwrap();
     let mut input = qa_input::Input::load();
     let mut commands = CommandBuffer::new();
     let vfs = qa_content::vfs::Vfs::default();
@@ -723,7 +745,7 @@ fn missing_client_abi_is_only_rejected_when_selected_and_nq_is_explicit() {
     });
     nq.seed_entities(&entities, ModuleId(4), RuleSetId::Quake, 1)
         .unwrap();
-    assert_eq!(nq.client_count(), Err(CallError::Unsupported));
+    assert_eq!(nq.client_count(), Ok(1));
     assert_eq!(
         nq.client_callback(ClientCallback::Connect),
         Err(CallError::Unsupported)
@@ -733,93 +755,257 @@ fn missing_client_abi_is_only_rejected_when_selected_and_nq_is_explicit() {
 
 #[test]
 fn absent_native_player_fields_preserve_common_and_raw_state() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|image| {
+            let absent = [
+                b"health".as_slice(),
+                b"armorvalue",
+                b"frags",
+                b"currentammo",
+                b"ammo_shells",
+                b"ammo_nails",
+                b"ammo_rockets",
+                b"ammo_cells",
+                b"items",
+                b"weapon",
+                b"weaponmodel",
+                b"weaponframe",
+            ];
+            image.fielddefs = image
+                .fielddefs
+                .iter()
+                .copied()
+                .filter(|definition| {
+                    !image
+                        .names
+                        .get(definition.name)
+                        .is_some_and(|name| absent.contains(&name))
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            image.globaldefs = image
+                .globaldefs
+                .iter()
+                .copied()
+                .filter(|definition| {
+                    !image.names.get(definition.name).is_some_and(|name| {
+                        [
+                            b"total_secrets".as_slice(),
+                            b"total_monsters",
+                            b"found_secrets",
+                            b"killed_monsters",
+                        ]
+                        .contains(&name)
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+        });
+        with_native_client(&mut vm, source, |vm, services, context, _, id| {
+            let player = &mut services.server.clients[id.0 as usize].player;
+            player.health = 71;
+            player.armor = 33;
+            player.frags = 9;
+            player.score = 9;
+            player.view_weapon.model =
+                ModelRef::native(ResourceNamespace::Module(ModuleId(99)), 12);
+            player.view_weapon.frame = 7;
+            player.inventory.weapon = WeaponId(3);
+            player.inventory.collectibles = 5;
+            player.inventory.item_counts[1] = 6;
+            for index in 0..33 {
+                assert!(
+                    ValueBinding {
+                        id: ValueId(index),
+                        width: ValueWidth::Signed32,
+                        reset: ValueReset::Life
+                    }
+                    .import(&mut player.values, 700 + index)
+                );
+            }
+            vm.project_entities(services, context).unwrap();
+            let player = &services.server.clients[id.0 as usize].player;
+            assert_eq!(
+                (player.health, player.armor, player.frags, player.score),
+                (71, 33, 9, 9)
+            );
+            assert_eq!(
+                player.view_weapon.model,
+                ModelRef::native(ResourceNamespace::Module(ModuleId(99)), 12)
+            );
+            assert_eq!(player.view_weapon.frame, 7);
+            assert_eq!(player.inventory.weapon, WeaponId(3));
+            assert_eq!(player.inventory.collectibles, 5);
+            assert_eq!(player.inventory.item_counts[1], 6);
+            for index in 0..33 {
+                assert_eq!(
+                    player.values.get(ValueId(index)).unwrap().as_integer(),
+                    700 + index as i32
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn nq_published_players_use_raw_clientdata_items_without_reusing_stat_fifteen() {
     let mut vm = vm(|image| {
-        let absent = [
-            b"health".as_slice(),
-            b"armorvalue",
-            b"frags",
-            b"currentammo",
-            b"ammo_shells",
-            b"ammo_nails",
-            b"ammo_rockets",
-            b"ammo_cells",
-            b"items",
-            b"weapon",
-            b"weaponmodel",
-            b"weaponframe",
-        ];
         image.fielddefs = image
             .fielddefs
             .iter()
             .copied()
-            .filter(|definition| {
-                !image
-                    .names
-                    .get(definition.name)
-                    .is_some_and(|name| absent.contains(&name))
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        image.globaldefs = image
-            .globaldefs
-            .iter()
-            .copied()
-            .filter(|definition| {
-                !image.names.get(definition.name).is_some_and(|name| {
-                    [
-                        b"total_secrets".as_slice(),
-                        b"total_monsters",
-                        b"found_secrets",
-                        b"killed_monsters",
-                    ]
-                    .contains(&name)
-                })
-            })
+            .filter(|definition| image.names.get(definition.name) != Some(b"items2".as_slice()))
             .collect::<Vec<_>>()
             .into_boxed_slice();
     });
-    with_client(&mut vm, |vm, services, context, _, id| {
-        let player = &mut services.server.clients[id.0 as usize].player;
-        player.health = 71;
-        player.armor = 33;
-        player.frags = 9;
-        player.score = 9;
-        player.view_weapon.model = ModelRef::native(ResourceNamespace::Module(ModuleId(99)), 12);
-        player.view_weapon.frame = 7;
-        player.inventory.weapon = WeaponId(3);
-        player.inventory.collectibles = 5;
-        player.inventory.item_counts[1] = 6;
-        for index in 0..32 {
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            assert_eq!(vm.client_count(), Ok(2));
+            assert_eq!(
+                vm.client_callback(ClientCallback::Connect),
+                Err(CallError::Unsupported)
+            );
+            assert_eq!(
+                vm.read_client(services, context, native),
+                Err(CallError::Unsupported)
+            );
+            assert_eq!(
+                vm.prepare_client_command(services, context, native, &UserCmd::default()),
+                Err(CallError::Unsupported)
+            );
+            let old_body = services.server.clients[id.0 as usize].player.body;
+            let old_mode = services.server.clients[id.0 as usize].player.movement.mode;
+            let stat15 = 0x8123_4567;
             assert!(
                 ValueBinding {
-                    id: ValueId(index),
+                    id: ValueId(15),
                     width: ValueWidth::Signed32,
                     reset: ValueReset::Life
                 }
-                .import(&mut player.values, 700 + index)
+                .import(
+                    &mut services.server.clients[id.0 as usize].player.values,
+                    stat15
+                )
             );
-        }
-        vm.project_entities(services, context).unwrap();
-        let player = &services.server.clients[id.0 as usize].player;
-        assert_eq!(
-            (player.health, player.armor, player.frags, player.score),
-            (71, 33, 9, 9)
-        );
-        assert_eq!(
-            player.view_weapon.model,
-            ModelRef::native(ResourceNamespace::Module(ModuleId(99)), 12)
-        );
-        assert_eq!(player.view_weapon.frame, 7);
-        assert_eq!(player.inventory.weapon, WeaponId(3));
-        assert_eq!(player.inventory.collectibles, 5);
-        assert_eq!(player.inventory.item_counts[1], 6);
-        for index in 0..32 {
+            for (name, value) in [
+                (b"health".as_slice(), 0.5),
+                (b"armorvalue", 50.0),
+                (b"armortype", 0.6),
+                (b"frags", 7.0),
+                (b"currentammo", 13.0),
+                (b"ammo_shells", 13.0),
+                (b"ammo_nails", 21.0),
+                (b"ammo_rockets", 4.0),
+                (b"ammo_cells", 9.0),
+                (b"items", (2 | 16384 | 131072 | 4194304) as f32),
+                (b"weapon", 2.0),
+                (b"weaponframe", 5.0),
+            ] {
+                number(vm, native, name, value);
+            }
+            vector(vm, native, b"view_ofs", Vec3([0.0, 0.0, 22.0]));
+            vector(vm, native, b"punchangle", Vec3([1.0, 2.0, 3.0]));
+            let range = services.storage.resources(context.module).unwrap()[0];
+            let model = (ENGINE_CALLS.resource_index)(
+                services,
+                context.module,
+                range,
+                b"progs/v_shot2.mdl",
+            )
+            .unwrap();
+            let model_name = vm.insert_string(b"progs/v_shot2.mdl").unwrap() as u32;
+            write(vm, native, b"weaponmodel", &[model_name]);
+            vm.image.globals[38] = 2.0f32.to_bits();
+            vm.image.globals[100] = 3.0f32.to_bits();
+            vm.project_entities(services, context).unwrap();
+            assert_eq!(read(vm, native, b"health"), 0.5f32.to_bits());
+            let player = &services.server.clients[id.0 as usize].player;
+            assert_eq!(player.health, 0);
+            assert_eq!(player.armor, 50);
+            assert_eq!((player.frags, player.score), (7, 7));
+            assert_eq!(player.values.get(ValueId(0)).unwrap().as_integer(), 0);
+            assert_eq!(player.values.get(ValueId(3)).unwrap().as_integer(), 13);
+            assert_eq!(player.values.get(ValueId(11)).unwrap().as_integer(), 3);
+            assert_eq!(player.values.get(ValueId(15)).unwrap().0, stat15);
             assert_eq!(
-                player.values.get(ValueId(index)).unwrap().as_integer(),
-                700 + index as i32
+                player.values.get(ValueId(32)).unwrap().0,
+                (2 | 16384 | 131072 | 4194304) | (2 << 28)
             );
-        }
-    });
+            assert_eq!(player.inventory.collectibles, 2);
+            assert_eq!(
+                player.inventory.weapon,
+                services
+                    .registry
+                    .native_weapon(RuleSetId::Quake, 2)
+                    .unwrap()
+            );
+            for (ordinal, count) in [(11, 13), (12, 21), (13, 4), (14, 9)] {
+                let item = services
+                    .registry
+                    .native_item(RuleSetId::Quake, ordinal)
+                    .unwrap();
+                assert_eq!(player.inventory.item_counts[item.0 as usize], count);
+            }
+            let armor = services.registry.native_item(RuleSetId::Quake, 3).unwrap();
+            assert_eq!(player.armor_type, armor);
+            assert_eq!(
+                player.view_weapon.model,
+                ModelRef::native(ResourceNamespace::Module(context.module), model)
+            );
+            assert_eq!(player.view_weapon.frame, 5);
+            assert_eq!(player.view_offset, Vec3([0.0, 0.0, 22.0]));
+            assert_eq!(player.punch_angles, Vec3([1.0, 2.0, 3.0]));
+            assert_eq!(player.body.position, old_body.position);
+            assert_eq!(player.body.velocity, old_body.velocity);
+            assert_eq!(player.body.mins, old_body.mins);
+            assert_eq!(player.body.maxs, old_body.maxs);
+            assert_eq!(player.movement.mode, old_mode);
+            assert_eq!(
+                (player.movement_rules, player.trace_rules),
+                (RuleSetId::Quake3, RuleSetId::Quake2)
+            );
+        },
+    );
+}
+
+#[test]
+fn qc_items2_is_only_selected_for_nq_clientdata_and_replaces_serverflag_bits() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|_| {});
+        with_native_client(&mut vm, source, |vm, services, context, native, id| {
+            number(vm, native, b"items", 2.0);
+            number(
+                vm,
+                native,
+                b"items2",
+                if source == RuleSetId::Quake {
+                    64.0
+                } else {
+                    f32::NAN
+                },
+            );
+            vm.image.globals[38] = 3.0f32.to_bits();
+            vm.project_entities(services, context).unwrap();
+            let player = &services.server.clients[id.0 as usize].player;
+            let (raw, at) = if source == RuleSetId::Quake {
+                (2 | (64 << 23), ValueId(32))
+            } else {
+                (2 | (3 << 28), ValueId(15))
+            };
+            assert_eq!(player.values.get(at).unwrap().0, raw);
+            assert_eq!(
+                player.inventory.collectibles,
+                if source == RuleSetId::Quake { 2 } else { 3 }
+            );
+            assert_eq!(
+                player.inventory.item_counts
+                    [services.registry.native_item(source, 11).unwrap().0 as usize],
+                0
+            );
+        });
+    }
 }
 
 #[test]

@@ -10,6 +10,8 @@ pub enum WavPolicy {
     Standard,
     Quake,
     Quake3,
+    /// Admit full PCM once while retaining cue-aware native metadata.
+    Shared,
 }
 
 pub struct Wav<'a> {
@@ -19,6 +21,8 @@ pub struct Wav<'a> {
     pub data: &'a [u8],
     pub frames: usize,
     pub loop_start: Option<usize>,
+    pub loop_end: Option<usize>,
+    pub loop_invalid: bool,
     pub data_offset: usize,
     pub info_tail_clamped: bool,
     pub riff_length_ignored: bool,
@@ -61,6 +65,7 @@ impl<'a> Wav<'a> {
         let mut loop_length = None;
         let mut info_tail_clamped = false;
         let mut zero_tail_ignored = false;
+        let mut loop_invalid = false;
         while r.at < end {
             if end - r.at < 8
                 && policy != WavPolicy::Standard
@@ -86,6 +91,16 @@ impl<'a> Wav<'a> {
                     && r.bytes.get(start..start + 4) == Some(b"INFO")
                 {
                     info_tail_clamped = true;
+                    break;
+                }
+                if policy == WavPolicy::Shared
+                    && format.is_some()
+                    && data.is_some()
+                    && matches!(id, b"cue " | b"smpl" | b"LIST")
+                {
+                    // Q3's separate fmt/data scans do not read trailing loop
+                    // metadata. Retain the PCM and its cue-aware rejection.
+                    loop_invalid = true;
                     break;
                 }
                 return Err(FormatError::Truncated);
@@ -122,35 +137,49 @@ impl<'a> Wav<'a> {
                 b"cue " if policy != WavPolicy::Quake3 => {
                     cue_seen = true;
                     if cue.is_none() {
-                        let count = s.u32()? as usize;
-                        s.remaining_records(count, 24)?;
-                        if count != 0 {
+                        let parsed = (|| {
+                            let count = s.u32()? as usize;
+                            s.remaining_records(count, 24)?;
+                            if count == 0 {
+                                return Ok(None);
+                            }
                             s.take(20)?;
-                            cue = Some(s.u32()? as usize);
+                            Ok(Some(s.u32()? as usize))
+                        })();
+                        match parsed {
+                            Ok(start) => cue = start,
+                            Err(_) if policy == WavPolicy::Shared => loop_invalid = true,
+                            Err(error) => return Err(error),
                         }
                     }
                 }
                 b"smpl" if policy != WavPolicy::Quake3 && sampler.is_none() => {
-                    s.take(28)?;
-                    let count = s.u32()? as usize;
-                    s.take(4)?;
-                    s.remaining_records(count, 24)?;
-                    if count != 0 {
+                    let parsed = (|| {
+                        s.take(28)?;
+                        let count = s.u32()? as usize;
+                        s.take(4)?;
+                        s.remaining_records(count, 24)?;
+                        if count == 0 {
+                            return Ok(None);
+                        }
                         s.take(4)?;
                         let kind = s.u32()?;
                         let begin = s.u32()?;
                         let finish = s.u32()?;
-                        if policy != WavPolicy::Quake
-                            || kind != 255
-                            || begin != u32::MAX
-                            || finish != u32::MAX
-                        {
-                            sampler = Some(begin as usize);
-                        }
+                        let ignored = matches!(policy, WavPolicy::Quake | WavPolicy::Shared)
+                            && kind == 255
+                            && begin == u32::MAX
+                            && finish == u32::MAX;
+                        Ok((!ignored).then_some(begin as usize))
+                    })();
+                    match parsed {
+                        Ok(start) => sampler = start,
+                        Err(_) if policy == WavPolicy::Shared => loop_invalid = true,
+                        Err(error) => return Err(error),
                     }
                 }
                 b"LIST"
-                    if policy == WavPolicy::Quake
+                    if matches!(policy, WavPolicy::Quake | WavPolicy::Shared)
                         && cue_seen
                         && loop_length.is_none()
                         && chunk.len() >= 24
@@ -172,17 +201,28 @@ impl<'a> Wav<'a> {
             return Err(FormatError::InvalidRecordSize);
         }
         let mut frames = data.len() / alignment;
-        let loop_start = cue.or(sampler);
+        let mut loop_start = cue.or(sampler);
+        let mut loop_end = None;
         if let Some(start) = loop_start {
             if start >= frames {
+                loop_invalid = true;
+            } else if let Some(length) = loop_length {
+                if length == 0 || length > frames - start {
+                    loop_invalid = true;
+                } else {
+                    loop_end = Some(start + length);
+                }
+            }
+        }
+        if loop_invalid {
+            if policy != WavPolicy::Shared {
                 return Err(FormatError::InvalidRange);
             }
-            if let Some(length) = loop_length {
-                if length == 0 || length > frames - start {
-                    return Err(FormatError::InvalidRange);
-                }
-                frames = start + length;
-            }
+            loop_start = None;
+            loop_end = None;
+        }
+        if policy != WavPolicy::Shared {
+            frames = loop_end.unwrap_or(frames);
         }
         if frames * channels as usize > MAX_SAMPLES {
             return Err(FormatError::InvalidRange);
@@ -194,6 +234,8 @@ impl<'a> Wav<'a> {
             data: &data[..frames * alignment],
             frames,
             loop_start,
+            loop_end,
+            loop_invalid,
             data_offset,
             info_tail_clamped,
             riff_length_ignored: declared_end != end,
@@ -215,6 +257,8 @@ impl<'a> Wav<'a> {
             channels: self.channels,
             samples,
             loop_start: self.loop_start,
+            loop_end: self.loop_end,
+            loop_invalid: self.loop_invalid,
         }
     }
 }
@@ -256,5 +300,7 @@ pub fn vorbis(bytes: &[u8]) -> Result<Pcm, FormatError> {
         channels,
         samples,
         loop_start: None,
+        loop_end: None,
+        loop_invalid: false,
     })
 }

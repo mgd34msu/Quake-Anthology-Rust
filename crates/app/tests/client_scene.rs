@@ -877,7 +877,8 @@ fn cached_clock_policy_preserves_native_interpolation_rounding() {
 fn every_accepted_gun_change_is_captured_before_one_client_phase() {
     use qa_network::snapshots::Q2ReproRing;
     let client = ClientId(3);
-    let values = qa_ui::values::ValueLayout::load(&[]).unwrap();
+    let catalog = qa_app::catalog::GameplayCatalog::load([]).unwrap();
+    let values = &catalog.hud.values;
     let mut output = EventRing::load(8, 1, 4, 64).unwrap();
     let consumer = output.bind(OutputTarget::Client(client)).unwrap();
     let mut snapshot = SnapshotBinding::load(
@@ -921,6 +922,8 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
             Incoming::Snapshot(ReceivedFrame::Quake2Repro(ring.frame(sequence).unwrap())),
             &mut player,
             &qa_app::output_namespace::NativeNumbers::load(Protocol::Quake2Repro1038),
+            &catalog.hud,
+            qa_core::sys_events::EventTime::from_milliseconds(u64::from(sequence) * 25),
         );
         assert_eq!(player.view_weapon.frame, gunframe);
         // No CLIENT phase has advanced yet, even after two changes in a drain.
@@ -1244,6 +1247,8 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
                 channels: qa_core::primitives::PcmChannels::Mono,
                 samples: vec![1024; 3],
                 loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
             },
         )],
     )

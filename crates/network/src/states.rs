@@ -29,6 +29,22 @@ pub fn player_value_layout(
     (protocol.rule_set(), spans)
 }
 
+/// Snapshot words for a native stat ordinal. NQ clientdata carries a sparse
+/// subset of its separate stat array; the other snapshots carry flat arrays.
+pub fn player_stat_word(
+    protocol: crate::commands::packet::Protocol,
+    index: usize,
+) -> Option<usize> {
+    if protocol == crate::commands::packet::Protocol::NetQuake15 {
+        qa_core::primitives::NQ_PACKET_STATS
+            .into_iter()
+            .zip([12, 11, 13, 10, 9, 14, 15, 16, 17, 18])
+            .find_map(|(ordinal, word)| (ordinal == index).then_some(word))
+    } else {
+        player_value_layout(protocol).1[0].range().nth(index)
+    }
+}
+
 pub const ENTITY_LAYOUT: [(&str, i8); 51] = [
     ("pos.trTime", 32),
     ("pos.trBase[0]", 0),
@@ -183,8 +199,10 @@ const fn mask_fields<const N: usize>(start: usize, bits: u8, value: Value) -> [F
 static STATS: [Field; 16] = mask_fields(48, 16, Value::Signed);
 static PERSISTANT: [Field; 16] = mask_fields(64, 16, Value::Signed);
 const _: () = {
-    assert!(STATS.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake3 as usize].0 as usize);
-    assert!(PERSISTANT.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake3 as usize].1 as usize);
+    assert!(STATS.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake3 as usize].stats as usize);
+    assert!(
+        PERSISTANT.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake3 as usize].persistent as usize
+    );
 };
 static AMMO: [Field; 16] = mask_fields(80, 16, Value::Signed);
 static POWERUPS: [Field; 16] = mask_fields(96, 32, Value::Unsigned);
@@ -403,8 +421,10 @@ const fn q2_player_fields() -> [Field; 36] {
 }
 static Q2_PLAYER_FIELDS: [Field; 36] = q2_player_fields();
 static Q2_STATS: [Field; 32] = mask_fields(36, 16, Value::Signed);
-const _: () = assert!(Q2_STATS.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake2 as usize].0 as usize);
-pub const Q2_RR_STATS: usize = NATIVE_VALUE_LAYOUT[RuleSetId::Quake2Rerelease as usize].0 as usize;
+const _: () =
+    assert!(Q2_STATS.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake2 as usize].stats as usize);
+pub const Q2_RR_STATS: usize =
+    NATIVE_VALUE_LAYOUT[RuleSetId::Quake2Rerelease as usize].stats as usize;
 static Q2_RR_STAT_FIELDS: [Field; Q2_RR_STATS] = mask_fields(0, 16, Value::Signed);
 static Q2_RR_STAT_GROUP: [Group; 1] = [Group {
     fields: &Q2_RR_STAT_FIELDS,

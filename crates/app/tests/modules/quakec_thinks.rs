@@ -413,6 +413,8 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
                         channels: PcmChannels::Mono,
                         samples: vec![1000, -1000, 1000, -1000],
                         loop_start: Some(1),
+                        loop_end: None,
+                        loop_invalid: false,
                     },
                 )],
             )
@@ -593,6 +595,8 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
                                     channels: PcmChannels::Mono,
                                     samples: vec![1; 2],
                                     loop_start: None,
+                                    loop_end: None,
+                                    loop_invalid: false,
                                 },
                             )
                         })
@@ -2588,6 +2592,226 @@ fn netquake_load_does_not_silently_admit_the_qw_client_phases() {
         host.connect_module_client(ModuleId(1), ClientId(0), b"\\name\\nq")
             .is_err()
     );
+}
+
+#[test]
+fn netquake_native_inventory_reaches_client_and_hud_through_queued_packets() {
+    use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
+    use qa_core::loopback::Endpoint;
+    use qa_network::commands::packet::Protocol;
+
+    for extra_items in [false, true] {
+        let mut fields = FIELDS.to_vec();
+        fields.extend_from_slice(&[
+            (2, 40, b"health".as_slice()),
+            (2, 41, b"armorvalue"),
+            (2, 42, b"frags"),
+            (2, 43, b"currentammo"),
+            (2, 44, b"ammo_shells"),
+            (2, 45, b"ammo_nails"),
+            (2, 46, b"ammo_rockets"),
+            (2, 47, b"ammo_cells"),
+            (2, 48, b"items"),
+            (2, 49, b"weapon"),
+            (1, 50, b"weaponmodel"),
+            (2, 51, b"weaponframe"),
+            (3, 52, b"view_ofs"),
+            (3, 55, b"punchangle"),
+            (3, 58, b"v_angle"),
+            (2, 61, b"waterlevel"),
+            (2, 62, b"watertype"),
+        ]);
+        if extra_items {
+            fields.push((2, 63, b"items2"));
+        }
+        let mut globals = GLOBALS.to_vec();
+        globals.push((2, 38, b"serverflags"));
+        let bytes = quakec_program::program_with_definitions(
+            &[(Return, 35, 0, 0)],
+            &[0, 1],
+            &globals,
+            &fields,
+            64,
+            128,
+        );
+        let mut vm = Vm::load(
+            Image::parse(&bytes, Some(5927)).unwrap(),
+            Layout {
+                entities: 64,
+                header_bytes: 16,
+                extra_string_bytes: 128,
+                state_step: 0.1,
+            },
+        )
+        .unwrap();
+        vm.image.globals[38] = 15.0f32.to_bits();
+        let raw_items = 1 | 2 | 256 | 8192 | 131072;
+        for (name, value) in [
+            (b"health".as_slice(), 0.5),
+            (b"armorvalue", 12.75),
+            (b"frags", 9.0),
+            (b"currentammo", 300.0),
+            (b"ammo_shells", 300.0),
+            (b"ammo_nails", -3.0),
+            (b"ammo_rockets", 13.0),
+            (b"ammo_cells", 12.0),
+            (b"items", raw_items as f32),
+            (b"weapon", 2.0),
+            (b"weaponframe", 258.0),
+        ] {
+            write(&mut vm, 1, name, value.to_bits());
+        }
+        if extra_items {
+            write(&mut vm, 1, b"items2", 3.0f32.to_bits());
+        }
+        write_vector(&mut vm, 1, b"view_ofs", Vec3([0.0, 0.0, 22.0]));
+        let module = ModuleId(1);
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let id = runtime
+            .connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Vec3([16.0, 24.0, 32.0]),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy {
+                    client: RuleSetId::Quake3,
+                    movement: RuleSetId::Quake3,
+                    trace: RuleSetId::Quake2,
+                },
+                Protocol::NetQuake15,
+                0,
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .server
+                .bind_client_native(id, NativeEntity { module, slot: 1 })
+        );
+        let (req, _) = request(
+            &mut runtime,
+            module,
+            RuleSetId::Quake,
+            vm,
+            vec![1],
+            1,
+            10,
+            &[],
+        );
+        let mut owned = Box::new(load(runtime, vec![req]));
+        let host = &mut *owned;
+        host.local_clients[SeatId::FIRST.index()] = Some(id);
+        let values = host.runtime.catalog.hud.values.native(RuleSetId::Quake);
+        let mask_binding = values.items.unwrap();
+        let stat15 = values.stats[15];
+        let expected_mask = raw_items | if extra_items { 3 << 23 } else { 15 << 28 };
+        let weapon = host
+            .runtime
+            .catalog
+            .registry
+            .native_weapon(RuleSetId::Quake, 2)
+            .unwrap();
+        let ammo = [11, 12, 13, 14].map(|number| {
+            host.runtime
+                .catalog
+                .registry
+                .native_item(RuleSetId::Quake, number)
+                .unwrap()
+        });
+
+        tick(host, 0);
+        tick(host, 100);
+        assert!(host.module_counts(module).unwrap().calls > 0);
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        let server = &host.runtime.server.clients[id.0 as usize].player;
+        assert_eq!(mask_binding.export(&server.values), Some(expected_mask));
+        assert_eq!(server.inventory.item_counts[ammo[0].0 as usize], 300);
+        assert_eq!(server.inventory.item_counts[ammo[1].0 as usize], -3);
+        let prediction = &host.runtime.prediction[SeatId::FIRST.index()].player;
+        assert_eq!((prediction.health, prediction.armor), (0, 12));
+        assert_eq!(prediction.view_weapon.frame, 2);
+        assert_eq!(prediction.inventory.weapon, weapon);
+        assert_eq!(mask_binding.export(&prediction.values), Some(expected_mask));
+        assert_eq!(values_of_items(prediction, ammo), [44, 253, 13, 12]);
+        assert_eq!(
+            prediction.values.get(stat15.id),
+            Some(NumericValue::integer(0))
+        );
+        assert_eq!(
+            (prediction.movement_rules, prediction.trace_rules),
+            (RuleSetId::Quake3, RuleSetId::Quake2)
+        );
+        assert!(
+            host.runtime
+                .network
+                .get(id, Endpoint::Client)
+                .unwrap()
+                .channel
+                .current_snapshot()
+                .is_some()
+        );
+        assert!(
+            host.runtime.snapshots[id.0 as usize]
+                .as_ref()
+                .unwrap()
+                .applied
+                > 0
+        );
+        assert_eq!(
+            host.runtime.snapshots[id.0 as usize]
+                .as_ref()
+                .unwrap()
+                .rejected,
+            0
+        );
+        let hud = &host.runtime.server.clients[id.0 as usize].hud;
+        assert_eq!(hud.inventory.weapon, weapon);
+        assert_eq!(hud.inventory.item_counts[ammo[0].0 as usize], 44);
+        assert_eq!(hud.inventory.item_counts[ammo[1].0 as usize], 253);
+
+        host.runtime
+            .server
+            .events
+            .push_delivered(
+                NativeDelivery {
+                    module,
+                    source: RuleSetId::Quake,
+                    target: NativeTarget::Client(id),
+                    origin: Vec3::default(),
+                    reliable: true,
+                    dupe_key: 0,
+                    component: 0,
+                    emission: None,
+                    check_portals: false,
+                },
+                FrameEvent::PlayerValue {
+                    id: stat15.id,
+                    value: NumericValue::integer(0x1234),
+                },
+            )
+            .unwrap();
+        tick(host, 200);
+        tick(host, 300);
+        let player = &host.runtime.prediction[SeatId::FIRST.index()].player;
+        assert_eq!(
+            player.values.get(stat15.id),
+            Some(NumericValue::integer(0x1234))
+        );
+        assert_eq!(mask_binding.export(&player.values), Some(expected_mask));
+        assert_eq!(values_of_items(player, ammo), [44, 253, 13, 12]);
+        assert_eq!(player.inventory.weapon, weapon);
+        assert_eq!(
+            host.module_state(module),
+            Some(qa_app::modules::State::Running)
+        );
+        assert!(host.client_info(module).is_none()); // Client physics is a separate pending path.
+    }
+}
+
+fn values_of_items(player: &PlayerState, items: [ItemId; 4]) -> [i32; 4] {
+    items.map(|item| player.inventory.item_counts[item.0 as usize])
 }
 
 #[test]

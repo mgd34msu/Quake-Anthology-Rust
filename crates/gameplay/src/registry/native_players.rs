@@ -78,8 +78,8 @@ impl NativePlayerBindings {
         if index >= 32 {
             return false;
         }
-        if index == 15 && self.items_stat && !self.fits(player) {
-            return false;
+        if index == 15 && self.items_stat {
+            return self.import_items(binding, bits, player, time);
         }
         if (6..=9).contains(&index)
             && self.ammo[index - 6].is_some_and(|item| {
@@ -117,22 +117,39 @@ impl NativePlayerBindings {
                     .find_map(|(native, weapon, _)| (native == bits).then_some(weapon))
                     .unwrap_or_default()
             }
-            15 if self.items_stat => {
-                for (mask, item) in self.items.into_iter().flatten() {
-                    set_item(player, item, i32::from(bits & mask != 0), time);
-                }
-                for (mask, _, item) in self.weapons.into_iter().flatten() {
-                    set_item(player, item, i32::from(bits & mask != 0), time);
-                }
-                player.armor_type = [32768, 16384, 8192]
-                    .into_iter()
-                    .zip(self.armor.into_iter().rev())
-                    .find_map(|(mask, item)| (bits & mask != 0).then_some(item).flatten())
-                    .unwrap_or_default();
-                player.inventory.collectibles = u64::from(bits >> 28);
-            }
             _ => {}
         }
+        true
+    }
+    /// NQ clientdata carries its mask separately from the stat array. QW's
+    /// STAT_ITEMS enters here too; unknown bits remain in the supplied binding.
+    pub fn import_items(
+        &self,
+        binding: Option<ValueBinding>,
+        bits: u32,
+        player: &mut PlayerState,
+        time: EventTime,
+    ) -> bool {
+        if !self.fits(player) {
+            return false;
+        }
+        if let Some(binding) = binding
+            && !binding.import(&mut player.values, bits)
+        {
+            return false;
+        }
+        for (mask, item) in self.items.into_iter().flatten() {
+            set_item(player, item, i32::from(bits & mask != 0), time);
+        }
+        for (mask, _, item) in self.weapons.into_iter().flatten() {
+            set_item(player, item, i32::from(bits & mask != 0), time);
+        }
+        player.armor_type = [32768, 16384, 8192]
+            .into_iter()
+            .zip(self.armor.into_iter().rev())
+            .find_map(|(mask, item)| (bits & mask != 0).then_some(item).flatten())
+            .unwrap_or_default();
+        player.inventory.collectibles = u64::from(bits >> 28);
         true
     }
 }

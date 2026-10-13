@@ -70,6 +70,7 @@ const Q2_LOOP: LoopPlayback = LoopPlayback {
     clamp_pan: false,
     origin: LoopOrigin::Accepted,
     latched: false,
+    cue_extent: true,
 };
 const RR_LOOP: LoopPlayback = LoopPlayback {
     master: LoopGain::Float(1.0),
@@ -83,6 +84,7 @@ const Q3_LOOP: LoopPlayback = LoopPlayback {
     },
     origin: LoopOrigin::Presented,
     clamp_pan: true,
+    cue_extent: false,
     ..Q2_LOOP
 };
 const Q3_REAL: LoopPlayback = LoopPlayback {

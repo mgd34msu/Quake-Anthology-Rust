@@ -1980,6 +1980,8 @@ fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
                             channels: PcmChannels::Mono,
                             samples: vec![1024],
                             loop_start: None,
+                            loop_end: None,
+                            loop_invalid: false,
                         },
                     )
                 })

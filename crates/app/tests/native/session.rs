@@ -4581,6 +4581,8 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         channels: qa_core::primitives::PcmChannels::Mono,
                         samples: vec![1024],
                         loop_start: None,
+                        loop_end: None,
+                        loop_invalid: false,
                     },
                 )],
             )

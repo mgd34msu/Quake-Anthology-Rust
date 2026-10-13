@@ -388,7 +388,10 @@ fn loop_order(event: SoundEvent) -> (u32, u32, u32, u32) {
     };
     (client, slot, generation, entity)
 }
-fn loop_group(event: SoundEvent, index: usize) -> (u32, u32, u32, (u32, Option<u32>), u16, usize) {
+fn loop_group(
+    event: SoundEvent,
+    index: usize,
+) -> (u32, u32, u32, (u32, Option<u32>, bool), u16, usize) {
     let (client, slot, generation, _) = loop_order(event);
     let (scale, separate) = event.looping.map_or((0, index + 1), |playback| {
         let scale = match playback.master {
@@ -406,11 +409,12 @@ fn loop_group(event: SoundEvent, index: usize) -> (u32, u32, u32, (u32, Option<u
         .looping
         .filter(|p| p.latched)
         .and(event.source_ordinal);
+    let cue_extent = event.looping.is_some_and(|playback| playback.cue_extent);
     (
         client,
         slot,
         generation,
-        (event.sound.0, handle),
+        (event.sound.0, handle, cue_extent),
         scale,
         separate,
     )
@@ -588,6 +592,12 @@ impl Mixer {
             .samples
             .get(event.sound.0 as usize)
             .is_none_or(Option::is_none)
+            || self.bank.sample(event.sound).is_some_and(|sample| {
+                sample.loop_invalid
+                    && event
+                        .looping
+                        .map_or(event.playback.is_none(), |playback| playback.cue_extent)
+            })
             || !event.volume.is_finite()
             || !(0.0..=1.0).contains(&event.volume)
             || !event.attenuation.is_finite()
@@ -1015,7 +1025,12 @@ impl Mixer {
                     }
                 }
                 voice.frame += 1;
-                if voice.frame == sample.frames() {
+                let frames = if voice.event.playback.is_some() {
+                    sample.frames()
+                } else {
+                    sample.cue_frames()
+                };
+                if voice.frame == frames {
                     let start = if voice.event.playback.is_some() {
                         None
                     } else {
@@ -1049,9 +1064,14 @@ impl Mixer {
                 let Some(sample) = self.bank.samples[event.sound.0 as usize].as_ref() else {
                     continue;
                 };
+                let frames = if playback.cue_extent {
+                    sample.cue_frames()
+                } else {
+                    sample.frames()
+                };
                 let sample_frame = match playback.phase {
-                    LoopPhase::Painted => (time % sample.frames() as u64) as usize,
-                    LoopPhase::Cursor => voice.frame,
+                    LoopPhase::Painted => (time % frames as u64) as usize,
+                    LoopPhase::Cursor => voice.frame % frames,
                 };
                 let channels = sample.channels as usize;
                 let offset = sample_frame * channels;
@@ -1071,7 +1091,7 @@ impl Mixer {
                     }
                 }
                 if playback.phase == LoopPhase::Cursor {
-                    voice.frame = (voice.frame + 1) % sample.frames();
+                    voice.frame = (sample_frame + 1) % frames;
                 }
             }
             for side in 0..2 {

@@ -15,6 +15,8 @@ fn pcm(samples: &[i16]) -> Pcm {
         channels: PcmChannels::Mono,
         samples: samples.to_vec(),
         loop_start: None,
+        loop_end: None,
+        loop_invalid: false,
     }
 }
 
@@ -95,6 +97,8 @@ fn staged_and_bulk_loading_share_pcm_preparation_and_name_semantics() {
         channels: PcmChannels::Stereo,
         samples: vec![1, -1, 3, -3, 5, -5],
         loop_start: Some(1),
+        loop_end: None,
+        loop_invalid: false,
     };
     let path = b"Sound\\TEST.WAV";
     let mut staged = Bank::with_capacity(rate(), 1, path.len()).unwrap();
@@ -132,6 +136,8 @@ fn rejected_pcm_or_capacity_keeps_prior_attempts_and_samples_intact() {
                 channels: PcmChannels::Stereo,
                 samples: vec![3],
                 loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
             }
         )
         .is_err()
@@ -258,6 +264,8 @@ fn rejecting_native_stereo_keeps_ready_shared_pcm_and_failed_handle_order() {
             channels: PcmChannels::Stereo,
             samples: vec![1, -1],
             loop_start: None,
+            loop_end: None,
+            loop_invalid: false,
         },
     )
     .unwrap();

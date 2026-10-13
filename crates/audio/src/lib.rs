@@ -20,6 +20,9 @@ pub fn prepare(source: Pcm, rate: NonZeroU32, eight_bit: bool) -> Result<Pcm, Pr
     let count = source.frames();
     if !source.samples.len().is_multiple_of(channels)
         || source.loop_start.is_some_and(|start| start >= count)
+        || source
+            .loop_end
+            .is_some_and(|end| end > count || source.loop_start.is_none_or(|start| start >= end))
     {
         return Err(PrepareError::InvalidPcm);
     }
@@ -31,11 +34,17 @@ pub fn prepare(source: Pcm, rate: NonZeroU32, eight_bit: bool) -> Result<Pcm, Pr
     if frames > 256 * 1024 * 1024 / (channels * 2) {
         return Err(PrepareError::TooLarge);
     }
-    let loop_start = source
+    let mut loop_start = source
         .loop_start
         .map(|start| (start as f32 / ratio).trunc() as usize);
-    if loop_start.is_some_and(|start| start >= frames) {
-        return Err(PrepareError::InvalidPcm);
+    let mut loop_end = source
+        .loop_end
+        .map(|end| (end as f32 / ratio).trunc() as usize);
+    let loop_invalid =
+        source.loop_invalid || loop_start.is_some_and(|start| start >= loop_end.unwrap_or(frames));
+    if loop_invalid {
+        loop_start = None;
+        loop_end = None;
     }
     let step = (ratio * 256.0) as u64;
     let mut samples = vec![0; frames * channels];
@@ -55,5 +64,7 @@ pub fn prepare(source: Pcm, rate: NonZeroU32, eight_bit: bool) -> Result<Pcm, Pr
         channels: source.channels,
         samples,
         loop_start,
+        loop_end,
+        loop_invalid,
     })
 }

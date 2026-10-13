@@ -18,6 +18,8 @@ fn bank() -> qa_audio::Bank {
                         channels: qa_core::primitives::PcmChannels::Mono,
                         samples: vec![1; 2],
                         loop_start: None,
+                        loop_end: None,
+                        loop_invalid: false,
                     },
                 )
             })
