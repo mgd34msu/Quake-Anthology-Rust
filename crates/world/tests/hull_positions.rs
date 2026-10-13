@@ -937,7 +937,7 @@ fn moving_point_line_and_flat_boxes_use_full_dimensional_source_facets() {
 }
 
 #[test]
-fn lower_rank_cells_reject_only_degenerate_sweeps_that_intersect_them() {
+fn lower_rank_cells_support_intersecting_degenerate_sweeps() {
     for rank_axes in 1..=3 {
         let planes = (0..rank_axes)
             .flat_map(|axis| {
@@ -951,12 +951,27 @@ fn lower_rank_cells_reject_only_degenerate_sweeps_that_intersect_them() {
             maxs: Vec3::default(),
             ..sweep(Vec3([-1.0, 0.0, 0.0]), Vec3([1.0, 0.0, 0.0]))
         };
-        assert_eq!(
-            store
-                .trace_model(geometry, 0, point, &mut store.scratch())
-                .unwrap_err(),
-            TraceError::Unsupported { geometry, model: 0 }
-        );
+        let trace = store
+            .trace_model(geometry, 0, point, &mut store.scratch())
+            .unwrap();
+        assert_eq!(trace.fraction.to_bits(), 0.4375f32.to_bits());
+        assert_eq!(trace.plane.normal, Vec3([-1.0, 0.0, 0.0]));
+        assert_clear_endpoint(&store, geometry, point, &trace);
+        for (mins, maxs) in [
+            (Vec3([0.0, -0.25, 0.0]), Vec3([0.0, 0.25, 0.0])),
+            (Vec3([0.0, -0.25, -0.25]), Vec3([0.0, 0.25, 0.25])),
+        ] {
+            let query = TraceQuery {
+                mins,
+                maxs,
+                ..point
+            };
+            let trace = store
+                .trace_model(geometry, 0, query, &mut store.scratch())
+                .unwrap();
+            assert_eq!(trace.fraction.to_bits(), 0.4375f32.to_bits());
+            assert_clear_endpoint(&store, geometry, query, &trace);
+        }
         let clear = TraceQuery {
             start: Vec3([1.0, -1.0, 0.0]),
             end: Vec3([1.0, 1.0, 0.0]),
@@ -988,6 +1003,110 @@ fn lower_rank_cells_reject_only_degenerate_sweeps_that_intersect_them() {
             .expect("full-volume sweep still expands a lower-rank cell");
         assert_eq!(trace.plane.normal, Vec3([-1.0, 0.0, 0.0]));
         assert_clear_endpoint(&store, geometry, volume, &trace);
+    }
+}
+
+#[test]
+fn lower_rank_union_does_not_report_its_internal_half_open_partition() {
+    let (mut store, geometry) = load_geometry(
+        vec![
+            Plane::oriented(Vec3::axis(0, 1.0), 0.0),
+            Plane::oriented(Vec3::axis(2, 1.0), 0.0),
+            Plane::oriented(Vec3::axis(2, -1.0), 0.0),
+        ],
+        vec![
+            ClipNode {
+                plane: 0,
+                children: [1, 3],
+            },
+            ClipNode {
+                plane: 1,
+                children: [2, -1],
+            },
+            ClipNode {
+                plane: 2,
+                children: [-2, -1],
+            },
+            ClipNode {
+                plane: 1,
+                children: [4, -1],
+            },
+            ClipNode {
+                plane: 2,
+                children: [-2, -1],
+            },
+        ],
+        vec![0],
+    );
+    admit(&mut store, geometry);
+    for reverse in [false, true] {
+        let x = if reverse { 1.0 } else { -1.0 };
+        let query = TraceQuery {
+            mins: Vec3::default(),
+            maxs: Vec3::default(),
+            ..sweep(Vec3([x, 0.0, 1.0]), Vec3([-x, 0.0, -1.0]))
+        };
+        let trace = store
+            .trace_model(geometry, 0, query, &mut store.scratch())
+            .unwrap();
+        assert_eq!(trace.plane.normal, Vec3::axis(2, 1.0));
+        assert_eq!(trace.fraction.to_bits(), 0.4375f32.to_bits());
+        assert_clear_endpoint(&store, geometry, query, &trace);
+    }
+}
+
+#[test]
+fn relative_sheet_facet_rejects_a_redundant_vertex_support() {
+    let (mut store, geometry) = path_cell(
+        vec![
+            Plane::oriented(Vec3([-1.0, -1.0, 0.0]), -2.0),
+            Plane::oriented(Vec3::axis(0, -1.0), -1.0),
+            Plane::oriented(Vec3::axis(0, 1.0), -1.0),
+            Plane::oriented(Vec3::axis(1, -1.0), -1.0),
+            Plane::oriented(Vec3::axis(1, 1.0), -1.0),
+            Plane::oriented(Vec3::axis(2, -1.0), 0.0),
+            Plane::oriented(Vec3::axis(2, 1.0), 0.0),
+        ],
+        true,
+    );
+    admit(&mut store, geometry);
+    let query = TraceQuery {
+        mins: Vec3::default(),
+        maxs: Vec3::default(),
+        ..sweep(Vec3([2.0, 2.0, 0.0]), Vec3::default())
+    };
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .unwrap();
+    assert!(trace.plane.normal == Vec3::axis(0, 1.0) || trace.plane.normal == Vec3::axis(1, 1.0));
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn implicit_affine_equalities_do_not_require_opposing_authored_planes() {
+    for rank in [2, 3] {
+        let mut planes = (0..rank)
+            .map(|axis| Plane::oriented(Vec3::axis(axis, 1.0), 0.0))
+            .collect::<Vec<_>>();
+        let diagonal = Vec3(std::array::from_fn(
+            |axis| if axis < rank { -1.0 } else { 0.0 },
+        ));
+        planes.push(Plane::oriented(diagonal, 0.0));
+        let (mut store, geometry) = path_cell(planes, true);
+        admit(&mut store, geometry);
+        for start in [diagonal, -diagonal] {
+            let query = TraceQuery {
+                mins: Vec3::default(),
+                maxs: Vec3::default(),
+                ..sweep(start, -start)
+            };
+            let trace = store
+                .trace_model(geometry, 0, query, &mut store.scratch())
+                .unwrap();
+            assert!(trace.fraction > 0.0 && trace.fraction < 0.5);
+            assert!(trace.plane.normal.dot(query.end - query.start) < 0.0);
+            assert_clear_endpoint(&store, geometry, query, &trace);
+        }
     }
 }
 

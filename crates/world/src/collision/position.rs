@@ -223,6 +223,43 @@ struct Contact {
     normal: [Int; 3],
     source_distance: Int,
     cost: Cost,
+    relative: bool,
+    affine: bool,
+}
+
+/// A constraint is an affine equality when its opposite is in the positive
+/// cone of the cell's active normals. The existing exact certificate supplies
+/// that proof, including equalities implied by three or four authored faces.
+fn affine_constraint(cell: &[Contact], index: usize, work: &mut Work) -> Result<bool, Failure> {
+    let normal = cell[index].normal;
+    let opposite = normal.map(Int::neg);
+    for other in cell {
+        work.item()?;
+        if parallel(&opposite, &other.normal)? {
+            return Ok(true);
+        }
+    }
+    let mut answer = false;
+    for count in 3..=4 {
+        combinations(cell.len() - 1, count - 1, |indices| {
+            work.item()?;
+            let mut columns = [[Int::ZERO; 4]; 4];
+            columns[0][..3].copy_from_slice(&normal);
+            columns[0][3] = Int::ONE;
+            for (column, &other) in indices.iter().enumerate() {
+                let other = other + usize::from(other >= index);
+                columns[column + 1][..3].copy_from_slice(&cell[other].normal);
+                columns[column + 1][3] = Int::ONE;
+            }
+            answer =
+                certificate(&columns, count, work)?.is_some_and(|weights| !weights[0].is_zero());
+            Ok(!answer)
+        })?;
+        if answer {
+            break;
+        }
+    }
+    Ok(answer)
 }
 
 impl Contact {
@@ -271,23 +308,39 @@ impl Contact {
 
 /// Only contact-local active normals are retained. On a candidate facet,
 /// pairwise cross rays delimit the open tangent sectors; their positive sums
-/// witness sector interiors. The lexicographic tangent/normal perturbation
-/// must leave every cell, so neither partitions nor vertex-only supports can
-/// become reported surfaces.
+/// witness sector interiors. Affine equalities constrain relative sectors,
+/// including zero-dimensional facets. The lexicographic tangent/normal
+/// perturbation must leave every cell, excluding partitions and redundant
+/// vertex-only supports from either kind of facet.
 fn exterior(
     candidate: Contact,
     active: &[Contact],
     tangent: &[Int; 3],
     work: &mut Work,
 ) -> Result<bool, Failure> {
-    if zero(tangent) {
+    if zero(tangent) && !candidate.relative {
         return Ok(false);
     }
+    let mut equality = false;
     for row in active.iter().filter(|row| row.cell == candidate.cell) {
         work.item()?;
-        if !parallel(&candidate.normal, &row.normal)? && !dot(&row.normal, tangent)?.negative() {
+        if row.affine {
+            equality = true;
+            // An affine-hull equality is retained in both orientations. A
+            // relative tangent must stay on it rather than enter a 3D interior.
+            if !dot(&row.normal, tangent)?.is_zero() {
+                return Ok(false);
+            }
+        } else if !parallel(&candidate.normal, &row.normal)?
+            && !dot(&row.normal, tangent)?.negative()
+        {
             return Ok(false);
         }
+    }
+    // A relative facet can be zero-dimensional. Ordinary cells still require
+    // an open facet sector, so a vertex-only support cannot become a surface.
+    if zero(tangent) && !equality {
+        return Ok(false);
     }
     for cell in active.chunk_by(|a, b| a.cell == b.cell) {
         let mut outside = false;
@@ -315,6 +368,9 @@ fn exterior_contact(active: &[Contact], work: &mut Work) -> Result<Contact, Fail
     for &candidate in active {
         if candidate.cost.beta.negative() || candidate.cost.beta.is_zero() {
             continue;
+        }
+        if candidate.relative && exterior(candidate, active, &[Int::ZERO; 3], work)? {
+            return Ok(candidate);
         }
         for axis in 0..3 {
             let mut unit = [Int::ZERO; 3];
@@ -581,6 +637,12 @@ fn certificate(
             return Ok(false);
         }
         for row in 0..4 {
+            // Cramer's rule already proves selected rows exactly. Only omitted
+            // rows need the full-system check; this also avoids an unnecessary
+            // fourth-degree product for a complete four-row basis.
+            if selected.contains(&row) {
+                continue;
+            }
             let mut projected = Int::ZERO;
             for column in 0..count {
                 projected = projected.add(&columns[column][row].mul(&weights[column])?)?;
@@ -1108,7 +1170,6 @@ impl Data {
         work: &mut Work,
         mut visit: impl FnMut(Interval, Contents) -> Result<(), Failure>,
     ) -> Result<(), Failure> {
-        let requires_interior = !path.full_volume();
         for &cell in &self.cells[cells.range()] {
             work.item()?;
             if !cell.contents.intersects(mask) {
@@ -1116,14 +1177,6 @@ impl Data {
             }
             let rows = self.fill_rows(planes, cell, path, pose, rows)?;
             if let Some(interval) = interval(rows, work)? {
-                // A full-volume box makes every expanded cell full-dimensional.
-                // Degenerate boxes need that guarantee from the source cell:
-                // the exterior facet/tangent proof cannot use opposing affine
-                // equality normals as an open 3D boundary. Reject only a cell
-                // that actually intersects this bounded sweep.
-                if requires_interior && !cell.full_dim {
-                    return Err(Failure::Input);
-                }
                 visit(interval, cell.contents)?;
             }
         }
@@ -1155,9 +1208,11 @@ impl Data {
             if !interval.contains(parameter)? {
                 continue;
             }
+            let relative = !cell.full_dim && !path.full_volume();
             visit_certificates(rows, work, |indices, weights, work| {
-                let contact =
+                let mut contact =
                     Contact::load(index, rows, cell.sides.count as usize, indices, weights)?;
+                contact.relative = relative;
                 if zero(&contact.normal) || !contact.cost.at(parameter)?.is_zero() {
                     return Ok(true);
                 }
@@ -1175,6 +1230,20 @@ impl Data {
                 count += 1;
                 Ok(true)
             })?;
+        }
+        let mut first = 0;
+        while first < count {
+            let cell = scratch.contacts[first].cell;
+            let end =
+                first + scratch.contacts[first..count].partition_point(|row| row.cell == cell);
+            if scratch.contacts[first].relative {
+                for index in first..end {
+                    let affine =
+                        affine_constraint(&scratch.contacts[first..end], index - first, work)?;
+                    scratch.contacts[index].affine = affine;
+                }
+            }
+            first = end;
         }
         Ok(&scratch.contacts[..count])
     }
