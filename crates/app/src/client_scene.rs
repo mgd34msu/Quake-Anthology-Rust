@@ -1,6 +1,6 @@
 //! CLIENT-owned snapshot values become copied entries in the shared scene list.
 use crate::model_assets::{
-    InlineBinding, ModelBinding, ModelCatalog, ModelMaterialPolicy, ModelProfile,
+    InlineBinding, ModelBinding, ModelBindings, ModelCatalog, ModelMaterialPolicy, ModelProfile,
     ModelRegistrationId,
 };
 use crate::snapshots::{GunAnimation, Interpolation};
@@ -40,6 +40,26 @@ enum SceneBinding {
         binding: InlineBinding,
         presentation: WorldPresentationId,
     },
+}
+enum SceneBindings<'a> {
+    Mesh(ModelBindings<'a>),
+    Inline(Option<(InlineBinding, WorldPresentationId)>),
+}
+impl Iterator for SceneBindings<'_> {
+    type Item = SceneBinding;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Mesh(bindings) => bindings.next().map(SceneBinding::Mesh),
+            Self::Inline(binding) => {
+                binding
+                    .take()
+                    .map(|(binding, presentation)| SceneBinding::Inline {
+                        binding,
+                        presentation,
+                    })
+            }
+        }
+    }
 }
 
 /// Only derived numeric asset bindings live here. Accepted entity values and
@@ -144,26 +164,26 @@ impl ClientModelBindings {
         })
     }
 
-    pub fn resolve(
+    pub fn resolve<'a>(
         &self,
         reference: ModelRef,
         skin: i32,
-        models: &ModelCatalog,
+        models: &'a ModelCatalog,
         policy: ModelMaterialPolicy,
-    ) -> Option<ModelBinding> {
+    ) -> Option<ModelBindings<'a>> {
         match self.resolve_scene(reference, skin, models, policy)? {
-            SceneBinding::Mesh(binding) => Some(binding),
-            SceneBinding::Inline { .. } => None,
+            SceneBindings::Mesh(bindings) => Some(bindings),
+            SceneBindings::Inline(_) => None,
         }
     }
 
-    fn resolve_scene(
+    fn resolve_scene<'a>(
         &self,
         reference: ModelRef,
         skin: i32,
-        models: &ModelCatalog,
+        models: &'a ModelCatalog,
         policy: ModelMaterialPolicy,
-    ) -> Option<SceneBinding> {
+    ) -> Option<SceneBindings<'a>> {
         if reference.namespace != ResourceNamespace::Client(self.client) {
             return None;
         }
@@ -174,15 +194,12 @@ impl ClientModelBindings {
             .flatten()?;
         match registration {
             ClientModel::Mesh(registration) => models
-                .binding(registration, u32::try_from(skin).unwrap_or(0), policy)
-                .map(SceneBinding::Mesh),
+                .bindings(registration, u32::try_from(skin).unwrap_or(0), policy)
+                .map(SceneBindings::Mesh),
             ClientModel::Inline {
                 binding,
                 presentation,
-            } => Some(SceneBinding::Inline {
-                binding,
-                presentation,
-            }),
+            } => Some(SceneBindings::Inline(Some((binding, presentation)))),
         }
     }
 }
@@ -566,7 +583,7 @@ impl ClientSceneInput<'_> {
             let Some(reference) = *reference else {
                 continue;
             };
-            let Some(binding) = self.bindings.resolve_scene(
+            let Some(bindings) = self.bindings.resolve_scene(
                 reference,
                 record.appearance.skin,
                 self.models,
@@ -578,56 +595,59 @@ impl ClientSceneInput<'_> {
                 counts.missing_models += 1;
                 continue;
             };
-            let mut entity = SceneEntity {
-                origin: pose.origin,
-                non_normalized_axes: capabilities.scale != 1.0,
-                color: [255, 255, 255, (capabilities.alpha * 255.0) as u8],
-                depth_hack: capabilities.depth_hack,
-                ..SceneEntity::default()
-            };
-            let angles = match binding {
-                SceneBinding::Inline {
-                    binding,
-                    presentation,
-                } => {
-                    entity.model = SceneModel::World {
-                        world: binding.world,
+            for binding in bindings {
+                let mut entity = SceneEntity {
+                    origin: pose.origin,
+                    non_normalized_axes: capabilities.scale != 1.0,
+                    color: [255, 255, 255, (capabilities.alpha * 255.0) as u8],
+                    depth_hack: capabilities.depth_hack,
+                    ..SceneEntity::default()
+                };
+                let angles = match binding {
+                    SceneBinding::Inline {
+                        binding,
                         presentation,
-                        surfaces: binding.surfaces,
-                    };
-                    pose.angles
-                }
-                SceneBinding::Mesh(binding) => {
-                    let Some(model) = assets.model(binding.model) else {
-                        counts.missing_models += 1;
-                        continue;
-                    };
-                    let current_frame = native_frame(record.appearance.frame, model.frame_count());
-                    let old_frame = if capabilities.state_old_frame {
-                        native_frame(record.appearance.native.old_frame, model.frame_count())
-                    } else {
-                        previous
-                            .filter(|old| old.appearance.models[slot] == Some(reference))
-                            .map_or(current_frame, |old| {
-                                native_frame(old.appearance.frame, model.frame_count())
-                            })
-                    };
-                    let angles = binding.pose.angles(pose.angles, software);
-                    entity.model = binding.model.into();
-                    entity.material = Some(binding.material);
-                    entity.frame = current_frame;
-                    entity.old_frame = old_frame;
-                    entity.back_lerp = 1.0 - fraction;
-                    entity.lighting = Some(native_lighting(binding.pose, angles));
-                    angles
-                }
-            };
-            entity.axes = angle_vectors(angles)
-                .axes()
-                .map(|axis| axis * capabilities.scale);
-            let added = frame.add_entity(entity);
-            counts.models += u32::from(added);
-            counts.rejected += u32::from(!added);
+                    } => {
+                        entity.model = SceneModel::World {
+                            world: binding.world,
+                            presentation,
+                            surfaces: binding.surfaces,
+                        };
+                        pose.angles
+                    }
+                    SceneBinding::Mesh(binding) => {
+                        let Some(model) = assets.model(binding.model) else {
+                            counts.missing_models += 1;
+                            continue;
+                        };
+                        let current_frame =
+                            native_frame(record.appearance.frame, model.frame_count());
+                        let old_frame = if capabilities.state_old_frame {
+                            native_frame(record.appearance.native.old_frame, model.frame_count())
+                        } else {
+                            previous
+                                .filter(|old| old.appearance.models[slot] == Some(reference))
+                                .map_or(current_frame, |old| {
+                                    native_frame(old.appearance.frame, model.frame_count())
+                                })
+                        };
+                        let angles = binding.pose.angles(pose.angles, software);
+                        entity.model = binding.model.into();
+                        entity.material = Some(binding.material);
+                        entity.frame = current_frame;
+                        entity.old_frame = old_frame;
+                        entity.back_lerp = 1.0 - fraction;
+                        entity.lighting = Some(native_lighting(binding.pose, angles));
+                        angles
+                    }
+                };
+                entity.axes = angle_vectors(angles)
+                    .axes()
+                    .map(|axis| axis * capabilities.scale);
+                let added = frame.add_entity(entity);
+                counts.models += u32::from(added);
+                counts.rejected += u32::from(!added);
+            }
         }
     }
 
@@ -646,16 +666,12 @@ impl ClientSceneInput<'_> {
         let Some(reference) = weapon.model else {
             return;
         };
-        let Some(binding) = self.bindings.resolve(
+        let Some(bindings) = self.bindings.resolve(
             reference,
             weapon.skin,
             self.models,
             ModelMaterialPolicy::default(),
         ) else {
-            counts.missing_models += 1;
-            return;
-        };
-        let Some(model) = assets.model(binding.model) else {
             counts.missing_models += 1;
             return;
         };
@@ -688,62 +704,68 @@ impl ClientSceneInput<'_> {
                 lerp_angle(old.angles.0[axis], weapon.angles.0[axis], fraction)
             }))
         });
-        let angles = binding
-            .pose
-            .angles(self.weapon_view_angles + angles, software);
-        let current_frame = native_frame(weapon.frame, model.frame_count());
-        let (old_frame, back_lerp) =
-            if animation_policy == WeaponInterpolation::Rate && previous.is_some() {
-                let back = self.gun_animation.map_or(0.0, |animation| {
-                    self.interpolation
-                        .gun_back_lerp(animation.changed_at, weapon.rate)
-                });
-                let old = self
-                    .gun_previous
-                    .and_then(|frame| self.weapon(frame))
-                    .filter(|old| old.model == weapon.model);
-                if old.is_none()
-                    && back != 0.0
-                    && self
-                        .gun_animation
-                        .is_some_and(|animation| animation.previous.is_some())
-                {
-                    counts.unsupported += 1;
-                }
-                (
-                    old.map_or(current_frame, |old| {
-                        native_frame(old.frame, model.frame_count())
-                    }),
-                    back,
-                )
-            } else if animation_policy == WeaponInterpolation::Snapshot {
-                (
-                    previous
-                        .filter(|_| weapon.frame != 0)
-                        .filter(|old| old.model == weapon.model)
-                        .map_or(current_frame, |old| {
+        for binding in bindings {
+            let Some(model) = assets.model(binding.model) else {
+                counts.missing_models += 1;
+                continue;
+            };
+            let angles = binding
+                .pose
+                .angles(self.weapon_view_angles + angles, software);
+            let current_frame = native_frame(weapon.frame, model.frame_count());
+            let (old_frame, back_lerp) =
+                if animation_policy == WeaponInterpolation::Rate && previous.is_some() {
+                    let back = self.gun_animation.map_or(0.0, |animation| {
+                        self.interpolation
+                            .gun_back_lerp(animation.changed_at, weapon.rate)
+                    });
+                    let old = self
+                        .gun_previous
+                        .and_then(|frame| self.weapon(frame))
+                        .filter(|old| old.model == weapon.model);
+                    if old.is_none()
+                        && back != 0.0
+                        && self
+                            .gun_animation
+                            .is_some_and(|animation| animation.previous.is_some())
+                    {
+                        counts.unsupported += 1;
+                    }
+                    (
+                        old.map_or(current_frame, |old| {
                             native_frame(old.frame, model.frame_count())
                         }),
-                    1.0 - fraction,
-                )
-            } else {
-                (current_frame, 0.0)
+                        back,
+                    )
+                } else if animation_policy == WeaponInterpolation::Snapshot {
+                    (
+                        previous
+                            .filter(|_| weapon.frame != 0)
+                            .filter(|old| old.model == weapon.model)
+                            .map_or(current_frame, |old| {
+                                native_frame(old.frame, model.frame_count())
+                            }),
+                        1.0 - fraction,
+                    )
+                } else {
+                    (current_frame, 0.0)
+                };
+            let entity = SceneEntity {
+                model: binding.model.into(),
+                material: Some(binding.material),
+                origin: refdef.origin + offset + (weapon.offset - offset) * fraction,
+                axes: angle_vectors(angles).axes(),
+                frame: current_frame,
+                old_frame,
+                back_lerp,
+                depth_hack: true,
+                lighting: Some(native_lighting(binding.pose, angles)),
+                ..SceneEntity::default()
             };
-        let entity = SceneEntity {
-            model: binding.model.into(),
-            material: Some(binding.material),
-            origin: refdef.origin + offset + (weapon.offset - offset) * fraction,
-            axes: angle_vectors(angles).axes(),
-            frame: current_frame,
-            old_frame,
-            back_lerp,
-            depth_hack: true,
-            lighting: Some(native_lighting(binding.pose, angles)),
-            ..SceneEntity::default()
-        };
-        let added = frame.add_entity(entity);
-        counts.models += u32::from(added);
-        counts.rejected += u32::from(!added);
+            let added = frame.add_entity(entity);
+            counts.models += u32::from(added);
+            counts.rejected += u32::from(!added);
+        }
     }
 
     fn weapon(&self, frame: ReceivedFrame<'_>) -> Option<ViewWeapon> {

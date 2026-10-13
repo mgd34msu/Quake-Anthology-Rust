@@ -306,32 +306,41 @@ fn connection_model_names_bind_once_and_reset_with_their_owner() {
     let policy = ModelMaterialPolicy::default();
     let selected = bindings
         .resolve(reference(client), 1, &catalog, policy)
+        .and_then(|mut surfaces| surfaces.next())
         .unwrap();
     assert_ne!(selected.model.0, 50);
     assert_eq!(
-        bindings.resolve(
-            ModelRef::native(ResourceNamespace::Module(ModuleId(7)), 50).unwrap(),
-            1,
-            &catalog,
-            policy
-        ),
+        bindings
+            .resolve(
+                ModelRef::native(ResourceNamespace::Module(ModuleId(7)), 50).unwrap(),
+                1,
+                &catalog,
+                policy
+            )
+            .and_then(|mut surfaces| surfaces.next()),
         None,
     );
     assert_eq!(
-        bindings.resolve(reference(ClientId(8)), 1, &catalog, policy),
+        bindings
+            .resolve(reference(ClientId(8)), 1, &catalog, policy)
+            .and_then(|mut surfaces| surfaces.next()),
         None
     );
     configs.set(index, b"models/missing.md2").unwrap();
     assert!(!bindings.config_changed(index, &configs, &catalog));
     assert_eq!(
-        bindings.resolve(reference(client), 1, &catalog, policy),
+        bindings
+            .resolve(reference(client), 1, &catalog, policy)
+            .and_then(|mut surfaces| surfaces.next()),
         None
     );
     configs.set(index, b"models/test/tris.md2").unwrap();
     assert!(bindings.config_changed(index, &configs, &catalog));
     bindings.reset();
     assert_eq!(
-        bindings.resolve(reference(client), 1, &catalog, policy),
+        bindings
+            .resolve(reference(client), 1, &catalog, policy)
+            .and_then(|mut surfaces| surfaces.next()),
         None
     );
 }
@@ -369,6 +378,7 @@ fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallbac
     );
     let native_binding = bindings
         .resolve(reference(client), 1, &catalog, policy)
+        .and_then(|mut surfaces| surfaces.next())
         .unwrap();
     assert_eq!(
         bindings.bind_all(&configs, &catalog, foreign.profile(), None),
@@ -376,6 +386,7 @@ fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallbac
     );
     let foreign_binding = bindings
         .resolve(reference(client), 1, &catalog, policy)
+        .and_then(|mut surfaces| surfaces.next())
         .unwrap();
     assert_eq!(native_binding.model, foreign_binding.model);
     assert_ne!(native_binding.material, foreign_binding.material);
@@ -386,14 +397,18 @@ fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallbac
     configs.set(index, b"MODELS\\TEST\\TRIS.MD2").unwrap();
     assert!(bindings.config_changed(index, &configs, &catalog));
     assert_eq!(
-        bindings.resolve(reference(client), 1, &catalog, policy),
+        bindings
+            .resolve(reference(client), 1, &catalog, policy)
+            .and_then(|mut surfaces| surfaces.next()),
         Some(foreign_binding)
     );
     let mut absent = foreign.profile();
     absent.source_rules = RuleSetId::Quake3;
     assert_eq!(bindings.bind_all(&configs, &catalog, absent, None), 1);
     assert_eq!(
-        bindings.resolve(reference(client), 1, &catalog, policy),
+        bindings
+            .resolve(reference(client), 1, &catalog, policy)
+            .and_then(|mut surfaces| surfaces.next()),
         None
     );
     // A later text update retains the unregistered profile, rather than
@@ -401,7 +416,9 @@ fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallbac
     configs.set(index, native.path.as_bytes()).unwrap();
     assert!(!bindings.config_changed(index, &configs, &catalog));
     assert_eq!(
-        bindings.resolve(reference(client), 1, &catalog, policy),
+        bindings
+            .resolve(reference(client), 1, &catalog, policy)
+            .and_then(|mut surfaces| surfaces.next()),
         None
     );
 }
@@ -559,7 +576,9 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         Some(
             catalog
                 .registration("models/test/tris.md2", profile)
-                .and_then(|id| catalog.binding(id, 0, ModelMaterialPolicy::default()))
+                .and_then(|id| catalog
+                    .bindings(id, 0, ModelMaterialPolicy::default())
+                    .and_then(|mut surfaces| surfaces.next()))
                 .unwrap()
                 .material
         )
@@ -569,7 +588,9 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         Some(
             catalog
                 .registration("models/test/tris.md2", profile)
-                .and_then(|id| catalog.binding(id, 1, ModelMaterialPolicy::default()))
+                .and_then(|id| catalog
+                    .bindings(id, 1, ModelMaterialPolicy::default())
+                    .and_then(|mut surfaces| surfaces.next()))
                 .unwrap()
                 .material
         )
@@ -764,7 +785,9 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
                 Some(
                     catalog
                         .registration("models/test/tris.md2", profile)
-                        .and_then(|id| catalog.binding(id, 1, ModelMaterialPolicy::default()))
+                        .and_then(|id| catalog
+                            .bindings(id, 1, ModelMaterialPolicy::default())
+                            .and_then(|mut surfaces| surfaces.next()))
                         .unwrap()
                         .material
                 )
@@ -1058,7 +1081,9 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         Some(
             catalog
                 .registration("models/test/tris.md2", profile)
-                .and_then(|id| catalog.binding(id, 1, ModelMaterialPolicy::default()))
+                .and_then(|id| catalog
+                    .bindings(id, 1, ModelMaterialPolicy::default())
+                    .and_then(|mut surfaces| surfaces.next()))
                 .unwrap()
                 .material
         )

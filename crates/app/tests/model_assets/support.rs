@@ -34,6 +34,15 @@ impl Fixture {
             ("progs/test.mdl", mdl()),
         ])
     }
+    pub fn surfaces() -> Self {
+        Self::new(&[
+            ("models/test.md3", md3_surfaces()),
+            ("textures/body.tga", tga(2, 2, &[[90, 20, 10, 255]; 4])),
+            ("textures/alternate.tga", tga(2, 2, &[[10, 90, 20, 255]; 4])),
+            ("textures/glow.tga", tga(2, 2, &[[20, 10, 90, 255]; 4])),
+            ("scripts/test.shader", b"textures/glow { cull none { map textures/glow.tga rgbGen wave sin 0.5 0.5 0 1 } { map textures/glow.tga blendFunc add rgbGen identity } }".to_vec()),
+        ])
+    }
     pub fn remove(&self, path: &str) {
         qa_platform::files::remove_file(self.root.join(path)).unwrap();
     }
@@ -141,6 +150,35 @@ pub fn md3() -> Vec<u8> {
     let frames = i32::from_le_bytes(bytes[92..96].try_into().unwrap()) as usize;
     // Keep frame zero native, but make the all-frame bounds distinguishable.
     bytes[frames + 56 + 12..frames + 56 + 16].copy_from_slice(&100.0f32.to_le_bytes());
+    bytes
+}
+
+/// Two surfaces, each with its own shader list and two vertex frames.
+pub fn md3_surfaces() -> Vec<u8> {
+    let mut bytes = md3();
+    let at = i32::from_le_bytes(bytes[100..104].try_into().unwrap()) as usize;
+    let original = bytes[at..].to_vec();
+    let shader_at = i32::from_le_bytes(original[92..96].try_into().unwrap()) as usize;
+    let mut first = original.clone();
+    let mut shader = vec![0; 68];
+    shader[..18].copy_from_slice(b"textures/alternate");
+    first.splice(shader_at + 68..shader_at + 68, shader);
+    first[76..80].copy_from_slice(&2i32.to_le_bytes());
+    for offset in [96, 100, 104] {
+        let value = i32::from_le_bytes(first[offset..offset + 4].try_into().unwrap());
+        first[offset..offset + 4].copy_from_slice(&(value + 68).to_le_bytes());
+    }
+    let mut second = original;
+    second[4..68].fill(0);
+    second[4..10].copy_from_slice(b"glow_1");
+    second[shader_at..shader_at + 64].fill(0);
+    second[shader_at..shader_at + 13].copy_from_slice(b"textures/glow");
+    bytes.truncate(at);
+    bytes.extend(first);
+    bytes.extend(second);
+    bytes[84..88].copy_from_slice(&2i32.to_le_bytes());
+    let end = bytes.len() as i32;
+    bytes[104..108].copy_from_slice(&end.to_le_bytes());
     bytes
 }
 

@@ -87,7 +87,250 @@ fn native_model_handles_share_file_registration_and_bounds() {
 }
 
 #[test]
-fn unsupported_model_registration_keeps_native_bounds_without_a_render_handle() {
+fn md3_surfaces_share_geometry_and_keep_per_surface_shader_selection() {
+    let fixture = support::Fixture::surfaces();
+    let profiles = [
+        shader_profile(RuleSetId::Quake3),
+        shader_profile(RuleSetId::Quake2),
+    ];
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        profiles,
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = builder
+        .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
+        .unwrap();
+    let bytes = support::md3_surfaces();
+    let parsed = qa_formats::model::Model::parse(&bytes).unwrap();
+    assert_eq!(builder.model_bounds(handle), Some(parsed.frames[0].bounds));
+    fixture.remove("models/test.md3");
+    for name in [
+        "textures/body.tga",
+        "textures/alternate.tga",
+        "textures/glow.tga",
+        "scripts/test.shader",
+    ] {
+        fixture.remove(name);
+    }
+    assert_eq!(
+        builder.register_model(&fixture.vfs, b"MODELS\\TEST.MD3", RuleSetId::Quake3),
+        Ok(handle)
+    );
+    let (assets, catalog) = builder.finish();
+    assert_eq!(assets.models().len(), 3);
+    assert_eq!(catalog.capacity().surfaces, 4);
+    assert_eq!(catalog.capacity().skins, 6);
+    let mut shared = None;
+    for profile in profiles {
+        let registration = catalog.registration("models/test.md3", profile).unwrap();
+        let selected = |skin| {
+            catalog
+                .bindings(registration, skin, ModelMaterialPolicy::default())
+                .unwrap()
+                .collect::<Vec<_>>()
+        };
+        let first = selected(0);
+        let wrapped = selected(3);
+        assert_eq!(first.len(), 2);
+        assert_eq!(wrapped.len(), 2);
+        assert_ne!(first[0].model, first[1].model);
+        assert_eq!(first[0].model, wrapped[0].model);
+        assert_ne!(first[0].material, wrapped[0].material);
+        assert_eq!(first[1], wrapped[1]);
+        assert_eq!(selected(u32::MAX), wrapped);
+        for (binding, decoded) in first.iter().zip(&parsed.meshes) {
+            let mesh = assets.model(binding.model).unwrap();
+            assert_eq!(mesh.frame_count(), 2);
+            assert_eq!(mesh.vertices.len(), decoded.vertices.len());
+            for (vertex, original) in mesh.vertices.iter().zip(&decoded.vertices) {
+                assert_eq!(vertex.position, original.position);
+                assert_eq!(vertex.normal, original.normal);
+            }
+        }
+        let opaque = assets.material(first[0].material).unwrap();
+        assert_eq!(opaque.stages.len(), 1);
+        assert_eq!(opaque.stages[0].rgb_gen, RgbGen::LightingDiffuse);
+        assert_eq!(opaque.stages[0].blend, None);
+        assert!(opaque.stages[0].depth_write);
+        assert_eq!(
+            opaque.stages[0].depth_func,
+            qa_render::assets::DepthFunc::Lequal
+        );
+        let scripted = assets.material(first[1].material).unwrap();
+        assert_eq!(scripted.stages.len(), 2);
+        assert!(matches!(scripted.stages[0].rgb_gen, RgbGen::Wave(_)));
+        assert!(scripted.stages[1].blend.is_some());
+        let meshes = first
+            .iter()
+            .map(|binding| binding.model)
+            .collect::<Vec<_>>();
+        if let Some(previous) = shared.replace(meshes.clone()) {
+            assert_eq!(meshes, previous);
+        }
+    }
+    assert!(catalog.diagnostics.is_empty());
+}
+
+#[test]
+fn md3_tag_only_models_register_without_a_mesh_placeholder() {
+    let mut bytes = support::md3();
+    let at = i32::from_le_bytes(bytes[100..104].try_into().unwrap());
+    bytes[84..88].copy_from_slice(&0i32.to_le_bytes());
+    bytes[104..108].copy_from_slice(&at.to_le_bytes());
+    bytes.truncate(at as usize);
+    let bounds = qa_formats::model::Model::parse(&bytes).unwrap().frames[0].bounds;
+    let fixture = support::Fixture::new(&[("models/hand.md3", bytes)]);
+    let profile = shader_profile(RuleSetId::Quake3);
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = builder
+        .register_model(&fixture.vfs, b"models/hand.md3", RuleSetId::Quake3)
+        .unwrap();
+    let (assets, catalog) = builder.finish();
+    assert_eq!(catalog.model_bounds(handle), Some(bounds));
+    assert_eq!(assets.models().len(), 1);
+    assert_eq!(
+        catalog
+            .bindings(
+                catalog.registration("models/hand.md3", profile).unwrap(),
+                0,
+                ModelMaterialPolicy::default()
+            )
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(catalog.capacity().frame_vertices, 0);
+    assert_eq!(catalog.capacity().surfaces, 0);
+}
+
+#[test]
+fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() {
+    use qa_app::client_scene::{ClientModelBindings, ClientSceneInput};
+    use qa_core::{
+        configstrings::{ConfigLayout, ConfigStrings},
+        primitives::{
+            ClientId, EntityAppearance, EntityRecord, ModelRef, PlayerState, ResourceNamespace,
+            ViewWeapon,
+        },
+    };
+    use qa_network::{
+        commands::packet::Protocol,
+        projection::{EntityProjection, PlayerProjection},
+    };
+    let fixture = support::Fixture::surfaces();
+    let profile = shader_profile(RuleSetId::Quake3);
+    let request = ModelRequest::native("models/test.md3", RuleSetId::Quake3, None);
+    let (assets, catalog) = load(
+        &fixture,
+        Assets::load().unwrap(),
+        &[request],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    // File, presentation, client wire protocol and movement are independent.
+    let layout = ConfigLayout::QUAKE2;
+    let mut configs =
+        ConfigStrings::load((0..layout.count).map(|index| layout.capacity(index).unwrap()))
+            .unwrap();
+    configs
+        .set(layout.resources[0].get(50).unwrap(), b"models/test.md3")
+        .unwrap();
+    let client = ClientId(7);
+    let reference = ModelRef::native(ResourceNamespace::Client(client), 50).unwrap();
+    let mut bindings = ClientModelBindings::load(client, layout);
+    assert_eq!(bindings.bind_all(&configs, &catalog, profile, None), 0);
+    let projection = EntityProjection::load(Protocol::Quake2_34);
+    let player_projection = PlayerProjection::load(Protocol::Quake2_34, &[]);
+    let mut player = PlayerState::default();
+    player.movement_rules = RuleSetId::Quake;
+    player.view_weapon = ViewWeapon {
+        model: Some(reference),
+        frame: 1,
+        skin: 3,
+        ..Default::default()
+    };
+    let record = EntityRecord {
+        position: Vec3([20.0, 30.0, 40.0]),
+        appearance: EntityAppearance {
+            source: RuleSetId::Quake2,
+            frame: 1,
+            skin: 3,
+            models: [Some(reference), None, None, None],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let input = ClientSceneInput {
+        client,
+        current: None,
+        previous: None,
+        projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
+        player_projection: &player_projection,
+        bindings: &bindings,
+        models: &catalog,
+        static_entities: std::slice::from_ref(&record),
+        player: &player,
+        weapon_view_angles: player.view_angles,
+        alias_roll: qa_gameplay::rules::appearance::AliasRoll::default(),
+        interpolation: Default::default(),
+        gun_animation: None,
+        gun_previous: None,
+        view_entity: None,
+    };
+    let expected = catalog
+        .bindings(
+            catalog.registration(request.path, profile).unwrap(),
+            3,
+            ModelMaterialPolicy::default(),
+        )
+        .unwrap()
+        .collect::<Vec<_>>();
+    for software in [false, true] {
+        for limit in [3, 4] {
+            let mut front = qa_render::FrontEnd::load(qa_render::Limits {
+                entities: limit,
+                ..Default::default()
+            })
+            .unwrap();
+            let mut frame = front.begin_frame([0; 4]).unwrap();
+            let counts = input.append(&mut frame, &assets, &qa_render::Refdef::default(), software);
+            assert_eq!(counts.entities, 1);
+            assert_eq!(counts.models, limit as u32);
+            assert_eq!(counts.rejected, (4 - limit) as u32);
+            assert_eq!(counts.missing_models, 0);
+            let packet = frame.finish();
+            for index in 0..limit {
+                let entity = packet.entity(index as u32);
+                assert_eq!(entity.model, expected[index % 2].model.into());
+                assert_eq!(entity.material, Some(expected[index % 2].material));
+                assert_eq!(entity.frame, 1);
+                assert_eq!(entity.old_frame, 1);
+                assert_eq!(entity.depth_hack, index >= 2);
+                assert_eq!(
+                    entity.origin,
+                    if index < 2 {
+                        record.position
+                    } else {
+                        Vec3::default()
+                    }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unresolved_model_materials_keep_native_bounds_without_a_render_handle() {
     let bytes = support::md3();
     let parsed = qa_formats::model::Model::parse(&bytes).unwrap();
     let bounds = parsed.bounds;
@@ -399,11 +642,13 @@ fn binding(
     profile: ModelProfile,
     skin: u32,
 ) -> Option<qa_app::model_assets::ModelBinding> {
-    catalog.binding(
-        catalog.registration(path, profile)?,
-        skin,
-        ModelMaterialPolicy::default(),
-    )
+    catalog
+        .bindings(
+            catalog.registration(path, profile)?,
+            skin,
+            ModelMaterialPolicy::default(),
+        )
+        .and_then(|mut surfaces| surfaces.next())
 }
 fn image(
     assets: &Assets,
@@ -832,8 +1077,12 @@ fn canonical_name_registration_is_unique_and_numeric_skin_lookup_falls_back_to_z
         Some(registration)
     );
     assert_eq!(
-        catalog.binding(registration, 99, ModelMaterialPolicy::default()),
-        catalog.binding(registration, 0, ModelMaterialPolicy::default())
+        catalog
+            .bindings(registration, 99, ModelMaterialPolicy::default())
+            .and_then(|mut surfaces| surfaces.next()),
+        catalog
+            .bindings(registration, 0, ModelMaterialPolicy::default())
+            .and_then(|mut surfaces| surfaces.next())
     );
     assert_eq!(catalog.registration("missing.md2", profile), None);
     assert_eq!(catalog.capacity().names, 2); // explicit empty NameId plus file.
@@ -901,7 +1150,8 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
             .registration("models/test/tris.md2", profile)
             .unwrap();
         let opaque = catalog
-            .binding(registration, 0, ModelMaterialPolicy::default())
+            .bindings(registration, 0, ModelMaterialPolicy::default())
+            .and_then(|mut surfaces| surfaces.next())
             .unwrap();
         let base_image = image(&assets, &catalog, "models/test/tris.md2", profile, 0);
         for translucent in [false, true] {
@@ -910,7 +1160,10 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
                     translucent,
                     fullbright,
                 };
-                let binding = catalog.binding(registration, 0, policy).unwrap();
+                let binding = catalog
+                    .bindings(registration, 0, policy)
+                    .and_then(|mut surfaces| surfaces.next())
+                    .unwrap();
                 assert_eq!(binding.model, opaque.model);
                 let material = assets.material(binding.material).unwrap();
                 assert_eq!(material.stages.len(), 1);
@@ -1199,7 +1452,8 @@ fn one_filename_has_explicit_profile_variants_on_one_mesh_without_first_profile_
             .registration("MODELS\\TEST\\TRIS.MD2", request.profile())
             .unwrap();
         catalog
-            .binding(id, 0, ModelMaterialPolicy::default())
+            .bindings(id, 0, ModelMaterialPolicy::default())
+            .and_then(|mut surfaces| surfaces.next())
             .unwrap()
     });
     assert_eq!(assets.models().len(), before + 1);

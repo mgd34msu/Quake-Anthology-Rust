@@ -72,6 +72,7 @@ pub struct ModelLimits {
     pub models: usize,
     pub name_bytes: usize,
     pub skins: usize,
+    pub surfaces: usize,
     pub frame_vertices: usize,
     pub indices: usize,
     pub inline_models: usize,
@@ -83,6 +84,7 @@ impl Default for ModelLimits {
             models: 4096,
             name_bytes: 4 * 1024 * 1024,
             skins: 65536,
+            surfaces: 65536,
             frame_vertices: 16 * 1024 * 1024,
             indices: 16 * 1024 * 1024,
             inline_models: 65536,
@@ -126,10 +128,43 @@ impl ModelMaterialPolicy {
         usize::from(self.translucent) * 2 + usize::from(self.fullbright)
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct ModelMaterials {
     variants: [ModelBinding; 4],
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SurfaceMaterials {
+    skins: IndexSpan,
+    wrap_skins: bool,
+}
+
+/// Numeric, allocation-free iteration over every surface of one registration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelBindings<'a> {
+    surfaces: &'a [SurfaceMaterials],
+    materials: &'a [ModelMaterials],
+    skin: u32,
+    policy: ModelMaterialPolicy,
+}
+impl Iterator for ModelBindings<'_> {
+    type Item = ModelBinding;
+    fn next(&mut self) -> Option<Self::Item> {
+        let (surface, remaining) = self.surfaces.split_first()?;
+        self.surfaces = remaining;
+        let skin = if surface.wrap_skins {
+            self.skin % surface.skins.count
+        } else if self.skin < surface.skins.count {
+            self.skin
+        } else {
+            0
+        };
+        Some(self.materials[(surface.skins.first + skin) as usize].variants[self.policy.index()])
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.surfaces.len(), Some(self.surfaces.len()))
+    }
+}
+impl ExactSizeIterator for ModelBindings<'_> {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InlineBinding {
     pub world: WorldId,
@@ -149,6 +184,7 @@ pub struct ModelCapacity {
     pub name_bytes: usize,
     pub bindings: usize,
     pub skins: usize,
+    pub surfaces: usize,
     pub frame_vertices: usize,
     pub indices: usize,
     pub inline_bindings: usize,
@@ -161,7 +197,7 @@ struct Registration {
 }
 struct RegisteredProfile {
     profile: ModelProfile,
-    skins: Option<IndexSpan>,
+    surfaces: Option<IndexSpan>,
     error: Option<String>,
 }
 struct RegisteredShader {
@@ -245,6 +281,7 @@ pub struct ModelCatalog {
     shader_bindings: Box<[ShaderProfileBinding]>,
     registrations: Box<[RegisteredProfile]>,
     bindings: Box<[ModelMaterials]>,
+    surfaces: Box<[SurfaceMaterials]>,
     worlds: Box<[IndexSpan]>,
     inline: Box<[InlineBinding]>,
     capacity: ModelCapacity,
@@ -266,6 +303,7 @@ pub struct ModelCatalogBuilder {
     profiles: Vec<ProfileImages>,
     registrations: Vec<RegisteredProfile>,
     bindings: Vec<ModelMaterials>,
+    surfaces: Vec<SurfaceMaterials>,
     worlds: Box<[IndexSpan]>,
     inline: Box<[InlineBinding]>,
     capacity: ModelCapacity,
@@ -321,6 +359,7 @@ impl ModelCatalogBuilder {
             profiles: unique,
             registrations: Vec::new(),
             bindings: Vec::new(),
+            surfaces: Vec::new(),
             worlds,
             inline,
             capacity,
@@ -471,7 +510,13 @@ impl ModelCatalogBuilder {
             },
             Err(error) => ModelFile::Failed(error.clone()),
         };
-        let mut mesh = None;
+        let mut meshes = vec![None; parsed.as_ref().map_or(0, |model| model.meshes.len())];
+        if parsed
+            .as_ref()
+            .is_ok_and(|model| model.format == ModelFormat::Md3)
+        {
+            self.shader_catalog(vfs);
+        }
         for images in &mut self.profiles {
             let registration = Registration {
                 path: path.to_owned(),
@@ -491,7 +536,8 @@ impl ModelCatalogBuilder {
                                 &mut temporary,
                                 &registration,
                                 images.model_policy,
-                                &mut mesh,
+                                &mut meshes,
+                                self.shader_catalog.as_ref(),
                                 &mut self.capacity,
                                 self.limits,
                             )
@@ -510,11 +556,22 @@ impl ModelCatalogBuilder {
                     });
                 }
             };
-            let (skins, error) = match result {
-                Ok(skins) => {
-                    let first = self.bindings.len() as u32;
-                    let count = skins.len() as u32;
-                    self.bindings.extend(skins);
+            let (surfaces, error) = match result {
+                Ok(surfaces) => {
+                    let first = self.surfaces.len() as u32;
+                    let count = surfaces.len() as u32;
+                    for skins in surfaces {
+                        self.surfaces.push(SurfaceMaterials {
+                            skins: IndexSpan {
+                                first: self.bindings.len() as u32,
+                                count: skins.len() as u32,
+                            },
+                            wrap_skins: parsed
+                                .as_ref()
+                                .is_ok_and(|model| model.format == ModelFormat::Md3),
+                        });
+                        self.bindings.extend(skins);
+                    }
                     if let ModelFile::Ready {
                         renderer_sources, ..
                     } = &mut self.files[name.0 as usize]
@@ -534,13 +591,20 @@ impl ModelCatalogBuilder {
             };
             self.registrations.push(RegisteredProfile {
                 profile: images.profile,
-                skins,
+                surfaces,
                 error,
             });
         }
         self.capacity.registrations = self.registrations.len();
         self.capacity.bindings = self.bindings.len() * ModelMaterialPolicy::ALL.len();
         metadata.map(|metadata| metadata.bounds)
+    }
+
+    fn shader_catalog(&mut self, vfs: &Vfs) -> &Result<ShaderCatalog, String> {
+        self.shader_catalog.get_or_insert_with(|| {
+            qa_render::material::load_catalog(vfs)
+                .map_err(|error| format!("shader scripts: {error:?}"))
+        })
     }
 
     fn admit_shader(
@@ -559,9 +623,8 @@ impl ModelCatalogBuilder {
         if let Some(handle) = shader_handle(&self.names, &self.shader_indices, &self.shaders, raw) {
             return Ok(handle);
         }
-        let full_name = std::str::from_utf8(raw).map_err(|_| CallError::Text)?;
+        std::str::from_utf8(raw).map_err(|_| CallError::Text)?;
         let key = shader_key(raw);
-        let display = std::str::from_utf8(key).map_err(|_| CallError::Text)?;
         let count = self
             .profiles
             .iter()
@@ -589,27 +652,7 @@ impl ModelCatalogBuilder {
             profiles: span,
             ready: false,
         });
-        let catalog = self.shader_catalog.get_or_insert_with(|| {
-            qa_render::material::load_catalog(vfs)
-                .map_err(|error| format!("shader scripts: {error:?}"))
-        });
-        let definition = match catalog {
-            Ok(catalog) => Ok(catalog
-                .find_canonical(&canonical_path(display))
-                .cloned()
-                .unwrap_or_else(|| implicit_shader(display, full_name, mipmaps))),
-            Err(error) => Err(error.clone()),
-        };
-        // The same compiler serves world and native LIGHTMAP_2D registrations.
-        // Native negative lightmap indices resolve explicit $lightmap to white.
-        let definition = definition.map(|mut definition| {
-            for stage in &mut definition.stages {
-                if matches!(stage.map, Some(TextureMap::Lightmap)) {
-                    stage.map = Some(TextureMap::White);
-                }
-            }
-            definition
-        });
+        let definition = shader_definition(self.shader_catalog(vfs), raw, mipmaps, false);
         let mut ready = false;
         for images in self
             .profiles
@@ -622,16 +665,7 @@ impl ModelCatalogBuilder {
                     let result = definition
                         .as_ref()
                         .map_err(Clone::clone)
-                        .and_then(|definition| {
-                            if !definition.valid {
-                                return Err("invalid shader definition".to_owned());
-                            }
-                            qa_render::material::world_load::compile_definition(
-                                definition,
-                                &mut temporary,
-                            )
-                            .map_err(|error| format!("shader material: {error:?}"))
-                        });
+                        .and_then(|definition| compile_shader(definition, &mut temporary));
                     images.state = Some(Ok(temporary.into_state()));
                     result
                 }
@@ -678,6 +712,7 @@ impl ModelCatalogBuilder {
             shader_bindings: self.shader_bindings.into_boxed_slice(),
             registrations: self.registrations.into_boxed_slice(),
             bindings: self.bindings.into_boxed_slice(),
+            surfaces: self.surfaces.into_boxed_slice(),
             worlds: self.worlds,
             inline: self.inline,
             capacity: self.capacity,
@@ -707,14 +742,43 @@ fn shader_handle(
     let entry = shaders.get(index as usize)?;
     Some(if entry.ready { index as i32 + 1 } else { 0 })
 }
-fn implicit_shader(display: &str, image: &str, mipmaps: bool) -> ShaderDef {
+fn shader_definition(
+    catalog: &Result<ShaderCatalog, String>,
+    raw: &[u8],
+    mipmaps: bool,
+    model: bool,
+) -> Result<ShaderDef, String> {
+    let image = std::str::from_utf8(raw).map_err(|_| "shader name is not UTF-8")?;
+    let display = std::str::from_utf8(shader_key(raw)).map_err(|_| "shader name is not UTF-8")?;
+    let mut definition = catalog
+        .as_ref()
+        .map_err(Clone::clone)?
+        .find_canonical(&canonical_path(display))
+        .cloned()
+        .unwrap_or_else(|| implicit_shader(display, image, mipmaps, model));
+    // Negative native lightmap indices resolve explicit $lightmap to white.
+    for stage in &mut definition.stages {
+        if matches!(stage.map, Some(TextureMap::Lightmap)) {
+            stage.map = Some(TextureMap::White);
+        }
+    }
+    Ok(definition)
+}
+fn compile_shader(definition: &ShaderDef, images: &mut Images<'_>) -> Result<MaterialId, String> {
+    if !definition.valid {
+        return Err("invalid shader definition".to_owned());
+    }
+    qa_render::material::world_load::compile_definition(definition, images)
+        .map_err(|error| format!("shader material: {error:?}"))
+}
+fn implicit_shader(display: &str, image: &str, mipmaps: bool, model: bool) -> ShaderDef {
     ShaderDef {
         name: display.to_owned(),
         source: String::new(),
         line: 0,
         valid: true,
         cull: Cull::Front,
-        sort: 9.0,
+        sort: if model { 3.0 } else { 9.0 },
         sort_explicit: false,
         surface_flags: 0,
         content_flags: 0,
@@ -732,14 +796,26 @@ fn implicit_shader(display: &str, image: &str, mipmaps: bool) -> ShaderDef {
                 name: image.to_owned(),
                 clamp: !mipmaps,
             }),
-            blend: Some(StageBlend::ALPHA),
-            rgb_gen: RgbGen::Vertex,
-            alpha_gen: AlphaGen::Vertex,
+            blend: (!model).then_some(StageBlend::ALPHA),
+            rgb_gen: if model {
+                RgbGen::LightingDiffuse
+            } else {
+                RgbGen::Vertex
+            },
+            alpha_gen: if model {
+                AlphaGen::Identity
+            } else {
+                AlphaGen::Vertex
+            },
             tc_gen: TexCoordGen::Texture,
             tc_mods: Box::new([]),
             alpha_func: AlphaFunc::None,
-            depth_func: DepthFunc::Always,
-            depth_write: false,
+            depth_func: if model {
+                DepthFunc::Lequal
+            } else {
+                DepthFunc::Always
+            },
+            depth_write: model,
             detail: false,
             unsupported: Box::new([]),
         }]
@@ -917,7 +993,7 @@ impl ModelCatalog {
         span.range()
             .find(|&index| {
                 let entry = &self.registrations[index];
-                entry.profile == profile && entry.skins.is_some()
+                entry.profile == profile && entry.surfaces.is_some()
             })
             .map(|index| ModelRegistrationId(index as u32))
     }
@@ -925,15 +1001,19 @@ impl ModelCatalog {
         std::str::from_utf8(self.names.get(name)?).ok()
     }
     /// Frame lookup uses only cached numeric registration, skin and policy.
-    pub fn binding(
+    pub fn bindings(
         &self,
         registration: ModelRegistrationId,
         skin: u32,
         policy: ModelMaterialPolicy,
-    ) -> Option<ModelBinding> {
-        let span = self.registrations.get(registration.0 as usize)?.skins?;
-        let skin = if skin < span.count { skin } else { 0 };
-        Some(self.bindings.get((span.first + skin) as usize)?.variants[policy.index()])
+    ) -> Option<ModelBindings<'_>> {
+        let span = self.registrations.get(registration.0 as usize)?.surfaces?;
+        Some(ModelBindings {
+            surfaces: &self.surfaces[span.range()],
+            materials: &self.bindings,
+            skin,
+            policy,
+        })
     }
     pub fn resolve_inline(&self, world: WorldId, index: u32) -> Option<InlineBinding> {
         inline_binding(&self.worlds, &self.inline, world, index)
@@ -996,7 +1076,10 @@ fn inline_bindings(
 }
 
 fn validate_model(model: &Model<'_>) -> Result<(), String> {
-    if !matches!(model.format, ModelFormat::Mdl | ModelFormat::Md2) {
+    if !matches!(
+        model.format,
+        ModelFormat::Mdl | ModelFormat::Md2 | ModelFormat::Md3
+    ) {
         return Err(format!(
             "model format not yet registered: {:?}",
             model.format
@@ -1013,7 +1096,7 @@ fn validate_model(model: &Model<'_>) -> Result<(), String> {
     {
         return Err("grouped MDL frame/skin timing is not yet registered".to_owned());
     }
-    if model.skins.is_empty() {
+    if model.format != ModelFormat::Md3 && model.skins.is_empty() {
         return Err("model requires an explicit external skin".to_owned());
     }
     Ok(())
@@ -1024,19 +1107,94 @@ fn register(
     images: &mut Images<'_>,
     registration: &Registration,
     model_policy: ModelPolicy,
-    shared_mesh: &mut Option<ModelId>,
+    shared_meshes: &mut [Option<ModelId>],
+    shader_catalog: Option<&Result<ShaderCatalog, String>>,
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
-) -> Result<Vec<ModelMaterials>, String> {
-    let skin_count = capacity
-        .skins
-        .checked_add(model.skins.len())
-        .filter(|&count| count <= limits.skins && count <= u32::MAX as usize)
-        .ok_or("model skin capacity")?;
+) -> Result<Vec<Vec<ModelMaterials>>, String> {
+    let next_surfaces = capacity
+        .surfaces
+        .checked_add(model.meshes.len())
+        .filter(|&count| count <= limits.surfaces && count <= u32::MAX as usize)
+        .ok_or("model surface capacity")?;
+    let alias = if model.format == ModelFormat::Md3 {
+        None
+    } else {
+        Some(alias_materials(
+            &model.skins,
+            images,
+            registration,
+            model_policy,
+        )?)
+    };
+    let mut surfaces = Vec::with_capacity(model.meshes.len());
+    let mut skin_count = capacity.skins;
+    for (mesh, shared_mesh) in model.meshes.iter().zip(shared_meshes) {
+        let count = alias
+            .as_ref()
+            .map_or_else(|| mesh.shaders.len().max(1), Vec::len);
+        skin_count = skin_count
+            .checked_add(count)
+            .filter(|&count| count <= limits.skins && count <= u32::MAX as usize)
+            .ok_or("model skin capacity")?;
+        let materials = if let Some(materials) = &alias {
+            materials.clone()
+        } else if mesh.shaders.is_empty() {
+            return Err("MD3 surface default shader is not yet registered".to_owned());
+        } else {
+            mesh.shaders
+                .iter()
+                .map(|shader| {
+                    let definition = shader_definition(
+                        shader_catalog.ok_or("missing model shader catalog")?,
+                        shader.name,
+                        true,
+                        true,
+                    )?;
+                    let material = compile_shader(&definition, images)?;
+                    Ok([material; 4])
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        };
+        let id = if let Some(id) = *shared_mesh {
+            id
+        } else {
+            let (vertices, frame_size, indices) = mesh_vertices(mesh, capacity, limits)?;
+            let material = materials.first().ok_or("model has no skin material")?[0];
+            let id = images
+                .assets
+                .register_animated_model(&vertices, frame_size, &indices, material)?;
+            *shared_mesh = Some(id);
+            id
+        };
+        surfaces.push(
+            materials
+                .into_iter()
+                .map(|materials| ModelMaterials {
+                    variants: materials.map(|material| ModelBinding {
+                        model: id,
+                        material,
+                        pose: model_policy.presentation.pose,
+                    }),
+                })
+                .collect(),
+        );
+    }
+    capacity.skins = skin_count;
+    capacity.surfaces = next_surfaces;
+    Ok(surfaces)
+}
+
+fn alias_materials(
+    skins: &[Image<'_>],
+    images: &mut Images<'_>,
+    registration: &Registration,
+    model_policy: ModelPolicy,
+) -> Result<Vec<[MaterialId; 4]>, String> {
     let options = registration.profile;
     let usage = ImageUse::default();
-    let mut materials = Vec::with_capacity(model.skins.len());
-    for (index, skin) in model.skins.iter().enumerate() {
+    let mut materials = Vec::with_capacity(skins.len());
+    for (index, skin) in skins.iter().enumerate() {
         let image = match *skin {
             Image::Indexed {
                 width,
@@ -1125,29 +1283,7 @@ fn register(
         }
         materials.push(variants);
     }
-    let id = if let Some(id) = *shared_mesh {
-        id
-    } else {
-        let mesh = model.meshes.first().ok_or("model has no mesh")?;
-        let (vertices, frame_size, indices) = mesh_vertices(mesh, capacity, limits)?;
-        let material = materials.first().ok_or("model has no skin material")?[0];
-        let id = images
-            .assets
-            .register_animated_model(&vertices, frame_size, &indices, material)?;
-        *shared_mesh = Some(id);
-        id
-    };
-    capacity.skins = skin_count;
-    Ok(materials
-        .into_iter()
-        .map(|materials| ModelMaterials {
-            variants: materials.map(|material| ModelBinding {
-                model: id,
-                material,
-                pose: model_policy.presentation.pose,
-            }),
-        })
-        .collect())
+    Ok(materials)
 }
 
 fn mesh_vertices(
@@ -1155,6 +1291,9 @@ fn mesh_vertices(
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
 ) -> Result<(Vec<Vertex>, usize, Vec<u32>), String> {
+    if mesh.vertices_per_frame == 0 {
+        return Ok((Vec::new(), 0, Vec::new()));
+    }
     let index_count = mesh
         .triangles
         .len()
