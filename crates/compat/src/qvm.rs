@@ -86,9 +86,17 @@ impl Vm {
         services: &mut crate::services::EngineServices<'_>,
         context: crate::services::CallContext,
         time: qa_core::sys_events::EventTime,
+        completed_export: Option<u32>,
     ) -> Result<(), crate::services::CallError> {
         if let Some(projection) = &mut self.projection {
-            projection.publish(&mut self.memory, services, context, None, time)?;
+            projection.publish(
+                &mut self.memory,
+                services,
+                context,
+                None,
+                time,
+                completed_export,
+            )?;
         }
         Ok(())
     }

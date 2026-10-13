@@ -2,6 +2,7 @@
 use super::*;
 use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
 use qa_core::loopback::Endpoint;
+use qa_core::primitives::ClockObservation;
 use qa_formats::program::qvm::Opcode as Op;
 use qa_network::{commands::packet::Protocol, snapshots::ReceivedFrame, states};
 use qa_session::clients::Connection;
@@ -24,6 +25,7 @@ fn program(gravity: i32, speed: i32, followed_client: i32) -> qa_compat::qvm::Vm
         Q3StatLayout::BASE,
         0,
         [0; 16],
+        false,
     )
 }
 fn program_inventory(
@@ -33,10 +35,11 @@ fn program_inventory(
     layout: Q3StatLayout,
     weapons: u32,
     ammo: [i32; 16],
+    powerup_frame: bool,
 ) -> qa_compat::qvm::Vm {
     let mut code = vec![(Op::Enter, 64)];
     let mut branches = Vec::new();
-    for export in [0, 7, 9, 10] {
+    for export in [0, 7, 9, 10, 8] {
         code.extend([
             (Op::Local, 72),
             (Op::Load4, 0),
@@ -92,6 +95,20 @@ fn program_inventory(
         (Op::Const, 0),
         (Op::Leave, 64),
     ]);
+    code[branches[4]].1 = code.len() as i32;
+    if powerup_frame {
+        // The guest reads the actual signed ABI frame argument and computes an
+        // expiry in its own native clock, including int32 wrap.
+        code.extend([
+            (Op::Const, PLAYERS + 312 + 4),
+            (Op::Local, 76),
+            (Op::Load4, 0),
+            (Op::Const, 1000),
+            (Op::Add, 0),
+            (Op::Store4, 0),
+        ]);
+    }
+    code.extend([(Op::Const, 0), (Op::Leave, 64)]);
     let mut data = vec![0; PLAYERS as usize + PLAYER_STRIDE as usize * 2];
     for index in 0..2 {
         let at = ENTITIES as usize + index * ENTITY_STRIDE as usize;
@@ -631,6 +648,14 @@ fn q3_accepted_follow_flag_keeps_received_pose_when_prediction_has_a_nonzero_com
 
 fn write_inventory(host: &mut FrameHost, offset: i32, value: u32, queued_ms: u64) {
     host.time = EventTime::from_milliseconds(queued_ms);
+    // Establish the provider sample explicitly. Other successful exports must
+    // retain it, even when their call arguments carry another native time.
+    host.call_module_export(
+        MODULE,
+        Export::clocked(CallbackId(8)),
+        ThinkTime::Milliseconds(5000),
+    )
+    .unwrap();
     host.call_module_export(
         MODULE,
         Export::words(
@@ -644,6 +669,81 @@ fn write_inventory(host: &mut FrameHost, offset: i32, value: u32, queued_ms: u64
 }
 
 #[test]
+fn q3_clientthink_between_ticks_preserves_native_frame_clock_and_ta_marker() {
+    let (mut host, client) = fixture_program(program_inventory(
+        800,
+        320,
+        0,
+        Q3StatLayout::TEAM_ARENA,
+        0,
+        [0; 16],
+        false,
+    ));
+    let scout = host
+        .runtime
+        .catalog
+        .registry
+        .native_powerup(RuleSetId::Quake3, 10)
+        .unwrap();
+    let (item, timer) = (scout.item, scout.id);
+    host.time = EventTime::from_milliseconds(1000);
+    host.call_module_export(
+        MODULE,
+        Export::words(CallbackId(10), &[(PLAYERS + 312 + 10 * 4) as u64, 1000]),
+        ThinkTime::Milliseconds(1000),
+    )
+    .unwrap();
+    host.call_module_export(
+        MODULE,
+        Export::clocked(CallbackId(8)),
+        ThinkTime::Milliseconds(1000),
+    )
+    .unwrap();
+    let clock = Some(ClockObservation {
+        native: ThinkTime::Milliseconds(1000),
+        queued: EventTime::from_milliseconds(1000),
+    });
+    let player = &host.runtime.server.clients[client.0 as usize].player;
+    assert_eq!(player.native_clock, clock);
+    assert_eq!(player.inventory.item_counts[item.0 as usize], 1);
+    assert_eq!(player.inventory.powerup_until[timer.0 as usize], 1.0);
+    host.time = EventTime::from_milliseconds(1050);
+    assert!(host.runtime.send_local_command(
+        client,
+        &UserCmd {
+            server_time_ms: 1050,
+            duration_ms: 50,
+            ..Default::default()
+        },
+        host.time,
+    ));
+    host.drain(&mut Default::default());
+    assert_eq!(read(&mut host, THINK_COUNT), 1);
+    let player = &host.runtime.server.clients[client.0 as usize].player;
+    assert_eq!(player.native_clock, clock);
+    assert_eq!(player.inventory.item_counts[item.0 as usize], 1);
+    assert_eq!(player.inventory.powerup_until[timer.0 as usize], 1.0);
+    let words = transmit(&mut host, client, 1050);
+    assert_eq!(words[106], 1000);
+    let ReceivedFrame::Quake3(frame) = host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .channel
+        .current_snapshot()
+        .unwrap()
+    else {
+        panic!("expected Q3 native frame")
+    };
+    assert_eq!(frame.time, ThinkTime::Milliseconds(1000));
+    let player = &host.runtime.prediction[0].player;
+    assert_eq!(player.inventory.item_counts[item.0 as usize], 1);
+    assert_eq!(player.inventory.powerup_until[timer.0 as usize], 1.05);
+    assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
+}
+
+#[test]
 fn q3_native_inventory_reaches_queued_client_and_hud_with_explicit_base_or_ta_layout() {
     for layout in [Q3StatLayout::BASE, Q3StatLayout::TEAM_ARENA] {
         let mut ammo = [0; 16];
@@ -653,7 +753,7 @@ fn q3_native_inventory_reaches_queued_client_and_hud_with_explicit_base_or_ta_la
         ammo[14] = -0x0100_1235;
         let mask = (1 << 2) | (1 << 3) | (1 << 5) | (1 << 14);
         let (mut host, client) =
-            fixture_program(program_inventory(800, 320, 0, layout, mask, ammo));
+            fixture_program(program_inventory(800, 320, 0, layout, mask, ammo, false));
         let registry = &host.runtime.catalog.registry;
         let rocket_weapon = registry.native_weapon(RuleSetId::Quake3, 5).unwrap();
         let rocket = registry.weapon(rocket_weapon).unwrap();
@@ -675,6 +775,9 @@ fn q3_native_inventory_reaches_queued_client_and_hud_with_explicit_base_or_ta_la
             .values
             .native(RuleSetId::Quake3)
             .ammo[14];
+        let haste_def = registry.native_powerup(RuleSetId::Quake3, 3).unwrap();
+        let haste_timer = haste_def.id;
+        let haste_item = haste_def.item;
         let powerup = host
             .runtime
             .catalog
@@ -706,7 +809,19 @@ fn q3_native_inventory_reaches_queued_client_and_hud_with_explicit_base_or_ta_la
         write_inventory(&mut host, 184 + i32::from(layout.weapons) * 4, mask, 137);
         write_inventory(&mut host, 144, 5, 137);
         write_inventory(&mut host, 184 + i32::from(layout.armor) * 4, 63, 137);
-        write_inventory(&mut host, 312 + 3 * 4, 0x8123_4567, 137);
+        write_inventory(&mut host, 312 + 3 * 4, 12_000, 137);
+        write_inventory(&mut host, 312 + 15 * 4, 0x8123_4567, 137);
+        assert_eq!(
+            host.runtime.server.clients[1]
+                .player
+                .inventory
+                .powerup_until[haste_timer.0 as usize],
+            7.137
+        );
+        assert_eq!(
+            host.runtime.server.clients[1].player.inventory.item_counts[haste_item.0 as usize],
+            1
+        );
         assert_eq!(
             host.runtime.server.clients[1]
                 .player
@@ -727,7 +842,8 @@ fn q3_native_inventory_reaches_queued_client_and_hud_with_explicit_base_or_ta_la
         assert_eq!(words[80 + 2], 1);
         assert_eq!(words[80 + 5], (-1i32) as u32);
         assert_eq!(words[80 + 14], (ammo[14] as i16 as i32) as u32);
-        assert_eq!(words[96 + 3], 0x8123_4567);
+        assert_eq!(words[96 + 3], 12_000);
+        assert_eq!(words[96 + 15], 0x8123_4567);
         assert_eq!(words[48 + usize::from(layout.weapons)], mask);
         assert_eq!(words[48 + usize::from(layout.armor)], 63);
         let player = &host.runtime.prediction[0].player;
@@ -744,13 +860,19 @@ fn q3_native_inventory_reaches_queued_client_and_hud_with_explicit_base_or_ta_la
             player.values.get(reserved_ammo.id).unwrap().0,
             (ammo[14] as i16 as i32) as u32
         );
-        assert_eq!(player.values.get(powerup.id).unwrap().0, 0x8123_4567);
-        assert!(
-            player
-                .inventory
-                .powerup_until
-                .iter()
-                .all(|value| *value == 0.0)
+        assert_eq!(player.values.get(powerup.id).unwrap().0, 12_000);
+        assert_eq!(player.inventory.powerup_until[haste_timer.0 as usize], 7.3);
+        assert_eq!(player.inventory.item_counts[haste_item.0 as usize], 1);
+        assert_eq!(
+            player.inventory.item_acquired_at[haste_item.0 as usize],
+            0.3
+        );
+        assert_eq!(
+            player.native_clock,
+            Some(ClockObservation {
+                native: ThinkTime::Milliseconds(5000),
+                queued: EventTime::from_milliseconds(300),
+            })
         );
         assert_eq!(
             (player.movement_rules, player.trace_rules),
@@ -771,6 +893,89 @@ fn q3_native_inventory_reaches_queued_client_and_hud_with_explicit_base_or_ta_la
         assert_eq!(hud.ammo, -1);
         assert!(hud.owned_weapons.contains(rocket_weapon.0 as usize));
         assert!(hud.owned_items.contains(rocket_item.0 as usize));
+        assert!(hud.owned_items.contains(haste_item.0 as usize));
+        assert_eq!(hud.inventory.powerup_until[haste_timer.0 as usize], 7.3);
+        assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
+    }
+}
+
+#[test]
+fn q3_guest_clock_wrap_retains_one_second_powerup_through_queue_and_hud() {
+    for layout in [Q3StatLayout::BASE, Q3StatLayout::TEAM_ARENA] {
+        let (mut host, client) =
+            fixture_program(program_inventory(800, 320, 0, layout, 0, [0; 16], true));
+        let quad = host
+            .runtime
+            .catalog
+            .registry
+            .native_powerup(RuleSetId::Quake3, 1)
+            .unwrap();
+        let (timer, item) = (quad.id, quad.item);
+        let raw_binding = host
+            .runtime
+            .catalog
+            .hud
+            .values
+            .native(RuleSetId::Quake3)
+            .powerups[1];
+        let native = i64::from(i32::MAX) + 17;
+        let guest_time = native as i32;
+        let expiry = guest_time.wrapping_add(1000);
+        host.time = EventTime::from_milliseconds(137);
+        host.call_module_export(
+            MODULE,
+            Export::clocked(CallbackId(8)),
+            ThinkTime::Milliseconds(native),
+        )
+        .unwrap();
+        let server = &host.runtime.server.clients[1].player;
+        assert_eq!(server.values.get(raw_binding.id).unwrap().0, expiry as u32);
+        assert_eq!(
+            server.native_clock,
+            Some(ClockObservation {
+                native: ThinkTime::Milliseconds(i64::from(guest_time)),
+                queued: EventTime::from_milliseconds(137),
+            })
+        );
+        assert_eq!(server.inventory.powerup_until[timer.0 as usize], 1.137);
+        assert_eq!(server.inventory.item_counts[item.0 as usize], 1);
+        let words = transmit(&mut host, client, 300);
+        assert_eq!(words[97], expiry as u32);
+        let received = host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap();
+        assert_eq!(
+            received.time(),
+            ThinkTime::Milliseconds(i64::from(guest_time))
+        );
+        let player = &host.runtime.prediction[0].player;
+        assert_eq!(player.inventory.powerup_until[timer.0 as usize], 1.3);
+        assert_eq!(player.inventory.item_counts[item.0 as usize], 1);
+        assert_eq!(
+            player.native_clock,
+            Some(ClockObservation {
+                native: ThinkTime::Milliseconds(i64::from(guest_time)),
+                queued: EventTime::from_milliseconds(300),
+            })
+        );
+        host.local_clients[0] = Some(client);
+        let result = host.frame(
+            &mut Source {
+                time: EventTime::from_milliseconds(300),
+                polls: 0,
+            },
+            true,
+        );
+        assert_eq!(result.drains, 2);
+        assert!(result.output.hud > 0);
+        let hud = &host.runtime.server.clients[1].hud;
+        assert_eq!(hud.inventory.powerup_until[timer.0 as usize], 1.3);
+        assert!(hud.owned_items.contains(item.0 as usize));
         assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
     }
 }

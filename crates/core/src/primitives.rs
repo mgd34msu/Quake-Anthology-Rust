@@ -348,6 +348,41 @@ impl ThinkTime {
     }
 }
 
+/// A supplied native clock sample tied to the queued engine timeline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClockObservation {
+    pub native: ThinkTime,
+    pub queued: crate::sys_events::EventTime,
+}
+impl ClockObservation {
+    pub fn is_valid(self) -> bool {
+        match self.native {
+            ThinkTime::Seconds(value) => value.is_finite(),
+            ThinkTime::Milliseconds(_) => true,
+        }
+    }
+
+    /// Preserve past deadlines. Unit mismatch and nonfinite samples reject.
+    pub fn deadline(self, deadline: ThinkTime) -> Option<f64> {
+        let mapped = match (self.native, deadline) {
+            (ThinkTime::Seconds(observed), ThinkTime::Seconds(deadline)) => {
+                if !observed.is_finite() || !deadline.is_finite() {
+                    return None;
+                }
+                self.queued.seconds() + (deadline - observed)
+            }
+            (ThinkTime::Milliseconds(observed), ThinkTime::Milliseconds(deadline)) => {
+                let nanos = i128::from(self.queued.0)
+                    + (i128::from(deadline) - i128::from(observed))
+                        * i128::from(crate::sys_events::NANOS_PER_MILLISECOND);
+                nanos as f64 / crate::sys_events::NANOS_PER_SECOND as f64
+            }
+            _ => return None,
+        };
+        mapped.is_finite().then_some(mapped)
+    }
+}
+
 /// Borrowed command tokens survive only the synchronous module invocation.
 /// The console owns tokenization; ABI adapters only project these bytes.
 #[derive(Clone, Copy, Debug, Default)]
@@ -665,6 +700,9 @@ pub struct PlayerState {
     pub frags: i32,
     pub weapon_state: Option<WeaponState>,
     pub native: Option<NativePlayerTail>,
+    /// Accepted owning module or wire clock observation. Movement command time
+    /// never supplies this sample; native deadline projection owns its update.
+    pub native_clock: Option<ClockObservation>,
 }
 
 /// Native resource ordinals are relative to their publishing module/client;

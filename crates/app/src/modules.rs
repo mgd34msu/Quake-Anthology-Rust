@@ -1405,9 +1405,14 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 .call(&mut calls, arguments, row.request.instruction_budget, false)
                 .map_err(|_| ());
             result.and_then(|value| {
-                vm.publish_entities(calls.services, call_context, calls.platform_time)
-                    .map(|()| ModuleResult::Qvm(value))
-                    .map_err(|_| ())
+                vm.publish_entities(
+                    calls.services,
+                    call_context,
+                    calls.platform_time,
+                    Some(entry),
+                )
+                .map(|()| ModuleResult::Qvm(value))
+                .map_err(|_| ())
             })
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

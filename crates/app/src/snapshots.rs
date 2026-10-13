@@ -384,6 +384,13 @@ impl SnapshotBinding {
     ) -> Result<usize, Error> {
         let time = if self.protocol == Protocol::NetQuake15 {
             ThinkTime::Seconds(0.0).at(time)
+        } else if self.protocol == Protocol::Quake3_68
+            && let Some(clock) = player.native_clock
+        {
+            if !clock.is_valid() {
+                return Err(Error::Context);
+            }
+            ThinkTime::Milliseconds(clock.native.milliseconds())
         } else {
             ThinkTime::Milliseconds(0).at(time)
         };
@@ -587,7 +594,11 @@ impl SnapshotBinding {
             _ => (None, None),
         };
         if let Some(words) = words {
-            if !hud.native_packet_fits(self.protocol.rule_set(), self.player_stats, player) {
+            let clock = snapshot.map(|frame| qa_core::primitives::ClockObservation {
+                native: frame.time(),
+                queued: time,
+            });
+            if !hud.native_packet_fits(self.protocol.rule_set(), self.player_stats, player, clock) {
                 self.rejected += 1;
                 return;
             }
@@ -625,8 +636,10 @@ impl SnapshotBinding {
                 self.client,
                 player,
                 time,
+                clock,
             ) {
                 registry.project_player_weapon(player);
+                player.native_clock = clock;
                 self.applied += 1;
             } else {
                 self.rejected += 1;

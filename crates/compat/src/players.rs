@@ -4,12 +4,9 @@ use crate::{
     memory::{ModuleMemory, Width},
     services::CallError,
 };
-use qa_core::{
-    primitives::{
-        ClientId, ModuleId, NativeEntity, PlayerValueBindings, Q3StatLayout, ResourceNamespace,
-        ValueBinding,
-    },
-    sys_events::EventTime,
+use qa_core::primitives::{
+    ClientId, ClockObservation, ModuleId, NativeEntity, PlayerValueBindings, Q3StatLayout,
+    ResourceNamespace, ThinkTime, ValueBinding,
 };
 use qa_network::{
     commands::packet::Protocol,
@@ -127,6 +124,19 @@ impl PlayerValues {
     pub fn stat_layout(&self) -> Q3StatLayout {
         self.stat_layout
     }
+    pub fn observe_clock(&self, clock: ClockObservation) -> Result<ClockObservation, CallError> {
+        if !clock.is_valid() {
+            return Err(CallError::Capacity);
+        }
+        match (self.address, clock.native) {
+            (PlayerAddress::Registered, ThinkTime::Milliseconds(value)) => Ok(ClockObservation {
+                native: ThinkTime::Milliseconds(i64::from(value as i32)),
+                ..clock
+            }),
+            (PlayerAddress::Registered, _) => Err(CallError::Capacity),
+            _ => Ok(clock),
+        }
+    }
     pub fn bind(
         &mut self,
         values: PlayerValueBindings<'_>,
@@ -202,7 +212,8 @@ impl PlayerValues {
         registry: &qa_gameplay::registry::Registry,
         server: &mut Server,
         mut pmove: Option<&mut crate::pmove::Pmove>,
-        time: EventTime,
+        time: qa_core::sys_events::EventTime,
+        clock: ClockObservation,
     ) -> Result<(), CallError> {
         if matches!(self.address, PlayerAddress::EntityClient(_)) && table.address == 0 {
             return Ok(());
@@ -254,7 +265,12 @@ impl PlayerValues {
             };
             if let Some(projection) = &self.projection {
                 if self.inventory.as_ref().is_some_and(|inventory| {
-                    !inventory.packet_fits(self.bindings(), self.stat_layout, &client.player)
+                    !inventory.packet_fits(
+                        self.bindings(),
+                        self.stat_layout,
+                        &client.player,
+                        Some(clock),
+                    )
                 }) {
                     return Err(CallError::Capacity);
                 }
@@ -304,6 +320,7 @@ impl PlayerValues {
                         namespace,
                         &mut client.player,
                         time,
+                        Some(clock),
                     )
                 {
                     return Err(CallError::Capacity);
@@ -319,6 +336,7 @@ impl PlayerValues {
                 }
             }
             let PlayerAddress::EntityClient(layout) = self.address else {
+                client.player.native_clock = Some(clock);
                 continue;
             };
             let edict = edict.ok_or(CallError::Entity)?;
@@ -332,6 +350,7 @@ impl PlayerValues {
             } else {
                 layout.import_presentation(memory, pointer, module, &mut client.player)?;
             }
+            client.player.native_clock = Some(clock);
         }
         Ok(())
     }

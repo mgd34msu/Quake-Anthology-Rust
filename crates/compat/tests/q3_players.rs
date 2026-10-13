@@ -8,9 +8,9 @@ use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
 use qa_core::{
     names::NameTable,
     primitives::{
-        ClientId, ModuleId, MovementMode, NativeEntity, NumericValue, PlayerValueBindings,
-        Q3StatLayout, ResourceNamespace, RuleSetId, ThinkTime, ValueBinding, ValueId, ValueReset,
-        ValueWidth, Vec3, WeaponReadiness,
+        ClientId, ClockObservation, ModuleId, MovementMode, NativeEntity, NumericValue,
+        PlayerValueBindings, Q3StatLayout, ResourceNamespace, RuleSetId, ThinkTime, ValueBinding,
+        ValueId, ValueReset, ValueWidth, Vec3, WeaponReadiness,
     },
     sys_events::EventTime,
 };
@@ -96,7 +96,7 @@ impl Fixture {
             2,
             16,
             registry.items.len() + 1,
-            1,
+            registry.powerup_capacity(),
             registry.weapons.len() + 1,
             64,
         )
@@ -201,7 +201,17 @@ impl Fixture {
         self.publish_at(vm, EventTime::from_milliseconds(1234))
     }
     fn publish_at(&mut self, vm: &mut Vm, time: EventTime) -> Result<(), CallError> {
-        vm.publish_entities(&mut self.engine(), context(), time)
+        self.publish_with_clock(vm, time, context().clock)
+    }
+    fn publish_with_clock(
+        &mut self,
+        vm: &mut Vm,
+        time: EventTime,
+        clock: ThinkTime,
+    ) -> Result<(), CallError> {
+        let mut context = context();
+        context.clock = clock;
+        vm.publish_entities(&mut self.engine(), context, time, Some(8))
     }
 }
 fn qvm(instructions: &[(Opcode, i32)], registry: &qa_gameplay::registry::Registry) -> Vm {
@@ -839,6 +849,366 @@ fn qvm_array_admission_and_inventory_capacity_reject_before_player_mutation() {
     }
 }
 
+fn qvm_powerups_use_the_owning_native_clock_and_stats_only_publication() {
+    let mut f = Fixture::new();
+    let mut vm = qvm(
+        &[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)],
+        &f.registry,
+    );
+    entity(&mut vm.memory, ENTITIES);
+    player(&mut vm.memory, PLAYERS);
+    for index in 0..16 {
+        vm.memory.write_word(PLAYERS + 312 + index * 4, 0).unwrap();
+    }
+    // Native time9000s and queued time100s are deliberately unrelated.
+    for (native, deadline) in [
+        (0, i32::MAX),
+        (1, 9_012_500),
+        (2, 8_999_000),
+        (7, 9_000_000),
+        (10, 9_000_000),
+        (15, 9_033_000),
+    ] {
+        vm.memory
+            .write_word(PLAYERS + 312 + native * 4, deadline)
+            .unwrap();
+    }
+    let quad = *f.registry.native_powerup(RuleSetId::Quake3, 1).unwrap();
+    let battlesuit = *f.registry.native_powerup(RuleSetId::Quake3, 2).unwrap();
+    let flag = *f.registry.native_powerup(RuleSetId::Quake3, 7).unwrap();
+    let scout = *f.registry.native_powerup(RuleSetId::Quake3, 10).unwrap();
+    let invulnerability = *f.registry.native_powerup(RuleSetId::Quake3, 14).unwrap();
+    assert!(!invulnerability.owns_item);
+    f.server.clients[1].player.inventory.item_counts[invulnerability.item.0 as usize] = 1;
+    f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+    f.publish_with_clock(
+        &mut vm,
+        EventTime::from_milliseconds(100_000),
+        ThinkTime::Milliseconds(9_000_000),
+    )
+    .unwrap();
+    let p = &f.server.clients[1].player;
+    assert_eq!(
+        p.native_clock,
+        Some(ClockObservation {
+            native: ThinkTime::Milliseconds(9_000_000),
+            queued: EventTime::from_milliseconds(100_000),
+        })
+    );
+    assert_eq!(p.inventory.powerup_until[usize::from(quad.id.0)], 112.5);
+    assert_eq!(
+        p.inventory.powerup_until[usize::from(battlesuit.id.0)],
+        99.0
+    );
+    assert_eq!(p.inventory.powerup_until[usize::from(flag.id.0)], 100.0);
+    assert_eq!(p.inventory.powerup_until[usize::from(scout.id.0)], 100.0);
+    assert_eq!(p.inventory.item_counts[quad.item.0 as usize], 1);
+    assert_eq!(p.inventory.item_counts[battlesuit.item.0 as usize], 0);
+    assert_eq!(p.inventory.item_counts[flag.item.0 as usize], 1);
+    assert_eq!(p.inventory.item_counts[scout.item.0 as usize], 1);
+    assert_eq!(p.inventory.item_counts[invulnerability.item.0 as usize], 1);
+    assert_eq!(p.inventory.item_acquired_at[quad.item.0 as usize], 100.0);
+    assert_eq!(
+        p.values.get(ValueId(48)),
+        Some(NumericValue::integer(i32::MAX))
+    );
+    assert_eq!(
+        p.values.get(ValueId(49)),
+        Some(NumericValue::integer(9_012_500))
+    );
+    assert_eq!(
+        p.values.get(ValueId(63)),
+        Some(NumericValue::integer(9_033_000))
+    );
+
+    f.server.clients[1].module_movement = false;
+    let p = &f.server.clients[1].player;
+    let before = (
+        [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
+        p.movement,
+        p.view_angles,
+        p.native,
+        p.prediction,
+        p.inventory.weapon,
+    );
+    vm.memory
+        .write_vec3(PLAYERS + 20, Vec3([777.0; 3]))
+        .unwrap();
+    vm.memory
+        .write_vec3(PLAYERS + 152, Vec3([888.0; 3]))
+        .unwrap();
+    vm.memory.write_word(PLAYERS + 12, 4096).unwrap();
+    vm.memory.write_word(PLAYERS + 144, 999).unwrap();
+    for (native, deadline) in [(1, 9_014_000), (2, 0), (7, 9_000_000), (14, 9_001_000)] {
+        vm.memory
+            .write_word(PLAYERS + 312 + native * 4, deadline)
+            .unwrap();
+    }
+    f.publish_with_clock(
+        &mut vm,
+        EventTime::from_milliseconds(103_000),
+        ThinkTime::Milliseconds(9_001_000),
+    )
+    .unwrap();
+    let p = &f.server.clients[1].player;
+    assert_eq!(
+        (
+            [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
+            p.movement,
+            p.view_angles,
+            p.native,
+            p.prediction,
+            p.inventory.weapon,
+        ),
+        before
+    );
+    assert_eq!(p.inventory.powerup_until[usize::from(quad.id.0)], 116.0);
+    assert_eq!(
+        p.native_clock,
+        Some(ClockObservation {
+            native: ThinkTime::Milliseconds(9_001_000),
+            queued: EventTime::from_milliseconds(103_000),
+        })
+    );
+    assert_eq!(p.inventory.powerup_until[usize::from(battlesuit.id.0)], 0.0);
+    assert_eq!(p.inventory.powerup_until[usize::from(flag.id.0)], 102.0);
+    assert_eq!(p.inventory.item_counts[flag.item.0 as usize], 0);
+    assert_eq!(
+        p.inventory.powerup_until[usize::from(invulnerability.id.0)],
+        103.0
+    );
+    assert_eq!(p.inventory.item_counts[invulnerability.item.0 as usize], 1);
+    assert_eq!(
+        p.values.get(ValueId(49)),
+        Some(NumericValue::integer(9_014_000))
+    );
+}
+
+fn qvm_powerup_capacity_and_clock_admission_preserve_player_state_on_rejection() {
+    for invalid_clock in [false, true] {
+        let mut f = Fixture::new();
+        let mut vm = qvm(
+            &[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)],
+            &f.registry,
+        );
+        entity(&mut vm.memory, ENTITIES);
+        player(&mut vm.memory, PLAYERS);
+        f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+        f.publish_with_clock(
+            &mut vm,
+            EventTime::from_milliseconds(137),
+            ThinkTime::Milliseconds(5000),
+        )
+        .unwrap();
+        assert_eq!(
+            f.server.clients[1].player.native_clock,
+            Some(ClockObservation {
+                native: ThinkTime::Milliseconds(5000),
+                queued: EventTime::from_milliseconds(137),
+            })
+        );
+        let clock = if invalid_clock {
+            ThinkTime::Seconds(9000.0)
+        } else {
+            let capacity = f.registry.powerup_capacity();
+            f.server.clients[1].player.inventory.powerup_until =
+                vec![0.0; capacity - 1].into_boxed_slice();
+            ThinkTime::Milliseconds(9_000_000)
+        };
+        let p = &f.server.clients[1].player;
+        let before = (
+            [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
+            p.movement,
+            p.view_angles,
+            p.native,
+            p.prediction,
+            p.inventory.weapon,
+            p.health,
+            p.armor,
+            p.values.get(ValueId(49)),
+            p.native_clock,
+        );
+        vm.memory
+            .write_vec3(PLAYERS + 20, Vec3([999.0; 3]))
+            .unwrap();
+        vm.memory.write_word(PLAYERS + 184, 999).unwrap();
+        vm.memory.write_word(PLAYERS + 316, 9_015_000).unwrap();
+        assert_eq!(
+            f.publish_with_clock(&mut vm, EventTime::from_milliseconds(100_000), clock),
+            Err(CallError::Capacity)
+        );
+        let p = &f.server.clients[1].player;
+        assert_eq!(
+            (
+                [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
+                p.movement,
+                p.view_angles,
+                p.native,
+                p.prediction,
+                p.inventory.weapon,
+                p.health,
+                p.armor,
+                p.values.get(ValueId(49)),
+                p.native_clock,
+            ),
+            before
+        );
+    }
+}
+
+fn qvm_powerups_observe_the_signed_clock_supplied_to_the_guest() {
+    let mut f = Fixture::new();
+    let mut vm = qvm(
+        &[
+            (Opcode::Enter, 16),
+            (Opcode::Const, PLAYERS as i32 + 316),
+            (Opcode::Local, 28),
+            (Opcode::Load4, 0),
+            (Opcode::Const, 1000),
+            (Opcode::Add, 0),
+            (Opcode::Store4, 0),
+            (Opcode::Const, 0),
+            (Opcode::Leave, 16),
+        ],
+        &f.registry,
+    );
+    entity(&mut vm.memory, ENTITIES);
+    player(&mut vm.memory, PLAYERS);
+    for index in 0..16 {
+        vm.memory.write_word(PLAYERS + 312 + index * 4, 0).unwrap();
+    }
+    f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+    let quad = *f.registry.native_powerup(RuleSetId::Quake3, 1).unwrap();
+    for native_clock in [0x8000_0010i64, 0x1_8000_0010] {
+        let queued = EventTime::from_milliseconds(137);
+        let mut context = context();
+        context.clock = ThinkTime::Milliseconds(native_clock);
+        {
+            let mut unknown = UnknownCalls::load(1).unwrap();
+            let mut engine = f.engine();
+            let mut calls = QvmCalls {
+                services: &mut engine,
+                table: &Q3_SERVER,
+                context,
+                platform_time: queued,
+                command: &[],
+                unknown: &mut unknown,
+            };
+            assert_eq!(
+                vm.call(
+                    &mut calls,
+                    [8, native_clock as i32, 0, 0, 0, 0, 0, 0, 0, 0],
+                    100,
+                    false
+                ),
+                Ok(0)
+            );
+        }
+        assert_eq!(vm.memory.read_word(PLAYERS + 316), Ok(-2_147_482_632));
+        f.publish_with_clock(&mut vm, queued, context.clock)
+            .unwrap();
+        let p = &f.server.clients[1].player;
+        assert_eq!(p.inventory.item_counts[quad.item.0 as usize], 1);
+        assert_eq!(p.inventory.powerup_until[usize::from(quad.id.0)], 1.137);
+        assert_eq!(
+            p.native_clock,
+            Some(ClockObservation {
+                native: ThinkTime::Milliseconds(-2_147_483_632),
+                queued,
+            })
+        );
+        assert_eq!(
+            p.values.get(ValueId(49)),
+            Some(NumericValue::integer(-2_147_482_632))
+        );
+    }
+}
+
+fn qvm_nonframe_exports_keep_the_frame_clock_and_current_acquisition_time() {
+    let mut f = Fixture::new();
+    let mut vm = qvm(
+        &[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)],
+        &f.registry,
+    );
+    entity(&mut vm.memory, ENTITIES);
+    player(&mut vm.memory, PLAYERS);
+    for index in 0..16 {
+        vm.memory.write_word(PLAYERS + 312 + index * 4, 0).unwrap();
+    }
+    vm.memory.write_word(PLAYERS + 312 + 10 * 4, 5000).unwrap();
+    f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+    f.publish_with_clock(
+        &mut vm,
+        EventTime::from_milliseconds(137),
+        ThinkTime::Milliseconds(5000),
+    )
+    .unwrap();
+    let scout = *f.registry.native_powerup(RuleSetId::Quake3, 10).unwrap();
+    let quad = *f.registry.native_powerup(RuleSetId::Quake3, 1).unwrap();
+    let frame_clock = Some(ClockObservation {
+        native: ThinkTime::Milliseconds(5000),
+        queued: EventTime::from_milliseconds(137),
+    });
+    assert_eq!(
+        f.server.clients[1].player.inventory.item_counts[scout.item.0 as usize],
+        1
+    );
+    vm.memory.write_word(PLAYERS + 316, 6000).unwrap();
+    let mut context = context();
+    context.clock = ThinkTime::Milliseconds(5100);
+    vm.publish_entities(
+        &mut f.engine(),
+        context,
+        EventTime::from_milliseconds(237),
+        Some(7),
+    )
+    .unwrap();
+    let p = &f.server.clients[1].player;
+    assert_eq!(p.native_clock, frame_clock);
+    assert_eq!(p.inventory.item_counts[scout.item.0 as usize], 1);
+    assert_eq!(p.inventory.powerup_until[usize::from(scout.id.0)], 0.137);
+    assert_eq!(p.inventory.powerup_until[usize::from(quad.id.0)], 1.137);
+    assert_eq!(p.inventory.item_acquired_at[quad.item.0 as usize], 0.237);
+
+    // A rejected RunFrame publication cannot replace the last admitted sample.
+    let capacity = f.registry.powerup_capacity();
+    let timers = std::mem::replace(
+        &mut f.server.clients[1].player.inventory.powerup_until,
+        vec![0.0; capacity - 1].into_boxed_slice(),
+    );
+    assert_eq!(
+        f.publish_with_clock(&mut vm, EventTime::from_milliseconds(237), context.clock),
+        Err(CallError::Capacity)
+    );
+    f.server.clients[1].player.inventory.powerup_until = timers;
+    context.clock = ThinkTime::Milliseconds(5500);
+    vm.publish_entities(
+        &mut f.engine(),
+        context,
+        EventTime::from_milliseconds(637),
+        Some(7),
+    )
+    .unwrap();
+    let p = &f.server.clients[1].player;
+    assert_eq!(p.native_clock, frame_clock);
+    assert_eq!(p.inventory.item_counts[scout.item.0 as usize], 1);
+    assert_eq!(p.inventory.item_acquired_at[quad.item.0 as usize], 0.237);
+
+    f.publish_with_clock(&mut vm, EventTime::from_milliseconds(637), context.clock)
+        .unwrap();
+    let p = &f.server.clients[1].player;
+    assert_eq!(p.inventory.item_counts[scout.item.0 as usize], 0);
+    assert_eq!(p.inventory.powerup_until[usize::from(scout.id.0)], 0.137);
+    assert_eq!(p.inventory.powerup_until[usize::from(quad.id.0)], 1.137);
+    assert_eq!(
+        p.native_clock,
+        Some(ClockObservation {
+            native: ThinkTime::Milliseconds(5500),
+            queued: EventTime::from_milliseconds(637),
+        })
+    );
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "../../formats/tests/support/native_image.rs"]
 #[allow(dead_code)]
@@ -863,8 +1233,8 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         image,
         &[NamedExport {
             name: b"GetGameAPI",
-            command: None,
-            parameters: &[],
+            command: Some(8),
+            parameters: &[NativeScalar::I32, NativeScalar::I32],
             result: NativeScalar::Word,
         }],
         &[],
@@ -895,24 +1265,43 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         memory.write(base + 0x1200, &code).unwrap();
     }
     let mut unknown = UnknownCalls::load(1).unwrap();
-    let invoke = |vm: &mut qa_compat::native::Vm, f: &mut Fixture, unknown: &mut UnknownCalls| {
+    let invoke = |vm: &mut qa_compat::native::Vm,
+                  f: &mut Fixture,
+                  unknown: &mut UnknownCalls,
+                  clock: ThinkTime,
+                  time: EventTime| {
+        let mut context = context();
+        context.clock = clock;
         let mut engine = f.engine();
         vm.call(
             &mut NativeCalls {
                 services: &mut engine,
                 table: &Q3_SERVER,
-                context: context(),
-                platform_time: EventTime::from_milliseconds(4567),
+                context,
+                platform_time: time,
                 command: &[],
                 raw_args: b"",
                 unknown,
                 native_player: None,
             },
             0,
-            &[],
+            &[match clock {
+                ThinkTime::Milliseconds(value) => value as u32 as u64,
+                ThinkTime::Seconds(_) => 0,
+            }],
         )
     };
-    assert_eq!(invoke(&mut vm, &mut f, &mut unknown).unwrap(), 0);
+    assert_eq!(
+        invoke(
+            &mut vm,
+            &mut f,
+            &mut unknown,
+            ThinkTime::Milliseconds(900),
+            EventTime::from_milliseconds(4567),
+        )
+        .unwrap(),
+        0
+    );
     vm.bind_client(&f.server.entities, NATIVE, f.server.clients[1].entity)
         .unwrap();
     verify(&f);
@@ -927,6 +1316,44 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         4.567
     );
     assert_eq!(vm.player_stat_layout(), Q3StatLayout::BASE);
+    let quad = *f.registry.native_powerup(RuleSetId::Quake3, 1).unwrap();
+    // The actual child receives the signed32 export clock and computes +1000.
+    let mut wrapped = vec![0x48, 0xb8];
+    wrapped.extend(native_players.to_le_bytes());
+    wrapped.extend([0x81, 0xc2]);
+    wrapped.extend(1000i32.to_le_bytes());
+    wrapped.extend([0x89, 0x90]);
+    wrapped.extend(316u32.to_le_bytes());
+    wrapped.extend(&code);
+    qa_compat::memory::process_memory(&mut vm.process)
+        .unwrap()
+        .write(base + 0x1200, &wrapped)
+        .unwrap();
+    assert_eq!(
+        invoke(
+            &mut vm,
+            &mut f,
+            &mut unknown,
+            ThinkTime::Milliseconds(0x8000_0010),
+            EventTime::from_milliseconds(137),
+        )
+        .unwrap(),
+        0
+    );
+    let p = &f.server.clients[1].player;
+    assert_eq!(p.inventory.item_counts[quad.item.0 as usize], 1);
+    assert_eq!(p.inventory.powerup_until[usize::from(quad.id.0)], 1.137);
+    assert_eq!(
+        p.native_clock,
+        Some(ClockObservation {
+            native: ThinkTime::Milliseconds(-2_147_483_632),
+            queued: EventTime::from_milliseconds(137),
+        })
+    );
+    assert_eq!(
+        p.values.get(ValueId(49)),
+        Some(NumericValue::integer(-2_147_482_632))
+    );
     let mut moved = vec![0x48, 0xb8];
     moved.extend(native_players.to_le_bytes());
     moved.extend([0xc7, 0x40, 20]);
@@ -935,16 +1362,96 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     moved.extend(16_777_217i32.to_le_bytes());
     moved.extend([0xc7, 0x40, 52]);
     moved.extend((-16_777_219i32).to_le_bytes());
+    moved.extend([0xc7, 0x80]);
+    moved.extend(316u32.to_le_bytes());
+    moved.extend(9_012_500i32.to_le_bytes());
     moved.extend(&code);
     qa_compat::memory::process_memory(&mut vm.process)
         .unwrap()
         .write(base + 0x1200, &moved)
         .unwrap();
-    assert_eq!(invoke(&mut vm, &mut f, &mut unknown).unwrap(), 0);
+    assert_eq!(
+        invoke(
+            &mut vm,
+            &mut f,
+            &mut unknown,
+            ThinkTime::Milliseconds(9_000_000),
+            EventTime::from_milliseconds(100_000),
+        )
+        .unwrap(),
+        0
+    );
     assert_eq!(f.server.clients[1].player.body.position.0[0], 123.5);
+    assert_eq!(
+        f.server.clients[1].player.inventory.powerup_until[usize::from(quad.id.0)],
+        112.5
+    );
+    assert_eq!(
+        f.server.clients[1].player.values.get(ValueId(49)),
+        Some(NumericValue::integer(9_012_500))
+    );
     let accepted_tail = f.server.clients[1].player.native;
     assert_eq!(accepted_tail.unwrap().gravity, Some(16_777_217));
     assert_eq!(accepted_tail.unwrap().speed, Some(-16_777_219));
+    f.server.clients[1].module_movement = false;
+    let p = &f.server.clients[1].player;
+    let before = (
+        [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
+        p.movement,
+        p.view_angles,
+        p.native,
+        p.prediction,
+        p.inventory.weapon,
+    );
+    let mut stats_only = vec![0x48, 0xb8];
+    stats_only.extend(native_players.to_le_bytes());
+    stats_only.extend([0xc7, 0x40, 20]);
+    stats_only.extend(555.5f32.to_bits().to_le_bytes());
+    stats_only.extend([0xc7, 0x40, 12]);
+    stats_only.extend(4096i32.to_le_bytes());
+    stats_only.extend([0xc7, 0x40, 48]);
+    stats_only.extend(7i32.to_le_bytes());
+    stats_only.extend([0xc7, 0x80]);
+    stats_only.extend(316u32.to_le_bytes());
+    stats_only.extend(9_014_000i32.to_le_bytes());
+    stats_only.extend(&code);
+    qa_compat::memory::process_memory(&mut vm.process)
+        .unwrap()
+        .write(base + 0x1200, &stats_only)
+        .unwrap();
+    assert_eq!(
+        invoke(
+            &mut vm,
+            &mut f,
+            &mut unknown,
+            ThinkTime::Milliseconds(9_001_000),
+            EventTime::from_milliseconds(103_000),
+        )
+        .unwrap(),
+        0
+    );
+    let p = &f.server.clients[1].player;
+    assert_eq!(
+        (
+            [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
+            p.movement,
+            p.view_angles,
+            p.native,
+            p.prediction,
+            p.inventory.weapon,
+        ),
+        before
+    );
+    assert_eq!(p.inventory.powerup_until[usize::from(quad.id.0)], 116.0);
+    let accepted_clock = Some(ClockObservation {
+        native: ThinkTime::Milliseconds(9_001_000),
+        queued: EventTime::from_milliseconds(103_000),
+    });
+    assert_eq!(p.native_clock, accepted_clock);
+    assert_eq!(
+        p.values.get(ValueId(49)),
+        Some(NumericValue::integer(9_014_000))
+    );
     // A failed native export does not publish bytes written before its trap.
     let mut failing = vec![0x48, 0xb8];
     failing.extend(native_players.to_le_bytes());
@@ -955,14 +1462,35 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     failing.extend([0xc7, 0x80]);
     failing.extend((376 + 3 * 4u32).to_le_bytes());
     failing.extend(999i32.to_le_bytes());
+    failing.extend([0xc7, 0x80]);
+    failing.extend(316u32.to_le_bytes());
+    failing.extend(9_900_000i32.to_le_bytes());
     failing.extend([0x0f, 0x0b]);
     qa_compat::memory::process_memory(&mut vm.process)
         .unwrap()
         .write(base + 0x1200, &failing)
         .unwrap();
-    assert!(invoke(&mut vm, &mut f, &mut unknown).is_err());
+    assert!(
+        invoke(
+            &mut vm,
+            &mut f,
+            &mut unknown,
+            ThinkTime::Milliseconds(9_002_000),
+            EventTime::from_milliseconds(105_000),
+        )
+        .is_err()
+    );
     assert_eq!(f.server.clients[1].player.body.position.0[0], 123.5);
     assert_eq!(f.server.clients[1].player.native, accepted_tail);
+    assert_eq!(f.server.clients[1].player.native_clock, accepted_clock);
+    assert_eq!(
+        f.server.clients[1].player.inventory.powerup_until[usize::from(quad.id.0)],
+        116.0
+    );
+    assert_eq!(
+        f.server.clients[1].player.values.get(ValueId(49)),
+        Some(NumericValue::integer(9_014_000))
+    );
     assert_eq!(
         f.server.clients[1].player.values.get(ValueId(35)),
         Some(NumericValue::integer(16_777_217))
@@ -979,6 +1507,10 @@ fn main() {
     locate_uses_the_frozen_module_capacity_after_cvar_mutation();
     qvm_stat_layout_and_inventory_use_cached_bindings_and_queued_acquisition_time();
     qvm_array_admission_and_inventory_capacity_reject_before_player_mutation();
+    qvm_powerups_use_the_owning_native_clock_and_stats_only_publication();
+    qvm_powerup_capacity_and_clock_admission_preserve_player_state_on_rejection();
+    qvm_powerups_observe_the_signed_clock_supplied_to_the_guest();
+    qvm_nonframe_exports_keep_the_frame_clock_and_current_acquisition_time();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     owned_native_export_imports_public_player_memory_only_after_success();
     println!("Q3 public player memory: all checks passed");

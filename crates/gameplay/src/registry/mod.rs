@@ -1,7 +1,9 @@
 mod generated;
 mod native_players;
+mod powerups;
 pub use generated::SOURCE_COUNTS;
 pub use native_players::NativePlayerBindings;
+pub use powerups::PowerupDef;
 use qa_core::{
     names::NameTable,
     primitives::{CallbackId, ItemId, NameId, PlayerState, RuleSetId, WeaponId},
@@ -71,6 +73,7 @@ pub enum RegistryError {
     Ammo,
     DuplicateItem,
     DuplicateWeapon,
+    Powerup,
 }
 
 pub struct AmmoConversion {
@@ -83,6 +86,7 @@ pub struct Registry {
     pub effects: Arc<qa_core::effects::EffectCatalog>,
     pub items: Box<[ItemDef]>,
     pub weapons: Box<[WeaponDef]>,
+    pub powerups: Box<[PowerupDef]>,
     pub ammo_conversions: Box<[AmmoConversion]>,
     native_items: Box<[(RuleSetId, u16, ItemId)]>,
     native_weapons: Box<[(RuleSetId, u16, WeaponId)]>,
@@ -259,10 +263,12 @@ impl Registry {
         }
         ammo_conversions.sort_unstable_by_key(|link| (link.source.0, link.target.0));
         ammo_conversions.dedup_by_key(|link| (link.source.0, link.target.0));
+        let powerups = powerups::load(&items)?;
         Ok(Self {
             effects: Arc::new(crate::effects::native_catalog()),
             items: items.into_boxed_slice(),
             weapons: weapons.into_boxed_slice(),
+            powerups,
             ammo_conversions: ammo_conversions.into_boxed_slice(),
             native_items: native_items.into_boxed_slice(),
             native_weapons: native_weapons.into_boxed_slice(),
@@ -289,6 +295,21 @@ impl Registry {
             .binary_search_by_key(&(source as u8, number), |weapon| (weapon.0 as u8, weapon.1))
             .ok()
             .map(|index| self.native_weapons[index].2)
+    }
+    pub fn native_powerup(&self, source: RuleSetId, number: u16) -> Option<&PowerupDef> {
+        self.powerups
+            .binary_search_by_key(&(source as u8, number), |entry| {
+                (entry.source as u8, entry.native)
+            })
+            .ok()
+            .map(|index| &self.powerups[index])
+    }
+    pub fn powerup_capacity(&self) -> usize {
+        self.powerups
+            .iter()
+            .map(|entry| usize::from(entry.id.0) + 1)
+            .max()
+            .unwrap_or(0)
     }
     pub fn native_weapon_number(&self, source: RuleSetId, id: WeaponId) -> Option<u16> {
         self.weapon(id)

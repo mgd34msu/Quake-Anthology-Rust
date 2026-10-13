@@ -6,7 +6,9 @@ use crate::{
     services::{CallContext, CallError, EngineServices},
 };
 use qa_core::{
-    primitives::{EntityId, ModuleId, NativeEntity, PlayerValueBindings, Q3StatLayout},
+    primitives::{
+        ClockObservation, EntityId, ModuleId, NativeEntity, PlayerValueBindings, Q3StatLayout,
+    },
     sys_events::EventTime,
 };
 use qa_world::entities::EntityTable;
@@ -14,12 +16,21 @@ use qa_world::entities::EntityTable;
 pub(crate) struct Projection {
     pub entities: EntityProjection,
     values: PlayerValues,
+    frame_observation: Option<FrameObservation>,
+}
+struct FrameObservation {
+    exports: [u32; 2],
+    last: Option<ClockObservation>,
 }
 impl Projection {
     pub fn load_q3(layout: Q3StatLayout) -> Self {
         Self {
             entities: EntityProjection::load_q3(),
             values: PlayerValues::load_q3(layout),
+            frame_observation: Some(FrameObservation {
+                exports: [0, 8],
+                last: None,
+            }),
         }
     }
     pub fn load_q2(
@@ -29,6 +40,7 @@ impl Projection {
         Self {
             entities,
             values: PlayerValues::load_q2(client),
+            frame_observation: None,
         }
     }
     pub fn bind_values(
@@ -65,9 +77,22 @@ impl Projection {
         context: CallContext,
         pmove: Option<&mut crate::pmove::Pmove>,
         time: EventTime,
+        completed_export: Option<u32>,
     ) -> Result<(), CallError> {
         if self.entities.ready() {
             let table = self.entities.project(services, memory, context)?;
+            let proposed = self.values.observe_clock(ClockObservation {
+                native: context.clock,
+                queued: time,
+            })?;
+            let clock = self
+                .frame_observation
+                .as_ref()
+                .filter(|frame| {
+                    !completed_export.is_some_and(|export| frame.exports.contains(&export))
+                })
+                .and_then(|frame| frame.last)
+                .unwrap_or(proposed);
             self.values.project(
                 memory,
                 table,
@@ -77,7 +102,11 @@ impl Projection {
                 services.server,
                 pmove,
                 time,
+                clock,
             )?;
+            if let Some(frame) = &mut self.frame_observation {
+                frame.last = Some(clock);
+            }
         }
         Ok(())
     }

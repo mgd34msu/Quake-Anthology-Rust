@@ -541,6 +541,7 @@ impl Vm {
                     calls.context,
                     self.pmove.as_mut(),
                     calls.platform_time,
+                    export.command,
                 )
                 .map_err(Error::Service)?;
         }

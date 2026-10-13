@@ -346,6 +346,7 @@ impl Server {
         {
             client.player.weapon_state = None;
             client.player.native = None;
+            client.player.native_clock = None;
             client.player.prediction = Default::default();
         }
         client.module = native.module;

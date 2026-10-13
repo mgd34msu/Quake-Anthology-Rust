@@ -104,7 +104,7 @@ impl Fixture {
             self.runtime
                 .engine_services(&mut self.console, &mut self.storage, &mut scratch);
         self.vm
-            .publish_entities(&mut services, context(), EventTime(0))
+            .publish_entities(&mut services, context(), EventTime(0), None)
             .unwrap();
     }
     fn export(&mut self, context: CallContext) -> Result<i32, Trap> {

@@ -1,6 +1,7 @@
 use qa_core::events::TextStore;
 use qa_core::primitives::{
-    HudChange, HudLine, HudState, ItemId, NameId, PlayerState, PrintEvent, PrintKind, Q3StatLayout,
+    ClockObservation, HudChange, HudLine, HudState, ItemId, NameId, PlayerState, PrintEvent,
+    PrintKind, Q3StatLayout,
 };
 use qa_gameplay::registry::{NativePlayerBindings, Registry};
 
@@ -91,11 +92,12 @@ impl HudBindings {
         rules: qa_core::primitives::RuleSetId,
         layout: Q3StatLayout,
         player: &PlayerState,
+        clock: Option<ClockObservation>,
     ) -> bool {
         let values = self.values.native(rules).bindings();
         self.native_players[rules as usize].as_ref().map_or_else(
             || values.fits(&player.values),
-            |native| native.packet_fits(values, layout, player),
+            |native| native.packet_fits(values, layout, player, clock),
         )
     }
     /// Packet fields have already entered their load-bound bank rows through
@@ -107,9 +109,10 @@ impl HudBindings {
         client: qa_core::primitives::ClientId,
         player: &mut PlayerState,
         time: qa_core::sys_events::EventTime,
+        clock: Option<ClockObservation>,
     ) -> bool {
         let Some(native) = self.native_players[rules as usize].as_ref() else {
-            return self.native_packet_fits(rules, layout, player);
+            return self.native_packet_fits(rules, layout, player, clock);
         };
         let namespace = qa_core::primitives::ResourceNamespace::Client(client);
         native.import_packet(
@@ -118,6 +121,7 @@ impl HudBindings {
             namespace,
             player,
             time,
+            clock,
         )
     }
     pub fn apply(&self, state: &mut HudState, change: HudChange) -> bool {

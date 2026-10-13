@@ -1,4 +1,6 @@
-use qa_core::primitives::{ClientId, ModuleId, NativeEntity, WeaponId};
+use qa_core::primitives::{
+    ClientId, ClockObservation, ModuleId, NativeEntity, ThinkTime, WeaponId,
+};
 use qa_session::clients::{Connection, Server};
 
 #[test]
@@ -59,9 +61,16 @@ fn native_weapon_owner_handoff_clears_readiness_and_identical_binding_preserves_
         readiness: WeaponReadiness::DeadlineSeconds(4.25),
     });
     player.weapon_state = seconds;
+    let clock = Some(ClockObservation {
+        native: ThinkTime::Milliseconds(5000),
+        queued: qa_core::sys_events::EventTime::from_milliseconds(137),
+    });
+    player.native_clock = clock;
     assert!(server.bind_client_native(id, original));
+    assert_eq!(server.clients[id.0 as usize].player.native_clock, clock);
     assert_eq!(server.clients[id.0 as usize].player.weapon_state, seconds);
     assert!(!server.bind_client_native(id, other_native));
+    assert_eq!(server.clients[id.0 as usize].player.native_clock, clock);
     assert_eq!(server.clients[id.0 as usize].player.weapon_state, seconds);
 
     let same_owner_new_row = NativeEntity {
@@ -69,6 +78,7 @@ fn native_weapon_owner_handoff_clears_readiness_and_identical_binding_preserves_
         ..original
     };
     assert!(server.bind_client_native(id, same_owner_new_row));
+    assert_eq!(server.clients[id.0 as usize].player.native_clock, None);
     assert_eq!(server.clients[id.0 as usize].player.weapon_state, None);
     let milliseconds = Some(WeaponState {
         source: RuleSetId::Quake3,

@@ -2,8 +2,9 @@
 use super::Registry;
 use qa_core::{
     primitives::{
-        HudChange, ItemId, ModelRef, NQ_PACKET_STATS, PlayerState, PlayerValueBindings,
-        Q3StatLayout, ResourceNamespace, RuleSetId, ValueBinding, WeaponId,
+        ClockObservation, HudChange, ItemId, ModelRef, NQ_PACKET_STATS, PlayerState,
+        PlayerValueBindings, PowerupId, Q3StatLayout, ResourceNamespace, RuleSetId, ThinkTime,
+        ValueBinding, WeaponId,
     },
     sys_events::EventTime,
 };
@@ -15,6 +16,7 @@ pub struct NativePlayerBindings {
     items: [Option<(u32, ItemId)>; 10],
     ammo: [Option<ItemId>; 16],
     armor: [Option<ItemId>; 3],
+    powerups: [Option<(PowerupId, ItemId, bool)>; 16],
     items_stat: bool,
 }
 impl NativePlayerBindings {
@@ -80,6 +82,11 @@ impl NativePlayerBindings {
             } else {
                 [2, 3, 4].map(|native| registry.native_item(source, native))
             },
+            powerups: std::array::from_fn(|native| {
+                registry
+                    .native_powerup(source, native as u16)
+                    .map(|entry| (entry.id, entry.item, entry.owns_item))
+            }),
             items_stat: source == RuleSetId::QuakeWorld,
         })
     }
@@ -89,9 +96,13 @@ impl NativePlayerBindings {
             .flatten()
             .chain(self.items.into_iter().flatten().map(|(_, item)| item))
             .chain(self.weapons.into_iter().flatten().map(|(_, _, item)| item))
+            .chain(self.powerups.into_iter().flatten().map(|(_, item, _)| item))
             .all(|item| {
                 (item.0 as usize) < player.inventory.item_counts.len()
                     && (item.0 as usize) < player.inventory.item_acquired_at.len()
+            })
+            && self.powerups.into_iter().flatten().all(|(powerup, _, _)| {
+                usize::from(powerup.0) < player.inventory.powerup_until.len()
             })
     }
     /// Admission precedes projection and inventory changes on both SERVER and
@@ -101,6 +112,7 @@ impl NativePlayerBindings {
         values: PlayerValueBindings<'_>,
         layout: Q3StatLayout,
         player: &PlayerState,
+        clock: Option<ClockObservation>,
     ) -> bool {
         if !values.fits(&player.values) {
             return false;
@@ -115,8 +127,12 @@ impl NativePlayerBindings {
             }
             RuleSetId::Quake3 => {
                 self.fits(player)
+                    && clock.is_some_and(|clock| {
+                        clock.is_valid() && matches!(clock.native, ThinkTime::Milliseconds(_))
+                    })
                     && values.arrays[0].len() == 16
                     && values.arrays[2].len() == 16
+                    && values.arrays[3].len() == self.powerups.len()
                     && layout.fits(values.arrays[0].len())
             }
             // QW's incremental STAT_* messages, not playerinfo, own inventory.
@@ -132,8 +148,9 @@ impl NativePlayerBindings {
         namespace: ResourceNamespace,
         player: &mut PlayerState,
         time: EventTime,
+        clock: Option<ClockObservation>,
     ) -> bool {
-        if !self.packet_fits(values, layout, player) {
+        if !self.packet_fits(values, layout, player, clock) {
             return false;
         }
         match self.source {
@@ -155,6 +172,26 @@ impl NativePlayerBindings {
                 self.import_items(None, bits, player, time)
             }
             RuleSetId::Quake3 => {
+                let Some(clock) = clock else {
+                    return false;
+                };
+                let ThinkTime::Milliseconds(observed) = clock.native else {
+                    return false;
+                };
+                // Check every conversion before ammo, weapons or timers mutate.
+                let mut deadlines = [None; 16];
+                for (ordinal, binding) in self.powerups.into_iter().enumerate() {
+                    if binding.is_some() {
+                        let Some(bits) = values.arrays[3][ordinal].export(&player.values) else {
+                            return false;
+                        };
+                        let deadline = i64::from(bits as i32);
+                        let Some(until) = clock.deadline(ThinkTime::Milliseconds(deadline)) else {
+                            return false;
+                        };
+                        deadlines[ordinal] = Some((deadline, until));
+                    }
+                }
                 let Some(mask) = player
                     .values
                     .get(values.arrays[0][usize::from(layout.weapons)].id)
@@ -172,6 +209,27 @@ impl NativePlayerBindings {
                     }
                 }
                 self.import_weapon_mask(mask.0, player, time);
+                for (ordinal, binding) in self.powerups.into_iter().enumerate() {
+                    if let Some((powerup, item, owns_item)) = binding {
+                        let Some((deadline, until)) = deadlines[ordinal] else {
+                            return false;
+                        };
+                        player.inventory.apply(HudChange::Powerup {
+                            slot: u32::from(powerup.0),
+                            until: if deadline == 0 { 0.0 } else { until },
+                        });
+                        // ClientEndFrame clears only times < level.time. TA
+                        // persistent/active markers can equal the observation.
+                        if owns_item {
+                            set_item(
+                                player,
+                                item,
+                                i32::from(deadline != 0 && deadline >= observed),
+                                time,
+                            );
+                        }
+                    }
+                }
                 true
             }
             _ => true,

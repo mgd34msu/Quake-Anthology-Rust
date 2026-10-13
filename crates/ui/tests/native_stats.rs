@@ -16,8 +16,11 @@ fn native_stats_update_client_player_then_one_hud_inventory_consumer() {
     let hud = HudBindings::load(&registry, &[]).unwrap();
     for source in [RuleSetId::QuakeWorld] {
         let id = ClientId(3);
-        let mut player =
-            PlayerState::with_capacity(registry.items.len() + 1, 32, hud.values.capacity());
+        let mut player = PlayerState::with_capacity(
+            registry.items.len() + 1,
+            registry.powerup_capacity().max(32),
+            hud.values.capacity(),
+        );
         player.movement_rules = RuleSetId::Quake3;
         player.trace_rules = RuleSetId::Quake2;
         player.weapon_state = Some(WeaponState {
@@ -115,8 +118,11 @@ fn other_protocol_stat_arrays_are_not_reinterpreted_as_q1_fields() {
     let names = NameTable::load(Registry::names_needed()).unwrap();
     let registry = Registry::load(&names).unwrap();
     let hud = HudBindings::load(&registry, &[]).unwrap();
-    let mut player =
-        PlayerState::with_capacity(registry.items.len() + 1, 32, hud.values.capacity());
+    let mut player = PlayerState::with_capacity(
+        registry.items.len() + 1,
+        registry.powerup_capacity().max(32),
+        hud.values.capacity(),
+    );
     player.health = 71;
     player.armor = 33;
     player.view_weapon.frame = 7;
@@ -149,8 +155,11 @@ fn netquake_unknown_stat_fifteen_does_not_replace_clientdata_inventory() {
     let names = NameTable::load(Registry::names_needed()).unwrap();
     let registry = Registry::load(&names).unwrap();
     let hud = HudBindings::load(&registry, &[]).unwrap();
-    let mut player =
-        PlayerState::with_capacity(registry.items.len() + 1, 32, hud.values.capacity());
+    let mut player = PlayerState::with_capacity(
+        registry.items.len() + 1,
+        registry.powerup_capacity().max(32),
+        hud.values.capacity(),
+    );
     player.inventory.weapon = WeaponId(3);
     player.inventory.collectibles = 5;
     player.inventory.item_counts[1] = 7;
@@ -183,8 +192,11 @@ fn netquake_clientdata_bank_enters_one_inventory_and_hud_at_queued_receipt_time(
     let source = RuleSetId::Quake;
     let client = ClientId(3);
     let values = hud.values.native(source);
-    let mut player =
-        PlayerState::with_capacity(registry.items.len() + 1, 32, hud.values.capacity());
+    let mut player = PlayerState::with_capacity(
+        registry.items.len() + 1,
+        registry.powerup_capacity().max(32),
+        hud.values.capacity(),
+    );
     player.movement_rules = RuleSetId::Quake3;
     player.trace_rules = RuleSetId::Quake2;
     player.frags = 19;
@@ -215,7 +227,14 @@ fn netquake_clientdata_bank_enters_one_inventory_and_hud_at_queued_receipt_time(
     let bits = 2 | 16384 | 131072 | 0x0800_0000 | (5 << 28);
     values.items.unwrap().import(&mut player.values, bits);
     let time = EventTime::from_milliseconds(2500);
-    assert!(hud.import_native_packet(source, Q3StatLayout::BASE, client, &mut player, time));
+    assert!(hud.import_native_packet(
+        source,
+        Q3StatLayout::BASE,
+        client,
+        &mut player,
+        time,
+        clock(time),
+    ));
     let weapon = registry.native_weapon(source, 2).unwrap();
     let weapon_item = registry.weapon(weapon).unwrap().item;
     let shells = registry.native_item(source, 11).unwrap();
@@ -243,7 +262,8 @@ fn netquake_clientdata_bank_enters_one_inventory_and_hud_at_queued_receipt_time(
         Q3StatLayout::BASE,
         client,
         &mut player,
-        EventTime::from_milliseconds(4000)
+        EventTime::from_milliseconds(4000),
+        clock(EventTime::from_milliseconds(4000)),
     ));
     assert_eq!(
         player.inventory.item_acquired_at[weapon_item.0 as usize],
@@ -288,7 +308,8 @@ fn netquake_clientdata_bank_enters_one_inventory_and_hud_at_queued_receipt_time(
         Q3StatLayout::BASE,
         client,
         &mut player,
-        EventTime::from_milliseconds(5000)
+        EventTime::from_milliseconds(5000),
+        clock(EventTime::from_milliseconds(5000)),
     ));
     assert_eq!(player.inventory.item_counts[weapon_item.0 as usize], 0);
     assert_eq!(player.inventory.item_counts[shells.0 as usize], 0);
@@ -317,7 +338,8 @@ fn clientdata_capacity_admission_precedes_all_common_inventory_and_scalar_writes
             Q3StatLayout::BASE,
             ClientId(0),
             &mut player,
-            EventTime::default()
+            EventTime::default(),
+            clock(EventTime::default()),
         ));
         assert_eq!((player.health, player.armor), (81, 53));
         assert_eq!(player.inventory.collectibles, 9);
@@ -339,8 +361,11 @@ fn q3_packet_inventory_reaches_hud_through_retained_events_for_both_stat_layouts
     let machinegun = registry.native_weapon(source, 2).unwrap();
     let shotgun = registry.native_weapon(source, 3).unwrap();
     for layout in [Q3StatLayout::BASE, Q3StatLayout::TEAM_ARENA] {
-        let mut player =
-            PlayerState::with_capacity(registry.items.len() + 1, 16, hud.values.capacity());
+        let mut player = PlayerState::with_capacity(
+            registry.items.len() + 1,
+            registry.powerup_capacity(),
+            hud.values.capacity(),
+        );
         player.health = 81;
         player.armor = 53;
         player.movement_rules = RuleSetId::Quake2;
@@ -358,27 +383,36 @@ fn q3_packet_inventory_reaches_hud_through_retained_events_for_both_stat_layouts
             values.ammo[ordinal].import(&mut player.values, count as u32);
         }
         values.powerups[3].import(&mut player.values, 12345);
-        assert!(hud.native_packet_fits(source, layout, &player));
+        assert!(hud.native_packet_fits(
+            source,
+            layout,
+            &player,
+            clock(EventTime::from_milliseconds(2500))
+        ));
         assert!(hud.import_native_packet(
             source,
             layout,
             client,
             &mut player,
-            EventTime::from_milliseconds(2500)
+            EventTime::from_milliseconds(2500),
+            clock(EventTime::from_milliseconds(2500)),
         ));
         registry.project_player_weapon(&mut player);
         assert_eq!(player.inventory.weapon, rocket);
         assert_eq!(player.inventory.item_counts[rocket_ammo.0 as usize], -1);
         assert_eq!(player.inventory.powerup_until[3], 12.5);
+        let haste = registry.native_powerup(source, 3).unwrap();
+        assert_eq!(player.inventory.powerup_until[haste.id.0 as usize], 12.345);
+        assert_eq!(player.inventory.item_counts[haste.item.0 as usize], 1);
         assert_eq!(player.native, Some(tail));
         assert_eq!(
             (player.movement_rules, player.trace_rules),
             (RuleSetId::Quake2, RuleSetId::Quake)
         );
-        let mut state = hud.state(16, NameId(0));
+        let mut state = hud.state(registry.powerup_capacity(), NameId(0));
         let mut publication = qa_session::clients::HudPublication::with_capacity(
             player.inventory.item_counts.len(),
-            16,
+            registry.powerup_capacity(),
         );
         let mut ring = EventRing::load(4096, 1, 1, 32).unwrap();
         let consumer = ring.bind(OutputTarget::Client(client)).unwrap();
@@ -398,7 +432,8 @@ fn q3_packet_inventory_reaches_hud_through_retained_events_for_both_stat_layouts
             layout,
             client,
             &mut player,
-            EventTime::from_milliseconds(4000)
+            EventTime::from_milliseconds(4000),
+            clock(EventTime::from_milliseconds(4000)),
         ));
         publication.publish_changes(&player, &mut ring, client);
         assert_eq!(ring.len(), retained);
@@ -442,7 +477,8 @@ fn q3_packet_inventory_reaches_hud_through_retained_events_for_both_stat_layouts
             layout,
             client,
             &mut player,
-            EventTime::from_milliseconds(5000)
+            EventTime::from_milliseconds(5000),
+            clock(EventTime::from_milliseconds(5000)),
         ));
         publication.publish_changes(&player, &mut ring, client);
         dispatch_consumer(
@@ -475,7 +511,7 @@ fn q3_packet_capacity_rejection_and_individual_stat_import_do_not_mutate_invento
         (capacity, 1, hud.values.capacity()),
         (capacity, capacity, hud.values.capacity() - 1),
     ] {
-        let mut player = PlayerState::with_capacity(counts, 16, bank);
+        let mut player = PlayerState::with_capacity(counts, registry.powerup_capacity(), bank);
         player.inventory.item_acquired_at = vec![0.0; times].into_boxed_slice();
         player.health = 81;
         player.view_weapon.frame = 17;
@@ -494,13 +530,19 @@ fn q3_packet_capacity_rejection_and_individual_stat_import_do_not_mutate_invento
         values.ammo[2].import(&mut player.values, 99);
         let before_counts = player.inventory.item_counts.to_vec();
         let before_times = player.inventory.item_acquired_at.to_vec();
-        assert!(!hud.native_packet_fits(source, Q3StatLayout::BASE, &player));
+        assert!(!hud.native_packet_fits(
+            source,
+            Q3StatLayout::BASE,
+            &player,
+            clock(EventTime::default())
+        ));
         assert!(!hud.import_native_packet(
             source,
             Q3StatLayout::BASE,
             ClientId(3),
             &mut player,
-            EventTime::from_milliseconds(2500)
+            EventTime::from_milliseconds(2500),
+            clock(EventTime::from_milliseconds(2500)),
         ));
         assert_eq!(player.inventory.item_counts.as_ref(), before_counts);
         assert_eq!(player.inventory.item_acquired_at.as_ref(), before_times);
@@ -515,4 +557,13 @@ fn q3_packet_capacity_rejection_and_individual_stat_import_do_not_mutate_invento
         assert_eq!(values.stats[2].export(&player.values), Some(u32::MAX));
         assert_eq!(values.ammo[2].export(&player.values), Some(99));
     }
+}
+
+fn clock(time: EventTime) -> Option<qa_core::primitives::ClockObservation> {
+    Some(qa_core::primitives::ClockObservation {
+        native: qa_core::primitives::ThinkTime::Milliseconds(
+            i64::try_from(time.milliseconds()).unwrap(),
+        ),
+        queued: time,
+    })
 }
