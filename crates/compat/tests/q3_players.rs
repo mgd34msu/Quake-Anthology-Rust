@@ -355,8 +355,18 @@ fn verify(f: &Fixture) {
     assert!(p.movement.grounded);
     assert!(p.movement.ground.is_none()); // WORLD is not common entity slot1022.
     assert!(p.movement.ducked && p.movement.jump_held);
-    assert_eq!(p.movement.tuning.gravity, Some(600.0));
-    assert_eq!(p.movement.tuning.max_speed, Some(500.0));
+    assert_eq!(p.movement.tuning.gravity, Some(600.0.into()));
+    assert_eq!(p.movement.tuning.max_speed, Some(500.0.into()));
+    let tail = p.native.unwrap();
+    assert_eq!(tail.source, RuleSetId::Quake3);
+    assert_eq!(tail.namespace, ResourceNamespace::Module(MODULE));
+    assert_eq!(tail.flags, 1 | 2 | 32 | 64 | 256);
+    assert_eq!((tail.gravity, tail.speed), (Some(1200), Some(250)));
+    assert_eq!((tail.client_number, tail.weapon_number), (Some(0), Some(4)));
+    assert_eq!(
+        p.inventory.weapon,
+        f.registry.native_weapon(RuleSetId::Quake3, 4).unwrap()
+    );
     assert_eq!(
         (
             p.movement.tuning.gravity_multiplier,
@@ -404,6 +414,8 @@ fn qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin() {
         [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
         p.view_angles,
         p.movement,
+        p.native,
+        p.inventory.weapon,
     );
     vm.memory
         .write_vec3(PLAYERS + 20, Vec3([222.0; 3]))
@@ -413,17 +425,84 @@ fn qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin() {
         .unwrap();
     vm.memory.write_word(PLAYERS + 0, 42).unwrap();
     vm.memory.write_word(PLAYERS + 184, 81).unwrap();
+    vm.memory.write_word(PLAYERS + 12, 0).unwrap();
+    vm.memory.write_word(PLAYERS + 48, 0).unwrap();
+    vm.memory.write_word(PLAYERS + 52, 0).unwrap();
+    vm.memory.write_word(PLAYERS + 140, 1).unwrap();
+    vm.memory.write_word(PLAYERS + 144, 999).unwrap();
     f.publish(&mut vm).unwrap();
     let p = &f.server.clients[1].player;
     assert_eq!(
         (
             [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
             p.view_angles,
-            p.movement
+            p.movement,
+            p.native,
+            p.inventory.weapon,
         ),
         before
     );
     assert_eq!(p.health, 81);
+}
+
+fn qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning() {
+    use qa_core::primitives::MovementMagnitude;
+    let mut f = Fixture::new();
+    let mut vm = qvm(&[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)]);
+    entity(&mut vm.memory, ENTITIES);
+    player(&mut vm.memory, PLAYERS);
+    f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+    let residual = 0x8000_0000 | 512 | 4096 | 8192;
+    vm.memory
+        .write_word(PLAYERS + 12, (residual | 1 | 32) as i32)
+        .unwrap();
+    vm.memory.write_word(PLAYERS + 48, 16_777_217).unwrap();
+    vm.memory.write_word(PLAYERS + 52, -16_777_219).unwrap();
+    vm.memory.write_word(PLAYERS + 140, 1).unwrap();
+    vm.memory.write_word(PLAYERS + 144, 65539).unwrap();
+    f.publish(&mut vm).unwrap();
+    let p = &mut f.server.clients[1].player;
+    assert_eq!(p.native.unwrap().gravity, Some(16_777_217));
+    assert_eq!(p.native.unwrap().speed, Some(-16_777_219));
+    assert_eq!(p.native.unwrap().client_number, Some(1));
+    assert_eq!(p.native.unwrap().weapon_number, Some(65539));
+    assert_eq!(p.inventory.weapon, Default::default());
+    p.movement.ducked = false;
+    let projection = qa_network::projection::PlayerProjection::load_native_q3(&[], &[]);
+    let context = qa_network::projection::PlayerContext {
+        namespace: Some(ResourceNamespace::Module(MODULE)),
+        client_number: Some(0),
+        weapon_number: Some(0),
+        ..Default::default()
+    };
+    let mut words = [0; qa_network::states::PLAYER_WORDS];
+    assert!(projection.reduce(p, &context, &mut words, |_| None));
+    assert_eq!(words[19], residual | 32);
+    assert_eq!(words[24], 16_777_217);
+    assert_eq!(words[25], (-16_777_219i32) as u32);
+    assert_eq!((words[40], words[41]), (1, 65539));
+    // Native NONE and client zero are values, even with nonzero prior state.
+    p.movement.tuning.gravity_multiplier = 0.0;
+    p.movement.tuning.speed_multiplier = 0.0;
+    vm.memory.write_word(PLAYERS + 48, 1200).unwrap();
+    vm.memory.write_word(PLAYERS + 52, 250).unwrap();
+    vm.memory.write_word(PLAYERS + 140, 0).unwrap();
+    vm.memory.write_word(PLAYERS + 144, 0).unwrap();
+    f.publish(&mut vm).unwrap();
+    let p = &f.server.clients[1].player;
+    assert_eq!(p.native.unwrap().client_number, Some(0));
+    assert_eq!(p.native.unwrap().weapon_number, Some(0));
+    assert_eq!(p.inventory.weapon, Default::default());
+    assert_eq!(
+        p.movement.tuning.gravity,
+        Some(MovementMagnitude::Effective(1200.0))
+    );
+    assert_eq!(
+        p.movement.tuning.max_speed,
+        Some(MovementMagnitude::Effective(250.0))
+    );
+    let effective = qa_movement::effective_tuning(p.movement_rules, p.movement.tuning);
+    assert_eq!((effective.gravity, effective.speed), (1200.0, 250.0));
 }
 fn qvm_export_relocation_zero_address_and_stale_bindings() {
     let mut f = Fixture::new();
@@ -611,6 +690,10 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     moved.extend(native_players.to_le_bytes());
     moved.extend([0xc7, 0x40, 20]);
     moved.extend(123.5f32.to_bits().to_le_bytes());
+    moved.extend([0xc7, 0x40, 48]);
+    moved.extend(16_777_217i32.to_le_bytes());
+    moved.extend([0xc7, 0x40, 52]);
+    moved.extend((-16_777_219i32).to_le_bytes());
     moved.extend(&code);
     qa_compat::memory::process_memory(&mut vm.process)
         .unwrap()
@@ -618,11 +701,16 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         .unwrap();
     assert_eq!(invoke(&mut vm, &mut f, &mut unknown).unwrap(), 0);
     assert_eq!(f.server.clients[1].player.body.position.0[0], 123.5);
+    let accepted_tail = f.server.clients[1].player.native;
+    assert_eq!(accepted_tail.unwrap().gravity, Some(16_777_217));
+    assert_eq!(accepted_tail.unwrap().speed, Some(-16_777_219));
     // A failed native export does not publish bytes written before its trap.
     let mut failing = vec![0x48, 0xb8];
     failing.extend(native_players.to_le_bytes());
     failing.extend([0xc7, 0x40, 20]);
     failing.extend(777.5f32.to_bits().to_le_bytes());
+    failing.extend([0xc7, 0x40, 48]);
+    failing.extend(7i32.to_le_bytes());
     failing.extend([0x0f, 0x0b]);
     qa_compat::memory::process_memory(&mut vm.process)
         .unwrap()
@@ -630,6 +718,7 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         .unwrap();
     assert!(invoke(&mut vm, &mut f, &mut unknown).is_err());
     assert_eq!(f.server.clients[1].player.body.position.0[0], 123.5);
+    assert_eq!(f.server.clients[1].player.native, accepted_tail);
 }
 
 fn main() {
@@ -637,6 +726,7 @@ fn main() {
         std::process::exit(status);
     }
     qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin();
+    qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning();
     qvm_export_relocation_zero_address_and_stale_bindings();
     locate_uses_the_frozen_module_capacity_after_cvar_mutation();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

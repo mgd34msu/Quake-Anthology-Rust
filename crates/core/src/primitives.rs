@@ -588,6 +588,34 @@ pub struct WeaponState {
     pub readiness: WeaponReadiness,
 }
 
+/// Native player metadata retains source widths independently of movement and
+/// connection identity. Hot movement fields overlay only their mapped flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativePlayerTail {
+    pub source: RuleSetId,
+    pub namespace: ResourceNamespace,
+    pub flags: u32,
+    pub client_number: Option<u32>,
+    pub ground_number: Option<u32>,
+    pub weapon_number: Option<u32>,
+    pub gravity: Option<i32>,
+    pub speed: Option<i32>,
+}
+impl NativePlayerTail {
+    pub const fn new(source: RuleSetId, namespace: ResourceNamespace) -> Self {
+        Self {
+            source,
+            namespace,
+            flags: 0,
+            client_number: None,
+            ground_number: None,
+            weapon_number: None,
+            gravity: None,
+            speed: None,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct PlayerState {
     pub values: ValueBank,
@@ -595,6 +623,8 @@ pub struct PlayerState {
     /// Caller clipping/filtering policy, independent of movement and geometry.
     pub trace_rules: RuleSetId,
     pub movement: MovementState,
+    /// Accepted native follow/no-position-prediction state is presented directly.
+    pub interpolate_only: bool,
     pub body: Body,
     pub view_angles: Vec3,
     pub health: i32,
@@ -613,6 +643,7 @@ pub struct PlayerState {
     pub score: i32,
     pub frags: i32,
     pub weapon_state: Option<WeaponState>,
+    pub native: Option<NativePlayerTail>,
 }
 
 /// Native resource ordinals are relative to their publishing module/client;
@@ -866,12 +897,41 @@ pub struct MovementState {
     pub tuning: MovementTuning,
 }
 
+/// A base value still receives the player's multiplier. Native effective
+/// values use a base when division is possible and retain their value when a
+/// zero multiplier has no inverse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MovementMagnitude {
+    Base(f32),
+    Effective(f32),
+}
+impl From<f32> for MovementMagnitude {
+    fn from(value: f32) -> Self {
+        Self::Base(value)
+    }
+}
+impl MovementMagnitude {
+    pub fn native(effective: f32, multiplier: f32) -> Self {
+        if multiplier != 0.0 {
+            Self::Base(effective / multiplier)
+        } else {
+            Self::Effective(effective)
+        }
+    }
+    pub fn effective(self, multiplier: f32) -> f32 {
+        match self {
+            Self::Base(value) => value * multiplier,
+            Self::Effective(value) => value,
+        }
+    }
+}
+
 /// Cached cvar/module overrides; absence retains the selected native default.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovementTuning {
-    pub max_speed: Option<f32>,
+    pub max_speed: Option<MovementMagnitude>,
     pub spectator_max_speed: Option<f32>,
-    pub gravity: Option<f32>,
+    pub gravity: Option<MovementMagnitude>,
     pub friction: Option<f32>,
     pub accelerate: Option<f32>,
     pub air_accelerate: Option<f32>,

@@ -923,6 +923,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
             &mut player,
             &qa_app::output_namespace::NativeNumbers::load(Protocol::Quake2Repro1038),
             &catalog.hud,
+            &catalog.registry,
             qa_core::sys_events::EventTime::from_milliseconds(u64::from(sequence) * 25),
         );
         assert_eq!(player.view_weapon.frame, gunframe);

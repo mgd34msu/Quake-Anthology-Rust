@@ -19,6 +19,7 @@ mod support;
 
 fn native_player_context() -> PlayerContext {
     PlayerContext {
+        namespace: None,
         client_number: None,
         ground_number: None,
         appearance: None,

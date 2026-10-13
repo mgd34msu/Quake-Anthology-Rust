@@ -313,7 +313,7 @@ fn classic_spectator_snaps_without_rejecting_a_position_beyond_a_wall() {
 fn qw_spectator_has_an_independent_native_and_overridden_speed_cap() {
     for (spectator, expected) in [(None, 250.0), (Some(600.0), 300.0)] {
         let mut state = player(RuleSetId::QuakeWorld, MovementMode::Spectator);
-        state.movement.tuning.max_speed = Some(50.0);
+        state.movement.tuning.max_speed = Some(50.0.into());
         state.movement.tuning.spectator_max_speed = spectator;
         let mut world = World::new(state.trace_rules);
         pmove(

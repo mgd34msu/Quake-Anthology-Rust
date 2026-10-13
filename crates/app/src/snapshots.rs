@@ -22,13 +22,23 @@ pub use presentation::{GunAnimation, Interpolation, PresentationClock};
 
 fn player_context(
     player: &PlayerState,
+    source: &EntitySource<'_>,
+    protocol: Protocol,
     number: u32,
     body_yaw: f32,
     appearance: Option<EntityAppearance>,
     is_self: bool,
 ) -> PlayerContext {
+    let tuning = qa_movement::effective_tuning(player.movement_rules, player.movement.tuning);
     let mut context = PlayerContext {
+        namespace: source.native_module.map(ResourceNamespace::Module),
         client_number: Some(number),
+        weapon_number: source
+            .registry
+            .native_weapon_number(protocol.rule_set(), player.inventory.weapon)
+            .map(u32::from),
+        gravity: tuning.gravity,
+        speed: tuning.speed,
         body_yaw,
         appearance,
         ..Default::default()
@@ -82,7 +92,6 @@ struct ClientPresentation {
     negotiated_period: bool,
     sequence: Option<u32>,
     gun_animation: Option<GunAnimation>,
-    context: PlayerContext,
     loops: Option<loops::LoopPublication>,
 }
 
@@ -93,8 +102,12 @@ impl SnapshotBinding {
     pub fn native_client(&self) -> u32 {
         self.native_client
     }
-    pub fn view_entity(&self) -> Option<u32> {
-        self.entities.view_entity()
+    pub fn view_entity(&self, frame: Option<ReceivedFrame<'_>>) -> Option<u32> {
+        let client = frame
+            .and_then(ReceivedFrame::player_words)
+            .and_then(|words| self.projection.client_number(words))
+            .unwrap_or(self.native_client);
+        crate::output_namespace::native_client_entity(self.protocol, client)
     }
     pub fn entity_projection(&self) -> &qa_network::projection::EntityProjection {
         self.entities.projection()
@@ -299,10 +312,6 @@ impl SnapshotBinding {
                 )),
                 sequence: None,
                 gun_animation: None,
-                context: PlayerContext {
-                    client_number: Some(native_client),
-                    ..Default::default()
-                },
             }),
             entities: entities::EntityScratch::load(protocol),
             last_sent: None,
@@ -345,6 +354,8 @@ impl SnapshotBinding {
         // projection, never common handle casts or the executing module.
         let mut context = player_context(
             player,
+            &source,
+            self.protocol,
             self.native_client,
             player.view_angles.0[1],
             None,
@@ -353,6 +364,7 @@ impl SnapshotBinding {
         context.ground_number = player
             .movement
             .ground
+            .filter(|_| player.movement.grounded)
             .and_then(|entity| numbers.number(entity));
         if !self
             .projection
@@ -511,6 +523,7 @@ impl SnapshotBinding {
         player: &mut PlayerState,
         numbers: &crate::output_namespace::NativeNumbers,
         hud: &qa_ui::hud::HudBindings,
+        registry: &qa_gameplay::registry::Registry,
         time: qa_core::sys_events::EventTime,
     ) {
         let Some(client) = self.presentation.as_mut() else {
@@ -560,14 +573,16 @@ impl SnapshotBinding {
             }
             // Native entity binding is deferred; an ordinal cannot resolve by
             // casting it to a common EntityId or selecting the executing module.
+            let mut context = PlayerContext::default();
             if self.projection.apply(
                 words,
                 player,
-                &mut client.context,
+                &mut context,
                 ResourceNamespace::Client(self.client),
                 |number| numbers.entity(number),
             ) && hud.import_native_packet(self.protocol.rule_set(), self.client, player, time)
             {
+                registry.project_player_weapon(player);
                 self.applied += 1;
             } else {
                 self.rejected += 1;

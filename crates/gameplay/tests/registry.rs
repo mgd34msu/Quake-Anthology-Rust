@@ -3,6 +3,53 @@ use qa_core::primitives::{ItemId, NameId, RuleSetId, WeaponId};
 use qa_gameplay::registry::{ItemKind, Registry, SOURCE_COUNTS};
 
 #[test]
+fn player_weapon_projection_uses_native_source_and_preserves_absent_metadata() {
+    use qa_core::primitives::{ModuleId, NativePlayerTail, PlayerState, ResourceNamespace};
+    let names = NameTable::load(Registry::names_needed()).unwrap();
+    let registry = Registry::load(&names).unwrap();
+    let mut player = PlayerState::default();
+    player.movement_rules = RuleSetId::QuakeWorld;
+    player.trace_rules = RuleSetId::Quake2;
+    player.inventory.weapon = registry.native_weapon(RuleSetId::Quake, 32).unwrap();
+    let original = player.inventory.weapon;
+    registry.project_player_weapon(&mut player);
+    assert_eq!(player.inventory.weapon, original);
+    let mut tail = NativePlayerTail::new(RuleSetId::Quake3, ResourceNamespace::Module(ModuleId(7)));
+    player.native = Some(tail);
+    registry.project_player_weapon(&mut player);
+    assert_eq!(player.inventory.weapon, original);
+    for source in RuleSetId::ALL {
+        tail.source = source;
+        tail.weapon_number = Some(match source {
+            RuleSetId::Quake | RuleSetId::QuakeWorld => 32,
+            RuleSetId::Quake2 => 7,
+            RuleSetId::Quake2Rerelease => 8,
+            RuleSetId::Quake3 => 4,
+        });
+        player.native = Some(tail);
+        registry.project_player_weapon(&mut player);
+        assert_eq!(
+            player.inventory.weapon,
+            registry
+                .native_weapon(source, tail.weapon_number.unwrap() as u16)
+                .unwrap()
+        );
+        assert_eq!(player.native, Some(tail));
+    }
+    for number in [0, 65539, u32::MAX] {
+        tail.weapon_number = Some(number);
+        player.native = Some(tail);
+        registry.project_player_weapon(&mut player);
+        assert_eq!(player.inventory.weapon, WeaponId(0));
+        assert_eq!(player.native, Some(tail));
+    }
+    assert_eq!(
+        (player.movement_rules, player.trace_rules),
+        (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+    );
+}
+
+#[test]
 fn source_tables_share_ids_without_losing_original_numbers_or_ammo_links() {
     let names = NameTable::load(
         Registry::names_needed().chain([b"info_player_start".as_slice(), b"ITEM_SHELLS"]),

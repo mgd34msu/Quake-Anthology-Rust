@@ -330,6 +330,7 @@ fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values(
 
 fn context() -> PlayerContext {
     PlayerContext {
+        namespace: None,
         client_number: Some(17),
         ground_number: Some(1022),
         appearance: None,
@@ -381,7 +382,7 @@ fn destination() -> PlayerState {
     p.view_angles = Vec3([-111.; 3]);
     p.health = 9876;
     p.inventory.item_counts[1] = 19;
-    p.movement.tuning.max_speed = Some(17.);
+    p.movement.tuning.max_speed = Some(17.0.into());
     p.movement.tuning.speed_multiplier = 2.;
     p.weapon_state = Some(qa_core::primitives::WeaponState {
         source: qa_core::primitives::RuleSetId::Quake,
@@ -398,7 +399,6 @@ fn assert_independent_state(
     assert_eq!(p.movement_rules, RuleSetId::Quake3);
     assert_eq!(p.trace_rules, RuleSetId::Quake);
     assert_eq!(p.inventory.item_counts[1], 19);
-    assert_eq!(p.movement.tuning.max_speed, Some(17.));
     assert_eq!(p.movement.tuning.speed_multiplier, 2.);
     assert_eq!(p.weapon_state, weapon_state);
 }
@@ -600,6 +600,7 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
         (-12, 55, 7)
     );
     assert_eq!(native.gravity, 800.);
+    assert_eq!(imported.movement.tuning.max_speed, Some(17.0.into()));
     assert_independent_state(&imported, destination().weapon_state);
 
     let q3 = PlayerProjection::load(Protocol::Quake3_68, &[]);
@@ -646,6 +647,7 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
         Vec3([90., 180., 270.])
     );
     assert_eq!(imported.movement.remaining_ms, 250);
+    assert_eq!(imported.movement.tuning.max_speed, Some(150.0.into()));
     assert_eq!(imported.movement.command_time_ms, 1200);
     assert_eq!(imported.movement.timer, p.movement.timer);
     assert!(imported.movement.grounded);
@@ -809,6 +811,262 @@ fn native_q3_delta_units_keep_full_signed_words_until_the_target_boundary() {
         assert!(matches!(angle, AngleOffset::Degrees(_)));
         assert_eq!(angle.degrees().to_bits(), bits);
     }
+}
+
+#[test]
+fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{ModuleId, MovementMagnitude, NativePlayerTail, ResourceNamespace};
+    let namespace = ResourceNamespace::Module(ModuleId(7));
+    let native = PlayerProjection::load_native_q3(&[], &[]);
+    let wire = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    assert_eq!(native.movement_flag_mask(), 0x163);
+    let mut words = [0; states::PLAYER_WORDS];
+    let flags = 0x8000_0000 | 8 | 16 | 512 | 1024 | 2048 | 4096 | 8192 | 16384 | 0x163;
+    words[19] = flags;
+    words[24] = 16_777_217;
+    words[25] = (-16_777_219i32) as u32;
+    words[40] = 1;
+    words[41] = 65539;
+    let mut player = PlayerState::default();
+    player.movement_rules = RuleSetId::QuakeWorld;
+    player.trace_rules = RuleSetId::Quake2;
+    player.movement.tuning.gravity_multiplier = 2.0;
+    player.movement.tuning.speed_multiplier = 0.5;
+    player.movement.tuning.spectator_max_speed = Some(501.0);
+    let mut context = PlayerContext::default();
+    assert!(native.apply(&words, &mut player, &mut context, namespace, |_| None));
+    assert_eq!(
+        player.native,
+        Some(NativePlayerTail {
+            source: RuleSetId::Quake3,
+            namespace,
+            flags,
+            client_number: Some(1),
+            ground_number: Some(0),
+            weapon_number: Some(65539),
+            gravity: Some(16_777_217),
+            speed: Some(-16_777_219),
+        })
+    );
+    assert_eq!(
+        player.movement.tuning.gravity,
+        Some(MovementMagnitude::Base(16_777_217i32 as f32 / 2.0))
+    );
+    assert_eq!(
+        player.movement.tuning.max_speed,
+        Some(MovementMagnitude::Base(-16_777_219i32 as f32 / 0.5))
+    );
+    assert_eq!(player.movement.tuning.spectator_max_speed, Some(501.0));
+    assert_eq!(
+        (player.movement_rules, player.trace_rules),
+        (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+    );
+    player.movement.ducked = false;
+    player.movement.timer = MovementTimer::LAND;
+    let expected_flags = (flags & !0x163) | 2 | 32;
+    let mut projected = [0; states::PLAYER_WORDS];
+    assert!(native.reduce(&player, &context, &mut projected, |_| None));
+    assert_eq!(projected[19], expected_flags);
+    assert_eq!(projected[24..=25], words[24..=25]);
+    assert_eq!(projected[40..=41], words[40..=41]);
+    let mut bytes = [0; 1400];
+    assert!(wire.reduce(&player, &context, &mut projected, |_| None));
+    let mut writer = Writer::new(&mut bytes, Encoding::Q3);
+    states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &projected)?;
+    let length = writer.size();
+    let decoded = states::read_q3_player(
+        &mut Reader::new(&bytes[..length], Encoding::Q3),
+        &[0; states::PLAYER_WORDS],
+    )?;
+    assert_eq!(decoded[19], expected_flags & 65535);
+    assert_eq!(decoded[24], 1);
+    assert_eq!(decoded[25], (-16_777_219i32) as u16 as u32);
+    assert_eq!((decoded[40], decoded[41]), (1, 3));
+
+    // Explicitly selecting another namespace drops residual/follow metadata.
+    context.namespace = Some(ResourceNamespace::Module(ModuleId(8)));
+    context.client_number = Some(5);
+    context.weapon_number = Some(7);
+    context.gravity = 123.0;
+    context.speed = 456.0;
+    assert!(wire.reduce(&player, &context, &mut projected, |_| None));
+    assert_eq!(projected[19], 2 | 32);
+    assert_eq!(projected[24..=25], [123, 456]);
+    assert_eq!(projected[40..=41], [5, 7]);
+    // Matching namespace never makes foreign raw flag bits meaningful.
+    context.namespace = Some(namespace);
+    let q2 = PlayerProjection::load(Protocol::Quake2_34, &[]);
+    let mut q2_words = [0; states::Q2_PLAYER_WORDS];
+    assert!(q2.reduce(&player, &context, &mut q2_words, |_| None));
+    assert_eq!(q2_words[8], 2 | 4 | 16);
+    assert_eq!(q2_words[9], 123);
+
+    let unchanged_tail = player.native;
+    let unchanged_tuning = player.movement.tuning;
+    words[19] = 0;
+    words[24] = 0;
+    words[25] = 0;
+    words[40] = 0;
+    words[41] = 0;
+    assert!(native.apply_stats(&words, &mut player, ResourceNamespace::Module(ModuleId(8))));
+    assert_eq!(player.native, unchanged_tail);
+    assert_eq!(player.movement.tuning, unchanged_tuning);
+    Ok(())
+}
+
+#[test]
+fn accepted_native_tuning_with_zero_multipliers_remains_effective() {
+    use qa_core::primitives::{ClientId, MovementMagnitude, ResourceNamespace};
+    let projection = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let mut words = [0; states::PLAYER_WORDS];
+    words[24] = 1200;
+    words[25] = 250;
+    let mut player = PlayerState::default();
+    player.movement.tuning.gravity_multiplier = 0.0;
+    player.movement.tuning.speed_multiplier = 0.0;
+    let mut context = PlayerContext::default();
+    assert!(projection.apply(
+        &words,
+        &mut player,
+        &mut context,
+        ResourceNamespace::Client(ClientId(0)),
+        |_| None
+    ));
+    assert_eq!(
+        player.movement.tuning.gravity,
+        Some(MovementMagnitude::Effective(1200.0))
+    );
+    assert_eq!(
+        player.movement.tuning.max_speed,
+        Some(MovementMagnitude::Effective(250.0))
+    );
+    assert_eq!(
+        player.movement.tuning.gravity.unwrap().effective(0.0),
+        1200.0
+    );
+    assert_eq!(
+        player.movement.tuning.max_speed.unwrap().effective(0.0),
+        250.0
+    );
+    assert_eq!(player.native.unwrap().client_number, Some(0));
+    assert_eq!(player.native.unwrap().weapon_number, Some(0));
+}
+
+#[test]
+fn native_world_ground_survives_until_airborne_or_an_explicit_mapping_replaces_it() {
+    use qa_core::primitives::{ModuleId, ResourceNamespace};
+    let namespace = ResourceNamespace::Module(ModuleId(7));
+    let projection = PlayerProjection::load_native_q3(&[], &[]);
+    let mut words = [0; states::PLAYER_WORDS];
+    words[20] = 1022;
+    let mut player = PlayerState::default();
+    assert!(projection.apply(
+        &words,
+        &mut player,
+        &mut PlayerContext::default(),
+        namespace,
+        |_| None
+    ));
+    assert!(player.movement.grounded);
+    assert_eq!(player.movement.ground, None);
+    assert_eq!(player.native.unwrap().ground_number, Some(1022));
+    let mut context = PlayerContext {
+        namespace: Some(namespace),
+        ..Default::default()
+    };
+    let mut output = [0; states::PLAYER_WORDS];
+    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert_eq!(output[20], 1022);
+    player.movement.grounded = false;
+    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert_eq!(output[20], 1023);
+    context.ground_number = Some(9);
+    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert_eq!(output[20], 9); // An explicit boundary mapping has precedence.
+    player.movement.grounded = true;
+    player.movement.ground = Some(EntityId {
+        slot: 91,
+        generation: 4,
+    });
+    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert_eq!(output[20], 9);
+    context.ground_number = None;
+    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert_eq!(output[20], 1023); // Unrepresentable common ground cannot use stale raw ground.
+    player.movement.ground = None;
+    context.namespace = Some(ResourceNamespace::Module(ModuleId(8)));
+    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert_eq!(output[20], 1023);
+    context.namespace = Some(namespace);
+    player.native.as_mut().unwrap().source = RuleSetId::Quake2;
+    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert_eq!(output[20], 1023);
+}
+
+#[test]
+fn accepted_follow_capability_and_client_target_use_the_existing_field_table() {
+    use qa_core::primitives::{ClientId, ResourceNamespace};
+    let namespace = ResourceNamespace::Client(ClientId(0));
+    let projection = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let mut words = [0; states::PLAYER_WORDS];
+    let mut player = PlayerState::default();
+    player.movement_rules = RuleSetId::QuakeWorld;
+    for number in [0, 1, 63] {
+        words[40] = number;
+        assert_eq!(projection.client_number(&words), Some(number));
+    }
+    words[40] = 64;
+    assert_eq!(projection.client_number(&words), None);
+    assert_eq!(projection.client_number(&words[..40]), None);
+    words[19] = 4096;
+    assert!(projection.apply(
+        &words,
+        &mut player,
+        &mut PlayerContext::default(),
+        namespace,
+        |_| None
+    ));
+    assert!(player.interpolate_only);
+    words[19] = 0;
+    assert!(projection.apply_stats(&words, &mut player, namespace));
+    assert!(player.interpolate_only);
+    assert!(projection.apply(
+        &words,
+        &mut player,
+        &mut PlayerContext::default(),
+        namespace,
+        |_| None
+    ));
+    assert!(!player.interpolate_only);
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+    ] {
+        let other = PlayerProjection::load(protocol, &[]);
+        let mut foreign = vec![0; other.words()];
+        if matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
+            foreign[8] = 64 | 256 | 4096;
+        }
+        player.interpolate_only = true;
+        assert!(other.apply(
+            &foreign,
+            &mut player,
+            &mut PlayerContext::default(),
+            namespace,
+            |_| None
+        ));
+        assert!(!player.interpolate_only); // Partial Q2 prediction policy is not full FOLLOW.
+        assert_eq!(player.movement_rules, RuleSetId::QuakeWorld);
+    }
+    let repro = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
+    let mut repro_words = vec![0; repro.words()];
+    repro_words[42] = 255;
+    assert_eq!(repro.client_number(&repro_words), Some(255));
+    repro_words[42] = 256;
+    assert_eq!(repro.client_number(&repro_words), None);
 }
 
 #[test]

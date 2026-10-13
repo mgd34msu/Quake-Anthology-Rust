@@ -4,8 +4,8 @@ mod recovery;
 mod slide;
 mod special;
 pub use physics::{
-    MoveEntry, MoveOptions, MovePhase, MovementResult, TraceServices, entry, no_boundary, pmove,
-    set_bounds,
+    EffectiveTuning, MoveEntry, MoveOptions, MovePhase, MovementResult, TraceServices,
+    effective_tuning, entry, no_boundary, pmove, set_bounds,
 };
 use qa_core::{
     primitives::{RuleSetId, UserCmd},

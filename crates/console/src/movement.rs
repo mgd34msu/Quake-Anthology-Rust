@@ -1,6 +1,6 @@
 //! Movement-role cvars bound once against the shared registry.
 use crate::cvars::Cvars;
-use qa_core::primitives::{CvarHandle, MovementTuning, RuleSetId};
+use qa_core::primitives::{CvarHandle, MovementMagnitude, MovementTuning, RuleSetId};
 
 #[derive(Clone, Copy, Debug)]
 pub struct MovementHandles {
@@ -40,8 +40,8 @@ impl MovementHandles {
     /// override must not become the base used after the cvar is reset.
     pub fn resolve(&self, vars: &Cvars, rules: RuleSetId, base: MovementTuning) -> MovementTuning {
         let mut tuning = base;
-        tuning.max_speed = number(vars, self.speed, rules, base.max_speed);
-        tuning.gravity = number(vars, self.gravity, rules, base.gravity);
+        tuning.max_speed = magnitude(vars, self.speed, rules, base.max_speed);
+        tuning.gravity = magnitude(vars, self.gravity, rules, base.gravity);
         tuning.friction = number(vars, self.friction, rules, base.friction);
         tuning.stop_speed = number(vars, self.stop_speed, rules, base.stop_speed);
         tuning.accelerate = number(vars, self.accelerate, rules, base.accelerate);
@@ -78,4 +78,13 @@ fn number(vars: &Cvars, handle: CvarHandle, rules: RuleSetId, base: Option<f32>)
     // Native modules have already applied cvars and per-player modifiers such
     // as haste or trigger gravity before passing their movement input.
     base.or_else(|| vars.native_number(handle, rules))
+}
+
+fn magnitude(
+    vars: &Cvars,
+    handle: CvarHandle,
+    rules: RuleSetId,
+    base: Option<MovementMagnitude>,
+) -> Option<MovementMagnitude> {
+    base.or_else(|| number(vars, handle, rules, None).map(MovementMagnitude::Base))
 }

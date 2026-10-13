@@ -19,6 +19,7 @@ use qa_world::{
 pub struct EntitySource<'a> {
     pub entities: &'a EntityTable,
     pub players: &'a [qa_session::clients::Client],
+    pub registry: &'a qa_gameplay::registry::Registry,
     pub native_module: Option<ModuleId>,
     pub self_entity: EntityId,
     pub visibility: Option<(&'a VisibilityWorld, &'a mut LeafScratch, &'a mut [u8])>,
@@ -352,7 +353,6 @@ pub(super) struct EntityScratch {
     qw_players: Box<[QwPlayer]>,
     qw_player_count: usize,
     pub rejected: u64,
-    view_entity: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -395,15 +395,11 @@ impl EntityScratch {
             .into_boxed_slice(),
             qw_player_count: 0,
             rejected: 0,
-            view_entity: None,
         }
     }
 
     pub fn load_visibility(&mut self, world: &VisibilityWorld) {
         self.visibility.load_world(world);
-    }
-    pub fn view_entity(&self) -> Option<u32> {
-        self.view_entity
     }
     pub fn projection(&self) -> &EntityProjection {
         &self.projection
@@ -440,7 +436,6 @@ impl EntityScratch {
             NativeRows::Quake2Repro(rows) => prepare!(rows)?,
             NativeRows::Quake3(rows) => prepare!(rows)?,
         };
-        self.view_entity = numbers.number(source.self_entity);
         Ok(())
     }
 
@@ -481,6 +476,8 @@ impl EntityScratch {
             }
             let context = super::player_context(
                 &client.player,
+                source,
+                self.protocol,
                 number - 1,
                 source.entities.columns.angles[slot].0[1],
                 Some(appearance),

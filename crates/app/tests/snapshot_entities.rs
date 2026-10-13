@@ -159,6 +159,7 @@ fn transmit(
     let source = EntitySource {
         entities: &runtime.server.entities,
         players: &runtime.server.clients,
+        registry: &runtime.catalog.registry,
         native_module: Some(MODULE),
         self_entity: player.entity,
         visibility,
@@ -847,7 +848,14 @@ fn native_namespace_wins_over_foreign_handles_and_generation_reuse() -> Result<(
     assert_ne!(foreign_number, 2);
     assert!(rows.iter().all(|(number, _)| *number != 99));
     assert_eq!(
-        host.runtime.snapshots[0].as_ref().unwrap().view_entity(),
+        host.runtime.snapshots[0].as_ref().unwrap().view_entity(
+            host.runtime
+                .network
+                .get(client, Endpoint::Client)
+                .unwrap()
+                .channel
+                .current_snapshot()
+        ),
         Some(1)
     );
     assert!(

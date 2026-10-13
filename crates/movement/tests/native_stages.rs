@@ -104,7 +104,7 @@ fn native_control_caps_raw_wish_and_uses_explicit_body_pitch_roll() {
         (Vec3([40.0, 17.0, 33.0]), [11.25, -3.5, -7.125]),
     ] {
         let mut state = player(RuleSetId::Quake);
-        state.movement.tuning.max_speed = Some(5.0);
+        state.movement.tuning.max_speed = Some(5.0.into());
         let basis = math::angle_vectors(angles);
         let mut expected = basis.forward * axes[0] + basis.right * axes[1];
         expected.0[2] = axes[2];

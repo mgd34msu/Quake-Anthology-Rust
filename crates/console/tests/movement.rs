@@ -3,7 +3,7 @@ use qa_console::{
     movement::MovementHandles,
     views::{Context, Role},
 };
-use qa_core::primitives::{MovementTuning, RuleSetId};
+use qa_core::primitives::{MovementMagnitude, MovementTuning, RuleSetId};
 
 #[test]
 fn registered_defaults_are_selected_by_movement_role_without_name_lookups() {
@@ -12,10 +12,10 @@ fn registered_defaults_are_selected_by_movement_role_without_name_lookups() {
     vars.reset_lookup_count();
     for rules in RuleSetId::ALL {
         let tuning = handles.resolve(&vars, rules, MovementTuning::default());
-        assert_eq!(tuning.gravity, Some(800.0));
+        assert_eq!(tuning.gravity, Some(MovementMagnitude::Base(800.0)));
         match rules {
             RuleSetId::Quake | RuleSetId::QuakeWorld => {
-                assert_eq!(tuning.max_speed, Some(320.0));
+                assert_eq!(tuning.max_speed, Some(MovementMagnitude::Base(320.0)));
                 assert_eq!(tuning.friction, Some(4.0));
                 assert_eq!(tuning.accelerate, Some(10.0));
                 assert_eq!(tuning.water_accelerate, Some(10.0));
@@ -28,7 +28,7 @@ fn registered_defaults_are_selected_by_movement_role_without_name_lookups() {
                 assert_eq!(tuning.water_friction, None);
                 assert_eq!(
                     tuning.max_speed,
-                    (rules == RuleSetId::Quake3).then_some(320.0)
+                    (rules == RuleSetId::Quake3).then_some(MovementMagnitude::Base(320.0))
                 );
             }
         }
@@ -69,8 +69,8 @@ fn aliases_fill_engine_defaults_and_preserve_native_player_gravity_and_speed() {
     let gravity = vars.bind("sv_gravity", context).unwrap();
     let speed = vars.bind("sv_maxspeed", context).unwrap();
     let base = MovementTuning {
-        gravity: Some(137.0),
-        max_speed: Some(416.0),
+        gravity: Some(MovementMagnitude::Base(137.0)),
+        max_speed: Some(MovementMagnitude::Base(416.0)),
         gravity_multiplier: 0.5,
         speed_multiplier: 2.0,
         fixed_step_ms: 17,
@@ -96,8 +96,8 @@ fn aliases_fill_engine_defaults_and_preserve_native_player_gravity_and_speed() {
         assert_eq!(tuning.gravity_multiplier, 0.5);
         assert_eq!(tuning.speed_multiplier, 2.0);
         let engine = handles.resolve(&vars, rules, MovementTuning::default());
-        assert_eq!(engine.gravity, Some(612.5));
-        assert_eq!(engine.max_speed, Some(235.25));
+        assert_eq!(engine.gravity, Some(MovementMagnitude::Base(612.5)));
+        assert_eq!(engine.max_speed, Some(MovementMagnitude::Base(235.25)));
     }
     assert_eq!(vars.lookup_count(), 0);
     vars.reset(gravity.canonical());
@@ -107,14 +107,14 @@ fn aliases_fill_engine_defaults_and_preserve_native_player_gravity_and_speed() {
         assert_eq!(tuning.gravity, base.gravity);
         assert_eq!(tuning.max_speed, base.max_speed);
         let engine = handles.resolve(&vars, rules, MovementTuning::default());
-        assert_eq!(engine.gravity, Some(800.0));
+        assert_eq!(engine.gravity, Some(MovementMagnitude::Base(800.0)));
         assert_eq!(
             engine.max_speed,
             matches!(
                 rules,
                 RuleSetId::Quake | RuleSetId::QuakeWorld | RuleSetId::Quake3
             )
-            .then_some(320.0)
+            .then_some(MovementMagnitude::Base(320.0))
         );
     }
 }
@@ -208,4 +208,30 @@ fn fixed_step_uses_cached_integers_and_native_settings_boundary() {
     vars.reset(fixed);
     vars.reset(msec);
     assert_eq!(resolve(&vars).fixed_step_ms, 0);
+}
+
+#[test]
+fn cached_defaults_preserve_native_effective_magnitudes_with_zero_multipliers() {
+    let mut vars = Cvars::new().unwrap();
+    let handles = MovementHandles::bind(&vars).unwrap();
+    vars.set_text(vars.find("g_gravity").unwrap(), "612.5")
+        .unwrap();
+    vars.set_text(vars.find("g_speed").unwrap(), "235.25")
+        .unwrap();
+    let base = MovementTuning {
+        gravity: Some(MovementMagnitude::native(1200.0, 0.0)),
+        max_speed: Some(MovementMagnitude::native(250.0, 0.0)),
+        gravity_multiplier: 0.0,
+        speed_multiplier: 0.0,
+        ..Default::default()
+    };
+    vars.reset_lookup_count();
+    for rules in RuleSetId::ALL {
+        let resolved = handles.resolve(&vars, rules, base);
+        assert_eq!(resolved.gravity, base.gravity);
+        assert_eq!(resolved.max_speed, base.max_speed);
+        assert_eq!(resolved.gravity.unwrap().effective(0.0), 1200.0);
+        assert_eq!(resolved.max_speed.unwrap().effective(0.0), 250.0);
+    }
+    assert_eq!(vars.lookup_count(), 0);
 }

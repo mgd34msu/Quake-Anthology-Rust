@@ -170,6 +170,7 @@ impl PlayerValues {
         table: Entities,
         entities: &EntityProjection,
         module: ModuleId,
+        registry: &qa_gameplay::registry::Registry,
         server: &mut Server,
         mut pmove: Option<&mut crate::pmove::Pmove>,
     ) -> Result<(), CallError> {
@@ -262,17 +263,7 @@ impl PlayerValues {
                     return Err(CallError::Capacity);
                 }
                 if module_moves && matches!(self.address, PlayerAddress::Registered) {
-                    let tuning = &mut client.player.movement.tuning;
-                    tuning.gravity = Some(if tuning.gravity_multiplier != 0.0 {
-                        context.gravity / tuning.gravity_multiplier
-                    } else {
-                        context.gravity
-                    });
-                    tuning.max_speed = Some(if tuning.speed_multiplier != 0.0 {
-                        context.speed / tuning.speed_multiplier
-                    } else {
-                        context.speed
-                    });
+                    registry.project_player_weapon(&mut client.player);
                     if native_address(table, module, &server.entities, client.entity).is_some() {
                         // playerState origin remains authoritative for unlinked
                         // spectators; sharedEntity contributes only body bounds.

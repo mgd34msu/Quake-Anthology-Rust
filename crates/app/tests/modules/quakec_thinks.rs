@@ -2516,7 +2516,7 @@ fn qw_client_lifecycle_uses_canonical_slot_shared_movement_and_packet_postthink_
     };
     qa_movement::set_bounds(&mut expected);
     expected.movement.mode = MovementMode::Walk;
-    expected.movement.tuning.max_speed = Some(320.0);
+    expected.movement.tuning.max_speed = Some(320.0.into());
     for leaf in qa_movement::quakeworld_steps(command) {
         let mut scratch = host.runtime.geometry.scratch();
         let mut trace = WorldTrace::new(
@@ -3228,7 +3228,7 @@ fn qw_native_command_subdivision_precedes_foreign_q3_movement_limits() {
     };
     qa_movement::set_bounds(&mut expected);
     expected.body.position = expected.body.position + Vec3([-1.0, -1.0, 0.0]); // native QW mins to selected Q3 mins
-    expected.movement.tuning.max_speed = Some(320.0);
+    expected.movement.tuning.max_speed = Some(320.0.into());
     let command = UserCmd {
         duration_ms: 250,
         movement: [200.0, 0.0, 0.0],

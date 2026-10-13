@@ -66,6 +66,7 @@ impl Projection {
                 table,
                 &self.entities,
                 context.module,
+                services.registry,
                 services.server,
                 pmove,
             )?;

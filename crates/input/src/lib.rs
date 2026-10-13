@@ -488,7 +488,10 @@ impl Input {
         player: &qa_core::primitives::PlayerState,
         forward: f32,
     ) -> Option<Vec3> {
-        if !policy.pitch_drift() || self.seats[seat.index()].catchers != 0 {
+        if player.interpolate_only
+            || !policy.pitch_drift()
+            || self.seats[seat.index()].catchers != 0
+        {
             return None;
         }
         let state = &mut self.seats[seat.index()];

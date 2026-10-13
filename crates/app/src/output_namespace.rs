@@ -6,6 +6,11 @@ use qa_core::{
 use qa_network::{commands::packet::Protocol, snapshots::snapshot_limits, states};
 use qa_world::entities::{EntityTable, MAX_ENTITIES};
 
+/// Protocol client ordinals differ from entity ordinals by the native world slot.
+pub fn native_client_entity(protocol: Protocol, client: u32) -> Option<u32> {
+    client.checked_add(snapshot_limits(protocol).first_entity)
+}
+
 #[derive(Clone, Copy, Default)]
 struct Mapping {
     id: Option<EntityId>,
@@ -53,11 +58,8 @@ impl NativeNumbers {
         self.native_clients = clients;
     }
     pub fn set_self(&mut self, entity: EntityId, native_client: u32, protocol: Protocol) {
-        self.self_claim = if protocol == Protocol::Quake3_68 {
-            Some((entity, native_client))
-        } else {
-            native_client.checked_add(1).map(|number| (entity, number))
-        };
+        self.self_claim =
+            native_client_entity(protocol, native_client).map(|number| (entity, number));
     }
     pub fn reset(&mut self) {
         self.slots.fill(Mapping::default());

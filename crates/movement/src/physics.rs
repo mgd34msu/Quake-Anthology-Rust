@@ -1,8 +1,8 @@
 use qa_core::{
     math,
     primitives::{
-        AngleOffset, MotionWrite, MovementMode, MovementTimer, PlayerState, RuleSetId,
-        SurfaceFlags, ThinkTime, UserCmd, Vec3, buttons,
+        AngleOffset, MotionWrite, MovementMagnitude, MovementMode, MovementTimer, MovementTuning,
+        PlayerState, RuleSetId, SurfaceFlags, ThinkTime, UserCmd, Vec3, buttons,
     },
     sys_events::EventTime,
 };
@@ -188,6 +188,42 @@ enum FrictionContext {
     Native,
     Free(FreeFriction),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectiveTuning {
+    pub gravity: f32,
+    pub speed: f32,
+    pub spectator_speed: f32,
+}
+
+/// Movement and snapshots use the same selected defaults and multiplier order.
+pub fn effective_tuning(rules: RuleSetId, tuning: MovementTuning) -> EffectiveTuning {
+    let legacy = matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld);
+    let arena = rules == RuleSetId::Quake3;
+    let speed = tuning
+        .max_speed
+        .unwrap_or(MovementMagnitude::Base(if legacy || arena {
+            320.0
+        } else {
+            300.0
+        }))
+        .effective(tuning.speed_multiplier);
+    EffectiveTuning {
+        gravity: tuning
+            .gravity
+            .unwrap_or(MovementMagnitude::Base(800.0))
+            .effective(tuning.gravity_multiplier),
+        speed,
+        spectator_speed: if let Some(speed) = tuning.spectator_max_speed {
+            speed * tuning.speed_multiplier
+        } else if rules == RuleSetId::QuakeWorld {
+            500.0 * tuning.speed_multiplier
+        } else {
+            speed
+        },
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Parameters {
     pub rules: RuleSetId,
@@ -221,6 +257,7 @@ impl Parameters {
         let t = player.movement.tuning;
         let legacy = matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld);
         let arena = rules == RuleSetId::Quake3;
+        let tuning = effective_tuning(rules, t);
         let capabilities = capabilities(rules);
         let (trace_rules, entity_rules) = trace_policy(player.trace_rules);
         Self {
@@ -229,20 +266,9 @@ impl Parameters {
             entity_rules,
             radius: if arena { 15.0 } else { 16.0 },
             view_height: if arena { 26.0 } else { 22.0 },
-            gravity: t.gravity.unwrap_or(800.0) * t.gravity_multiplier,
-            speed: t
-                .max_speed
-                .unwrap_or(if legacy || arena { 320.0 } else { 300.0 })
-                * t.speed_multiplier,
-            spectator_speed: t
-                .spectator_max_speed
-                .unwrap_or(if rules == RuleSetId::QuakeWorld {
-                    500.0
-                } else {
-                    t.max_speed
-                        .unwrap_or(if legacy || arena { 320.0 } else { 300.0 })
-                })
-                * t.speed_multiplier,
+            gravity: tuning.gravity,
+            speed: tuning.speed,
+            spectator_speed: tuning.spectator_speed,
             friction: t.friction.unwrap_or(if legacy { 4.0 } else { 6.0 }),
             stop: t.stop_speed.unwrap_or(100.0),
             accel: t.accelerate.unwrap_or(10.0),

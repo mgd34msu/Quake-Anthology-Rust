@@ -16,6 +16,8 @@ impl Prediction {
         self.player.movement_rules = source.movement_rules;
         self.player.trace_rules = source.trace_rules;
         self.player.movement = source.movement;
+        self.player.native = source.native;
+        self.player.interpolate_only = source.interpolate_only;
         self.player.view_angles = source.view_angles;
         self.player.view_offset = source.view_offset;
         self.player.ideal_pitch = source.ideal_pitch;
@@ -25,6 +27,9 @@ impl Prediction {
         command: UserCmd,
         trace: &mut dyn TraceServices,
     ) -> Result<MovementResult, TraceError> {
+        if self.player.interpolate_only {
+            return Ok(MovementResult::default());
+        }
         qa_movement::pmove(
             command,
             &mut self.player,

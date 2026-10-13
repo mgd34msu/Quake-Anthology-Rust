@@ -2071,6 +2071,8 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         client.player.view_angles,
         client.player.view_offset,
         client.command,
+        client.player.native,
+        client.player.interpolate_only,
     );
     let result = (|| {
         let client = &mut c.services.server.clients[id.0 as usize];
@@ -2102,7 +2104,7 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
             )
             .unwrap_or(table.address)
         };
-        codec.write_state(c.memory, address, player)?;
+        codec.write_state(c.memory, address, c.context.module, player)?;
         c.memory
             .write_vec3(address + layout.view as u64, player.view_angles)?;
         c.memory
@@ -2192,6 +2194,8 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
             client.player.view_angles,
             client.player.view_offset,
             client.command,
+            client.player.native,
+            client.player.interpolate_only,
         ) = saved;
     }
     result

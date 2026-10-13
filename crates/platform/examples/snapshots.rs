@@ -458,6 +458,7 @@ fn connected_heap() -> Result<(), String> {
     imported.movement_rules = RuleSetId::Quake3;
     imported.trace_rules = RuleSetId::Quake;
     let mut context = PlayerContext {
+        namespace: None,
         client_number: None,
         ground_number: None,
         appearance: None,
@@ -663,6 +664,7 @@ fn connected_qw_heap() -> Result<(), String> {
         ..Default::default()
     };
     let mut context = PlayerContext {
+        namespace: None,
         client_number: None,
         ground_number: None,
         appearance: None,
@@ -896,6 +898,7 @@ fn connected_nq_heap() -> Result<(), String> {
         ..Default::default()
     };
     let mut context = PlayerContext {
+        namespace: None,
         client_number: None,
         ground_number: None,
         appearance: None,

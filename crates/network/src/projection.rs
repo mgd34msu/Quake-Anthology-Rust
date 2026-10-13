@@ -4,9 +4,9 @@ use crate::{commands::packet::Protocol, states};
 use qa_core::{
     math::{AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
-        AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMode, MovementTimer,
-        PlayerState, ResourceNamespace, ValueBinding, ValueWidth, ViewWeapon, WeaponReadiness,
-        WeaponState,
+        AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMagnitude, MovementMode,
+        MovementTimer, NativePlayerTail, PlayerState, ResourceNamespace, ValueBinding, ValueWidth,
+        ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -21,6 +21,8 @@ pub const GRAVITY_WORD: usize = 9;
 /// These are native values, never common entity, client or registry handles.
 #[derive(Default)]
 pub struct PlayerContext {
+    /// Only this explicitly selected namespace may contribute raw native tails.
+    pub namespace: Option<ResourceNamespace>,
     pub client_number: Option<u32>,
     pub ground_number: Option<u32>,
     pub weapon_number: Option<u32>,
@@ -247,6 +249,7 @@ pub struct PlayerProjection {
     exact_modes: bool,
     flags: [u32; 8],
     flag_mask: u32,
+    interpolation_mask: u32,
     client_limit: u32,
     bindings: Box<[Field<ValueBinding>]>,
     write_bindings: Box<[Field<ValueBinding>]>,
@@ -424,6 +427,10 @@ impl PlayerProjection {
             exact_modes: false,
             flags,
             flag_mask: flags.into_iter().fold(0, |mask, flag| mask | flag),
+            interpolation_mask: match protocol {
+                Protocol::Quake3_68 => 4096,
+                _ => 0,
+            },
             client_limit: if protocol == Protocol::Quake2Repro1038 {
                 256
             } else {
@@ -439,6 +446,19 @@ impl PlayerProjection {
     }
     pub fn movement_flag_mask(&self) -> u32 {
         self.flag_mask
+    }
+
+    /// The native view target is independent of this connection's callback id.
+    pub fn client_number(&self, words: &[u32]) -> Option<u32> {
+        let words = words.get(..self.words)?;
+        self.fields.iter().find_map(|field| {
+            if matches!(field.source, Client) {
+                let number = field.convert.import(words[field.word]);
+                (number < self.client_limit).then_some(number)
+            } else {
+                None
+            }
+        })
     }
 
     /// Presentation reads the same native field table without importing stats
@@ -526,6 +546,9 @@ impl PlayerProjection {
             return false;
         };
         out.fill(0);
+        let native = player.native.as_ref().filter(|tail| {
+            tail.source == self.protocol.rule_set() && context.namespace == Some(tail.namespace)
+        });
         for field in &self.fields {
             out[field.word] = if let DeltaAngle(axis) = field.source {
                 field
@@ -533,12 +556,29 @@ impl PlayerProjection {
                     .export_angle(player.movement.delta_angles.0[axis])
             } else {
                 let word = self.value(field.source, player, context, &mut resolve_model);
-                field.convert.export(word)
+                native
+                    .and_then(|tail| match field.source {
+                        Flags => Some((tail.flags & !self.flag_mask) | word),
+                        Gravity => tail.gravity.map(|value| value as u32),
+                        Speed => tail.speed.map(|value| value as u32),
+                        Client => tail.client_number,
+                        Ground
+                            if player.movement.grounded
+                                && context.ground_number.is_none()
+                                && player.movement.ground.is_none() =>
+                        {
+                            tail.ground_number
+                        }
+                        Weapon => tail.weapon_number,
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| field.convert.export(word))
             };
         }
         for field in &self.write_bindings {
             if self.protocol == Protocol::NetQuake15
-                && context.weapon_number.is_some()
+                && (context.weapon_number.is_some()
+                    || native.is_some_and(|tail| tail.weapon_number.is_some()))
                 && NQ
                     .iter()
                     .any(|native| native.word == field.word && matches!(native.source, Weapon))
@@ -561,8 +601,8 @@ impl PlayerProjection {
     /// input words (NQ's QC float stats decode to native signed integers).
     /// Roles, untransmitted fields and owned arenas remain unchanged. Ordinals
     /// stay in boundary context; the caller resolves ground in its namespace.
-    /// Effective gravity/speed stay in context for the movement adapter, which
-    /// must account for its independently selected tuning/multipliers.
+    /// Effective native tuning enters the same shared capability columns used by
+    /// SERVER and accepted CLIENT packets. Raw words retain their source tail.
     pub fn apply(
         &self,
         words: &[u32],
@@ -609,6 +649,11 @@ impl PlayerProjection {
         {
             return false;
         }
+        let mut native = NativePlayerTail::new(self.protocol.rule_set(), namespace);
+        if !stats_only {
+            context.namespace = Some(namespace);
+            player.interpolate_only = false;
+        }
         for field in &self.fields {
             if stats_only && !matches!(field.source, Health | Armor | Score | Frags | WeaponTime) {
                 continue;
@@ -631,6 +676,8 @@ impl PlayerProjection {
                 CommandTime => player.movement.command_time_ms = value as i32,
                 Timer => player.movement.remaining_ms = value,
                 Flags => {
+                    native.flags = word;
+                    player.interpolate_only = word & self.interpolation_mask != 0;
                     if self.flags[0] != 0 {
                         player.movement.ducked = value & self.flags[0] != 0;
                     }
@@ -708,15 +755,38 @@ impl PlayerProjection {
                         _ => {}
                     }
                 }
-                Client => context.client_number = (value < self.client_limit).then_some(value),
+                Client => {
+                    native.client_number = Some(word);
+                    context.client_number = (value < self.client_limit).then_some(value);
+                }
                 Ground => {
+                    native.ground_number = Some(word);
                     context.ground_number = (value < 1023).then_some(value);
                     player.movement.grounded = context.ground_number.is_some();
                     player.movement.ground = context.ground_number.and_then(&mut resolve_ground);
                 }
-                Weapon => context.weapon_number = Some(value),
-                Gravity => context.gravity = f32::from_bits(value),
-                Speed => context.speed = f32::from_bits(value),
+                Weapon => {
+                    native.weapon_number = Some(word);
+                    context.weapon_number = Some(value);
+                }
+                Gravity => {
+                    native.gravity = Some(word as i32);
+                    context.gravity = f32::from_bits(value);
+                    let tuning = &mut player.movement.tuning;
+                    tuning.gravity = Some(MovementMagnitude::native(
+                        context.gravity,
+                        tuning.gravity_multiplier,
+                    ));
+                }
+                Speed => {
+                    native.speed = Some(word as i32);
+                    context.speed = f32::from_bits(value);
+                    let tuning = &mut player.movement.tuning;
+                    tuning.max_speed = Some(MovementMagnitude::native(
+                        context.speed,
+                        tuning.speed_multiplier,
+                    ));
+                }
                 InfoFlags => context.player_info_flags = value as u16,
                 CommandAge => context.command_age_ms = value,
                 IdealPitch => player.ideal_pitch = f32::from_bits(value),
@@ -724,6 +794,9 @@ impl PlayerProjection {
                 // received in playerinfo. Its decoded placeholder is unused.
                 BodyYaw | NativeValue => {}
             }
+        }
+        if !stats_only {
+            player.native = Some(native);
         }
         for field in &self.bindings {
             field

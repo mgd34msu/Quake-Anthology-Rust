@@ -203,11 +203,7 @@ impl FrameHost {
         if let Some(file) = runtime.vfs.open(path.as_bytes()) {
             let bytes = runtime
                 .vfs
-                .read_to_vec(
-                    file,
-                    16 * 1024 * 1024,
-                    &mut qa_formats::archive::ArchiveReader::default(),
-                )
+                .read_to_vec(file, 16 * 1024 * 1024, &mut runtime.script_reader)
                 .map_err(|e| format!("localization: {e}"))?;
             runtime.localization = qa_content::localization::Catalog::load(&bytes)
                 .map_err(|e| format!("localization: {e:?}"))?;
@@ -557,7 +553,7 @@ impl FrameHost {
                     .gun_animation()
                     .and_then(|animation| animation.previous)
                     .and_then(|sequence| channel.snapshot(sequence)),
-                view_entity: snapshot.view_entity(),
+                view_entity: snapshot.view_entity(channel.current_snapshot()),
             })
         })
     }
@@ -708,7 +704,14 @@ impl FrameHost {
                 entity: Some(
                     self.runtime.snapshots[client.0 as usize]
                         .as_ref()
-                        .and_then(|snapshot| snapshot.view_entity())
+                        .and_then(|snapshot| {
+                            snapshot.view_entity(
+                                self.runtime
+                                    .network
+                                    .get(client, qa_core::loopback::Endpoint::Client)
+                                    .and_then(|connection| connection.channel.current_snapshot()),
+                            )
+                        })
                         .map_or(
                             qa_core::primitives::SoundEmitter::Entity(row.entity),
                             |slot| qa_core::primitives::SoundEmitter::Native {
@@ -821,6 +824,7 @@ impl FrameHost {
                                         &mut self.runtime.prediction[seat.index()].player,
                                         &self.runtime.native_numbers[id.0 as usize],
                                         &self.runtime.catalog.hud,
+                                        &self.runtime.catalog.registry,
                                         time,
                                     );
                                 }
@@ -1080,6 +1084,7 @@ impl FrameHost {
         if self.runtime.collision.is_some() {
             let mut predicted_poses = std::array::from_fn::<_, { SeatId::COUNT }, _>(|seat| {
                 self.local_seat(seat)
+                    .filter(|(_, _, player)| !player.interpolate_only)
                     .map(|(_, client, player)| (client.entity, player.body.position))
             });
             self.runtime

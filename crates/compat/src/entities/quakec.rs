@@ -914,7 +914,7 @@ impl EntityProjection {
         }
         player.movement.water_jump_seconds = water_jump;
         player.movement.tuning.gravity_multiplier = gravity;
-        player.movement.tuning.max_speed = maxspeed;
+        player.movement.tuning.max_speed = maxspeed.map(Into::into);
         Ok(offset)
     }
     pub(crate) fn quakec_write_client(

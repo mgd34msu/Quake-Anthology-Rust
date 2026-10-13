@@ -156,7 +156,6 @@ impl Pmove {
             ResourceNamespace::Module(module),
             |_| None,
         );
-        player.movement.tuning.gravity = Some(context.gravity);
         if player.movement.grounded {
             player.movement.ground = ground;
         }
@@ -169,11 +168,13 @@ impl Pmove {
         &mut self,
         memory: &mut ModuleMemory<'_>,
         address: u64,
+        module: ModuleId,
         player: &PlayerState,
     ) -> Result<(), CallError> {
-        let flags = self.words[PM_FLAGS_WORD];
         let context = PlayerContext {
-            gravity: player.movement.tuning.gravity.unwrap_or(800.0),
+            namespace: Some(ResourceNamespace::Module(module)),
+            gravity: qa_movement::effective_tuning(player.movement_rules, player.movement.tuning)
+                .gravity,
             ..Default::default()
         };
         self.projection
@@ -184,8 +185,8 @@ impl Pmove {
                 qa_core::primitives::MovementMode::Spectator
                     | qa_core::primitives::MovementMode::Noclip
             );
-        if !clear_flags {
-            self.words[PM_FLAGS_WORD] |= flags & !self.projection.movement_flag_mask();
+        if clear_flags {
+            self.words[PM_FLAGS_WORD] &= self.projection.movement_flag_mask();
         }
         if self.layout.wide {
             self.words[PM_FLAGS_WORD] =

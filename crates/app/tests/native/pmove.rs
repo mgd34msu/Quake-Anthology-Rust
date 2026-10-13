@@ -405,7 +405,7 @@ pub(super) fn commands_move_a_native_client_once() {
         } else {
             MovementMode::Spectator
         };
-        expected.movement.tuning.gravity = Some(800.0);
+        expected.movement.tuning.gravity = Some(800.0.into());
         expected.movement.grounded = !rr;
         expected.movement.remaining_ms = if rr { 500 } else { 0 };
         expected.movement.delta_angles = Vec3([0.0, 90.0, 0.0]).into();

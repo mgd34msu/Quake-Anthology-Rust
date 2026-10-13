@@ -345,6 +345,8 @@ impl Server {
             || self.entities.columns.native_entity[slot] != Some(native)
         {
             client.player.weapon_state = None;
+            client.player.native = None;
+            client.player.interpolate_only = false;
         }
         client.module = native.module;
         self.entities.columns.owner[slot] = native.module;

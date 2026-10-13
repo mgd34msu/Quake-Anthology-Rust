@@ -78,7 +78,10 @@ fn check_velocity(host: &FrameHost, id: ClientId, expected: f32, base: Option<f3
         "{:?}",
         player.body.velocity
     );
-    assert_eq!(player.movement.tuning.gravity, base);
+    assert_eq!(
+        player.movement.tuning.gravity,
+        base.map(qa_core::primitives::MovementMagnitude::Base)
+    );
     assert_eq!(player.trace_rules, RuleSetId::Quake3);
 }
 
@@ -116,7 +119,7 @@ fn native_pmove_service_uses_the_same_resolver_and_retains_module_gravity() {
         .player
         .movement
         .tuning
-        .gravity = Some(600.0);
+        .gravity = Some(600.0.into());
     let mut storage =
         qa_compat::services::ServiceStorage::load(&[], 0, &host.console.cvars).unwrap();
     let mut scratch = host.runtime.geometry.scratch();

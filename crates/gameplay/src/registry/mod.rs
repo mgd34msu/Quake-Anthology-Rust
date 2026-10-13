@@ -4,7 +4,7 @@ pub use generated::SOURCE_COUNTS;
 pub use native_players::NativePlayerBindings;
 use qa_core::{
     names::NameTable,
-    primitives::{CallbackId, ItemId, NameId, RuleSetId, WeaponId},
+    primitives::{CallbackId, ItemId, NameId, PlayerState, RuleSetId, WeaponId},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,6 +291,19 @@ impl Registry {
         self.weapon(id)
             .filter(|weapon| weapon.source == source)
             .map(|weapon| weapon.native)
+    }
+    /// Native ordinals may be unknown while their raw source tail stays intact.
+    pub fn project_player_weapon(&self, player: &mut PlayerState) {
+        let Some(tail) = player.native else {
+            return;
+        };
+        let Some(number) = tail.weapon_number else {
+            return;
+        };
+        player.inventory.weapon = u16::try_from(number)
+            .ok()
+            .and_then(|number| self.native_weapon(tail.source, number))
+            .unwrap_or_default();
     }
     /// Q3 usercmds carry one native weapon byte, with zero denoting NONE.
     pub fn command_weapon_number(&self, id: Option<WeaponId>) -> u8 {

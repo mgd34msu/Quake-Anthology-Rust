@@ -677,6 +677,7 @@ impl Runtime {
                         snapshots::EntitySource {
                             entities: &self.server.entities,
                             players: &self.server.clients,
+                            registry: &self.catalog.registry,
                             native_module,
                             self_entity: client.entity,
                             visibility,

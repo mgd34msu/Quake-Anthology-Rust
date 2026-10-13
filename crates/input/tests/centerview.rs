@@ -8,6 +8,37 @@ use qa_core::{
 use qa_input::{Action, Input};
 
 #[test]
+fn accepted_interpolated_view_is_not_replaced_by_local_quake_pitch_drift() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut input = Input::load();
+        input.seed(EventTime(0));
+        input.set_view_angles(SeatId::FIRST, Vec3([40.0, 5.0, 2.0]));
+        input.center_view(SeatId::FIRST);
+        let policy = support::catalog_policy(rules);
+        let time = EventTime::from_milliseconds(16);
+        input.build_frame_with_policy(time, &[policy; SeatId::COUNT]);
+        let mut player = PlayerState {
+            interpolate_only: true,
+            view_angles: Vec3([-17.0, 133.0, 9.0]),
+            ideal_pitch: 20.0,
+            ..Default::default()
+        };
+        player.movement.grounded = true;
+        assert_eq!(
+            input.drift_view(SeatId::FIRST, time, policy, &player, 0.0),
+            None
+        );
+        assert_eq!(player.view_angles, Vec3([-17.0, 133.0, 9.0]));
+        player.interpolate_only = false;
+        assert!(
+            input
+                .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
+                .is_some()
+        );
+    }
+}
+
+#[test]
 fn delta_centering_changes_only_the_selected_seat() {
     for rules in [
         RuleSetId::Quake2,
