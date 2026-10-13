@@ -254,7 +254,7 @@ impl TraceRules {
         secondary_contact: false,
     };
     pub const ARENA: Self = Self {
-        hull_shape: HullShape::CompiledWidth,
+        hull_shape: HullShape::ExactBox,
         contact_epsilon: 0.125,
         fraction_binary32: false,
         outside_brush: OutsideBrush::EndBeyondEpsilon,
@@ -345,10 +345,13 @@ pub const fn trace_policy(rules: RuleSetId) -> (TraceRules, EntityTracePolicy) {
             },
         ),
         RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => (
-            if matches!(rules, RuleSetId::Quake2Rerelease) {
-                TraceRules::RERELEASE
-            } else {
-                TraceRules::LEGACY
+            TraceRules {
+                hull_shape: HullShape::ExactBox,
+                ..if matches!(rules, RuleSetId::Quake2Rerelease) {
+                    TraceRules::RERELEASE
+                } else {
+                    TraceRules::LEGACY
+                }
             },
             EntityTracePolicy {
                 world_entity: WorldEntityRule::Always,

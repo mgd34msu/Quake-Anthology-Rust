@@ -323,10 +323,11 @@ impl FrameHost {
     /// The caller supplies namespace, scheduling and import-table roles at load.
     pub fn load_modules(
         console: qa_console::commands::Console<Runtime>,
-        runtime: Runtime,
+        mut runtime: Runtime,
         world_rate: TickRate,
         requests: Vec<ModuleRequest>,
     ) -> Result<Self, String> {
+        runtime.prepare_traces(requests.iter().map(|request| request.context.trace_rules))?;
         let providers = requests
             .iter()
             .filter(|m| m.phase == Phase::Server)

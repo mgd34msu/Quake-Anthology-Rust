@@ -186,7 +186,7 @@ impl CollisionStore {
         let Geometry::Hulls(hulls) = &resource.geometry else {
             return Err(StoreError::Models);
         };
-        if hulls.position_rows() != 0 {
+        if hulls.has_positions() {
             return Ok(());
         }
         let models = resource.models.clone();
@@ -213,6 +213,37 @@ impl CollisionStore {
             model.position_cells = Some(cells);
         }
         Ok(())
+    }
+
+    /// Admit the caller's requested hull capability for every loaded resource
+    /// before allocating frame/module scratch. Brush data needs no conversion.
+    pub fn prepare_traces(
+        &mut self,
+        rules: super::TraceRules,
+        limits: HullPositionLimits,
+    ) -> Result<bool, StoreError> {
+        if rules.hull_shape != HullShape::ExactBox {
+            return Ok(false);
+        }
+        let mut changed = false;
+        for slot in 0..self.slots.len() {
+            let Some(resource) = self.slots[slot].resource.as_ref() else {
+                continue;
+            };
+            let Geometry::Hulls(hulls) = &resource.geometry else {
+                continue;
+            };
+            if hulls.has_positions() {
+                continue;
+            }
+            let id = GeometryId {
+                slot: slot as u32,
+                generation: self.slots[slot].generation,
+            };
+            self.prepare_hull_positions(id, limits)?;
+            changed = true;
+        }
+        Ok(changed)
     }
 
     fn resource(&self, geometry: GeometryId) -> Option<&Resource> {

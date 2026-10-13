@@ -130,9 +130,13 @@ fn native_hull_epsilon_and_startsolid_follow_world_c() {
 }
 
 #[test]
-fn foreign_caller_epsilon_is_used_on_compiled_hull_topology() {
+fn foreign_caller_epsilon_is_used_on_source_hull_topology() {
     let (planes, nodes, models) = wall();
-    let hulls = load(planes, nodes.clone(), nodes, models).unwrap();
+    let mut hulls = load(planes, nodes.clone(), nodes, models).unwrap();
+    hulls
+        .store
+        .prepare_traces(TraceRules::ARENA, Default::default())
+        .unwrap();
     let mut scratch = hulls.store.scratch();
     let query = TraceQuery::point(
         Vec3([1.0, 0.0, 0.0]),
@@ -168,7 +172,11 @@ fn foreign_caller_epsilon_is_used_on_compiled_hull_topology() {
 #[test]
 fn independent_callers_reuse_scratch_over_one_immutable_hull() {
     let (planes, nodes, models) = wall();
-    let hulls = load(planes, nodes.clone(), nodes, models).unwrap();
+    let mut hulls = load(planes, nodes.clone(), nodes, models).unwrap();
+    hulls
+        .store
+        .prepare_traces(TraceRules::ARENA, Default::default())
+        .unwrap();
     let geometry = &hulls;
     let mut first = geometry.store.scratch();
     let mut second = geometry.store.scratch();
@@ -219,8 +227,8 @@ fn independent_callers_reuse_scratch_over_one_immutable_hull() {
 }
 
 #[test]
-fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
-    let hulls = load(
+fn native_compiled_height_and_foreign_supplied_height_are_independent() {
+    let mut hulls = load(
         vec![
             Plane {
                 encoding: None,
@@ -275,8 +283,13 @@ fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
         )
         .expect("valid collision query");
     // Native SV_HullForEntity chooses by X width, so the authored standing
-    // ceiling remains. Rebuilding a four-unit-high hull is separate work.
+    // ceiling remains. The foreign caller instead selects its supplied height.
     assert_eq!(crouched.end, stock.end);
+    hulls
+        .store
+        .prepare_traces(TraceRules::ARENA, Default::default())
+        .unwrap();
+    scratch = hulls.store.scratch();
     let foreign = hulls
         .store
         .trace_model(
@@ -290,7 +303,14 @@ fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
             &mut scratch,
         )
         .expect("valid collision query");
-    assert_eq!(foreign.end.0[2], -32.125);
+    // The closest binary32 parameter must round down to preserve the exact
+    // dyadic separation; rounding 0.95875 to nearest is slightly too large.
+    assert_eq!(foreign.fraction.to_bits(), 0x3f7570a3);
+    assert_eq!(
+        foreign.end,
+        standing.start.lerp(standing.end, foreign.fraction)
+    );
+    assert!(foreign.end.0[2] < -4.125 && foreign.end.0[2] > -4.126);
 }
 
 #[test]

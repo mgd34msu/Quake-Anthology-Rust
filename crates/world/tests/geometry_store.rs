@@ -169,6 +169,7 @@ fn mixed_topologies_keep_native_models_and_caller_rules_independent() -> Result<
     assert_eq!(store.model_count(brush), Some(2));
     assert_eq!(store.model_bounds(hull, 0), Some(bounds()));
     assert_eq!(store.model_bounds(brush, 1), Some(bounds()));
+    store.prepare_traces(TraceRules::ARENA, Default::default())?;
     let mut first = store.scratch();
     let mut second = store.scratch();
     for (rules, entities, fraction) in [
@@ -288,6 +289,8 @@ fn removal_compacts_private_rows_and_reuse_rejects_stale_handles() -> Result<(),
     assert_eq!(after.surface, before.surface);
     assert_eq!(store.model_bounds(brush, 1), Some(bounds()));
     let new_hull = add_hull(&mut store)?;
+    store.prepare_traces(TraceRules::ARENA, Default::default())?;
+    scratch = store.scratch();
     assert_eq!(new_hull.slot, old_hull.slot);
     assert_eq!(new_hull.generation, old_hull.generation + 1);
     assert_eq!(

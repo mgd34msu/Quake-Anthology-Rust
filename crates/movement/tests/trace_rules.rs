@@ -71,12 +71,18 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
         ),
         (
             RuleSetId::Quake2,
-            TraceRules::LEGACY,
+            TraceRules {
+                hull_shape: qa_world::collision::HullShape::ExactBox,
+                ..TraceRules::LEGACY
+            },
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
         ),
         (
             RuleSetId::Quake2Rerelease,
-            TraceRules::RERELEASE,
+            TraceRules {
+                hull_shape: qa_world::collision::HullShape::ExactBox,
+                ..TraceRules::RERELEASE
+            },
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2Rerelease).1,
         ),
         (

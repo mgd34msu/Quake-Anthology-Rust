@@ -777,7 +777,7 @@ fn extreme_finite_coefficients_and_world_box_sums_remain_exact() {
 }
 
 #[test]
-fn all_existing_policy_presets_retain_compiled_width_compatibility() {
+fn only_quake_presets_choose_compiled_widths() {
     for rules in [
         RuleSetId::Quake,
         RuleSetId::QuakeWorld,
@@ -785,8 +785,81 @@ fn all_existing_policy_presets_retain_compiled_width_compatibility() {
         RuleSetId::Quake2Rerelease,
         RuleSetId::Quake3,
     ] {
-        assert_eq!(trace_policy(rules).0.hull_shape, HullShape::CompiledWidth);
+        assert_eq!(
+            trace_policy(rules).0.hull_shape,
+            if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+                HullShape::CompiledWidth
+            } else {
+                HullShape::ExactBox
+            }
+        );
     }
+}
+
+#[test]
+fn caller_admission_covers_every_loaded_hull_and_keeps_empty_tables_admitted() {
+    let (mut store, first) = convex(vec![Plane::oriented(Vec3::axis(0, 1.0), 0.0)]);
+    let node = ClipNode {
+        plane: 0,
+        children: [-1, -2],
+    };
+    let bounds = Bounds {
+        mins: Vec3([-1024.0; 3]),
+        maxs: Vec3([1024.0; 3]),
+    };
+    let second = store
+        .load_hulls(
+            vec![Plane::oriented(Vec3::axis(0, 1.0), 2.0)],
+            vec![node],
+            vec![node],
+            vec![HullModel { roots: [0; 3] }],
+            vec![bounds],
+        )
+        .unwrap();
+    let empty = store
+        .load_hulls(
+            vec![],
+            vec![],
+            vec![],
+            vec![HullModel { roots: [-1; 3] }],
+            vec![bounds],
+        )
+        .unwrap();
+    assert!(
+        !store
+            .prepare_traces(trace_policy(RuleSetId::Quake).0, Default::default())
+            .unwrap()
+    );
+    let exact = trace_policy(RuleSetId::Quake2).0;
+    assert!(store.prepare_traces(exact, Default::default()).unwrap());
+    // A second request cannot rebuild even a zero-cell table with a new budget.
+    assert!(
+        !store
+            .prepare_traces(
+                exact,
+                HullPositionLimits {
+                    bytes: 0,
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+    );
+    let mut scratch = store.scratch();
+    let query = radius(Vec3::default(), 0.25);
+    for geometry in [first, second] {
+        assert!(
+            store
+                .trace_model(geometry, 0, query, &mut scratch)
+                .unwrap()
+                .all_solid
+        );
+    }
+    assert!(
+        !store
+            .trace_model(empty, 0, query, &mut scratch)
+            .unwrap()
+            .start_solid
+    );
 }
 
 fn sweep(start: Vec3, end: Vec3) -> TraceQuery<'static> {

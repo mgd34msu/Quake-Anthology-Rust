@@ -1,16 +1,245 @@
 //! Cold retail admission and supplied-box queries through the production loader.
 //! This is neither a gameplay run nor a timing/allocation qualification.
 use qa_content::vfs::Vfs;
-use qa_core::primitives::{GeometryId, Plane, RuleSetId, Vec3};
+use qa_core::primitives::{Bounds, ClipNode, GeometryId, ModelRules, Plane, RuleSetId, Vec3};
 use qa_formats::{
     archive::ArchiveReader,
     bsp::Map,
     entities::{EntityLump, EntitySyntax},
 };
 use qa_world::collision::{
-    CollisionStore, HullPositionLimits, HullShape, Trace, TraceQuery, TraceRules, trace_policy,
+    CollisionStore, HullPositionLimits, HullShape, Trace, TraceQuery, TraceRules, hulls::HullModel,
+    trace_policy,
 };
 use std::path::PathBuf;
+
+#[path = "support/service_program.rs"]
+#[allow(dead_code)]
+mod service_program;
+
+fn half_space_runtime() -> qa_app::Runtime {
+    let mut runtime = qa_app::Runtime::load(2, []).unwrap();
+    let node = ClipNode {
+        plane: 0,
+        children: [-1, -2],
+    };
+    let geometry = runtime
+        .geometry
+        .load_hulls(
+            vec![Plane::oriented(Vec3::axis(0, 1.0), 0.0)],
+            vec![node],
+            vec![node],
+            vec![HullModel { roots: [0; 3] }],
+            vec![Bounds {
+                mins: Vec3([-1024.0; 3]),
+                maxs: Vec3([1024.0; 3]),
+            }],
+        )
+        .unwrap();
+    runtime.collision = Some(qa_app::WorldCollision::new(&runtime.geometry, geometry, 0));
+    runtime
+}
+
+fn box_crossing(rules: RuleSetId) -> TraceQuery<'static> {
+    let (rules, entity_rules) = trace_policy(rules);
+    TraceQuery {
+        mins: Vec3([-2.0; 3]),
+        maxs: Vec3([2.0; 3]),
+        ..TraceQuery::point(
+            Vec3([4.0, 0.0, 0.0]),
+            Vec3([-4.0, 0.0, 0.0]),
+            rules,
+            entity_rules,
+        )
+    }
+}
+
+#[test]
+fn client_trace_role_admits_supplied_boxes_independently_of_movement_and_protocol() {
+    use qa_app::{client_policy::ClientPolicy, host::FrameHost, map::SpawnAnchor};
+    use qa_console::{commands::Console, views::Context};
+    use qa_core::sys_events::SeatId;
+    use qa_network::commands::packet::Protocol;
+    use qa_session::timing::TickRate;
+    for rules in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        let mut runtime = half_space_runtime();
+        runtime
+            .connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Vec3([64.0, 0.0, 64.0]),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy::select(
+                    Some(RuleSetId::Quake),
+                    None,
+                    Some(RuleSetId::Quake),
+                    Some(rules),
+                )
+                .unwrap(),
+                Protocol::QuakeWorld28,
+                0,
+            )
+            .unwrap();
+        let mut host = FrameHost::load(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![],
+        )
+        .unwrap();
+        let collision = host.runtime.collision.as_mut().unwrap();
+        let trace = host
+            .runtime
+            .geometry
+            .trace_transformed(
+                collision.geometry,
+                collision.index,
+                box_crossing(rules),
+                Vec3::default(),
+                Vec3::default(),
+                ModelRules::default(),
+                &mut collision.scratch,
+            )
+            .unwrap();
+        if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+            assert_eq!(trace.fraction, 1.0, "native compiled box remains selected");
+        } else {
+            let epsilon = if rules == RuleSetId::Quake3 {
+                0.125f32
+            } else {
+                0.03125
+            };
+            assert_eq!(trace.fraction.to_bits(), ((2.0 - epsilon) / 8.0).to_bits());
+            assert_eq!(trace.plane.normal, Vec3::axis(0, 1.0));
+        }
+    }
+}
+
+#[test]
+fn module_trace_admission_precedes_initialize_and_allocates_shared_trace_scratch() {
+    use qa_app::{
+        host::FrameHost,
+        modules::{Export, ModuleRequest, ModuleResult, Phase, Program},
+    };
+    use qa_compat::{abi::Q3_SERVER, services::CallContext};
+    use qa_console::{commands::Console, views::Context};
+    use qa_core::primitives::{CallbackId, ModuleId, ThinkTime};
+    use qa_formats::program::qvm::Opcode::*;
+    use qa_session::timing::TickRate;
+    use qa_world::{area::LinkOrder, entities::AllocationPolicy};
+    let mut operations = vec![(Enter, 64)];
+    for (argument, value) in [
+        64,
+        128,
+        144,
+        160,
+        176,
+        1023, // Q3 ENTITYNUM_NONE in the guest ABI.
+        1,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        operations.extend([(Const, value), (Arg, 8 + argument as i32 * 4)]);
+    }
+    operations.extend([
+        (Const, -25),
+        (Call, 0),
+        (Pop, 0),
+        (Const, 72),
+        (Load4, 0),
+        (Leave, 64),
+    ]);
+    let mut data = [0u8; 192];
+    for (offset, value) in [
+        (128, Vec3([4.0, 0.0, 0.0])),
+        (144, Vec3([-2.0; 3])),
+        (160, Vec3([2.0; 3])),
+        (176, Vec3([-4.0, 0.0, 0.0])),
+    ] {
+        for (axis, component) in value.0.into_iter().enumerate() {
+            data[offset + axis * 4..offset + axis * 4 + 4]
+                .copy_from_slice(&component.to_le_bytes());
+        }
+    }
+    for rules in [
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        let mut runtime = half_space_runtime();
+        let module = ModuleId(1);
+        let anchor = runtime
+            .server
+            .entities
+            .allocate(ThinkTime::Milliseconds(0), module, AllocationPolicy::q3(0))
+            .unwrap()
+            .id;
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![ModuleRequest {
+                context: CallContext {
+                    native_rules: RuleSetId::Quake3,
+                    trace_rules: rules,
+                    sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
+                    server_frame: 0,
+                    module,
+                    clock: ThinkTime::Milliseconds(0),
+                    console: Context::default(),
+                    allocation: AllocationPolicy::q3(0),
+                    link_order: LinkOrder::Head,
+                },
+                timing_rules: RuleSetId::Quake3,
+                phase: Phase::Server,
+                rate: TickRate::FrameDriven,
+                anchor,
+                program: Program::Qvm {
+                    vm: Box::new(service_program::program(&operations, &data)),
+                    imports: &Q3_SERVER,
+                },
+                entries: vec![0],
+                frame: Export::clocked(CallbackId(0)),
+                prepare: vec![],
+                initialize: vec![Export::clocked(CallbackId(0))],
+                api: None,
+                shutdown: vec![],
+                instruction_budget: 100,
+                configstrings: 0,
+                files: 0,
+                entity_source: None,
+            }],
+        )
+        .unwrap();
+        host.initialize_modules(Phase::Server);
+        assert_eq!(
+            host.module_counts(module).unwrap().traps,
+            0,
+            "{:?}",
+            host.module_counts(module)
+        );
+        let epsilon = if rules == RuleSetId::Quake3 {
+            0.125f32
+        } else {
+            0.03125
+        };
+        assert_eq!(
+            host.module_counts(module).unwrap().last_result,
+            Some(ModuleResult::Qvm(((2.0 - epsilon) / 8.0).to_bits() as i32))
+        );
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+}
 
 fn player_start(map: &Map<'_>) -> Vec3 {
     let entities =
@@ -100,10 +329,7 @@ fn exact_query(start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3) -> TraceQuery<'st
     TraceQuery {
         mins,
         maxs,
-        rules: TraceRules {
-            hull_shape: HullShape::ExactBox,
-            ..TraceRules::ARENA
-        },
+        rules: trace_policy(RuleSetId::Quake3).0,
         ..TraceQuery::point(
             start,
             end,
@@ -184,7 +410,7 @@ fn e1m1_default_exact_admission_and_supplied_boxes_preserve_native_queries() {
     }
     let limits = HullPositionLimits::default();
     println!("e1m1 cold exact phase=admission begin limits={limits:?}");
-    let admission = store.prepare_hull_positions(geometry, limits);
+    let admission = store.prepare_traces(trace_policy(RuleSetId::Quake3).0, limits);
     println!(
         "e1m1 cold exact phase=admission result={admission:?} limits={limits:?}; public Capacity errors do not expose the failed budget field"
     );

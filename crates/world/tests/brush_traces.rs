@@ -282,7 +282,13 @@ fn rerelease_keeps_native_secondary_selection_and_primary_surface() {
     let y = Vec3([0.0, 1.0, 0.0]);
     let z = Vec3([0.0, 0.0, 1.0]);
     let (rules, entities) = qa_world::collision::trace_policy(RuleSetId::Quake2Rerelease);
-    assert_eq!(rules, TraceRules::RERELEASE);
+    assert_eq!(
+        rules,
+        TraceRules {
+            hull_shape: qa_world::collision::HullShape::ExactBox,
+            ..TraceRules::RERELEASE
+        }
+    );
     for (normals, secondary, primary_index) in [([x, y, z], z, 1), ([y, x, z], x, 0)] {
         let world = half_spaces(&normals);
         let query = TraceQuery::point(

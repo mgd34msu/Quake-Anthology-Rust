@@ -233,6 +233,7 @@ impl FrameHost {
         world_rate: TickRate,
         mut providers: Vec<Provider>,
     ) -> Result<Self, String> {
+        runtime.prepare_traces(std::iter::empty())?;
         let localization = console
             .cvars
             .bind("loc_file", console.cvars.context())

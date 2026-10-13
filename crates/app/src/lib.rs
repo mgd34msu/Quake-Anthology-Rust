@@ -106,6 +106,32 @@ impl WorldCollision {
 }
 
 impl Runtime {
+    pub(crate) fn prepare_traces(
+        &mut self,
+        module_rules: impl Iterator<Item = qa_core::primitives::RuleSetId>,
+    ) -> Result<(), String> {
+        let Some(rules) = self
+            .server
+            .clients
+            .iter()
+            .filter(|client| client.connection.is_some())
+            .map(|client| client.player.trace_rules)
+            .chain(module_rules)
+            .map(|rules| qa_world::collision::trace_policy(rules).0)
+            .find(|rules| rules.hull_shape == qa_world::collision::HullShape::ExactBox)
+        else {
+            return Ok(());
+        };
+        if self
+            .geometry
+            .prepare_traces(rules, Default::default())
+            .map_err(|error| format!("caller hull capability: {error:?}"))?
+            && let Some(collision) = &mut self.collision
+        {
+            collision.scratch = self.geometry.scratch();
+        }
+        Ok(())
+    }
     pub fn engine_services<'a>(
         &'a mut self,
         console: &'a mut qa_console::commands::Console<Self>,

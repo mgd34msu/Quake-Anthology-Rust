@@ -268,6 +268,9 @@ impl Q1Hulls {
         self.stack_capacity
     }
 
+    pub(crate) fn has_positions(&self) -> bool {
+        self.positions.is_some()
+    }
     pub(crate) fn position_rows(&self) -> usize {
         self.positions
             .as_ref()
