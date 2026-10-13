@@ -59,6 +59,7 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
     };
     let trace = trace_box(
         TraceQuery {
+            capsule: None,
             scope: qa_world::collision::TraceScope::Scene,
             start: Vec3([100.0, 0.0, 0.0]),
             end: Vec3::default(),
@@ -80,6 +81,7 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
     assert_eq!(trace.entity, Some(entity));
     let foreign_contact = trace_box(
         TraceQuery {
+            capsule: None,
             scope: qa_world::collision::TraceScope::Scene,
             start: Vec3([100.0, 0.0, 0.0]),
             end: Vec3::default(),
@@ -99,6 +101,7 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
     assert_eq!(foreign_contact.end.0[0], 46.125);
     let embedded = trace_box(
         TraceQuery {
+            capsule: None,
             scope: qa_world::collision::TraceScope::Scene,
             start: body.position,
             end: body.position,

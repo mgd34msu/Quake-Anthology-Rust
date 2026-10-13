@@ -384,6 +384,7 @@ impl Step<'_> {
     ) -> Result<Trace, TraceError> {
         self.result.traces += 1;
         self.world.trace(TraceQuery {
+            capsule: None,
             start,
             end,
             mins,

@@ -163,6 +163,7 @@ fn hulls(mut data: &[u8]) -> Result<brush::Fixture, &'static str> {
             model,
             point,
             trace: TraceQuery {
+                capsule: None,
                 scope: qa_world::collision::TraceScope::Scene,
                 start,
                 end,

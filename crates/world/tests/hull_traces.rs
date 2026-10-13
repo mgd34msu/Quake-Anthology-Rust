@@ -43,6 +43,52 @@ fn wall() -> (Vec<Plane>, Vec<ClipNode>, Vec<HullModel>) {
 }
 
 #[test]
+fn capsule_queries_never_select_an_unrelated_compiled_box_hull() {
+    let (planes, nodes, models) = wall();
+    let hulls = load(planes, nodes.clone(), nodes, models).unwrap();
+    let mut scratch = hulls.store.scratch();
+    let (rules, entity_rules) =
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3);
+    let query = TraceQuery {
+        mins: Vec3([-15.0, -15.0, -24.0]),
+        maxs: Vec3([15.0, 15.0, 32.0]),
+        ..TraceQuery::point(
+            Vec3([40.0, 0.0, 0.0]),
+            Vec3([-40.0, 0.0, 0.0]),
+            rules,
+            entity_rules,
+        )
+    }
+    .with_capsule();
+    let unsupported = qa_world::collision::TraceError::Unsupported {
+        geometry: hulls.geometry,
+        model: 0,
+    };
+    assert_eq!(
+        hulls
+            .store
+            .trace_model(hulls.geometry, 0, query, &mut scratch)
+            .unwrap_err(),
+        unsupported
+    );
+    assert_eq!(
+        hulls
+            .store
+            .trace_transformed(
+                hulls.geometry,
+                0,
+                query,
+                Vec3::default(),
+                Vec3::default(),
+                qa_core::primitives::ModelRules::default(),
+                &mut scratch
+            )
+            .unwrap_err(),
+        unsupported
+    );
+}
+
+#[test]
 fn native_hull_epsilon_and_startsolid_follow_world_c() {
     let (planes, nodes, models) = wall();
     let hulls = load(planes, nodes.clone(), nodes, models).unwrap();

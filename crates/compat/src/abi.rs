@@ -431,18 +431,18 @@ const fn server() -> CallTable {
     t.entries[21] = scalar!(q3_set_userinfo);
     t.entries[22] = scalar!(q3_get_serverinfo);
     t.entries[23] = scalar!(q3_set_brush_model);
-    t.entries[24] = scalar!(q3_trace);
+    t.entries[24] = scalar!(q3_trace::<false>);
     t.entries[25] = scalar!(q3_point_contents);
     t.entries[26] = scalar!(q3_visibility::<false>);
     t.entries[27] = scalar!(q3_visibility::<true>);
     t.entries[29] = scalar!(q3_areas_connected);
     t.entries[32] = scalar!(q3_entities_in_box);
-    t.entries[33] = scalar!(q3_entity_contact);
+    t.entries[33] = scalar!(q3_entity_contact::<false>);
     t.entries[36] = scalar!(q3_usercmd);
     t.entries[37] = scalar!(entity_token);
     t.entries[42] = scalar!(snap_vector);
-    t.entries[43] = scalar!(q3_capsule_unsupported);
-    t.entries[44] = scalar!(q3_capsule_unsupported);
+    t.entries[43] = scalar!(q3_trace::<true>);
+    t.entries[44] = scalar!(q3_entity_contact::<true>);
     t.entries[45] = scalar!(file_seek);
     t
 }
@@ -2134,6 +2134,7 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
     let surfaces = c.native_surfaces.ok_or(CallError::Geometry)?;
     let (rules, entity_rules) = trace_policy(c.context.trace_rules);
     let query = TraceQuery {
+        capsule: None,
         scope: qa_world::collision::TraceScope::Scene,
         start,
         end,
@@ -2165,7 +2166,7 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
     crate::traces::write_q2::<WIDE>(c.memory, output, result, surfaces, entity)
 }
 
-fn q3_trace(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn q3_trace<const CAPSULE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     use qa_world::collision::{Contents, TraceQuery, trace_policy};
     let output = c.required_pointer(0)?;
     c.memory.read(output, 56)?;
@@ -2185,6 +2186,7 @@ fn q3_trace(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         pass,
         ..TraceQuery::point(start, end, rules, entity_rules)
     };
+    let query = if CAPSULE { query.with_capsule() } else { query };
     let result = (ENGINE_CALLS.trace)(
         c.services,
         query,
@@ -2203,11 +2205,9 @@ fn q3_trace(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(0)
 }
 
-fn q3_capsule_unsupported(_: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Err(CallError::Geometry)
-}
-
-fn q3_entity_contact(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn q3_entity_contact<const CAPSULE: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
     use qa_core::primitives::Vec3;
     use qa_world::collision::{Contents, TraceQuery, trace_policy};
     let bounds = c.bounds(0, false)?;
@@ -2221,6 +2221,7 @@ fn q3_entity_contact(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         mask: Contents::from_q3(u32::MAX),
         ..TraceQuery::point(Vec3::default(), Vec3::default(), rules, entity_rules)
     };
+    let query = if CAPSULE { query.with_capsule() } else { query };
     Ok(u64::from(
         (ENGINE_CALLS.clip)(c.services, query, target)?.start_solid,
     ))

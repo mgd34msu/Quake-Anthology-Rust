@@ -218,6 +218,7 @@ pub fn load(
             model,
             point,
             trace: TraceQuery {
+                capsule: None,
                 scope: qa_world::collision::TraceScope::Scene,
                 start,
                 end,

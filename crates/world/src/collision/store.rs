@@ -383,6 +383,7 @@ impl CollisionStore {
             model: index,
         };
         let (resource, model) = self.resolve(geometry, index).ok_or(invalid)?;
+        validate_query_shape(resource, geometry, index, query)?;
         if query.rules.hull_shape == HullShape::ExactBox
             && let Geometry::Hulls(hulls) = resource
         {
@@ -469,6 +470,7 @@ impl CollisionStore {
             model: index,
         };
         let (resource, model) = self.resolve(geometry, index).ok_or(invalid)?;
+        validate_query_shape(resource, geometry, index, query)?;
         if query.rules.hull_shape == HullShape::ExactBox
             && let Geometry::Hulls(hulls) = resource
         {
@@ -491,7 +493,7 @@ impl CollisionStore {
             );
         }
         let mut local = query;
-        if rules.rotation == ModelRotation::TransposeBasis {
+        if rules.rotation == ModelRotation::TransposeBasis || query.capsule.is_some() {
             local.center_box();
         }
         let offset = match resource {
@@ -505,6 +507,17 @@ impl CollisionStore {
         let matrix = if rotated {
             let basis = basis(angles, rules.rotation);
             let matrix = basis.axes();
+            // CM_TransformedBoxTrace negates the capsule's side column again
+            // after CreateRotationMatrix has inverted that row. Endpoints
+            // retain the ordinary matrix, independently of this native rule.
+            let capsule_matrix = if rules.rotation == ModelRotation::TransposeBasis {
+                [matrix[0], -matrix[1], matrix[2]]
+            } else {
+                matrix
+            };
+            local.capsule = local
+                .capsule
+                .map(|capsule| capsule.to_local(capsule_matrix));
             if rules.rotation == ModelRotation::TransposeBasis {
                 local.start = inverse_transform_point(Vec3::default(), matrix, local.start);
                 local.end = inverse_transform_point(Vec3::default(), matrix, local.end);
@@ -593,6 +606,22 @@ fn trace_position(
             position::Failure::Scratch => TraceError::Scratch,
             _ => unsupported,
         })
+}
+
+fn validate_query_shape(
+    resource: &Geometry,
+    geometry: GeometryId,
+    index: u32,
+    query: TraceQuery,
+) -> Result<(), TraceError> {
+    if query.capsule.is_some() && matches!(resource, Geometry::Hulls(_)) {
+        Err(TraceError::Unsupported {
+            geometry,
+            model: index,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn trace_native(

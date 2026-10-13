@@ -109,6 +109,49 @@ fn box_map() -> Case {
 }
 
 #[test]
+fn capsule_queries_use_radius_and_segment_on_the_same_brush_reducer() {
+    let world = box_map();
+    for source in [
+        qa_core::primitives::RuleSetId::Quake2,
+        qa_core::primitives::RuleSetId::Quake3,
+    ] {
+        let (rules, entity_rules) = qa_world::collision::trace_policy(source);
+        let query = TraceQuery {
+            mins: Vec3([-15.0, -1.0, -24.0]),
+            maxs: Vec3([15.0, 1.0, 32.0]),
+            ..TraceQuery::point(
+                Vec3([100.0, 0.0, 0.0]),
+                Vec3::default(),
+                rules,
+                entity_rules,
+            )
+        }
+        .with_capsule();
+        let hit = trace_world(&world, query);
+        assert_eq!(
+            hit.fraction,
+            ((75.0 - rules.contact_epsilon) / 100.0) as f32
+        );
+        assert_eq!(hit.plane.normal, Vec3::axis(0, 1.0));
+        let query = TraceQuery {
+            start: Vec3([0.0, 24.0, 0.0]),
+            end: Vec3([0.0, 24.0, 0.0]),
+            ..query
+        };
+        let capsule = trace_world(&world, query);
+        assert!(capsule.all_solid && capsule.start_solid);
+        let supplied_box = trace_world(
+            &world,
+            TraceQuery {
+                capsule: None,
+                ..query
+            },
+        );
+        assert!(!supplied_box.start_solid);
+    }
+}
+
+#[test]
 fn caller_rules_choose_contact_on_the_same_brush_geometry() {
     let world = box_map();
     for rules in [TraceRules::LEGACY, TraceRules::ARENA, TraceRules::LEGACY] {
@@ -117,6 +160,7 @@ fn caller_rules_choose_contact_on_the_same_brush_geometry() {
             let trace = trace_world(
                 &world,
                 TraceQuery {
+                    capsule: None,
                     scope: qa_world::collision::TraceScope::Scene,
                     start: Vec3([100.0, 0.0, 0.0]),
                     end: Vec3::default(),
@@ -149,6 +193,7 @@ fn caller_rules_choose_contact_on_the_same_brush_geometry() {
             trace_world(
                 &world,
                 TraceQuery {
+                    capsule: None,
                     scope: qa_world::collision::TraceScope::Scene,
                     start: Vec3([100.0, 0.0, 0.0]),
                     end: Vec3::default(),
@@ -176,6 +221,7 @@ fn embedded_motion_keeps_original_brush_trace_semantics() {
         (TraceRules::ARENA, 0.0, Contents::SOLID),
     ] {
         let query = TraceQuery {
+            capsule: None,
             scope: qa_world::collision::TraceScope::Scene,
             start: Vec3::default(),
             end: Vec3([1.0, 0.0, 0.0]),
@@ -510,6 +556,7 @@ fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
     )
     .unwrap();
     let query = TraceQuery {
+        capsule: None,
         scope: qa_world::collision::TraceScope::Scene,
         start: Vec3([origin + 6.0, 0.0, 0.0]),
         end: Vec3([origin + 4.0, 0.0, 0.0]),

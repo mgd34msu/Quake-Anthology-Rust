@@ -23,7 +23,7 @@ const fn nodes() -> [ClipNode; 6] {
 static NODES: [ClipNode; 6] = nodes();
 
 pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Trace {
-    if query.entity_rules.quake_kind().is_none() {
+    if query.entity_rules.quake_kind().is_none() || query.capsule.is_some() {
         return trace_convex_box(query, body, entity);
     }
     let TraceQuery {
@@ -74,10 +74,11 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Tr
 fn trace_convex_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Trace {
     let original = query;
     let mut query = query;
-    if query
-        .entity_rules
-        .filtering
-        .contains(EntityTraceFlags::CENTER_BOX)
+    if query.capsule.is_some()
+        || query
+            .entity_rules
+            .filtering
+            .contains(EntityTraceFlags::CENTER_BOX)
     {
         query.center_box();
     }

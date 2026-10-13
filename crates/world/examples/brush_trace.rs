@@ -136,6 +136,7 @@ fn load(
         queries.push(Query {
             map,
             trace: TraceQuery {
+                capsule: None,
                 scope: qa_world::collision::TraceScope::Scene,
                 start,
                 end,
@@ -157,8 +158,13 @@ fn load(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 4 {
-        return Err("expected q2|q3, brush fixture, and result path".into());
+    if args.len() != 4 && args.len() != 5 {
+        return Err("expected q2|q3, brush fixture, result path, optional capsule".into());
+    }
+    let capsule = args.get(4).is_some_and(|argument| argument == "capsule");
+    let measured = args.get(4).is_none();
+    if args.len() == 5 && !capsule && args[4] != "comparison" {
+        return Err("unknown fixture mode".into());
     }
     let (rules, entity_rules) = match args[1].as_str() {
         "q2" => (
@@ -172,7 +178,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("expected q2 or q3 rules".into()),
     };
     let payload = std::fs::read(&args[2])?;
-    let (store, geometries, queries) = load(&payload, rules, entity_rules)?;
+    let (store, geometries, mut queries) = load(&payload, rules, entity_rules)?;
+    if capsule {
+        for query in &mut queries {
+            query.trace = query.trace.with_capsule();
+        }
+    }
     let entities = EntityTable::new(2, 1).map_err(|_| "invalid fixture entity capacity")?;
     let area = AreaGrid::load(
         2,
@@ -187,7 +198,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut contacts = 0usize;
     let mut start_solid = 0usize;
     let mut all_solid = 0usize;
-    allocation_counter::start();
+    if measured {
+        allocation_counter::start();
+    }
     for (query, row) in queries.iter().zip(&mut results) {
         let trace = black_box(
             WorldTrace::new(
@@ -219,7 +232,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             trace.surface.0 as u32,
         ];
     }
-    let allocations = allocation_counter::stop();
+    let allocations = measured.then(allocation_counter::stop);
+    let allocation_report =
+        allocations.map_or_else(|| "null".to_owned(), |value| value.to_string());
     let mut output = Vec::with_capacity(results.len() * 44);
     for row in results {
         for value in row {
@@ -228,12 +243,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     std::fs::write(&args[3], output)?;
     println!(
-        "{{\"scope\":\"headless convex brush kernels; no BSP traversal/gameplay/install\",\"rule\":\"{}\",\"rows\":{},\"maps\":{},\"contacts\":{contacts},\"start_solid\":{start_solid},\"all_solid\":{all_solid},\"rust_calling_thread_alloc_or_realloc\":{allocations}}}",
+        "{{\"scope\":\"headless convex brush kernels; no BSP traversal/gameplay/install\",\"rule\":\"{}\",\"rows\":{},\"maps\":{},\"contacts\":{contacts},\"start_solid\":{start_solid},\"all_solid\":{all_solid},\"rust_calling_thread_alloc_or_realloc\":{allocation_report}}}",
         args[1],
         queries.len(),
         geometries.len()
     );
-    if allocations != 0 {
+    if allocations.is_some_and(|value| value != 0) {
         return Err("brush trace allocation gate failed".into());
     }
     Ok(())

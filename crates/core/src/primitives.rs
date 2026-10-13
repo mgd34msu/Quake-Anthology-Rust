@@ -235,6 +235,71 @@ pub enum CollisionShape {
     },
 }
 
+/// A swept capsule is a sphere around a centered line segment. Its native
+/// vertical size comes from the supplied X and Z extents, independently of
+/// the map or movement role. Model transforms may rotate its segment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Capsule {
+    pub radius: f32,
+    pub offset: Vec3,
+}
+impl Capsule {
+    pub fn from_bounds(bounds: Bounds) -> Self {
+        let half = bounds.maxs - crate::math::midpoint(bounds.mins, bounds.maxs);
+        let radius = if half.0[0] > half.0[2] {
+            half.0[2]
+        } else {
+            half.0[0]
+        };
+        Self {
+            radius,
+            offset: Vec3([0.0, 0.0, half.0[2] - radius]),
+        }
+    }
+    pub fn swept_bounds(self, start: Vec3, end: Vec3, margin: f32) -> Bounds {
+        let endpoints = std::array::from_fn::<_, 3, _>(|axis| {
+            if start.0[axis] < end.0[axis] {
+                (start.0[axis], end.0[axis])
+            } else {
+                (end.0[axis], start.0[axis])
+            }
+        });
+        Bounds {
+            mins: Vec3(std::array::from_fn(|axis| {
+                // Native fabs promotes the offset and both following size
+                // operations to double before storing the bound as float.
+                (f64::from(endpoints[axis].0)
+                    - f64::from(self.offset.0[axis]).abs()
+                    - f64::from(self.radius)) as f32
+                    - margin
+            })),
+            maxs: Vec3(std::array::from_fn(|axis| {
+                (f64::from(endpoints[axis].1)
+                    + f64::from(self.offset.0[axis]).abs()
+                    + f64::from(self.radius)) as f32
+                    + margin
+            })),
+        }
+    }
+    pub fn closest_segment(self, start: Vec3, end: Vec3, normal: Vec3) -> (Vec3, Vec3) {
+        if normal.dot(self.offset) > 0.0 {
+            (start - self.offset, end - self.offset)
+        } else {
+            (start + self.offset, end + self.offset)
+        }
+    }
+    pub fn to_local(mut self, axes: [Vec3; 3]) -> Self {
+        self.offset = if self.offset.0[0] == 0.0 && self.offset.0[1] == 0.0 {
+            // Native transformed capsules form this matrix column directly.
+            // Adding zero products would change signed-zero rounding.
+            Vec3(axes.map(|axis| axis.0[2] * self.offset.0[2]))
+        } else {
+            crate::math::inverse_transform_point(Vec3::default(), axes, self.offset)
+        };
+        self
+    }
+}
+
 /// A target role selects its model transform independently of geometry and
 /// the caller's trace rules. Temporary boxes never rotate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

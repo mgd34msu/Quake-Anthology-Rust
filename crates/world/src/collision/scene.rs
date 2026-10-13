@@ -133,7 +133,12 @@ impl<'a> WorldTrace<'a> {
         } else {
             (query.mins, query.maxs)
         };
-        let bounds = Bounds::swept(query.start, query.end, mins, maxs, 1.0);
+        let bounds = TraceQuery {
+            mins,
+            maxs,
+            ..query
+        }
+        .swept_bounds(1.0);
         let pass_owner = self.owner(query.pass).unwrap_or(CollisionOwner::None);
         let role = query.entity_rules.link_role;
         for linked in self.area.query(self.entities, bounds, role) {

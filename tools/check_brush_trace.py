@@ -2,7 +2,7 @@
 """Bit-compare shared convex traces with extracted original Q2/Q3 brush kernels.
 
 This headless developer fixture never launches a game. It is not complete BSP
-traversal, capsule, linked-entity, legacy-network, installation or live proof.
+traversal, linked-entity, legacy-network, installation or live proof.
 Build the Rust example separately before running this tool; it never starts a
 concurrent Cargo build. Native C is compiled only into the evidence directory.
 """
@@ -187,7 +187,10 @@ def main():
     parser.add_argument('--rust-binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cc', default='cc')
+    parser.add_argument('--capsule', action='store_true', help='Q3 capsule arithmetic comparison, without allocation measurement')
+    parser.add_argument('--comparison-only', action='store_true', help='compare native results without allocation measurement or gate')
     args = parser.parse_args()
+    args.comparison_only |= args.capsule
     args.qsrc = args.qsrc.resolve()
     args.rust_binary = args.rust_binary.resolve(strict=True)
     args.output = args.output.resolve()
@@ -201,6 +204,8 @@ def main():
         ('q2', 'quake-2', 'qcommon/cmodel.c', ['CM_ClipBoxToBrush', 'CM_TestBoxInBrush']),
         ('q3', 'quake-iii-arena/code', 'qcommon/cm_trace.c', ['CM_TraceThroughBrush', 'CM_TestBoxInBrush']),
     ]:
+        if args.capsule and rule != 'q3':
+            continue
         base = args.qsrc / folder
         source_path = base / relative
         source = source_path.read_text()
@@ -226,19 +231,22 @@ def main():
              str(generated), '-lm', '-o', str(executable)], args.output, f'{rule}-compile')
         compile_seconds = time.monotonic() - started
         expected, actual = args.output / f'{rule}-native.bin', args.output / f'{rule}-rust.bin'
-        run([str(executable), str(fixture), str(expected)], args.output, f'{rule}-native')
-        rust = run([str(args.rust_binary), rule, str(fixture), str(actual)], args.output, f'{rule}-rust')
+        mode = ['capsule'] if args.capsule else ['comparison'] if args.comparison_only else []
+        run([str(executable), str(fixture), str(expected), *(['capsule'] if args.capsule else [])], args.output, f'{rule}-native')
+        rust = run([str(args.rust_binary), rule, str(fixture), str(actual), *mode], args.output, f'{rule}-rust')
         stats = json.loads(rust.stdout)
-        if stats['rows'] != metadata['rows_per_rule'] or stats['rust_calling_thread_alloc_or_realloc'] != 0:
+        if stats['rows'] != metadata['rows_per_rule'] or not args.comparison_only and stats['rust_calling_thread_alloc_or_realloc'] != 0:
             raise ValueError('Rust row count/allocation gate differs')
         results[rule] = {**compare(expected.read_bytes(), actual.read_bytes(), metadata),
                          'rust': stats, 'native_source': str(source_path),
                          'extracted_functions': spans, 'native_compile_seconds': compile_seconds}
     report = {'scope': 'extracted native brush sweep/position kernels and direct ordered fixture lists',
-              'limits': ['no BSP traversal/leaf selection', 'no capsules or transformed/linked entities',
+              'limits': ['no BSP traversal/leaf selection', 'no transformed/linked entities',
                          'common contents bits only; no file/wire conversion proof',
                          'no retail gameplay, legacy live connection, performance or installation proof',
-                         'allocation gate covers calling Rust thread only, not native heap'],
+                         'comparison mode does not measure or qualify allocations' if args.comparison_only else 'allocation gate covers calling Rust thread only, not native heap'],
+              'capsule': args.capsule,
+              'allocation_measured': not args.comparison_only,
               'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
                                                         text=True, timeout=300).strip(),
               'source_tree_dirty': bool(subprocess.check_output(['git', 'status', '--porcelain'],

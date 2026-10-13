@@ -154,7 +154,8 @@ pub(super) struct BrushWork<'a> {
 
 impl<'a> BrushWork<'a> {
     pub fn new(query: TraceQuery<'a>) -> Self {
-        let centered = query.rules.bounds_origin == BoundsOrigin::Centered;
+        let centered =
+            query.rules.bounds_origin == BoundsOrigin::Centered || query.capsule.is_some();
         let mut centered_query = query;
         if centered {
             centered_query.center_box();
@@ -178,7 +179,11 @@ impl<'a> BrushWork<'a> {
                 (-mins.0[axis]).max(maxs.0[axis])
             }))
         };
-        let bounds = Bounds::swept(start, end, mins, maxs, 0.0);
+        let bounds = if query.capsule.is_some() {
+            query.swept_bounds(0.0)
+        } else {
+            Bounds::swept(start, end, mins, maxs, 0.0)
+        };
         Self {
             query,
             start,
@@ -202,6 +207,19 @@ impl<'a> BrushWork<'a> {
         }
         .corner(plane.normal, false);
         plane.distance - offset.dot(plane.normal)
+    }
+
+    fn distances(&self, plane: Plane, point_shortcut: bool) -> (f32, f32) {
+        let (start, end, distance) = if let Some(capsule) = self.query.capsule {
+            let (start, end) = capsule.closest_segment(self.start, self.end, plane.normal);
+            (start, end, plane.distance + capsule.radius)
+        } else {
+            (self.start, self.end, self.distance(plane, point_shortcut))
+        };
+        (
+            start.dot(plane.normal) - distance,
+            end.dot(plane.normal) - distance,
+        )
     }
 
     pub fn end_position(&self, fraction: f32) -> Vec3 {
@@ -237,7 +255,7 @@ pub(super) fn position_brush(
         first = 6;
     }
     for &plane in &planes[brush.sides.range()][first..] {
-        if work.start.dot(plane.normal) - work.distance(plane, false) > 0.0 {
+        if work.distances(plane, false).0 > 0.0 {
             return;
         }
     }
@@ -327,10 +345,7 @@ pub(super) fn clip_brush(
     let rules = work.query.rules;
     let Some(interval) = convex_interval(rules, sides.len(), |index| {
         let plane = sides[index];
-        let distance = work.distance(plane, true);
-        let d1 = work.start.dot(plane.normal) - distance;
-        let d2 = work.end.dot(plane.normal) - distance;
-        (d1, d2)
+        work.distances(plane, true)
     }) else {
         return;
     };

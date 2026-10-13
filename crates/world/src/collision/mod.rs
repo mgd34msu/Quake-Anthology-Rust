@@ -409,10 +409,29 @@ pub struct TraceQuery<'a> {
     pub end: Vec3,
     pub mins: Vec3,
     pub maxs: Vec3,
+    pub capsule: Option<qa_core::primitives::Capsule>,
     pub entity_rules: EntityTracePolicy,
 }
 
 impl TraceQuery<'_> {
+    pub fn with_capsule(mut self) -> Self {
+        self.capsule = Some(qa_core::primitives::Capsule::from_bounds(
+            qa_core::primitives::Bounds {
+                mins: self.mins,
+                maxs: self.maxs,
+            },
+        ));
+        self
+    }
+
+    pub fn swept_bounds(self, margin: f32) -> qa_core::primitives::Bounds {
+        if let Some(capsule) = self.capsule {
+            let center = qa_core::math::midpoint(self.mins, self.maxs);
+            capsule.swept_bounds(self.start + center, self.end + center, margin)
+        } else {
+            qa_core::primitives::Bounds::swept(self.start, self.end, self.mins, self.maxs, margin)
+        }
+    }
     pub(crate) fn center_box(&mut self) {
         // CM_TransformedBoxTrace centers world endpoints before translation;
         // doing those f32 operations in reverse loses native rounding.
@@ -436,6 +455,7 @@ impl TraceQuery<'_> {
             end,
             mins: Vec3::default(),
             maxs: Vec3::default(),
+            capsule: None,
             mask: Contents::SOLID,
             rules,
             scope: TraceScope::Scene,

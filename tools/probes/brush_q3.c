@@ -1,5 +1,5 @@
 /* Developer-only ABI fixture; check_brush_trace.py inserts original native
- * brush kernels unchanged. Capsules, BSP traversal and linked entities are absent. */
+ * brush kernels unchanged. BSP traversal and linked entities are absent. */
 #include "cm_local.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -48,7 +48,9 @@ static int output_trace(FILE *out, const trace_t *trace) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3 || sizeof(float) != 4 || sizeof(int) != 4) return 2;
+    if ((argc != 3 && argc != 4) || sizeof(float) != 4 || sizeof(int) != 4) return 2;
+    int capsule = argc == 4 && strcmp(argv[3], "capsule") == 0;
+    if (argc == 4 && !capsule) return 2;
     FILE *in = fopen(argv[1], "rb"), *out = fopen(argv[2], "wb");
     uint32_t magic, version, maps, queries;
     if (!in || !out || !word(in, &magic) || magic != 0x48535242 ||
@@ -99,13 +101,17 @@ int main(int argc, char **argv) {
         for (int bits = 0; bits < 8; ++bits)
             for (int i = 0; i < 3; ++i)
                 tw.offsets[bits][i] = tw.size[(bits >> i) & 1][i];
+        tw.sphere.use = capsule;
+        tw.sphere.radius = tw.size[1][0] > tw.size[1][2] ? tw.size[1][2] : tw.size[1][0];
+        tw.sphere.halfheight = tw.size[1][2];
+        VectorSet(tw.sphere.offset, 0, 0, tw.size[1][2] - tw.sphere.radius);
         for (int i = 0; i < 3; ++i) {
             if (tw.start[i] < tw.end[i]) {
-                tw.bounds[0][i] = tw.start[i] + tw.size[0][i];
-                tw.bounds[1][i] = tw.end[i] + tw.size[1][i];
+                tw.bounds[0][i] = capsule ? tw.start[i] - fabs(tw.sphere.offset[i]) - tw.sphere.radius : tw.start[i] + tw.size[0][i];
+                tw.bounds[1][i] = capsule ? tw.end[i] + fabs(tw.sphere.offset[i]) + tw.sphere.radius : tw.end[i] + tw.size[1][i];
             } else {
-                tw.bounds[0][i] = tw.end[i] + tw.size[0][i];
-                tw.bounds[1][i] = tw.start[i] + tw.size[1][i];
+                tw.bounds[0][i] = capsule ? tw.end[i] - fabs(tw.sphere.offset[i]) - tw.sphere.radius : tw.end[i] + tw.size[0][i];
+                tw.bounds[1][i] = capsule ? tw.start[i] + fabs(tw.sphere.offset[i]) + tw.sphere.radius : tw.start[i] + tw.size[1][i];
             }
         }
         for (uint32_t brush_index = fixture_maps[map].first;

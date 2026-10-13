@@ -150,7 +150,7 @@ def extract_extra(qsrc, folder, path, names, output, rule):
     return bodies, spans
 
 
-def brush_source(qsrc, rule, output):
+def brush_source(qsrc, rule, output, capsule=False):
     path, folder, spans = tree.source_for(qsrc, rule, output)
     source = path.read_text()
     groups = [('game/q_shared.c' if rule == 'q2' else 'game/q_math.c', ['AngleVectors']),
@@ -184,7 +184,7 @@ def brush_source(qsrc, rule, output):
                              'CM_TransformedPointContents(point, f->roots[model], origin, angles)')
     else:
         source = replace_one(source, 'CM_Trace(&trace, start, end, mins, maxs, (clipHandle_t)model, vec3_origin, (int)mask, 0, NULL);',
-                             'CM_TransformedBoxTrace(&trace, start, end, mins, maxs, (clipHandle_t)model, (int)mask, origin, angles, 0);')
+                             'CM_TransformedBoxTrace(&trace, start, end, mins, maxs, (clipHandle_t)model, (int)mask, origin, angles, ' + ('1' if capsule else '0') + ');')
         source = replace_one(source, 'CM_PointContents(point, (clipHandle_t)model)',
                              'CM_TransformedPointContents(point, (clipHandle_t)model, origin, angles)')
     source = replace_one(source, 'if (fgetc(in) != EOF || ferror(in)) return 22;',
@@ -310,7 +310,14 @@ def main():
     parser.add_argument('--rules', nargs='+', choices=['q1', 'q2', 'q3'], default=['q1', 'q2', 'q3'])
     parser.add_argument('--timings', action='store_true')
     parser.add_argument('--cores')
+    parser.add_argument('--capsule', action='store_true')
+    parser.add_argument('--comparison-only', action='store_true')
     args = parser.parse_args()
+    args.comparison_only |= args.capsule
+    if args.capsule and args.rules != ['q3']:
+        parser.error('--capsule requires --rules q3')
+    if args.comparison_only and args.timings:
+        parser.error('comparison-only does not run timing or allocation gates')
     if not 10000 <= args.seeded_rows <= 40000:
         parser.error('--seeded-rows must be 10000..40000')
     if not args.prepare_only and args.rust_binary is None:
@@ -332,7 +339,7 @@ def main():
         if fixture.read_bytes() != payload or pose_file.read_bytes() != poses:
             raise ValueError('model fixture/pose readback differs')
         (args.output / f'{rule}-workload.json').write_text(json.dumps(metadata, indent=2) + '\n')
-        source, folder, spans = hull_source(args.qsrc, args.output) if rule == 'q1' else brush_source(args.qsrc, rule, args.output)
+        source, folder, spans = hull_source(args.qsrc, args.output) if rule == 'q1' else brush_source(args.qsrc, rule, args.output, args.capsule)
         binary = args.output / f'{rule}-model-native'
         includes = [] if rule == 'q1' else ['-I' + str(folder / 'game'), '-I' + str(folder / 'qcommon')]
         tree.run([args.cc, *tree.C_FLAGS, *includes, str(source), '-lm', '-o', str(binary)], args.output, f'{rule}-compile')
@@ -342,12 +349,14 @@ def main():
         expected, actual = args.output / f'{rule}-native.bin', args.output / f'{rule}-rust.bin'
         tree.run([str(binary), str(fixture), str(pose_file), str(expected)], args.output, f'{rule}-native')
         command = [str(args.rust_binary), rule, str(fixture), str(pose_file), str(actual)]
+        if args.comparison_only:
+            command.append('--capsule' if args.capsule else '--comparison-only')
         if args.timings:
             command = ['taskset', '-c', args.cores, *command, '--timings', str(expected), str(args.output / f'{rule}-timing.json')]
         run = tree.run(command, args.output, f'{rule}-rust')
         allocation = json.loads(run.stdout)
-        if allocation['rows'] != metadata['rows'] or any(allocation[key] != 0 for key in
-                ['rust_allocations', 'rust_reallocations', 'rust_requested_bytes']) or allocation['allocation_positive_control'] != 1:
+        if allocation['rows'] != metadata['rows'] or not args.comparison_only and (any(allocation[key] != 0 for key in
+                ['rust_allocations', 'rust_reallocations', 'rust_requested_bytes']) or allocation['allocation_positive_control'] != 1):
             raise ValueError('model row/allocation gate or positive control differs')
         native = expected.read_bytes()
         comparator = hull_compare if rule == 'q1' else tree.compare
@@ -378,10 +387,12 @@ def main():
     report = {'scope': 'synthetic transformed inline hull/brush comparisons with unchanged qsrc wrappers',
               'gameplay': False, 'installation_qualified': False,
               'performance_measured': bool(args.timings and not args.prepare_only),
+              'capsule': args.capsule,
+              'allocation_measured': not args.comparison_only and not args.prepare_only,
               'native_flags': tree.C_FLAGS, 'results': results,
               'limits': ['no retail BSP load, linked scene/filter/order or VM/wire ABI proof',
                          'Q1 synthetic hull traces only; no Q1 point contents or temporary boxes',
-                         'Q2/Q3 brush-only; no patches, capsules or special box/capsule handles',
+                         'Q2/Q3 brush-only; no patches or special box/capsule handles',
                          'zero-normal invalid plane axis normalized to no-axis for brush rows only',
                          'Rust calling thread allocation scope; no C/native heap or worker scope',
                          'timing samples include 64 queries and comparisons; Q1 trace only, Q2/Q3 trace plus point contents; p99 is batch p99 divided by 64',

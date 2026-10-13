@@ -19,13 +19,28 @@ const QUERIES: usize = 64;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use qa_platform::allocations::{begin_frame, end_frame};
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 5 && (args.len() != 8 || args[5] != "--timings") {
+    let comparison = args
+        .get(5)
+        .is_some_and(|arg| matches!(arg.as_str(), "--capsule" | "--comparison-only"));
+    let capsule = args.get(5).is_some_and(|arg| arg == "--capsule");
+    if args.len() != 5
+        && !(args.len() == 6 && comparison)
+        && (args.len() != 8 || args[5] != "--timings")
+    {
         return Err("expected q1|q2|q3, fixture, poses, output, optionally --timings native-rows JSON-output".into());
     }
     let rule = fixture::parse_rule(&args[1])?;
     let bytes = std::fs::read(&args[2])?;
     let poses = std::fs::read(&args[3])?;
-    let fixture = fixture::load(rule, &bytes, &poses)?;
+    let mut fixture = fixture::load(rule, &bytes, &poses)?;
+    if capsule {
+        if rule != qa_core::primitives::RuleSetId::Quake3 {
+            return Err("capsule reference uses Q3 rules".into());
+        }
+        for query in &mut fixture.queries {
+            query.trace = query.trace.with_capsule();
+        }
+    }
     let words = fixture::words(rule);
     let mut scratch = fixture.store.scratch();
     let mut results = vec![[0u32; fixture::WORDS]; fixture.queries.len()];
@@ -51,19 +66,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    let _ = Stopwatch::start().elapsed();
-    begin_frame();
-    let positive = black_box(Vec::<u8>::with_capacity(black_box(128)));
-    let positive_count = end_frame();
-    drop(positive);
-    if positive_count.allocations != 1 {
-        return Err("model allocation positive control failed".into());
+    let positive_count = if comparison {
+        None
+    } else {
+        let _ = Stopwatch::start().elapsed();
+        begin_frame();
+        let positive = black_box(Vec::<u8>::with_capacity(black_box(128)));
+        let counts = end_frame();
+        drop(positive);
+        if counts.allocations != 1 {
+            return Err("model allocation positive control failed".into());
+        }
+        Some(counts)
+    };
+    if !comparison {
+        begin_frame();
     }
-    begin_frame();
     for (index, row) in results.iter_mut().enumerate() {
         *row = black_box(fixture.sample(black_box(index), &mut scratch)?.1);
     }
-    let all_counts = end_frame();
+    let all_counts = (!comparison).then(end_frame);
     let mut output = Vec::with_capacity(results.len() * words * 4);
     for row in &results {
         for value in &row[..words] {
@@ -133,24 +155,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("model timing fidelity/allocation gate failed".into());
         }
     }
+    let report_count =
+        |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
     let report = format!(
-        "{{\"scope\":\"synthetic production transformed models; no gameplay/install/nativeheap/workers; Q1 point fields excluded\",\"rule\":\"{}\",\"rows\":{},\"row_words\":{words},\"geometries\":{},\"rust_allocations\":{},\"rust_reallocations\":{},\"rust_requested_bytes\":{},\"allocation_positive_control\":{}{timing}}}\n",
+        "{{\"scope\":\"synthetic production transformed models; no gameplay/install/nativeheap/workers; Q1 point fields excluded\",\"rule\":\"{}\",\"rows\":{},\"row_words\":{words},\"geometries\":{},\"allocation_measured\":{},\"rust_allocations\":{},\"rust_reallocations\":{},\"rust_requested_bytes\":{},\"allocation_positive_control\":{}{timing}}}\n",
         args[1],
         results.len(),
         fixture.geometries.len(),
-        all_counts.allocations,
-        all_counts.reallocations,
-        all_counts.requested_bytes,
-        positive_count.allocations,
+        !comparison,
+        report_count(all_counts.map(|counts| counts.allocations)),
+        report_count(all_counts.map(|counts| counts.reallocations)),
+        report_count(all_counts.map(|counts| counts.requested_bytes)),
+        report_count(positive_count.map(|counts| counts.allocations)),
     );
     if args.len() == 8 {
         std::fs::write(&args[7], &report)?;
     }
     print!("{report}");
-    if all_counts.allocations != 0
-        || all_counts.reallocations != 0
-        || all_counts.requested_bytes != 0
-    {
+    if all_counts.is_some_and(|counts| {
+        counts.allocations != 0 || counts.reallocations != 0 || counts.requested_bytes != 0
+    }) {
         return Err("model fixture hot allocation gate failed".into());
     }
     Ok(())

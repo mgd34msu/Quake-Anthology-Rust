@@ -320,16 +320,44 @@ fn qvm_world_pass_is_a_weak_identity_without_an_ordinary_world_row() {
 }
 
 #[test]
-fn qvm_capsule_queries_reject_explicitly_without_box_results() {
+fn qvm_capsule_queries_share_world_and_unlinked_target_clipping() {
     let mut f = Fixture::new();
     f.collision_model();
     f.register(ENTITIES, 3).unwrap();
-    f.row(ENTITIES, 0, 1);
-    f.vm.memory.read_mut(512, 56).unwrap().fill(0xa5);
-    for call in [43, 44] {
-        assert!(f.call(call, &[0, 512, 600, 616, 0, 0, 1023, -1]).is_err());
-    }
+    f.trace_rules = RuleSetId::Quake3;
+    f.runtime.collision.as_mut().unwrap().index = 1;
+    let start = f.vector(600, Vec3([-5.0, 0.0, 0.0]));
+    let end = f.vector(616, Vec3([5.0, 0.0, 0.0]));
+    let mins = f.vector(640, Vec3([-0.5, -0.5, -2.0]));
+    let maxs = f.vector(656, Vec3([0.5, 0.5, 4.0]));
+    assert_eq!(
+        f.call(43, &[0, 512, start, mins, maxs, end, 1023, -1]),
+        Ok(0)
+    );
+    assert_eq!(
+        f.vm.memory.read_word(520).unwrap() as u32,
+        0.3375f32.to_bits()
+    );
     assert_eq!(f.unknown.calls, 0);
+    f.row(ENTITIES, 0, 1);
+    f.runtime.collision = None;
+    let live = f.runtime.server.entities.active().count();
+    let mins = f.vector(640, Vec3([-2.5, -0.5, -0.5]));
+    let maxs = f.vector(656, Vec3([-1.5, 0.5, 0.5]));
+    assert_eq!(f.call(44, &[0, mins, maxs, ENTITIES as i32]), Ok(1));
+    assert_eq!(f.runtime.server.entities.active().count(), live);
+    assert!(
+        f.runtime
+            .server
+            .entities
+            .active()
+            .all(|id| f.runtime.server.area.bounds(id).is_none())
+    );
+    f.vm.memory.read_mut(512, 56).unwrap().fill(0xa5);
+    assert!(
+        f.call(43, &[0, 512, start, mins, maxs, end, 1023, -1])
+            .is_err()
+    );
     assert_eq!(f.vm.memory.read(512, 56).unwrap(), &[0xa5; 56]);
     f.vm.memory.write_word(ENTITIES + 424, 0x400).unwrap();
     let mins = f.vector(600, Vec3([-1.0; 3]));
