@@ -112,12 +112,12 @@ impl Runtime {
     ) -> qa_compat::services::EngineServices<'a> {
         self.engine_service_parts(console, storage, scratch, None).0
     }
-    pub(crate) fn client_command_parts(
+    pub(crate) fn client_connection_parts(
         &mut self,
         client: ClientId,
         lifetime: qa_core::primitives::EntityId,
-    ) -> Option<(client_resources::ClientCommandView<'_>, &mut Server)> {
-        let view = client_resources::command_view(
+    ) -> Option<(client_resources::ClientConnectionView<'_>, &mut Server)> {
+        let view = client_resources::connection_view(
             client,
             lifetime,
             &mut self.network,
@@ -135,10 +135,10 @@ impl Runtime {
         client: Option<(ClientId, qa_core::primitives::EntityId)>,
     ) -> (
         qa_compat::services::EngineServices<'a>,
-        Option<client_resources::ClientCommandView<'a>>,
+        Option<client_resources::ClientConnectionView<'a>>,
     ) {
-        let client_commands = client.and_then(|(client, lifetime)| {
-            client_resources::command_view(
+        let client_connection = client.and_then(|(client, lifetime)| {
+            client_resources::connection_view(
                 client,
                 lifetime,
                 &mut self.network,
@@ -178,7 +178,7 @@ impl Runtime {
             input: &mut self.input,
             cvars,
             commands,
-            client_commands: None,
+            client_connection: None,
             client_audio,
             vfs: &self.vfs,
             localization: &self.localization,
@@ -201,7 +201,7 @@ impl Runtime {
             portals,
             scratch,
         };
-        (services, client_commands)
+        (services, client_connection)
     }
 
     /// Common client capacity is chosen at load; native limits belong to each connection.
@@ -585,7 +585,12 @@ impl Runtime {
             &mut false,
             |channel, _| {
                 channel
-                    .prepare_move(&bytes[..length], time, snapshot_request)
+                    .prepare_move(
+                        &bytes[..length],
+                        time,
+                        snapshot_request,
+                        Some(command.server_time_ms),
+                    )
                     .is_ok_and(|packet| packet.is_some())
             },
             |bytes| {

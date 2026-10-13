@@ -372,7 +372,7 @@ fn admission_rejection_keeps_native_queries_and_publishes_no_partial_models() {
 }
 
 #[test]
-fn insufficient_old_scratch_and_moving_exact_queries_are_errors() {
+fn insufficient_old_scratch_and_degenerate_moving_queries_are_errors() {
     let (mut store, geometry) = convex(vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0)]);
     let mut old = store.scratch();
     let query = radius(Vec3::default(), 1.0);
@@ -387,6 +387,8 @@ fn insufficient_old_scratch_and_moving_exact_queries_are_errors() {
     );
     let moving = TraceQuery {
         end: Vec3([10.0, 0.0, 0.0]),
+        mins: Vec3::default(),
+        maxs: Vec3::default(),
         ..query
     };
     let mut scratch = store.scratch();
@@ -491,4 +493,337 @@ fn all_existing_policy_presets_retain_compiled_width_compatibility() {
     ] {
         assert_eq!(trace_policy(rules).0.hull_shape, HullShape::CompiledWidth);
     }
+}
+
+fn sweep(start: Vec3, end: Vec3) -> TraceQuery<'static> {
+    TraceQuery {
+        end,
+        ..radius(start, 0.25)
+    }
+}
+
+fn assert_clear_endpoint(
+    store: &CollisionStore,
+    geometry: GeometryId,
+    query: TraceQuery,
+    trace: &qa_world::collision::Trace,
+) {
+    assert!(trace.fraction < 1.0 && !trace.all_solid);
+    assert_eq!(
+        trace.end.0.map(f32::to_bits),
+        query
+            .start
+            .lerp(query.end, trace.fraction)
+            .0
+            .map(f32::to_bits)
+    );
+    let position = TraceQuery {
+        start: trace.end,
+        end: trace.end,
+        ..query
+    };
+    assert!(
+        !store
+            .trace_model(geometry, 0, position, &mut store.scratch())
+            .expect("published endpoint occupancy")
+            .start_solid
+    );
+}
+
+#[test]
+fn moving_halfspace_has_native_epsilon_and_unshifted_contact_plane() {
+    let (mut store, geometry) = convex(vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0)]);
+    admit(&mut store, geometry);
+    let query = sweep(Vec3([2.0, 0.0, 0.0]), Vec3([-2.0, 0.0, 0.0]));
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("moving halfspace");
+    assert_eq!(trace.fraction, 0.40625);
+    assert_eq!(trace.end, Vec3([0.375, 0.0, 0.0]));
+    assert_eq!(trace.plane.normal, Vec3([1.0, 0.0, 0.0]));
+    assert_eq!(trace.plane.distance, 0.0);
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn moving_tetrahedron_uses_the_box_edge_bevel() {
+    let (mut store, geometry) = convex(vec![
+        Plane::oriented(Vec3([-1.0, 0.0, 0.0]), 0.0),
+        Plane::oriented(Vec3([0.0, -1.0, 0.0]), 0.0),
+        Plane::oriented(Vec3([0.0, 0.0, -1.0]), 0.0),
+        Plane::oriented(Vec3([1.0; 3]), 1.0),
+    ]);
+    admit(&mut store, geometry);
+    let mut query = sweep(Vec3([1.0, 0.6, -0.25]), Vec3([1.0, 0.4, -0.25]));
+    query.rules.contact_epsilon = 0.03125;
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("complete box bevel");
+    assert!(trace.fraction > 0.0 && trace.fraction < 0.5);
+    assert!(trace.plane.normal.0[0] > 0.7 && trace.plane.normal.0[1] > 0.7);
+    assert_eq!(trace.plane.normal.0[2], 0.0);
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn moving_union_does_not_publish_an_internal_partition_normal() {
+    let (mut store, geometry) = load_geometry(
+        vec![
+            Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0),
+            Plane::oriented(Vec3([0.0, 1.0, 0.0]), 0.0),
+        ],
+        vec![
+            ClipNode {
+                plane: 0,
+                children: [1, 1],
+            },
+            ClipNode {
+                plane: 1,
+                children: [-1, -2],
+            },
+        ],
+        vec![0],
+    );
+    admit(&mut store, geometry);
+    let query = sweep(Vec3([2.0, 2.0, 0.0]), Vec3([-2.0, -2.0, 0.0]));
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("union exterior");
+    assert_eq!(trace.plane.normal, Vec3([0.0, 1.0, 0.0]));
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn concave_union_exterior_uses_a_facet_tangent_witness() {
+    let (mut store, geometry) = load_geometry(
+        vec![
+            Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0),
+            Plane::oriented(Vec3([0.0, 1.0, 0.0]), 0.0),
+        ],
+        vec![
+            ClipNode {
+                plane: 0,
+                children: [1, -2],
+            },
+            ClipNode {
+                plane: 1,
+                children: [-1, -2],
+            },
+        ],
+        vec![0],
+    );
+    admit(&mut store, geometry);
+    let query = sweep(Vec3([2.0, 2.0, 0.0]), Vec3([-2.0, -2.0, 0.0]));
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("concave exterior");
+    assert!([Vec3([1.0, 0.0, 0.0]), Vec3([0.0, 1.0, 0.0])].contains(&trace.plane.normal));
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn redundant_vertex_plane_is_not_reported_as_a_surface() {
+    let mut planes = vec![Plane::oriented(Vec3([1.0; 3]), 3.0)];
+    for axis in 0..3 {
+        planes.push(Plane::oriented(Vec3::axis(axis, 1.0), 1.0));
+        planes.push(Plane::oriented(Vec3::axis(axis, -1.0), 1.0));
+    }
+    let (mut store, geometry) = convex(planes);
+    store
+        .prepare_hull_positions(
+            geometry,
+            HullPositionLimits {
+                query_work: 16_777_216,
+                ..Default::default()
+            },
+        )
+        .expect("cube admission");
+    let query = sweep(Vec3([2.0; 3]), Vec3::default());
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("facet instead of redundant vertex normal");
+    assert_eq!(
+        trace
+            .plane
+            .normal
+            .0
+            .iter()
+            .filter(|&&value| value != 0.0)
+            .count(),
+        1
+    );
+    assert!(trace.plane.normal.0.contains(&1.0));
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn posed_asymmetric_sweep_retains_world_box_axes() {
+    let (mut store, geometry) = convex(vec![
+        Plane::oriented(Vec3([-1.0, 0.0, 0.0]), 0.0),
+        Plane::oriented(Vec3([0.0, -1.0, 0.0]), 0.0),
+    ]);
+    admit(&mut store, geometry);
+    let query = TraceQuery {
+        end: Vec3([10.0, 20.3, 0.0]),
+        mins: Vec3([-0.125, -0.25, -0.5]),
+        maxs: Vec3([0.375, 0.25, 0.5]),
+        rules: TraceRules {
+            contact_epsilon: 0.03125,
+            hull_shape: HullShape::ExactBox,
+            ..TraceRules::ARENA
+        },
+        ..radius(Vec3([10.0, 19.6, 0.0]), 0.25)
+    };
+    let origin = Vec3([10.0, 20.0, 0.0]);
+    let angles = Vec3([0.0, 45.0, 0.0]);
+    let rules = ModelRules {
+        rotation: ModelRotation::TransposeBasis,
+        ..Default::default()
+    };
+    let mut scratch = store.scratch();
+    let trace = store
+        .trace_transformed(geometry, 0, query, origin, angles, rules, &mut scratch)
+        .expect("posed moving original bounds");
+    assert!(trace.fraction > 0.0 && trace.end.0[1] < 19.75);
+    assert_eq!(trace.plane.normal, Vec3([0.0, -1.0, 0.0]));
+    let endpoint = TraceQuery {
+        start: trace.end,
+        end: trace.end,
+        ..query
+    };
+    assert!(
+        !store
+            .trace_transformed(geometry, 0, endpoint, origin, angles, rules, &mut scratch)
+            .expect("posed endpoint certification")
+            .start_solid
+    );
+}
+
+#[test]
+fn initially_solid_adjacent_cells_cover_the_whole_sweep() {
+    let (mut store, geometry) = load_geometry(
+        vec![
+            Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0),
+            Plane::oriented(Vec3([1.0, 0.0, 0.0]), 2.0),
+            Plane::oriented(Vec3([-1.0, 0.0, 0.0]), 2.0),
+        ],
+        vec![
+            ClipNode {
+                plane: 0,
+                children: [1, 2],
+            },
+            ClipNode {
+                plane: 1,
+                children: [-1, -2],
+            },
+            ClipNode {
+                plane: 2,
+                children: [-1, -2],
+            },
+        ],
+        vec![0],
+    );
+    admit(&mut store, geometry);
+    let query = sweep(Vec3([-1.0, 0.0, 0.0]), Vec3([1.0, 0.0, 0.0]));
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("connected initial union");
+    assert!(trace.start_solid && trace.all_solid);
+    assert_eq!(trace.fraction, 0.0);
+    assert_eq!(trace.end, query.start);
+}
+
+fn disjoint_halfspaces(left: f32, right: f32) -> (CollisionStore, GeometryId) {
+    load_geometry(
+        vec![
+            Plane::oriented(Vec3([1.0, 0.0, 0.0]), left),
+            Plane::oriented(Vec3([-1.0, 0.0, 0.0]), -right),
+        ],
+        vec![
+            ClipNode {
+                plane: 0,
+                children: [1, -2],
+            },
+            ClipNode {
+                plane: 1,
+                children: [-1, -2],
+            },
+        ],
+        vec![0],
+    )
+}
+
+#[test]
+fn initial_solid_exit_and_reentry_stops_in_the_real_gap() {
+    let (mut store, geometry) = disjoint_halfspaces(0.0, 2.0);
+    admit(&mut store, geometry);
+    let query = sweep(Vec3([-1.0, 0.0, 0.0]), Vec3([3.0, 0.0, 0.0]));
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("union reentry");
+    assert!(trace.start_solid && !trace.all_solid);
+    assert_eq!(trace.plane.normal, Vec3([-1.0, 0.0, 0.0]));
+    assert!(trace.end.0[0] > 0.25 && trace.end.0[0] < 1.75);
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn no_representable_clear_endpoint_returns_an_error_instead_of_false_clear() {
+    let (mut store, geometry) = disjoint_halfspaces(16_777_216.0, 16_777_218.0);
+    store
+        .prepare_hull_positions(
+            geometry,
+            HullPositionLimits {
+                query_work: 50_000,
+                ..Default::default()
+            },
+        )
+        .expect("bounded large-coordinate admission");
+    // The mathematical gap for a radius 1/4 center is
+    // (16777216.25, 16777217.75). Adjacent f32 values are 16777216/18;
+    // neither can represent a clear center, whatever parameter is returned.
+    for x in [16_777_216.0, 16_777_218.0] {
+        assert!(
+            store
+                .trace_model(
+                    geometry,
+                    0,
+                    radius(Vec3([x, 0.0, 0.0]), 0.25),
+                    &mut store.scratch()
+                )
+                .expect("adjacent float occupancy")
+                .start_solid
+        );
+    }
+    let query = sweep(
+        Vec3([16_777_216.0, 0.0, 0.0]),
+        Vec3([16_777_220.0, 0.0, 0.0]),
+    );
+    assert_eq!(
+        store
+            .trace_model(geometry, 0, query, &mut store.scratch())
+            .unwrap_err(),
+        TraceError::Unsupported { geometry, model: 0 }
+    );
+}
+
+#[test]
+fn bounded_contact_overflow_never_publishes_a_clear_trace() {
+    let (mut store, geometry) = convex(vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0)]);
+    store
+        .prepare_hull_positions(
+            geometry,
+            HullPositionLimits {
+                contact_rows: 0,
+                ..Default::default()
+            },
+        )
+        .expect("zero contact capacity admission");
+    let query = sweep(Vec3([2.0, 0.0, 0.0]), Vec3([-2.0, 0.0, 0.0]));
+    assert_eq!(
+        store
+            .trace_model(geometry, 0, query, &mut store.scratch())
+            .unwrap_err(),
+        TraceError::Unsupported { geometry, model: 0 }
+    );
 }

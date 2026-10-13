@@ -451,7 +451,7 @@ fn queue_move(host: &mut FrameHost, peer: &mut Channel, protocol: Protocol, time
         .encode(&command, 0, peer, &mut bytes)
         .unwrap();
     let packet = peer
-        .prepare_move(&bytes[..length], time, None)
+        .prepare_move(&bytes[..length], time, None, None)
         .unwrap()
         .unwrap()
         .bytes

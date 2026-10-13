@@ -56,6 +56,33 @@ impl Int {
         self.negative
     }
 
+    pub fn bit_length(&self) -> usize {
+        if self.is_zero() {
+            0
+        } else {
+            (self.len - 1) * 64 + 64 - self.words[self.len - 1].leading_zeros() as usize
+        }
+    }
+
+    pub fn compare(&self, other: &Self) -> Ordering {
+        match (self.negative, other.negative) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => self.magnitude_cmp(other),
+            (true, true) => self.magnitude_cmp(other).reverse(),
+        }
+    }
+
+    /// Representation only: geometric decisions never consume this rounding.
+    pub fn scaled_f64(&self, shift: usize) -> f64 {
+        let mut result = 0.0;
+        for index in (0..self.len).rev() {
+            let power = (index * 64) as i32 - shift as i32;
+            result += (self.words[index] as f64) * 2.0f64.powi(power);
+        }
+        if self.negative { -result } else { result }
+    }
+
     pub fn neg(mut self) -> Self {
         if !self.is_zero() {
             self.negative = !self.negative;
@@ -91,7 +118,7 @@ impl Int {
         if self.is_zero() {
             return Ok(*self);
         }
-        let bit_len = (self.len - 1) * 64 + 64 - self.words[self.len - 1].leading_zeros() as usize;
+        let bit_len = self.bit_length();
         if bit_len.checked_add(bits).is_none_or(|n| n > LIMBS * 64) {
             return Err(super::Failure::Arithmetic);
         }

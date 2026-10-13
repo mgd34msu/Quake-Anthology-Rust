@@ -293,7 +293,7 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
         )
         .map_err(|_| Error::Context)?;
     let Some(packet) = server
-        .prepare_move(&payload[..n], EventTime(1), None)
+        .prepare_move(&payload[..n], EventTime(1), None, None)
         .map_err(|_| Error::Context)?
     else {
         return Err(Error::Context);
@@ -362,7 +362,7 @@ fn deliver_server_message(
     })?;
     let mut bytes = [0; 1400];
     let packet = server
-        .prepare_move(&payload[..n], EventTime(1), None)
+        .prepare_move(&payload[..n], EventTime(1), None, None)
         .map_err(|_| Error::Context)?
         .ok_or(Error::Context)?;
     let n = packet.bytes.len();
@@ -669,7 +669,7 @@ fn q2_deliver_frame(
     writer.write_data(b"after\0")?;
     let mut bytes = [0; 1400];
     let packet = server
-        .prepare_move(writer.bytes(), EventTime(1), None)
+        .prepare_move(writer.bytes(), EventTime(1), None, None)
         .map_err(|_| Error::Context)?
         .ok_or(Error::Context)?;
     let n = packet.bytes.len();
@@ -1084,7 +1084,7 @@ fn qw_move(
     } else {
         client
             .channel
-            .prepare_move(&payload[..length], EventTime(1), request)
+            .prepare_move(&payload[..length], EventTime(1), request, None)
             .map_err(|_| Error::Context)?
             .ok_or(Error::Context)?
     };
@@ -1157,7 +1157,7 @@ fn qw_reply(
         payload[start + 1] = advisory;
     }
     let packet = server
-        .prepare_move(&payload[..length], EventTime(2), None)
+        .prepare_move(&payload[..length], EventTime(2), None, None)
         .map_err(|_| Error::Context)?
         .ok_or(Error::Context)?;
     let mut bytes = [0; 1400];
@@ -1267,7 +1267,7 @@ fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() 
     assert_eq!(request, Some(4));
     client
         .channel
-        .prepare_move(&payload[..n], EventTime(4), request)
+        .prepare_move(&payload[..n], EventTime(4), request, None)
         .map_err(|_| Error::Context)?;
     // No transport admission yet: a delta response to that unsent request must
     // not borrow a conveniently retained base and invent an accepted frame.
@@ -1465,7 +1465,7 @@ fn server_payload(
     mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
 ) -> Result<(), Error> {
     let packet = server
-        .prepare_move(payload, EventTime(2), None)
+        .prepare_move(payload, EventTime(2), None, None)
         .map_err(|_| Error::Context)?
         .ok_or(Error::Context)?;
     let mut bytes = [0; 1400];
@@ -1897,7 +1897,7 @@ fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protoco
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
     server.write_snapshot(&mut writer, 1, None, 0)?;
     let packet = server
-        .prepare_move(writer.bytes(), EventTime(1), None)
+        .prepare_move(writer.bytes(), EventTime(1), None, None)
         .map_err(|_| Error::Context)?
         .ok_or(Error::Context)?;
     let pending = packet.bytes.to_vec();
@@ -1969,7 +1969,7 @@ fn publication_retains_snapshot_between_native_q3_fragments() -> Result<(), Erro
     };
     server.publish_snapshot(snapshots::ReceivedFrame::Quake3(frame))?;
     server
-        .prepare_move(&[0x55; 2600], EventTime(0), None)
+        .prepare_move(&[0x55; 2600], EventTime(0), None, None)
         .map_err(|_| Error::Context)?
         .ok_or(Error::Context)?;
     assert_eq!(

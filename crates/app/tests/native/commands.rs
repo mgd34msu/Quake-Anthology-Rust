@@ -405,7 +405,7 @@ fn submit(
     bytes[end..end + suffix.len()].copy_from_slice(suffix);
     connection
         .channel
-        .prepare_move(&bytes[..end + suffix.len()], host.time, None)
+        .prepare_move(&bytes[..end + suffix.len()], host.time, None, None)
         .unwrap()
         .unwrap();
     connection

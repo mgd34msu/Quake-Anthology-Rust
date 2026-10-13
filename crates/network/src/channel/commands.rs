@@ -396,6 +396,8 @@ impl Channel {
         if self.endpoint() != Endpoint::Client {
             return Err(packet::Error::Context);
         }
+        let outgoing_sequence = self.send_state().sequence;
+        let queued_at = self.state.last_received;
         let c = self.commands.as_mut().ok_or(packet::Error::Context)?;
         let reliable = Reader::new(bytes, Encoding::Q3).read_bits(32)?;
         if reliable > c.outgoing.sent || reliable.saturating_add(SLOTS as u32) < c.outgoing.sequence
@@ -438,12 +440,14 @@ impl Channel {
                     else {
                         return Err(packet::Error::Context);
                     };
-                    crate::snapshots::read_q3(
+                    if crate::snapshots::read_q3(
                         &mut reader,
                         snapshots,
                         sequence,
                         c.incoming.sequence,
-                    )?;
+                    )? {
+                        snapshots.observe_ping(sequence, queued_at, outgoing_sequence);
+                    }
                 }
                 _ => return Err(packet::Error::Opcode),
             }

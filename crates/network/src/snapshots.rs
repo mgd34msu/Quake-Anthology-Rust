@@ -59,12 +59,27 @@ pub struct Entity<const N: usize> {
     pub words: [u32; N],
 }
 
+/// Submission metadata for native ping; contains no input or replay state.
+#[derive(Clone, Copy)]
+struct MoveObservation {
+    time: qa_core::sys_events::EventTime,
+    command_time: i32,
+}
+impl MoveObservation {
+    const ZERO: Self = Self {
+        time: qa_core::sys_events::EventTime(0),
+        command_time: 0,
+    };
+}
+
 #[derive(Clone, Copy)]
 struct Slot<const P: usize> {
     sequence: Option<u32>,
     observation: Option<qa_core::primitives::SnapshotObservation>,
     request_sequence: Option<u32>,
     requested_base: Option<u32>,
+    sent_move: MoveObservation,
+    ping: i32,
     valid: bool,
     time: qa_core::primitives::ThinkTime,
     command: u32,
@@ -81,6 +96,8 @@ impl<const P: usize> Slot<P> {
         observation: None,
         request_sequence: None,
         requested_base: None,
+        sent_move: MoveObservation::ZERO,
+        ping: 0,
         valid: false,
         time: qa_core::primitives::ThinkTime::Milliseconds(0),
         command: 0,
@@ -236,9 +253,12 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             .is_some_and(|n| self.parsed_rows.saturating_sub(slot.first_entity) > n)
     }
     pub fn frame(&self, sequence: u32) -> Option<Frame<'_, P, E>> {
+        self.retained_frame(sequence, self.expired(&self.slots[self::slot(sequence)]))
+    }
+    fn retained_frame(&self, sequence: u32, expired: bool) -> Option<Frame<'_, P, E>> {
         let index = self::slot(sequence);
         let slot = &self.slots[index];
-        if !slot.valid || slot.sequence != Some(sequence) || self.expired(slot) {
+        if !slot.valid || slot.sequence != Some(sequence) || expired {
             return None;
         }
         Some(Frame {
@@ -331,6 +351,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         let index = self::slot(sequence);
         slot.request_sequence = self.slots[index].request_sequence;
         slot.requested_base = self.slots[index].requested_base;
+        slot.sent_move = self.slots[index].sent_move;
         self.slots[index] = slot;
         self.latest = Some(sequence);
         self.counts.accepted += u64::from(slot.valid);
@@ -370,6 +391,79 @@ impl<const P: usize, const E: usize> Ring<P, E> {
 
 pub type Q3Ring = Ring<{ states::PLAYER_WORDS }, { states::ENTITY_WORDS }>;
 pub type Q3Frame<'a> = Frame<'a, { states::PLAYER_WORDS }, { states::ENTITY_WORDS }>;
+
+/// Native cgame view borrows the same accepted CLIENT frame and transport metadata.
+#[derive(Clone, Copy, Debug)]
+pub struct Q3ClientSnapshot<'a> {
+    pub frame: Q3Frame<'a>,
+    pub ping: i32,
+}
+impl Q3Ring {
+    pub(crate) fn client_number(&self) -> (u32, qa_core::primitives::ThinkTime) {
+        self.latest.map_or(
+            (0, qa_core::primitives::ThinkTime::Milliseconds(0)),
+            |sequence| (sequence, self.slots[slot(sequence)].time),
+        )
+    }
+    pub(crate) fn client_snapshot(
+        &self,
+        sequence: i32,
+    ) -> Result<Option<Q3ClientSnapshot<'_>>, packet::Error> {
+        let latest = self.latest.unwrap_or(0);
+        if i64::from(sequence) > i64::from(latest) {
+            return Err(packet::Error::Context);
+        }
+        let Ok(sequence) = u32::try_from(sequence) else {
+            return Ok(None);
+        };
+        if latest.saturating_sub(sequence) >= SLOTS as u32 {
+            return Ok(None);
+        }
+        let index = slot(sequence);
+        let retained = &self.slots[index];
+        // CL_GetSnapshot uses MAX_PARSE_ENTITIES, not MSG's delta-base margin.
+        let expired = self.parsed_rows.saturating_sub(retained.first_entity) >= 2048;
+        Ok(self
+            .retained_frame(sequence, expired)
+            .map(|frame| Q3ClientSnapshot {
+                frame,
+                ping: retained.ping,
+            }))
+    }
+    pub(crate) fn record_move(
+        &mut self,
+        sequence: u32,
+        time: qa_core::sys_events::EventTime,
+        command_time: i32,
+    ) {
+        self.slots[slot(sequence)].sent_move = MoveObservation { time, command_time };
+    }
+    pub(crate) fn observe_ping(
+        &mut self,
+        sequence: u32,
+        queued_at: qa_core::sys_events::EventTime,
+        outgoing_sequence: u32,
+    ) {
+        let index = slot(sequence);
+        if !self.slots[index].valid || self.slots[index].sequence != Some(sequence) {
+            return;
+        }
+        let command_time = self.slots[index].player[0] as i32;
+        let mut ping = 999;
+        for offset in 0..SLOTS as u32 {
+            let observation =
+                self.slots[slot(outgoing_sequence.wrapping_sub(1 + offset))].sent_move;
+            if command_time >= observation.command_time {
+                // Both operands narrow at the original signed millisecond boundary.
+                ping = (queued_at.milliseconds() as i32)
+                    .wrapping_sub(observation.time.milliseconds() as i32);
+                break;
+            }
+        }
+        self.slots[index].ping = ping;
+    }
+}
+
 pub type Q2Ring = Ring<{ states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>;
 pub type Q2Frame<'a> = Frame<'a, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>;
 /// QW playerinfo is an independent native service, not part of packetentities.

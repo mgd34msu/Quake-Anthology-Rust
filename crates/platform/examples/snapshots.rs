@@ -510,7 +510,7 @@ fn connected_heap() -> Result<(), String> {
             server.write_snapshot(&mut writer, frame, delta, 16)?;
             writer.write_data(&[10, 2, b'x', 0])?;
             let packet = server
-                .prepare_move(writer.bytes(), EventTime(1), None)
+                .prepare_move(writer.bytes(), EventTime(1), None, None)
                 .map_err(|_| qa_network::commands::packet::Error::Context)?
                 .ok_or(qa_network::commands::packet::Error::Context)?;
             let mut packet_bytes = [0; 1400];
@@ -704,7 +704,7 @@ fn connected_qw_heap() -> Result<(), String> {
             let base = codec.snapshot_request(&client.channel);
             let packet = client
                 .channel
-                .prepare_move(&payload[..length], EventTime(1), base)
+                .prepare_move(&payload[..length], EventTime(1), base, None)
                 .map_err(|_| Error::Context)?
                 .ok_or(Error::Context)?;
             let length = packet.bytes.len();
@@ -781,7 +781,7 @@ fn connected_qw_heap() -> Result<(), String> {
             writer.write_bits(2, 8)?;
             writer.write_data(b"connected\0")?;
             let packet = server
-                .prepare_move(writer.bytes(), EventTime(3), None)
+                .prepare_move(writer.bytes(), EventTime(3), None, None)
                 .map_err(|_| Error::Context)?
                 .ok_or(Error::Context)?;
             let length = packet.bytes.len();
@@ -960,7 +960,7 @@ fn connected_nq_heap() -> Result<(), String> {
             writer.write_bits(26, 8)?;
             writer.write_data(b"connected\0")?;
             let packet = server
-                .prepare_move(writer.bytes(), EventTime(1), None)
+                .prepare_move(writer.bytes(), EventTime(1), None, None)
                 .map_err(|_| Error::Context)?
                 .ok_or(Error::Context)?;
             let mut bytes = [0; 1400];

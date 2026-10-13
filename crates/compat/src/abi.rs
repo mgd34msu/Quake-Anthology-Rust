@@ -1,4 +1,7 @@
 //! Numbered boundary entries. QVM and native pointers share these handlers.
+pub use crate::players::{
+    Q3_ENTITY_STATE_BYTES, Q3_PLAYER_STATE_BYTES, write_q3_entity_state, write_q3_player_state,
+};
 use crate::{
     memory::ModuleMemory,
     quakec, qvm,
@@ -443,6 +446,8 @@ const fn client() -> CallTable {
     t.entries[32] = client_audio!(client_sound::position);
     t.entries[33] = client_audio!(client_sound::listener);
     t.entries[34] = scalar!(register_sound);
+    t.entries[51] = scalar!(client_snapshot_number);
+    t.entries[52] = scalar!(client_snapshot);
     t.entries[53] = Some(CallEntry {
         handler: Handler::ClientCommands(|call, _| {
             client_server_command(call).map(CallValue::Word)
@@ -1830,7 +1835,7 @@ fn cvar_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 }
 fn argc(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.services
-        .client_commands
+        .client_connection
         .as_deref()
         .map_or_else(|| c.command.len(), |commands| commands.arguments().len()) as u64)
 }
@@ -1838,7 +1843,7 @@ fn argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let index = c.arg(0)? as u32 as usize;
     let target = c.pointer(1)?;
     let length = c.length(2)?;
-    let text = c.services.client_commands.as_deref().map_or_else(
+    let text = c.services.client_connection.as_deref().map_or_else(
         || c.command.get(index).copied().unwrap_or(b""),
         |commands| commands.arguments().get_bytes(index),
     );
@@ -1850,7 +1855,7 @@ fn client_args(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let length = c.length(1)?;
     let mut text = FixedText::<1024>::default();
     c.services
-        .client_commands
+        .client_connection
         .as_deref()
         .ok_or(CallError::Text)?
         .arguments()
@@ -1864,6 +1869,65 @@ fn client_server_command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
     Ok(u64::from((ENGINE_CALLS.server_command)(
         c.services, number,
     )?))
+}
+
+fn client_snapshot_number(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let number = c.required_pointer(0)?;
+    let time = c.required_pointer(1)?;
+    // Both outputs are checked before either is changed. Native writes the
+    // number first, so aliased outputs finish with serverTime.
+    c.memory.read(number, 4)?;
+    c.memory.read(time, 4)?;
+    let (sequence, clock) = (ENGINE_CALLS.snapshot_number)(c.services)?;
+    let qa_core::primitives::ThinkTime::Milliseconds(clock) = clock else {
+        return Err(CallError::Memory);
+    };
+    c.memory.write_word(number, sequence as i32)?;
+    c.memory.write_word(time, clock as i32)?;
+    Ok(0)
+}
+
+fn client_snapshot(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    const SNAPSHOT_BYTES: usize = 53772;
+    const ENTITIES: usize = 516;
+    const COMMAND_SEQUENCE: usize = 53768;
+    let sequence = c.arg(0)? as u32 as i32;
+    let target = c.pointer(1)?;
+    let null = c.null_pointer(1)?;
+    let Some(snapshot) = (ENGINE_CALLS.snapshot)(c.services, sequence)? else {
+        return Ok(0);
+    };
+    if null {
+        return Err(CallError::Memory);
+    }
+    let frame = snapshot.frame;
+    let qa_core::primitives::ThinkTime::Milliseconds(clock) = frame.time else {
+        return Err(CallError::Memory);
+    };
+    c.memory.read_mut(target, SNAPSHOT_BYTES)?;
+    c.memory.write_word(target, i32::from(frame.flags))?;
+    c.memory
+        .write_word(target + COMMAND_SEQUENCE as u64, frame.command as i32)?;
+    c.memory.write_word(target + 4, snapshot.ping)?;
+    c.memory.write_word(target + 8, clock as i32)?;
+    let areas = c.memory.read_mut(target + 12, 32)?;
+    areas.fill(0);
+    let area_count = frame.areas.len().min(areas.len());
+    areas[..area_count].copy_from_slice(&frame.areas[..area_count]);
+    write_q3_player_state(c.memory, target + 44, frame.player)?;
+    let count = frame.entities.len().min(256);
+    c.memory.write_word(target + 512, count as i32)?;
+    for (index, entity) in frame.entities[..count].iter().enumerate() {
+        write_q3_entity_state(
+            c.memory,
+            target + (ENTITIES + index * Q3_ENTITY_STATE_BYTES) as u64,
+            entity.number,
+            &entity.words,
+        )?;
+    }
+    // Original CL_GetSnapshot leaves numServerCommands and unused ES rows
+    // untouched, even though the complete public destination must be valid.
+    Ok(1)
 }
 fn native_argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.native_command

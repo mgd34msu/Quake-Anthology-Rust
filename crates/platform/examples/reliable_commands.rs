@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut bytes,
         )?;
         let wire = client
-            .prepare_move(&bytes[..n], EventTime(0), None)?
+            .prepare_move(&bytes[..n], EventTime(0), None, None)?
             .ok_or("move packet")?
             .bytes
             .to_vec();

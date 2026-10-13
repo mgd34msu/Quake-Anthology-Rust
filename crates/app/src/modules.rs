@@ -1056,7 +1056,25 @@ impl FrameHost {
             if row.request.phase != Phase::Client {
                 continue;
             }
-            let time = row.time(self.time);
+            let time = row
+                .client_connection
+                .filter(|_| row.produces_client_view)
+                .and_then(|(id, lifetime)| {
+                    let client = self.runtime.server.clients.get(id.0 as usize)?;
+                    if client.connection.is_none()
+                        || client.entity != lifetime
+                        || self.runtime.server.entities.resolve(lifetime).is_none()
+                    {
+                        return None;
+                    }
+                    self.runtime
+                        .snapshots
+                        .get(id.0 as usize)?
+                        .as_ref()?
+                        .interpolation()
+                        .map(|sample| sample.time)
+                })
+                .unwrap_or_else(|| row.time(self.time));
             invoke_frame(self, ModuleId(index as u16), time);
         }
     }
@@ -1089,13 +1107,14 @@ impl FrameHost {
             {
                 continue;
             }
-            let disconnected =
-                if let Some((mut view, server)) = self.runtime.client_command_parts(id, lifetime) {
-                    let _ = view.consume_configuration(server, team_chats_only);
-                    view.disconnected
-                } else {
-                    false
-                };
+            let disconnected = if let Some((mut view, server)) =
+                self.runtime.client_connection_parts(id, lifetime)
+            {
+                let _ = view.consume_configuration(server, team_chats_only);
+                view.disconnected
+            } else {
+                false
+            };
             if disconnected {
                 self.disconnect_client(id);
             }
@@ -1400,7 +1419,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
     {
         return false;
     }
-    let (mut services, mut client_commands) = host.runtime.engine_service_parts(
+    let (mut services, mut client_view) = host.runtime.engine_service_parts(
         &mut host.console,
         storage,
         &mut row.scratch,
@@ -1409,9 +1428,9 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
     // A live connection can lack this protocol's configstring/command view.
     // Each executed import checks its own service; independent CLIENT audio
     // and scene calls still use their load-bound publisher and common state.
-    services.client_commands = client_commands
+    services.client_connection = client_view
         .as_mut()
-        .map(|view| view as &mut dyn qa_compat::services::ClientServerCommands);
+        .map(|view| view as &mut dyn qa_compat::services::ClientConnection);
     row.counts.calls += 1;
     let call_context = context(row.request.context, time);
     let result = match &mut row.request.program {
@@ -1476,7 +1495,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
     };
     let accepted = row.counts.record(result);
     let disconnected = services
-        .client_commands
+        .client_connection
         .as_deref()
         .is_some_and(|commands| commands.disconnected());
     drop(services);

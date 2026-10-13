@@ -182,7 +182,7 @@ fn native_packet(payload: &[u8]) -> Vec<u8> {
     let mut server =
         Channel::load(Protocol::NetQuake15.channel(), Endpoint::Server, 8192, 16).unwrap();
     let packet = server
-        .prepare_move(payload, EventTime(2), None)
+        .prepare_move(payload, EventTime(2), None, None)
         .unwrap()
         .unwrap();
     let bytes = packet.bytes.to_vec();

@@ -9,6 +9,7 @@ use qa_core::{
 
 pub mod commands;
 mod transmit;
+pub use crate::snapshots::Q3ClientSnapshot;
 pub use transmit::{Prepared, SendState, TransmitError, Unreliable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,6 +192,28 @@ impl Channel {
     }
     pub fn snapshot(&self, sequence: u32) -> Option<crate::snapshots::ReceivedFrame<'_>> {
         self.snapshots.as_ref()?.frame(sequence)
+    }
+    /// Public cgame state always comes from the accepted receiving connection.
+    pub fn q3_snapshot_number(&self) -> Option<(u32, qa_core::primitives::ThinkTime)> {
+        if self.endpoint != Endpoint::Client {
+            return None;
+        }
+        let crate::snapshots::Storage::Quake3(ring) = self.snapshots.as_ref()? else {
+            return None;
+        };
+        Some(ring.client_number())
+    }
+    pub fn q3_client_snapshot(
+        &self,
+        sequence: i32,
+    ) -> Result<Option<Q3ClientSnapshot<'_>>, crate::commands::packet::Error> {
+        if self.endpoint != Endpoint::Client {
+            return Err(crate::commands::packet::Error::Context);
+        }
+        let Some(crate::snapshots::Storage::Quake3(ring)) = &self.snapshots else {
+            return Err(crate::commands::packet::Error::Context);
+        };
+        ring.client_snapshot(sequence)
     }
     /// Only a fully submitted SERVER snapshot can explain a native lastframe
     /// acknowledgement; publication and transmit watermarks are insufficient.

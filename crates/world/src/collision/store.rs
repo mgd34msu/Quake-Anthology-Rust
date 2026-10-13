@@ -291,16 +291,18 @@ impl CollisionStore {
         true
     }
 
-    fn scratch_dimensions(&self) -> (usize, usize, usize, usize) {
+    fn scratch_dimensions(&self) -> (usize, usize, usize, usize, usize) {
         let mut hull_depth = 0;
         let mut brush_depth = 0;
         let mut brushes = 0;
         let mut positions = 0;
+        let mut contacts = 0;
         for resource in self.slots.iter().filter_map(|slot| slot.resource.as_ref()) {
             match &resource.geometry {
                 Geometry::Hulls(geometry) => {
                     hull_depth = hull_depth.max(geometry.scratch_capacity());
                     positions = positions.max(geometry.position_rows());
+                    contacts = contacts.max(geometry.position_contacts());
                 }
                 Geometry::Brushes(geometry) => {
                     let (depth, count) = geometry.scratch_capacity();
@@ -309,15 +311,15 @@ impl CollisionStore {
                 }
             }
         }
-        (hull_depth, brush_depth, brushes, positions)
+        (hull_depth, brush_depth, brushes, positions, contacts)
     }
 
     fn make_scratch(&self, position_capacity: usize) -> TraceScratch {
-        let (hull_depth, brush_depth, brushes, positions) = self.scratch_dimensions();
+        let (hull_depth, brush_depth, brushes, positions, contacts) = self.scratch_dimensions();
         TraceScratch {
             hulls: HullScratch::new(hull_depth),
             brushes: BrushScratch::new(brush_depth, brushes, position_capacity),
-            position: position::Scratch::new(positions),
+            position: position::Scratch::new(positions, contacts),
         }
     }
 
@@ -585,9 +587,6 @@ fn trace_position(
         geometry,
         model: index,
     };
-    if query.start != query.end {
-        return Err(unsupported);
-    }
     hulls
         .trace_position(cells.ok_or(unsupported)?, query, origin, axes, scratch)
         .map_err(|error| match error {

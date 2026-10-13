@@ -369,7 +369,7 @@ pub use qa_core::primitives::CommandIntent;
 
 pub struct Input {
     bindings: Box<[Option<Binding>]>,
-    devices: [Device; MAX_INPUT_DEVICES],
+    devices: Box<[Device]>,
     seats: [Seat; SeatId::COUNT],
     previous: Option<EventTime>,
     frame_span: EventTime,
@@ -398,7 +398,7 @@ impl Input {
     pub fn load() -> Self {
         let mut input = Self {
             bindings: (0..CONTROLS).map(|_| None).collect(),
-            devices: [Device::default(); MAX_INPUT_DEVICES],
+            devices: vec![Device::default(); MAX_INPUT_DEVICES].into_boxed_slice(),
             seats: [Seat::default(); SeatId::COUNT],
             previous: None,
             frame_span: EventTime::default(),
@@ -721,7 +721,7 @@ impl Input {
                     seat.actions.fill(Button::default());
                 }
                 self.clear_mouse();
-                for device in &mut self.devices {
+                for device in self.devices.iter_mut() {
                     device.axes.fill(0);
                 }
             }

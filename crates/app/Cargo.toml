@@ -46,6 +46,11 @@ path = "tests/client_commands.rs"
 harness = false
 
 [[test]]
+name = "client_snapshots"
+path = "tests/client_snapshots.rs"
+harness = false
+
+[[test]]
 name = "client_loops"
 path = "tests/client_loops.rs"
 harness = false

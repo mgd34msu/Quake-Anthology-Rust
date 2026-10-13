@@ -252,7 +252,7 @@ fn snapshot_frames_for_protocol(protocol: qa_network::commands::packet::Protocol
         let length = packet::write(&mut bytes, &movement, sequence, Key::default()).unwrap();
         connection
             .channel
-            .prepare_move(&bytes[..length], host.time, Some(old_sequence as u32))
+            .prepare_move(&bytes[..length], host.time, Some(old_sequence as u32), None)
             .unwrap()
             .unwrap();
         connection
@@ -311,7 +311,12 @@ fn snapshot_frames_for_protocol(protocol: qa_network::commands::packet::Protocol
     .unwrap();
     connection
         .channel
-        .prepare_move(&bytes[..length], host.time, Some(stale_sequence as u32))
+        .prepare_move(
+            &bytes[..length],
+            host.time,
+            Some(stale_sequence as u32),
+            None,
+        )
         .unwrap()
         .unwrap();
     connection

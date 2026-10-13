@@ -297,7 +297,7 @@ fn with_native_client(
         input: &mut input,
         cvars: &mut cvars,
         commands: &mut commands,
-        client_commands: None,
+        client_connection: None,
         client_audio: None,
         vfs: &vfs,
         model_loader: None,

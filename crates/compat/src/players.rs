@@ -35,12 +35,34 @@ struct MemoryField {
     word: usize,
     width: Width,
 }
+pub const Q3_PLAYER_STATE_BYTES: usize = 468;
+pub const Q3_ENTITY_STATE_BYTES: usize = 208;
+
+const Q3_PLAYER_ARRAYS: [ArrayLayout; 4] = [
+    ArrayLayout {
+        offset: 184,
+        width: Width::Word,
+    },
+    ArrayLayout {
+        offset: 248,
+        width: Width::Word,
+    },
+    ArrayLayout {
+        offset: 376,
+        width: Width::Word,
+    },
+    ArrayLayout {
+        offset: 312,
+        width: Width::Word,
+    },
+];
 // Original q_shared.h playerState_t offsets, mapped into the one player
 // projection's numeric words. Both native widths have this pointer-free ABI.
 const Q3_PLAYER_FIELDS: &[(usize, u64)] = &[
     (0, 0),
     (1, 20),
     (2, 24),
+    (3, 8),
     (4, 32),
     (5, 36),
     (6, 156),
@@ -48,12 +70,18 @@ const Q3_PLAYER_FIELDS: &[(usize, u64)] = &[
     (8, 44),
     (9, 28),
     (10, 40),
+    (11, 72),
     (12, 16),
     (13, 108),
+    (14, 84),
+    (15, 88),
     (16, 112),
+    (17, 76),
     (18, 116),
     (19, 12),
     (20, 68),
+    (21, 148),
+    (22, 104),
     (23, 128),
     (24, 48),
     (25, 52),
@@ -64,16 +92,149 @@ const Q3_PLAYER_FIELDS: &[(usize, u64)] = &[
     (30, 172),
     (31, 176),
     (32, 180),
+    (33, 440),
     (34, 4),
     (35, 56),
     (36, 64),
+    (37, 80),
     (38, 120),
     (39, 124),
     (40, 140),
     (41, 144),
     (42, 160),
+    (43, 92),
+    (44, 96),
+    (45, 100),
+    (46, 448),
     (47, 444),
 ];
+// Original msg.c entityStateFields order. The entity number is outside the
+// delta field array and occupies the first public ABI cell.
+const Q3_ENTITY_FIELDS: &[(usize, u64)] = &[
+    (0, 16),
+    (1, 24),
+    (2, 28),
+    (3, 36),
+    (4, 40),
+    (5, 32),
+    (6, 64),
+    (7, 44),
+    (8, 60),
+    (9, 180),
+    (10, 132),
+    (11, 4),
+    (12, 200),
+    (13, 184),
+    (14, 196),
+    (15, 148),
+    (16, 12),
+    (17, 8),
+    (18, 140),
+    (19, 192),
+    (20, 168),
+    (21, 120),
+    (22, 20),
+    (23, 48),
+    (24, 92),
+    (25, 96),
+    (26, 100),
+    (27, 176),
+    (28, 188),
+    (29, 160),
+    (30, 144),
+    (31, 156),
+    (32, 204),
+    (33, 112),
+    (34, 104),
+    (35, 108),
+    (36, 164),
+    (37, 116),
+    (38, 84),
+    (39, 52),
+    (40, 56),
+    (41, 68),
+    (42, 72),
+    (43, 76),
+    (44, 80),
+    (45, 88),
+    (46, 124),
+    (47, 128),
+    (48, 136),
+    (49, 152),
+    (50, 172),
+];
+
+fn array_fields(protocol: Protocol, arrays: [ArrayLayout; 4]) -> impl Iterator<Item = MemoryField> {
+    qa_network::states::player_value_layout(protocol)
+        .1
+        .into_iter()
+        .zip(arrays)
+        .flat_map(|(span, array)| {
+            span.range()
+                .enumerate()
+                .map(move |(ordinal, word)| MemoryField {
+                    offset: (array.offset + ordinal * array.width.len()) as u64,
+                    word,
+                    width: array.width,
+                })
+        })
+}
+
+fn scalar_fields(fields: &[(usize, u64)]) -> impl Iterator<Item = MemoryField> + '_ {
+    fields.iter().map(|&(word, offset)| MemoryField {
+        offset,
+        word,
+        width: Width::Word,
+    })
+}
+
+fn write_fields(output: &mut [u8], words: &[u32], fields: impl Iterator<Item = MemoryField>) {
+    for field in fields {
+        let start = field.offset as usize;
+        let width = field.width.len();
+        output[start..start + width].copy_from_slice(&words[field.word].to_le_bytes()[..width]);
+    }
+}
+
+/// Reconstructs the public pointer-free ABI from accepted Q3 snapshot words.
+/// The five cells absent from MSG-null decoding remain zero; transmitted
+/// cells retain their raw bits without another native or wire conversion.
+pub fn write_q3_player_state(
+    memory: &mut ModuleMemory<'_>,
+    base: u64,
+    words: &[u32],
+) -> Result<(), CallError> {
+    if words.len() < qa_network::states::PLAYER_WORDS {
+        return Err(CallError::Capacity);
+    }
+    let output = memory.read_mut(base, Q3_PLAYER_STATE_BYTES)?;
+    write_fields(
+        output,
+        words,
+        array_fields(Protocol::Quake3_68, Q3_PLAYER_ARRAYS).chain(scalar_fields(Q3_PLAYER_FIELDS)),
+    );
+    for offset in [136, 452, 456, 460, 464] {
+        output[offset..offset + 4].fill(0);
+    }
+    Ok(())
+}
+
+/// The native entity number is supplied by the accepted snapshot row, never
+/// derived from a common entity slot. All public ES cells are transmitted.
+pub fn write_q3_entity_state(
+    memory: &mut ModuleMemory<'_>,
+    base: u64,
+    number: u32,
+    words: &[u32],
+) -> Result<(), CallError> {
+    if words.len() < qa_network::states::ENTITY_WORDS {
+        return Err(CallError::Capacity);
+    }
+    let output = memory.read_mut(base, Q3_ENTITY_STATE_BYTES)?;
+    write_fields(output, words, scalar_fields(Q3_ENTITY_FIELDS));
+    output[..4].copy_from_slice(&number.to_le_bytes());
+    Ok(())
+}
 pub(crate) struct PlayerValues {
     address: PlayerAddress,
     protocol: Protocol,
@@ -104,10 +265,7 @@ impl PlayerValues {
         let mut values = Self::load(
             PlayerAddress::Registered,
             Protocol::Quake3_68,
-            [184, 248, 376, 312].map(|offset| ArrayLayout {
-                offset,
-                width: Width::Word,
-            }),
+            Q3_PLAYER_ARRAYS,
             layout,
         );
         // Body/view/movement publication is useful even without HUD bank rows.
@@ -192,24 +350,8 @@ impl PlayerValues {
                 &[][..],
             ),
         };
-        let spans = qa_network::states::player_value_layout(self.protocol).1;
-        self.fields = spans
-            .into_iter()
-            .zip(self.arrays)
-            .flat_map(|(span, array)| {
-                span.range()
-                    .enumerate()
-                    .map(move |(ordinal, word)| MemoryField {
-                        offset: (array.offset + ordinal * array.width.len()) as u64,
-                        word,
-                        width: array.width,
-                    })
-            })
-            .chain(native_fields.iter().map(|&(word, offset)| MemoryField {
-                offset,
-                word,
-                width: Width::Word,
-            }))
+        self.fields = array_fields(self.protocol, self.arrays)
+            .chain(scalar_fields(native_fields))
             .collect();
         self.words = vec![0; projection.words()].into_boxed_slice();
         self.projection = Some(projection);

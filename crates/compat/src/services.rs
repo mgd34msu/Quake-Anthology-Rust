@@ -111,12 +111,18 @@ pub trait SoundRegistrar {
     fn bank(&self) -> &qa_audio::Bank;
 }
 
-/// One current native CLIENT command, selected from the channel's retained
-/// window for this synchronous module call. It never executes local commands.
-pub trait ClientServerCommands {
+/// Accepted CLIENT snapshots and current command argv borrow the same
+/// connection for one synchronous module call, without reading SERVER state.
+pub trait ClientConnection {
     fn select(&mut self, number: i32, server: &mut Server) -> Result<bool, CallError>;
     fn arguments(&self) -> qa_console::command_text::Arguments<'_>;
     fn disconnected(&self) -> bool;
+    fn snapshot_number(&self, server: &Server) -> Result<(u32, ThinkTime), CallError>;
+    fn snapshot(
+        &mut self,
+        sequence: i32,
+        server: &Server,
+    ) -> Result<Option<qa_network::snapshots::Q3ClientSnapshot<'_>>, CallError>;
 }
 
 /// Synchronous CLIENT audio publication uses the receiving connection's
@@ -804,7 +810,7 @@ pub struct EngineServices<'a> {
     pub input: &'a mut qa_input::Input,
     pub cvars: &'a mut Cvars,
     pub commands: &'a mut CommandBuffer,
-    pub client_commands: Option<&'a mut dyn ClientServerCommands>,
+    pub client_connection: Option<&'a mut dyn ClientConnection>,
     pub client_audio: Option<&'a mut dyn ClientAudio>,
     pub vfs: &'a Vfs,
     pub model_loader: Option<&'a mut dyn ModelLoader>,
@@ -848,6 +854,11 @@ pub type LocalizedPrintCall = for<'a> fn(
 ) -> Result<u64, CallError>;
 pub type FileOpenCall =
     fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(u32, u64), CallError>;
+pub type ClientSnapshotCall =
+    for<'a> fn(
+        &'a mut EngineServices<'_>,
+        i32,
+    ) -> Result<Option<qa_network::snapshots::Q3ClientSnapshot<'a>>, CallError>;
 pub type CvarRegisterCall =
     fn(&mut EngineServices<'_>, Context, &str, Option<&str>, u32) -> Result<View, CallError>;
 pub type ResourceIndexCall =
@@ -873,6 +884,8 @@ pub struct EngineCallTable {
     pub set_userinfo: fn(&mut EngineServices<'_>, NativeEntity, &[u8]) -> Result<(), CallError>,
     pub serverinfo: fn(&mut EngineServices<'_>, ModuleId, &mut [u8]) -> Result<usize, CallError>,
     pub server_command: fn(&mut EngineServices<'_>, i32) -> Result<bool, CallError>,
+    pub snapshot_number: fn(&EngineServices<'_>) -> Result<(u32, ThinkTime), CallError>,
+    pub snapshot: ClientSnapshotCall,
     pub pmove: fn(
         &mut EngineServices<'_>,
         ClientId,
@@ -993,10 +1006,22 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     set_userinfo: |s, native, text| s.storage.set_userinfo(s.server, native, text),
     serverinfo: |s, module, output| s.storage.serverinfo(s.cvars, module, output),
     server_command: |s, number| {
-        s.client_commands
+        s.client_connection
             .as_deref_mut()
             .ok_or(CallError::Text)?
             .select(number, s.server)
+    },
+    snapshot_number: |s| {
+        s.client_connection
+            .as_deref()
+            .ok_or(CallError::Entity)?
+            .snapshot_number(s.server)
+    },
+    snapshot: |s, number| {
+        s.client_connection
+            .as_deref_mut()
+            .ok_or(CallError::Entity)?
+            .snapshot(number, s.server)
     },
     pmove: |services, id, native, options| services.pmove(id, native, options),
     in_visibility: |s, first, second, policy, check_portals| {

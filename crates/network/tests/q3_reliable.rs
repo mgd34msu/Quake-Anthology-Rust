@@ -79,7 +79,7 @@ fn move_message(client: &mut Channel, server: &mut Channel, codec: &mut Commands
     let encoder = Commands::load(Protocol::Quake3_68, maximum);
     let n = encoder.encode(&command, 0, client, &mut bytes).unwrap();
     let data = client
-        .prepare_move(&bytes[..n], EventTime(time as u64), None)
+        .prepare_move(&bytes[..n], EventTime(time as u64), None, None)
         .unwrap()
         .unwrap()
         .bytes
@@ -376,7 +376,7 @@ fn client_encoded_windows_retain_rejected_fragments_and_refund_only_native_acks(
             .unwrap();
         assert!(length > 1400 && length <= maximum);
         client
-            .prepare_move(&encoded[..length], EventTime(1), None)
+            .prepare_move(&encoded[..length], EventTime(1), None, None)
             .unwrap()
             .unwrap();
         let mut records = Vec::new();
@@ -482,7 +482,7 @@ fn newer_client_command_cannot_inherit_an_older_fragment_flights_submission() {
         .encode(&movement(16), 7, &client, &mut encoded)
         .unwrap();
     let first = client
-        .prepare_move(&encoded[..length], EventTime(1), None)
+        .prepare_move(&encoded[..length], EventTime(1), None, None)
         .unwrap()
         .unwrap()
         .bytes
@@ -504,7 +504,7 @@ fn newer_client_command_cannot_inherit_an_older_fragment_flights_submission() {
         // Even this direct caller supplies a newer body and watermark. The
         // channel must keep both attached to their original encoded flight.
         let packet_bytes = client
-            .prepare_move(&encoded[..next], EventTime(2), None)
+            .prepare_move(&encoded[..next], EventTime(2), None, None)
             .unwrap()
             .unwrap()
             .bytes
@@ -538,7 +538,7 @@ fn newer_client_command_cannot_inherit_an_older_fragment_flights_submission() {
         .encode(&movement(32), 9, &client, &mut encoded)
         .unwrap();
     let packet_bytes = client
-        .prepare_move(&encoded[..length], EventTime(3), None)
+        .prepare_move(&encoded[..length], EventTime(3), None, None)
         .unwrap()
         .unwrap()
         .bytes

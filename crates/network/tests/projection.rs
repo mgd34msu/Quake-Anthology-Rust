@@ -1152,6 +1152,7 @@ fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
             gravity: Some(16_777_217),
             speed: Some(-16_777_219),
             signals: Some(Default::default()),
+            presentation: Some(Default::default()),
         })
     );
     assert_eq!(

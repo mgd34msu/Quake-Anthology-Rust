@@ -274,6 +274,12 @@ impl Q1Hulls {
             .map_or(0, position::Data::scratch_rows)
     }
 
+    pub(crate) fn position_contacts(&self) -> usize {
+        self.positions
+            .as_ref()
+            .map_or(0, position::Data::scratch_contacts)
+    }
+
     pub(crate) fn prepare_positions(
         &self,
         models: usize,

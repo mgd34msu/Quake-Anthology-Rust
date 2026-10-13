@@ -157,7 +157,7 @@ fn literal_static_entities_traverse_native_channel_in_service_order_without_snap
         payload.extend_from_slice(b"after\0");
         payload.extend_from_slice(&STATIC);
         let packet = server
-            .prepare_move(&payload, EventTime(2), None)
+            .prepare_move(&payload, EventTime(2), None, None)
             .unwrap()
             .unwrap();
         let mut bytes = [0; 1400];

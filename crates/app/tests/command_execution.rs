@@ -168,7 +168,7 @@ fn every_new_q3_command_inside_one_packet_reaches_engine_movement_in_order() {
     .unwrap();
     let packet = connection
         .channel
-        .prepare_move(&payload[..length], EventTime::default(), None)
+        .prepare_move(&payload[..length], EventTime::default(), None, None)
         .unwrap()
         .unwrap();
     host.runtime
@@ -298,7 +298,7 @@ fn netquake_command_from_second_intake_uses_the_next_queued_server_frame_span() 
         .unwrap();
     let packet = connection
         .channel
-        .prepare_move(&payload[..length], EventTime::default(), None)
+        .prepare_move(&payload[..length], EventTime::default(), None, None)
         .unwrap()
         .unwrap()
         .bytes

@@ -112,7 +112,7 @@ impl RemoteReceiver {
         let request = commands.snapshot_request(&connection.channel);
         let packet = connection
             .channel
-            .prepare_move(&bytes[..length], time, request)
+            .prepare_move(&bytes[..length], time, request, None)
             .unwrap()
             .unwrap()
             .bytes

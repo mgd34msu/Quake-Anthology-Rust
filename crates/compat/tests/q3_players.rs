@@ -176,7 +176,7 @@ impl Fixture {
             input: &mut self.input,
             cvars: &mut self.cvars,
             commands: &mut self.commands,
-            client_commands: None,
+            client_connection: None,
             client_audio: None,
             vfs: &self.vfs,
             model_loader: None,

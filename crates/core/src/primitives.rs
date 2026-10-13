@@ -701,9 +701,27 @@ pub struct PlayerSignals {
     pub damage: PlayerDamageSample,
 }
 
+/// Player animation and native presentation state retain the enclosing tail's
+/// source and resource namespace. Animation toggle bits and native ordinals
+/// remain intact until a presentation or protocol boundary interprets them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlayerPresentation {
+    pub bob_cycle: u32,
+    pub legs_timer: i32,
+    pub legs_animation: u32,
+    pub torso_timer: i32,
+    pub torso_animation: u32,
+    pub movement_direction: i32,
+    pub grapple_point: Vec3,
+    pub entity_flags: u32,
+    pub weapon_phase: i32,
+    pub generic: i32,
+    pub jump_pad_entity: u32,
+}
+
 /// Native player metadata retains source widths independently of movement and
 /// connection identity. Hot movement fields overlay only their mapped flags.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NativePlayerTail {
     pub source: RuleSetId,
     pub namespace: ResourceNamespace,
@@ -714,6 +732,7 @@ pub struct NativePlayerTail {
     pub gravity: Option<i32>,
     pub speed: Option<i32>,
     pub signals: Option<PlayerSignals>,
+    pub presentation: Option<PlayerPresentation>,
 }
 impl NativePlayerTail {
     pub const fn new(source: RuleSetId, namespace: ResourceNamespace) -> Self {
@@ -727,6 +746,7 @@ impl NativePlayerTail {
             gravity: None,
             speed: None,
             signals: None,
+            presentation: None,
         }
     }
 }

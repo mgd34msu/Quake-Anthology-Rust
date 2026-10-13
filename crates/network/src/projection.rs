@@ -5,9 +5,9 @@ use qa_core::{
     math::{AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
         AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMagnitude, MovementMode,
-        MovementTimer, NativePlayerTail, PlayerDamageSample, PlayerSignals, PlayerState,
-        PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding, ValueWidth,
-        ViewWeapon, WeaponReadiness, WeaponState,
+        MovementTimer, NativePlayerTail, PlayerDamageSample, PlayerPresentation, PlayerSignals,
+        PlayerState, PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding,
+        ValueWidth, ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -79,6 +79,7 @@ enum Source {
     DamageYaw,
     DamagePitch,
     DamageCount,
+    Presentation(PresentationField),
     Gravity,
     Speed,
     InfoFlags,
@@ -87,6 +88,20 @@ enum Source {
     BodyYaw,
     /// A native-only value lives in the common bank through a cold binding.
     NativeValue,
+}
+#[derive(Clone, Copy)]
+enum PresentationField {
+    BobCycle,
+    LegsTimer,
+    LegsAnimation,
+    TorsoTimer,
+    TorsoAnimation,
+    MovementDirection,
+    GrapplePoint(usize),
+    EntityFlags,
+    WeaponPhase,
+    Generic,
+    JumpPadEntity,
 }
 #[derive(Clone, Copy)]
 enum Convert {
@@ -225,6 +240,7 @@ static Q3: &[Field] = &[
     f(0, CommandTime, Bits),
     f(1, Position(0), Bits),
     f(2, Position(1), Bits),
+    f(3, Presentation(PresentationField::BobCycle), Bits),
     f(4, Velocity(0), Bits),
     f(5, Velocity(1), Bits),
     f(6, View(1), Bits),
@@ -232,12 +248,18 @@ static Q3: &[Field] = &[
     f(8, WeaponTime, Bits),
     f(9, Position(2), Bits),
     f(10, Velocity(2), Bits),
+    f(11, Presentation(PresentationField::LegsTimer), Bits),
     f(12, Timer, Bits),
     f(13, EventSequence, Bits),
+    f(14, Presentation(PresentationField::TorsoAnimation), Bits),
+    f(15, Presentation(PresentationField::MovementDirection), Bits),
     f(16, Event(0), Bits),
+    f(17, Presentation(PresentationField::LegsAnimation), Bits),
     f(18, Event(1), Bits),
     f(19, Flags, Bits),
     f(20, Ground, Bits),
+    f(21, Presentation(PresentationField::WeaponPhase), Bits),
+    f(22, Presentation(PresentationField::EntityFlags), Bits),
     f(23, ExternalEvent, Bits),
     f(24, Gravity, FloatInteger),
     f(25, Speed, FloatInteger),
@@ -248,14 +270,20 @@ static Q3: &[Field] = &[
     f(30, DamageYaw, Bits),
     f(31, DamagePitch, Bits),
     f(32, DamageCount, Bits),
+    f(33, Presentation(PresentationField::Generic), Bits),
     f(34, Mode, Bits),
     f(35, DeltaAngle(0), UnsignedShortAngle),
     f(36, DeltaAngle(2), UnsignedShortAngle),
+    f(37, Presentation(PresentationField::TorsoTimer), Bits),
     f(38, EventParameter(0), Bits),
     f(39, EventParameter(1), Bits),
     f(40, Client, Bits),
     f(41, Weapon, Bits),
     f(42, View(2), Bits),
+    f(43, Presentation(PresentationField::GrapplePoint(0)), Bits),
+    f(44, Presentation(PresentationField::GrapplePoint(1)), Bits),
+    f(45, Presentation(PresentationField::GrapplePoint(2)), Bits),
+    f(46, Presentation(PresentationField::JumpPadEntity), Bits),
     f(47, LoopSound, Bits),
     f(48, Health, Bits),
     f(51, Armor, Bits),
@@ -344,7 +372,8 @@ impl PlayerProjection {
             .iter()
             .copied()
             .filter(|field| {
-                field.word < MOVEMENT_WORDS && !matches!(field.source, Source::WeaponTime)
+                field.word < MOVEMENT_WORDS
+                    && !matches!(field.source, Source::WeaponTime | Source::Presentation(_))
             })
             .collect();
         projection.feedback = None;
@@ -697,6 +726,7 @@ impl PlayerProjection {
                             tail.ground_number
                         }
                         Weapon => tail.weapon_number,
+                        Presentation(part) => tail.presentation.map(|value| part.value(value)),
                         _ => tail
                             .signals
                             .and_then(|signals| field.source.signal_value(signals)),
@@ -882,6 +912,12 @@ impl PlayerProjection {
                     let signals = native.signals.get_or_insert_with(PlayerSignals::default);
                     field.source.apply_signal(value, signals);
                 }
+                Presentation(part) => part.apply(
+                    value,
+                    native
+                        .presentation
+                        .get_or_insert_with(PlayerPresentation::default),
+                ),
                 BodyFrame | BodyModel | BodySkin | BodyEffects => {
                     let body = context.appearance.get_or_insert_with(|| EntityAppearance {
                         source: self.protocol.rule_set(),
@@ -1057,6 +1093,7 @@ impl PlayerProjection {
             LoopSound => p.loop_sound.and_then(resolve_sound).unwrap_or(0),
             EventSequence | Event(_) | EventParameter(_) | ExternalEvent | ExternalParameter
             | DamageSequence | DamageYaw | DamagePitch | DamageCount => 0,
+            Presentation(_) => 0,
             Gravity => c.gravity.to_bits(),
             Speed => c.speed.to_bits(),
             InfoFlags => u32::from(c.player_info_flags),
@@ -1064,6 +1101,39 @@ impl PlayerProjection {
             IdealPitch => p.ideal_pitch.to_bits(),
             BodyYaw => c.body_yaw.to_bits(),
             NativeValue => 0,
+        }
+    }
+}
+
+impl PresentationField {
+    fn value(self, value: PlayerPresentation) -> u32 {
+        match self {
+            Self::BobCycle => value.bob_cycle,
+            Self::LegsTimer => value.legs_timer as u32,
+            Self::LegsAnimation => value.legs_animation,
+            Self::TorsoTimer => value.torso_timer as u32,
+            Self::TorsoAnimation => value.torso_animation,
+            Self::MovementDirection => value.movement_direction as u32,
+            Self::GrapplePoint(axis) => value.grapple_point.0[axis].to_bits(),
+            Self::EntityFlags => value.entity_flags,
+            Self::WeaponPhase => value.weapon_phase as u32,
+            Self::Generic => value.generic as u32,
+            Self::JumpPadEntity => value.jump_pad_entity,
+        }
+    }
+    fn apply(self, word: u32, value: &mut PlayerPresentation) {
+        match self {
+            Self::BobCycle => value.bob_cycle = word,
+            Self::LegsTimer => value.legs_timer = word as i32,
+            Self::LegsAnimation => value.legs_animation = word,
+            Self::TorsoTimer => value.torso_timer = word as i32,
+            Self::TorsoAnimation => value.torso_animation = word,
+            Self::MovementDirection => value.movement_direction = word as i32,
+            Self::GrapplePoint(axis) => value.grapple_point.0[axis] = f32::from_bits(word),
+            Self::EntityFlags => value.entity_flags = word,
+            Self::WeaponPhase => value.weapon_phase = word as i32,
+            Self::Generic => value.generic = word as i32,
+            Self::JumpPadEntity => value.jump_pad_entity = word,
         }
     }
 }

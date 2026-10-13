@@ -78,7 +78,7 @@ impl ClientResources {
 
 /// The retained channel and current argv storage are borrowed only for one
 /// synchronous cgame call or the identical engine configuration consumer.
-pub(crate) struct ClientCommandView<'a> {
+pub(crate) struct ClientConnectionView<'a> {
     client: ClientId,
     lifetime: EntityId,
     channel: &'a mut qa_network::channel::Channel,
@@ -87,23 +87,23 @@ pub(crate) struct ClientCommandView<'a> {
     bank: Option<&'a qa_audio::Bank>,
     pub(crate) disconnected: bool,
 }
-pub(crate) fn command_view<'a>(
+pub(crate) fn connection_view<'a>(
     client: ClientId,
     lifetime: EntityId,
     network: &'a mut qa_network::ingress::Connections,
     resources: &'a mut [Option<ClientResources>],
     catalog: Option<&'a ModelCatalog>,
     bank: Option<&'a qa_audio::Bank>,
-) -> Option<ClientCommandView<'a>> {
+) -> Option<ClientConnectionView<'a>> {
     let channel = &mut network
         .get_mut(client, qa_core::loopback::Endpoint::Client)?
         .channel;
     let resources = resources.get_mut(client.0 as usize)?.as_mut()?;
-    Some(ClientCommandView::new(
+    Some(ClientConnectionView::new(
         client, lifetime, channel, resources, catalog, bank,
     ))
 }
-impl<'a> ClientCommandView<'a> {
+impl<'a> ClientConnectionView<'a> {
     pub(crate) fn new(
         client: ClientId,
         lifetime: EntityId,
@@ -130,12 +130,28 @@ impl<'a> ClientCommandView<'a> {
         self.disconnected = true;
         Err(error)
     }
+    fn validate(
+        &self,
+        server: &qa_session::clients::Server,
+    ) -> Result<(), qa_compat::services::CallError> {
+        let client = server
+            .clients
+            .get(self.client.0 as usize)
+            .ok_or(qa_compat::services::CallError::Entity)?;
+        if client.connection.is_none()
+            || client.entity != self.lifetime
+            || server.entities.resolve(self.lifetime).is_none()
+        {
+            return Err(qa_compat::services::CallError::Entity);
+        }
+        Ok(())
+    }
     pub(crate) fn consume_configuration(
         &mut self,
         server: &mut qa_session::clients::Server,
         team_chats_only: bool,
     ) -> Result<(), qa_compat::services::CallError> {
-        use qa_compat::services::{CallError, ClientServerCommands};
+        use qa_compat::services::{CallError, ClientConnection};
         let received = self
             .channel
             .command_state()
@@ -196,13 +212,38 @@ impl<'a> ClientCommandView<'a> {
         Ok(())
     }
 }
-impl qa_compat::services::ClientServerCommands for ClientCommandView<'_> {
+impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     fn disconnected(&self) -> bool {
         self.disconnected
     }
 
     fn arguments(&self) -> qa_console::command_text::Arguments<'_> {
         self.resources.selected.arguments()
+    }
+    fn snapshot_number(
+        &self,
+        server: &qa_session::clients::Server,
+    ) -> Result<(u32, qa_core::primitives::ThinkTime), qa_compat::services::CallError> {
+        self.validate(server)?;
+        self.channel
+            .q3_snapshot_number()
+            .ok_or(qa_compat::services::CallError::Unsupported)
+    }
+    fn snapshot(
+        &mut self,
+        sequence: i32,
+        server: &qa_session::clients::Server,
+    ) -> Result<Option<qa_network::snapshots::Q3ClientSnapshot<'_>>, qa_compat::services::CallError>
+    {
+        self.validate(server)?;
+        match self.channel.q3_client_snapshot(sequence) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(_) => {
+                self.resources.state.rejected += 1;
+                self.disconnected = true;
+                Err(qa_compat::services::CallError::Memory)
+            }
+        }
     }
     fn select(
         &mut self,
@@ -211,16 +252,7 @@ impl qa_compat::services::ClientServerCommands for ClientCommandView<'_> {
     ) -> Result<bool, qa_compat::services::CallError> {
         use qa_compat::services::CallError;
         use qa_network::outputs::ConfigCommandStep;
-        let client = server
-            .clients
-            .get(self.client.0 as usize)
-            .ok_or(CallError::Entity)?;
-        if client.connection.is_none()
-            || client.entity != self.lifetime
-            || server.entities.resolve(self.lifetime).is_none()
-        {
-            return Err(CallError::Entity);
-        }
+        self.validate(server)?;
         let Ok(sequence) = u32::try_from(number) else {
             return self.reject(CallError::Text);
         };

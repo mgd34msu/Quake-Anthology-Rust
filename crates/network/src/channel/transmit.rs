@@ -77,11 +77,17 @@ struct Pending {
     commands: Option<u32>,
     snapshot_request: Option<Option<u32>>,
     snapshot: Option<SnapshotSubmission>,
+    command_time: Option<i32>,
 }
 #[derive(Clone, Copy)]
 struct SnapshotSubmission {
     sequence: u32,
     observation: Option<qa_core::primitives::SnapshotObservation>,
+}
+#[derive(Clone, Copy)]
+struct MoveSubmission {
+    time: EventTime,
+    command_time: i32,
 }
 pub(super) struct Transmit {
     direction: Direction,
@@ -102,6 +108,8 @@ pub(super) struct Transmit {
     fragment_pending: bool,
     command_flight: Option<u32>,
     snapshot_flight: Option<SnapshotSubmission>,
+    move_flight: Option<MoveSubmission>,
+    last_command_time: i32,
     packet: [u8; PACKET_BYTES],
     pending: Option<Pending>,
     reply_allowed: bool,
@@ -151,6 +159,8 @@ impl Transmit {
             fragment_pending: false,
             command_flight: None,
             snapshot_flight: None,
+            move_flight: None,
+            last_command_time: 0,
             packet: [0; PACKET_BYTES],
             pending: None,
             reply_allowed: !policy.reply_per_packet || endpoint == Endpoint::Client,
@@ -510,6 +520,7 @@ impl Channel {
                 .then_some(commands)
                 .flatten(),
             snapshot_request,
+            command_time: None,
             snapshot: (disposition == Unreliable::Included)
                 .then_some(snapshot)
                 .flatten(),
@@ -575,6 +586,21 @@ impl Channel {
                 }
             }
         }
+        if self.policy.command_ack && self.endpoint == Endpoint::Client {
+            if pending.unreliable == Unreliable::Included {
+                tx.move_flight = Some(MoveSubmission {
+                    time,
+                    command_time: pending.command_time.unwrap_or(tx.last_command_time),
+                });
+            }
+            if !tx.fragment_pending
+                && let Some(observation) = tx.move_flight.take()
+                && let Some(crate::snapshots::Storage::Quake3(ring)) = &mut self.snapshots
+            {
+                ring.record_move(request_sequence, observation.time, observation.command_time);
+                tx.last_command_time = observation.command_time;
+            }
+        }
         tx.state.last_sent = time;
         tx.state.packets = tx.state.packets.saturating_add(1);
         tx.command_flight = pending.commands.or(tx.command_flight);
@@ -635,9 +661,17 @@ impl Channel {
         bytes: &[u8],
         time: EventTime,
         snapshot_request: Option<u32>,
+        command_time: Option<i32>,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         let queued = self.command_state().map(|state| state.queued);
         self.prepare_inner(Some(bytes), time, queued, Some(snapshot_request), None)
+            .map(|_| ())?;
+        if let Some(pending) = &mut self.transmit.pending
+            && pending.unreliable == Unreliable::Included
+        {
+            pending.command_time = command_time;
+        }
+        Ok(self.pending_packet())
     }
     /// Retain snapshot provenance with the same prepared bytes and native
     /// fragments; it becomes observable only when all those bytes are admitted.
