@@ -15,6 +15,22 @@ pub mod geometry;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorldId(pub u32);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldPresentationId(pub u32);
+
+pub struct WorldPresentation {
+    pub world: WorldId,
+    pub(crate) bindings: Box<[SurfaceBinding]>,
+}
+impl WorldPresentation {
+    pub fn world(&self) -> WorldId {
+        self.world
+    }
+    pub fn bindings(&self) -> &[SurfaceBinding] {
+        &self.bindings
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SurfaceBinding {
     pub material: MaterialId,
@@ -56,7 +72,7 @@ pub struct World {
     pub(crate) geometry: geometry::WorldGeometry,
     pub(crate) visibility: std::sync::Arc<VisibilityWorld>,
     pub(crate) mesh: ModelId,
-    pub(crate) bindings: Box<[SurfaceBinding]>,
+    pub(crate) presentations: Span,
 }
 impl World {
     pub fn geometry(&self) -> &geometry::WorldGeometry {
@@ -72,8 +88,8 @@ impl World {
     pub fn mesh(&self) -> ModelId {
         self.mesh
     }
-    pub fn bindings(&self) -> &[SurfaceBinding] {
-        &self.bindings
+    pub fn presentations(&self) -> Span {
+        self.presentations
     }
 }
 

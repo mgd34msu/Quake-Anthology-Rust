@@ -66,7 +66,10 @@ impl FrameHost {
             Item = (
                 ClientId,
                 crate::model_assets::ModelProfile,
-                Option<qa_render::world::WorldId>,
+                Option<(
+                    qa_render::world::WorldId,
+                    qa_render::world::WorldPresentationId,
+                )>,
             ),
         >,
     ) {

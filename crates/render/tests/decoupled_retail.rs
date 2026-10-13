@@ -4,7 +4,10 @@ use qa_formats::{archive::ArchiveReader, bsp::Map};
 use qa_render::{
     Assets, FrontEnd, Limits, Refdef, Viewport,
     cpu::CpuBackend,
-    material::world_load::{WorldLoadOptions, load_world},
+    material::{
+        resources::{PaletteSource, load_palette},
+        world_load::{WorldLoadOptions, WorldPresentationProfile, load_world},
+    },
     world::VisibleSurface,
 };
 
@@ -38,11 +41,21 @@ fn retail_base1_decoupled_samples_reach_the_indexed_surface_cache() {
         16_330
     );
     let mut assets = Assets::load().unwrap();
+    let palette = load_palette(
+        &vfs,
+        &mut assets,
+        PaletteSource::native(RuleSetId::Quake2Rerelease).unwrap(),
+    )
+    .unwrap();
     let loaded = load_world(
         &vfs,
         &map,
         &mut assets,
-        RuleSetId::Quake2Rerelease,
+        Some(palette),
+        &[WorldPresentationProfile::native(
+            RuleSetId::Quake2Rerelease,
+            Some(palette),
+        )],
         WorldLoadOptions::default(),
     )
     .unwrap();
@@ -118,10 +131,11 @@ fn retail_base1_decoupled_samples_reach_the_indexed_surface_cache() {
         fov: [90.0; 2],
         ..Refdef::default()
     };
-    loaded.presentation.apply(&mut view);
+    loaded.presentations[0].defaults.apply(&mut view);
     let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
     assert!(frame.add_world(
         loaded.world,
+        loaded.presentations[0].id,
         &[VisibleSurface {
             surface: surface_index as u32,
             depth_key: 1,

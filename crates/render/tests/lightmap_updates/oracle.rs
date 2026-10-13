@@ -6,7 +6,7 @@ use qa_render::world::geometry::{
     GeometryKind, GeometryPartition, LightEncoding, LightSource, PatchStats, TextureCoordinates,
     WorldGeometry, WorldModel, WorldSurface, WorldVertex,
 };
-use qa_render::world::{SurfaceMaterial, VisibleSurface, WorldId};
+use qa_render::world::{SurfaceMaterial, VisibleSurface, WorldId, WorldPresentationId};
 use qa_world::visibility::{PvsRows, VisLeaf, VisibilityWorld};
 
 fn fixture(
@@ -15,7 +15,18 @@ fn fixture(
     region: AtlasRegion,
     conversion: Option<LightmapConversion>,
     samples: [[u8; 3]; 2],
+) -> (WorldId, WorldPresentationId) {
+    let world = fixture_variants(assets, &[(image, region, conversion)], samples);
+    let presentation = WorldPresentationId(assets.world(world).unwrap().presentations().first);
+    (world, presentation)
+}
+
+fn fixture_variants(
+    assets: &mut qa_render::Assets,
+    variants: &[(ImageId, AtlasRegion, Option<LightmapConversion>)],
+    samples: [[u8; 3]; 2],
 ) -> WorldId {
+    let (_, region, conversion) = variants[0];
     let bounds = Bounds {
         mins: Vec3([4.0, -1.0, -1.0]),
         maxs: Vec3([4.0, 1.0, 1.0]),
@@ -101,17 +112,23 @@ fn fixture(
         PvsRows::all_visible(0),
     )
     .unwrap();
-    assets
-        .register_world_with_bindings(
-            geometry,
-            visibility,
-            &[SurfaceMaterial {
+    let materials = variants
+        .iter()
+        .map(|&(image, region, conversion)| {
+            [SurfaceMaterial {
                 lightmap: image,
                 lightmap_region: Some(region),
                 lightmap_conversion: conversion,
                 ..SurfaceMaterial::default()
-            }],
-        )
+            }]
+        })
+        .collect::<Vec<_>>();
+    let bindings = materials
+        .iter()
+        .map(|variant| &variant[..])
+        .collect::<Vec<_>>();
+    assets
+        .register_world(geometry, visibility, &bindings)
         .unwrap()
 }
 
@@ -173,7 +190,7 @@ fn per_view_refresh_reuses_one_region_and_only_its_actual_scalar_styles() {
     let mut assets = qa_render::Assets::load().unwrap();
     let image = assets.register_image(4, 4, &[0; 64]).unwrap();
     let target = region(1);
-    let world = fixture(
+    let (_world, presentation) = fixture(
         &mut assets,
         image,
         target,
@@ -194,7 +211,7 @@ fn per_view_refresh_reuses_one_region_and_only_its_actual_scalar_styles() {
     ] {
         assert!(
             updates
-                .refresh(world, 0, &styles, &assets, |id, rect, pixels| {
+                .refresh(presentation, 0, &styles, &assets, |id, rect, pixels| {
                     assert_eq!(id, image);
                     assert_eq!(rect, target);
                     assert_eq!(pixels, expected);
@@ -208,7 +225,7 @@ fn per_view_refresh_reuses_one_region_and_only_its_actual_scalar_styles() {
     a[7].indexed_scale = 77;
     assert!(
         !updates
-            .refresh(world, 0, &a, &assets, |_, _, _| {
+            .refresh(presentation, 0, &a, &assets, |_, _, _| {
                 uploads.push(vec![]);
                 true
             })
@@ -222,30 +239,30 @@ fn per_view_refresh_reuses_one_region_and_only_its_actual_scalar_styles() {
 fn shared_page_refresh_keeps_each_world_conversion_and_static_q3_texels() {
     let mut assets = qa_render::Assets::load().unwrap();
     let image = assets.register_image(4, 4, &[91; 64]).unwrap();
-    let q2 = fixture(
+    let (_, q2) = fixture(
         &mut assets,
         image,
         region(0),
         Some(LightmapConversion::Rgb { modulate: 2.0 }),
         [[20, 40, 80], [10, 20, 40]],
     );
-    let q1 = fixture(
+    let (_, q1) = fixture(
         &mut assets,
         image,
         region(1),
         Some(LightmapConversion::Scalar(Q1GlScale::Standard)),
         [[9, 8, 7], [1, 2, 3]],
     );
-    let q3 = fixture(&mut assets, image, region(2), None, [[230; 3], [5; 3]]);
+    let (_, q3) = fixture(&mut assets, image, region(2), None, [[230; 3], [5; 3]]);
     let mut updates = AtlasUpdates::load(&assets).unwrap();
     let mut styles = [LightStyle::default(); 256];
     styles[0].rgb = [1.0, 0.5, 0.25];
     styles[3].rgb = [0.5, 1.0, 2.0];
     let mut gpu = assets.image(image).unwrap().rgba.to_vec();
-    for (world, expected) in [(q2, [50, 80, 200, 255]), (q1, [10, 10, 10, 255])] {
+    for (presentation, expected) in [(q2, [50, 80, 200, 255]), (q1, [10, 10, 10, 255])] {
         assert!(
             updates
-                .refresh(world, 0, &styles, &assets, |id, rect, pixels| {
+                .refresh(presentation, 0, &styles, &assets, |id, rect, pixels| {
                     assert_eq!(id, image);
                     assert_eq!(pixels, expected);
                     let start = (rect.y as usize * 4 + rect.x as usize) * 4;
@@ -276,7 +293,7 @@ fn shared_page_refresh_keeps_each_world_conversion_and_static_q3_texels() {
 fn static_and_inline_scene_references_refresh_one_owned_atlas_residency() {
     let mut assets = qa_render::Assets::load().unwrap();
     let image = assets.register_image(4, 4, &[0; 64]).unwrap();
-    let world = fixture(
+    let (world, presentation) = fixture(
         &mut assets,
         image,
         region(0),
@@ -287,6 +304,7 @@ fn static_and_inline_scene_references_refresh_one_owned_atlas_residency() {
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
     assert!(frame.add_world(
         world,
+        presentation,
         &[VisibleSurface {
             surface: 0,
             depth_key: 0
@@ -295,6 +313,7 @@ fn static_and_inline_scene_references_refresh_one_owned_atlas_residency() {
     assert!(frame.add_entity(SceneEntity {
         model: SceneModel::World {
             world,
+            presentation,
             surfaces: Span { first: 0, count: 1 }
         },
         origin: Vec3([17.0, -4.0, 2.0]),
@@ -313,7 +332,7 @@ fn static_and_inline_scene_references_refresh_one_owned_atlas_residency() {
             for reference in refs {
                 updates
                     .refresh(
-                        reference.world,
+                        reference.presentation,
                         reference.surface,
                         &view.refdef.lightstyles,
                         &assets,
@@ -334,7 +353,7 @@ fn static_and_inline_scene_references_refresh_one_owned_atlas_residency() {
 fn rejected_upload_and_nonfinite_style_do_not_publish_new_residency() {
     let mut assets = qa_render::Assets::load().unwrap();
     let image = assets.register_image(4, 4, &[0; 64]).unwrap();
-    let world = fixture(
+    let (_world, presentation) = fixture(
         &mut assets,
         image,
         region(0),
@@ -345,12 +364,12 @@ fn rejected_upload_and_nonfinite_style_do_not_publish_new_residency() {
     let mut styles = [LightStyle::default(); 256];
     assert!(
         updates
-            .refresh(world, 0, &styles, &assets, |_, _, _| false)
+            .refresh(presentation, 0, &styles, &assets, |_, _, _| false)
             .is_err()
     );
     assert!(
         updates
-            .refresh(world, 0, &styles, &assets, |_, _, pixels| {
+            .refresh(presentation, 0, &styles, &assets, |_, _, pixels| {
                 assert_eq!(pixels, [32, 32, 32, 255]);
                 true
             })
@@ -359,16 +378,157 @@ fn rejected_upload_and_nonfinite_style_do_not_publish_new_residency() {
     styles[0].rgb = [f32::NAN; 3];
     assert!(
         updates
-            .refresh(world, 0, &styles, &assets, |_, _, _| false)
+            .refresh(presentation, 0, &styles, &assets, |_, _, _| false)
             .is_err()
     );
     styles[0].rgb = [0.5; 3];
     assert!(
         updates
-            .refresh(world, 0, &styles, &assets, |_, _, pixels| {
+            .refresh(presentation, 0, &styles, &assets, |_, _, pixels| {
                 assert_eq!(pixels, [24, 24, 24, 255]);
                 true
             })
             .unwrap()
     );
+}
+
+#[test]
+fn one_world_variants_keep_conversion_uploads_and_residency_independent() {
+    for reversed in [false, true] {
+        let mut assets = qa_render::Assets::load().unwrap();
+        let images =
+            [[23; 64], [91; 64]].map(|pixels| assets.register_image(4, 4, &pixels).unwrap());
+        let target = region(1);
+        let mut variants = [
+            (
+                images[0],
+                target,
+                Some(LightmapConversion::Scalar(Q1GlScale::Standard)),
+            ),
+            (
+                images[1],
+                target,
+                Some(LightmapConversion::Rgb { modulate: 2.0 }),
+            ),
+        ];
+        if reversed {
+            variants.reverse();
+        }
+        let world = fixture_variants(&mut assets, &variants, [[20, 40, 80], [10, 20, 40]]);
+        let registrations = assets.world(world).unwrap().presentations();
+        assert_eq!(assets.worlds().len(), 1);
+        assert_eq!(registrations.count, 2);
+        let q1 = WorldPresentationId(registrations.first + u32::from(reversed));
+        let q2 = WorldPresentationId(registrations.first + u32::from(!reversed));
+        assert_ne!(q1, q2);
+        assert_eq!(assets.world_presentation(q1).unwrap().world(), world);
+        assert_eq!(assets.world_presentation(q2).unwrap().world(), world);
+        assert_eq!(
+            assets.surface_binding(q1, 0).unwrap().mesh_indices,
+            assets.surface_binding(q2, 0).unwrap().mesh_indices
+        );
+        let mut a = [LightStyle::default(); 256];
+        a[0].indexed_scale = 128;
+        let mut b = a;
+        b[0].rgb = [1.0, 0.5, 0.25];
+        b[3].rgb = [0.5, 1.0, 2.0];
+        let mut updates = AtlasUpdates::load(&assets).unwrap();
+        let mut uploaded = Vec::new();
+        for (presentation, styles, image, expected) in [
+            (q1, a, images[0], [20, 40, 80, 255]),
+            (q2, b, images[1], [50, 80, 200, 255]),
+        ] {
+            assert!(
+                updates
+                    .refresh(presentation, 0, &styles, &assets, |id, rect, pixels| {
+                        assert_eq!(id, image);
+                        assert_eq!(rect, target);
+                        assert_eq!(pixels, expected);
+                        uploaded.push((id, pixels.to_vec()));
+                        true
+                    })
+                    .unwrap()
+            );
+        }
+        for (presentation, styles) in [(q1, a), (q2, b), (q1, a)] {
+            assert!(
+                !updates
+                    .refresh(presentation, 0, &styles, &assets, |_, _, _| {
+                        panic!("peer refresh must not invalidate this presentation")
+                    })
+                    .unwrap()
+            );
+        }
+        a[0].indexed_scale = 256;
+        a[3].indexed_scale = 128;
+        assert!(
+            updates
+                .refresh(q1, 0, &a, &assets, |id, _, pixels| {
+                    assert_eq!(id, images[0]);
+                    assert_eq!(pixels, [25, 50, 100, 255]);
+                    false
+                })
+                .is_err()
+        );
+        assert!(
+            !updates
+                .refresh(q2, 0, &b, &assets, |_, _, _| {
+                    panic!("rejected peer upload must retain this presentation")
+                })
+                .unwrap()
+        );
+        assert!(
+            updates
+                .refresh(q1, 0, &a, &assets, |id, _, pixels| {
+                    assert_eq!(id, images[0]);
+                    assert_eq!(pixels, [25, 50, 100, 255]);
+                    uploaded.push((id, pixels.to_vec()));
+                    true
+                })
+                .unwrap()
+        );
+        assert_eq!(uploaded.len(), 3);
+        assert_eq!(assets.image(images[0]).unwrap().rgba.as_ref(), &[23; 64]);
+        assert_eq!(assets.image(images[1]).unwrap().rgba.as_ref(), &[91; 64]);
+        assert!(
+            updates
+                .refresh(WorldPresentationId(u32::MAX), 0, &a, &assets, |_, _, _| {
+                    panic!("unknown presentation must not upload")
+                })
+                .is_err()
+        );
+        assert!(
+            updates
+                .refresh(q1, 1, &a, &assets, |_, _, _| {
+                    panic!("unknown surface must not upload")
+                })
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn presentation_variants_cannot_alias_mutable_atlas_texels() {
+    let mut assets = qa_render::Assets::load().unwrap();
+    let image = assets.register_image(4, 4, &[0; 64]).unwrap();
+    fixture_variants(
+        &mut assets,
+        &[
+            (
+                image,
+                region(0),
+                Some(LightmapConversion::Scalar(Q1GlScale::Standard)),
+            ),
+            (
+                image,
+                region(0),
+                Some(LightmapConversion::Rgb { modulate: 1.0 }),
+            ),
+        ],
+        [[16; 3], [0; 3]],
+    );
+    assert!(matches!(
+        AtlasUpdates::load(&assets),
+        Err("GL styled atlas regions overlap")
+    ));
 }

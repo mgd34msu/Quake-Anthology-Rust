@@ -15,11 +15,32 @@ mod tiled;
 #[path = "instances.rs"]
 mod instances;
 
+#[path = "presentations.rs"]
+mod presentations;
+
+fn only_presentation(assets: &Assets, world: WorldId) -> crate::world::WorldPresentationId {
+    let span = assets.world(world).unwrap().presentations();
+    assert_eq!(span.count, 1);
+    crate::world::WorldPresentationId(span.first)
+}
+
 fn fixture_world(
     assets: &mut Assets,
     depth: f32,
     extent: f32,
     binding: SurfaceMaterial,
+    light: Option<u8>,
+    partition: GeometryPartition,
+    mutate: impl FnOnce(&mut WorldGeometry),
+) -> WorldId {
+    fixture_world_variants(assets, depth, extent, &[binding], light, partition, mutate)
+}
+
+fn fixture_world_variants(
+    assets: &mut Assets,
+    depth: f32,
+    extent: f32,
+    bindings: &[SurfaceMaterial],
     light: Option<u8>,
     partition: GeometryPartition,
     mutate: impl FnOnce(&mut WorldGeometry),
@@ -119,8 +140,9 @@ fn fixture_world(
         PvsRows::all_visible(0),
     )
     .unwrap();
+    let variants: Vec<_> = bindings.iter().map(std::slice::from_ref).collect();
     assets
-        .register_world_with_bindings(geometry, visibility, &[binding])
+        .register_world(geometry, visibility, &variants)
         .unwrap()
 }
 
@@ -146,6 +168,7 @@ fn packet(assets: &Assets, worlds: &[WorldId], refdef: Refdef) -> CommandList {
     for (index, &world) in worlds.iter().enumerate() {
         assert!(frame.add_world(
             world,
+            only_presentation(&assets, world),
             &[VisibleSurface {
                 surface: 0,
                 depth_key: index as u32 * 9000
@@ -1632,7 +1655,17 @@ fn rank_one_and_zero_extent_texture_axes_use_the_same_indexed_cache_and_bands() 
             .catalog
             .surfaces[0];
         assert!(info.cache_supported);
-        assert!(info.indexed_chart.is_some());
+        assert!(
+            cpu.world
+                .as_ref()
+                .unwrap()
+                .prepare
+                .geometry
+                .catalog
+                .geometry[info.geometry]
+                .indexed_chart
+                .is_some()
+        );
         let frame = packet(
             &assets,
             &[world],
@@ -2593,6 +2626,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
     let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
     assert!(frame.add_world(
         back,
+        only_presentation(&assets, back),
         &[VisibleSurface {
             surface: 0,
             depth_key: 9000
@@ -2600,6 +2634,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
     ));
     assert!(frame.add_world(
         front,
+        only_presentation(&assets, front),
         &[VisibleSurface {
             surface: 0,
             depth_key: 0
@@ -2628,6 +2663,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
     frame.clear_scene();
     assert!(frame.add_world(
         front,
+        only_presentation(&assets, front),
         &[VisibleSurface {
             surface: 0,
             depth_key: 9000
@@ -2635,6 +2671,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
     ));
     assert!(frame.add_world(
         back,
+        only_presentation(&assets, back),
         &[VisibleSurface {
             surface: 0,
             depth_key: 0
@@ -2751,6 +2788,7 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
     for &world in &worlds {
         assert!(frame.add_world(
             world,
+            only_presentation(&assets, world),
             &[VisibleSurface {
                 surface: 0,
                 depth_key: 0

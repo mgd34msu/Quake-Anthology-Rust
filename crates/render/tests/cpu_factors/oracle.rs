@@ -12,6 +12,12 @@ use crate::world::{SurfaceMaterial, VisibleSurface, WorldId, geometry::*};
 use qa_core::primitives::{Bounds, Vec3};
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
+fn only_presentation(assets: &Assets, world: WorldId) -> crate::world::WorldPresentationId {
+    let span = assets.world(world).unwrap().presentations();
+    assert_eq!(span.count, 1);
+    crate::world::WorldPresentationId(span.first)
+}
+
 fn fixture_world(
     assets: &mut Assets,
     binding: SurfaceMaterial,
@@ -111,9 +117,7 @@ fn fixture_world(
         PvsRows::all_visible(0),
     )
     .unwrap();
-    assets
-        .register_world_with_bindings(geometry, vis, &[binding])
-        .unwrap()
+    assets.register_world(geometry, vis, &[&[binding]]).unwrap()
 }
 
 fn material(
@@ -186,6 +190,7 @@ fn packet(assets: &Assets, worlds: &[WorldId]) -> CommandList {
     for (index, &world) in worlds.iter().enumerate() {
         assert!(frame.add_world(
             world,
+            only_presentation(&assets, world),
             &[VisibleSurface {
                 surface: 0,
                 depth_key: (worlds.len() - index) as u32

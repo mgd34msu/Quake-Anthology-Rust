@@ -497,18 +497,34 @@ fn run() -> Result<(), String> {
     if !imported.consumed() {
         return Err("copied saved profile contained no applicable settings".into());
     }
-    let image_settings = render_settings::image_settings(&console.cvars, source)?;
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
+    let mut palettes = [None; 5];
+    let source_palette = render_settings::palette(
+        &runtime.vfs,
+        &mut assets,
+        input.native_source,
+        &mut palettes,
+    )?;
+    let presentation_profile = render_settings::world_profile(
+        &runtime.vfs,
+        &mut assets,
+        &console.cvars,
+        source,
+        &mut palettes,
+    )?;
     let loaded = input.load(
         &runtime.vfs,
         &mut assets,
         &mut runtime.geometry,
-        source,
-        WorldLoadOptions {
-            image_settings: Some(image_settings),
-            ..WorldLoadOptions::default()
-        },
+        source_palette,
+        &[presentation_profile],
+        WorldLoadOptions::default(),
     )?;
+    let presentation = loaded
+        .render
+        .presentations
+        .first()
+        .ok_or("missing requested world presentation")?;
     for diagnostic in &loaded.render.diagnostics {
         logger::console(format_args!(
             "world {}: {diagnostic}\n",
@@ -541,7 +557,7 @@ fn run() -> Result<(), String> {
         time_ms: 0,
         ..Refdef::default()
     };
-    loaded.render.presentation.apply(&mut refdef);
+    presentation.defaults.apply(&mut refdef);
     let world = assets
         .world(loaded.render.world)
         .ok_or("missing loaded world")?;
@@ -559,7 +575,8 @@ fn run() -> Result<(), String> {
         .begin_frame([18, 26, 34, 255])
         .ok_or("scene packet unavailable")?;
     frame.clear_scene();
-    if !frame.add_world(loaded.render.world, surfaces) || !frame.render_scene(refdef, &[], &assets)
+    if !frame.add_world(loaded.render.world, presentation.id, surfaces)
+        || !frame.render_scene(refdef, &[], &assets)
     {
         return Err("fixed retail scene capacity".into());
     }
@@ -602,8 +619,11 @@ fn run() -> Result<(), String> {
                 .begin_frame([18, 26, 34, 255])
                 .ok_or("diagnostic scene packet unavailable")?;
             isolated.clear_scene();
-            if !isolated.add_world(loaded.render.world, std::slice::from_ref(surface))
-                || !isolated.render_scene(refdef, &[], &assets)
+            if !isolated.add_world(
+                loaded.render.world,
+                presentation.id,
+                std::slice::from_ref(surface),
+            ) || !isolated.render_scene(refdef, &[], &assets)
             {
                 return Err("diagnostic scene capacity".into());
             }
@@ -616,7 +636,11 @@ fn run() -> Result<(), String> {
                     "{{\"event\":\"retail_surface_rejected\",\"surface\":{},\"rejected\":{},\"material\":{}}}\n",
                     surface.surface,
                     result.rejected,
-                    world.bindings()[surface.surface as usize].material.0,
+                    assets
+                        .surface_binding(presentation.id, surface.surface)
+                        .ok_or("missing diagnostic surface binding")?
+                        .material
+                        .0,
                 ));
             }
             diagnosis

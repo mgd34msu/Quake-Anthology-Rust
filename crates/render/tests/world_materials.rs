@@ -12,11 +12,43 @@ use qa_render::{
     assets::{ImageId, PaletteId, StageTexture, TcMod},
     cpu::CpuBackend,
     material::resources::{ImageSettings, Images, PaletteSource, load_palette},
-    material::world_load::{WorldLoadOptions, load_world},
+    material::world_load::{
+        LoadedWorld, LoadedWorldPresentation, WorldLoadOptions, WorldPresentationProfile,
+        load_world,
+    },
     shader::{RgbGen, TexMod},
     surface_cache::{IndexedLighting, IndexedTexture},
-    world::{VisibleSurface, geometry::TextureCoordinates},
+    world::{VisibleSurface, WorldPresentationId, geometry::TextureCoordinates},
 };
+
+fn load_native_world(
+    vfs: &Vfs,
+    map: &Map<'_>,
+    assets: &mut Assets,
+    rules: RuleSetId,
+    options: WorldLoadOptions,
+) -> Result<LoadedWorld, qa_render::material::world_load::WorldMaterialError> {
+    let source = PaletteSource::native(map.bsp.format.rule_set());
+    let source_palette = source
+        .map(|source| load_palette(vfs, assets, source))
+        .transpose()?;
+    let target = PaletteSource::native(rules);
+    let target_palette = if target == source {
+        source_palette
+    } else {
+        target
+            .map(|source| load_palette(vfs, assets, source))
+            .transpose()?
+    };
+    load_world(
+        vfs,
+        map,
+        assets,
+        source_palette,
+        &[WorldPresentationProfile::native(rules, target_palette)],
+        options,
+    )
+}
 
 fn map_bytes(family: u8) -> Vec<u8> {
     let (magic, count, light_lump, samples) = match family {
@@ -192,7 +224,7 @@ fn independent_lightmap_projection_packs_large_grids_with_original_styles() -> R
             }),
         ];
         let mut assets = Assets::load().map_err(|e| format!("assets: {e:?}"))?;
-        let loaded = load_world(
+        let loaded = load_native_world(
             &vfs,
             &map,
             &mut assets,
@@ -201,14 +233,16 @@ fn independent_lightmap_projection_packs_large_grids_with_original_styles() -> R
         )
         .map_err(|e| format!("independent materials: {e:?}"))?;
         assert!(matches!(
-            loaded.presentation.cpu,
+            loaded.presentations[0].defaults.cpu,
             CpuPresentation::Indexed {
                 lighting: IndexedLighting::NativeRgb,
                 ..
             }
         ));
         let world = assets.world(loaded.world).ok_or("world")?;
-        let binding = world.bindings()[0];
+        let binding = *assets
+            .surface_binding(loaded.presentations[0].id, 0)
+            .unwrap();
         let region = binding.lightmap_region.ok_or("lit region")?;
         assert_eq!(region.page_size, expected_page_size);
         assert_eq!((region.width, region.height), (width, 2));
@@ -231,8 +265,20 @@ fn independent_lightmap_projection_packs_large_grids_with_original_styles() -> R
         ]) {
             assert_eq!(vertex.vertex.lightmap_coord, region.uv_at_sample(raw));
         }
-        assert!(world.bindings()[1].lightmap_region.is_none());
-        assert_eq!(world.bindings()[1].lightmap, qa_render::assets::ImageId(0));
+        assert!(
+            assets
+                .surface_binding(loaded.presentations[0].id, 1)
+                .unwrap()
+                .lightmap_region
+                .is_none()
+        );
+        assert_eq!(
+            assets
+                .surface_binding(loaded.presentations[0].id, 1)
+                .unwrap()
+                .lightmap,
+            qa_render::assets::ImageId(0)
+        );
         assert_eq!(geometry.surfaces[1].light_samples.count, 0);
     }
     std::fs::remove_dir_all(root).map_err(|e| e.to_string())?;
@@ -325,7 +371,7 @@ fn authored_stages_replace_only_matching_legacy_faces_and_keep_their_lightmaps()
             std::fs::write(root.join("scripts/test.shader"), shader).map_err(|e| e.to_string())?;
             let vfs = mount(&root)?;
             let mut assets = Assets::load().map_err(|e| format!("assets: {e:?}"))?;
-            let loaded = load_world(
+            let loaded = load_native_world(
                 &vfs,
                 &map,
                 &mut assets,
@@ -334,8 +380,12 @@ fn authored_stages_replace_only_matching_legacy_faces_and_keep_their_lightmaps()
             )
             .map_err(|e| format!("material: {e:?}"))?;
             let world = assets.world(loaded.world).ok_or("world")?;
-            let first = world.bindings()[0];
-            let second = world.bindings()[1];
+            let first = *assets
+                .surface_binding(loaded.presentations[0].id, 0)
+                .unwrap();
+            let second = *assets
+                .surface_binding(loaded.presentations[0].id, 1)
+                .unwrap();
             let changed = assets.material(first.material).ok_or("first material")?;
             let stock = assets.material(second.material).ok_or("second material")?;
             assert_eq!(assets.name(stock.name), Some("other"));
@@ -388,7 +438,7 @@ fn opaque_native_water_and_flow_register_software_sampling_without_changing_gl_s
         }
         let vfs = mount(&root)?;
         let mut assets = Assets::load().map_err(|e| e.to_string())?;
-        let loaded = load_world(
+        let loaded = load_native_world(
             &vfs,
             &map,
             &mut assets,
@@ -396,7 +446,9 @@ fn opaque_native_water_and_flow_register_software_sampling_without_changing_gl_s
             WorldLoadOptions::default(),
         )
         .map_err(|e| format!("water material: {e:?}"))?;
-        let binding = assets.world(loaded.world).ok_or("world")?.bindings()[0];
+        let binding = *assets
+            .surface_binding(loaded.presentations[0].id, 0)
+            .ok_or("binding")?;
         let material = assets.material(binding.material).ok_or("material")?;
         let base = &material.stages[0];
         if opaque {
@@ -433,9 +485,9 @@ fn opaque_native_water_and_flow_register_software_sampling_without_changing_gl_s
     std::fs::remove_dir_all(root).map_err(|e| e.to_string())
 }
 
-fn surface_image(assets: &Assets, world: qa_render::world::WorldId) -> ImageId {
+fn surface_image(assets: &Assets, presentation: WorldPresentationId) -> ImageId {
     let material = assets
-        .material(assets.world(world).unwrap().bindings()[0].material)
+        .material(assets.surface_binding(presentation, 0).unwrap().material)
         .unwrap();
     material
         .stages
@@ -465,13 +517,14 @@ fn selected_cpu_palette_preserves_source_colors_with_load_time_index_translation
             RuleSetId::Quake2Rerelease,
         ] {
             let mut assets = Assets::load().map_err(|e| format!("assets: {e:?}"))?;
-            let loaded = load_world(&vfs, &map, &mut assets, rules, WorldLoadOptions::default())
-                .map_err(|e| format!("material: {e:?}"))?;
-            assert_eq!(loaded.presentation_rules, rules);
+            let loaded =
+                load_native_world(&vfs, &map, &mut assets, rules, WorldLoadOptions::default())
+                    .map_err(|e| format!("material: {e:?}"))?;
+            assert_eq!(loaded.presentations[0].profile.rules, rules);
             let q1 = matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld);
             let CpuPresentation::Indexed {
                 palette, lighting, ..
-            } = loaded.presentation.cpu
+            } = loaded.presentations[0].defaults.cpu
             else {
                 panic!("selected legacy palette must retain indexed presentation");
             };
@@ -488,11 +541,16 @@ fn selected_cpu_palette_preserves_source_colors_with_load_time_index_translation
                 }
             );
             assert_eq!(
-                loaded.presentation.lightstyles[0].indexed_scale,
+                loaded.presentations[0].defaults.lightstyles[0].indexed_scale,
                 if q1 { 264 } else { 384 }
             );
-            assert_eq!(loaded.presentation.blend_phase, BlendPhase::FinalPalette);
-            let image = assets.image(surface_image(&assets, loaded.world)).unwrap();
+            assert_eq!(
+                loaded.presentations[0].defaults.blend_phase,
+                BlendPhase::FinalPalette
+            );
+            let image = assets
+                .image(surface_image(&assets, loaded.presentations[0].id))
+                .unwrap();
             assert_eq!(&image.rgba[..4], &source_color);
             let expected_index = if same_resource {
                 10
@@ -524,6 +582,7 @@ fn selected_cpu_palette_preserves_source_colors_with_load_time_index_translation
             let mut frame = frontend.begin_frame([0, 0, 0, 255]).ok_or("frame")?;
             assert!(frame.add_world(
                 loaded.world,
+                loaded.presentations[0].id,
                 &[VisibleSurface {
                     surface: 0,
                     depth_key: 0
@@ -546,7 +605,7 @@ fn selected_cpu_palette_preserves_source_colors_with_load_time_index_translation
                 far: 64.0,
                 ..Refdef::default()
             };
-            loaded.presentation.apply(&mut view);
+            loaded.presentations[0].defaults.apply(&mut view);
             assert!(frame.render_scene(view, &[], &assets));
             let packet = frame.finish();
             let stats = cpu.render(&packet, &assets);
@@ -562,77 +621,91 @@ fn selected_cpu_palette_preserves_source_colors_with_load_time_index_translation
 }
 
 #[test]
-fn loading_one_map_with_two_presentations_keeps_previous_assets_unchanged() -> Result<(), String> {
+fn one_world_registers_exact_profiles_once_without_mutating_previous_assets() -> Result<(), String>
+{
     let root = resources("cache-roles")?;
     let vfs = mount(&root)?;
     let bytes = map_bytes(1);
     let map = legacy_map(&bytes, 1)?;
     let mut assets = Assets::load().map_err(|e| format!("assets: {e:?}"))?;
-    let first = load_world(
+    let palette = load_palette(
+        &vfs,
+        &mut assets,
+        PaletteSource::native(RuleSetId::Quake).unwrap(),
+    )
+    .map_err(|e| format!("palette: {e:?}"))?;
+    let first = WorldPresentationProfile::native(RuleSetId::Quake, Some(palette));
+    let second = WorldPresentationProfile::native(RuleSetId::Quake3, None);
+    let third = WorldPresentationProfile {
+        image_settings: ImageSettings {
+            picmip: 2,
+            ..second.image_settings
+        },
+        ..second
+    };
+    let loaded = load_world(
         &vfs,
         &map,
         &mut assets,
-        RuleSetId::Quake,
+        Some(palette),
+        &[first, second, third, first],
         WorldLoadOptions::default(),
     )
-    .map_err(|e| format!("first material: {e:?}"))?;
-    let first_binding = assets.world(first.world).unwrap().bindings()[0];
-    let first_stages = assets
-        .material(first_binding.material)
+    .map_err(|e| format!("material variants: {e:?}"))?;
+    assert_eq!(assets.worlds().len(), 1);
+    assert_eq!(assets.models().len(), 2); // The empty model and one static mesh.
+    assert_eq!(loaded.presentations.len(), 4);
+    assert_eq!(loaded.presentations[0].id, loaded.presentations[3].id);
+    assert_eq!(assets.world(loaded.world).unwrap().presentations().count, 3);
+    let mesh_range = assets
+        .surface_binding(loaded.presentations[0].id, 0)
         .unwrap()
-        .stages
+        .mesh_indices;
+    let original = surface_image(&assets, loaded.presentations[0].id);
+    let original_pixels = assets
+        .image(original)
+        .unwrap()
+        .prepared
+        .as_ref()
+        .unwrap()
+        .levels[0]
+        .rgba
         .to_vec();
-    let first_image = surface_image(&assets, first.world);
-    let original = assets.image(first_image).unwrap();
-    let original_revision = original.preparation_revision;
-    let original_pixels = original.prepared.as_ref().unwrap().levels[0].rgba.to_vec();
-    assert_eq!(original.prepared.as_ref().unwrap().levels[0].width, 16);
-    let second = load_world(
-        &vfs,
-        &map,
-        &mut assets,
-        RuleSetId::Quake3,
-        WorldLoadOptions::default(),
-    )
-    .map_err(|e| format!("second material: {e:?}"))?;
-    assert_eq!(second.presentation.cpu, CpuPresentation::Rgb);
-    let second_image = surface_image(&assets, second.world);
-    assert_ne!(second.world, first.world);
-    assert_ne!(second_image, first_image);
-    assert_ne!(
-        assets.world(second.world).unwrap().bindings()[0].material,
-        first_binding.material
-    );
+    let revision = assets.image(original).unwrap().preparation_revision;
+    let mut images = Vec::new();
+    for (registration, width) in loaded.presentations.iter().take(3).zip([16, 8, 4]) {
+        let binding = assets.surface_binding(registration.id, 0).unwrap();
+        assert_eq!(
+            assets.world_presentation(registration.id).unwrap().world(),
+            loaded.world
+        );
+        assert_eq!(binding.mesh_indices, mesh_range);
+        let image = surface_image(&assets, registration.id);
+        assert!(!images.contains(&image));
+        images.push(image);
+        assert_eq!(
+            assets
+                .image(image)
+                .unwrap()
+                .prepared
+                .as_ref()
+                .unwrap()
+                .levels[0]
+                .width,
+            width
+        );
+        assert_eq!(
+            assets.image(image).unwrap().rgba,
+            assets.image(original).unwrap().rgba
+        );
+    }
     assert_eq!(
-        assets.image(second_image).unwrap().rgba,
-        assets.image(first_image).unwrap().rgba
-    );
-    assert_eq!(
-        assets
-            .image(second_image)
-            .unwrap()
-            .prepared
-            .as_ref()
-            .unwrap()
-            .levels[0]
-            .width,
-        8
+        assets.image(original).unwrap().preparation_revision,
+        revision
     );
     assert_eq!(
         assets
-            .material(first_binding.material)
-            .unwrap()
-            .stages
-            .as_ref(),
-        first_stages
-    );
-    assert_eq!(
-        assets.image(first_image).unwrap().preparation_revision,
-        original_revision
-    );
-    assert_eq!(
-        assets
-            .image(first_image)
+            .image(original)
             .unwrap()
             .prepared
             .as_ref()
@@ -642,32 +715,121 @@ fn loading_one_map_with_two_presentations_keeps_previous_assets_unchanged() -> R
             .as_ref(),
         original_pixels
     );
-    // An explicit upload override is honored independently of presentation.
-    let third = load_world(
-        &vfs,
-        &map,
-        &mut assets,
-        RuleSetId::Quake3,
-        WorldLoadOptions {
-            image_settings: Some(ImageSettings {
-                picmip: 2,
-                ..ImageSettings::native(RuleSetId::Quake3)
-            }),
-            ..WorldLoadOptions::default()
-        },
-    )
-    .map_err(|e| format!("third material: {e:?}"))?;
-    assert_eq!(
-        assets
-            .image(surface_image(&assets, third.world))
-            .unwrap()
-            .prepared
-            .as_ref()
-            .unwrap()
-            .levels[0]
-            .width,
-        4
-    );
+    assert_eq!(surface_image(&assets, loaded.presentations[3].id), original);
+    std::fs::remove_dir_all(root).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn draw_registered_profiles(
+    assets: &Assets,
+    world: qa_render::world::WorldId,
+    profiles: &[LoadedWorldPresentation],
+) -> Result<Vec<u32>, String> {
+    let width = profiles.len() as u32 * 8;
+    let mut cpu = CpuBackend::load_with_assets(width, 8, assets).map_err(str::to_owned)?;
+    let mut frontend = FrontEnd::load(Limits::default()).map_err(str::to_owned)?;
+    let mut frame = frontend.begin_frame([0, 0, 0, 255]).ok_or("frame")?;
+    for (seat, profile) in profiles.iter().enumerate() {
+        assert!(frame.add_world(world, profile.id, &[VisibleSurface::default()]));
+        let mut view = Refdef {
+            viewport: Viewport {
+                x: seat as u32 * 8,
+                width: 8,
+                height: 8,
+                ..Default::default()
+            },
+            origin: Vec3([8.0, 8.0, 8.0]),
+            axes: [
+                Vec3([0.0, 0.0, -1.0]),
+                Vec3([0.0, 1.0, 0.0]),
+                Vec3([1.0, 0.0, 0.0]),
+            ],
+            fov: [90.0; 2],
+            near: 0.25,
+            far: 64.0,
+            ..Refdef::default()
+        };
+        profile.defaults.apply(&mut view);
+        assert!(frame.render_scene(view, &[], assets));
+    }
+    let packet = frame.finish();
+    assert_eq!(cpu.render(&packet, assets).rejected, 0);
+    Ok(cpu.pixels().to_vec())
+}
+
+#[test]
+fn one_geometry_presents_explicit_palette_variants_in_both_seat_orders() -> Result<(), String> {
+    let root = resources("same-world-palettes")?;
+    let vfs = mount(&root)?;
+    let bytes = map_bytes(1);
+    let mut map = legacy_map(&bytes, 1)?;
+    map.surface_edges.reverse();
+    for reversed in [false, true] {
+        let mut assets = Assets::load().map_err(|e| e.to_string())?;
+        let source = load_palette(
+            &vfs,
+            &mut assets,
+            PaletteSource::native(RuleSetId::Quake).unwrap(),
+        )
+        .map_err(|e| format!("source palette: {e:?}"))?;
+        let target = load_palette(
+            &vfs,
+            &mut assets,
+            PaletteSource::native(RuleSetId::Quake2).unwrap(),
+        )
+        .map_err(|e| format!("target palette: {e:?}"))?;
+        let mut profiles = [
+            WorldPresentationProfile::native(RuleSetId::Quake, Some(source)),
+            WorldPresentationProfile::native(RuleSetId::Quake2, Some(target)),
+        ];
+        if reversed {
+            profiles.reverse();
+        }
+        let loaded = load_world(
+            &vfs,
+            &map,
+            &mut assets,
+            Some(source),
+            &profiles,
+            WorldLoadOptions::default(),
+        )
+        .map_err(|e| format!("palette variants: {e:?}"))?;
+        assert_eq!(assets.worlds().len(), 1);
+        assert_eq!(assets.models().len(), 2);
+        let mut expected = Vec::new();
+        for profile in &loaded.presentations {
+            let image = assets.image(surface_image(&assets, profile.id)).unwrap();
+            let expected_index = if profile.profile.rules == RuleSetId::Quake {
+                10
+            } else {
+                42
+            };
+            assert!(
+                image
+                    .indexed
+                    .as_ref()
+                    .unwrap()
+                    .mip(0)
+                    .unwrap()
+                    .indices()
+                    .iter()
+                    .all(|&index| index == expected_index)
+            );
+            expected.push(draw_registered_profiles(
+                &assets,
+                loaded.world,
+                &[*profile],
+            )?);
+        }
+        let joined = draw_registered_profiles(&assets, loaded.world, &loaded.presentations)?;
+        for (seat, oracle) in expected.iter().enumerate() {
+            let actual: Vec<_> = joined
+                .chunks_exact(16)
+                .flat_map(|row| row[seat * 8..seat * 8 + 8].iter().copied())
+                .collect();
+            assert_eq!(&actual, oracle);
+        }
+    }
     std::fs::remove_dir_all(root).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -711,7 +873,7 @@ fn foreign_presentation_keeps_q3_geometry_coordinates_and_source_overbright() ->
     });
     let mut assets = Assets::load().map_err(|e| format!("assets: {e:?}"))?;
     for rules in [RuleSetId::Quake3, RuleSetId::Quake, RuleSetId::Quake2] {
-        let loaded = load_world(&vfs, &map, &mut assets, rules, WorldLoadOptions::default())
+        let loaded = load_native_world(&vfs, &map, &mut assets, rules, WorldLoadOptions::default())
             .map_err(|e| format!("material: {e:?}"))?;
         let world = assets.world(loaded.world).unwrap();
         assert_eq!(
@@ -722,13 +884,15 @@ fn foreign_presentation_keeps_q3_geometry_coordinates_and_source_overbright() ->
         assert_eq!(vertex.texcoord, [0.25, 0.75]);
         assert_eq!(vertex.lightmap_coord, [0.125, 0.875]);
         assert_eq!(vertex.color, [40, 80, 120, 255]);
-        let image = assets.image(surface_image(&assets, loaded.world)).unwrap();
+        let image = assets
+            .image(surface_image(&assets, loaded.presentations[0].id))
+            .unwrap();
         // Source Q3 ignores the top-origin bit, even with a Q1/Q2 upload
         // policy. A presentation-selected decoder would return [1, 2, 3].
         assert_eq!(&image.rgba[..4], &[30, 60, 90, 255]);
-        assert!(image.indexed.is_none());
+        assert_eq!(image.indexed.is_none(), rules == RuleSetId::Quake3);
         assert_eq!(
-            matches!(loaded.presentation.cpu, CpuPresentation::Rgb),
+            matches!(loaded.presentations[0].defaults.cpu, CpuPresentation::Rgb),
             rules == RuleSetId::Quake3
         );
     }

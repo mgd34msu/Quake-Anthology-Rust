@@ -18,6 +18,7 @@ pub use scene::{
     Light, LightStyle, Limits, PaletteOperation, PaletteShift, PaletteTransform, PerspectiveStep,
     Refdef, SceneEntity, SceneModel, Viewport,
 };
+pub use world::WorldPresentationId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BackendStats {

@@ -5,7 +5,9 @@ use qa_app::{
 use qa_core::primitives::Vec3;
 use qa_render::{
     BlendPhase, CpuPresentation, PaletteId, PaletteTransform, Viewport,
-    material::world_load::PresentationDefaults, surface_cache::IndexedLighting, world::WorldId,
+    material::world_load::PresentationDefaults,
+    surface_cache::IndexedLighting,
+    world::{WorldId, WorldPresentationId},
 };
 
 fn presentation(palette: PaletteId, lighting: IndexedLighting) -> PresentationDefaults {
@@ -31,6 +33,7 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     };
     let first = ClientView {
         world: WorldId(2),
+        world_presentation: WorldPresentationId(3),
         origin: Vec3([1.0, 2.0, 3.0]),
         angles: Vec3([5.0, 45.0, 0.0]),
         fov_x: 90.0,
@@ -38,6 +41,9 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
         presentation: presentation(PaletteId(0), IndexedLighting::Gray),
     };
     let mut second = first;
+    second.world_presentation = WorldPresentationId(4);
+    assert_eq!(first.world, second.world);
+    assert_ne!(first.world_presentation, second.world_presentation);
     second.presentation = presentation(PaletteId(1), IndexedLighting::NativeRgb);
     second.presentation.lightstyles[0].indexed_scale = 384;
     second.presentation.identity_light = 0.5;

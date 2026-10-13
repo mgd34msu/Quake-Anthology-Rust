@@ -433,7 +433,7 @@ impl Renderer {
             };
             self.sample.visible_surfaces += surfaces.len() as u32;
             frame.clear_scene();
-            let world_added = frame.add_world(client.world, surfaces);
+            let world_added = frame.add_world(client.world, client.world_presentation, surfaces);
             if let Some(client_scene) = &scenes[seat] {
                 self.sample.client_scene += client_scene.append(
                     &mut frame,

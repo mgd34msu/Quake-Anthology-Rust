@@ -9,7 +9,7 @@ use qa_core::primitives::{Bounds, IndexSpan, RuleSetId, Vec3};
 use qa_render::assets::{SoftwareAlias, StageTexture};
 use qa_render::shader::{AlphaGen, RgbGen, StageBlend};
 use qa_render::world::{
-    WorldId,
+    SurfaceMaterial, WorldId, WorldPresentationId,
     geometry::{GeometryPartition, PatchStats, WorldGeometry, WorldModel},
 };
 use qa_render::{Assets, PaletteId};
@@ -987,6 +987,10 @@ fn optional_image_constructor_failure_isolated_from_healthy_same_filename_profil
 }
 
 fn world(assets: &mut Assets, origin: f32) -> WorldId {
+    world_variants(assets, origin, &[&[]])
+}
+
+fn world_variants(assets: &mut Assets, origin: f32, variants: &[&[SurfaceMaterial]]) -> WorldId {
     let bounds = Bounds {
         mins: Vec3([origin; 3]),
         maxs: Vec3([origin + 1.0; 3]),
@@ -1029,7 +1033,9 @@ fn world(assets: &mut Assets, origin: f32) -> WorldId {
         PvsRows::all_visible(0),
     )
     .unwrap();
-    assets.register_world(geometry, visibility, &[]).unwrap()
+    assets
+        .register_world(geometry, visibility, variants)
+        .unwrap()
 }
 
 #[test]
@@ -1386,13 +1392,18 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
     let _fixture = support::Fixture::models();
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
-    let first = world(&mut assets, 0.0);
+    let first = world_variants(&mut assets, 0.0, &[&[], &[]]);
     let second = world(&mut assets, 100.0);
+    assert_eq!(assets.worlds().len(), 2);
+    assert_eq!(assets.world(first).unwrap().presentations().count, 2);
+    let world_meshes = assets.models().len();
     let profile = native_profile(RuleSetId::Quake2, palette);
     let builder =
         ModelCatalogBuilder::new(assets, [profile], [first, second], ModelLimits::default())
             .unwrap();
     let (assets, catalog) = builder.finish();
+    assert_eq!(assets.models().len(), world_meshes);
+    assert_eq!(catalog.capacity().inline_bindings, 4);
     let layout = ConfigLayout::QUAKE2;
     let mut configs =
         ConfigStrings::load((0..layout.count).map(|index| layout.capacity(index).unwrap()))
@@ -1421,9 +1432,21 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
         },
         ..Default::default()
     };
-    for selected in [first, second] {
+    let first_presentation = assets.world(first).unwrap().presentations().first;
+    for (selected, presentation) in [
+        (first, WorldPresentationId(first_presentation)),
+        (first, WorldPresentationId(first_presentation + 1)),
+        (
+            second,
+            WorldPresentationId(assets.world(second).unwrap().presentations().first),
+        ),
+    ] {
         assert_eq!(
-            bindings.bind_all(&configs, &catalog, profile, Some(selected)),
+            assets.world_presentation(presentation).unwrap().world(),
+            selected
+        );
+        assert_eq!(
+            bindings.bind_all(&configs, &catalog, profile, Some((selected, presentation))),
             0
         );
         let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
@@ -1452,10 +1475,16 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
         );
         let packet = frame.finish();
         let entity = packet.entity(0);
-        let qa_render::SceneModel::World { world, surfaces } = entity.model else {
+        let qa_render::SceneModel::World {
+            world,
+            presentation: selected_presentation,
+            surfaces,
+        } = entity.model
+        else {
             panic!("inline became a mesh")
         };
         assert_eq!(world, selected);
+        assert_eq!(selected_presentation, presentation);
         assert_eq!(
             surfaces,
             catalog.resolve_inline(selected, 1).unwrap().surfaces

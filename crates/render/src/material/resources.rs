@@ -472,6 +472,7 @@ pub struct ImagesState {
     recipes: ImageRecipes,
     source_rules: RuleSetId,
     indexed_remap: Option<IndexedRemap>,
+    raster_target: Option<IndexedTarget>,
     resolved: Vec<(ImageKey, ResolvedImage, ImageUse)>,
     conflicts: Vec<ImageConflict>,
 }
@@ -493,6 +494,7 @@ impl ImagesState {
                     target,
                     maps: Vec::new(),
                 }),
+            raster_target: None,
             resolved: Vec::new(),
             conflicts: Vec::new(),
         })
@@ -529,6 +531,24 @@ impl<'a> Images<'a> {
     }
     pub fn conflicts(&self) -> &[ImageConflict] {
         &self.state.conflicts
+    }
+    /// The cold profile chooses software quantization independently of the
+    /// decoder's source rules and source palette.
+    pub fn set_raster_target(
+        &mut self,
+        target: Option<IndexedTarget>,
+    ) -> Result<(), ResourceError> {
+        if target.is_some_and(|target| self.assets.palette(target.palette).is_none()) {
+            return Err(ResourceError::Asset("missing presentation image palette"));
+        }
+        if !self.state.resolved.is_empty() && target != self.state.raster_target {
+            return Err(ResourceError::Asset("image target already registered"));
+        }
+        self.state.raster_target = target;
+        Ok(())
+    }
+    pub fn raster_target(&self) -> Option<IndexedTarget> {
+        self.state.raster_target
     }
     fn remap_texture(
         &mut self,

@@ -71,6 +71,11 @@ fn poly_order(assets: &Assets, materials: &[MaterialId]) -> Vec<u32> {
 }
 
 fn world(assets: &mut Assets, materials: &[SurfaceMaterial]) -> WorldId {
+    world_variants(assets, &[materials])
+}
+
+fn world_variants(assets: &mut Assets, variants: &[&[SurfaceMaterial]]) -> WorldId {
+    let materials = variants[0];
     let bounds = Bounds {
         mins: Vec3([1.0, -1.0, -1.0]),
         maxs: Vec3([1.0, 1.0, 1.0]),
@@ -147,8 +152,91 @@ fn world(assets: &mut Assets, materials: &[SurfaceMaterial]) -> WorldId {
     )
     .unwrap();
     assets
-        .register_world_with_bindings(geometry, visibility, materials)
+        .register_world(geometry, visibility, variants)
         .unwrap()
+}
+
+fn presentation(assets: &Assets, world: WorldId) -> qa_render::WorldPresentationId {
+    qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first)
+}
+
+#[test]
+fn presentation_variants_select_sort_materials_for_world_and_inline_and_reject_wrong_world() {
+    let mut assets = Assets::load().unwrap();
+    let low = material(&mut assets, "variant-low", 1.0);
+    let middle = material(&mut assets, "variant-middle", 5.0);
+    let high = material(&mut assets, "variant-high", 9.0);
+    let low_bindings = [SurfaceMaterial {
+        material: low,
+        ..Default::default()
+    }];
+    let high_bindings = [SurfaceMaterial {
+        material: high,
+        ..Default::default()
+    }];
+    let world = world_variants(&mut assets, &[&low_bindings, &high_bindings]);
+    let foreign = world_variants(&mut assets, &[&low_bindings]);
+    let first = presentation(&assets, world);
+    let second = qa_render::WorldPresentationId(first.0 + 1);
+    assert_eq!(assets.worlds().len(), 2);
+    assert_eq!(assets.models().len(), 3);
+    assert_eq!(
+        assets.surface_binding(first, 0).unwrap().mesh_indices,
+        assets.surface_binding(second, 0).unwrap().mesh_indices
+    );
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    assert!(frame.add_world(world, first, &[VisibleSurface::default()]));
+    assert!(frame.add_poly(middle, &[Vertex::default(); 3]));
+    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.add_entity(SceneEntity {
+        model: SceneModel::World {
+            world,
+            presentation: second,
+            surfaces: Span { first: 0, count: 1 }
+        },
+        ..Default::default()
+    }));
+    assert!(frame.add_poly(middle, &[Vertex::default(); 3]));
+    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.add_world(
+        world,
+        presentation(&assets, foreign),
+        &[VisibleSurface::default()]
+    ));
+    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    let packet = frame.finish();
+    let views: Vec<_> = packet
+        .commands()
+        .iter()
+        .filter_map(|command| {
+            if let Command::View(view) = command {
+                Some(view)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        packet
+            .draws(views[0].scene.draws)
+            .iter()
+            .map(|draw| draw.kind)
+            .collect::<Vec<_>>(),
+        [DrawKind::Surface, DrawKind::Poly]
+    );
+    assert_eq!(
+        packet
+            .draws(views[1].scene.draws)
+            .iter()
+            .map(|draw| draw.kind)
+            .collect::<Vec<_>>(),
+        [DrawKind::Poly, DrawKind::Surface]
+    );
+    assert_eq!(packet.surface(0).presentation, first);
+    assert_eq!(packet.surface(1).presentation, second);
+    assert_eq!(views[2].scene.draws.count, 0);
+    assert_eq!(packet.rejected, 1);
 }
 
 #[test]
@@ -166,11 +254,15 @@ fn world_submissions_copy_surface_ids_and_keep_prior_views_on_overflow() {
         surface: 0,
         depth_key: 7,
     }];
-    assert!(frame.add_world(first_world, &visible));
+    assert!(frame.add_world(first_world, presentation(&assets, first_world), &visible));
     visible[0].surface = 1;
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
-    assert!(!frame.add_world(WorldId(8), &[visible[0]; 2]));
-    assert!(frame.add_world(second_world, &visible));
+    assert!(!frame.add_world(
+        WorldId(8),
+        qa_render::WorldPresentationId(u32::MAX),
+        &[visible[0]; 2]
+    ));
+    assert!(frame.add_world(second_world, presentation(&assets, second_world), &visible));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
@@ -297,6 +389,7 @@ fn shared_draw_order_places_translucent_surfaces_after_opaque_entities() {
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_world(
         world,
+        presentation(&assets, world),
         &[VisibleSurface {
             surface: 0,
             depth_key: 7
@@ -372,6 +465,7 @@ fn equal_native_keys_keep_native_cross_kind_shortsort_swaps() {
     assert!(frame.add_poly(material, &[Vertex::default(); 3]));
     assert!(frame.add_world(
         world,
+        presentation(&assets, world),
         &[VisibleSurface {
             surface: 0,
             depth_key: 1
@@ -455,6 +549,7 @@ fn draw_keys_group_lightmaps_without_reordering_raw_depth_surfaces() {
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_world(
         world,
+        presentation(&assets, world),
         &[
             VisibleSurface {
                 surface: 0,
@@ -518,9 +613,9 @@ fn surface_draw_ranks_are_native_view_local_and_preserve_bsp_depth_keys() {
             depth_key: 99,
         },
     ];
-    assert!(frame.add_world(world, &surfaces));
+    assert!(frame.add_world(world, presentation(&assets, world), &surfaces));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
-    assert!(frame.add_world(world, &surfaces[..2]));
+    assert!(frame.add_world(world, presentation(&assets, world), &surfaces[..2]));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
@@ -619,7 +714,11 @@ fn draw_capacity_drops_whole_payload_submissions_atomically() {
     .unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_entity(SceneEntity::default()));
-    assert!(!frame.add_world(WorldId(99), &[VisibleSurface::default(); 2]));
+    assert!(!frame.add_world(
+        WorldId(99),
+        qa_render::WorldPresentationId(u32::MAX),
+        &[VisibleSurface::default(); 2]
+    ));
     assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
     assert!(!frame.add_entity(SceneEntity::default()));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
@@ -689,7 +788,11 @@ fn invalid_frozen_handles_only_drop_the_affected_draw() {
         model: qa_render::ModelId(999).into(),
         ..SceneEntity::default()
     }));
-    assert!(frame.add_world(WorldId(999), &[VisibleSurface::default()]));
+    assert!(frame.add_world(
+        WorldId(999),
+        qa_render::WorldPresentationId(u32::MAX),
+        &[VisibleSurface::default()]
+    ));
     assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
     assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
@@ -790,6 +893,7 @@ fn inline_surface_submission_owns_one_pose_and_keeps_per_face_bindings() {
     let mut frame = front.begin_frame([0; 4]).unwrap();
     let mut entity = SceneEntity {
         model: SceneModel::World {
+            presentation: presentation(&assets, id),
             world: id,
             surfaces: Span { first: 0, count: 2 },
         },
@@ -802,6 +906,7 @@ fn inline_surface_submission_owns_one_pose_and_keeps_per_face_bindings() {
     entity.origin = Vec3([100.0; 3]);
     assert!(frame.add_world(
         id,
+        presentation(&assets, id),
         &[VisibleSurface {
             surface: 1,
             depth_key: 19
@@ -866,6 +971,7 @@ fn inline_surface_capacity_failure_leaves_entity_and_draw_arenas_unchanged() {
         let mut frame = front.begin_frame([0; 4]).unwrap();
         let instance = SceneEntity {
             model: SceneModel::World {
+                presentation: presentation(&assets, id),
                 world: id,
                 surfaces: Span { first: 0, count: 2 },
             },
@@ -874,6 +980,7 @@ fn inline_surface_capacity_failure_leaves_entity_and_draw_arenas_unchanged() {
         assert!(!frame.add_entity(instance));
         assert!(frame.add_entity(SceneEntity {
             model: SceneModel::World {
+                presentation: presentation(&assets, id),
                 world: id,
                 surfaces: Span { first: 1, count: 1 }
             },

@@ -47,6 +47,7 @@ fn run() -> Result<(), String> {
     let mut map_name = None;
     let mut movement_rules = None;
     let mut presentation_rules = None;
+    let mut seat_presentations = [None; SeatId::COUNT];
     let mut trace_rules = None;
     let mut client_module = None;
     let mut seat_policies = [None; SeatId::COUNT];
@@ -143,6 +144,13 @@ fn run() -> Result<(), String> {
                     RuleSetId::parse(&args.next().ok_or("--presentation needs q1/qw/q2/q2rr/q3")?)
                         .ok_or("unknown presentation rule set")?,
                 );
+            }
+            "--seat-presentation" => {
+                let value = args
+                    .next()
+                    .ok_or("--seat-presentation needs seat:q1/qw/q2/q2rr/q3")?;
+                let (seat, rules) = parse_seat_value(&value, RuleSetId::parse)?;
+                insert_seat_value(&mut seat_presentations, &mut seat_count, seat, rules)?;
             }
             "--client-module" => {
                 client_module = Some(
@@ -327,6 +335,7 @@ fn run() -> Result<(), String> {
     }
     if (movement_rules.is_some()
         || presentation_rules.is_some()
+        || seat_presentations.iter().any(Option::is_some)
         || trace_rules.is_some()
         || client_module.is_some()
         || seat_policies.iter().any(Option::is_some))
@@ -414,18 +423,33 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
     }
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
+    let mut palettes = [None; 5];
     if let Some((input, policy)) = staged_map {
-        let presentation = presentation_rules.unwrap_or(input.native_source);
-        let image_settings = qa_app::render_settings::image_settings(&console.cvars, presentation)?;
+        let source_palette = qa_app::render_settings::palette(
+            &runtime.vfs,
+            &mut assets,
+            input.native_source,
+            &mut palettes,
+        )?;
+        let presentations = seat_presentations[..seat_count]
+            .iter()
+            .map(|rules| {
+                qa_app::render_settings::world_profile(
+                    &runtime.vfs,
+                    &mut assets,
+                    &console.cvars,
+                    rules.or(presentation_rules).unwrap_or(input.native_source),
+                    &mut palettes,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let loaded = input.load(
             &runtime.vfs,
             &mut assets,
             &mut runtime.geometry,
-            presentation,
-            WorldLoadOptions {
-                image_settings: Some(image_settings),
-                ..WorldLoadOptions::default()
-            },
+            source_palette,
+            &presentations,
+            WorldLoadOptions::default(),
         )?;
         world_rate = qa_app::client_policy::tick_rate(policy.client, &mut console.cvars)?;
         let tick_ms = match world_rate {
@@ -564,46 +588,50 @@ fn run() -> Result<(), String> {
     host.console.execute_frame(&mut host.runtime);
     // Synchronous native precache owns the same assets and metadata that CLIENT
     // will read after startup. Configure every module's independent profile first.
-    let mut palettes = [None; 5];
-    let view_palette = loaded_world.as_ref().and_then(|world| {
-        let qa_render::CpuPresentation::Indexed { palette, .. } = world.presentation.cpu else {
-            return None;
-        };
-        palettes[world.presentation_rules as usize] = Some(palette);
-        Some(palette)
-    });
     let mut profiles = [None; 5];
+    let mut seat_model_profiles = [[None; 5]; SeatId::COUNT];
+    let mut configured_profiles = Vec::new();
     for source_rules in RuleSetId::ALL {
         if !model_sources.contains(&source_rules) {
             continue;
         }
-        let rules = presentation_rules.unwrap_or(source_rules);
-        for palette_rules in [source_rules, rules] {
-            if palettes[palette_rules as usize].is_none()
-                && let Some(source) =
-                    qa_render::material::resources::PaletteSource::native(palette_rules)
-            {
-                palettes[palette_rules as usize] = Some(
-                    qa_render::material::resources::load_palette(
-                        &host.runtime.vfs,
-                        &mut assets,
-                        source,
-                    )
-                    .map_err(|error| format!("model palette: {error:?}"))?,
-                );
-            }
-        }
-        profiles[source_rules as usize] = Some(qa_app::model_assets::ModelProfile {
+        let source_palette = qa_app::render_settings::palette(
+            &host.runtime.vfs,
+            &mut assets,
             source_rules,
-            rules,
-            source_palette: palettes[source_rules as usize],
-            palette: view_palette.or(palettes[rules as usize]),
-            image_settings: qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
-        });
+            &mut palettes,
+        )?;
+        let default = qa_app::render_settings::world_profile(
+            &host.runtime.vfs,
+            &mut assets,
+            &host.console.cvars,
+            presentation_rules.unwrap_or(source_rules),
+            &mut palettes,
+        )?;
+        let local = loaded_world
+            .as_ref()
+            .into_iter()
+            .flat_map(|world| world.presentations.iter().enumerate())
+            .map(|(seat, presentation)| (Some(seat), presentation.profile));
+        for (seat, presentation) in std::iter::once((None, default)).chain(local) {
+            let profile = qa_app::model_assets::ModelProfile {
+                source_rules,
+                rules: presentation.rules,
+                source_palette,
+                palette: presentation.indexed_palette,
+                image_settings: presentation.image_settings,
+            };
+            if let Some(seat) = seat {
+                seat_model_profiles[seat][source_rules as usize] = Some(profile);
+            } else {
+                profiles[source_rules as usize] = Some(profile);
+            }
+            configured_profiles.push(profile);
+        }
     }
     host.runtime.model_loader = Some(qa_app::model_assets::ModelCatalogBuilder::new(
         assets,
-        profiles.iter().flatten().copied(),
+        configured_profiles,
         render_world,
         Default::default(),
     )?);
@@ -726,7 +754,15 @@ fn run() -> Result<(), String> {
         .client_model_sources()
         .into_iter()
         .filter_map(|(client, source)| {
-            profiles[source as usize].map(|profile| (client, profile, render_world))
+            let seat = local_clients.iter().position(|id| *id == Some(client));
+            let profile = seat.map_or(profiles[source as usize], |seat| {
+                seat_model_profiles[seat][source as usize]
+            })?;
+            let world = seat.and_then(|seat| {
+                let loaded = loaded_world.as_ref()?;
+                Some((loaded.world, loaded.presentations.get(seat)?.id))
+            });
+            Some((client, profile, world))
         })
         .collect();
     let (mut assets, models) = host
@@ -755,10 +791,12 @@ fn run() -> Result<(), String> {
     let mut audio = qa_app::audio::Output::open(bank)?;
     host.local_clients = local_clients;
     if let Some(world) = &loaded_world {
-        host.local_presentations.fill(world.presentation);
-    }
-    for (world, client) in host.local_worlds.iter_mut().zip(local_clients) {
-        *world = client.and(render_world);
+        for (seat, presentation) in world.presentations.iter().enumerate() {
+            if local_clients[seat].is_some() {
+                host.local_worlds[seat] = Some((world.world, presentation.id));
+                host.local_presentations[seat] = presentation.defaults;
+            }
+        }
     }
     let (band_cvar, cpu_bands) = if matches!(renderer_kind, Kind::Cpu) {
         cpu_band_setting(&host.console.cvars, cpu_bands)?

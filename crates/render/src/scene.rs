@@ -1,7 +1,7 @@
 //! Q3-style append-only scene ranges in alternating owned packets.
 use crate::assets::{Assets, MaterialId, ModelId, PaletteId, Vertex};
 use crate::surface_cache::IndexedLighting;
-use crate::world::{VisibleSurface, WorldId};
+use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
 use qa_core::primitives::Vec3;
 use std::cmp::Ordering as SortOrdering;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -198,7 +198,11 @@ impl Default for Refdef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SceneModel {
     Mesh(ModelId),
-    World { world: WorldId, surfaces: Span },
+    World {
+        world: WorldId,
+        presentation: WorldPresentationId,
+        surfaces: Span,
+    },
 }
 impl From<ModelId> for SceneModel {
     fn from(model: ModelId) -> Self {
@@ -292,6 +296,7 @@ pub struct SceneRanges {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SurfaceRef {
     pub world: WorldId,
+    pub presentation: WorldPresentationId,
     pub surface: u32,
     pub depth_key: u32,
     /// View-local position in the one sorted draw list. Exact-depth ties use
@@ -607,7 +612,11 @@ impl Frame {
                 }
                 self.draw(DrawKind::Entity, self.list.entity_count as u32);
             }
-            SceneModel::World { world, surfaces } => {
+            SceneModel::World {
+                world,
+                presentation,
+                surfaces,
+            } => {
                 if surfaces.first.checked_add(surfaces.count).is_none() {
                     self.list.rejected += 1;
                     return false;
@@ -615,6 +624,7 @@ impl Frame {
                 let index = self.list.entity_count as u32;
                 if !self.add_surfaces(surfaces.range().map(|surface| SurfaceRef {
                     world,
+                    presentation,
                     surface: surface as u32,
                     entity: Some(index),
                     ..SurfaceRef::default()
@@ -661,9 +671,15 @@ impl Frame {
     }
     /// Copy the one frontend visibility result into this owned packet. Both
     /// consumers receive these ids and the CPU's original BSP depth keys.
-    pub fn add_world(&mut self, world: WorldId, surfaces: &[VisibleSurface]) -> bool {
+    pub fn add_world(
+        &mut self,
+        world: WorldId,
+        presentation: WorldPresentationId,
+        surfaces: &[VisibleSurface],
+    ) -> bool {
         self.add_surfaces(surfaces.iter().map(|source| SurfaceRef {
             world,
+            presentation,
             surface: source.surface,
             depth_key: source.depth_key,
             ..SurfaceRef::default()
@@ -775,7 +791,7 @@ pub(crate) fn item_material_lightmap(
     match draw.kind {
         DrawKind::Surface => {
             let surface = list.surface(draw.index);
-            let binding = assets.surface_binding(surface.world, surface.surface)?;
+            let binding = assets.scene_binding(*surface)?;
             let material = surface
                 .entity
                 .and_then(|index| list.entity(index).material)

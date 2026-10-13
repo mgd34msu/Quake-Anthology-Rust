@@ -1272,7 +1272,7 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(binding) = world.bindings.get(surface.surface as usize) else {
+        let Some(binding) = assets.surface_binding(surface.presentation, surface.surface) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -1299,7 +1299,7 @@ impl GlBackend {
         if self
             .lightmap_updates
             .refresh(
-                surface.world,
+                surface.presentation,
                 surface.surface,
                 lightstyles,
                 assets,

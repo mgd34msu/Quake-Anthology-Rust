@@ -342,7 +342,7 @@ pub struct SurfaceSource {
     layout: CacheLayout,
     mip_count: u8,
     slot_start: usize,
-    lightmap: Option<LightGrid>,
+    lightmap: Option<Arc<LightGrid>>,
     /// Texture texel coordinates to the raw, independent lightmap lattice.
     lightmap_projection: Option<IndexedProjection>,
     world_has_lightdata: bool,
@@ -353,7 +353,7 @@ impl SurfaceSource {
     pub fn load(
         texture_mins: [i32; 2],
         extents: [u32; 2],
-        lightmap: Option<LightGrid>,
+        lightmap: Option<Arc<LightGrid>>,
         world_has_lightdata: bool,
         lightmap_projection: Option<IndexedProjection>,
     ) -> Result<Self, &'static str> {
@@ -499,7 +499,7 @@ impl SurfaceSource {
     }
 
     pub fn lightmap(&self) -> Option<&LightGrid> {
-        self.lightmap.as_ref()
+        self.lightmap.as_deref()
     }
 
     fn grid_cells(&self) -> usize {
@@ -1276,7 +1276,7 @@ fn fill_surface(
             palette,
             lights,
             projection,
-            source.lightmap.as_ref().map(LightGrid::dimensions),
+            source.lightmap.as_deref().map(LightGrid::dimensions),
             output,
         );
         return;

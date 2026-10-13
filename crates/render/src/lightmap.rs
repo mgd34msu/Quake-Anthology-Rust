@@ -302,8 +302,8 @@ fn active_style_count(ids: &[u8; 4]) -> usize {
     ids.iter().take_while(|&&id| id != 255).count()
 }
 
-/// GPU atlas residency remembers only the weights used by each registered
-/// surface. Samples and atlas images stay in the existing immutable Assets.
+/// GPU atlas residency remembers the weights for each presentation's surfaces.
+/// Geometry and samples stay in the world's existing immutable Assets storage.
 pub struct AtlasUpdates {
     offsets: Box<[usize]>,
     styles: Box<[Option<[LightStyle; 4]>]>,
@@ -311,19 +311,27 @@ pub struct AtlasUpdates {
     rgba: Box<[u8]>,
 }
 impl AtlasUpdates {
-    /// Frozen Assets must retain the same numeric world, surface and image
-    /// registrations until this residency owner is discarded.
+    /// Frozen Assets must retain the same numeric presentation, surface and
+    /// image registrations until this residency owner is discarded.
     pub fn load(assets: &crate::Assets) -> Result<Self, &'static str> {
-        let mut offsets = Vec::with_capacity(assets.worlds().len());
+        let mut offsets = Vec::with_capacity(assets.world_presentations().len());
         let mut region_edges = Vec::new();
         let mut count = 0usize;
         let mut bytes = 0usize;
-        for world in assets.worlds() {
+        for presentation in assets.world_presentations() {
+            let world = assets
+                .world(presentation.world())
+                .ok_or("invalid GL styled world")?;
             offsets.push(count);
             count = count
                 .checked_add(world.geometry().surfaces.len())
                 .ok_or("GL styled surface count overflow")?;
-            for (surface, binding) in world.geometry().surfaces.iter().zip(world.bindings()) {
+            for (surface, binding) in world
+                .geometry()
+                .surfaces
+                .iter()
+                .zip(presentation.bindings())
+            {
                 if binding.lightmap_conversion.is_none() {
                     continue;
                 }
@@ -395,28 +403,32 @@ impl AtlasUpdates {
     /// records successful submission; rejection keeps the previous residency.
     pub fn refresh(
         &mut self,
-        world_id: crate::world::WorldId,
+        presentation_id: crate::world::WorldPresentationId,
         surface_id: u32,
         styles: &[LightStyle; 256],
         assets: &crate::Assets,
         upload: impl FnOnce(crate::assets::ImageId, AtlasRegion, &[u8]) -> bool,
     ) -> Result<bool, &'static str> {
-        let world = assets.world(world_id).ok_or("invalid GL styled world")?;
+        let presentation = assets
+            .world_presentation(presentation_id)
+            .ok_or("invalid GL styled presentation")?;
+        let world = assets
+            .world(presentation.world())
+            .ok_or("invalid GL styled world")?;
         let surface = world
             .geometry()
             .surfaces
             .get(surface_id as usize)
             .ok_or("invalid GL styled surface")?;
-        let binding = world
-            .bindings()
-            .get(surface_id as usize)
+        let binding = assets
+            .surface_binding(presentation_id, surface_id)
             .ok_or("invalid GL styled binding")?;
         let Some(conversion) = binding.lightmap_conversion else {
             return Ok(false);
         };
         let index = self
             .offsets
-            .get(world_id.0 as usize)
+            .get(presentation_id.0 as usize)
             .and_then(|offset| offset.checked_add(surface_id as usize))
             .ok_or("invalid GL style residency index")?;
         let last = self

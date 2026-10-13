@@ -17,7 +17,9 @@ fn lit_source() -> SurfaceSource {
     SurfaceSource::load(
         [0; 2],
         [16; 2],
-        Some(LightGrid::gray(2, 2, [0, 255, 255, 255], &[64; 4]).unwrap()),
+        Some(Arc::new(
+            LightGrid::gray(2, 2, [0, 255, 255, 255], &[64; 4]).unwrap(),
+        )),
         true,
         None,
     )

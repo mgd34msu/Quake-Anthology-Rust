@@ -3,9 +3,36 @@
 use qa_content::vfs::Vfs;
 use qa_core::primitives::RuleSetId;
 use qa_formats::{archive::ArchiveReader, bsp::Map};
-use qa_render::{Assets, material::world_load::WorldLoadOptions};
+use qa_render::{
+    Assets,
+    material::world_load::{WorldLoadOptions, WorldPresentationProfile},
+};
 use qa_world::collision::CollisionStore;
 use std::path::PathBuf;
+
+fn load_input(
+    input: qa_app::map::MapInput,
+    vfs: &Vfs,
+    assets: &mut Assets,
+    geometry: &mut CollisionStore,
+    rules: RuleSetId,
+) -> qa_app::map::LoadedMap {
+    let mut palettes = [None; 5];
+    let source = qa_app::render_settings::palette(vfs, assets, input.native_source, &mut palettes)
+        .expect("source palette");
+    let target = qa_app::render_settings::palette(vfs, assets, rules, &mut palettes)
+        .expect("target palette");
+    input
+        .load(
+            vfs,
+            assets,
+            geometry,
+            source,
+            &[WorldPresentationProfile::native(rules, target)],
+            WorldLoadOptions::default(),
+        )
+        .expect("production map/collision admission")
+}
 
 fn load_retail(product: &str, name: &str, rules: RuleSetId) {
     let root = PathBuf::from(std::env::var_os("QA_RETAIL_ROOT").expect("QA_RETAIL_ROOT"));
@@ -59,16 +86,13 @@ fn load_retail(product: &str, name: &str, rules: RuleSetId) {
         assert_eq!(negative_tagged_axial, 0);
     }
     let mut geometry = CollisionStore::new();
-    let loaded = qa_app::map::read(&vfs, name)
-        .expect("map input")
-        .load(
-            &vfs,
-            &mut Assets::load().unwrap(),
-            &mut geometry,
-            rules,
-            WorldLoadOptions::default(),
-        )
-        .expect("production map/collision admission");
+    let loaded = load_input(
+        qa_app::map::read(&vfs, name).expect("map input"),
+        &vfs,
+        &mut Assets::load().unwrap(),
+        &mut geometry,
+        rules,
+    );
     assert_eq!(
         geometry.model_count(loaded.collision),
         Some(map.models.len() as u32)
@@ -161,15 +185,7 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
     for (_, name, rules, entity_rules) in cases {
         let input = qa_app::map::read(&vfs, name).expect("shared VFS map");
         let presentation = input.native_source;
-        let map = input
-            .load(
-                &vfs,
-                &mut assets,
-                &mut geometry,
-                presentation,
-                WorldLoadOptions::default(),
-            )
-            .expect("retail geometry admission");
+        let map = load_input(input, &vfs, &mut assets, &mut geometry, presentation);
         assert!(geometry.model_count(map.collision).expect("model count") > 1);
         loaded.push((map.collision, rules, entity_rules, name));
     }
@@ -252,16 +268,13 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
             );
         }
     }
-    let replacement = qa_app::map::read(&vfs, "base1")
-        .expect("reload input")
-        .load(
-            &vfs,
-            &mut assets,
-            &mut geometry,
-            RuleSetId::Quake2,
-            WorldLoadOptions::default(),
-        )
-        .expect("reload geometry");
+    let replacement = load_input(
+        qa_app::map::read(&vfs, "base1").expect("reload input"),
+        &vfs,
+        &mut assets,
+        &mut geometry,
+        RuleSetId::Quake2,
+    );
     assert_eq!(replacement.collision.slot, removed.slot);
     assert_ne!(replacement.collision.generation, removed.generation);
     assert!(geometry.model_bounds(removed, 1).is_none());

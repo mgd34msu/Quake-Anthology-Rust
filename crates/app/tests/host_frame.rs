@@ -641,7 +641,12 @@ fn server_set_angles_survive_q2_and_q3_client_prediction() {
     )
     .unwrap();
     host.local_clients = local;
-    host.local_worlds[..2].fill(Some(qa_render::world::WorldId(0)));
+    for seat in 0..2 {
+        host.local_worlds[seat] = Some((
+            qa_render::world::WorldId(0),
+            qa_render::world::WorldPresentationId(seat as u32),
+        ));
+    }
     let mut source = Source::default();
     for ms in [100, 116, 132] {
         source.time = ms;
@@ -659,6 +664,10 @@ fn server_set_angles_survive_q2_and_q3_client_prediction() {
             assert_eq!(frame.commands[seat].view_angles, Vec3::default());
             assert_eq!(host.runtime.prediction[seat].player.view_angles, *angles);
             assert_eq!(host.client_views()[seat].unwrap().angles, *angles);
+            assert_eq!(
+                host.client_views()[seat].unwrap().world_presentation,
+                qa_render::world::WorldPresentationId(seat as u32)
+            );
         }
     }
 }

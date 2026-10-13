@@ -17,6 +17,7 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug)]
 pub struct ClientView {
     pub world: qa_render::world::WorldId,
+    pub world_presentation: qa_render::world::WorldPresentationId,
     pub presentation: qa_render::material::world_load::PresentationDefaults,
     pub origin: qa_core::primitives::Vec3,
     pub angles: qa_core::primitives::Vec3,
@@ -145,7 +146,10 @@ pub struct FrameHost {
     pub developer: CvarHandle,
     pub local_clients: [Option<ClientId>; SeatId::COUNT],
     /// A seat's world/presentation choice is independent of its physics rules.
-    pub local_worlds: [Option<qa_render::world::WorldId>; SeatId::COUNT],
+    pub local_worlds: [Option<(
+        qa_render::world::WorldId,
+        qa_render::world::WorldPresentationId,
+    )>; SeatId::COUNT],
     pub local_presentations: [qa_render::material::world_load::PresentationDefaults; SeatId::COUNT],
     maxfps: CvarHandle,
     fov: CvarHandle,
@@ -424,9 +428,10 @@ impl FrameHost {
     pub fn client_views(&self) -> [Option<ClientView>; SeatId::COUNT] {
         std::array::from_fn(|seat| {
             let (_, _, player) = self.local_seat(seat)?;
-            let world = self.local_worlds[seat]?;
+            let (world, world_presentation) = self.local_worlds[seat]?;
             Some(ClientView {
                 world,
+                world_presentation,
                 presentation: self.local_presentations[seat],
                 origin: player.eye(),
                 angles: player.view_angles,

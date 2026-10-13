@@ -64,7 +64,10 @@ fn connect(host: &mut FrameHost) -> qa_core::primitives::ClientId {
         .connect(Connection::Local, ModuleId(1), None)
         .unwrap();
     host.local_clients[0] = Some(client);
-    host.local_worlds[0] = Some(qa_render::world::WorldId(0));
+    host.local_worlds[0] = Some((
+        qa_render::world::WorldId(0),
+        qa_render::world::WorldPresentationId(0),
+    ));
     client
 }
 

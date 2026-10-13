@@ -2,8 +2,7 @@
 use super::{
     load_catalog,
     resources::{
-        ImageRole, ImageSettings, ImageUse, Images, PaletteSource, ResolvedImage, ResourceError,
-        load_palette,
+        ImageRole, ImageSettings, ImageUse, Images, IndexedTarget, ResolvedImage, ResourceError,
     },
 };
 use crate::{
@@ -15,16 +14,17 @@ use crate::{
         Wrap, upload,
     },
     lightmap::{
-        AtlasBuilder, AtlasRegion, LightmapConversion, LightmapError, Q1GlScale, shift_quake3_rgb,
+        Atlas, AtlasBuilder, AtlasRegion, LightmapConversion, LightmapError, Q1GlScale,
+        shift_quake3_rgb,
     },
     shader::{
-        AlphaFunc, AlphaGen, BlendFactor, Cull, Deform, RgbGen, ShaderDef, StageBlend, TexCoordGen,
-        TextureMap, canonical_path,
+        AlphaFunc, AlphaGen, BlendFactor, Cull, Deform, RgbGen, ShaderCatalog, ShaderDef,
+        StageBlend, TexCoordGen, TextureMap, canonical_path,
     },
     sky::{CloudSphere, LayeredSphere, split_layered_sky},
     surface_cache::{IndexedLighting, IndexedTexture},
     world::{
-        SurfaceMaterial, WorldId,
+        SurfaceMaterial, WorldId, WorldPresentationId,
         geometry::{
             GeometryError, GeometryOptions, LightSource, WorldGeometry,
             grid::{GridFan, GridOptions, subdivide_surface},
@@ -92,27 +92,17 @@ impl Default for SkyEnvironment {
 #[derive(Clone, Debug)]
 pub struct WorldLoadOptions {
     pub geometry: GeometryOptions,
-    /// Explicit RGB/custom presentation; stock Q1/Q2 defaults retain indices.
-    pub cpu_rgb: bool,
-    pub q1_gl_scale: Q1GlScale,
-    pub q2_modulate: f32,
     pub map_overbright: u8,
     pub renderer_overbright: u8,
     pub sky_environment: SkyEnvironment,
-    /// None resolves defaults from the caller's explicit presentation role.
-    pub image_settings: Option<ImageSettings>,
 }
 impl Default for WorldLoadOptions {
     fn default() -> Self {
         Self {
             geometry: GeometryOptions::default(),
-            cpu_rgb: false,
-            q1_gl_scale: Q1GlScale::OriginalOverbright,
-            q2_modulate: 1.0,
             map_overbright: 2,
             renderer_overbright: 0,
             sky_environment: SkyEnvironment::default(),
-            image_settings: None,
         }
     }
 }
@@ -149,10 +139,45 @@ impl PresentationDefaults {
         view.identity_light = self.identity_light;
     }
 }
+/// Exact cold policies. None is an explicit RGB target, never a palette fallback.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldPresentationProfile {
+    pub rules: RuleSetId,
+    pub indexed_palette: Option<crate::PaletteId>,
+    pub image_settings: ImageSettings,
+    pub q1_gl_scale: Q1GlScale,
+    pub q2_modulate: f32,
+}
+impl PartialEq for WorldPresentationProfile {
+    fn eq(&self, other: &Self) -> bool {
+        self.rules == other.rules
+            && self.indexed_palette == other.indexed_palette
+            && self.image_settings == other.image_settings
+            && self.q1_gl_scale == other.q1_gl_scale
+            && self.q2_modulate.to_bits() == other.q2_modulate.to_bits()
+    }
+}
+impl WorldPresentationProfile {
+    pub fn native(rules: RuleSetId, indexed_palette: Option<crate::PaletteId>) -> Self {
+        Self {
+            rules,
+            indexed_palette,
+            image_settings: ImageSettings::native(rules),
+            q1_gl_scale: Q1GlScale::OriginalOverbright,
+            q2_modulate: 1.0,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub struct LoadedWorldPresentation {
+    pub id: WorldPresentationId,
+    pub profile: WorldPresentationProfile,
+    pub defaults: PresentationDefaults,
+}
 pub struct LoadedWorld {
     pub world: WorldId,
-    pub presentation_rules: RuleSetId,
-    pub presentation: PresentationDefaults,
+    /// Request order is preserved; exact duplicate profiles share one id.
+    pub presentations: Box<[LoadedWorldPresentation]>,
     pub diagnostics: Box<[String]>,
 }
 #[derive(Debug)]
@@ -185,96 +210,46 @@ pub fn load_world(
     vfs: &Vfs,
     map: &Map<'_>,
     assets: &mut Assets,
-    presentation_rules: RuleSetId,
+    source_palette: Option<crate::PaletteId>,
+    profiles: &[WorldPresentationProfile],
     mut options: WorldLoadOptions,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let geometry_source = map.bsp.format.rule_set();
-    let image_settings = options
-        .image_settings
-        .unwrap_or_else(|| ImageSettings::native(presentation_rules));
+    if profiles.is_empty() {
+        return Err(WorldMaterialError::Boundary("missing world presentation"));
+    }
     if options.renderer_overbright > 2
         || options.map_overbright > 8
         || options.map_overbright < options.renderer_overbright
     {
         return Err(WorldMaterialError::Boundary("invalid overbright settings"));
     }
-    // Disk indices expand through their source palette; CPU shading uses the
-    // independently selected presentation palette. Equal resources share one.
-    let source_palette = PaletteSource::native(geometry_source);
-    let palette = source_palette
-        .map(|source| load_palette(vfs, assets, source))
-        .transpose()?;
-    let selected_palette = PaletteSource::native(presentation_rules);
-    let presentation_palette = if selected_palette == source_palette {
-        palette
-    } else {
-        selected_palette
-            .map(|source| load_palette(vfs, assets, source))
-            .transpose()?
-    };
-    let mut presentation = PresentationDefaults::default();
-    // Native presentation choices are resolved here, independently of movement,
-    // client protocol and module format. There is no family branch in drawing.
-    if matches!(presentation_rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-        presentation.lightstyles[0].indexed_scale = 264;
-        presentation.lightstyles[0].rgb = [264.0 / 256.0; 3];
-        presentation.blend_phase = BlendPhase::FinalPalette;
-        presentation.palette_transform = Some(PaletteTransform::default());
-    } else if matches!(
-        presentation_rules,
-        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-    ) {
-        for style in &mut presentation.lightstyles {
-            style.indexed_scale = 384;
-        }
-        // The original portable Q2 D_DrawSpans16 body subdivides by eight.
-        presentation.perspective_step = PerspectiveStep::Eight;
-        presentation.blend_phase = BlendPhase::FinalPalette;
-        presentation.palette_transform = Some(PaletteTransform {
-            operation: PaletteOperation::ScreenBlend,
-            ..PaletteTransform::default()
-        });
-    } else {
-        presentation.identity_light = 1.0 / (1u32 << options.renderer_overbright) as f32;
+    if (!matches!(geometry_source, RuleSetId::Quake3) && source_palette.is_none())
+        || source_palette.is_some_and(|id| assets.palette(id).is_none())
+        || profiles.iter().any(|profile| {
+            !profile.q2_modulate.is_finite()
+                || profile
+                    .indexed_palette
+                    .is_some_and(|id| assets.palette(id).is_none())
+        })
+    {
+        return Err(WorldMaterialError::Boundary(
+            "invalid world presentation profile",
+        ));
     }
+    // Nonlinear Q3 color normalization precedes patch interpolation once. These
+    // geometry settings are common to every admitted presentation profile.
     if matches!(geometry_source, RuleSetId::Quake3) {
         options.geometry.vertex_color_shift =
             (options.map_overbright - options.renderer_overbright) as i8;
     }
-    if !options.cpu_rgb
-        && let Some(palette) = presentation_palette
-    {
-        presentation.cpu = CpuPresentation::Indexed {
-            palette,
-            lighting: if matches!(presentation_rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-                IndexedLighting::Gray
-            } else {
-                IndexedLighting::NativeRgb
-            },
-            ambient: 0,
-            fullbright: false,
-        };
-    }
     let mut geometry = load_geometry(map, options.geometry)?;
-    let lightmap_conversion = if matches!(geometry_source, RuleSetId::Quake) {
-        LightmapConversion::Scalar(options.q1_gl_scale)
-    } else {
-        LightmapConversion::Rgb {
-            modulate: options.q2_modulate,
-        }
-    };
     let visibility =
         load_visibility(map).map_err(|_| WorldMaterialError::Boundary("world visibility"))?;
-    let (lightmaps, regions) = prepare_lightmaps(
-        &geometry,
-        assets,
-        &options,
-        &presentation.lightstyles,
-        lightmap_conversion,
-    )?;
+    let layout = prepare_lightmap_layout(&geometry)?;
     for surface in &geometry.surfaces {
         if !matches!(geometry_source, RuleSetId::Quake3)
-            && let Some(region) = regions[surface.source_id as usize]
+            && let Some(region) = layout.regions[surface.source_id as usize]
         {
             for vertex in &mut geometry.vertices[surface.vertices.range()] {
                 vertex.vertex.lightmap_coord =
@@ -284,41 +259,6 @@ pub fn load_world(
                         region.uv_from_texture(vertex.vertex.texcoord, surface.texture_minima)
                     };
             }
-        }
-    }
-    let catalog = load_catalog(vfs).map_err(WorldMaterialError::Catalog)?;
-    let mut images = Images::new(
-        vfs,
-        assets,
-        geometry_source,
-        presentation_rules,
-        image_settings,
-        palette.zip(presentation_palette),
-    )?;
-    let mut diagnostics = Vec::new();
-    let mut textures = Vec::with_capacity(map.textures.len());
-    let mut layered_skies = Vec::with_capacity(map.textures.len());
-    if matches!(geometry_source, RuleSetId::Quake) {
-        for texture in &map.textures {
-            textures.push(match texture {
-                // R_InitSky uploads the two split layers directly, rather
-                // than uploading the original 256x128 texture as a surface.
-                Some(mip) if legacy_sky_name(&mip.name) => ImageId(0),
-                Some(mip) => images.embedded(
-                    mip,
-                    palette.ok_or(WorldMaterialError::Boundary("missing legacy palette"))?,
-                    mip.name.starts_with(b"{"),
-                )?,
-                None => ImageId(0),
-            });
-            layered_skies.push(match texture {
-                Some(mip) if legacy_sky_name(&mip.name) => Some(load_layered_sky(
-                    mip,
-                    palette.ok_or(WorldMaterialError::Boundary("missing sky palette"))?,
-                    &mut images,
-                )?),
-                _ => None,
-            });
         }
     }
     // GPU interpolation matches native pre-fragmented liquid/sky polygons;
@@ -371,8 +311,186 @@ pub fn load_world(
             )?;
         }
     }
+    let catalog = load_catalog(vfs).map_err(WorldMaterialError::Catalog)?;
+    let mut diagnostics = Vec::new();
+    let mut distinct = Vec::<WorldPresentationProfile>::new();
+    let mut request_indices = Vec::with_capacity(profiles.len());
+    for &profile in profiles {
+        let index = if let Some(index) = distinct.iter().position(|existing| *existing == profile) {
+            index
+        } else {
+            let index = distinct.len();
+            distinct.push(profile);
+            index
+        };
+        request_indices.push(index);
+    }
+    let mut variants = Vec::with_capacity(distinct.len());
+    let mut defaults = Vec::with_capacity(distinct.len());
+    for &profile in &distinct {
+        let presentation = presentation_defaults(profile, &options);
+        let conversion = if matches!(geometry_source, RuleSetId::Quake) {
+            LightmapConversion::Scalar(profile.q1_gl_scale)
+        } else {
+            LightmapConversion::Rgb {
+                modulate: profile.q2_modulate,
+            }
+        };
+        let lightmaps = prepare_lightmap_pages(
+            &geometry,
+            &layout,
+            assets,
+            &options,
+            &presentation.lightstyles,
+            conversion,
+        )?;
+        variants.push(compile_presentation(
+            vfs,
+            map,
+            assets,
+            source_palette,
+            profile,
+            &options,
+            &geometry,
+            &legacy_kinds,
+            &catalog,
+            &layout.regions,
+            &lightmaps,
+            conversion,
+            &mut diagnostics,
+        )?);
+        defaults.push(presentation);
+    }
+    let variant_slices: Vec<_> = variants.iter().map(Vec::as_slice).collect();
+    let world = assets
+        .register_world(geometry, visibility, &variant_slices)
+        .map_err(WorldMaterialError::Boundary)?;
+    let first = assets
+        .world(world)
+        .ok_or(WorldMaterialError::Boundary("missing registered world"))?
+        .presentations()
+        .first;
+    let presentations = request_indices
+        .into_iter()
+        .map(|index| LoadedWorldPresentation {
+            id: WorldPresentationId(first + index as u32),
+            profile: distinct[index],
+            defaults: defaults[index],
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    Ok(LoadedWorld {
+        world,
+        presentations,
+        diagnostics: diagnostics.into_boxed_slice(),
+    })
+}
+
+fn presentation_defaults(
+    profile: WorldPresentationProfile,
+    options: &WorldLoadOptions,
+) -> PresentationDefaults {
+    let presentation_rules = profile.rules;
+    let mut presentation = PresentationDefaults::default();
+    // Native presentation choices are resolved here, independently of movement,
+    // client protocol and module format. There is no family branch in drawing.
+    if matches!(presentation_rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+        presentation.lightstyles[0].indexed_scale = 264;
+        presentation.lightstyles[0].rgb = [264.0 / 256.0; 3];
+        presentation.blend_phase = BlendPhase::FinalPalette;
+        presentation.palette_transform = Some(PaletteTransform::default());
+    } else if matches!(
+        presentation_rules,
+        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+    ) {
+        for style in &mut presentation.lightstyles {
+            style.indexed_scale = 384;
+        }
+        // The original portable Q2 D_DrawSpans16 body subdivides by eight.
+        presentation.perspective_step = PerspectiveStep::Eight;
+        presentation.blend_phase = BlendPhase::FinalPalette;
+        presentation.palette_transform = Some(PaletteTransform {
+            operation: PaletteOperation::ScreenBlend,
+            ..PaletteTransform::default()
+        });
+    } else {
+        presentation.identity_light = 1.0 / (1u32 << options.renderer_overbright) as f32;
+    }
+    if let Some(palette) = profile.indexed_palette {
+        presentation.cpu = CpuPresentation::Indexed {
+            palette,
+            lighting: if matches!(presentation_rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+                IndexedLighting::Gray
+            } else {
+                IndexedLighting::NativeRgb
+            },
+            ambient: 0,
+            fullbright: false,
+        };
+    }
+    presentation
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "One cold converter receives the shared geometry and atlas plus an explicit exact resource profile."
+)]
+fn compile_presentation(
+    vfs: &Vfs,
+    map: &Map<'_>,
+    assets: &mut Assets,
+    palette: Option<crate::PaletteId>,
+    profile: WorldPresentationProfile,
+    options: &WorldLoadOptions,
+    geometry: &WorldGeometry,
+    legacy_kinds: &[(bool, bool)],
+    catalog: &ShaderCatalog,
+    regions: &[Option<AtlasRegion>],
+    lightmaps: &[Option<ImageId>],
+    lightmap_conversion: LightmapConversion,
+    diagnostics: &mut Vec<String>,
+) -> Result<Vec<SurfaceMaterial>, WorldMaterialError> {
+    let geometry_source = map.bsp.format.rule_set();
+    let presentation_rules = profile.rules;
+    let mut images = Images::new(
+        vfs,
+        assets,
+        geometry_source,
+        presentation_rules,
+        profile.image_settings,
+        palette.zip(profile.indexed_palette),
+    )?;
+    images.set_raster_target(profile.indexed_palette.map(|palette| IndexedTarget {
+        palette,
+        transparent_index: Some(255),
+    }))?;
+    let mut textures = Vec::with_capacity(map.textures.len());
+    let mut layered_skies = Vec::with_capacity(map.textures.len());
+    if matches!(geometry_source, RuleSetId::Quake) {
+        for texture in &map.textures {
+            textures.push(match texture {
+                // R_InitSky uploads the two split layers directly, rather
+                // than uploading the original 256x128 texture as a surface.
+                Some(mip) if legacy_sky_name(&mip.name) => ImageId(0),
+                Some(mip) => images.embedded(
+                    mip,
+                    palette.ok_or(WorldMaterialError::Boundary("missing legacy palette"))?,
+                    mip.name.starts_with(b"{"),
+                )?,
+                None => ImageId(0),
+            });
+            layered_skies.push(match texture {
+                Some(mip) if legacy_sky_name(&mip.name) => Some(load_layered_sky(
+                    mip,
+                    palette.ok_or(WorldMaterialError::Boundary("missing sky palette"))?,
+                    &mut images,
+                )?),
+                _ => None,
+            });
+        }
+    }
     let mut bindings = Vec::with_capacity(geometry.surfaces.len());
-    for (surface, &kind) in geometry.surfaces.iter().zip(&legacy_kinds) {
+    for (surface, &kind) in geometry.surfaces.iter().zip(legacy_kinds) {
         let (warp, sky) = kind;
         if surface.no_draw {
             bindings.push(SurfaceMaterial::default());
@@ -455,7 +573,7 @@ pub fn load_world(
                     distance: SkyDistance::Fixed(2300.0),
                     far_depth: false,
                     texcoord_range: if options.sky_environment.degrees_per_second != 0.0
-                        || image_settings.sky_mip
+                        || profile.image_settings.sky_mip
                     {
                         [1.0 / 256.0, 255.0 / 256.0]
                     } else {
@@ -487,7 +605,7 @@ pub fn load_world(
                 diagnostics.push(format!("native shader fallback: {name}"));
             }
             if matches!(geometry_source, RuleSetId::Quake3) {
-                let image = images.raster(&name, ImageUse::default(), None)?;
+                let image = images.raster(&name, ImageUse::default(), images.raster_target())?;
                 default_material(&name, image, surface.light_source, &mut images)?
             } else {
                 legacy_material(
@@ -518,10 +636,6 @@ pub fn load_world(
             texture_scale: scale,
         });
     }
-    let world = images
-        .assets
-        .register_world_with_bindings(geometry, visibility, &bindings)
-        .map_err(WorldMaterialError::Boundary)?;
     for conflict in images.conflicts() {
         diagnostics.push(format!(
             "native first-image flags retained: {} ({:?} requested {:?})",
@@ -533,25 +647,15 @@ pub fn load_world(
             conflict.requested
         ));
     }
-    Ok(LoadedWorld {
-        world,
-        presentation_rules,
-        presentation,
-        diagnostics: diagnostics.into_boxed_slice(),
-    })
+    Ok(bindings)
 }
 
-#[expect(
-    clippy::type_complexity,
-    reason = "Native surface IDs index independent image and packed-region columns returned flat, without a second resource registry."
-)]
-fn prepare_lightmaps(
-    geometry: &WorldGeometry,
-    assets: &mut Assets,
-    options: &WorldLoadOptions,
-    styles: &[LightStyle; 256],
-    conversion: LightmapConversion,
-) -> Result<(Vec<Option<ImageId>>, Vec<Option<AtlasRegion>>), WorldMaterialError> {
+struct LightmapLayout {
+    atlas: Atlas,
+    regions: Vec<Option<AtlasRegion>>,
+}
+
+fn prepare_lightmap_layout(geometry: &WorldGeometry) -> Result<LightmapLayout, WorldMaterialError> {
     let decoupled = geometry
         .surfaces
         .iter()
@@ -566,7 +670,6 @@ fn prepare_lightmaps(
             if surface.no_draw || surface.light_source != LightSource::Samples {
                 continue;
             }
-            // Keep native LM_AllocBlock's excluded rightmost start position.
             let required = surface.lightmap_grid[0]
                 .checked_add(1)
                 .map(|width| width.max(surface.lightmap_grid[1]))
@@ -585,22 +688,13 @@ fn prepare_lightmaps(
         if surface.no_draw {
             continue;
         }
-        let rgb: Vec<_> = geometry.light_samples[surface.light_samples.range()]
-            .iter()
-            .flatten()
-            .copied()
-            .collect();
         let region = match surface.light_source {
             LightSource::Page(page) => {
                 if let Some((_, region)) = page_regions.iter().find(|(id, _)| *id == page) {
                     *region
                 } else {
-                    let rgb = shift_quake3_rgb(
-                        &rgb,
-                        options.map_overbright,
-                        options.renderer_overbright,
-                    )?;
-                    let region = atlas.insert_page(&rgb)?;
+                    let blank = vec![0; crate::lightmap::rgb_bytes(page_size, page_size)?];
+                    let region = atlas.insert_page(&blank)?;
                     page_regions.push((page, region));
                     region
                 }
@@ -611,58 +705,113 @@ fn prepare_lightmaps(
                 ));
             }
             LightSource::Samples => {
-                let (active, count) = conversion.referenced_styles(surface.styles, styles);
-                let mut converted = vec![
-                    0;
-                    crate::lightmap::rgb_bytes(
-                        surface.lightmap_grid[0],
-                        surface.lightmap_grid[1],
-                    )?
-                ];
-                conversion.build_rgb_into(
-                    surface.lightmap_grid[0],
-                    surface.lightmap_grid[1],
-                    &rgb,
-                    &active[..count],
-                    &mut converted,
-                )?;
-                atlas.insert(
-                    surface.lightmap_grid[0],
-                    surface.lightmap_grid[1],
-                    &converted,
-                )?
+                let [width, height] = surface.lightmap_grid;
+                let blank = vec![0; crate::lightmap::rgb_bytes(width, height)?];
+                atlas.insert(width, height, &blank)?
             }
             _ => continue,
         };
         regions[surface.source_id as usize] = Some(region);
     }
-    let atlas = atlas.finish();
-    let mut ids = Vec::with_capacity(atlas.page_count());
-    for page in atlas.pages() {
-        let rgba: Vec<_> = page
-            .rgb
+    Ok(LightmapLayout {
+        atlas: atlas.finish(),
+        regions,
+    })
+}
+
+fn prepare_lightmap_pages(
+    geometry: &WorldGeometry,
+    layout: &LightmapLayout,
+    assets: &mut Assets,
+    options: &WorldLoadOptions,
+    styles: &[LightStyle; 256],
+    conversion: LightmapConversion,
+) -> Result<Vec<Option<ImageId>>, WorldMaterialError> {
+    let mut pages: Vec<_> = layout
+        .atlas
+        .pages()
+        .iter()
+        .map(|page| page.rgb.to_vec())
+        .collect();
+    let mut authored = Vec::new();
+    for surface in &geometry.surfaces {
+        let Some(region) = layout.regions[surface.source_id as usize] else {
+            continue;
+        };
+        if matches!(surface.light_source, LightSource::Page(_)) {
+            if authored.contains(&region.page) {
+                continue;
+            }
+            authored.push(region.page);
+        }
+        let samples: Vec<_> = geometry.light_samples[surface.light_samples.range()]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        let converted = if matches!(surface.light_source, LightSource::Page(_)) {
+            shift_quake3_rgb(
+                &samples,
+                options.map_overbright,
+                options.renderer_overbright,
+            )?
+        } else {
+            let (active, count) = conversion.referenced_styles(surface.styles, styles);
+            let mut rgb = vec![0; crate::lightmap::rgb_bytes(region.width, region.height)?];
+            conversion.build_rgb_into(
+                region.width,
+                region.height,
+                &samples,
+                &active[..count],
+                &mut rgb,
+            )?;
+            rgb
+        };
+        write_lightmap_region(&mut pages[region.page as usize], region, &converted)?;
+    }
+    let mut ids = Vec::with_capacity(pages.len());
+    for rgb in pages {
+        let rgba: Vec<_> = rgb
             .as_chunks::<3>()
             .0
             .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect();
         let id = assets
-            .register_image(atlas.page_size(), atlas.page_size(), &rgba)
+            .register_image(layout.atlas.page_size(), layout.atlas.page_size(), &rgba)
             .map_err(WorldMaterialError::Boundary)?;
-        // Atlas bytes already include native lightstyle/modulate/overbright.
-        // Image intensity/gamma and ordinary mip generation do not apply.
+        // Lightstyle/modulate/overbright bytes bypass ordinary image upload corrections.
         assets
             .prepare_image(id, upload::UploadParams::default())
             .map_err(WorldMaterialError::Boundary)?;
         ids.push(id);
     }
-    Ok((
-        regions
-            .iter()
-            .map(|region| region.map(|r| ids[r.page as usize]))
-            .collect(),
-        regions,
-    ))
+    Ok(layout
+        .regions
+        .iter()
+        .map(|region| region.map(|r| ids[r.page as usize]))
+        .collect())
+}
+
+fn write_lightmap_region(
+    page: &mut [u8],
+    region: AtlasRegion,
+    rgb: &[u8],
+) -> Result<(), LightmapError> {
+    let expected = crate::lightmap::rgb_bytes(region.width, region.height)?;
+    if rgb.len() != expected {
+        return Err(LightmapError::SampleLength {
+            expected,
+            actual: rgb.len(),
+        });
+    }
+    for row in 0..region.height as usize {
+        let from = row * region.width as usize * 3;
+        let to = ((region.y as usize + row) * region.page_size as usize + region.x as usize) * 3;
+        page[to..to + region.width as usize * 3]
+            .copy_from_slice(&rgb[from..from + region.width as usize * 3]);
+    }
+    Ok(())
 }
 
 fn default_material(
@@ -792,7 +941,7 @@ pub fn compile_definition(
                         allow_picmip: !definition.no_picmip,
                         ..ImageUse::default()
                     },
-                    None,
+                    images.raster_target(),
                 )?;
                 sampler = image.sampler;
                 StageTexture::Image(image.id)
@@ -819,7 +968,7 @@ pub fn compile_definition(
                             allow_picmip: !definition.no_picmip,
                             ..ImageUse::default()
                         },
-                        None,
+                        images.raster_target(),
                     )?;
                     *slot = image.id;
                 }
@@ -932,7 +1081,7 @@ fn load_box_with_suffix(
                     },
                     allow_picmip: true,
                 },
-                None,
+                images.raster_target(),
             )?
             .id;
     }

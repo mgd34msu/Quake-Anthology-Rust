@@ -14,8 +14,8 @@ use crate::stage::{
 use crate::surface_cache::{
     BuildState, CacheStats, IndexedProjection, LightGrid, SurfaceCache, SurfaceSource,
 };
-use crate::world::WorldId;
 use crate::world::geometry::{GeometryPartition, TextureCoordinates};
+use crate::world::{WorldId, WorldPresentationId};
 use qa_core::primitives::IndexSpan;
 use std::sync::Arc;
 
@@ -193,12 +193,17 @@ impl WorldStats {
 
 #[derive(Clone, Copy, Default)]
 struct SurfaceInfo {
+    geometry: usize,
     cache: u32,
     cache_supported: bool,
-    mip_adjust: f32,
     sky: Option<super::sky::Source>,
     raster_empty: bool,
     preparation: PrepareCapacity,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SurfaceGeometry {
+    mip_adjust: f32,
     indexed_chart: Option<IndexedChart>,
 }
 
@@ -208,7 +213,7 @@ struct IndexedChart {
     minima: [i32; 2],
 }
 
-impl SurfaceInfo {
+impl SurfaceGeometry {
     fn indexed_coordinates(
         self,
         surface: &crate::world::geometry::WorldSurface,
@@ -322,6 +327,7 @@ enum PrimitiveDomain {
 struct Primitive {
     domain: PrimitiveDomain,
     world: WorldId,
+    presentation: WorldPresentationId,
     surface: u32,
     boundary: u32,
     depth_key: u32,
@@ -362,6 +368,7 @@ struct WorldCatalog {
     primitive_capacity: usize,
     mandatory_cache_bytes: usize,
     offsets: Box<[usize]>,
+    geometry: Box<[SurfaceGeometry]>,
     surfaces: Box<[SurfaceInfo]>,
     boundary_offsets: Box<[usize]>,
     rgba: Box<[Option<super::rgba::Recipe>]>,
@@ -583,10 +590,11 @@ impl WorldRaster {
         } else {
             limits.cache_bytes
         };
-        let mut offsets = Vec::with_capacity(assets.worlds().len());
+        let mut offsets = vec![0; assets.world_presentations().len()];
+        let mut surface_geometry = Vec::new();
         let mut sources = Vec::new();
         let mut surfaces = Vec::new();
-        let mut boundary_offsets = Vec::with_capacity(assets.worlds().len());
+        let mut boundary_offsets = vec![0; assets.world_presentations().len()];
         let mut rgba = Vec::new();
         let mut factors = Vec::new();
         let mut boundaries = 0usize;
@@ -620,26 +628,18 @@ impl WorldRaster {
         {
             return Err("invalid CPU scene draw capacity");
         }
-        for world in assets.worlds() {
-            let surface_offset = surfaces.len();
-            offsets.push(surface_offset);
+        for (world_index, world) in assets.worlds().iter().enumerate() {
             let geometry = world.geometry();
-            let boundary_offset = rgba.len();
-            boundary_offsets.push(boundary_offset);
-            rgba.resize(boundary_offset + geometry.boundaries.len(), None);
+            let geometry_offset = surface_geometry.len();
+            let mut layouts = Vec::with_capacity(geometry.surfaces.len());
+            let mut footprints = vec![PrepareCapacity::default(); geometry.surfaces.len()];
             for (surface_index, surface) in geometry.surfaces.iter().enumerate() {
-                let binding = world
-                    .bindings()
-                    .get(surface_index)
-                    .ok_or("invalid world surface binding")?;
-                let material = assets
-                    .material(binding.material)
-                    .ok_or("invalid world material")?;
                 let loops = geometry
                     .boundaries
                     .get(surface.boundaries.range())
                     .ok_or("invalid world polygon boundary range")?;
-                let mut raster_empty = material.settings.deforms.iter().all(Option::is_none);
+                let mut raster_empty = true;
+                let mut coverage = 0usize;
                 for boundary in loops {
                     let indices = geometry
                         .indices
@@ -653,17 +653,27 @@ impl WorldRaster {
                         return Err("invalid world polygon vertices");
                     }
                     raster_empty &= boundary_is_collinear(&geometry.vertices, indices);
+                    let clipped = indices
+                        .len()
+                        .checked_add(6)
+                        .ok_or("world clip count overflow")?;
+                    coverage = coverage
+                        .checked_add(clipped)
+                        .ok_or("reference coverage overflow")?;
+                    max_vertices = max_vertices.max(clipped);
+                    max_edges = max_edges
+                        .checked_add(clipped)
+                        .ok_or("world edge count overflow")?;
                 }
-                let indexed_candidate = !raster_empty
-                    && material.settings.software_tiled.is_none()
-                    && surface.texture_coordinates == TextureCoordinates::Texels;
-                let projected = if indexed_candidate {
-                    indexed_lightmap_layout(geometry, surface)?
-                } else {
-                    None
-                };
+                let projected =
+                    if !raster_empty && surface.texture_coordinates == TextureCoordinates::Texels {
+                        indexed_lightmap_layout(geometry, surface)?
+                    } else {
+                        None
+                    };
                 let extents = projected.map_or(surface.texture_extents, |p| p.extents);
-                let cache_supported = indexed_candidate
+                let cache_supported = !raster_empty
+                    && surface.texture_coordinates == TextureCoordinates::Texels
                     && extents
                         .iter()
                         .all(|&e| e > 0 && e <= 8192 && e.is_multiple_of(16));
@@ -672,101 +682,116 @@ impl WorldRaster {
                         .light_samples
                         .get(surface.light_samples.range())
                         .ok_or("invalid world light sample range")?;
-                    Some(LightGrid::rgb(
+                    Some(Arc::new(LightGrid::rgb(
                         surface.lightmap_grid[0],
                         surface.lightmap_grid[1],
                         surface.styles,
                         samples.as_flattened(),
-                    )?)
+                    )?))
                 } else {
                     None
                 };
-                let source = SurfaceSource::load(
-                    projected.map_or(surface.texture_minima, |p| p.minima),
-                    if cache_supported {
-                        projected.map_or(surface.texture_extents, |p| p.extents)
-                    } else {
-                        [16; 2]
-                    },
-                    lightmap,
-                    geometry.world_has_lightdata,
-                    cache_supported
-                        .then_some(projected)
-                        .flatten()
-                        .map(|p| p.mapping),
-                )?;
-                let cache = u32::try_from(sources.len()).map_err(|_| "too many world surfaces")?;
-                sources.push(source);
-                surfaces.push(SurfaceInfo {
-                    cache,
-                    cache_supported,
+                layouts.push((projected, cache_supported, raster_empty, lightmap));
+                surface_geometry.push(SurfaceGeometry {
                     mip_adjust: mip_adjust(
                         projected
                             .and_then(|p| p.chart)
                             .map_or(surface.texture_projection, |chart| chart.projection),
                     ),
-                    sky: None,
-                    raster_empty,
-                    preparation: PrepareCapacity::default(),
                     indexed_chart: projected.and_then(|p| p.chart),
                 });
-                if let Some(info) = surfaces.last_mut() {
-                    info.sky = super::sky::Source::load(material, assets);
-                }
-                let reference_stages = loops
-                    .len()
-                    .checked_mul(material.stages.len())
-                    .ok_or("world stage count overflow")?;
-                stage_capacity = stage_capacity
-                    .checked_add(reference_stages)
-                    .ok_or("world stage count overflow")?;
+                footprints[surface_index] = PrepareCapacity {
+                    primitives: loops.len(),
+                    stages: 0,
+                    coverage,
+                };
                 boundaries = boundaries
                     .checked_add(loops.len())
                     .ok_or("world polygon count overflow")?;
-                let mut reference_coverage = 0usize;
-                for (loop_index, boundary) in loops.iter().enumerate() {
-                    let boundary_index = surface.boundaries.first as usize + loop_index;
-                    if let Some(recipe) = super::rgba::Recipe::load(
-                        geometry,
-                        boundary_index,
-                        *binding,
-                        material,
-                        assets,
-                        evaluator,
-                        &mut sources,
-                        &mut factors,
-                        recipe_budget,
-                    )? {
-                        rgba[boundary_offset + boundary_index] = Some(recipe);
-                    }
-                    let indices = geometry
-                        .indices
-                        .get(boundary.range())
-                        .ok_or("invalid world polygon index range")?;
-                    let clipped = indices
-                        .len()
-                        .checked_add(6)
-                        .ok_or("world clip count overflow")?;
-                    reference_coverage = reference_coverage
-                        .checked_add(clipped)
-                        .ok_or("reference coverage overflow")?;
-                    max_vertices = max_vertices.max(clipped);
-                    max_edges = max_edges
-                        .checked_add(clipped)
-                        .ok_or("world edge count overflow")?;
+            }
+            for presentation_index in world.presentations().range() {
+                let presentation = assets
+                    .world_presentations()
+                    .get(presentation_index)
+                    .filter(|p| p.world() == WorldId(world_index as u32))
+                    .ok_or("invalid world presentation")?;
+                if presentation.bindings().len() != geometry.surfaces.len() {
+                    return Err("invalid world presentation bindings");
                 }
-                if let Some(info) = surfaces.last_mut() {
-                    info.raster_empty = raster_empty;
-                    info.preparation = PrepareCapacity {
-                        primitives: loops.len(),
-                        stages: reference_stages,
-                        coverage: reference_coverage,
-                    };
+                let surface_offset = surfaces.len();
+                offsets[presentation_index] = surface_offset;
+                let boundary_offset = rgba.len();
+                boundary_offsets[presentation_index] = boundary_offset;
+                rgba.resize(boundary_offset + geometry.boundaries.len(), None);
+                for (surface_index, surface) in geometry.surfaces.iter().enumerate() {
+                    let binding = &presentation.bindings()[surface_index];
+                    let material = assets
+                        .material(binding.material)
+                        .ok_or("invalid world material")?;
+                    let loops = &geometry.boundaries[surface.boundaries.range()];
+                    let (projected, candidate, empty, lightmap) = &layouts[surface_index];
+                    let cache_supported = *candidate && material.settings.software_tiled.is_none();
+                    let source = SurfaceSource::load(
+                        projected.map_or(surface.texture_minima, |p| p.minima),
+                        if cache_supported {
+                            projected.map_or(surface.texture_extents, |p| p.extents)
+                        } else {
+                            [16; 2]
+                        },
+                        cache_supported
+                            .then(|| lightmap.as_ref().map(Arc::clone))
+                            .flatten(),
+                        geometry.world_has_lightdata,
+                        cache_supported
+                            .then_some(*projected)
+                            .flatten()
+                            .map(|p| p.mapping),
+                    )?;
+                    let cache =
+                        u32::try_from(sources.len()).map_err(|_| "too many world surfaces")?;
+                    sources.push(source);
+                    let stages = loops
+                        .len()
+                        .checked_mul(material.stages.len())
+                        .ok_or("world stage count overflow")?;
+                    footprints[surface_index].stages = footprints[surface_index].stages.max(stages);
+                    surfaces.push(SurfaceInfo {
+                        geometry: geometry_offset + surface_index,
+                        cache,
+                        cache_supported,
+                        sky: super::sky::Source::load(material, assets),
+                        raster_empty: *empty
+                            && material.settings.deforms.iter().all(Option::is_none),
+                        preparation: PrepareCapacity {
+                            stages,
+                            ..footprints[surface_index]
+                        },
+                    });
+                    for (loop_index, _) in loops.iter().enumerate() {
+                        let boundary_index = surface.boundaries.first as usize + loop_index;
+                        if let Some(recipe) = super::rgba::Recipe::load(
+                            geometry,
+                            boundary_index,
+                            *binding,
+                            material,
+                            assets,
+                            evaluator,
+                            &mut sources,
+                            &mut factors,
+                            recipe_budget,
+                        )? {
+                            rgba[boundary_offset + boundary_index] = Some(recipe);
+                        }
+                    }
                 }
             }
-            // Reserve repeated inline-model output at load. Model zero is the
-            // static map already counted above; each candidate is bounded by
-            // both entity slots and the scene's surface-reference capacity.
+            for footprint in &footprints {
+                stage_capacity = stage_capacity
+                    .checked_add(footprint.stages)
+                    .ok_or("world stage count overflow")?;
+            }
+            // Geometry is counted once; each profile reserves only its possible
+            // stage demand, and repeated inline references use the largest demand.
             for model in geometry.models.iter().skip(1) {
                 let model_surfaces = geometry
                     .surfaces
@@ -778,7 +803,7 @@ impl WorldRaster {
                 let mut footprint = PrepareCapacity::default();
                 for surface_index in model.surfaces.range() {
                     footprint = footprint
-                        .checked_add(surfaces[surface_offset + surface_index].preparation)
+                        .checked_add(footprints[surface_index])
                         .ok_or("inline-model preparation count overflow")?;
                 }
                 let copies = limits
@@ -890,6 +915,7 @@ impl WorldRaster {
             primitive_capacity: boundaries.max(1),
             mandatory_cache_bytes,
             offsets: offsets.into_boxed_slice(),
+            geometry: surface_geometry.into_boxed_slice(),
             surfaces: surfaces.into_boxed_slice(),
             boundary_offsets: boundary_offsets.into_boxed_slice(),
             rgba: rgba.into_boxed_slice(),
@@ -1186,7 +1212,7 @@ impl WorldPrepare {
                         }
                         if self
                             .catalog
-                            .surface_info(reference.world, reference.surface)
+                            .surface_info(reference.presentation, reference.surface)
                             .is_some_and(|info| info.raster_empty)
                         {
                             return false;
@@ -1432,7 +1458,7 @@ impl SurfacePrepare {
                 self.reject(stats);
                 continue;
             };
-            let Some(binding) = world.bindings().get(reference.surface as usize) else {
+            let Some(binding) = assets.scene_binding(*reference) else {
                 self.reject(stats);
                 continue;
             };
@@ -1443,7 +1469,7 @@ impl SurfacePrepare {
             };
             let Some(info) = self
                 .catalog
-                .surface_info(reference.world, reference.surface)
+                .surface_info(reference.presentation, reference.surface)
                 .copied()
             else {
                 self.reject(stats);
@@ -1563,12 +1589,14 @@ impl SurfacePrepare {
                     break;
                 }
                 let current = if native.is_none() && material_id == binding.material {
-                    self.catalog.current_rgba(reference.world, boundary, assets)
+                    self.catalog
+                        .current_rgba(reference.presentation, boundary, assets)
                 } else {
                     None
                 };
                 let mut primitive = Primitive {
                     world: reference.world,
+                    presentation: reference.presentation,
                     surface: reference.surface,
                     boundary: boundary as u32,
                     depth_key: reference.depth_key,
@@ -1631,7 +1659,8 @@ impl SurfacePrepare {
                             .fold(0.0, f32::max);
                         let scale = camera.screen_scale();
                         let scale = scale[0].max(scale[1]);
-                        let distance = nearzi * scale * info.mip_adjust;
+                        let distance =
+                            nearzi * scale * self.catalog.geometry[info.geometry].mip_adjust;
                         primitive.mip = if distance >= 1.0 {
                             0
                         } else if distance >= 0.4 {
@@ -1643,7 +1672,8 @@ impl SurfacePrepare {
                         };
                     }
                     let Some((planes, adjust)) = eye.and_then(|eye| {
-                        let (projection, minima) = info.indexed_coordinates(surface, source);
+                        let (projection, minima) = self.catalog.geometry[info.geometry]
+                            .indexed_coordinates(surface, source);
                         native_planes(camera, surface, projection, minima, primitive.mip, eye)
                     }) else {
                         self.reject(stats);
@@ -1876,6 +1906,7 @@ impl SurfacePrepare {
         for boundary in surface.boundaries.range() {
             let mut primitive = Primitive {
                 world: reference.world,
+                presentation: reference.presentation,
                 surface: reference.surface,
                 boundary: boundary as u32,
                 depth_key: reference.depth_key,
@@ -1940,7 +1971,8 @@ impl SurfacePrepare {
         let indexed_coordinates = if let Some(source) = primitive.indexed {
             Some(
                 self.catalog
-                    .surface_info(primitive.world, primitive.surface)?
+                    .surface_info(primitive.presentation, primitive.surface)
+                    .and_then(|info| self.catalog.geometry.get(info.geometry))?
                     .indexed_coordinates(surface, source),
             )
         } else {
@@ -2544,7 +2576,7 @@ fn stage_span(
         {
             let Some(bounded) = texels.region(
                 assets
-                    .surface_binding(primitive.world, primitive.surface)
+                    .surface_binding(primitive.presentation, primitive.surface)
                     .and_then(|binding| binding.lightmap_region),
             ) else {
                 stats.rejected += 1;
@@ -2650,7 +2682,7 @@ fn factor_spans(
         pairs[mips[0] as usize] |= 1 << mips[1];
     }
     let region = assets
-        .surface_binding(primitive.world, primitive.surface)
+        .surface_binding(primitive.presentation, primitive.surface)
         .and_then(|binding| binding.lightmap_region);
     while first_levels != 0 {
         let first_mip = first_levels.trailing_zeros() as u8;
@@ -3151,7 +3183,7 @@ impl SurfacePrepare {
         for reference in references {
             let info = self
                 .catalog
-                .surface_info(reference.world, reference.surface)?;
+                .surface_info(reference.presentation, reference.surface)?;
             total = total.checked_add(info.preparation)?;
         }
         Some(total)
@@ -3220,7 +3252,8 @@ impl WorldPrepare {
             };
             for boundary in surface.boundaries.range() {
                 let Some((index, recipe)) =
-                    self.catalog.current_rgba(reference.world, boundary, assets)
+                    self.catalog
+                        .current_rgba(reference.presentation, boundary, assets)
                 else {
                     continue;
                 };
@@ -3242,19 +3275,23 @@ impl WorldCatalog {
     }
     fn current_rgba(
         &self,
-        world: WorldId,
+        presentation: WorldPresentationId,
         boundary: usize,
         assets: &Assets,
     ) -> Option<(usize, &super::rgba::Recipe)> {
         let index = self
             .boundary_offsets
-            .get(world.0 as usize)?
+            .get(presentation.0 as usize)?
             .checked_add(boundary)?;
         let recipe = self.rgba.get(index)?.as_ref()?;
         recipe.current(assets).then_some((index, recipe))
     }
-    fn surface_info(&self, world: WorldId, surface: u32) -> Option<&SurfaceInfo> {
+    fn surface_info(
+        &self,
+        presentation: WorldPresentationId,
+        surface: u32,
+    ) -> Option<&SurfaceInfo> {
         self.surfaces
-            .get(*self.offsets.get(world.0 as usize)? + surface as usize)
+            .get(*self.offsets.get(presentation.0 as usize)? + surface as usize)
     }
 }

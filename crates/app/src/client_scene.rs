@@ -18,18 +18,27 @@ use qa_network::{
     projection::{EntityProjection, EntityRecord, PlayerProjection},
     snapshots::{Frame as SnapshotFrame, ReceivedFrame},
 };
-use qa_render::{Assets, Frame, Refdef, SceneEntity, SceneModel, world::WorldId};
+use qa_render::{
+    Assets, Frame, Refdef, SceneEntity, SceneModel,
+    world::{WorldId, WorldPresentationId},
+};
 
 #[derive(Clone, Copy)]
 enum ClientModel {
     Mesh(ModelRegistrationId),
-    Inline(InlineBinding),
+    Inline {
+        binding: InlineBinding,
+        presentation: WorldPresentationId,
+    },
 }
 
 #[derive(Clone, Copy)]
 enum SceneBinding {
     Mesh(ModelBinding),
-    Inline(InlineBinding),
+    Inline {
+        binding: InlineBinding,
+        presentation: WorldPresentationId,
+    },
 }
 
 /// Only derived numeric asset bindings live here. Accepted entity values and
@@ -38,7 +47,7 @@ pub struct ClientModelBindings {
     client: ClientId,
     range: IndexSpan,
     profile: Option<ModelProfile>,
-    world: Option<WorldId>,
+    world: Option<(WorldId, WorldPresentationId)>,
     registrations: Box<[Option<ClientModel>]>,
 }
 impl ClientModelBindings {
@@ -87,13 +96,20 @@ impl ClientModelBindings {
             return false;
         };
         if let Some(index) = path.strip_prefix('*') {
-            let Some(binding) = index.parse::<u32>().ok().and_then(|index| {
-                self.world
-                    .and_then(|world| models.resolve_inline(world, index))
-            }) else {
+            let Some((world, presentation)) = self.world else {
                 return false;
             };
-            self.registrations[ordinal] = Some(ClientModel::Inline(binding));
+            let Some(binding) = index
+                .parse::<u32>()
+                .ok()
+                .and_then(|index| models.resolve_inline(world, index))
+            else {
+                return false;
+            };
+            self.registrations[ordinal] = Some(ClientModel::Inline {
+                binding,
+                presentation,
+            });
             return true;
         }
         let Some(registration) = self
@@ -111,7 +127,7 @@ impl ClientModelBindings {
         configs: &ConfigStrings,
         models: &ModelCatalog,
         profile: ModelProfile,
-        world: Option<WorldId>,
+        world: Option<(WorldId, WorldPresentationId)>,
     ) -> u32 {
         self.reset();
         self.profile = Some(profile);
@@ -130,7 +146,7 @@ impl ClientModelBindings {
     ) -> Option<ModelBinding> {
         match self.resolve_scene(reference, skin, models, policy)? {
             SceneBinding::Mesh(binding) => Some(binding),
-            SceneBinding::Inline(_) => None,
+            SceneBinding::Inline { .. } => None,
         }
     }
 
@@ -153,7 +169,13 @@ impl ClientModelBindings {
             ClientModel::Mesh(registration) => models
                 .binding(registration, u32::try_from(skin).unwrap_or(0), policy)
                 .map(SceneBinding::Mesh),
-            ClientModel::Inline(binding) => Some(SceneBinding::Inline(binding)),
+            ClientModel::Inline {
+                binding,
+                presentation,
+            } => Some(SceneBinding::Inline {
+                binding,
+                presentation,
+            }),
         }
     }
 }
@@ -476,9 +498,13 @@ impl ClientSceneInput<'_> {
                 ..SceneEntity::default()
             };
             let angles = match binding {
-                SceneBinding::Inline(binding) => {
+                SceneBinding::Inline {
+                    binding,
+                    presentation,
+                } => {
                     entity.model = SceneModel::World {
                         world: binding.world,
+                        presentation,
                         surfaces: binding.surfaces,
                     };
                     pose.angles

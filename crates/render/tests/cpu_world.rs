@@ -12,6 +12,12 @@ use qa_render::{
 };
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
+fn only_presentation(assets: &Assets, world: WorldId) -> qa_render::world::WorldPresentationId {
+    let span = assets.world(world).unwrap().presentations();
+    assert_eq!(span.count, 1);
+    qa_render::world::WorldPresentationId(span.first)
+}
+
 fn cloud_material(assets: &mut Assets, stages: &[Stage]) -> MaterialId {
     cloud_material_with_cull(assets, stages, Cull::None)
 }
@@ -116,6 +122,7 @@ fn cloud_grid_stages_draw_once_across_world_and_poly_sources() {
         let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
         assert!(frame.add_world(
             sky,
+            only_presentation(&assets, sky),
             &[VisibleSurface {
                 surface: 0,
                 depth_key: 0
@@ -654,7 +661,7 @@ fn world_bound(
     )
     .unwrap();
     assets
-        .register_world_with_bindings(geometry, visibility, &[binding])
+        .register_world(geometry, visibility, &[&[binding]])
         .unwrap()
 }
 
@@ -1725,6 +1732,7 @@ fn packet(
     for &(world, depth_key) in worlds {
         assert!(frame.add_world(
             world,
+            only_presentation(&assets, world),
             &[VisibleSurface {
                 surface: 0,
                 depth_key
@@ -2097,6 +2105,7 @@ fn coincident_entity_and_world_obey_the_same_shared_draw_order() {
         let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
         assert!(frame.add_world(
             world,
+            only_presentation(&assets, world),
             &[VisibleSurface {
                 surface: 0,
                 depth_key: 9000

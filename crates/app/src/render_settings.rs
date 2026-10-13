@@ -1,6 +1,50 @@
 //! Cold presentation settings from the one cvar table, selected per world.
 use qa_console::{cvars::Cvars, views::RuleSetId};
-use qa_render::{assets::upload, material::resources::ImageSettings};
+use qa_content::vfs::Vfs;
+use qa_render::{
+    Assets,
+    assets::{PaletteId, upload},
+    material::{
+        resources::{ImageSettings, PaletteSource, load_palette},
+        world_load::WorldPresentationProfile,
+    },
+};
+
+/// Palette resources are registered once for their exact native source, even
+/// when multiple source/presentation roles request the same resource.
+pub fn palette(
+    vfs: &Vfs,
+    assets: &mut Assets,
+    rules: RuleSetId,
+    registered: &mut [Option<PaletteId>; 5],
+) -> Result<Option<PaletteId>, String> {
+    let Some(source) = PaletteSource::native(rules) else {
+        return Ok(None);
+    };
+    if let Some(id) = registered[rules as usize] {
+        return Ok(Some(id));
+    }
+    let id = load_palette(vfs, assets, source).map_err(|error| format!("palette: {error:?}"))?;
+    for rule in RuleSetId::ALL {
+        if PaletteSource::native(rule) == Some(source) {
+            registered[rule as usize] = Some(id);
+        }
+    }
+    Ok(Some(id))
+}
+
+pub fn world_profile(
+    vfs: &Vfs,
+    assets: &mut Assets,
+    vars: &Cvars,
+    rules: RuleSetId,
+    registered: &mut [Option<PaletteId>; 5],
+) -> Result<WorldPresentationProfile, String> {
+    let mut profile =
+        WorldPresentationProfile::native(rules, palette(vfs, assets, rules, registered)?);
+    profile.image_settings = image_settings(vars, rules)?;
+    Ok(profile)
+}
 
 pub fn image_settings(vars: &Cvars, source: RuleSetId) -> Result<ImageSettings, &'static str> {
     let mut settings = ImageSettings::native(source);

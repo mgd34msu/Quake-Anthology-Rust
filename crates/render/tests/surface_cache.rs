@@ -2,6 +2,7 @@ use qa_render::surface_cache::{
     BuildState, IndexedLighting, IndexedTexture, LightGrid, PaletteLighting, SurfaceCache,
     SurfaceSource,
 };
+use std::sync::Arc;
 
 #[path = "surface_cache/projected.rs"]
 mod projected;
@@ -25,7 +26,7 @@ fn gray_surface(samples: &[u8], styles: [u8; 4]) -> SurfaceSource {
     SurfaceSource::load(
         [0; 2],
         [16; 2],
-        Some(LightGrid::gray(2, 2, styles, samples).unwrap()),
+        Some(Arc::new(LightGrid::gray(2, 2, styles, samples).unwrap())),
         true,
         None,
     )
@@ -154,7 +155,7 @@ fn owner_brightest_rgb_policy_preserves_red_green_ties() {
         &[100, 100, 20, 100, 100, 20, 100, 100, 20, 100, 100, 20],
     )
     .unwrap();
-    let source = SurfaceSource::load([0; 2], [16; 2], Some(grid), true, None).unwrap();
+    let source = SurfaceSource::load([0; 2], [16; 2], Some(Arc::new(grid)), true, None).unwrap();
     let mut cache = SurfaceCache::load(vec![source], 256).unwrap();
     let span = cache
         .prepare(
@@ -409,7 +410,9 @@ fn malformed_load_inputs_are_scoped_errors() {
         SurfaceSource::load(
             [0; 2],
             [16; 2],
-            Some(LightGrid::gray(3, 2, [0, 255, 255, 255], &[0; 6]).unwrap()),
+            Some(Arc::new(
+                LightGrid::gray(3, 2, [0, 255, 255, 255], &[0; 6]).unwrap()
+            )),
             true,
             None,
         )

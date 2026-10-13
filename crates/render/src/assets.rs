@@ -5,7 +5,10 @@ use crate::scene::Span;
 pub use crate::shader::{AlphaFunc as AlphaTest, Cull, TexCoordGen as TcGen};
 use crate::shader::{AlphaGen, Deform, FogParms, RgbGen, StageBlend, TexMod};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
-use crate::world::{SurfaceBinding, SurfaceMaterial, World, WorldId, geometry::WorldGeometry};
+use crate::world::{
+    SurfaceBinding, SurfaceMaterial, World, WorldId, WorldPresentation, WorldPresentationId,
+    geometry::WorldGeometry,
+};
 use qa_core::names::{NameTable, NamesError};
 pub use qa_core::primitives::ModelId;
 use qa_core::primitives::{NameId, Vec3};
@@ -391,6 +394,7 @@ pub struct Assets {
     materials: Vec<Material>,
     models: Vec<Model>,
     worlds: Vec<World>,
+    presentations: Vec<WorldPresentation>,
     palettes: Vec<PaletteLighting>,
 }
 impl Assets {
@@ -430,6 +434,7 @@ impl Assets {
                 frame_count: 1,
             }],
             worlds: Vec::new(),
+            presentations: Vec::new(),
             palettes: Vec::new(),
         })
     }
@@ -690,52 +695,46 @@ impl Assets {
         &mut self,
         geometry: WorldGeometry,
         visibility: VisibilityWorld,
-        materials: &[MaterialId],
-    ) -> Result<WorldId, &'static str> {
-        let bindings: Vec<_> = materials
-            .iter()
-            .map(|&material| SurfaceMaterial {
-                material,
-                ..SurfaceMaterial::default()
-            })
-            .collect();
-        self.register_world_with_bindings(geometry, visibility, &bindings)
-    }
-    pub fn register_world_with_bindings(
-        &mut self,
-        geometry: WorldGeometry,
-        visibility: VisibilityWorld,
-        materials: &[SurfaceMaterial],
+        variants: &[&[SurfaceMaterial]],
     ) -> Result<WorldId, &'static str> {
         if geometry.surfaces.len() != visibility.surface_count()
-            || materials.len() != geometry.surfaces.len()
-            || materials.iter().any(|binding| {
-                self.material(binding.material).is_none()
-                    || !self.image(binding.lightmap).is_some_and(|image| {
-                        binding.lightmap_region.is_none_or(|region| {
-                            region.width != 0
-                                && region.height != 0
-                                && region
-                                    .x
-                                    .checked_add(region.width)
-                                    .is_some_and(|end| end <= image.width)
-                                && region
-                                    .y
-                                    .checked_add(region.height)
-                                    .is_some_and(|end| end <= image.height)
-                        })
+            || variants.is_empty()
+            || variants.iter().any(|materials| {
+                materials.len() != geometry.surfaces.len()
+                    || materials.iter().any(|binding| {
+                        self.material(binding.material).is_none()
+                            || !self.image(binding.lightmap).is_some_and(|image| {
+                                binding.lightmap_region.is_none_or(|region| {
+                                    region.width != 0
+                                        && region.height != 0
+                                        && region
+                                            .x
+                                            .checked_add(region.width)
+                                            .is_some_and(|end| end <= image.width)
+                                        && region
+                                            .y
+                                            .checked_add(region.height)
+                                            .is_some_and(|end| end <= image.height)
+                                })
+                            })
+                            || binding
+                                .texture_scale
+                                .iter()
+                                .any(|value| !value.is_finite() || *value <= 0.0)
                     })
-                    || binding
-                        .texture_scale
-                        .iter()
-                        .any(|value| !value.is_finite() || *value <= 0.0)
             })
         {
             return Err("invalid world surface bindings");
         }
         let id = WorldId(u32::try_from(self.worlds.len()).map_err(|_| "world table full")?);
+        let first =
+            u32::try_from(self.presentations.len()).map_err(|_| "world presentation table full")?;
+        let count = u32::try_from(variants.len()).map_err(|_| "world presentation table full")?;
+        first
+            .checked_add(count)
+            .ok_or("world presentation table full")?;
         let mut indices = Vec::new();
-        let mut bindings = Vec::with_capacity(materials.len());
+        let mut mesh_ranges = Vec::with_capacity(geometry.surfaces.len());
         for (source, surface) in geometry.surfaces.iter().enumerate() {
             let range = surface.indices.range();
             if source != surface.source_id as usize
@@ -746,33 +745,69 @@ impl Assets {
             }
             let first = u32::try_from(indices.len()).map_err(|_| "world mesh full")?;
             indices.extend_from_slice(&geometry.indices[range]);
-            bindings.push(SurfaceBinding {
-                material: materials[source].material,
-                lightmap: materials[source].lightmap,
-                lightmap_region: materials[source].lightmap_region,
-                lightmap_conversion: materials[source].lightmap_conversion,
-                texture_scale: materials[source].texture_scale,
-                mesh_indices: Span {
-                    first,
-                    count: surface.indices.count,
-                },
+            mesh_ranges.push(Span {
+                first,
+                count: surface.indices.count,
             });
         }
+        let registrations: Vec<_> = variants
+            .iter()
+            .map(|materials| {
+                let bindings = materials
+                    .iter()
+                    .zip(&mesh_ranges)
+                    .map(|(material, &mesh_indices)| SurfaceBinding {
+                        material: material.material,
+                        lightmap: material.lightmap,
+                        lightmap_region: material.lightmap_region,
+                        lightmap_conversion: material.lightmap_conversion,
+                        texture_scale: material.texture_scale,
+                        mesh_indices,
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice();
+                WorldPresentation {
+                    world: id,
+                    bindings,
+                }
+            })
+            .collect();
         let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();
         let mesh = self.register_model(&vertices, &indices, MaterialId(0))?;
         self.worlds.push(World {
             geometry,
             visibility: visibility.into(),
             mesh,
-            bindings: bindings.into_boxed_slice(),
+            presentations: Span { first, count },
         });
+        self.presentations.extend(registrations);
         Ok(id)
     }
     pub fn world(&self, id: WorldId) -> Option<&World> {
         self.worlds.get(id.0 as usize)
     }
-    pub fn surface_binding(&self, world: WorldId, surface: u32) -> Option<&SurfaceBinding> {
-        self.world(world)?.bindings().get(surface as usize)
+    pub fn world_presentation(&self, id: WorldPresentationId) -> Option<&WorldPresentation> {
+        self.presentations.get(id.0 as usize)
+    }
+    pub fn world_presentations(&self) -> &[WorldPresentation] {
+        &self.presentations
+    }
+    pub fn surface_binding(
+        &self,
+        presentation: WorldPresentationId,
+        surface: u32,
+    ) -> Option<&SurfaceBinding> {
+        self.world_presentation(presentation)?
+            .bindings()
+            .get(surface as usize)
+    }
+    /// Copied scene references must name the world owning their presentation.
+    pub(crate) fn scene_binding(
+        &self,
+        surface: crate::scene::SurfaceRef,
+    ) -> Option<&SurfaceBinding> {
+        (self.world_presentation(surface.presentation)?.world() == surface.world).then_some(())?;
+        self.surface_binding(surface.presentation, surface.surface)
     }
     pub fn worlds(&self) -> &[World] {
         &self.worlds

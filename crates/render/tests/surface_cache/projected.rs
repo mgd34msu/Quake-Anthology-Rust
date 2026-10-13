@@ -9,7 +9,9 @@ fn projected_source(samples: &[u8]) -> SurfaceSource {
     SurfaceSource::load(
         MINIMUM,
         [32, 16],
-        Some(LightGrid::gray(17, 7, [0, 1, 255, 255], samples).unwrap()),
+        Some(Arc::new(
+            LightGrid::gray(17, 7, [0, 1, 255, 255], samples).unwrap(),
+        )),
         true,
         Some(IndexedProjection {
             lightmap: Some(PROJECTION),
@@ -140,7 +142,9 @@ fn projected_single_cell_keeps_native_scalar_ties_and_style_invalidation() {
     let source = SurfaceSource::load(
         [0; 2],
         [16; 2],
-        Some(LightGrid::rgb(1, 1, [0, 255, 255, 255], &[100, 100, 20]).unwrap()),
+        Some(Arc::new(
+            LightGrid::rgb(1, 1, [0, 255, 255, 255], &[100, 100, 20]).unwrap(),
+        )),
         true,
         Some(IndexedProjection {
             lightmap: Some([[17.0, -8.0, 100.0], [-23.0, 4.0, -200.0]]),
@@ -187,7 +191,9 @@ fn projected_load_validation_and_classic_absent_samples_keep_native_darkness() {
         SurfaceSource::load(
             [0; 2],
             [16; 2],
-            Some(LightGrid::gray(1, 1, [0, 255, 255, 255], &[64]).unwrap()),
+            Some(Arc::new(
+                LightGrid::gray(1, 1, [0, 255, 255, 255], &[64]).unwrap()
+            )),
             true,
             Some(IndexedProjection {
                 lightmap: Some([[f64::NAN, 0.0, 0.0], [0.0; 3]]),

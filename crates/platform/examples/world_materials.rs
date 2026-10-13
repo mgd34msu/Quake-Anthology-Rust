@@ -2,7 +2,10 @@
 use qa_app::map;
 use qa_content::vfs::Vfs;
 use qa_platform::Stopwatch;
-use qa_render::{Assets, CpuPresentation, material::world_load::WorldLoadOptions};
+use qa_render::{
+    Assets, CpuPresentation,
+    material::world_load::{WorldLoadOptions, WorldPresentationProfile},
+};
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -21,11 +24,20 @@ fn run() -> Result<(), String> {
     let start = Stopwatch::start();
     let input = map::read(&vfs, &name)?;
     let presentation = input.native_source;
+    let mut palettes = [None; 5];
+    let source_palette =
+        qa_app::render_settings::palette(&vfs, &mut assets, input.native_source, &mut palettes)?;
+    let target_palette =
+        qa_app::render_settings::palette(&vfs, &mut assets, presentation, &mut palettes)?;
     let loaded = input.load(
         &vfs,
         &mut assets,
         &mut collision,
-        presentation,
+        source_palette,
+        &[WorldPresentationProfile::native(
+            presentation,
+            target_palette,
+        )],
         WorldLoadOptions::default(),
     )?;
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -57,7 +69,7 @@ fn run() -> Result<(), String> {
         geometry.indices.len() / 3,
         assets.materials().len(),
         assets.images().len(),
-        match loaded.render.presentation.cpu {
+        match loaded.render.presentations[0].defaults.cpu {
             CpuPresentation::Rgb => "rgb",
             CpuPresentation::Indexed { .. } => "indexed",
         },

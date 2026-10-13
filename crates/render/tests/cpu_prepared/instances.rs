@@ -3,17 +3,18 @@ use crate::scene::{SceneEntity, SceneModel};
 use crate::shader::{AlphaGen, RgbGen};
 use crate::surface_cache::{IndexedLighting, IndexedTexture};
 
-fn instance(world: WorldId) -> SceneEntity {
+fn instance(assets: &Assets, world: WorldId) -> SceneEntity {
     SceneEntity {
         model: SceneModel::World {
             world,
+            presentation: only_presentation(assets, world),
             surfaces: IndexSpan { first: 0, count: 1 },
         },
         ..SceneEntity::default()
     }
 }
 
-fn inline_models(geometry: &mut WorldGeometry) {
+pub(super) fn inline_models(geometry: &mut WorldGeometry) {
     let model = WorldModel {
         bounds: geometry.surfaces[0].bounds,
         origin: Vec3::default(),
@@ -35,7 +36,7 @@ fn instance_packet(assets: &Assets, entities: &[SceneEntity], view: Refdef) -> C
     frame.finish()
 }
 
-fn assert_frame(actual: &CpuBackend, expected: &CpuBackend) {
+pub(super) fn assert_frame(actual: &CpuBackend, expected: &CpuBackend) {
     assert_eq!(actual.frame.pixels, expected.frame.pixels);
     assert_eq!(actual.frame.indices, expected.frame.indices);
     assert_eq!(actual.frame.palettes, expected.frame.palettes);
@@ -120,7 +121,7 @@ fn indexed_world_instances_retain_native_coordinates_and_share_cached_texels() {
     assert_eq!(
         actual
             .render(
-                &instance_packet(&assets, &[instance(worlds[0])], view),
+                &instance_packet(&assets, &[instance(&assets, worlds[0])], view),
                 &assets
             )
             .rejected,
@@ -136,7 +137,7 @@ fn indexed_world_instances_retain_native_coordinates_and_share_cached_texels() {
             Vec3([-1.0, 0.0, 0.0]),
             Vec3([0.0, 0.0, 1.0]),
         ],
-        ..instance(worlds[0])
+        ..instance(&assets, worlds[0])
     };
     assert_eq!(
         actual
@@ -160,7 +161,7 @@ fn indexed_world_instances_retain_native_coordinates_and_share_cached_texels() {
     assert!(actual.world_stats().cache.hits > 0);
     let translated = SceneEntity {
         origin: Vec3([4.0, 0.0, 0.0]),
-        ..instance(worlds[0])
+        ..instance(&assets, worlds[0])
     };
     assert_eq!(
         expected
@@ -204,6 +205,7 @@ fn mixed_static_and_instanced_bsp_surfaces_use_plane_depth_order() {
     let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
     assert!(frame.add_world(
         world,
+        only_presentation(&assets, world),
         &[VisibleSurface {
             surface: 0,
             depth_key: 0
@@ -211,7 +213,7 @@ fn mixed_static_and_instanced_bsp_surfaces_use_plane_depth_order() {
     ));
     assert!(frame.add_entity(SceneEntity {
         origin: Vec3([-2.0, 0.0, 0.0]),
-        ..instance(world)
+        ..instance(&assets, world)
     }));
     assert!(frame.render_scene(test_view(), &[], &assets));
     let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
@@ -247,7 +249,7 @@ fn parallel_instance_chunks_share_packet_poses_and_disable_bsp_certification() {
         GeometryPartition::SplitBsp,
         inline_models,
     );
-    let mut entities = vec![instance(world); 128];
+    let mut entities = vec![instance(&assets, world); 128];
     entities[64].origin = Vec3([-2.0, 0.0, 0.0]);
     let list = instance_packet(&assets, &entities, test_view());
     let scene = Limits {
@@ -361,7 +363,7 @@ fn world_instances_use_copied_entity_shader_inputs_and_material_override() {
     let entity = SceneEntity {
         material: Some(replacement),
         color: [101, 203, 47, 255],
-        ..instance(world)
+        ..instance(&assets, world)
     };
     let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     let list = instance_packet(&assets, &[entity], view);
@@ -423,7 +425,7 @@ fn unsupported_world_instance_transform_drops_only_affected_submission() {
         GeometryPartition::Unpartitioned,
         inline_models,
     );
-    let good = instance(world);
+    let good = instance(&assets, world);
     for bad in [
         SceneEntity {
             axes: [Vec3([2.0, 0.0, 0.0]), good.axes[1], good.axes[2]],

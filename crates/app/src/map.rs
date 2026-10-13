@@ -12,7 +12,10 @@ use qa_formats::{
 };
 use qa_render::{
     Assets,
-    material::world_load::{LoadedWorld, SkyEnvironment, WorldLoadOptions, load_world},
+    assets::PaletteId,
+    material::world_load::{
+        LoadedWorld, SkyEnvironment, WorldLoadOptions, WorldPresentationProfile, load_world,
+    },
 };
 use qa_world::collision::{
     CollisionStore, Contents,
@@ -262,7 +265,8 @@ impl MapInput {
         vfs: &Vfs,
         assets: &mut Assets,
         geometry: &mut CollisionStore,
-        presentation: RuleSetId,
+        source_palette: Option<PaletteId>,
+        presentations: &[WorldPresentationProfile],
         mut options: WorldLoadOptions,
     ) -> Result<LoadedMap, String> {
         let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;
@@ -270,7 +274,7 @@ impl MapInput {
         let (spawns, entity_count, sky_environment) = spawns(&map, self.native_source)?;
         let (collision, collision_brushes) = collision(&map, geometry)?;
         options.sky_environment = sky_environment;
-        let render = match load_world(vfs, &map, assets, presentation, options) {
+        let render = match load_world(vfs, &map, assets, source_palette, presentations, options) {
             Ok(render) => render,
             Err(error) => {
                 geometry.remove(collision);

@@ -1,7 +1,7 @@
 use super::*;
 use crate::scene::SceneModel;
 use crate::stage::EntityLighting;
-use crate::world::WorldId;
+use crate::world::{WorldId, WorldPresentationId};
 
 #[test]
 fn mesh_and_world_instances_share_the_same_column_major_pose_matrix() {
@@ -21,6 +21,7 @@ fn mesh_and_world_instances_share_the_same_column_major_pose_matrix() {
         entity.model,
         SceneModel::World {
             world: WorldId(3),
+            presentation: WorldPresentationId(7),
             surfaces: Span { first: 7, count: 2 },
         },
     ] {
@@ -99,6 +100,7 @@ fn entity_inputs_preserve_face_bindings_and_independent_view_data() {
     let world_entity = SceneEntity {
         model: SceneModel::World {
             world: WorldId(3),
+            presentation: WorldPresentationId(7),
             surfaces: Span { first: 7, count: 2 },
         },
         ..entity

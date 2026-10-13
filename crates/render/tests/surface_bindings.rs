@@ -121,12 +121,26 @@ fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
     });
     let (geometry, visibility) = inputs(2);
     let id = assets
-        .register_world_with_bindings(geometry, visibility, &materials)
+        .register_world(geometry, visibility, &[&materials])
         .unwrap();
     let world = assets.world(id).unwrap();
     for (binding, region, expected) in [
-        (world.bindings()[0], red, [17, 0, 0, 255]),
-        (world.bindings()[1], blue, [0, 0, 231, 255]),
+        (
+            assets
+                .world_presentation(qa_render::WorldPresentationId(world.presentations().first))
+                .unwrap()
+                .bindings()[0],
+            red,
+            [17, 0, 0, 255],
+        ),
+        (
+            assets
+                .world_presentation(qa_render::WorldPresentationId(world.presentations().first))
+                .unwrap()
+                .bindings()[1],
+            blue,
+            [0, 0, 231, 255],
+        ),
     ] {
         assert_eq!(binding.lightmap, image);
         assert_eq!(binding.lightmap_region, Some(region));
@@ -176,14 +190,14 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
         let (geometry, visibility) = inputs(1);
         assert!(
             assets
-                .register_world_with_bindings(
+                .register_world(
                     geometry,
                     visibility,
-                    &[SurfaceMaterial {
+                    &[&[SurfaceMaterial {
                         lightmap: image,
                         lightmap_region: Some(region),
                         ..SurfaceMaterial::default()
-                    }]
+                    }]]
                 )
                 .is_err()
         );
@@ -192,18 +206,24 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
     }
     let (geometry, visibility) = inputs(1);
     let id = assets
-        .register_world_with_bindings(
+        .register_world(
             geometry,
             visibility,
-            &[SurfaceMaterial {
+            &[&[SurfaceMaterial {
                 lightmap: image,
                 lightmap_region: Some(valid),
                 ..SurfaceMaterial::default()
-            }],
+            }]],
         )
         .unwrap();
     assert_eq!(
-        assets.world(id).unwrap().bindings()[0].lightmap_region,
+        assets
+            .world_presentation(qa_render::WorldPresentationId(
+                assets.world(id).unwrap().presentations().first
+            ))
+            .unwrap()
+            .bindings()[0]
+            .lightmap_region,
         Some(valid)
     );
 }
@@ -220,17 +240,24 @@ fn authored_full_page_keeps_uvs_and_default_region_none() {
         .unwrap();
     let (geometry, visibility) = inputs(1);
     let id = assets
-        .register_world_with_bindings(
+        .register_world(
             geometry,
             visibility,
-            &[SurfaceMaterial {
+            &[&[SurfaceMaterial {
                 lightmap: image,
                 ..SurfaceMaterial::default()
-            }],
+            }]],
         )
         .unwrap();
     let world = assets.world(id).unwrap();
-    assert_eq!(world.bindings()[0].lightmap_region, None);
+    assert_eq!(
+        assets
+            .world_presentation(qa_render::WorldPresentationId(world.presentations().first))
+            .unwrap()
+            .bindings()[0]
+            .lightmap_region,
+        None
+    );
     assert_eq!(
         world.geometry().vertices[0].vertex.lightmap_coord,
         [0.25, 0.75]
@@ -238,5 +265,44 @@ fn authored_full_page_keeps_uvs_and_default_region_none() {
     assert_eq!(
         assets.model(world.mesh()).unwrap().vertices[0].lightmap_coord,
         [0.25, 0.75]
+    );
+}
+
+#[test]
+fn invalid_later_presentation_does_not_publish_a_world_mesh_or_partial_variant() {
+    let mut assets = Assets::load().unwrap();
+    let before = (
+        assets.worlds().len(),
+        assets.models().len(),
+        assets.world_presentations().len(),
+    );
+    let valid = [SurfaceMaterial::default()];
+    let invalid = [SurfaceMaterial {
+        material: qa_render::MaterialId(u32::MAX),
+        ..Default::default()
+    }];
+    let (geometry, visibility) = inputs(1);
+    assert!(
+        assets
+            .register_world(geometry, visibility, &[&valid, &invalid])
+            .is_err()
+    );
+    assert_eq!(
+        (
+            assets.worlds().len(),
+            assets.models().len(),
+            assets.world_presentations().len()
+        ),
+        before
+    );
+    let (geometry, visibility) = inputs(1);
+    assert!(assets.register_world(geometry, visibility, &[]).is_err());
+    assert_eq!(
+        (
+            assets.worlds().len(),
+            assets.models().len(),
+            assets.world_presentations().len()
+        ),
+        before
     );
 }

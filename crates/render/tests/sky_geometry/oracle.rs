@@ -204,7 +204,7 @@ fn sky_entity_triangles_use_the_same_selected_frame_pair_as_mesh_draws() {
 
 fn two_face_world(
     assets: &mut Assets,
-    materials: &[crate::world::SurfaceMaterial; 2],
+    materials: &[&[crate::world::SurfaceMaterial]],
 ) -> (crate::world::WorldId, [[Vec3; 3]; 2]) {
     use crate::world::geometry::{
         GeometryKind, GeometryPartition, LightEncoding, LightSource, PatchStats,
@@ -316,7 +316,7 @@ fn two_face_world(
     .unwrap();
     (
         assets
-            .register_world_with_bindings(geometry, visibility, materials)
+            .register_world(geometry, visibility, materials)
             .unwrap(),
         points,
     )
@@ -336,19 +336,22 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
     });
     let lightmaps = [[17, 0, 0, 255], [0, 0, 231, 255]]
         .map(|color| assets.register_image(1, 1, &color).unwrap());
-    let bindings = std::array::from_fn(|index| SurfaceMaterial {
+    let bindings: [SurfaceMaterial; 2] = std::array::from_fn(|index| SurfaceMaterial {
         material: materials[index],
         lightmap: lightmaps[index],
         texture_scale: [1.0 / (32 << index) as f32, 1.0 / (64 << index) as f32],
         ..SurfaceMaterial::default()
     });
-    let (world, points) = two_face_world(&mut assets, &bindings);
+    let (world, points) = two_face_world(&mut assets, &[&bindings]);
+    let presentation =
+        crate::WorldPresentationId(assets.world(world).unwrap().presentations().first);
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     for material in [None, Some(materials[1])] {
         let mut submission = frontend.begin_frame([0; 4]).unwrap();
         let first_entity = SceneEntity {
             model: SceneModel::World {
                 world,
+                presentation,
                 surfaces: Span { first: 1, count: 1 },
             },
             origin: Vec3([1.0, 0.0, 0.0]),
@@ -364,10 +367,11 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
         };
         assert!(submission.add_entity(first_entity));
         assert!(submission.render_scene(refdef, &[], &assets));
-        assert!(submission.add_world(world, &[VisibleSurface::default()]));
+        assert!(submission.add_world(world, presentation, &[VisibleSurface::default()]));
         let second_entity = SceneEntity {
             model: SceneModel::World {
                 world,
+                presentation,
                 surfaces: Span { first: 0, count: 2 },
             },
             origin: Vec3([-5.0, 7.0, -2.0]),
@@ -418,7 +422,7 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
                         .map(f32::to_bits)
                 }),
             ));
-            let binding = assets.surface_binding(world, index as u32).unwrap();
+            let binding = assets.surface_binding(presentation, index as u32).unwrap();
             assert_eq!(binding.material, bindings[index].material);
             assert_eq!(binding.lightmap, bindings[index].lightmap);
             assert_eq!(binding.texture_scale, bindings[index].texture_scale);
@@ -426,6 +430,116 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
         actual.sort();
         expected.sort();
         assert_eq!(actual, expected);
+        assert!(frontend.recycle(list).is_ok());
+    }
+}
+
+#[test]
+fn world_sky_variants_share_geometry_and_keep_the_selected_material() {
+    use crate::assets::MaterialSettings;
+    use crate::scene::{Command, FrontEnd, Limits, Refdef, SceneEntity, SceneModel};
+    use crate::world::{SurfaceMaterial, VisibleSurface, WorldPresentationId};
+
+    let mut assets = Assets::load().unwrap();
+    let materials = [
+        "sky-native-first",
+        "sky-native-second",
+        "sky-alternate-first",
+        "sky-alternate-second",
+    ]
+    .map(|name| {
+        assets
+            .register_material(name, &[Stage::default()], MaterialSettings::default())
+            .unwrap()
+    });
+    let variants = [
+        [0, 1].map(|index| SurfaceMaterial {
+            material: materials[index],
+            ..SurfaceMaterial::default()
+        }),
+        [2, 3].map(|index| SurfaceMaterial {
+            material: materials[index],
+            ..SurfaceMaterial::default()
+        }),
+    ];
+    let (world, points) = two_face_world(&mut assets, &[&variants[0], &variants[1]]);
+    assert_eq!(assets.worlds().len(), 1);
+    let presentations = assets.world(world).unwrap().presentations();
+    assert_eq!(presentations.count, 2);
+    for surface in 0..2 {
+        assert_eq!(
+            assets
+                .surface_binding(WorldPresentationId(presentations.first), surface)
+                .unwrap()
+                .mesh_indices,
+            assets
+                .surface_binding(WorldPresentationId(presentations.first + 1), surface)
+                .unwrap()
+                .mesh_indices
+        );
+    }
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let origin = Vec3([3.0, -7.0, 1.0]);
+    for order in [[0u32, 1u32], [1u32, 0u32]] {
+        let mut frame = frontend.begin_frame([0; 4]).unwrap();
+        for profile in order {
+            let presentation = WorldPresentationId(presentations.first + profile);
+            assert!(frame.add_world(world, presentation, &[VisibleSurface::default()]));
+            assert!(frame.add_entity(SceneEntity {
+                model: SceneModel::World {
+                    world,
+                    presentation,
+                    surfaces: Span { first: 1, count: 1 },
+                },
+                origin,
+                ..SceneEntity::default()
+            }));
+            assert!(frame.render_scene(Refdef::default(), &[], &assets));
+        }
+        let list = frame.finish();
+        let mut views = 0;
+        for command in list.commands() {
+            let Command::View(view) = command else {
+                continue;
+            };
+            let profile = order[views];
+            views += 1;
+            assert!(list.surfaces(view.scene.surfaces).iter().all(|reference| {
+                reference.world == world
+                    && reference.presentation == WorldPresentationId(presentations.first + profile)
+            }));
+            let mut actual = Vec::new();
+            for_each_sky_triangle(&list, view.scene.draws, &assets, |material, geometry| {
+                match geometry {
+                    SkySubmission::Begin(_) => {}
+                    SkySubmission::Triangle(triangle) => {
+                        actual.push((material.0, triangle.map(|point| point.0.map(f32::to_bits))));
+                    }
+                    SkySubmission::MissingSurface => {
+                        panic!("registered sky geometry must remain available")
+                    }
+                }
+                true
+            });
+            let mut expected = vec![
+                (
+                    materials[profile as usize * 2].0,
+                    points[0].map(|point| point.0.map(f32::to_bits)),
+                ),
+                (
+                    materials[profile as usize * 2 + 1].0,
+                    points[1].map(|point| {
+                        math::transform_point(origin, SceneEntity::default().axes, point)
+                            .0
+                            .map(f32::to_bits)
+                    }),
+                ),
+            ];
+            actual.sort();
+            expected.sort();
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(views, 2);
         assert!(frontend.recycle(list).is_ok());
     }
 }
