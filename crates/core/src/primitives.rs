@@ -54,6 +54,34 @@ impl Vec3 {
     }
 }
 
+/// An attachment's affine pose; axes retain the file's native orientation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Orientation {
+    pub origin: Vec3,
+    pub axes: [Vec3; 3],
+}
+impl Default for Orientation {
+    fn default() -> Self {
+        Self {
+            origin: Vec3::default(),
+            axes: std::array::from_fn(|axis| Vec3::axis(axis, 1.0)),
+        }
+    }
+}
+impl Orientation {
+    /// Native tag interpolation uses weighted sums, followed by independent
+    /// axis normalization; subtract-then-lerp rounds differently.
+    pub fn interpolate(self, end: Self, fraction: f32) -> Self {
+        let back = 1.0 - fraction;
+        Self {
+            origin: self.origin * back + end.origin * fraction,
+            axes: std::array::from_fn(|axis| {
+                crate::math::normalized(self.axes[axis] * back + end.axes[axis] * fraction)
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
     X,

@@ -3,7 +3,7 @@
 use qa_compat::services::{CallError, ModelLoader, ModelLookup};
 use qa_content::vfs::Vfs;
 use qa_core::names::{NameTable, canonical_path};
-use qa_core::primitives::{Bounds, IndexSpan, NameId, RuleSetId};
+use qa_core::primitives::{Bounds, IndexSpan, NameId, Orientation, RuleSetId};
 use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Mesh, Model, ModelFormat};
 use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSource};
@@ -73,6 +73,7 @@ pub struct ModelLimits {
     pub name_bytes: usize,
     pub skins: usize,
     pub surfaces: usize,
+    pub tags: usize,
     pub frame_vertices: usize,
     pub indices: usize,
     pub inline_models: usize,
@@ -85,6 +86,7 @@ impl Default for ModelLimits {
             name_bytes: 4 * 1024 * 1024,
             skins: 65536,
             surfaces: 65536,
+            tags: 1024 * 1024,
             frame_vertices: 16 * 1024 * 1024,
             indices: 16 * 1024 * 1024,
             inline_models: 65536,
@@ -185,6 +187,7 @@ pub struct ModelCapacity {
     pub bindings: usize,
     pub skins: usize,
     pub surfaces: usize,
+    pub tags: usize,
     pub frame_vertices: usize,
     pub indices: usize,
     pub inline_bindings: usize,
@@ -236,12 +239,24 @@ enum ModelFile {
     Ready {
         metadata: ModelMetadata,
         renderer_sources: u8,
+        tags: Option<TagLayout>,
     },
     LoadedWorld {
         binding: InlineBinding,
         bounds: Bounds,
     },
     Failed(FileError),
+}
+#[derive(Clone, Copy)]
+struct TagLayout {
+    samples: IndexSpan,
+    frames: u32,
+    tags_per_frame: u32,
+}
+#[derive(Clone, Copy)]
+struct TaggedOrientation {
+    name: NameId,
+    orientation: Orientation,
 }
 impl ModelFile {
     fn bounds(&self) -> Option<Bounds> {
@@ -282,6 +297,7 @@ pub struct ModelCatalog {
     registrations: Box<[RegisteredProfile]>,
     bindings: Box<[ModelMaterials]>,
     surfaces: Box<[SurfaceMaterials]>,
+    tags: Box<[TaggedOrientation]>,
     worlds: Box<[IndexSpan]>,
     inline: Box<[InlineBinding]>,
     capacity: ModelCapacity,
@@ -304,6 +320,7 @@ pub struct ModelCatalogBuilder {
     registrations: Vec<RegisteredProfile>,
     bindings: Vec<ModelMaterials>,
     surfaces: Vec<SurfaceMaterials>,
+    tags: Vec<TaggedOrientation>,
     worlds: Box<[IndexSpan]>,
     inline: Box<[InlineBinding]>,
     capacity: ModelCapacity,
@@ -360,6 +377,7 @@ impl ModelCatalogBuilder {
             registrations: Vec::new(),
             bindings: Vec::new(),
             surfaces: Vec::new(),
+            tags: Vec::new(),
             worlds,
             inline,
             capacity,
@@ -503,10 +521,15 @@ impl ModelCatalogBuilder {
                     _ => model.bounds,
                 },
             });
+        let tags = parsed
+            .as_ref()
+            .map_err(|error| error.message.clone())
+            .and_then(|model| self.admit_tags(model));
         self.files[name.0 as usize] = match &metadata {
             Ok(metadata) => ModelFile::Ready {
                 metadata: *metadata,
                 renderer_sources: 0,
+                tags: tags.as_ref().ok().copied().flatten(),
             },
             Err(error) => ModelFile::Failed(error.clone()),
         };
@@ -531,6 +554,7 @@ impl ModelCatalogBuilder {
                         .map_err(|error| error.message.clone())
                         .and_then(|model| {
                             validate_model(model)?;
+                            tags.as_ref().map_err(Clone::clone)?;
                             register(
                                 model,
                                 &mut temporary,
@@ -605,6 +629,44 @@ impl ModelCatalogBuilder {
             qa_render::material::load_catalog(vfs)
                 .map_err(|error| format!("shader scripts: {error:?}"))
         })
+    }
+
+    fn admit_tags(&mut self, model: &Model<'_>) -> Result<Option<TagLayout>, String> {
+        if model.format != ModelFormat::Md3 || model.tags_per_frame == 0 {
+            return Ok(None);
+        }
+        let first = self.tags.len();
+        let next = first
+            .checked_add(model.tags.len())
+            .filter(|&count| count <= self.limits.tags && count <= u32::MAX as usize)
+            .ok_or("model tag capacity")?;
+        for frame in model.tags.chunks_exact(model.tags_per_frame) {
+            let at = self.tags.len();
+            for tag in frame {
+                let name = match self.admit_name(tag.name) {
+                    Ok(name) => name,
+                    Err(_) => {
+                        self.tags.truncate(first);
+                        return Err("model tag name capacity".to_owned());
+                    }
+                };
+                self.tags.push(TaggedOrientation {
+                    name,
+                    orientation: tag.orientation,
+                });
+            }
+            // Preserve the original first match for duplicate names in a frame.
+            self.tags[at..].sort_by_key(|tag| tag.name.0);
+        }
+        self.capacity.tags = next;
+        Ok(Some(TagLayout {
+            samples: IndexSpan {
+                first: first as u32,
+                count: model.tags.len() as u32,
+            },
+            frames: model.frames.len() as u32,
+            tags_per_frame: model.tags_per_frame as u32,
+        }))
     }
 
     fn admit_shader(
@@ -713,6 +775,7 @@ impl ModelCatalogBuilder {
             registrations: self.registrations.into_boxed_slice(),
             bindings: self.bindings.into_boxed_slice(),
             surfaces: self.surfaces.into_boxed_slice(),
+            tags: self.tags.into_boxed_slice(),
             worlds: self.worlds,
             inline: self.inline,
             capacity: self.capacity,
@@ -867,7 +930,57 @@ fn model_bounds(files: &[ModelFile], handle: i32) -> Option<Bounds> {
         file => file.bounds(),
     }
 }
+fn lerp_tag(
+    names: &NameTable,
+    files: &[ModelFile],
+    tags: &[TaggedOrientation],
+    handle: i32,
+    start: i32,
+    end: i32,
+    fraction: f32,
+    raw_name: &[u8],
+) -> Option<Orientation> {
+    let ModelFile::Ready {
+        tags: Some(layout), ..
+    } = renderer_file(files, handle, None)?
+    else {
+        return None;
+    };
+    let name = names.find(raw_name)?;
+    let sample = |frame: i32| {
+        let frame = u32::try_from(frame).ok()?.min(layout.frames - 1);
+        let first = layout.samples.first + frame * layout.tags_per_frame;
+        let samples = &tags[IndexSpan {
+            first,
+            count: layout.tags_per_frame,
+        }
+        .range()];
+        let index = samples.partition_point(|tag| tag.name.0 < name.0);
+        let tag = samples.get(index)?;
+        (tag.name == name).then_some(tag.orientation)
+    };
+    Some(sample(start)?.interpolate(sample(end)?, fraction))
+}
 impl ModelLookup for ModelCatalogBuilder {
+    fn lerp_tag(
+        &self,
+        handle: i32,
+        start: i32,
+        end: i32,
+        fraction: f32,
+        name: &[u8],
+    ) -> Option<Orientation> {
+        lerp_tag(
+            &self.names,
+            &self.files,
+            &self.tags,
+            handle,
+            start,
+            end,
+            fraction,
+            name,
+        )
+    }
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
         file_lookup(&self.names, &self.files, path)?.bounds()
     }
@@ -906,6 +1019,25 @@ impl ModelLoader for ModelCatalogBuilder {
     }
 }
 impl ModelLookup for ModelCatalog {
+    fn lerp_tag(
+        &self,
+        handle: i32,
+        start: i32,
+        end: i32,
+        fraction: f32,
+        name: &[u8],
+    ) -> Option<Orientation> {
+        lerp_tag(
+            &self.names,
+            &self.files,
+            &self.tags,
+            handle,
+            start,
+            end,
+            fraction,
+            name,
+        )
+    }
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
         file_lookup(&self.names, &self.files, path)?.bounds()
     }

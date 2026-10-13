@@ -142,6 +142,22 @@ fn renderer_model_bounds(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
     c.memory.write_vec3(maxs, bounds.maxs)?;
     Ok(0)
 }
+fn renderer_lerp_tag(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let output = c.required_pointer(0)?;
+    c.memory.read(output, 48)?;
+    let name = c.memory.cstring(c.required_pointer(5)?)?;
+    let tag = (ENGINE_CALLS.lerp_tag)(
+        c.services,
+        c.arg(1)? as u32 as i32,
+        c.arg(2)? as u32 as i32,
+        c.arg(3)? as u32 as i32,
+        float::<false>(c, 4)? as f32,
+        name,
+    );
+    c.memory
+        .write_orientation(output, tag.unwrap_or_default())?;
+    Ok(u64::from(tag.is_some()))
+}
 
 enum CallValue {
     Word(u64),
@@ -472,6 +488,7 @@ const fn client() -> CallTable {
     t.entries[34] = scalar!(register_sound);
     t.entries[36] = scalar!(register_model);
     t.entries[47] = scalar!(renderer_model_bounds);
+    t.entries[48] = scalar!(renderer_lerp_tag);
     t.entries[39] = scalar!(register_shader::<true>);
     t.entries[49] = scalar!(renderer_configuration);
     t.entries[50] = scalar!(client_game_state);
@@ -510,6 +527,7 @@ const fn ui() -> CallTable {
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
     t.entries[18] = scalar!(register_model);
+    t.entries[29] = scalar!(renderer_lerp_tag);
     t.entries[31] = scalar!(register_sound);
     t.entries[32] = scalar!(client_sound::local::<true>);
     t.entries[43] = scalar!(renderer_configuration);

@@ -2,7 +2,7 @@
 use crate::assets::{Assets, MaterialId, ModelId, PaletteId, Vertex};
 use crate::surface_cache::IndexedLighting;
 use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
-use qa_core::primitives::Vec3;
+use qa_core::primitives::{Orientation, Vec3};
 use std::cmp::Ordering as SortOrdering;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
@@ -175,11 +175,7 @@ impl Default for Refdef {
         Self {
             viewport: Viewport::default(),
             origin: Vec3::default(),
-            axes: [
-                Vec3([1.0, 0.0, 0.0]),
-                Vec3([0.0, 1.0, 0.0]),
-                Vec3([0.0, 0.0, 1.0]),
-            ],
+            axes: Orientation::default().axes,
             fov: [90.0, 75.0],
             near: 4.0,
             far: 65536.0,
@@ -247,11 +243,7 @@ impl Default for SceneEntity {
         Self {
             model: SceneModel::Mesh(ModelId(0)),
             origin: Vec3::default(),
-            axes: [
-                Vec3([1.0, 0.0, 0.0]),
-                Vec3([0.0, 1.0, 0.0]),
-                Vec3([0.0, 0.0, 1.0]),
-            ],
+            axes: Orientation::default().axes,
             non_normalized_axes: false,
             color: [255; 4],
             material: None,

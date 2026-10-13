@@ -8,7 +8,7 @@ mod read;
 
 use crate::FormatError;
 pub use qa_core::primitives::IndexSpan;
-use qa_core::primitives::{Bounds, Vec3};
+use qa_core::primitives::{Bounds, Orientation, Vec3};
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,8 +110,7 @@ pub struct Sprite<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct Tag<'a> {
     pub name: &'a [u8],
-    pub origin: Vec3,
-    pub axes: [Vec3; 3],
+    pub orientation: Orientation,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Bone<'a> {

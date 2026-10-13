@@ -107,7 +107,10 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
                 [s.vector()?, s.vector()?, s.vector()?],
             )
         };
-        m.tags.push(Tag { name, origin, axes });
+        m.tags.push(Tag {
+            name,
+            orientation: Orientation { origin, axes },
+        });
     }
     let mut expanded_vertices = 0usize;
     for _ in 0..surfaces {

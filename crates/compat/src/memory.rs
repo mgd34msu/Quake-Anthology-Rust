@@ -1,7 +1,7 @@
 //! One module byte view over owned VM storage or stopped native backing.
 use qa_core::heap::extent;
 pub use qa_core::heap::{Heap, MemoryError};
-use qa_core::primitives::Vec3;
+use qa_core::primitives::{Orientation, Vec3};
 
 #[derive(Clone, Copy)]
 pub enum Width {
@@ -174,6 +174,18 @@ impl<'a> ModuleMemory<'a> {
         let bytes = self.read_mut(address, 12)?;
         for (chunk, value) in bytes.chunks_exact_mut(4).zip(value.0) {
             chunk.copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(())
+    }
+    pub fn write_orientation(
+        &mut self,
+        address: u64,
+        value: Orientation,
+    ) -> Result<(), MemoryError> {
+        self.read(address, 48)?;
+        self.write_vec3(address, value.origin)?;
+        for (axis, vector) in value.axes.into_iter().enumerate() {
+            self.write_vec3(address + 12 + axis as u64 * 12, vector)?;
         }
         Ok(())
     }

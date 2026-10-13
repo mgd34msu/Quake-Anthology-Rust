@@ -35,8 +35,11 @@ impl Fixture {
         ])
     }
     pub fn surfaces() -> Self {
+        Self::with_surfaces(md3_surfaces())
+    }
+    pub fn with_surfaces(model: Vec<u8>) -> Self {
         Self::new(&[
-            ("models/test.md3", md3_surfaces()),
+            ("models/test.md3", model),
             ("textures/body.tga", tga(2, 2, &[[90, 20, 10, 255]; 4])),
             ("textures/alternate.tga", tga(2, 2, &[[10, 90, 20, 255]; 4])),
             ("textures/glow.tga", tga(2, 2, &[[20, 10, 90, 255]; 4])),
@@ -156,6 +159,14 @@ pub fn md3() -> Vec<u8> {
 /// Two surfaces, each with its own shader list and two vertex frames.
 pub fn md3_surfaces() -> Vec<u8> {
     let mut bytes = md3();
+    let tags = i32::from_le_bytes(bytes[96..100].try_into().unwrap()) as usize;
+    let axes = tags + 112 + 76;
+    for (index, value) in [0.0f32, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        .into_iter()
+        .enumerate()
+    {
+        bytes[axes + index * 4..axes + index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
     let at = i32::from_le_bytes(bytes[100..104].try_into().unwrap()) as usize;
     let original = bytes[at..].to_vec();
     let shader_at = i32::from_le_bytes(original[92..96].try_into().unwrap()) as usize;

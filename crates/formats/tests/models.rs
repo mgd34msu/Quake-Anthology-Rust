@@ -86,8 +86,8 @@ fn md3_and_mdc_produce_the_same_frame_major_mesh_and_tag_shapes() {
         assert_eq!(m.meshes[0].shaders[0].name, b"textures/body");
     }
     let m = Model::parse(MDC).unwrap();
-    assert_eq!(m.tags[1].origin, Vec3([2.0, 0.0, 0.0]));
-    assert!((m.tags[1].axes[0].0[1] - 1.0).abs() < 1e-6);
+    assert_eq!(m.tags[1].orientation.origin, Vec3([2.0, 0.0, 0.0]));
+    assert!((m.tags[1].orientation.axes[0].0[1] - 1.0).abs() < 1e-6);
     assert_eq!(
         m.meshes[0].vertices[3].position,
         Vec3([0.0, -127.0 * 0.05, 128.0 * 0.05])

@@ -400,6 +400,16 @@ struct Models {
     fail: bool,
 }
 impl ModelLookup for Models {
+    fn lerp_tag(
+        &self,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: f32,
+        _: &[u8],
+    ) -> Option<qa_core::primitives::Orientation> {
+        None
+    }
     fn model_handle(&self, _: &[u8], _: RuleSetId) -> Option<i32> {
         None
     }

@@ -14,8 +14,8 @@ use qa_core::{
     primitives::{
         Body, Bounds, ClientId, CollisionOwner, CollisionShape, CvarHandle, EffectEvent, EntityId,
         EntityRecord, GeometryId, IndexSpan, ModelRules, ModuleId, NATIVE_PAYLOAD_BYTES,
-        NATIVE_WIRE_BYTES, NameId, NativeDelivery, NativeEntity, PrintKind, RuleSetId, SoundEvent,
-        UserCmd, Vec3,
+        NATIVE_WIRE_BYTES, NameId, NativeDelivery, NativeEntity, Orientation, PrintKind, RuleSetId,
+        SoundEvent, UserCmd, Vec3,
     },
 };
 use qa_session::clients::Server;
@@ -96,6 +96,14 @@ pub trait ModelLookup {
     fn shader_handle(&self, name: &[u8]) -> Option<i32>;
     fn model_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
     fn model_bounds(&self, handle: i32) -> Option<Bounds>;
+    fn lerp_tag(
+        &self,
+        handle: i32,
+        start: i32,
+        end: i32,
+        fraction: f32,
+        name: &[u8],
+    ) -> Option<Orientation>;
 }
 pub trait ModelLoader: ModelLookup {
     fn precache(&mut self, vfs: &Vfs, path: &[u8], source: RuleSetId) -> Result<Bounds, CallError>;
@@ -969,6 +977,7 @@ pub struct EngineCallTable {
     pub register_sound: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
     pub register_model: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
     pub registered_model_bounds: fn(&EngineServices<'_>, i32) -> Option<Bounds>,
+    pub lerp_tag: fn(&EngineServices<'_>, i32, i32, i32, f32, &[u8]) -> Option<Orientation>,
     pub registered_sound:
         fn(&EngineServices<'_>, i32) -> Result<Option<qa_core::primitives::SoundId>, CallError>,
     pub static_entity:
@@ -1156,13 +1165,9 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     },
     register_sound: |s, sample, source| s.register_sound(sample, source),
     register_model: |s, name, source| s.register_model(name, source),
-    registered_model_bounds: |s, handle| {
-        if let Some(loader) = s.model_loader.as_deref() {
-            loader.model_bounds(handle)
-        } else {
-            s.model_lookup
-                .and_then(|lookup| lookup.model_bounds(handle))
-        }
+    registered_model_bounds: |s, handle| s.models()?.model_bounds(handle),
+    lerp_tag: |s, handle, start, end, fraction, name| {
+        s.models()?.lerp_tag(handle, start, end, fraction, name)
     },
     registered_sound: |s, handle| Ok(s.registered_bank()?.registered_sound(handle)),
     ambient: |s, context, sound| {
@@ -1236,6 +1241,12 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
 };
 
 impl EngineServices<'_> {
+    fn models(&self) -> Option<&dyn ModelLookup> {
+        self.model_loader
+            .as_deref()
+            .map(|loader| loader as &dyn ModelLookup)
+            .or(self.model_lookup)
+    }
     /// The trace borrows spatial state while the caller may update the disjoint
     /// client array. Both borrows end before returning to the native module.
     fn world_trace<'a>(

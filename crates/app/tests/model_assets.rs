@@ -213,6 +213,147 @@ fn md3_tag_only_models_register_without_a_mesh_placeholder() {
 }
 
 #[test]
+fn model_tags_keep_exact_names_native_frame_clamps_and_frozen_poses() {
+    let fixture = support::Fixture::surfaces();
+    let profile = shader_profile(RuleSetId::Quake3);
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = builder
+        .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
+        .unwrap();
+    let bytes = support::md3_surfaces();
+    let decoded = qa_formats::model::Model::parse(&bytes).unwrap();
+    let start = decoded.tags[0].orientation;
+    let end = decoded.tags[1].orientation;
+    let expected = start.interpolate(end, 0.25);
+    assert_eq!(
+        builder.lerp_tag(handle, 0, 1, 0.25, b"tag_weapon"),
+        Some(expected)
+    );
+    fixture.remove("models/test.md3");
+    let (_, catalog) = builder.finish();
+    assert_eq!(catalog.capacity().tags, 2);
+    assert_eq!(
+        catalog.lerp_tag(handle, 0, 1, 0.25, b"tag_weapon"),
+        Some(expected)
+    );
+    assert_eq!(
+        catalog.lerp_tag(handle, 99, i32::MAX, 0.5, b"tag_weapon"),
+        Some(end.interpolate(end, 0.5))
+    );
+    for (start_frame, end_frame, name) in [
+        (-1, 0, b"tag_weapon".as_slice()),
+        (0, -1, b"tag_weapon"),
+        (0, 1, b"TAG_WEAPON"),
+        (0, 1, b"missing"),
+        (0, 1, b""),
+    ] {
+        assert_eq!(
+            catalog.lerp_tag(handle, start_frame, end_frame, 0.5, name),
+            None
+        );
+    }
+    for handle in [0, -1, i32::MAX] {
+        assert_eq!(catalog.lerp_tag(handle, 0, 1, 0.5, b"tag_weapon"), None);
+    }
+    assert_ne!(expected.origin, start.origin);
+    assert_ne!(expected.axes, start.axes);
+}
+
+#[test]
+fn tag_lookup_does_not_fold_names_between_frames() {
+    let mut bytes = support::md3_surfaces();
+    let tags = i32::from_le_bytes(bytes[96..100].try_into().unwrap()) as usize;
+    bytes[tags + 112..tags + 176].fill(0);
+    bytes[tags + 112..tags + 122].copy_from_slice(b"TAG_WEAPON");
+    let fixture = support::Fixture::with_surfaces(bytes);
+    let profile = shader_profile(RuleSetId::Quake3);
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = builder
+        .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
+        .unwrap();
+    assert!(builder.lerp_tag(handle, 0, 0, 0.5, b"tag_weapon").is_some());
+    assert!(builder.lerp_tag(handle, 1, 1, 0.5, b"TAG_WEAPON").is_some());
+    assert_eq!(builder.lerp_tag(handle, 0, 1, 0.5, b"tag_weapon"), None);
+    assert_eq!(builder.lerp_tag(handle, 0, 1, 0.5, b"TAG_WEAPON"), None);
+}
+
+#[test]
+fn tag_name_index_preserves_the_first_duplicate_in_each_frame() {
+    let original = support::md3_surfaces();
+    let tags = i32::from_le_bytes(original[96..100].try_into().unwrap()) as usize;
+    let mut bytes = original[..tags].to_vec();
+    for frame in 0..2 {
+        let tag = &original[tags + frame * 112..tags + (frame + 1) * 112];
+        bytes.extend(tag);
+        let mut duplicate = tag.to_vec();
+        duplicate[64..68].copy_from_slice(&999.0f32.to_le_bytes());
+        bytes.extend(duplicate);
+    }
+    bytes.extend(&original[tags + 224..]);
+    bytes[80..84].copy_from_slice(&2i32.to_le_bytes());
+    for offset in [100, 104] {
+        let value = i32::from_le_bytes(original[offset..offset + 4].try_into().unwrap());
+        bytes[offset..offset + 4].copy_from_slice(&(value + 224).to_le_bytes());
+    }
+    let parsed = qa_formats::model::Model::parse(&original).unwrap();
+    let fixture = support::Fixture::with_surfaces(bytes);
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [shader_profile(RuleSetId::Quake3)],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = builder
+        .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
+        .unwrap();
+    assert_eq!(
+        builder.lerp_tag(handle, 0, 1, 0.5, b"tag_weapon"),
+        Some(
+            parsed.tags[0]
+                .orientation
+                .interpolate(parsed.tags[1].orientation, 0.5)
+        )
+    );
+}
+
+#[test]
+fn native_model_admission_rejects_exhausted_tag_storage() {
+    let fixture = support::Fixture::surfaces();
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [shader_profile(RuleSetId::Quake3)],
+        [],
+        ModelLimits {
+            tags: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        builder.register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
+        Err(qa_compat::services::CallError::File)
+    );
+    let (assets, catalog) = builder.finish();
+    assert_eq!(catalog.capacity().tags, 0);
+    assert_eq!(catalog.capacity().frame_vertices, 0);
+    assert_eq!(assets.models().len(), 1);
+    assert!(catalog.diagnostics[0].error.contains("model tag capacity"));
+}
+
+#[test]
 fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() {
     use qa_app::client_scene::{ClientModelBindings, ClientSceneInput};
     use qa_core::{

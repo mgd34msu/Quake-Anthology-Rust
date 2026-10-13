@@ -6,6 +6,16 @@ pub struct ShaderLoader {
     pub calls: Vec<(Vec<u8>, RuleSetId, bool)>,
 }
 impl qa_compat::services::ModelLookup for ShaderLoader {
+    fn lerp_tag(
+        &self,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: f32,
+        _: &[u8],
+    ) -> Option<qa_core::primitives::Orientation> {
+        None
+    }
     fn model_handle(&self, _: &[u8], _: qa_core::primitives::RuleSetId) -> Option<i32> {
         None
     }
