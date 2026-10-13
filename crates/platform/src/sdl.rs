@@ -151,6 +151,19 @@ struct SdlFRect {
     h: f32,
 }
 
+#[repr(C)]
+struct SdlDisplayMode {
+    display: u32,
+    format: u32,
+    width: c_int,
+    height: c_int,
+    pixel_density: f32,
+    refresh_rate: f32,
+    refresh_numerator: c_int,
+    refresh_denominator: c_int,
+    internal: *mut c_void,
+}
+
 #[link(name = "SDL3")]
 unsafe extern "C" {
     fn SDL_InitSubSystem(flags: u32) -> bool;
@@ -161,6 +174,9 @@ unsafe extern "C" {
     fn SDL_SyncWindow(window: *mut c_void) -> bool;
     fn SDL_GetWindowID(window: *mut c_void) -> u32;
     fn SDL_GetWindowFlags(window: *mut c_void) -> u64;
+    fn SDL_GetWindowSizeInPixels(window: *mut c_void, w: *mut c_int, h: *mut c_int) -> bool;
+    fn SDL_GetDisplayForWindow(window: *mut c_void) -> u32;
+    fn SDL_GetCurrentDisplayMode(display: u32) -> *const SdlDisplayMode;
     fn SDL_SetWindowRelativeMouseMode(window: *mut c_void, enabled: bool) -> bool;
     fn SDL_GetWindowRelativeMouseMode(window: *mut c_void) -> bool;
     fn SDL_DestroyWindow(window: *mut c_void);
@@ -595,6 +611,52 @@ impl Window {
         unsafe { CStr::from_ptr(SDL_GetCurrentVideoDriver()) }
             .to_str()
             .unwrap_or("unknown")
+    }
+    /// Actual render-target and display properties. A software presenter uses
+    /// its fixed framebuffer, which SDL may scale to a different window size.
+    pub fn display_configuration(
+        &self,
+    ) -> Result<qa_core::presentation::DisplayConfiguration, String> {
+        let mut result = qa_core::presentation::DisplayConfiguration::default();
+        // SAFETY: the owned SDL window and current GL context remain live on
+        // this thread; SDL owns the returned display-mode record.
+        unsafe {
+            result.fullscreen = SDL_GetWindowFlags(self.window.as_ptr()) & 1 != 0;
+            let display = SDL_GetDisplayForWindow(self.window.as_ptr());
+            if let Some(mode) = SDL_GetCurrentDisplayMode(display).as_ref() {
+                result.frequency = mode.refresh_rate as i32;
+            }
+            match self.presentation {
+                Presentation::Software { width, height, .. } => {
+                    result.width = width;
+                    result.height = height;
+                    result.color_bits = 24;
+                    result.depth_bits = 32;
+                }
+                Presentation::Gl { .. } => {
+                    let (mut width, mut height) = (0, 0);
+                    if !SDL_GetWindowSizeInPixels(self.window.as_ptr(), &mut width, &mut height)
+                        || width <= 0
+                        || height <= 0
+                    {
+                        return Err(error());
+                    }
+                    result.width = width as u32;
+                    result.height = height as u32;
+                    let mut attributes = [0; 6];
+                    for (target, attribute) in attributes.iter_mut().zip([0, 1, 2, 6, 7, 12]) {
+                        if !SDL_GL_GetAttribute(attribute, target) || *target < 0 {
+                            return Err(error());
+                        }
+                    }
+                    result.color_bits = (attributes[0] + attributes[1] + attributes[2]) as u32;
+                    result.depth_bits = attributes[3] as u32;
+                    result.stencil_bits = attributes[4] as u32;
+                    result.stereo = attributes[5] != 0;
+                }
+            }
+        }
+        Ok(result)
     }
     /// Opens the SDL software presenter with a fixed streaming framebuffer.
     /// SDL window operations must remain on the main thread that creates it.

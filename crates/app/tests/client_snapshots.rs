@@ -35,10 +35,16 @@ const SELECT_COMMAND: u32 = 8;
 const READ_BYTE: u32 = 9;
 
 fn qvm() -> (Program, u64) {
+    qvm_with_renderer(&Q3_CLIENT, 49)
+}
+fn qvm_ui_renderer() -> (Program, u64) {
+    qvm_with_renderer(&qa_compat::abi::Q3_UI, 43)
+}
+fn qvm_with_renderer(imports: &'static qa_compat::abi::CallTable, renderer: i32) -> (Program, u64) {
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..10 {
+    for command in 0..11 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
@@ -94,6 +100,13 @@ fn qvm() -> (Program, u64) {
                 (Call, 0),
             ]),
             9 => operations.extend([(Local, 76), (Load4, 0), (Load1, 0)]),
+            10 => operations.extend([
+                (Local, 76),
+                (Load4, 0),
+                (Arg, 8),
+                (Const, -renderer - 1),
+                (Call, 0),
+            ]),
             _ => unreachable!(),
         }
         operations.push((Leave, 64));
@@ -101,7 +114,7 @@ fn qvm() -> (Program, u64) {
     (
         Program::Qvm {
             vm: Box::new(service_program::program(&operations, &[0; 256])),
-            imports: &Q3_CLIENT,
+            imports,
         },
         QVM_OUTPUT,
     )
@@ -109,6 +122,17 @@ fn qvm() -> (Program, u64) {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn native() -> (Program, u64) {
+    native_with_renderer(&Q3_CLIENT, 49)
+}
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn native_ui_renderer() -> (Program, u64) {
+    native_with_renderer(&qa_compat::abi::Q3_UI, 43)
+}
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn native_with_renderer(
+    imports: &'static qa_compat::abi::CallTable,
+    renderer: u8,
+) -> (Program, u64) {
     use native_image::*;
     use qa_compat::native::{NamedExport, Vm};
     use qa_formats::program::native::{Image, LoadRole};
@@ -122,7 +146,7 @@ fn native() -> (Program, u64) {
     pe_text(&mut file, 0x1800, &[0xc3]);
     let mut vm = Vm::map_image(
         Image::parse(&file, None, LoadRole::Library).unwrap(),
-        &(0..10)
+        &(0..11)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -137,7 +161,7 @@ fn native() -> (Program, u64) {
     let output = vm.process.base() + 0x2000;
     let callback = vm.import_callback();
     let mut code = Vec::new();
-    for command in 0..10u8 {
+    for command in 0..11u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
@@ -160,6 +184,7 @@ fn native() -> (Program, u64) {
                 4 => 100,
                 7 => 50,
                 8 => 53,
+                10 => renderer,
                 _ => 51,
             };
             code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
@@ -181,7 +206,7 @@ fn native() -> (Program, u64) {
     (
         Program::Native {
             vm: Box::new(vm),
-            imports: &Q3_CLIENT,
+            imports,
         },
         output,
     )
@@ -261,7 +286,7 @@ fn host_with_server(
             rate: TickRate::FrameDriven,
             anchor,
             program,
-            entries: (0..10).collect(),
+            entries: (0..11).collect(),
             frame: Export {
                 client: Some(client),
                 ..Export::clocked(CallbackId(6))
@@ -1469,9 +1494,79 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     );
 }
 
+fn renderer_configuration_uses_shared_services(factory: fn() -> (Program, u64)) {
+    use qa_core::presentation::{DisplayConfiguration, RendererConfiguration};
+    let (mut host, _, output) = host(factory, 1);
+    let mut configuration = RendererConfiguration {
+        display: DisplayConfiguration {
+            width: 1234,
+            height: 567,
+            frequency: 143,
+            fullscreen: true,
+            color_bits: 30,
+            depth_bits: 24,
+            stencil_bits: 8,
+            stereo: false,
+        },
+        max_texture_size: 16384,
+        max_active_textures: 32,
+        texture_env_add: true,
+        ..Default::default()
+    };
+    configuration.renderer.set("fixture backend").unwrap();
+    configuration.vendor.set("fixture vendor").unwrap();
+    configuration.version.set("fixture version").unwrap();
+    configuration
+        .extensions
+        .set("GL_fixture_extension")
+        .unwrap();
+    host.runtime.renderer_configuration = Some(std::sync::Arc::new(configuration));
+    fill(&mut host, 0, output);
+    assert_eq!(call(&mut host, 0, 10, &[output]), Ok(0));
+    assert_eq!(word(&mut host, 0, output), u32::from_le_bytes(*b"fixt"));
+    assert_eq!(
+        word(&mut host, 0, output + 1024),
+        u32::from_le_bytes(*b"fixt")
+    );
+    assert_eq!(word(&mut host, 0, output + 1020), 0);
+    assert_eq!(word(&mut host, 0, output + 11260), 0);
+    let values = [
+        16384,
+        32,
+        30,
+        24,
+        8,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1234,
+        567,
+        (1234.0f32 / 567.0).to_bits(),
+        143,
+        1,
+        0,
+        0,
+    ];
+    for (index, value) in values.into_iter().enumerate() {
+        assert_eq!(word(&mut host, 0, output + 11264 + index as u64 * 4), value);
+    }
+    assert_eq!(word(&mut host, 0, output + 11332), 0xa5a5a5a5);
+    host.runtime.renderer_configuration = None;
+    assert_eq!(call(&mut host, 0, 10, &[output]), Err(()));
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
+    }
+    renderer_configuration_uses_shared_services(qvm);
+    renderer_configuration_uses_shared_services(qvm_ui_renderer);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        renderer_configuration_uses_shared_services(native);
+        renderer_configuration_uses_shared_services(native_ui_renderer);
     }
     accepted_connection_snapshot_bytes(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

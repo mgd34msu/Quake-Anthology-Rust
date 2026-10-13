@@ -13,6 +13,7 @@ use crate::scene::{
 use crate::shader::{AlphaGen, RgbGen, StageBlend};
 use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyBatches, SkyClip};
 use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, TexCoordOp};
+use qa_core::presentation::{DisplayConfiguration, RendererConfiguration};
 use qa_core::primitives::Vec3;
 use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
@@ -49,6 +50,7 @@ macro_rules! procedures {
 procedures! {
     get_integer: "glGetIntegerv"(u32, *mut i32);
     get_string: "glGetString"(u32) -> *const u8;
+    get_string_index: "glGetStringi"(u32, u32) -> *const u8;
     get_error: "glGetError"() -> u32;
     enable: "glEnable"(u32);
     disable: "glDisable"(u32);
@@ -379,11 +381,96 @@ impl Default for Dynamic {
     }
 }
 
+/// Resolved once, before modules register assets into the cold asset owner.
+pub struct GlContext {
+    gl: Gl,
+    configuration: std::sync::Arc<RendererConfiguration>,
+    _context_thread: PhantomData<*mut ()>,
+}
+impl GlContext {
+    /// # Safety
+    /// `resolve` must return this thread's current GL context entry points.
+    /// Keep that context current and alive through the consuming GlBackend.
+    pub unsafe fn load(
+        resolve: impl FnMut(&CStr) -> *const c_void,
+        display: DisplayConfiguration,
+    ) -> Result<Self, String> {
+        let gl = unsafe { Gl::load(resolve)? };
+        let mut values = [0; 5];
+        for (target, name) in values
+            .iter_mut()
+            .zip([0x821b, 0x821c, 0x0d33, 0x8872, 0x821d])
+        {
+            unsafe { (gl.get_integer)(name, target) };
+        }
+        let [major, minor, texture_size, texture_units, extensions] = values;
+        if major < 4 || (major == 4 && minor < 4) {
+            return Err(format!(
+                "GL 4.4 is required; current context is {major}.{minor}"
+            ));
+        }
+        if texture_size <= 0 || texture_units <= 0 || extensions < 0 {
+            return Err("invalid GL context limits".into());
+        }
+        let mut configuration = RendererConfiguration {
+            display,
+            max_texture_size: texture_size as u32,
+            max_active_textures: texture_units as u32,
+            texture_env_add: true,
+            ..RendererConfiguration::default()
+        };
+        for (target, name) in [
+            (&mut configuration.renderer, 0x1f01),
+            (&mut configuration.vendor, 0x1f00),
+            (&mut configuration.version, 0x1f02),
+        ] {
+            let text = unsafe { context_string(&gl, name)? };
+            target
+                .set_bytes(
+                    &text.as_bytes()[..text
+                        .len()
+                        .min(qa_core::presentation::RENDERER_TEXT_BYTES - 1)],
+                )
+                .map_err(|_| "GL identity capacity")?;
+        }
+        for index in 0..extensions as u32 {
+            let bytes = unsafe { (gl.get_string_index)(0x1f03, index) };
+            if bytes.is_null() {
+                return Err("missing GL extension string".into());
+            }
+            let bytes = unsafe { CStr::from_ptr(bytes.cast()) }.to_bytes();
+            let separator = usize::from(!configuration.extensions.as_bytes().is_empty());
+            if configuration.extensions.as_bytes().len() + separator + bytes.len()
+                > qa_core::presentation::RENDERER_EXTENSIONS_BYTES - 1
+            {
+                break;
+            }
+            if separator != 0 {
+                configuration
+                    .extensions
+                    .append_bytes(b" ")
+                    .map_err(|_| "GL extensions capacity")?;
+            }
+            configuration
+                .extensions
+                .append_bytes(bytes)
+                .map_err(|_| "GL extensions capacity")?;
+        }
+        Ok(Self {
+            gl,
+            configuration: std::sync::Arc::new(configuration),
+            _context_thread: PhantomData,
+        })
+    }
+    pub fn configuration(&self) -> &std::sync::Arc<RendererConfiguration> {
+        &self.configuration
+    }
+}
+
 /// Owns GPU resources on the thread with the current SDL GL context.
 pub struct GlBackend {
     gl: Gl,
-    renderer: String,
-    version: String,
+    configuration: std::sync::Arc<RendererConfiguration>,
     width: u32,
     height: u32,
     program: u32,
@@ -408,11 +495,11 @@ pub struct GlBackend {
 
 impl GlBackend {
     /// # Safety
-    /// `resolve` must return this current context's GL entry points. Keep that
+    /// `context` must contain this current context's GL entry points. Keep that
     /// context current on this thread until this backend has been dropped.
     /// Assets must remain frozen after load; later registrations need a reload.
     pub unsafe fn load(
-        resolve: impl FnMut(&CStr) -> *const c_void,
+        context: GlContext,
         assets: &Assets,
         width: u32,
         height: u32,
@@ -429,19 +516,12 @@ impl GlBackend {
             .checked_mul(size_of::<Vertex>())
             .filter(|&n| n <= isize::MAX as usize)
             .ok_or("GL dynamic buffer size overflow")?;
-        let gl = unsafe { Gl::load(resolve)? };
-        let (mut major, mut minor) = (0, 0);
-        unsafe {
-            (gl.get_integer)(0x821b, &mut major);
-            (gl.get_integer)(0x821c, &mut minor);
+        let GlContext {
+            gl, configuration, ..
+        } = context;
+        if configuration.display.width != width || configuration.display.height != height {
+            return Err("GL context render-target size changed during registration".into());
         }
-        if major < 4 || (major == 4 && minor < 4) {
-            return Err(format!(
-                "GL 4.4 is required; current context is {major}.{minor}"
-            ));
-        }
-        let renderer = unsafe { context_string(&gl, 0x1f01)? };
-        let version = unsafe { context_string(&gl, 0x1f02)? };
         let program = unsafe { compile_program(&gl)? };
         let uniforms = unsafe {
             Uniforms {
@@ -470,8 +550,7 @@ impl GlBackend {
         };
         let mut backend = Self {
             gl,
-            renderer,
-            version,
+            configuration,
             width,
             height,
             program,
@@ -534,7 +613,10 @@ impl GlBackend {
 
     /// Renderer identity and GL version, captured once at context load.
     pub fn renderer_info(&self) -> (&str, &str) {
-        (&self.renderer, &self.version)
+        (
+            self.configuration.renderer.as_str(),
+            self.configuration.version.as_str(),
+        )
     }
 
     /// Optional verification probe. This is not called by the frame path.

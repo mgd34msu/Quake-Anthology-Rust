@@ -821,6 +821,7 @@ pub struct EngineServices<'a> {
     pub commands: &'a mut CommandBuffer,
     pub client_connection: Option<&'a mut dyn ClientConnection>,
     pub client_audio: Option<&'a mut dyn ClientAudio>,
+    pub renderer: Option<&'a qa_core::presentation::RendererConfiguration>,
     pub vfs: &'a Vfs,
     pub model_loader: Option<&'a mut dyn ModelLoader>,
     pub model_lookup: Option<&'a dyn ModelLookup>,
@@ -896,6 +897,10 @@ pub struct EngineCallTable {
     pub serverinfo: fn(&mut EngineServices<'_>, ModuleId, &mut [u8]) -> Result<usize, CallError>,
     pub server_command: fn(&mut EngineServices<'_>, i32) -> Result<bool, CallError>,
     pub client_configstrings: ClientConfigStringsCall,
+    pub renderer: for<'a> fn(
+        &'a EngineServices<'_>,
+    )
+        -> Result<&'a qa_core::presentation::RendererConfiguration, CallError>,
     pub snapshot_number: fn(&EngineServices<'_>) -> Result<(u32, ThinkTime), CallError>,
     pub snapshot: ClientSnapshotCall,
     pub pmove: fn(
@@ -1016,6 +1021,7 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    renderer: |s| s.renderer.ok_or(CallError::Geometry),
     userinfo: |s, native| s.storage.userinfo(s.server, native),
     set_userinfo: |s, native, text| s.storage.set_userinfo(s.server, native, text),
     serverinfo: |s, module, output| s.storage.serverinfo(s.cvars, module, output),

@@ -181,6 +181,7 @@ impl Fixture {
             cvars: &mut self.cvars,
             commands: &mut self.commands,
             client_connection: None,
+            renderer: None,
             client_audio: None,
             vfs: &self.vfs,
             model_loader: None,

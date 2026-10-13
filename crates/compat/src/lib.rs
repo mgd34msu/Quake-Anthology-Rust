@@ -17,6 +17,7 @@ mod projection;
 pub mod q2_abi;
 pub mod quakec;
 pub mod qvm;
+pub mod renderer;
 pub mod services;
 pub mod surfaces;
 pub mod traces;

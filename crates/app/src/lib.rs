@@ -53,6 +53,8 @@ pub struct Runtime {
     pub models: Option<std::sync::Arc<model_assets::ModelCatalog>>,
     /// Cold owned assets and metadata become the same frozen catalog after precache.
     pub model_loader: Option<model_assets::ModelCatalogBuilder>,
+    pub renderer_configuration:
+        Option<std::sync::Arc<qa_core::presentation::RendererConfiguration>>,
     pub loopback: Loopback,
     pub input: qa_input::Input,
     pub input_time: qa_core::sys_events::EventTime,
@@ -179,6 +181,7 @@ impl Runtime {
             cvars,
             commands,
             client_connection: None,
+            renderer: self.renderer_configuration.as_deref(),
             client_audio,
             vfs: &self.vfs,
             localization: &self.localization,
@@ -244,6 +247,7 @@ impl Runtime {
             sound_bank: None,
             models: None,
             model_loader: None,
+            renderer_configuration: None,
             client_resources: std::iter::repeat_with(|| None).take(max_clients).collect(),
             native_numbers: std::iter::repeat_with(|| {
                 output_namespace::NativeNumbers::load(

@@ -452,6 +452,7 @@ const fn client() -> CallTable {
     t.entries[33] = client_audio!(client_sound::listener);
     t.entries[34] = scalar!(register_sound);
     t.entries[39] = scalar!(register_shader::<true>);
+    t.entries[49] = scalar!(renderer_configuration);
     t.entries[50] = scalar!(client_game_state);
     t.entries[51] = scalar!(client_snapshot_number);
     t.entries[52] = scalar!(client_snapshot);
@@ -489,6 +490,7 @@ const fn ui() -> CallTable {
     t.entries[16] = scalar!(file_close);
     t.entries[31] = scalar!(register_sound);
     t.entries[32] = scalar!(client_sound::local::<true>);
+    t.entries[43] = scalar!(renderer_configuration);
     t.entries[86] = scalar!(file_seek);
     t.entries[50] = scalar!(q3_cvar_register);
     t.entries[51] = scalar!(q3_cvar_update);
@@ -1877,6 +1879,16 @@ fn client_server_command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
     Ok(u64::from((ENGINE_CALLS.server_command)(
         c.services, number,
     )?))
+}
+
+fn renderer_configuration(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let target = c.required_pointer(0)?;
+    let configuration = (ENGINE_CALLS.renderer)(c.services)?;
+    let output = c
+        .memory
+        .read_mut(target, crate::renderer::Q3_GL_CONFIG_BYTES)?;
+    crate::renderer::write_q3(configuration, output)?;
+    Ok(0)
 }
 
 fn client_game_state(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

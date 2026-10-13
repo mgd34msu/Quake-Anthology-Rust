@@ -295,7 +295,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Window outlives the GL backend. Only this main thread uses its context.
     let mut backend = if renderer == "gl" {
         Backend::Gl(unsafe {
-            GlBackend::load(|name| window.gl_proc(name), &assets, WIDTH, HEIGHT, 65536)?
+            GlBackend::load(
+                qa_render::gl::GlContext::load(
+                    |name| window.gl_proc(name),
+                    window.display_configuration()?,
+                )?,
+                &assets,
+                WIDTH,
+                HEIGHT,
+                65536,
+            )?
         })
     } else {
         Backend::Cpu(CpuBackend::load(WIDTH, HEIGHT)?)

@@ -11,7 +11,7 @@ use qa_platform::{Stopwatch, Window, WorkerError, Workers};
 use qa_render::{
     Assets, BackendStats, BlendPhase, FrontEnd, Limits, Refdef, Viewport,
     cpu::{CpuBackend, CpuLimits, RasterBands, RasterConfig, run_cpu_job},
-    gl::GlBackend,
+    gl::{GlBackend, GlContext},
     material::world_load::LoadedWorld,
     world::WorldView,
 };
@@ -163,6 +163,55 @@ impl Kind {
         }
     }
 }
+
+/// Cold context and capability owner; it becomes the only live backend after
+/// CLIENT registration finishes, without resolving the GL table a second time.
+pub enum Context {
+    Cpu(std::sync::Arc<qa_core::presentation::RendererConfiguration>),
+    Gl(GlContext),
+}
+impl Context {
+    pub fn load(kind: Kind, window: &Window) -> Result<Self, String> {
+        let display = window.display_configuration()?;
+        match kind {
+            Kind::Cpu => {
+                let mut configuration = qa_core::presentation::RendererConfiguration {
+                    display,
+                    max_texture_size: qa_render::assets::upload::MAX_DIMENSION,
+                    max_active_textures: 1,
+                    texture_env_add: true,
+                    ..Default::default()
+                };
+                configuration
+                    .renderer
+                    .set("Quake Anthology CPU edge/span")
+                    .map_err(|_| "CPU identity capacity")?;
+                configuration
+                    .vendor
+                    .set("Quake Anthology")
+                    .map_err(|_| "CPU identity capacity")?;
+                configuration
+                    .version
+                    .set("CPU")
+                    .map_err(|_| "CPU identity capacity")?;
+                Ok(Self::Cpu(std::sync::Arc::new(configuration)))
+            }
+            Kind::Gl => {
+                // SAFETY: Window owns this thread's current SDL GL context and
+                // outlives Context and the consuming backend.
+                Ok(Self::Gl(unsafe {
+                    GlContext::load(|name| window.gl_proc(name), display)?
+                }))
+            }
+        }
+    }
+    pub fn configuration(&self) -> &std::sync::Arc<qa_core::presentation::RendererConfiguration> {
+        match self {
+            Self::Cpu(configuration) => configuration,
+            Self::Gl(context) => context.configuration(),
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Sample {
     pub frontend_ns: u64,
@@ -229,8 +278,7 @@ pub struct Renderer {
 impl Renderer {
     /// Assets are frozen while a backend and its packets reference them.
     pub fn load(
-        kind: Kind,
-        window: &Window,
+        context: Context,
         width: u32,
         height: u32,
         assets: Assets,
@@ -240,6 +288,14 @@ impl Renderer {
         hud: [Option<hud::HudAssets>; 5],
         effects: qa_render::effects::Effects,
     ) -> Result<Self, String> {
+        let kind = match &context {
+            Context::Cpu(_) => Kind::Cpu,
+            Context::Gl(_) => Kind::Gl,
+        };
+        let display = context.configuration().display;
+        if display.width != width || display.height != height {
+            return Err("renderer target changed during registration".into());
+        }
         let mut scenes: Vec<Option<WorldScene>> =
             (0..assets.worlds().len()).map(|_| None).collect();
         let mut max_surfaces = 0usize;
@@ -298,8 +354,8 @@ impl Renderer {
             )
             .ok_or("console vertex capacity")?;
         let frontend = FrontEnd::load(limits)?;
-        let backend = match kind {
-            Kind::Cpu => {
+        let backend = match context {
+            Context::Cpu(_) => {
                 let physical_cores = qa_platform::physical_core_count();
                 let backend = CpuBackend::load_with_limits(
                     width,
@@ -323,14 +379,8 @@ impl Renderer {
                 ));
                 Backend::Cpu { backend, dispatch }
             }
-            Kind::Gl => Backend::Gl(unsafe {
-                GlBackend::load(
-                    |name| window.gl_proc(name),
-                    &assets,
-                    width,
-                    height,
-                    limits.vertices,
-                )?
+            Context::Gl(context) => Backend::Gl(unsafe {
+                GlBackend::load(context, &assets, width, height, limits.vertices)?
             }),
         };
         if let Backend::Gl(gl) = &backend {

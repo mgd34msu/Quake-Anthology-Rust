@@ -354,6 +354,7 @@ fn with_collision_services(
         cvars: &mut cvars,
         commands: &mut commands,
         client_connection: None,
+        renderer: None,
         client_audio: None,
         vfs: &vfs,
         model_loader: model_loader

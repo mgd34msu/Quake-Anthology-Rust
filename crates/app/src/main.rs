@@ -787,6 +787,14 @@ fn run() -> Result<(), String> {
         })
         .collect();
     qa_app::audio::load_registered_sounds(&mut host, &precache_sounds, sound_rules)?;
+    let mut window = renderer_kind.open(width, height)?;
+    let renderer_context = qa_app::renderer::Context::load(renderer_kind, &window)?;
+    host.runtime.renderer_configuration =
+        Some(std::sync::Arc::clone(renderer_context.configuration()));
+    let width = i32::try_from(renderer_context.configuration().display.width)
+        .map_err(|_| "renderer width")?;
+    let height = i32::try_from(renderer_context.configuration().display.height)
+        .map_err(|_| "renderer height")?;
     if !host.runtime.quit {
         // CLIENT precaches borrow the same cold asset owner as SERVER and
         // configured profiles. Freeze it only after module registration ends.
@@ -832,7 +840,6 @@ fn run() -> Result<(), String> {
             None,
         )
     };
-    let mut window = renderer_kind.open(width, height)?;
     let console_rules = host.console.cvars.context().source;
     let console_assets = qa_app::renderer::console::ConsoleAssets::load(
         &host.runtime.vfs,
@@ -899,8 +906,7 @@ fn run() -> Result<(), String> {
         &effect_bindings,
     )?;
     let mut renderer = Renderer::load(
-        renderer_kind,
-        &window,
+        renderer_context,
         width as u32,
         height as u32,
         assets,
