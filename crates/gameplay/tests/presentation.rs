@@ -50,3 +50,33 @@ fn text_roles_preserve_native_placement_without_inventing_q3_center_hud() {
     assert!(!text_rules(RuleSetId::Quake3).center);
     assert_eq!(text_rules(RuleSetId::Quake2).layout_stat, Some(13));
 }
+
+#[test]
+fn native_camera_and_weapon_rules_share_angle_math_without_coupling_roles() {
+    use qa_core::primitives::Vec3;
+    use qa_gameplay::rules::presentation::view_rules;
+    let base = Vec3([5.0, 20.0, -1.0]);
+    let old = Vec3([350.0, -180.0, 1.0]);
+    let new = Vec3([10.0, 0.0, -1.0]);
+    let nq = view_rules(RuleSetId::Quake);
+    let direct = nq.angles(base, new, Some(old), 0.5, true);
+    assert_eq!(direct, Vec3([15.0, 20.0, -2.0]));
+    assert_eq!(nq.weapon_angles(base, direct), base);
+    for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let rules = view_rules(source);
+        let presented = rules.angles(base, new, Some(old), 0.5, true);
+        assert_eq!(presented, Vec3([365.0, -70.0, -1.0]));
+        assert_eq!(rules.weapon_angles(base, presented), presented);
+        assert_eq!(rules.angles(base, new, None, 0.5, true), direct);
+    }
+    assert_eq!(
+        view_rules(RuleSetId::Quake2Rerelease).angles(base, new, Some(old), 0.5, false),
+        base
+    );
+    for source in [RuleSetId::QuakeWorld, RuleSetId::Quake3] {
+        assert_eq!(
+            view_rules(source).angles(base, new, Some(old), 0.5, true),
+            base
+        );
+    }
+}

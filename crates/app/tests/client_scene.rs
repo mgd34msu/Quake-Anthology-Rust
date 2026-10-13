@@ -117,6 +117,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
         models: &models,
         static_entities: resources.state.static_entities(),
         player: &player,
+        weapon_view_angles: player.view_angles,
         alias_roll: AliasRoll::default(),
         interpolation: Interpolation {
             fraction: 0.25,
@@ -271,6 +272,7 @@ fn static_entity_admission_and_scene_capacity_reject_without_growing() {
         models: &models,
         static_entities: resources.state.static_entities(),
         player: &player,
+        weapon_view_angles: player.view_angles,
         alias_roll: AliasRoll::default(),
         interpolation: Interpolation::default(),
         gun_animation: None,
@@ -506,6 +508,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         static_entities: &[],
         models: &catalog,
         player: &player,
+        weapon_view_angles: player.view_angles + Vec3([4.0, 6.0, 1.0]),
         alias_roll: AliasRoll::default(),
         interpolation: Interpolation {
             time: ThinkTime::Milliseconds(950),
@@ -574,7 +577,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
     assert!(packet.entity(1).depth_hack);
     assert_eq!(
         packet.entity(1).axes,
-        qa_core::math::angle_vectors(player.view_angles).axes()
+        qa_core::math::angle_vectors(input.weapon_view_angles).axes()
     );
     assert!(frontend.recycle(packet).is_ok());
     let mut player_words = *ring.frame(2).unwrap().player;
@@ -722,6 +725,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
             static_entities: &[],
             models: &catalog,
             player: &player,
+            weapon_view_angles: player.view_angles,
             alias_roll: AliasRoll {
                 angle: 2.0,
                 speed: 200.0,
@@ -887,6 +891,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
         Some(SeatId::FIRST),
         consumer,
         Protocol::Quake2Repro1038,
+        RuleSetId::Quake2Rerelease,
         0,
         &values,
     );
@@ -1017,6 +1022,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         static_entities: &[],
         models: &catalog,
         player: &player,
+        weapon_view_angles: player.view_angles,
         alias_roll: AliasRoll::default(),
         interpolation: Interpolation {
             time: ThinkTime::Milliseconds(87),

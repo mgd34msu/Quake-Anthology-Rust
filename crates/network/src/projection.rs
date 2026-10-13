@@ -7,7 +7,7 @@ use qa_core::{
         AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMagnitude, MovementMode,
         MovementTimer, NativePlayerTail, PlayerPresentation, PlayerSignals, PlayerState,
         PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding, ValueWidth,
-        ViewWeapon, WeaponReadiness, WeaponState,
+        Vec3, ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -366,6 +366,7 @@ pub struct PlayerProjection {
     layout_valid: bool,
     client_limit: u32,
     feedback: Option<FeedbackFields>,
+    punch: Option<[Field; 3]>,
     bindings: Box<[Field<ValueBinding>]>,
     write_bindings: Box<[Field<ValueBinding>]>,
     pub dropped_bindings: usize,
@@ -386,6 +387,7 @@ impl PlayerProjection {
             })
             .collect();
         projection.feedback = None;
+        projection.punch = None;
         projection
     }
     pub fn load(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
@@ -561,6 +563,16 @@ impl PlayerProjection {
         } else {
             None
         };
+        let punch: [Option<Field>; 3] = std::array::from_fn(|axis| {
+            fields
+                .iter()
+                .find(|field| matches!(field.source, Punch(i) if i == axis))
+                .copied()
+        });
+        let punch = match punch {
+            [Some(x), Some(y), Some(z)] => Some([x, y, z]),
+            _ => None,
+        };
         Self {
             protocol,
             fields,
@@ -585,6 +597,7 @@ impl PlayerProjection {
                 64
             },
             feedback,
+            punch,
             dropped_bindings: bindings.len() - admitted.len(),
             write_bindings: admitted.clone(),
             bindings: admitted,
@@ -616,6 +629,15 @@ impl PlayerProjection {
                 None
             }
         })
+    }
+
+    /// Presentation borrows the accepted native kick fields selected at load.
+    /// Movement-only and statistic-only projections have no kick sample.
+    pub fn punch_angles(&self, words: &[u32]) -> Option<Vec3> {
+        let words = words.get(..self.words)?;
+        Some(Vec3(self.punch?.map(|field| {
+            f32::from_bits(field.convert.import(words[field.word]))
+        })))
     }
 
     /// Presentation reads the same native field table without importing stats

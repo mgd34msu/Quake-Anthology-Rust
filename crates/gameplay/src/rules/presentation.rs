@@ -1,5 +1,93 @@
 //! Native text placement and lightstyle arithmetic, independent of geometry.
-use qa_core::primitives::{RuleSetId, ThinkTime};
+use qa_core::primitives::{RuleSetId, ThinkTime, Vec3};
+
+#[derive(Clone, Copy)]
+enum PunchRules {
+    None,
+    Current,
+    Interpolated,
+}
+
+/// Native view construction is selected from the accepted presentation source,
+/// independently of movement, trace and the loaded world.
+#[derive(Clone, Copy)]
+pub struct ViewRules {
+    punch: PunchRules,
+    weapon_follows_view: bool,
+    kick_setting: bool,
+}
+
+const VIEW: [ViewRules; 5] = [
+    // WinQuake view.c builds the gun before adding the clientdata punch vector.
+    ViewRules {
+        punch: PunchRules::Current,
+        weapon_follows_view: false,
+        kick_setting: false,
+    },
+    // QW's separate smallkick/bigkick messages are not playerinfo punch fields.
+    ViewRules {
+        punch: PunchRules::None,
+        weapon_follows_view: false,
+        kick_setting: false,
+    },
+    // Q2 CL_CalcViewValues adds interpolated kick before CL_AddViewWeapon.
+    ViewRules {
+        punch: PunchRules::Interpolated,
+        weapon_follows_view: true,
+        kick_setting: false,
+    },
+    // q2repro CL_SetupFirstPersonView retains the native cl_kickangles switch.
+    ViewRules {
+        punch: PunchRules::Interpolated,
+        weapon_follows_view: true,
+        kick_setting: true,
+    },
+    // Q3's cgame-local weapon kick is not a transmitted playerState punch.
+    ViewRules {
+        punch: PunchRules::None,
+        weapon_follows_view: true,
+        kick_setting: false,
+    },
+];
+
+pub fn view_rules(source: RuleSetId) -> ViewRules {
+    VIEW[source as usize]
+}
+
+impl ViewRules {
+    pub fn interpolate_punch(self) -> bool {
+        matches!(self.punch, PunchRules::Interpolated)
+    }
+    pub fn angles(
+        self,
+        base: Vec3,
+        current: Vec3,
+        previous: Option<Vec3>,
+        fraction: f32,
+        enabled: bool,
+    ) -> Vec3 {
+        if self.kick_setting && !enabled {
+            return base;
+        }
+        let punch = match self.punch {
+            PunchRules::None => return base,
+            PunchRules::Current => current,
+            PunchRules::Interpolated => previous.map_or(current, |previous| {
+                Vec3(std::array::from_fn(|axis| {
+                    qa_core::math::lerp_angle(previous.0[axis], current.0[axis], fraction)
+                }))
+            }),
+        };
+        base + punch
+    }
+    pub fn weapon_angles(self, accepted: Vec3, presented: Vec3) -> Vec3 {
+        if self.weapon_follows_view {
+            presented
+        } else {
+            accepted
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ClockRules {

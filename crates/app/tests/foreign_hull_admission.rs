@@ -120,6 +120,10 @@ fn run_exact(
     query: TraceQuery,
     limits: HullPositionLimits,
 ) -> Trace {
+    println!(
+        "e1m1 exact phase={phase} begin start={:?} end={:?} mins={:?} maxs={:?}",
+        query.start, query.end, query.mins, query.maxs
+    );
     match store.trace_model(geometry, 0, query, &mut store.scratch()) {
         Ok(trace) => {
             println!(
@@ -179,6 +183,7 @@ fn e1m1_default_exact_admission_and_supplied_boxes_preserve_native_queries() {
         }
     }
     let limits = HullPositionLimits::default();
+    println!("e1m1 cold exact phase=admission begin limits={limits:?}");
     let admission = store.prepare_hull_positions(geometry, limits);
     println!(
         "e1m1 cold exact phase=admission result={admission:?} limits={limits:?}; public Capacity errors do not expose the failed budget field"

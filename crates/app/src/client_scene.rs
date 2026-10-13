@@ -419,6 +419,9 @@ pub struct ClientSceneInput<'a> {
     /// Owned signon values outlive the source edict and snapshot ring slots.
     pub static_entities: &'a [EntityRecord],
     pub player: &'a PlayerState,
+    /// Camera angle policy is resolved once by CLIENT; NQ retains its gun pose
+    /// from before punch while Q2 follows the presented, kicked view.
+    pub weapon_view_angles: Vec3,
     pub alias_roll: AliasRoll,
     /// Snapshot-domain time is independent of shader/refdef time.
     pub interpolation: Interpolation,
@@ -681,7 +684,7 @@ impl ClientSceneInput<'_> {
         });
         let angles = binding
             .pose
-            .angles(self.player.view_angles + angles, software);
+            .angles(self.weapon_view_angles + angles, software);
         let current_frame = native_frame(weapon.frame, model.frame_count());
         let (old_frame, back_lerp) =
             if animation_policy == WeaponInterpolation::Rate && previous.is_some() {

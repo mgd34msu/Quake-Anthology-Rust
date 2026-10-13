@@ -654,6 +654,71 @@ fn source_row(planes: &[Plane], side: Side) -> Result<Row, Failure> {
     Ok(row)
 }
 
+/// Reduce only positively parallel path inequalities. Their tightest bound
+/// represents the same halfspace intersection; equal bounds keep the first
+/// source plane and combine strict ownership. Opposing normals stay separate.
+/// The unpublished tail of `sides` is the workspace for this path's provenance.
+fn reduce_path(
+    planes: &[Plane],
+    path: &[Side],
+    rows: &mut [Row],
+    sides: &mut Vec<Side>,
+    work: &mut Work,
+) -> Result<usize, Failure> {
+    let first = sides.len();
+    let mut count = 0;
+    'source: for &side in path {
+        work.item()?;
+        let row = source_row(planes, side)?;
+        for index in 0..count {
+            work.item()?;
+            let old = &mut rows[index];
+            if !parallel(&old.normal, &row.normal)? {
+                continue;
+            }
+            let axis = old
+                .normal
+                .iter()
+                .position(|component| !component.is_zero())
+                .ok_or(Failure::Input)?;
+            let old_scale = if old.normal[axis].negative() {
+                old.normal[axis].neg()
+            } else {
+                old.normal[axis]
+            };
+            let new_scale = if row.normal[axis].negative() {
+                row.normal[axis].neg()
+            } else {
+                row.normal[axis]
+            };
+            match row
+                .distance
+                .mul(&old_scale)?
+                .compare(&old.distance.mul(&new_scale)?)
+            {
+                Ordering::Less => {
+                    *old = row;
+                    sides[first + index] = side;
+                }
+                Ordering::Equal => {
+                    old.strict |= row.strict;
+                    sides[first + index].strict = old.strict;
+                }
+                Ordering::Greater => {}
+            }
+            continue 'source;
+        }
+        let target = rows.get_mut(count).ok_or(Failure::Scratch)?;
+        *target = row;
+        if sides.len() == sides.capacity() {
+            return Err(Failure::Budget);
+        }
+        sides.push(side);
+        count += 1;
+    }
+    Ok(count)
+}
+
 fn reserve<T>(count: usize, held: &mut usize, limit: usize) -> Result<Vec<T>, Failure> {
     let expected = count.checked_mul(size_of::<T>()).ok_or(Failure::Budget)?;
     if held.checked_add(expected).is_none_or(|total| total > limit) {
@@ -796,6 +861,7 @@ pub(super) fn prepare(
     // Account the future caller's typed contact arena while all builder arrays
     // are owned. This reservation is not another published geometry table.
     let _contacts = reserve::<Contact>(limits.contact_rows, &mut held, limits.bytes)?;
+    let mut retained_greatest = 0;
     for model in 0..model_count {
         let first = retained_cells.len();
         paths(
@@ -805,19 +871,19 @@ pub(super) fn prepare(
             &mut pending,
             &mut work,
             |path, contents, work| {
-                for (row, &side) in workspace.iter_mut().zip(path) {
-                    *row = source_row(planes, side)?;
-                }
-                if feasible(&workspace[..path.len()], work)? {
-                    let first = retained_sides.len();
-                    retained_sides.extend_from_slice(path);
+                let first = retained_sides.len();
+                let count = reduce_path(planes, path, &mut workspace, &mut retained_sides, work)?;
+                if feasible(&workspace[..count], work)? {
+                    retained_greatest = retained_greatest.max(count);
                     retained_cells.push(Cell {
                         sides: IndexSpan {
                             first: first as u32,
-                            count: path.len() as u32,
+                            count: count as u32,
                         },
                         contents,
                     });
+                } else {
+                    retained_sides.truncate(first);
                 }
                 Ok(())
             },
@@ -831,7 +897,7 @@ pub(super) fn prepare(
         data: Data {
             cells: retained_cells,
             sides: retained_sides,
-            rows,
+            rows: retained_greatest.checked_add(6).ok_or(Failure::Budget)?,
             contacts: limits.contact_rows,
             query_work: limits.query_work,
         },

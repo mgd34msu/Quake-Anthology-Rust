@@ -10,6 +10,72 @@ use qa_network::{
 };
 
 #[test]
+fn punch_samples_use_the_same_native_width_conversion_as_full_projection() {
+    use qa_core::primitives::ResourceNamespace;
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+    ] {
+        let projection = PlayerProjection::load(protocol, &[]);
+        let source = PlayerState {
+            punch_angles: Vec3([1.25, -2.5, 0.03125]),
+            ..PlayerState::default()
+        };
+        let mut words = vec![
+            0;
+            match protocol {
+                Protocol::NetQuake15 => states::NQ_PLAYER_WORDS,
+                Protocol::Quake2_34 => states::Q2_PLAYER_WORDS,
+                Protocol::Quake2Repro1038 => states::Q2_REPRO_PLAYER_WORDS,
+                _ => unreachable!(),
+            }
+        ];
+        assert!(projection.reduce(
+            &source,
+            &PlayerContext::default(),
+            &mut words,
+            |_| None,
+            |_| None
+        ));
+        let mut accepted = PlayerState::default();
+        assert!(projection.apply(
+            &words,
+            &mut accepted,
+            &mut PlayerContext::default(),
+            ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| None,
+        ));
+        assert_eq!(
+            projection.punch_angles(&words).unwrap().0.map(f32::to_bits),
+            accepted.punch_angles.0.map(f32::to_bits)
+        );
+        assert!(projection.punch_angles(&words[..words.len() - 1]).is_none());
+        assert!(
+            PlayerProjection::load_movement(protocol)
+                .punch_angles(&words)
+                .is_none()
+        );
+        assert!(
+            PlayerProjection::load_stat_values(
+                protocol,
+                PlayerValueBindings::EMPTY,
+                Q3StatLayout::BASE
+            )
+            .punch_angles(&words)
+            .is_none()
+        );
+    }
+    for protocol in [Protocol::QuakeWorld28, Protocol::Quake3_68] {
+        assert!(
+            PlayerProjection::load(protocol, &[])
+                .punch_angles(&[0; states::PLAYER_WORDS])
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn nq_clientdata_sparse_values_keep_native_wire_and_raw_items()
 -> Result<(), qa_network::message::Error> {
     use qa_core::primitives::{ModelRef, ModuleId, ResourceNamespace};

@@ -92,6 +92,8 @@ pub struct SnapshotBinding {
 struct ClientPresentation {
     seat: SeatId,
     appearance: qa_gameplay::rules::appearance::AppearancePolicy,
+    view_source: qa_core::primitives::RuleSetId,
+    view_rules: qa_gameplay::rules::presentation::ViewRules,
     clock: PresentationClock,
     fixed_period: Option<u16>,
     negotiated_period: bool,
@@ -162,6 +164,51 @@ impl SnapshotBinding {
         self.presentation
             .as_ref()
             .map(|client| client.clock.sample())
+    }
+    pub fn view_source(&self) -> Option<qa_core::primitives::RuleSetId> {
+        self.presentation.as_ref().map(|client| client.view_source)
+    }
+    /// Native kick fields remain borrowed from the receiving channel. They do
+    /// not change accepted input angles or movement state.
+    pub fn view_angles(
+        &self,
+        channel: &Channel,
+        player: &PlayerState,
+        kick_enabled: bool,
+    ) -> qa_core::primitives::Vec3 {
+        let Some(client) = self.presentation.as_ref() else {
+            return player.view_angles;
+        };
+        let mut punch = player.punch_angles;
+        let mut previous = None;
+        if client.view_rules.interpolate_punch()
+            && let Some(current) = channel.current_snapshot()
+            && let Some(words) = current.player_words()
+            && let Some(sample) = self.projection.punch_angles(words)
+        {
+            punch = sample;
+            previous = channel
+                .snapshot(current.sequence().wrapping_sub(1))
+                .and_then(ReceivedFrame::player_words)
+                .filter(|old| self.projection.can_interpolate_player(old, words))
+                .and_then(|old| self.projection.punch_angles(old));
+        }
+        client.view_rules.angles(
+            player.view_angles,
+            punch,
+            previous,
+            client.clock.sample().fraction,
+            kick_enabled,
+        )
+    }
+    pub fn weapon_view_angles(
+        &self,
+        accepted: qa_core::primitives::Vec3,
+        presented: qa_core::primitives::Vec3,
+    ) -> qa_core::primitives::Vec3 {
+        self.presentation.as_ref().map_or(accepted, |client| {
+            client.view_rules.weapon_angles(accepted, presented)
+        })
     }
     pub fn gun_animation(&self) -> Option<GunAnimation> {
         self.presentation
@@ -322,6 +369,7 @@ impl SnapshotBinding {
         seat: Option<SeatId>,
         output: OutputConsumerId,
         protocol: Protocol,
+        view_source: qa_core::primitives::RuleSetId,
         native_client: u32,
         values: &qa_ui::values::ValueLayout,
     ) -> Self {
@@ -343,6 +391,8 @@ impl SnapshotBinding {
             presentation: seat.map(|seat| ClientPresentation {
                 seat,
                 appearance: qa_gameplay::rules::appearance::policy(protocol.rule_set()),
+                view_source,
+                view_rules: qa_gameplay::rules::presentation::view_rules(view_source),
                 // Native wire timestamps select their arithmetic at admission;
                 // movement, map format and module ownership do not select it.
                 clock: PresentationClock::load(qa_gameplay::rules::presentation::clock_rules(

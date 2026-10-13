@@ -29,21 +29,25 @@ fn load_geometry(
     (store, id)
 }
 
-fn convex(planes: Vec<Plane>) -> (CollisionStore, GeometryId) {
+fn path_cell(planes: Vec<Plane>, front: bool) -> (CollisionStore, GeometryId) {
     let nodes = (0..planes.len())
-        .map(|index| ClipNode {
-            plane: index as u32,
-            children: [
-                -1,
-                if index + 1 == planes.len() {
-                    -2
-                } else {
-                    index as i32 + 1
-                },
-            ],
+        .map(|index| {
+            let next = if index + 1 == planes.len() {
+                -2
+            } else {
+                index as i32 + 1
+            };
+            ClipNode {
+                plane: index as u32,
+                children: if front { [next, -1] } else { [-1, next] },
+            }
         })
         .collect();
     load_geometry(planes, nodes, vec![0])
+}
+
+fn convex(planes: Vec<Plane>) -> (CollisionStore, GeometryId) {
+    path_cell(planes, false)
 }
 
 fn box_at(position: Vec3, mins: Vec3, maxs: Vec3) -> TraceQuery<'static> {
@@ -123,6 +127,166 @@ fn strict_empty_bsp_path_never_contributes_a_closed_phantom_cell() {
         .trace_model(geometry, 0, query, &mut store.scratch())
         .expect("empty path");
     assert!(!trace.start_solid && !trace.all_solid);
+}
+
+#[test]
+fn repeated_scaled_path_planes_fit_bounded_admission_and_query_work() {
+    let planes = (0..128)
+        .map(|index| Plane::oriented(Vec3::axis(0, 2.0f32.powi(index % 16)), 0.0))
+        .collect();
+    let (mut store, geometry) = convex(planes);
+    let native = TraceQuery::point(
+        Vec3([2.0, 0.0, 0.0]),
+        Vec3([-2.0, 0.0, 0.0]),
+        TraceRules::LEGACY,
+        trace_policy(RuleSetId::Quake).1,
+    );
+    let before = store
+        .trace_model(geometry, 0, native, &mut store.scratch())
+        .expect("native repeated path");
+    store
+        .prepare_hull_positions(
+            geometry,
+            HullPositionLimits {
+                admission_work: 2_000,
+                query_work: 10_000,
+                ..Default::default()
+            },
+        )
+        .expect("redundant path fits bounded admission");
+    let after = store
+        .trace_model(geometry, 0, native, &mut store.scratch())
+        .expect("native after reduction");
+    assert_eq!(before.fraction.to_bits(), after.fraction.to_bits());
+    assert_eq!(
+        before.end.0.map(f32::to_bits),
+        after.end.0.map(f32::to_bits)
+    );
+    assert_eq!(
+        before.plane.normal.0.map(f32::to_bits),
+        after.plane.normal.0.map(f32::to_bits)
+    );
+    assert_eq!(
+        before.plane.distance.to_bits(),
+        after.plane.distance.to_bits()
+    );
+    let query = sweep(native.start, native.end);
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("persisted reduced path fits query work");
+    assert_eq!(trace.fraction, 0.40625);
+    assert_eq!(trace.plane.normal, Vec3([1.0, 0.0, 0.0]));
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn positive_parallel_bounds_keep_the_tightest_negative_normal_source() {
+    let (mut store, geometry) = convex(vec![
+        Plane::oriented(Vec3([-2.0, 0.0, 0.0]), -8.0),
+        Plane::oriented(Vec3([-1.0, 0.0, 0.0]), -6.0),
+        Plane::oriented(Vec3([-4.0, 0.0, 0.0]), -16.0),
+    ]);
+    admit(&mut store, geometry);
+    for (x, solid) in [(5.0, false), (6.0, true), (7.0, true)] {
+        assert_eq!(
+            store
+                .trace_model(
+                    geometry,
+                    0,
+                    radius(Vec3([x, 0.0, 0.0]), 0.0),
+                    &mut store.scratch()
+                )
+                .expect("exact tightest bound")
+                .all_solid,
+            solid
+        );
+    }
+    let query = sweep(Vec3::default(), Vec3([10.0, 0.0, 0.0]));
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("tightest source contact");
+    assert_eq!(trace.fraction, 0.5625);
+    assert_eq!(trace.plane.normal, Vec3([-1.0, 0.0, 0.0]));
+    assert_eq!(trace.plane.distance, -6.0);
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn equal_parallel_bounds_preserve_strict_ownership_but_loose_bounds_do_not() {
+    for equal_strict in [false, true] {
+        let mut planes = vec![
+            Plane::oriented(Vec3([-2.0, 0.0, 0.0]), -2.0),
+            Plane::oriented(Vec3([1.0, 0.0, 0.0]), 2.0),
+        ];
+        let mut nodes = vec![
+            ClipNode {
+                plane: 0,
+                children: [1, -1],
+            },
+            ClipNode {
+                plane: 1,
+                children: [-1, 2],
+            },
+        ];
+        if equal_strict {
+            planes.push(Plane::oriented(Vec3([4.0, 0.0, 0.0]), 4.0));
+            nodes.push(ClipNode {
+                plane: 2,
+                children: [-1, 3],
+            });
+        }
+        planes.push(Plane::oriented(Vec3([1.0, 0.0, 0.0]), 1.0));
+        nodes.push(ClipNode {
+            plane: planes.len() as u32 - 1,
+            children: [-2, -1],
+        });
+        let (mut store, geometry) = load_geometry(planes, nodes, vec![0]);
+        admit(&mut store, geometry);
+        let trace = store
+            .trace_model(
+                geometry,
+                0,
+                radius(Vec3([1.0, 0.0, 0.0]), 0.0),
+                &mut store.scratch(),
+            )
+            .expect("mixed strict path");
+        assert_eq!(trace.all_solid, !equal_strict);
+    }
+}
+
+#[test]
+fn repeated_opposing_constraints_preserve_closed_rank_deficient_occupancy() {
+    let planes = (0..128)
+        .map(|index| {
+            let scale = 2.0f32.powi(index % 16);
+            Plane::oriented(Vec3::axis(0, if index < 64 { scale } else { -scale }), 0.0)
+        })
+        .collect();
+    let (mut store, geometry) = path_cell(planes, true);
+    store
+        .prepare_hull_positions(
+            geometry,
+            HullPositionLimits {
+                admission_work: 2_000,
+                query_work: 10_000,
+                ..Default::default()
+            },
+        )
+        .expect("opposing rows remain bounded");
+    for (x, solid) in [(0.0, true), (-0.25, false), (0.25, false)] {
+        assert_eq!(
+            store
+                .trace_model(
+                    geometry,
+                    0,
+                    radius(Vec3([x, 0.0, 0.0]), 0.0),
+                    &mut store.scratch()
+                )
+                .expect("opposing rank constraints")
+                .all_solid,
+            solid
+        );
+    }
 }
 
 #[test]

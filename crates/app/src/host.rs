@@ -173,6 +173,7 @@ pub struct FrameHost {
     fov: CvarHandle,
     roll_angle: CvarHandle,
     roll_speed: CvarHandle,
+    kick_angles: CvarHandle,
     input_handles: qa_console::input_settings::InputHandles,
     pub(crate) movement_handles: qa_console::movement::MovementHandles,
     notify_time: CvarHandle,
@@ -249,6 +250,10 @@ impl FrameHost {
             .cvars
             .find("cl_rollspeed")
             .ok_or("missing cl_rollspeed")?;
+        let kick_angles = console
+            .cvars
+            .find("cl_kickangles")
+            .ok_or("missing cl_kickangles")?;
         let input_handles = qa_console::input_settings::InputHandles::load(&console.cvars)?;
         let movement_handles = qa_console::movement::MovementHandles::bind(&console.cvars)?;
         let notify_time = console
@@ -298,6 +303,7 @@ impl FrameHost {
             fov,
             roll_angle,
             roll_speed,
+            kick_angles,
             input_handles,
             movement_handles,
             notify_time,
@@ -486,12 +492,20 @@ impl FrameHost {
         let Some(interpolation) = snapshot.interpolation() else {
             return player.view_angles;
         };
-        qa_ui::hud::view_angles(
-            &row.hud,
-            player.view_angles,
-            player.health,
-            interpolation.time,
-        )
+        let angles = self
+            .runtime
+            .network
+            .get(client, qa_core::loopback::Endpoint::Client)
+            .map_or(player.view_angles, |connection| {
+                snapshot.view_angles(
+                    &connection.channel,
+                    player,
+                    snapshot.view_source().is_none_or(|source| {
+                        self.console.cvars.integer_in(self.kick_angles, source) != 0
+                    }),
+                )
+            });
+        qa_ui::hud::view_angles(&row.hud, angles, player.health, interpolation.time)
     }
 
     /// Transition due frames from the connection ring without replacing an
@@ -618,7 +632,7 @@ impl FrameHost {
     ) -> [Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT] {
         let entities = self.client_entities_inputs();
         std::array::from_fn(|seat| {
-            let (_, _, player) = self.local_seat(seat)?;
+            let (_, row, player) = self.local_seat(seat)?;
             let entities = entities[seat]?;
             let client = entities.client;
             let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
@@ -643,6 +657,10 @@ impl FrameHost {
                 static_entities: resources.state.static_entities(),
                 models: self.runtime.models.as_deref()?,
                 player,
+                weapon_view_angles: snapshot.weapon_view_angles(
+                    player.view_angles,
+                    self.client_angles(client, row, player),
+                ),
                 alias_roll: entities.alias_roll,
                 interpolation: entities.interpolation,
                 gun_animation: snapshot.gun_animation(),

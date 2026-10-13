@@ -500,6 +500,7 @@ impl Runtime {
             seat,
             output,
             protocol,
+            client.client_rules,
             native_client,
             &self.catalog.hud.values,
         );
