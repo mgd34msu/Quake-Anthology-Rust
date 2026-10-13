@@ -4,9 +4,9 @@ use super::tree::Topology;
 pub use super::tree::{BrushTree, CollisionLeaf, ModelRoot};
 use super::{
     AllSolid, BoundsOrigin, Contents, EntityTracePolicy, FractionClamp, OutsideBrush,
-    PositionEndpoint, PositionRules, Trace, TraceError, TraceQuery,
+    PositionEndpoint, PositionRules, Trace, TraceError, TraceQuery, TraceRules,
 };
-use qa_core::primitives::{Bounds, Plane, SurfaceFlags, Vec3};
+use qa_core::primitives::{Bounds, Plane, Vec3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Brush {
@@ -247,6 +247,72 @@ pub(super) fn position_brush(
     trace.contents = brush.contents;
 }
 
+struct ConvexInterval {
+    enter: f32,
+    leave: f32,
+    contact: usize,
+    secondary_contact: Option<usize>,
+    start_out: bool,
+    end_out: bool,
+}
+
+/// The side reducer owns selection and ordering; the caller supplies distances
+/// in its native arithmetic order and retains the side's geometry and surface.
+fn convex_interval(
+    rules: TraceRules,
+    side_count: usize,
+    mut distances: impl FnMut(usize) -> (f32, f32),
+) -> Option<ConvexInterval> {
+    let mut interval = ConvexInterval {
+        enter: -1.0,
+        leave: 1.0,
+        contact: 0,
+        secondary_contact: None,
+        start_out: false,
+        end_out: false,
+    };
+    let mut second_enter = -1.0f32;
+    for index in 0..side_count {
+        let (d1, d2) = distances(index);
+        interval.start_out |= d1 > 0.0;
+        interval.end_out |= d2 > 0.0;
+        if d1 > 0.0
+            && (d2 >= d1
+                || rules.outside_brush == OutsideBrush::EndBeyondEpsilon
+                    && f64::from(d2) >= rules.contact_epsilon)
+        {
+            return None;
+        }
+        if d1 <= 0.0 && d2 <= 0.0 {
+            continue;
+        }
+        if d1 > d2 {
+            let mut fraction = rules.contact_fraction(d1, d2, true);
+            if rules.fraction_clamp == FractionClamp::PerPlane && fraction < 0.0 {
+                fraction = 0.0;
+            }
+            if fraction > interval.enter {
+                interval.enter = fraction;
+                interval.contact = index;
+            } else if rules.secondary_contact && fraction > second_enter {
+                // Native KEX only records this else branch; it does not move
+                // the previous primary plane into the secondary slot.
+                second_enter = fraction;
+                interval.secondary_contact = Some(index);
+            }
+        } else {
+            let mut fraction = rules.contact_fraction(d1, d2, false);
+            if rules.fraction_clamp == FractionClamp::PerPlane && fraction > 1.0 {
+                fraction = 1.0;
+            }
+            if fraction < interval.leave {
+                interval.leave = fraction;
+            }
+        }
+    }
+    Some(interval)
+}
+
 pub(super) fn clip_brush(
     work: &BrushWork,
     planes: &[Plane],
@@ -259,72 +325,35 @@ pub(super) fn clip_brush(
     }
     let sides = &planes[brush.sides.range()];
     let rules = work.query.rules;
-    let mut enter = -1.0f32;
-    let mut second_enter = -1.0f32;
-    let mut second_contact = None;
-    let mut leave = 1.0f32;
-    let mut contact = Plane::default();
-    let mut surface = SurfaceFlags::default();
-    let mut surface_id = None;
-    let mut start_out = false;
-    let mut end_out = false;
-    for (index, &plane) in sides.iter().enumerate() {
+    let Some(interval) = convex_interval(rules, sides.len(), |index| {
+        let plane = sides[index];
         let distance = work.distance(plane, true);
         let d1 = work.start.dot(plane.normal) - distance;
         let d2 = work.end.dot(plane.normal) - distance;
-        start_out |= d1 > 0.0;
-        end_out |= d2 > 0.0;
-        if d1 > 0.0
-            && (d2 >= d1
-                || rules.outside_brush == OutsideBrush::EndBeyondEpsilon
-                    && f64::from(d2) >= rules.contact_epsilon)
-        {
-            return;
-        }
-        if d1 <= 0.0 && d2 <= 0.0 {
-            continue;
-        }
-        if d1 > d2 {
-            let mut fraction = rules.contact_fraction(d1, d2, true);
-            if rules.fraction_clamp == FractionClamp::PerPlane && fraction < 0.0 {
-                fraction = 0.0;
-            }
-            if fraction > enter {
-                enter = fraction;
-                contact = plane;
-                (surface, surface_id) = surfaces.contact(brush.sides.first as usize + index);
-            } else if rules.secondary_contact && fraction > second_enter {
-                // Native KEX only records this else branch; it does not move
-                // the previous primary plane into the secondary slot.
-                second_enter = fraction;
-                second_contact = Some(plane);
-            }
-        } else {
-            let mut fraction = rules.contact_fraction(d1, d2, false);
-            if rules.fraction_clamp == FractionClamp::PerPlane && fraction > 1.0 {
-                fraction = 1.0;
-            }
-            if fraction < leave {
-                leave = fraction;
-            }
-        }
-    }
-    if !start_out {
+        (d1, d2)
+    }) else {
+        return;
+    };
+    if !interval.start_out {
         trace.start_solid = true;
-        if !end_out {
+        if !interval.end_out {
             trace.all_solid = true;
             if rules.all_solid == AllSolid::BlockAtStart {
                 trace.fraction = 0.0;
                 trace.contents = brush.contents;
             }
         }
-    } else if enter < leave && enter > -1.0 && enter < trace.fraction {
-        trace.fraction = enter.max(0.0);
-        trace.plane = contact;
+    } else if interval.enter < interval.leave
+        && interval.enter > -1.0
+        && interval.enter < trace.fraction
+    {
+        let (surface, surface_id) = surfaces.contact(brush.sides.first as usize + interval.contact);
+        trace.fraction = interval.enter.max(0.0);
+        trace.plane = sides[interval.contact];
         trace.surface = surface;
         trace.surface_id = surface_id;
-        if let Some(plane) = second_contact {
-            trace.secondary_plane = Some(plane);
+        if let Some(index) = interval.secondary_contact {
+            trace.secondary_plane = Some(sides[index]);
             // qsrc stores the primary side's surface in both native slots.
             trace.secondary_surface_id = surface_id;
         }
