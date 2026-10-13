@@ -4,9 +4,7 @@ use crate::{
     memory::{ModuleMemory, Width},
     services::CallError,
 };
-use qa_core::primitives::{
-    ClientId, ModuleId, ResourceNamespace, RuleSetId, ValueBinding, WeaponReadiness, WeaponState,
-};
+use qa_core::primitives::{ClientId, ModuleId, NativeEntity, ResourceNamespace, ValueBinding};
 use qa_network::{
     commands::packet::Protocol,
     projection::{PlayerContext, PlayerProjection},
@@ -34,11 +32,37 @@ struct MemoryField {
     word: usize,
     width: Width,
 }
+// Original q_shared.h playerState_t offsets, mapped into the one player
+// projection's numeric words. Both native widths have this pointer-free ABI.
+const Q3_PLAYER_FIELDS: &[(usize, u64)] = &[
+    (0, 0),
+    (1, 20),
+    (2, 24),
+    (4, 32),
+    (5, 36),
+    (6, 156),
+    (7, 152),
+    (8, 44),
+    (9, 28),
+    (10, 40),
+    (12, 16),
+    (19, 12),
+    (20, 68),
+    (24, 48),
+    (25, 52),
+    (26, 60),
+    (28, 164),
+    (34, 4),
+    (35, 56),
+    (36, 64),
+    (40, 140),
+    (41, 144),
+    (42, 160),
+];
 pub(crate) struct PlayerValues {
     address: PlayerAddress,
     protocol: Protocol,
     arrays: [ArrayLayout; 2],
-    weapon_time: Option<usize>,
     fields: Box<[MemoryField]>,
     projection: Option<PlayerProjection>,
     words: Box<[u32]>,
@@ -62,7 +86,7 @@ impl PlayerValues {
     }
     pub fn load_q3() -> Self {
         // Original q_shared.h playerState_t: pointer-free signed32 arrays.
-        Self::load(
+        let mut values = Self::load(
             PlayerAddress::Registered,
             Protocol::Quake3_68,
             [
@@ -75,17 +99,16 @@ impl PlayerValues {
                     width: Width::Word,
                 },
             ],
-        )
+        );
+        // Body/view/movement publication is useful even without HUD bank rows.
+        values.bind_fields(&[], &[]);
+        values
     }
     fn load(address: PlayerAddress, protocol: Protocol, arrays: [ArrayLayout; 2]) -> Self {
         Self {
             address,
             protocol,
             arrays,
-            weapon_time: match address {
-                PlayerAddress::Registered => Some(44),
-                PlayerAddress::EntityClient(_) => None,
-            },
             fields: Box::default(),
             projection: None,
             words: Box::default(),
@@ -104,7 +127,21 @@ impl PlayerValues {
         {
             return Err(CallError::Capacity);
         }
-        let projection = PlayerProjection::load_stat_values(self.protocol, stats, persistent);
+        self.bind_fields(stats, persistent);
+        Ok(())
+    }
+    fn bind_fields(&mut self, stats: &[ValueBinding], persistent: &[ValueBinding]) {
+        let (projection, native_fields) = match self.address {
+            PlayerAddress::Registered => (
+                PlayerProjection::load_native_q3(stats, persistent),
+                Q3_PLAYER_FIELDS,
+            ),
+            PlayerAddress::EntityClient(_) => (
+                PlayerProjection::load_stat_values(self.protocol, stats, persistent),
+                &[][..],
+            ),
+        };
+        let spans = qa_network::states::player_value_layout(self.protocol).1;
         self.fields = spans
             .into_iter()
             .zip(self.arrays)
@@ -117,10 +154,14 @@ impl PlayerValues {
                         width: array.width,
                     })
             })
+            .chain(native_fields.iter().map(|&(word, offset)| MemoryField {
+                offset,
+                word,
+                width: Width::Word,
+            }))
             .collect();
         self.words = vec![0; projection.words()].into_boxed_slice();
         self.projection = Some(projection);
-        Ok(())
     }
     /// Native callers lend bytes only after their child is parked; QVM owns them.
     pub fn project(
@@ -141,6 +182,12 @@ impl PlayerValues {
             if client.connection.is_none() || client.module != module {
                 continue;
             }
+            let Some(slot) = server.entities.resolve(client.entity) else {
+                continue;
+            };
+            if server.entities.columns.owner[slot] != module {
+                continue;
+            }
             let (pointer, edict) = match self.address {
                 PlayerAddress::EntityClient(layout) => {
                     let Some(edict) =
@@ -158,6 +205,14 @@ impl PlayerValues {
                     let Some(players) = entities.registered_players() else {
                         continue;
                     };
+                    let Some(native) = server.entities.columns.native_entity[slot]
+                        .filter(|native| native.module == module)
+                    else {
+                        continue;
+                    };
+                    if entities.binding(&server.entities, native)? != Some(client.entity) {
+                        continue;
+                    }
                     let Some(pointer) =
                         native_address(players, module, &server.entities, client.entity)
                     else {
@@ -166,16 +221,6 @@ impl PlayerValues {
                     (pointer, None)
                 }
             };
-            if let Some(offset) = self.weapon_time {
-                let address = pointer
-                    .checked_add(offset as u64)
-                    .ok_or(CallError::Memory)?;
-                client.player.weapon_state = Some(WeaponState {
-                    source: RuleSetId::Quake3,
-                    namespace: ResourceNamespace::Module(module),
-                    readiness: WeaponReadiness::RemainingMilliseconds(memory.read_word(address)?),
-                });
-            }
             if let Some(projection) = &self.projection {
                 for field in &self.fields {
                     let address = pointer.checked_add(field.offset).ok_or(CallError::Memory)?;
@@ -186,19 +231,60 @@ impl PlayerValues {
                         value
                     };
                 }
-                projection.apply(
-                    &self.words,
-                    &mut client.player,
-                    &mut PlayerContext::default(),
-                    qa_core::primitives::ResourceNamespace::Module(module),
-                    |_| None,
-                );
+                let mut context = PlayerContext::default();
+                let namespace = ResourceNamespace::Module(module);
+                let imported = if module_moves {
+                    projection.apply(
+                        &self.words,
+                        &mut client.player,
+                        &mut context,
+                        namespace,
+                        |number| {
+                            entities
+                                .binding(
+                                    &server.entities,
+                                    NativeEntity {
+                                        module,
+                                        slot: number as i32,
+                                    },
+                                )
+                                .ok()
+                                .flatten()
+                                .filter(|entity| {
+                                    server.entities.columns.owner[entity.slot as usize] == module
+                                })
+                        },
+                    )
+                } else {
+                    projection.apply_stats(&self.words, &mut client.player, namespace)
+                };
+                if !imported {
+                    return Err(CallError::Capacity);
+                }
+                if module_moves && matches!(self.address, PlayerAddress::Registered) {
+                    let tuning = &mut client.player.movement.tuning;
+                    tuning.gravity = Some(if tuning.gravity_multiplier != 0.0 {
+                        context.gravity / tuning.gravity_multiplier
+                    } else {
+                        context.gravity
+                    });
+                    tuning.max_speed = Some(if tuning.speed_multiplier != 0.0 {
+                        context.speed / tuning.speed_multiplier
+                    } else {
+                        context.speed
+                    });
+                    if native_address(table, module, &server.entities, client.entity).is_some() {
+                        // playerState origin remains authoritative for unlinked
+                        // spectators; sharedEntity contributes only body bounds.
+                        client.player.body.mins = server.entities.columns.mins[slot];
+                        client.player.body.maxs = server.entities.columns.maxs[slot];
+                    }
+                }
             }
             let PlayerAddress::EntityClient(layout) = self.address else {
                 continue;
             };
             let edict = edict.ok_or(CallError::Entity)?;
-            let slot = client.entity.slot as usize;
             if module_moves && let Some(pmove) = pmove.as_deref_mut() {
                 let (body, _) = entities.body(memory, edict)?;
                 pmove.import_client(memory, pointer, module, &mut client.player)?;

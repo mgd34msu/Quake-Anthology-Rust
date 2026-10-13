@@ -2,10 +2,11 @@
 //! Native ordinals and effective tuning are supplied by the module/connection.
 use crate::{commands::packet::Protocol, states};
 use qa_core::{
-    math::{AngleShortForm, angle_to_short, eighth_to_short, short_to_angle, short_to_eighth},
+    math::{AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
-        EntityAppearance, EntityId, ModelRef, MovementMode, MovementTimer, PlayerState,
-        ResourceNamespace, ValueBinding, ValueWidth, ViewWeapon, WeaponReadiness, WeaponState,
+        AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMode, MovementTimer,
+        PlayerState, ResourceNamespace, ValueBinding, ValueWidth, ViewWeapon, WeaponReadiness,
+        WeaponState,
     },
 };
 
@@ -82,6 +83,7 @@ enum Convert {
     Eighth,
     ShortAngle,
     UnsignedShortAngle,
+    IntegerAngle,
     TimerEighth,
     Milliseconds16,
     ScaledShort(u16),
@@ -242,6 +244,7 @@ pub struct PlayerProjection {
     words: usize,
     modes: [u32; 7],
     received_modes: &'static [MovementMode],
+    exact_modes: bool,
     flags: [u32; 8],
     flag_mask: u32,
     client_limit: u32,
@@ -285,6 +288,19 @@ impl PlayerProjection {
         persistent: &[ValueBinding],
     ) -> Self {
         Self::load_value_fields(protocol, stats, persistent, None, true)
+    }
+    /// Q3's public playerState_t has signed32 angle offsets and exact native
+    /// movement modes. Its wire adapter retains its own narrower conversions.
+    pub fn load_native_q3(stats: &[ValueBinding], persistent: &[ValueBinding]) -> Self {
+        let mut projection =
+            Self::load_value_fields(Protocol::Quake3_68, stats, persistent, None, false);
+        for field in &mut projection.fields {
+            if matches!(field.source, DeltaAngle(_)) {
+                field.convert = IntegerAngle;
+            }
+        }
+        projection.exact_modes = true;
+        projection
     }
     fn load_value_fields(
         protocol: Protocol,
@@ -405,6 +421,7 @@ impl PlayerProjection {
             words,
             modes,
             received_modes,
+            exact_modes: false,
             flags,
             flag_mask: flags.into_iter().fold(0, |mask, flag| mask | flag),
             client_limit: if protocol == Protocol::Quake2Repro1038 {
@@ -510,8 +527,14 @@ impl PlayerProjection {
         };
         out.fill(0);
         for field in &self.fields {
-            let word = self.value(field.source, player, context, &mut resolve_model);
-            out[field.word] = field.convert.export(word);
+            out[field.word] = if let DeltaAngle(axis) = field.source {
+                field
+                    .convert
+                    .export_angle(player.movement.delta_angles.0[axis])
+            } else {
+                let word = self.value(field.source, player, context, &mut resolve_model);
+                field.convert.export(word)
+            };
         }
         for field in &self.write_bindings {
             if self.protocol == Protocol::NetQuake15
@@ -546,7 +569,35 @@ impl PlayerProjection {
         player: &mut PlayerState,
         context: &mut PlayerContext,
         namespace: ResourceNamespace,
+        resolve_ground: impl FnMut(u32) -> Option<EntityId>,
+    ) -> bool {
+        self.apply_fields(words, player, context, namespace, resolve_ground, false)
+    }
+    /// Engine-owned movement retains its body/view state while a native module
+    /// publishes numeric arrays and weapon readiness through this same walker.
+    pub fn apply_stats(
+        &self,
+        words: &[u32],
+        player: &mut PlayerState,
+        namespace: ResourceNamespace,
+    ) -> bool {
+        self.apply_fields(
+            words,
+            player,
+            &mut PlayerContext::default(),
+            namespace,
+            |_| None,
+            true,
+        )
+    }
+    fn apply_fields(
+        &self,
+        words: &[u32],
+        player: &mut PlayerState,
+        context: &mut PlayerContext,
+        namespace: ResourceNamespace,
         mut resolve_ground: impl FnMut(u32) -> Option<EntityId>,
+        stats_only: bool,
     ) -> bool {
         let Some(words) = words.get(..self.words) else {
             return false;
@@ -559,15 +610,24 @@ impl PlayerProjection {
             return false;
         }
         for field in &self.fields {
+            if stats_only && !matches!(field.source, Health | Armor | Score | Frags | WeaponTime) {
+                continue;
+            }
             let word = words[field.word];
-            let value = field.convert.import(word);
+            let value = if matches!(field.source, DeltaAngle(_)) {
+                word
+            } else {
+                field.convert.import(word)
+            };
             match field.source {
                 Position(i) => player.body.position.0[i] = f32::from_bits(value),
                 Velocity(i) => player.body.velocity.0[i] = f32::from_bits(value),
                 View(i) => player.view_angles.0[i] = f32::from_bits(value),
                 ViewOffset(i) => player.view_offset.0[i] = f32::from_bits(value),
                 Punch(i) => player.punch_angles.0[i] = f32::from_bits(value),
-                DeltaAngle(i) => player.movement.delta_angles.0[i] = f32::from_bits(value),
+                DeltaAngle(i) => {
+                    player.movement.delta_angles.0[i] = field.convert.import_angle(word)
+                }
                 CommandTime => player.movement.command_time_ms = value as i32,
                 Timer => player.movement.remaining_ms = value,
                 Flags => {
@@ -601,7 +661,7 @@ impl PlayerProjection {
                 Mode => {
                     // Preserve a caller's Fly/Noclip/Gib choice when the wire
                     // cannot distinguish it from another common mode.
-                    if self.native_mode(player.movement.mode) != value {
+                    if self.exact_modes || self.native_mode(player.movement.mode) != value {
                         player.movement.mode = self
                             .received_modes
                             .get(value as usize)
@@ -698,7 +758,7 @@ impl PlayerProjection {
             View(i) => p.view_angles.0[i].to_bits(),
             ViewOffset(i) => p.view_offset.0[i].to_bits(),
             Punch(i) => p.punch_angles.0[i].to_bits(),
-            DeltaAngle(i) => p.movement.delta_angles.0[i].to_bits(),
+            DeltaAngle(i) => p.movement.delta_angles.0[i].degrees().to_bits(),
             CommandTime => p.movement.command_time_ms as u32,
             Timer => p.movement.remaining_ms,
             Flags => {
@@ -798,10 +858,8 @@ impl Convert {
             IntegerFloat => (word as i32 as f32).to_bits(),
             FloatInteger => f32::from_bits(word) as i32 as u32,
             Eighth => eighth_to_short(f32::from_bits(word)) as i32 as u32,
-            ShortAngle => angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide)
-                as i16 as i32 as u32,
-            UnsignedShortAngle => {
-                angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide) as u16 as u32
+            ShortAngle | UnsignedShortAngle | IntegerAngle => {
+                self.export_angle(AngleOffset::Degrees(f32::from_bits(word)))
             }
             TimerEighth => (word / 8).min(255),
             Milliseconds16 => word.min(u32::from(u16::MAX)),
@@ -832,12 +890,29 @@ impl Convert {
             Bits | IntegerFloat => word,
             FloatInteger => (word as i32 as f32).to_bits(),
             Eighth => short_to_eighth(word as i16).to_bits(),
-            ShortAngle => short_to_angle(word as i16 as i32).to_bits(),
-            UnsignedShortAngle => short_to_angle(word as u16 as i32).to_bits(),
+            ShortAngle | UnsignedShortAngle | IntegerAngle => {
+                self.import_angle(word).degrees().to_bits()
+            }
             TimerEighth => u32::from(word as u8) * 8,
             Milliseconds16 => u32::from(word as u16),
             ScaledShort(scale) => (f32::from(word as i16) / f32::from(scale)).to_bits(),
             ScaledByte { scale, .. } => (word as u8 as f32 / f32::from(scale)).to_bits(),
+        }
+    }
+    fn import_angle(self, word: u32) -> AngleOffset {
+        match self {
+            ShortAngle => AngleOffset::Units(word as i16 as i32),
+            UnsignedShortAngle => AngleOffset::Units(word as u16 as i32),
+            IntegerAngle => AngleOffset::Units(word as i32),
+            _ => AngleOffset::Degrees(f32::from_bits(self.import(word))),
+        }
+    }
+    fn export_angle(self, angle: AngleOffset) -> u32 {
+        match self {
+            ShortAngle => angle.units(AngleShortForm::MultiplyDivide) as i16 as i32 as u32,
+            UnsignedShortAngle => angle.units(AngleShortForm::MultiplyDivide) as u16 as u32,
+            IntegerAngle => angle.units(AngleShortForm::Factored) as u32,
+            _ => self.export(angle.degrees().to_bits()),
         }
     }
 }

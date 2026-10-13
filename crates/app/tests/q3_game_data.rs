@@ -58,7 +58,10 @@ impl Fixture {
             PvsRows::load(vec![Some(0), Some(1)], vec![3, 3]).unwrap(),
         ));
         let console = Console::new(Context::default()).unwrap();
-        let storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+        let mut storage =
+            ServiceStorage::load_native(&[(ModuleId(1), 0, RuleSetId::Quake3)], 0, &console.cvars)
+                .unwrap();
+        storage.bind_client_capacity(ModuleId(1), clients).unwrap();
         let mut vm =
             service_program::program(&[(qa_formats::program::qvm::Opcode::Ignore, 0)], &[]);
         vm.configure_q3_game();
@@ -555,7 +558,7 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
     player.view_angles = Vec3([10.5, 270.25, -8.0]);
     player.view_offset = Vec3([3.0, 4.0, 22.0]);
     player.movement.command_time_ms = 333;
-    player.movement.delta_angles = Vec3([25.0, 5.0, -15.0]);
+    player.movement.delta_angles = Vec3([25.0, 5.0, -15.0]).into();
     player.movement.remaining_ms = 99;
     let before = (
         [

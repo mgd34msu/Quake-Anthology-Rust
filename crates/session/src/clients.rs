@@ -5,6 +5,7 @@ use qa_core::primitives::{
     UserCmd, Vec3,
 };
 use qa_core::sys_events::EventTime;
+use qa_core::text::{FixedText, InfoError, InfoRules, InfoUpdate};
 use qa_world::{
     area::{AreaGrid, AttachmentTransport, LinkFlags, LinkIntent, LinkOrder},
     collision::{CollisionStore, Contents, TraceError, TraceScratch, WorldTrace},
@@ -19,6 +20,22 @@ pub enum Connection {
     Local,
     Remote,
     Bot,
+}
+
+/// Canonical client storage accommodates the largest admitted native userinfo
+/// boundary. A module supplies its smaller limit at admission.
+pub const USERINFO_BYTES: usize = 2048;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientInfoError {
+    Client,
+    Info(InfoError),
+}
+
+impl From<InfoError> for ClientInfoError {
+    fn from(error: InfoError) -> Self {
+        Self::Info(error)
+    }
 }
 
 /// Retained until the Presentation consumer has applied the retirement.
@@ -45,6 +62,7 @@ pub struct Client {
     pub command_observation: Option<SnapshotObservation>,
     /// Raw native connect parameters, retained on the canonical client slot.
     pub module_spawn_parms: [u32; 16],
+    userinfo: FixedText<USERINFO_BYTES>,
     pub value_publication: qa_core::primitives::ValueBank,
     pub intent: CommandIntent,
     pub output: Option<OutputConsumerId>,
@@ -64,6 +82,7 @@ impl Client {
         self.command_execution = CommandExecution::default();
         self.command_observation = None;
         self.module_spawn_parms = [0; 16];
+        self.userinfo.clear();
         self.value_publication.clear();
         self.command_pending = false;
         self.module_movement = false;
@@ -143,6 +162,7 @@ impl Server {
                 command_execution: CommandExecution::default(),
                 command_observation: None,
                 module_spawn_parms: [0; 16],
+                userinfo: FixedText::default(),
                 value_publication: qa_core::primitives::ValueBank::load(values),
                 intent: CommandIntent::default(),
                 command_pending: false,
@@ -230,6 +250,67 @@ impl Server {
                         == Some(native)
             })
             .map(|slot| ClientId(slot as u32))
+    }
+
+    pub fn userinfo(&self, id: ClientId) -> Option<&[u8]> {
+        let client = self.clients.get(id.0 as usize)?;
+        (client.connection.is_some() && self.entities.resolve(client.entity).is_some())
+            .then(|| client.userinfo.as_bytes())
+    }
+
+    /// Input admission checks the complete record before replacing its raw
+    /// bytes. Exact spelling, duplicates and the optional leading slash remain.
+    pub fn replace_userinfo(
+        &mut self,
+        id: ClientId,
+        text: &[u8],
+        rules: InfoRules,
+    ) -> Result<(), ClientInfoError> {
+        if rules.bytes == 0 || rules.bytes > USERINFO_BYTES || text.len() >= rules.bytes {
+            return Err(InfoError::Capacity.into());
+        }
+        if text.contains(&0) {
+            return Err(InfoError::Invalid.into());
+        }
+        if !text.is_empty() {
+            let text = text.strip_prefix(b"\\").unwrap_or(text);
+            let mut fields = text.split(|&byte| byte == b'\\');
+            while let Some(key) = fields.next() {
+                let value = fields.next().ok_or(InfoError::Invalid)?;
+                InfoUpdate::new(key, value, rules)?;
+            }
+        }
+        self.copy_userinfo(id, text)
+    }
+
+    /// Q3's native setter copies arbitrary bytes with Q_strncpyz truncation;
+    /// it does not apply the input-admission validator.
+    pub fn replace_userinfo_raw(
+        &mut self,
+        id: ClientId,
+        text: &[u8],
+        bytes: usize,
+    ) -> Result<(), ClientInfoError> {
+        if bytes == 0 || bytes > USERINFO_BYTES {
+            return Err(InfoError::Capacity.into());
+        }
+        let text = qa_core::text::until_nul(text);
+        self.copy_userinfo(id, &text[..text.len().min(bytes - 1)])
+    }
+
+    fn copy_userinfo(&mut self, id: ClientId, text: &[u8]) -> Result<(), ClientInfoError> {
+        let client = self
+            .clients
+            .get_mut(id.0 as usize)
+            .filter(|client| {
+                client.connection.is_some() && self.entities.resolve(client.entity).is_some()
+            })
+            .ok_or(ClientInfoError::Client)?;
+        client
+            .userinfo
+            .set_bytes(text)
+            .map_err(|_| InfoError::Capacity)?;
+        Ok(())
     }
 
     /// Only an admitted client with a live entity in its owning native module

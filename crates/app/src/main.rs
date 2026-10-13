@@ -665,11 +665,7 @@ fn run() -> Result<(), String> {
                 host.client_info(module).map(|_| module)
             });
             let only = available.next()?;
-            (available.next().is_none()
-                && q3_modules
-                    .iter()
-                    .all(|module| module.role != qa_app::modules::Q3Role::Game))
-            .then_some(only)
+            available.next().is_none().then_some(only)
         });
         let Some(module) = selected else {
             continue;

@@ -353,7 +353,7 @@ fn player() -> PlayerState {
     p.body.position = Vec3([12.3, -47.17, -0.]);
     p.body.velocity = Vec3([16.12, -32.7, 1.01]);
     p.view_angles = Vec3([15., 300., -30.]);
-    p.movement.delta_angles = Vec3([90., 180., -90.]);
+    p.movement.delta_angles = Vec3([90., 180., -90.]).into();
     p.view_offset = Vec3([0., 0., 22.]);
     p.health = -12;
     p.armor = 55;
@@ -422,7 +422,10 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
     assert_eq!(&words[1..4], &p.body.position.0.map(f32::to_bits));
     assert_eq!(&words[4..7], &p.body.velocity.0.map(f32::to_bits));
     assert_eq!(words[7], 65535);
-    assert_eq!(&words[10..13], &p.movement.delta_angles.0.map(f32::to_bits));
+    assert_eq!(
+        &words[10..13],
+        &p.movement.delta_angles.degrees().0.map(f32::to_bits)
+    );
     assert_eq!(&words[13..16], &[32767, (-32768i32) as u32, 353]);
     assert_eq!(&words[19..22], &[32, (-64i32) as u32, 32767]);
     assert_eq!(words[23], 65535);
@@ -583,7 +586,10 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
         |_| { panic!("Q2 transmits ground presence, not its ordinal") }
     ));
     assert_eq!(imported.body.position.0[0..2], [12.25, -47.125]);
-    assert_eq!(imported.movement.delta_angles, Vec3([90., -180., -90.]));
+    assert_eq!(
+        imported.movement.delta_angles.degrees(),
+        Vec3([90., -180., -90.])
+    );
     assert_eq!(imported.movement.remaining_ms, 248);
     assert_eq!(imported.movement.timer, MovementTimer::LAND);
     assert!(imported.movement.ducked && imported.movement.jump_held);
@@ -635,7 +641,10 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(imported.body.position, p.body.position);
     assert_eq!(imported.body.velocity, p.body.velocity);
     assert_eq!(imported.view_angles, p.view_angles);
-    assert_eq!(imported.movement.delta_angles, Vec3([90., 180., 270.]));
+    assert_eq!(
+        imported.movement.delta_angles.degrees(),
+        Vec3([90., 180., 270.])
+    );
     assert_eq!(imported.movement.remaining_ms, 250);
     assert_eq!(imported.movement.command_time_ms, 1200);
     assert_eq!(imported.movement.timer, p.movement.timer);
@@ -726,7 +735,7 @@ fn delta_angles_keep_the_native_macro_order_and_signedness() {
     for _ in 0..4096 {
         seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
         let angle = (seed as i32 as f32) / 4096.;
-        p.movement.delta_angles = Vec3([angle; 3]);
+        p.movement.delta_angles = Vec3([angle; 3]).into();
         assert!(q2.reduce(&p, &context(), &mut q2_words, |model| Some(model.ordinal)));
         assert!(q3.reduce(&p, &context(), &mut q3_words, |model| Some(model.ordinal)));
         let native = (angle * 65536. / 360.) as i32;
@@ -736,6 +745,69 @@ fn delta_angles_keep_the_native_macro_order_and_signedness() {
         for index in [26, 35, 36] {
             assert_eq!(q3_words[index], (native & 65535) as u32);
         }
+    }
+}
+
+#[test]
+fn native_q3_delta_units_keep_full_signed_words_until_the_target_boundary() {
+    use qa_core::primitives::{AngleOffset, ClientId, ModuleId, ResourceNamespace};
+    let native = PlayerProjection::load_native_q3(&[], &[]);
+    let wire = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let raw = [i32::MIN + 1, i32::MAX - 1, 65537];
+    let mut source = vec![0; native.words()];
+    for (word, value) in [35, 26, 36].into_iter().zip(raw) {
+        source[word] = value as u32;
+    }
+    source[34] = 1;
+    let mut target = PlayerState::default();
+    target.movement_rules = RuleSetId::QuakeWorld;
+    target.trace_rules = RuleSetId::Quake2;
+    target.movement.mode = MovementMode::Fly;
+    assert!(native.apply(
+        &source,
+        &mut target,
+        &mut PlayerContext::default(),
+        ResourceNamespace::Module(ModuleId(7)),
+        |_| None
+    ));
+    assert_eq!(target.movement.delta_angles.0, raw.map(AngleOffset::Units));
+    assert_eq!(target.movement.mode, MovementMode::Noclip);
+    assert_eq!(
+        (target.movement_rules, target.trace_rules),
+        (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+    );
+    let mut encoded = vec![0; native.words()];
+    assert!(native.reduce(&target, &PlayerContext::default(), &mut encoded, |_| None));
+    for (word, value) in [35, 26, 36].into_iter().zip(raw) {
+        assert_eq!(encoded[word], value as u32);
+    }
+    assert!(wire.reduce(&target, &PlayerContext::default(), &mut encoded, |_| None));
+    for (word, value) in [35, 26, 36].into_iter().zip(raw) {
+        assert_eq!(encoded[word], value as u16 as u32);
+    }
+    let repro = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
+    let mut floats = vec![0; repro.words()];
+    for (word, bits) in
+        [10, 11, 12]
+            .into_iter()
+            .zip([(-0.0f32).to_bits(), 0x7fc0_0123, 17.25f32.to_bits()])
+    {
+        floats[word] = bits;
+    }
+    assert!(repro.apply(
+        &floats,
+        &mut target,
+        &mut PlayerContext::default(),
+        ResourceNamespace::Client(ClientId(0)),
+        |_| None
+    ));
+    for (angle, bits) in target.movement.delta_angles.0.into_iter().zip([
+        (-0.0f32).to_bits(),
+        0x7fc0_0123,
+        17.25f32.to_bits(),
+    ]) {
+        assert!(matches!(angle, AngleOffset::Degrees(_)));
+        assert_eq!(angle.degrees().to_bits(), bits);
     }
 }
 

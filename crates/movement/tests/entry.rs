@@ -83,7 +83,10 @@ fn q3_view_angles_use_native_signed_shorts_and_pitch_delta_clamp() {
         )
         .expect("valid movement query");
         assert_eq!(state.view_angles, Vec3(expected));
-        assert_eq!(state.movement.delta_angles.0[0], delta * (360. / 65536.));
+        assert_eq!(
+            state.movement.delta_angles.0[0].degrees(),
+            delta * (360. / 65536.)
+        );
         // Native clamping adjusts delta_angles; the same command remains stable.
         pmove(
             UserCmd {
@@ -98,6 +101,74 @@ fn q3_view_angles_use_native_signed_shorts_and_pitch_delta_clamp() {
         .expect("valid movement query");
         assert_eq!(state.view_angles, Vec3(expected));
     }
+}
+
+#[test]
+fn native_delta_words_wrap_before_short_narrowing_and_only_clamped_pitch_changes() {
+    use qa_core::primitives::{AngleOffset, AngleOffsets, MovementMode};
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake3] {
+        let mut state = player(rules);
+        state.movement.mode = MovementMode::Frozen;
+        let native = [i32::MIN + 1, i32::MAX - 1, i32::MIN + 1];
+        state.movement.delta_angles = AngleOffsets(native.map(AngleOffset::Units));
+        pmove(
+            UserCmd {
+                duration_ms: 16,
+                server_time_ms: 16,
+                view_angles: Vec3([0.0, 90.0, 0.0]),
+                ..Default::default()
+            },
+            &mut state,
+            &mut support::FixtureWorld::default(),
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("valid movement query");
+        // Native short temp retains low16 of (cmd + delta), including an
+        // overflowing signed32 addition in yaw; f32 cannot retain these words.
+        assert_eq!(
+            state.view_angles.0.map(f32::to_bits),
+            Vec3([
+                1.0 * (360.0 / 65536.0),
+                16382.0 * (360.0 / 65536.0),
+                1.0 * (360.0 / 65536.0)
+            ])
+            .0
+            .map(f32::to_bits)
+        );
+        assert_eq!(
+            state.movement.delta_angles.0,
+            native.map(AngleOffset::Units)
+        );
+    }
+    let mut state = player(RuleSetId::Quake3);
+    state.movement.mode = MovementMode::Frozen;
+    state.movement.delta_angles = AngleOffsets([
+        AngleOffset::Units(0),
+        AngleOffset::Units(i32::MAX - 1),
+        AngleOffset::Degrees(-0.0),
+    ]);
+    pmove(
+        UserCmd {
+            server_time_ms: 16,
+            view_angles: Vec3([90.0, 0.0, 0.0]),
+            ..Default::default()
+        },
+        &mut state,
+        &mut support::FixtureWorld::default(),
+        Default::default(),
+        qa_movement::no_boundary,
+    )
+    .expect("valid movement query");
+    assert_eq!(state.movement.delta_angles.0[0], AngleOffset::Units(-384));
+    assert_eq!(
+        state.movement.delta_angles.0[1],
+        AngleOffset::Units(i32::MAX - 1)
+    );
+    assert_eq!(
+        state.movement.delta_angles.0[2].degrees().to_bits(),
+        0x8000_0000
+    );
 }
 #[test]
 fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {

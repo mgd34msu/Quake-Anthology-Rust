@@ -1,8 +1,8 @@
 use qa_core::{
     math,
     primitives::{
-        MotionWrite, MovementMode, MovementTimer, PlayerState, RuleSetId, SurfaceFlags, ThinkTime,
-        UserCmd, Vec3, buttons,
+        AngleOffset, MotionWrite, MovementMode, MovementTimer, PlayerState, RuleSetId,
+        SurfaceFlags, ThinkTime, UserCmd, Vec3, buttons,
     },
     sys_events::EventTime,
 };
@@ -1369,31 +1369,29 @@ impl Step<'_> {
             self.command.movement = [0.0; 3];
         }
         let mut previous = self.player.body.position;
-        self.player.view_angles = self.command.view_angles + self.player.movement.delta_angles;
         if self.classic() || self.arena() {
             for i in 0..3 {
-                let mut angle = (math::angle_to_short(
+                let command_angle = math::angle_to_short(
                     self.command.view_angles.0[i],
                     math::AngleShortForm::Factored,
-                ) as i16)
-                    .wrapping_add(math::angle_to_short(
-                        self.player.movement.delta_angles.0[i],
-                        math::AngleShortForm::Factored,
-                    ) as i16);
+                );
+                let mut angle = command_angle.wrapping_add(
+                    self.player.movement.delta_angles.0[i].units(math::AngleShortForm::Factored),
+                ) as i16;
                 if self.arena() && i == 0 {
                     let clamped = angle.clamp(-16000, 16000);
                     if clamped != angle {
-                        let command_angle = math::angle_to_short(
-                            self.command.view_angles.0[i],
-                            math::AngleShortForm::Factored,
-                        ) as u16;
+                        let command_angle = command_angle as u16;
                         self.player.movement.delta_angles.0[i] =
-                            math::short_to_angle(i32::from(clamped) - i32::from(command_angle));
+                            AngleOffset::Units(i32::from(clamped) - i32::from(command_angle));
                         angle = clamped;
                     }
                 }
                 self.player.view_angles.0[i] = math::short_to_angle(i32::from(angle));
             }
+        } else {
+            self.player.view_angles =
+                self.command.view_angles + self.player.movement.delta_angles.degrees();
         }
         if self.parameters.circular_pitch {
             let pitch = &mut self.player.view_angles.0[0];

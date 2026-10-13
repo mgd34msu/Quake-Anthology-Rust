@@ -394,6 +394,9 @@ const fn server() -> CallTable {
     t.entries[31] = scalar!(native_unlink);
     t.entries[18] = scalar!(config_set);
     t.entries[19] = scalar!(config_get);
+    t.entries[20] = scalar!(q3_get_userinfo);
+    t.entries[21] = scalar!(q3_set_userinfo);
+    t.entries[22] = scalar!(q3_get_serverinfo);
     t.entries[23] = scalar!(q3_set_brush_model);
     t.entries[24] = scalar!(q3_trace);
     t.entries[25] = scalar!(q3_point_contents);
@@ -473,7 +476,7 @@ const fn ui() -> CallTable {
 }
 // Original Q3 1.32 import ordinals. Game/UI commands carry an execution mode;
 // cgame's SendConsoleCommand accepts only text and appends it.
-pub const Q3_SERVER: CallTable = server();
+pub static Q3_SERVER: CallTable = server();
 pub const Q3_CLIENT: CallTable = client();
 pub const Q3_UI: CallTable = ui();
 
@@ -2258,13 +2261,52 @@ fn qc_point_contents(
     Ok(CallValue::Word(bits::<false>(f64::from(contents.to_q1()))))
 }
 
+fn q3_get_userinfo(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let native = qa_core::primitives::NativeEntity {
+        module: c.context.module,
+        slot: c.arg(0)? as u32 as i32,
+    };
+    let target = c.required_pointer(1)?;
+    let length = c.length(2)?;
+    if length == 0 {
+        return Err(CallError::Memory);
+    }
+    let text = (ENGINE_CALLS.userinfo)(c.services, native)?;
+    c.memory.write_string(target, length, text)?;
+    Ok(0)
+}
+fn q3_set_userinfo(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let native = qa_core::primitives::NativeEntity {
+        module: c.context.module,
+        slot: c.arg(0)? as u32 as i32,
+    };
+    let text = if c.null_pointer(1)? {
+        b"".as_slice()
+    } else {
+        c.memory.cstring(c.pointer(1)?)?
+    };
+    (ENGINE_CALLS.set_userinfo)(c.services, native, text)?;
+    Ok(0)
+}
+fn q3_get_serverinfo(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let target = c.required_pointer(0)?;
+    let length = c.length(1)?;
+    if length == 0 {
+        return Err(CallError::Memory);
+    }
+    let output = c.memory.read_mut(target, length)?;
+    (ENGINE_CALLS.serverinfo)(c.services, c.context.module, output)?;
+    Ok(0)
+}
+
 fn q3_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let slot = c.arg(0)? as i32;
     let limit = c
         .services
         .storage
-        .max_clients(c.services.cvars, c.context.native_rules);
-    if slot < 0 || slot >= limit {
+        .client_capacity(c.context.module)
+        .ok_or(CallError::Entity)?;
+    if slot < 0 || slot as u32 >= limit {
         return Err(CallError::Entity);
     }
     // Valid unused native client rows contain a zero lastUsercmd in qsrc.
@@ -2726,12 +2768,11 @@ fn q3_locate_game_data(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError>
     let player_stride = u64::try_from(c.arg(4)? as u32 as i32).map_err(|_| CallError::Entity)?;
     let address = c.pointer(0)?;
     let players = c.pointer(3)?;
-    let player_count = u32::try_from(
-        c.services
-            .storage
-            .max_clients(c.services.cvars, c.context.native_rules),
-    )
-    .map_err(|_| CallError::Entity)?;
+    let player_count = c
+        .services
+        .storage
+        .client_capacity(c.context.module)
+        .ok_or(CallError::Entity)?;
     let entities = crate::entities::Entities {
         address,
         stride,

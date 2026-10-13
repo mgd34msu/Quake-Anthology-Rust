@@ -105,7 +105,13 @@ fn abi_call(
         1 << 40
     };
     let mut memory = ModuleMemory::load(base, 128, &[0xa5; 128]).unwrap();
-    let mut storage = ServiceStorage::load(&[], 0, &host.console.cvars).unwrap();
+    let mut storage = ServiceStorage::load_native(
+        &[(ModuleId(7), 0, RuleSetId::Quake3)],
+        0,
+        &host.console.cvars,
+    )
+    .unwrap();
+    storage.bind_client_capacity(ModuleId(7), 2).unwrap();
     let mut scratch = host.runtime.geometry.scratch();
     let mut unknown = UnknownCalls::load(1).unwrap();
     let args = args(base);

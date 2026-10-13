@@ -307,7 +307,7 @@ fn native_teleport_angle_pause_zeroes_pitch_and_roll_without_narrowing_rerelease
         state.movement_rules = rules;
         state.movement.timer = MovementTimer::TELEPORT;
         state.movement.remaining_ms = 100;
-        state.movement.delta_angles = Vec3([12.5, 3.125, 17.25]);
+        state.movement.delta_angles = Vec3([12.5, 3.125, 17.25]).into();
         let mut cmd = command(0);
         cmd.view_angles = Vec3([100.0, 45.123, 32.5]);
         let yaw = if rules == RuleSetId::Quake2 {
@@ -315,10 +315,11 @@ fn native_teleport_angle_pause_zeroes_pitch_and_roll_without_narrowing_rerelease
                 qa_core::math::angle_to_short(angle, qa_core::math::AngleShortForm::Factored) as i16
             };
             qa_core::math::short_to_angle(i32::from(
-                encode(cmd.view_angles.0[1]).wrapping_add(encode(state.movement.delta_angles.0[1])),
+                encode(cmd.view_angles.0[1])
+                    .wrapping_add(encode(state.movement.delta_angles.0[1].degrees())),
             ))
         } else {
-            cmd.view_angles.0[1] + state.movement.delta_angles.0[1]
+            cmd.view_angles.0[1] + state.movement.delta_angles.0[1].degrees()
         };
         pmove(
             cmd,

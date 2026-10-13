@@ -6,6 +6,7 @@ use qa_core::primitives::{
 };
 use std::fmt;
 
+mod q3;
 pub(super) mod quakec;
 
 /// Cold ABI metadata, independent of a client's wire, movement and trace roles.
@@ -19,7 +20,7 @@ pub struct ClientLifecycleInfo {
 }
 #[derive(Clone, Copy)]
 pub(super) struct ClientLifecycle {
-    info: ClientLifecycleInfo,
+    pub(super) info: ClientLifecycleInfo,
     frame_commands: bool,
     q2: Option<Q2Clients>,
     connect: fn(&mut FrameHost, ModuleId, ClientId, &[u8]) -> Result<u32, String>,
@@ -32,6 +33,26 @@ pub(super) struct ClientLifecycle {
     publish: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
 }
 impl ClientLifecycle {
+    pub(super) fn q3(module: ModuleId, clients: usize) -> Self {
+        Self {
+            info: ClientLifecycleInfo {
+                module,
+                rules: RuleSetId::Quake3,
+                userinfo_bytes: qa_compat::services::userinfo_rules(RuleSetId::Quake3).bytes,
+                clients,
+                separate_values: false,
+            },
+            frame_commands: false,
+            q2: None,
+            connect: q3::connect,
+            command: q3::command,
+            finish: no_finish,
+            disconnect: q3::disconnect,
+            text: q3::text,
+            userinfo: q3::userinfo,
+            publish: no_finish,
+        }
+    }
     pub(super) fn quakec(module: ModuleId, rules: RuleSetId, clients: usize) -> Self {
         let frame_client = rules == RuleSetId::Quake;
         Self {
@@ -216,6 +237,10 @@ impl FrameHost {
             .storage
             .max_clients(&self.console.cvars, api.rules)
             .clamp(0, 256) as usize;
+        modules
+            .storage
+            .bind_client_capacity(api.module, limit)
+            .map_err(|e| format!("module client capacity: {e:?}"))?;
         let row = modules.row_mut(api.module).ok_or("missing client module")?;
         if let Some(existing) = row.client_lifecycle {
             let unchanged = existing.q2.is_some_and(|previous| {
@@ -254,6 +279,14 @@ impl FrameHost {
             .module_row(module)
             .and_then(|row| row.client_lifecycle)
             .ok_or("module has no supported client lifecycle")?;
+        self.runtime
+            .server
+            .replace_userinfo(
+                id,
+                userinfo,
+                qa_compat::services::userinfo_rules(table.info.rules),
+            )
+            .map_err(|e| format!("client userinfo: {e:?}"))?;
         (table.connect)(self, module, id, userinfo)
     }
     pub fn run_module_client_command(
@@ -565,7 +598,6 @@ impl FrameHost {
             if !self.runtime.server.bind_client_native(id, native) {
                 return Err("native client namespace already occupied".into());
             }
-            let mut accepted = false;
             let result = (|| {
                 let entity = self.runtime.server.clients[id.0 as usize].entity;
                 let row = self
@@ -602,7 +634,8 @@ impl FrameHost {
                 {
                     return Err("native ClientConnect rejected this client".into());
                 }
-                accepted = true;
+                self.refresh_q2_userinfo(id, api)
+                    .map_err(|e| format!("native userinfo publication: {e:?}"))?;
                 // The successful ClientBegin return publishes native pmove and
                 // edict bounds through the existing owned-client projection.
                 // Failure below disconnects and clears this admission.
@@ -625,16 +658,6 @@ impl FrameHost {
                 Ok(native_client)
             })();
             if result.is_err() {
-                if accepted {
-                    let _ = self.invoke_client(
-                        id,
-                        api.disconnect,
-                        ClientCallback::Disconnect,
-                        time,
-                        &[address],
-                        CommandArgs::default(),
-                    );
-                }
                 self.disconnect_client(id);
             }
             result
@@ -774,6 +797,14 @@ impl FrameHost {
             .module_row(native.module)
             .and_then(|row| row.client_lifecycle)
             .ok_or(ClientCommandError::Inactive)?;
+        self.runtime
+            .server
+            .replace_userinfo(
+                id,
+                text,
+                qa_compat::services::userinfo_rules(table.info.rules),
+            )
+            .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))?;
         (table.userinfo)(self, native.module, id, text)
     }
     fn userinfo_q2_client(&mut self, id: ClientId, text: &[u8]) -> Result<(), ClientCommandError> {
@@ -795,13 +826,41 @@ impl FrameHost {
                 time,
                 &[address, api.userinfo],
                 CommandArgs::default(),
-            )
+            )?;
+            self.refresh_q2_userinfo(id, &api)
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {
             let _ = (id, text);
             Err(ClientCommandError::Unsupported)
         }
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn refresh_q2_userinfo(
+        &mut self,
+        id: ClientId,
+        api: &Q2Clients,
+    ) -> Result<(), ClientCommandError> {
+        let row = self
+            .modules
+            .as_mut()
+            .and_then(|modules| modules.row_mut(api.module))
+            .ok_or(ClientCommandError::MissingModule)?;
+        let Program::Native { vm, .. } = &mut row.request.program else {
+            return Err(ClientCommandError::NeedsNativeModule);
+        };
+        let memory = qa_compat::memory::process_memory(&mut vm.process)
+            .map_err(ClientCommandError::Memory)?;
+        let text = memory
+            .read(api.userinfo, api.abi.userinfo_bytes)
+            .map_err(|e| ClientCommandError::Usercmd(e.into()))?;
+        let text = qa_core::text::terminated(text).ok_or(ClientCommandError::Usercmd(
+            qa_compat::services::CallError::Memory,
+        ))?;
+        self.runtime
+            .server
+            .replace_userinfo_raw(id, text, api.abi.userinfo_bytes)
+            .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn module_client(

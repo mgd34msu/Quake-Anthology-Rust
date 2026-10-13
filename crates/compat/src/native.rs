@@ -563,7 +563,6 @@ impl Vm {
         self.projection
             .as_mut()
             .ok_or(Error::Export)?
-            .entities
             .bind_client(entities, native, entity)
             .map_err(Error::Service)
     }

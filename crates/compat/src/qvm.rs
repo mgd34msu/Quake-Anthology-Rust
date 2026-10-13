@@ -63,6 +63,17 @@ impl Vm {
         }
         Ok(())
     }
+    pub fn bind_client(
+        &mut self,
+        entities: &qa_world::entities::EntityTable,
+        native: qa_core::primitives::NativeEntity,
+        entity: qa_core::primitives::EntityId,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection
+            .as_mut()
+            .ok_or(crate::services::CallError::Entity)?
+            .bind_client(entities, native, entity)
+    }
     pub fn publish_entities(
         &mut self,
         services: &mut crate::services::EngineServices<'_>,

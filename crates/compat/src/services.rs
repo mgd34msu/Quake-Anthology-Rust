@@ -7,6 +7,7 @@ use qa_console::{
 use qa_content::vfs::{FileRef, Vfs};
 use qa_core::names::NameTable;
 use qa_core::primitives::ThinkTime;
+use qa_core::text::{InfoBytes, InfoRules};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigRef, ConfigStrings},
     events::FrameEvent,
@@ -31,6 +32,32 @@ mod native_message;
 mod signon;
 pub use signon::{AmbientSound, SIGNON_BYTES, SignonCursor};
 
+pub const Q3_USERINFO_BYTES: usize = 1024;
+
+/// Native module admission chooses this policy once, independently of the
+/// player's movement, connection protocol and console view.
+pub fn userinfo_rules(source: RuleSetId) -> InfoRules {
+    if let Some(layout) = crate::q2_abi::client_layout(source) {
+        return InfoRules {
+            bytes: layout.userinfo_bytes,
+            key_bytes: crate::q2_abi::INFO_KEY_BYTES,
+            value_bytes: layout.value_bytes,
+            filter: InfoBytes::Ascii7Printable,
+        };
+    }
+    let (bytes, fields) = if source == RuleSetId::Quake3 {
+        (Q3_USERINFO_BYTES, Q3_USERINFO_BYTES)
+    } else {
+        (crate::quakec::QW_USERINFO_BYTES, 64)
+    };
+    InfoRules {
+        bytes,
+        key_bytes: fields,
+        value_bytes: fields,
+        filter: InfoBytes::Exact,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallError {
     Aborted,
@@ -47,6 +74,19 @@ pub enum CallError {
 impl From<crate::memory::MemoryError> for CallError {
     fn from(_: crate::memory::MemoryError) -> Self {
         Self::Memory
+    }
+}
+impl From<qa_session::clients::ClientInfoError> for CallError {
+    fn from(error: qa_session::clients::ClientInfoError) -> Self {
+        match error {
+            qa_session::clients::ClientInfoError::Client => Self::Entity,
+            qa_session::clients::ClientInfoError::Info(qa_core::text::InfoError::Invalid) => {
+                Self::Text
+            }
+            qa_session::clients::ClientInfoError::Info(qa_core::text::InfoError::Capacity) => {
+                Self::Capacity
+            }
+        }
     }
 }
 
@@ -126,6 +166,10 @@ struct ConfigRange {
     module: ModuleId,
     lifetime: Option<EntityId>,
     native_rules: RuleSetId,
+    client_capacity: Option<u32>,
+    client_first: i32,
+    info: InfoRules,
+    info_scratch: Box<[u8]>,
     span: IndexSpan,
     files: Option<IndexSpan>,
     resources: Option<[IndexSpan; 3]>,
@@ -288,10 +332,16 @@ impl ServiceStorage {
             } else {
                 None
             };
+            let source = native_rules.unwrap_or(RuleSetId::Quake2);
+            let info = userinfo_rules(source);
             ranges.push(ConfigRange {
                 module,
                 lifetime: None,
-                native_rules: native_rules.unwrap_or(RuleSetId::Quake2),
+                native_rules: source,
+                client_capacity: None,
+                client_first: i32::from(source != RuleSetId::Quake3),
+                info,
+                info_scratch: vec![0; info.bytes].into_boxed_slice(),
                 resources,
                 span: IndexSpan {
                     first: u32::try_from(total).map_err(|_| CallError::Capacity)?,
@@ -337,6 +387,91 @@ impl ServiceStorage {
     }
     fn range_mut(&mut self, module: ModuleId) -> Option<&mut ConfigRange> {
         self.ranges.iter_mut().find(|range| range.module == module)
+    }
+    /// Freeze the native client boundary before the first module callback.
+    /// Identical rebinding preserves a level's retained client records.
+    pub fn bind_client_capacity(
+        &mut self,
+        module: ModuleId,
+        capacity: usize,
+    ) -> Result<(), CallError> {
+        let capacity = u32::try_from(capacity)
+            .ok()
+            .filter(|&capacity| capacity != 0 && capacity <= i32::MAX as u32)
+            .ok_or(CallError::Capacity)?;
+        let range = self.range_mut(module).ok_or(CallError::Entity)?;
+        if range.client_capacity.is_some_and(|old| old != capacity) {
+            return Err(CallError::Capacity);
+        }
+        range.client_capacity = Some(capacity);
+        Ok(())
+    }
+    pub fn client_capacity(&self, module: ModuleId) -> Option<u32> {
+        self.range(module)?.client_capacity
+    }
+    fn client_info(&self, native: NativeEntity) -> Result<&ConfigRange, CallError> {
+        let range = self.range(native.module).ok_or(CallError::Entity)?;
+        let limit = range.client_capacity.ok_or(CallError::Entity)?;
+        if native.slot < range.client_first || (native.slot - range.client_first) as u32 >= limit {
+            return Err(CallError::Entity);
+        }
+        Ok(range)
+    }
+    pub fn userinfo<'a>(
+        &self,
+        server: &'a Server,
+        native: NativeEntity,
+    ) -> Result<&'a [u8], CallError> {
+        self.client_info(native)?;
+        let Some(id) = server.client_for_native(native) else {
+            return Ok(b"");
+        };
+        let client = &server.clients[id.0 as usize];
+        if client.module != native.module {
+            return Err(CallError::Entity);
+        }
+        server.userinfo(id).ok_or(CallError::Entity)
+    }
+    pub fn set_userinfo(
+        &self,
+        server: &mut Server,
+        native: NativeEntity,
+        text: &[u8],
+    ) -> Result<(), CallError> {
+        let range = self.client_info(native)?;
+        let id = server.client_for_native(native).ok_or(CallError::Entity)?;
+        if server.clients[id.0 as usize].module != native.module {
+            return Err(CallError::Entity);
+        }
+        server.replace_userinfo_raw(id, text, range.info.bytes)?;
+        Ok(())
+    }
+    fn serverinfo(
+        &mut self,
+        cvars: &Cvars,
+        module: ModuleId,
+        output: &mut [u8],
+    ) -> Result<usize, CallError> {
+        if output.is_empty() {
+            return Err(CallError::Memory);
+        }
+        let range = self.range_mut(module).ok_or(CallError::Entity)?;
+        let length = cvars
+            .info_string(
+                Context {
+                    source: range.native_rules,
+                    side: qa_console::catalog::Scope::Server,
+                    role: qa_console::views::Role::Game,
+                    ..Context::default()
+                },
+                4,
+                &mut range.info_scratch,
+            )
+            .map_err(|_| CallError::Cvar)?;
+        let copied = length.min(output.len() - 1);
+        output[..copied].copy_from_slice(&range.info_scratch[..copied]);
+        output[copied] = 0;
+        Ok(copied)
     }
     fn file_span(&self, module: ModuleId) -> Result<IndexSpan, CallError> {
         if let Some(span) = self.range(module).and_then(|range| range.files) {
@@ -721,6 +856,8 @@ pub type AreaQueryCall =
     fn(&EngineServices<'_>, Bounds, LinkFlags, &mut dyn FnMut(EntityId) -> bool);
 pub type EntityTokenCall =
     for<'a> fn(&'a mut EngineServices<'_>, ModuleId) -> Result<Option<&'a [u8]>, CallError>;
+pub type UserinfoCall =
+    for<'a> fn(&'a EngineServices<'_>, NativeEntity) -> Result<&'a [u8], CallError>;
 /// A direct clip selects one target, independently of area linking and owners.
 pub enum ClipTarget {
     World,
@@ -732,6 +869,9 @@ pub enum ClipTarget {
     },
 }
 pub struct EngineCallTable {
+    pub userinfo: UserinfoCall,
+    pub set_userinfo: fn(&mut EngineServices<'_>, NativeEntity, &[u8]) -> Result<(), CallError>,
+    pub serverinfo: fn(&mut EngineServices<'_>, ModuleId, &mut [u8]) -> Result<usize, CallError>,
     pub server_command: fn(&mut EngineServices<'_>, i32) -> Result<bool, CallError>,
     pub pmove: fn(
         &mut EngineServices<'_>,
@@ -849,6 +989,9 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    userinfo: |s, native| s.storage.userinfo(s.server, native),
+    set_userinfo: |s, native, text| s.storage.set_userinfo(s.server, native, text),
+    serverinfo: |s, module, output| s.storage.serverinfo(s.cvars, module, output),
     server_command: |s, number| {
         s.client_commands
             .as_deref_mut()

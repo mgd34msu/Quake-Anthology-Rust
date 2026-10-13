@@ -17,3 +17,7 @@ qa-network = { path = "../network" }
 qa-gameplay = { path = "../gameplay" }
 qa-movement = { path = "../movement" }
 qa-input = { path = "../input" }
+
+[[test]]
+name = "q3_players"
+harness = false

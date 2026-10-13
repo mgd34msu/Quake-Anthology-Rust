@@ -407,6 +407,12 @@ fn registered_q3_player_values_reach_client_and_hud_through_session_packets() {
     .unwrap();
     host.local_clients[0] = Some(id);
     host.initialize_modules(Phase::Server);
+    assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    assert!(host.client_info(module).is_none());
+    assert_eq!(
+        host.module_state(module),
+        Some(qa_app::modules::State::Running)
+    );
     let bindings = host.runtime.catalog.hud.values.native(RuleSetId::Quake3);
     for (array, expected) in [(&bindings.stats, stats), (&bindings.persistent, persistent)] {
         for (binding, value) in array.iter().zip(expected) {
@@ -623,7 +629,7 @@ fn server_set_angles_survive_q2_and_q3_client_prediction() {
         let player = &mut runtime.server.clients[client.0 as usize].player;
         // Native teleport/set-angle adjusts delta_angles relative to the
         // client's unchanged raw command angles. Deliver it in a snapshot.
-        player.movement.delta_angles = server_angles[seat.index()];
+        player.movement.delta_angles = server_angles[seat.index()].into();
         player.view_angles = server_angles[seat.index()];
         local[seat.index()] = Some(client);
     }

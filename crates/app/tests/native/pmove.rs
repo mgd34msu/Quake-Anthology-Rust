@@ -408,7 +408,7 @@ pub(super) fn commands_move_a_native_client_once() {
         expected.movement.tuning.gravity = Some(800.0);
         expected.movement.grounded = !rr;
         expected.movement.remaining_ms = if rr { 500 } else { 0 };
-        expected.movement.delta_angles = Vec3([0.0, 90.0, 0.0]);
+        expected.movement.delta_angles = Vec3([0.0, 90.0, 0.0]).into();
         let command = UserCmd {
             duration_ms: 16,
             movement: [200.0, 0.0, 0.0],

@@ -802,6 +802,46 @@ impl MovementTimer {
     }
 }
 
+/// A native short-angle offset retains its complete integer word until the
+/// selected movement or wire boundary narrows it. Float ABIs retain degrees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AngleOffset {
+    Degrees(f32),
+    Units(i32),
+}
+impl Default for AngleOffset {
+    fn default() -> Self {
+        Self::Degrees(0.0)
+    }
+}
+impl AngleOffset {
+    pub fn degrees(self) -> f32 {
+        match self {
+            Self::Degrees(value) => value,
+            Self::Units(value) => crate::math::short_to_angle(value),
+        }
+    }
+    pub fn units(self, form: crate::math::AngleShortForm) -> i32 {
+        match self {
+            Self::Degrees(value) => crate::math::angle_to_short(value, form),
+            Self::Units(value) => value,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AngleOffsets(pub [AngleOffset; 3]);
+impl From<Vec3> for AngleOffsets {
+    fn from(value: Vec3) -> Self {
+        Self(value.0.map(AngleOffset::Degrees))
+    }
+}
+impl AngleOffsets {
+    pub fn degrees(self) -> Vec3 {
+        Vec3(self.0.map(AngleOffset::degrees))
+    }
+}
+
 /// Hot physics state belongs to the player, independently of module format.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MovementState {
@@ -819,7 +859,7 @@ pub struct MovementState {
     pub timer: MovementTimer,
     pub remaining_ms: u32,
     pub command_time_ms: i32,
-    pub delta_angles: Vec3,
+    pub delta_angles: AngleOffsets,
     pub previous_position: Vec3,
     pub water_jump_seconds: f32,
     pub teleport_hold_until: f64,

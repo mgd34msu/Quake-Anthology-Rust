@@ -1020,7 +1020,7 @@ impl FrameHost {
                 let mut policy = self.input_handles.policy(&self.console.cvars, rules[seat]);
                 if self.local_clients[seat].is_some() {
                     policy.delta_pitch =
-                        self.runtime.prediction[seat].player.movement.delta_angles.0[0];
+                        self.runtime.prediction[seat].player.movement.delta_angles.0[0].degrees();
                 }
                 policy
             })

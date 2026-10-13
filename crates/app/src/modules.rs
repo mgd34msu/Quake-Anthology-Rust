@@ -589,6 +589,20 @@ impl FrameHost {
             };
             let consumes_server_commands = request.program.consumes_server_commands();
             let produces_client_audio = request.program.produces_client_audio();
+            let q3_clients = request
+                .program
+                .imports()
+                .filter(|imports| std::ptr::eq(*imports, &qa_compat::abi::Q3_SERVER))
+                .map(|_| {
+                    storage
+                        .max_clients(&host.console.cvars, RuleSetId::Quake3)
+                        .clamp(0, 64) as usize
+                });
+            if let Some(capacity) = q3_clients {
+                storage
+                    .bind_client_capacity(request.context.module, capacity)
+                    .map_err(|e| format!("module client capacity: {e:?}"))?;
+            }
             let client_lifecycle = match &request.program {
                 Program::QuakeC(qc)
                     if request.phase == Phase::Server
@@ -605,8 +619,23 @@ impl FrameHost {
                             .map_err(|e| format!("module client reservation: {e:?}"))?,
                     ))
                 }
+                _ if request.phase == Phase::Server
+                    && request.context.native_rules == RuleSetId::Quake3
+                    && q3_clients.is_some()
+                    && (2..=7).all(|export| request.entries.contains(&export)) =>
+                {
+                    Some(ClientLifecycle::q3(
+                        request.context.module,
+                        q3_clients.ok_or("missing Q3 client capacity")?,
+                    ))
+                }
                 _ => None,
             };
+            if let Some(lifecycle) = client_lifecycle {
+                storage
+                    .bind_client_capacity(request.context.module, lifecycle.info.clients)
+                    .map_err(|e| format!("module client capacity: {e:?}"))?;
+            }
             rows[index] = Some(Module {
                 request,
                 scratch: host.runtime.geometry.scratch(),

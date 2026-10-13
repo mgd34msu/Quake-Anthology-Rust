@@ -509,7 +509,10 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
             .bind("sv_maxclients", Context::default())
             .unwrap();
         console.cvars.force_write(maximum, "4").unwrap();
-        let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+        let mut storage =
+            ServiceStorage::load_native(&[(ModuleId(7), 0, RuleSetId::Quake3)], 0, &console.cvars)
+                .unwrap();
+        storage.bind_client_capacity(ModuleId(7), 4).unwrap();
         let mut scratch = runtime.geometry.scratch();
         let base = if matches!(addresses, Addresses::Qvm { .. }) {
             0

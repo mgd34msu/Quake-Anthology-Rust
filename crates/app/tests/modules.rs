@@ -1,3 +1,5 @@
+#[path = "modules/q3_clients.rs"]
+mod q3_clients;
 #[path = "modules/quakec_map.rs"]
 mod quakec_map;
 #[path = "../../compat/tests/support/quakec_program.rs"]
