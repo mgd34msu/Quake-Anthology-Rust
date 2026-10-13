@@ -470,7 +470,8 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             &native_player,
             &PlayerContext::default(),
             &mut player_words,
-            |model| Some(model.ordinal)
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
         ));
         ring.store(Frame {
             sequence,
@@ -905,7 +906,8 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
             &source,
             &PlayerContext::default(),
             &mut words,
-            |model| Some(model.ordinal)
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
         ));
         ring.store(Frame {
             sequence,
@@ -988,7 +990,8 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
             &source,
             &PlayerContext::default(),
             &mut words,
-            |reference| Some(reference.ordinal)
+            |reference| Some(reference.ordinal),
+            |sound| Some(sound.ordinal),
         ));
         ring.store(Frame {
             sequence,
@@ -1186,6 +1189,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
     };
     let entities = ClientEntities {
         client,
+        player: None,
         current: Some(ReceivedFrame::Quake2(current_frame)),
         previous: Some(ReceivedFrame::Quake2(old_frame)),
         projection: &projection,
@@ -1339,6 +1343,7 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
     };
     let entities = ClientEntities {
         client,
+        player: None,
         current: Some(ReceivedFrame::Quake3(frame)),
         previous: None,
         projection: &projection,
@@ -1372,4 +1377,62 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
         assert_eq!(world.sound_origin(0, None), Some(Vec3::default()));
         assert_eq!(world.sound_origin(1, None), None);
     }
+}
+
+#[test]
+fn synthesized_q3_player_sound_origin_does_not_interpolate_a_packet_pose() {
+    use qa_core::primitives::{NativePlayerTail, SoundRef};
+    use qa_network::snapshots::Q3Frame;
+    let client = ClientId(4);
+    let namespace = ResourceNamespace::Client(client);
+    let mut player = PlayerState::default();
+    player.body.position = Vec3([64., 32., 16.]);
+    player.native = Some(NativePlayerTail {
+        client_number: Some(0),
+        ..NativePlayerTail::new(RuleSetId::Quake3, namespace)
+    });
+    player.loop_sound = SoundRef::native(namespace, 1);
+    let projection = EntityProjection::load(Protocol::Quake3_68);
+    let mut previous_words = [0; states::ENTITY_WORDS];
+    let record = EntityRecord {
+        position: Vec3([4., 8., 12.]),
+        ..Default::default()
+    };
+    assert!(projection.reduce(&record, &mut previous_words, |_| None, |_| None));
+    let previous_entities = [Entity {
+        number: 0,
+        words: previous_words,
+    }];
+    let words = [0; states::PLAYER_WORDS];
+    let frame = Q3Frame {
+        sequence: 2,
+        time: ThinkTime::Milliseconds(200),
+        command: 0,
+        flags: 0,
+        qw_peers: 0,
+        areas: &[],
+        player: &words,
+        entities: &[],
+    };
+    let previous = Q3Frame {
+        sequence: 1,
+        time: ThinkTime::Milliseconds(100),
+        entities: &previous_entities,
+        ..frame
+    };
+    let entities = ClientEntities {
+        client,
+        player: Some(&player),
+        current: Some(ReceivedFrame::Quake3(frame)),
+        previous: Some(ReceivedFrame::Quake3(previous)),
+        projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(RuleSetId::Quake3),
+        alias_roll: AliasRoll::default(),
+        interpolation: Interpolation {
+            fraction: 0.25,
+            ..Default::default()
+        },
+    };
+    assert_eq!(entities.get(0).unwrap().origin, player.body.position);
+    assert_eq!(entities.sound_origin(0, None), Some(player.body.position));
 }

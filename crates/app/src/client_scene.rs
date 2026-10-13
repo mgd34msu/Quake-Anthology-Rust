@@ -8,7 +8,8 @@ use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     math::{angle_vectors, lerp_angle},
     primitives::{
-        ClientId, IndexSpan, LoopOrigin, ModelRef, PlayerState, ResourceNamespace, Vec3, ViewWeapon,
+        ClientId, EntityAppearance, IndexSpan, LoopOrigin, ModelRef, NativeAppearanceTail,
+        PlayerState, ResourceNamespace, RuleSetId, Vec3, ViewWeapon,
     },
 };
 use qa_gameplay::rules::appearance::{
@@ -185,6 +186,8 @@ impl ClientModelBindings {
 #[derive(Clone, Copy)]
 pub struct ClientEntities<'a> {
     pub client: ClientId,
+    /// Accepted/predicted CLIENT state, never the SERVER player array.
+    pub player: Option<&'a PlayerState>,
     pub current: Option<ReceivedFrame<'a>>,
     pub previous: Option<ReceivedFrame<'a>>,
     pub projection: &'a EntityProjection,
@@ -234,10 +237,17 @@ impl ClientEntities<'_> {
         }
     }
 
-    fn present(&self, number: u32, record: EntityRecord, qw_player: bool) -> PresentedEntity {
+    fn present(
+        &self,
+        number: u32,
+        record: EntityRecord,
+        qw_player: bool,
+        interpolate: bool,
+    ) -> PresentedEntity {
         let capabilities = self.appearance.project(&record.appearance);
         let previous = self
             .previous
+            .filter(|_| interpolate)
             .filter(|previous| {
                 self.current.is_some_and(|current| {
                     std::mem::discriminant(&current) == std::mem::discriminant(previous)
@@ -281,27 +291,91 @@ impl ClientEntities<'_> {
 
     /// Walk the sole accepted frame in its native entity order. A malformed
     /// row remains visible to the caller as a rejected admission, not a copy.
-    pub fn visit(&self, mut visit: impl FnMut(u32, Option<PresentedEntity>)) {
+    pub fn visit(&self, visit: impl FnMut(u32, Option<PresentedEntity>)) {
+        self.visit_rows(None, visit);
+    }
+
+    fn player_record(&self) -> Option<(u32, EntityRecord)> {
+        let Some(ReceivedFrame::Quake3(_)) = self.current else {
+            return None;
+        };
+        let player = self.player?;
+        let native = player.native_for(
+            RuleSetId::Quake3,
+            Some(ResourceNamespace::Client(self.client)),
+        )?;
+        Some((
+            native.client_number?,
+            EntityRecord {
+                position: player.body.position,
+                velocity: player.body.velocity,
+                angles: player.view_angles,
+                appearance: EntityAppearance {
+                    source: native.source,
+                    loop_sound: player.loop_sound,
+                    native: NativeAppearanceTail {
+                        entity_type: 1, // Original Q3 ET_PLAYER.
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ))
+    }
+
+    /// Q3 adds the predicted player before packet entities. A nonzero packet
+    /// loop replaces that sound; a zero packet loop only updates its origin.
+    pub(crate) fn visit_loops(&self, visit: impl FnMut(u32, Option<PresentedEntity>)) {
+        self.visit_rows(self.player_record(), visit);
+    }
+
+    fn visit_rows(
+        &self,
+        supplement: Option<(u32, EntityRecord)>,
+        mut visit: impl FnMut(u32, Option<PresentedEntity>),
+    ) {
         fn rows<const P: usize, const E: usize>(
             entities: &ClientEntities<'_>,
             frame: SnapshotFrame<'_, P, E>,
+            mut supplement: Option<(u32, EntityRecord)>,
             visit: &mut impl FnMut(u32, Option<PresentedEntity>),
         ) {
             for row in frame.entities {
+                if let Some((number, record)) =
+                    supplement.filter(|(number, _)| *number < row.number)
+                {
+                    supplement = None;
+                    visit(number, Some(entities.present(number, record, false, false)));
+                }
+                let predicted = supplement
+                    .filter(|(number, _)| *number == row.number)
+                    .map(|(_, record)| record);
+                if predicted.is_some() {
+                    supplement = None;
+                }
                 visit(
                     row.number,
-                    entities.decode(&row.words).map(|record| {
-                        entities.present(row.number, record, frame.qw_player(row.number))
+                    entities.decode(&row.words).map(|mut record| {
+                        if record.appearance.loop_sound.is_none()
+                            && let Some(predicted) = predicted
+                        {
+                            record.appearance.loop_sound = predicted.appearance.loop_sound;
+                        }
+                        entities.present(row.number, record, frame.qw_player(row.number), true)
                     }),
                 );
             }
+            if let Some((number, record)) = supplement {
+                visit(number, Some(entities.present(number, record, false, false)));
+            }
         }
         match self.current {
-            Some(ReceivedFrame::NetQuake(frame)) => rows(self, frame, &mut visit),
-            Some(ReceivedFrame::QuakeWorld(frame)) => rows(self, frame, &mut visit),
-            Some(ReceivedFrame::Quake2(frame)) => rows(self, frame, &mut visit),
-            Some(ReceivedFrame::Quake2Repro(frame)) => rows(self, frame, &mut visit),
-            Some(ReceivedFrame::Quake3(frame)) => rows(self, frame, &mut visit),
+            Some(ReceivedFrame::NetQuake(frame)) => rows(self, frame, supplement, &mut visit),
+            Some(ReceivedFrame::QuakeWorld(frame)) => rows(self, frame, supplement, &mut visit),
+            Some(ReceivedFrame::Quake2(frame)) => rows(self, frame, supplement, &mut visit),
+            Some(ReceivedFrame::Quake2Repro(frame)) => rows(self, frame, supplement, &mut visit),
+            Some(ReceivedFrame::Quake3(frame)) => rows(self, frame, supplement, &mut visit),
             None => {}
         }
     }
@@ -309,8 +383,12 @@ impl ClientEntities<'_> {
     /// Numeric lookup in accepted CLIENT rows. The pose uses the same native
     /// discontinuity and interpolation path as the copied scene entities.
     pub fn get(&self, number: u32) -> Option<PresentedEntity> {
-        let (words, qw_player) = Self::row(self.current?, number)?;
-        Some(self.present(number, self.decode(words)?, qw_player))
+        if let Some((words, qw_player)) = Self::row(self.current?, number) {
+            return Some(self.present(number, self.decode(words)?, qw_player, true));
+        }
+        self.player_record()
+            .filter(|(native, _)| *native == number)
+            .map(|(_, record)| self.present(number, record, false, false))
     }
 
     /// NQ/QW/Q2 reserve ordinal zero for the world and never receive a pose
@@ -372,6 +450,7 @@ impl ClientSceneInput<'_> {
     pub fn entities(&self) -> ClientEntities<'_> {
         ClientEntities {
             client: self.client,
+            player: Some(self.player),
             current: self.current,
             previous: self.previous,
             projection: self.projection,

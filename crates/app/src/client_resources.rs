@@ -630,11 +630,27 @@ impl ConfigPublication {
         mut bound_sound: impl FnMut(ModuleId, u32) -> Option<qa_core::primitives::SoundId>,
     ) -> Option<u32> {
         let (ordinal, readiness) = match reference.namespace {
-            ResourceNamespace::Module(module) => self.project_sound(
-                module,
-                Some(reference.ordinal),
-                bound_sound(module, reference.ordinal)?,
-            )?,
+            ResourceNamespace::Module(module) => {
+                if let Some(sound) = bound_sound(module, reference.ordinal) {
+                    self.project_sound(module, Some(reference.ordinal), sound)?
+                } else {
+                    // A dedicated host need not decode PCM. Native primary
+                    // rows retain ordinals only after compatible text is ACKed.
+                    let layout = self.layout?;
+                    if Some(module) != self.module
+                        || reference.ordinal >= layout.resources[1].count
+                        || !self.primary_claims[reference.ordinal as usize]
+                    {
+                        return None;
+                    }
+                    (
+                        reference.ordinal,
+                        self.readiness(
+                            layout.resources[1].first as usize + reference.ordinal as usize,
+                        ),
+                    )
+                }
+            }
             ResourceNamespace::Client(owner) if owner == client => {
                 let layout = self.layout?;
                 if reference.ordinal >= layout.resources[1].count {

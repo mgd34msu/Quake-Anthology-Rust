@@ -56,6 +56,10 @@ impl FrameHost {
         let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
         crate::client_scene::ClientEntities {
             client,
+            player: snapshot
+                .seat()
+                .and_then(|seat| self.runtime.prediction.get(seat.index()))
+                .map(|prediction| &prediction.player),
             current,
             previous: None,
             projection: snapshot.entity_projection(),

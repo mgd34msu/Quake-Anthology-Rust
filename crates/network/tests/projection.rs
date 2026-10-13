@@ -60,7 +60,13 @@ fn nq_clientdata_sparse_values_keep_native_wire_and_raw_items()
         ..Default::default()
     };
     let mut words = [0; states::NQ_PLAYER_WORDS];
-    assert!(projection.reduce(&source, &context, &mut words, |model| Some(model.ordinal)));
+    assert!(projection.reduce(
+        &source,
+        &context,
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    ));
     let mut bytes = [0; 64];
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
     states::write_nq_player(&mut writer, &words)?;
@@ -117,7 +123,8 @@ fn nq_clientdata_sparse_values_keep_native_wire_and_raw_items()
         &source,
         &PlayerContext::default(),
         &mut words,
-        |model| Some(model.ordinal)
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
     ));
     assert_eq!(words[18], 2);
     Ok(())
@@ -169,7 +176,13 @@ fn numeric_stat_projection_preserves_independent_body_view_and_movement_state() 
         source.frags = -7;
         let original = PlayerProjection::load(protocol, &[]);
         let mut words = vec![0; original.words()];
-        original.reduce(&source, &context(), &mut words, |model| Some(model.ordinal));
+        original.reduce(
+            &source,
+            &context(),
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        );
         let projection = PlayerProjection::load_stat_values(
             protocol,
             PlayerValueBindings::EMPTY,
@@ -216,7 +229,8 @@ fn trick_timer_uses_only_the_native_rerelease_flag_and_clears_on_receive() {
             &source,
             &PlayerContext::default(),
             &mut words,
-            |model| Some(model.ordinal)
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
         ));
         let flags = if protocol == Protocol::Quake3_68 {
             19
@@ -243,7 +257,8 @@ fn trick_timer_uses_only_the_native_rerelease_flag_and_clears_on_receive() {
             &source,
             &PlayerContext::default(),
             &mut words,
-            |model| Some(model.ordinal)
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
         ));
         assert!(projection.apply(
             &words,
@@ -297,12 +312,22 @@ fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values(
             assert!(binding.import(&mut source.values, (binding.id.0 as i32 - 300) as u32));
         }
         let mut words = vec![0; projection.words()];
-        assert!(projection.reduce(&source, &context(), &mut words, |model| Some(model.ordinal)));
+        assert!(projection.reduce(
+            &source,
+            &context(),
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        ));
         let ordinary = PlayerProjection::load(protocol, &[]);
         let mut scalar = vec![0; ordinary.words()];
-        ordinary.reduce(&source, &context(), &mut scalar, |model| {
-            Some(model.ordinal)
-        });
+        ordinary.reduce(
+            &source,
+            &context(),
+            &mut scalar,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        );
         let mut target = player();
         target.values = qa_core::primitives::ValueBank::load(first as usize);
         assert!(projection.apply(
@@ -336,7 +361,13 @@ fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values(
         source.armor = 0;
         source.score = 0;
         source.frags = 0;
-        assert!(projection.reduce(&source, &context(), &mut words, |model| Some(model.ordinal)));
+        assert!(projection.reduce(
+            &source,
+            &context(),
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        ));
         assert!(projection.apply(
             &words,
             &mut target,
@@ -405,7 +436,8 @@ fn q3_four_arrays_preserve_native_integers_and_narrow_only_through_the_existing_
             &source,
             &PlayerContext::default(),
             &mut native_words,
-            |_| None
+            |_| None,
+            |sound| Some(sound.ordinal),
         ));
         let stats = spans[0].first as usize;
         assert_eq!(native_words[stats + layout.health as usize], 41);
@@ -441,7 +473,13 @@ fn q3_four_arrays_preserve_native_integers_and_narrow_only_through_the_existing_
         assert_eq!(arrays[2][1].export(&published.values), Some(u32::MAX));
 
         let mut outgoing = [0; states::PLAYER_WORDS];
-        assert!(wire.reduce(&source, &PlayerContext::default(), &mut outgoing, |_| None));
+        assert!(wire.reduce(
+            &source,
+            &PlayerContext::default(),
+            &mut outgoing,
+            |_| None,
+            |sound| Some(sound.ordinal),
+        ));
         let mut bytes = [0; 1400];
         let mut writer = Writer::new(&mut bytes, Encoding::Q3);
         states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &outgoing)?;
@@ -502,7 +540,13 @@ fn invalid_q3_stat_layout_rejects_before_raw_values_or_common_fields_change() {
     source.health = 81;
     source.armor = 53;
     let mut words = [99; states::PLAYER_WORDS];
-    assert!(!projection.reduce(&source, &PlayerContext::default(), &mut words, |_| None));
+    assert!(!projection.reduce(
+        &source,
+        &PlayerContext::default(),
+        &mut words,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(words, [99; states::PLAYER_WORDS]);
     assert!(!projection.apply(
         &words,
@@ -605,7 +649,13 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
     native.client_number = Some(255);
     let projection = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
     let mut words = [0; states::Q2_REPRO_PLAYER_WORDS];
-    assert!(projection.reduce(&p, &native, &mut words, |model| Some(model.ordinal)));
+    assert!(projection.reduce(
+        &p,
+        &native,
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(words[0], 2);
     assert_eq!(&words[1..4], &p.body.position.0.map(f32::to_bits));
     assert_eq!(&words[4..7], &p.body.velocity.0.map(f32::to_bits));
@@ -676,7 +726,13 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     let mut bytes = [0; 1400];
     let nq = PlayerProjection::load(Protocol::NetQuake15, &[]);
     let mut words = [0; states::NQ_PLAYER_WORDS];
-    assert!(nq.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
+    assert!(nq.reduce(
+        &p,
+        &c,
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(words[12], (-12.0f32).to_bits());
     assert_eq!(words[10], 55.0f32.to_bits());
     assert_eq!((words[19], words[20]), (1, 1));
@@ -707,7 +763,13 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
 
     let qw = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
     let mut words = [0; states::QW_PLAYER_WORDS];
-    assert!(qw.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
+    assert!(qw.reduce(
+        &p,
+        &c,
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    ));
     let command = QwCmd {
         msec: 0,
         view_angles: Vec3::default(),
@@ -744,7 +806,13 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
 
     let q2 = PlayerProjection::load(Protocol::Quake2_34, &[]);
     let mut words = [0; states::Q2_PLAYER_WORDS];
-    assert!(q2.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
+    assert!(q2.reduce(
+        &p,
+        &c,
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(words[1] as i32, 98);
     assert_eq!(words[2] as i32, -377);
     assert_eq!(words[7], 31);
@@ -793,7 +861,13 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
 
     let q3 = PlayerProjection::load(Protocol::Quake3_68, &[]);
     let mut words = [0; states::PLAYER_WORDS];
-    assert!(q3.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
+    assert!(q3.reduce(
+        &p,
+        &c,
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(words[1], p.body.position.0[0].to_bits());
     assert_eq!(words[19], 99);
     assert_eq!(words[20], 1022);
@@ -878,12 +952,24 @@ fn module_bindings_use_common_values_and_drop_only_unrepresentable_destinations(
     );
     assert_eq!(projection.dropped_bindings, 1);
     let mut words = [123; states::PLAYER_WORDS];
-    assert!(projection.reduce(&p, &context(), &mut words, |model| Some(model.ordinal)));
+    assert!(projection.reduce(
+        &p,
+        &context(),
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(words[48] as i32, -2);
     assert_eq!(words[49], 0);
     assert_eq!(p.values.get(ValueId(0)), Some(NumericValue::integer(-2)));
     let mut short = [123; 8];
-    assert!(!projection.reduce(&p, &context(), &mut short, |model| Some(model.ordinal)));
+    assert!(!projection.reduce(
+        &p,
+        &context(),
+        &mut short,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(short, [123; 8]);
 }
 
@@ -906,7 +992,13 @@ fn native_ordinals_and_modes_remain_boundary_data() {
         (MovementMode::Frozen, 4),
     ] {
         p.movement.mode = mode;
-        assert!(projection.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
+        assert!(projection.reduce(
+            &p,
+            &c,
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        ));
         assert_eq!(words[34], native);
         assert_eq!(words[40], 0);
         assert_eq!(words[20], 1023);
@@ -926,8 +1018,20 @@ fn delta_angles_keep_the_native_macro_order_and_signedness() {
         seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
         let angle = (seed as i32 as f32) / 4096.;
         p.movement.delta_angles = Vec3([angle; 3]).into();
-        assert!(q2.reduce(&p, &context(), &mut q2_words, |model| Some(model.ordinal)));
-        assert!(q3.reduce(&p, &context(), &mut q3_words, |model| Some(model.ordinal)));
+        assert!(q2.reduce(
+            &p,
+            &context(),
+            &mut q2_words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        ));
+        assert!(q3.reduce(
+            &p,
+            &context(),
+            &mut q3_words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        ));
         let native = (angle * 65536. / 360.) as i32;
         for word in &q2_words[10..13] {
             assert_eq!(*word, native as i16 as i32 as u32);
@@ -967,11 +1071,23 @@ fn native_q3_delta_units_keep_full_signed_words_until_the_target_boundary() {
         (RuleSetId::QuakeWorld, RuleSetId::Quake2)
     );
     let mut encoded = vec![0; native.words()];
-    assert!(native.reduce(&target, &PlayerContext::default(), &mut encoded, |_| None));
+    assert!(native.reduce(
+        &target,
+        &PlayerContext::default(),
+        &mut encoded,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     for (word, value) in [35, 26, 36].into_iter().zip(raw) {
         assert_eq!(encoded[word], value as u32);
     }
-    assert!(wire.reduce(&target, &PlayerContext::default(), &mut encoded, |_| None));
+    assert!(wire.reduce(
+        &target,
+        &PlayerContext::default(),
+        &mut encoded,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     for (word, value) in [35, 26, 36].into_iter().zip(raw) {
         assert_eq!(encoded[word], value as u16 as u32);
     }
@@ -1054,12 +1170,24 @@ fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
     player.movement.timer = MovementTimer::LAND;
     let expected_flags = (flags & !0x163) | 2 | 32;
     let mut projected = [0; states::PLAYER_WORDS];
-    assert!(native.reduce(&player, &context, &mut projected, |_| None));
+    assert!(native.reduce(
+        &player,
+        &context,
+        &mut projected,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(projected[19], expected_flags);
     assert_eq!(projected[24..=25], words[24..=25]);
     assert_eq!(projected[40..=41], words[40..=41]);
     let mut bytes = [0; 1400];
-    assert!(wire.reduce(&player, &context, &mut projected, |_| None));
+    assert!(wire.reduce(
+        &player,
+        &context,
+        &mut projected,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     let mut writer = Writer::new(&mut bytes, Encoding::Q3);
     states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &projected)?;
     let length = writer.size();
@@ -1078,7 +1206,13 @@ fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
     context.weapon_number = Some(7);
     context.gravity = 123.0;
     context.speed = 456.0;
-    assert!(wire.reduce(&player, &context, &mut projected, |_| None));
+    assert!(wire.reduce(
+        &player,
+        &context,
+        &mut projected,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(projected[19], 2 | 32);
     assert_eq!(projected[24..=25], [123, 456]);
     assert_eq!(projected[40..=41], [5, 7]);
@@ -1086,7 +1220,13 @@ fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
     context.namespace = Some(namespace);
     let q2 = PlayerProjection::load(Protocol::Quake2_34, &[]);
     let mut q2_words = [0; states::Q2_PLAYER_WORDS];
-    assert!(q2.reduce(&player, &context, &mut q2_words, |_| None));
+    assert!(q2.reduce(
+        &player,
+        &context,
+        &mut q2_words,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(q2_words[8], 2 | 4 | 16);
     assert_eq!(q2_words[9], 123);
 
@@ -1165,31 +1305,73 @@ fn native_world_ground_survives_until_airborne_or_an_explicit_mapping_replaces_i
         ..Default::default()
     };
     let mut output = [0; states::PLAYER_WORDS];
-    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert!(projection.reduce(
+        &player,
+        &context,
+        &mut output,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(output[20], 1022);
     player.movement.grounded = false;
-    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert!(projection.reduce(
+        &player,
+        &context,
+        &mut output,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(output[20], 1023);
     context.ground_number = Some(9);
-    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert!(projection.reduce(
+        &player,
+        &context,
+        &mut output,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(output[20], 9); // An explicit boundary mapping has precedence.
     player.movement.grounded = true;
     player.movement.ground = Some(EntityId {
         slot: 91,
         generation: 4,
     });
-    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert!(projection.reduce(
+        &player,
+        &context,
+        &mut output,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(output[20], 9);
     context.ground_number = None;
-    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert!(projection.reduce(
+        &player,
+        &context,
+        &mut output,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(output[20], 1023); // Unrepresentable common ground cannot use stale raw ground.
     player.movement.ground = None;
     context.namespace = Some(ResourceNamespace::Module(ModuleId(8)));
-    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert!(projection.reduce(
+        &player,
+        &context,
+        &mut output,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(output[20], 1023);
     context.namespace = Some(namespace);
     player.native.as_mut().unwrap().source = RuleSetId::Quake2;
-    assert!(projection.reduce(&player, &context, &mut output, |_| None));
+    assert!(projection.reduce(
+        &player,
+        &context,
+        &mut output,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(output[20], 1023);
 }
 
@@ -1356,7 +1538,13 @@ fn native_prediction_flags_keep_independent_capabilities_and_exact_wire_words()
             );
             assert_eq!(player.native.unwrap().flags, flags);
             let mut projected = vec![0; projection.words()];
-            assert!(projection.reduce(&player, &context, &mut projected, |_| None));
+            assert!(projection.reduce(
+                &player,
+                &context,
+                &mut projected,
+                |_| None,
+                |sound| Some(sound.ordinal),
+            ));
             assert_eq!(projected[flag_word], flags);
             words.copy_from_slice(&received);
             words[flag_word] = 0;
@@ -1569,11 +1757,17 @@ fn view_weapon_uses_one_primitive_with_connection_model_resolution_and_native_pa
             readiness: qa_core::primitives::WeaponReadiness::DeadlineSeconds(99.),
         });
         let mut words = vec![0; projection.words()];
-        assert!(projection.reduce(&p, &context(), &mut words, |model| {
-            assert_eq!(model.namespace, source_namespace);
-            assert_eq!(model.ordinal, 900);
-            Some(17)
-        }));
+        assert!(projection.reduce(
+            &p,
+            &context(),
+            &mut words,
+            |model| {
+                assert_eq!(model.namespace, source_namespace);
+                assert_eq!(model.ordinal, 900);
+                Some(17)
+            },
+            |sound| Some(sound.ordinal),
+        ));
         assert_eq!(
             words[22],
             if protocol == Protocol::Quake2Repro1038 {
@@ -1630,9 +1824,13 @@ fn view_weapon_uses_one_primitive_with_connection_model_resolution_and_native_pa
             assert_eq!(imported.view_weapon.rate, 12);
         }
         p.view_weapon.model = None;
-        projection.reduce(&p, &context(), &mut words, |_| {
-            panic!("no native model to resolve")
-        });
+        projection.reduce(
+            &p,
+            &context(),
+            &mut words,
+            |_| panic!("no native model to resolve"),
+            |sound| Some(sound.ordinal),
+        );
         projection.apply(
             &words,
             &mut imported,
@@ -1666,7 +1864,13 @@ fn targeted_view_weapon_projection_matches_full_import_without_a_stat_bank() {
             rate: 12,
         };
         let mut words = vec![0; projection.words()];
-        assert!(projection.reduce(&source, &context(), &mut words, |model| Some(model.ordinal)));
+        assert!(projection.reduce(
+            &source,
+            &context(),
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        ));
         // IntegerFloat is the writer's input representation. These two native
         // readers store the decoded byte integer in the accepted player row.
         match protocol {
@@ -1737,7 +1941,13 @@ fn q3_weapon_readiness_is_projected_without_a_protocol_selected_player_tail()
         });
         let native_state = server.weapon_state;
         let mut words = [0; states::PLAYER_WORDS];
-        assert!(projection.reduce(&server, &context(), &mut words, |_| None));
+        assert!(projection.reduce(
+            &server,
+            &context(),
+            &mut words,
+            |_| None,
+            |sound| Some(sound.ordinal),
+        ));
         assert_eq!(words[8], timer as u32);
         let mut bytes = [0; 1400];
         let mut writer = Writer::new(&mut bytes, Encoding::Q3);
@@ -1768,7 +1978,13 @@ fn q3_weapon_readiness_is_projected_without_a_protocol_selected_player_tail()
     let mut server = destination();
     let deadline = server.weapon_state;
     let mut words = [0; states::PLAYER_WORDS];
-    assert!(projection.reduce(&server, &context(), &mut words, |_| None));
+    assert!(projection.reduce(
+        &server,
+        &context(),
+        &mut words,
+        |_| None,
+        |sound| Some(sound.ordinal),
+    ));
     assert_eq!(words[8], 0); // The native wire carries a duration, never a QC seconds deadline.
     assert_eq!(server.weapon_state, deadline);
     let movement = PlayerProjection::load_movement(Protocol::Quake3_68);
@@ -1776,4 +1992,174 @@ fn q3_weapon_readiness_is_projected_without_a_protocol_selected_player_tail()
     assert!(movement.apply(&words, &mut server, &mut context(), namespace, |_| None));
     assert_eq!(server.weapon_state, deadline);
     Ok(())
+}
+
+#[test]
+fn q3_player_loop_retains_native_words_in_the_explicit_namespace_and_zero_clears() {
+    use qa_core::primitives::{ClientId, ModuleId, ResourceNamespace, SoundRef};
+    let projection =
+        PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
+    for namespace in [
+        ResourceNamespace::Module(ModuleId(7)),
+        ResourceNamespace::Client(ClientId(3)),
+    ] {
+        let mut player = PlayerState::default();
+        player.movement_rules = RuleSetId::QuakeWorld;
+        player.trace_rules = RuleSetId::Quake2;
+        let mut context = PlayerContext::default();
+        for ordinal in [1, 65_535, 65_536, i32::MAX as u32, u32::MAX, 0] {
+            let mut words = [0; states::PLAYER_WORDS];
+            words[47] = ordinal;
+            assert!(projection.apply(&words, &mut player, &mut context, namespace, |_| None));
+            assert_eq!(player.loop_sound, SoundRef::native(namespace, ordinal));
+            assert_eq!(context.namespace, Some(namespace));
+            let mut outgoing = [0; states::PLAYER_WORDS];
+            assert!(projection.reduce(
+                &player,
+                &context,
+                &mut outgoing,
+                |_| None,
+                |sound| Some(sound.ordinal),
+            ));
+            assert_eq!(outgoing[47], ordinal);
+            assert_eq!(
+                (player.movement_rules, player.trace_rules),
+                (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+            );
+        }
+    }
+}
+
+#[test]
+fn q3_player_loop_native_words_narrow_only_at_the_queued_wire_boundary()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{ClientId, ModuleId, ResourceNamespace, SoundRef};
+    let native = PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
+    let wire = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let module = ResourceNamespace::Module(ModuleId(7));
+    let client = ResourceNamespace::Client(ClientId(3));
+    for ordinal in [1, 65_535, 65_536, 65_537, i32::MAX as u32, u32::MAX, 0] {
+        let mut original = [0; states::PLAYER_WORDS];
+        original[47] = ordinal;
+        let mut server = PlayerState::default();
+        let mut context = PlayerContext::default();
+        assert!(native.apply(&original, &mut server, &mut context, module, |_| None));
+        let retained = server.loop_sound;
+        let mut outgoing = [0; states::PLAYER_WORDS];
+        assert!(wire.reduce(
+            &server,
+            &context,
+            &mut outgoing,
+            |_| None,
+            |sound| Some(sound.ordinal),
+        ));
+        assert_eq!(outgoing[47], ordinal);
+        let mut bytes = [0; 1400];
+        let mut writer = Writer::new(&mut bytes, Encoding::Q3);
+        states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &outgoing)?;
+        let received = states::read_q3_player(
+            &mut Reader::new(writer.bytes(), Encoding::Q3),
+            &[0; states::PLAYER_WORDS],
+        )?;
+        assert_eq!(received[47], ordinal as u16 as u32);
+        let mut destination = PlayerState::default();
+        destination.loop_sound = SoundRef::native(client, 17);
+        assert!(wire.apply(
+            &received,
+            &mut destination,
+            &mut PlayerContext::default(),
+            client,
+            |_| None
+        ));
+        assert_eq!(
+            destination.loop_sound,
+            SoundRef::native(client, ordinal as u16 as u32)
+        );
+        assert_eq!(server.loop_sound, retained);
+    }
+    Ok(())
+}
+
+#[test]
+fn q3_player_loop_export_drops_unselected_module_and_client_namespaces() {
+    use qa_core::primitives::{ClientId, ModuleId, ResourceNamespace, SoundRef};
+    let projection =
+        PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
+    let namespace = ResourceNamespace::Module(ModuleId(7));
+    let mut source = PlayerState::default();
+    source.loop_sound = SoundRef::native(namespace, u32::MAX);
+    for selected in [
+        None,
+        Some(ResourceNamespace::Module(ModuleId(8))),
+        Some(ResourceNamespace::Client(ClientId(7))),
+    ] {
+        let mut words = [0; states::PLAYER_WORDS];
+        words[47] = 17;
+        let context = PlayerContext {
+            namespace: selected,
+            ..Default::default()
+        };
+        assert!(projection.reduce(&source, &context, &mut words, |_| None, |_| None,));
+        assert_eq!(words[47], 0);
+        assert_eq!(source.loop_sound, SoundRef::native(namespace, u32::MAX));
+    }
+    source.loop_sound = SoundRef::native(ResourceNamespace::Client(ClientId(7)), 19);
+    let mut words = [0; states::PLAYER_WORDS];
+    assert!(projection.reduce(
+        &source,
+        &PlayerContext {
+            namespace: Some(ResourceNamespace::Client(ClientId(8))),
+            ..Default::default()
+        },
+        &mut words,
+        |_| None,
+        |_| None,
+    ));
+    assert_eq!(words[47], 0);
+}
+
+#[test]
+fn stats_and_movement_only_projection_preserve_the_accepted_player_loop() {
+    use qa_core::primitives::{ClientId, ModuleId, ResourceNamespace, SoundRef};
+    let client = ResourceNamespace::Client(ClientId(3));
+    let module = ResourceNamespace::Module(ModuleId(7));
+    let native = PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
+    let stats = PlayerProjection::load_stat_values(
+        Protocol::Quake3_68,
+        PlayerValueBindings::EMPTY,
+        Q3StatLayout::BASE,
+    );
+    let movement = PlayerProjection::load_movement(Protocol::Quake3_68);
+    let mut player = PlayerState::default();
+    player.loop_sound = SoundRef::native(client, 17);
+    for ordinal in [0, 9, u32::MAX] {
+        let mut words = [0; states::PLAYER_WORDS];
+        words[47] = ordinal;
+        assert!(native.apply_stats(&words, &mut player, module));
+        assert_eq!(player.loop_sound, SoundRef::native(client, 17));
+        assert!(stats.apply(
+            &words,
+            &mut player,
+            &mut PlayerContext::default(),
+            module,
+            |_| None
+        ));
+        assert_eq!(player.loop_sound, SoundRef::native(client, 17));
+        assert!(movement.apply(
+            &words,
+            &mut player,
+            &mut PlayerContext::default(),
+            module,
+            |_| None
+        ));
+        assert_eq!(player.loop_sound, SoundRef::native(client, 17));
+    }
+    assert!(!native.apply(
+        &[0; 47],
+        &mut player,
+        &mut PlayerContext::default(),
+        module,
+        |_| None
+    ));
+    assert_eq!(player.loop_sound, SoundRef::native(client, 17));
 }

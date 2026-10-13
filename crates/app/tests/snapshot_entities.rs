@@ -321,6 +321,11 @@ fn sound_only_entity_projects_its_explicit_foreign_resource_namespace() -> Resul
         let appearance = &mut host.runtime.server.entities.columns.appearance[entity.slot as usize];
         appearance.models = [None; 4];
         appearance.loop_sound = SoundRef::native(ResourceNamespace::Module(ModuleId(8)), 5);
+        // Player and entity resources use the same resolver even when their
+        // resource owner differs from the native entity namespace.
+        host.runtime.server.clients[client.0 as usize]
+            .player
+            .loop_sound = SoundRef::native(ResourceNamespace::Module(ModuleId(8)), 5);
         transmit(
             &mut host,
             client,
@@ -330,6 +335,12 @@ fn sound_only_entity_projects_its_explicit_foreign_resource_namespace() -> Resul
             None,
         )?;
         dispatch(&mut host, EventTime::from_milliseconds(1000));
+        if protocol == Protocol::Quake3_68 {
+            assert_eq!(
+                host.runtime.prediction[0].player.loop_sound,
+                SoundRef::native(ResourceNamespace::Client(client), 6)
+            );
+        }
         let rows = records(&host, client)?;
         let record = rows
             .iter()
@@ -511,7 +522,16 @@ fn q3_stop_with_an_unresolved_native_target_does_not_invent_client_zero() -> Res
     )?;
     dispatch(&mut host, EventTime::from_milliseconds(1000));
     let rows = records(&host, client)?;
-    assert!(rows.iter().any(|(number, _)| *number == 0));
+    // Original Q3 omits the viewed player row; CLIENT retains it through PS.
+    assert!(rows.iter().all(|(number, _)| *number != 0));
+    assert_eq!(
+        host.runtime.prediction[0]
+            .player
+            .native
+            .and_then(|native| native.client_number),
+        Some(0)
+    );
+    assert_eq!(host.runtime.prediction[0].player.loop_sound, None);
     assert!(rows.iter().all(|(number, _)| *number != 42));
     Ok(())
 }

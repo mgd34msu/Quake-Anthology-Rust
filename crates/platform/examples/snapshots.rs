@@ -486,7 +486,13 @@ fn connected_heap() -> Result<(), String> {
         allocations::begin_frame();
         let result = (|| -> Result<(), qa_network::commands::packet::Error> {
             source.body.position.0[0] = frame as f32 * 0.125;
-            if !projection.reduce(&source, &context, &mut player, |model| Some(model.ordinal)) {
+            if !projection.reduce(
+                &source,
+                &context,
+                &mut player,
+                |model| Some(model.ordinal),
+                |sound| Some(sound.ordinal),
+            ) {
                 return Err(qa_network::commands::packet::Error::Context);
             }
             server.publish_snapshot(ReceivedFrame::Quake2(Frame {
@@ -753,9 +759,13 @@ fn connected_qw_heap() -> Result<(), String> {
             source.body.position.0[0] = x;
             source.body.velocity.0[0] = 300.;
             let mut player_words = [0; states::QW_PLAYER_WORDS];
-            if !projection.reduce(&source, &context, &mut player_words, |model| {
-                Some(model.ordinal)
-            }) {
+            if !projection.reduce(
+                &source,
+                &context,
+                &mut player_words,
+                |model| Some(model.ordinal),
+                |sound| Some(sound.ordinal),
+            ) {
                 return Err(Error::Context);
             }
             if !states::write_qw_player(
@@ -919,7 +929,13 @@ fn connected_nq_heap() -> Result<(), String> {
         allocations::begin_frame();
         let result = (|| -> Result<(), Error> {
             let mut player = [0; states::NQ_PLAYER_WORDS];
-            if !projection.reduce(&source, &context, &mut player, |model| Some(model.ordinal)) {
+            if !projection.reduce(
+                &source,
+                &context,
+                &mut player,
+                |model| Some(model.ordinal),
+                |sound| Some(sound.ordinal),
+            ) {
                 return Err(Error::Context);
             }
             let mut entity = Entity {

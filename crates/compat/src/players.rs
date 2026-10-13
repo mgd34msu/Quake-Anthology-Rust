@@ -61,6 +61,7 @@ const Q3_PLAYER_FIELDS: &[(usize, u64)] = &[
     (40, 140),
     (41, 144),
     (42, 160),
+    (47, 444),
 ];
 pub(crate) struct PlayerValues {
     address: PlayerAddress,

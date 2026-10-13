@@ -66,10 +66,15 @@ fn native_weapon_owner_handoff_clears_readiness_and_identical_binding_preserves_
         queued: qa_core::sys_events::EventTime::from_milliseconds(137),
     });
     player.native_clock = clock;
+    let sound =
+        qa_core::primitives::SoundRef::native(ResourceNamespace::Module(original.module), 37);
+    player.loop_sound = sound;
     assert!(server.bind_client_native(id, original));
     assert_eq!(server.clients[id.0 as usize].player.native_clock, clock);
+    assert_eq!(server.clients[id.0 as usize].player.loop_sound, sound);
     assert_eq!(server.clients[id.0 as usize].player.weapon_state, seconds);
     assert!(!server.bind_client_native(id, other_native));
+    assert_eq!(server.clients[id.0 as usize].player.loop_sound, sound);
     assert_eq!(server.clients[id.0 as usize].player.native_clock, clock);
     assert_eq!(server.clients[id.0 as usize].player.weapon_state, seconds);
 
@@ -79,6 +84,7 @@ fn native_weapon_owner_handoff_clears_readiness_and_identical_binding_preserves_
     };
     assert!(server.bind_client_native(id, same_owner_new_row));
     assert_eq!(server.clients[id.0 as usize].player.native_clock, None);
+    assert_eq!(server.clients[id.0 as usize].player.loop_sound, None);
     assert_eq!(server.clients[id.0 as usize].player.weapon_state, None);
     let milliseconds = Some(WeaponState {
         source: RuleSetId::Quake3,

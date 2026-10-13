@@ -1,6 +1,8 @@
 //! Connection-owned wire scratch and explicit entity-number projection.
 use crate::output_namespace::NativeNumbers;
-use qa_core::primitives::{Bounds, EntityId, ModelRef, ModuleId, PlayerState, SoundRef, Vec3};
+use qa_core::primitives::{
+    Bounds, EntityId, ModelRef, ModuleId, PlayerState, ResourceNamespace, SoundRef, Vec3,
+};
 use qa_network::{
     commands::packet::{Error, Protocol},
     projection::{EntityProjection, EntityRecord, PlayerProjection},
@@ -77,6 +79,17 @@ impl<const N: usize> Rows<N> {
     ) -> Result<u64, Error> {
         self.count = 0;
         let mut rejected = 0;
+        // sv_snapshot.c marks ps.clientNum already added before the PVS walk.
+        // Cgame rebuilds this one row from PS, including spectator FOLLOW.
+        let player_number = (protocol == Protocol::Quake3_68).then(|| {
+            player
+                .native_for(
+                    protocol.rule_set(),
+                    source.native_module.map(ResourceNamespace::Module),
+                )
+                .and_then(|native| native.client_number)
+                .unwrap_or(self_number)
+        });
         let origin = player.body.position + player.view_offset;
         visibility.begin(source, protocol, origin)?;
         for id in source.entities.active() {
@@ -108,6 +121,9 @@ impl<const N: usize> Rows<N> {
                 && numbers.number(id) != Some(number)
             {
                 rejected += 1;
+                continue;
+            }
+            if native.is_some() && native == player_number {
                 continue;
             }
             let appearance = columns.appearance[slot];
@@ -492,6 +508,7 @@ impl EntityScratch {
                 &context,
                 &mut row.words,
                 &mut *source.resolve_model,
+                &mut *source.resolve_sound,
             ) {
                 self.rejected += 1;
                 continue;

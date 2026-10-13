@@ -2120,7 +2120,13 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
     source.view_offset.0[2] = 22.;
     let mut context = native_player_context();
     let mut player = [0; states::NQ_PLAYER_WORDS];
-    assert!(projection.reduce(&source, &context, &mut player, |model| Some(model.ordinal)));
+    assert!(projection.reduce(
+        &source,
+        &context,
+        &mut player,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    ));
     player[18] = 3;
     let mut entities = [snapshots::Entity {
         number: 256,

@@ -198,6 +198,7 @@ impl SnapshotBinding {
     )]
     pub(crate) fn publish_loops(
         &mut self,
+        player: Option<&PlayerState>,
         lifetime: qa_core::primitives::EntityId,
         owner: OutputConsumerId,
         events: &mut qa_core::events::EventRing,
@@ -220,6 +221,7 @@ impl SnapshotBinding {
             events,
             crate::client_scene::ClientEntities {
                 client: self.client,
+                player,
                 current: channel.current_snapshot(),
                 previous: channel.previous_snapshot(),
                 projection,
@@ -412,10 +414,13 @@ impl SnapshotBinding {
             .ground
             .filter(|_| player.movement.grounded)
             .and_then(|entity| numbers.number(entity));
-        if !self
-            .projection
-            .reduce(player, &context, &mut words, &mut *source.resolve_model)
-        {
+        if !self.projection.reduce(
+            player,
+            &context,
+            &mut words,
+            &mut *source.resolve_model,
+            &mut *source.resolve_sound,
+        ) {
             return Err(Error::Context);
         }
         self.entities

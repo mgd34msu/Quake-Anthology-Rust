@@ -221,6 +221,16 @@ fn snapshot(
     frame_number: u32,
     records: &[(u32, EntityRecord)],
 ) {
+    snapshot_with_player(host, client, protocol, frame_number, records, None);
+}
+fn snapshot_with_player(
+    host: &mut FrameHost,
+    client: ClientId,
+    protocol: Protocol,
+    frame_number: u32,
+    records: &[(u32, EntityRecord)],
+    player_words: Option<&[u32; states::PLAYER_WORDS]>,
+) {
     let channel = &mut host
         .runtime
         .network
@@ -237,7 +247,10 @@ fn snapshot(
     let mut bytes = [0; 16384];
     macro_rules! write {
         ($kind:ident, $player:expr, $entity:expr) => {{
-            let player = [0; $player];
+            let mut player = [0; $player];
+            if let Some(words) = player_words {
+                player.copy_from_slice(&words[..$player]);
+            }
             let entities = records
                 .iter()
                 .map(|(number, record)| {
@@ -812,6 +825,118 @@ fn q3_cross_target_stop_retires_the_event_rows_old_loop() {
     }
     assert!(paint(&host, &mut source).iter().all(|sample| *sample == 0));
 }
+fn q3_player_loop_uses_the_existing_emitter_without_a_packet_self_row() {
+    let protocol = Protocol::Quake3_68;
+    let (mut host, mut source, ids) = fixture(protocol, 1, 32, 8);
+    let client = ids[0];
+    config(&mut host, client, protocol, 1, b"sound/first.wav");
+    config(&mut host, client, protocol, 2, b"sound/second.wav");
+    let mut player = [0; states::PLAYER_WORDS];
+    player[1] = 64.0f32.to_bits();
+    player[47] = 1;
+    snapshot_with_player(&mut host, client, protocol, 1, &[], Some(&player));
+    assert_eq!(
+        host.runtime.prediction[0].player.loop_sound,
+        SoundRef::native(ResourceNamespace::Client(client), 1),
+    );
+    let ReceivedFrame::Quake3(frame) = host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .channel
+        .current_snapshot()
+        .unwrap()
+    else {
+        panic!("expected Q3 native frame")
+    };
+    assert!(frame.entities.is_empty());
+    // No native guest or SERVER pose can supply the missing CLIENT emitter.
+    host.runtime
+        .server
+        .entities
+        .columns
+        .position
+        .fill(Vec3([f32::NAN; 3]));
+    host.publish_client_loops();
+    dispatch(&mut host, &mut source);
+    assert_eq!(starts(&source), 1);
+    assert_eq!(
+        source.observations.last().unwrap().2,
+        Some(SoundEmitter::Native {
+            namespace: ResourceNamespace::Client(client),
+            slot: 0,
+        }),
+    );
+    assert_eq!(
+        host.client_entities_inputs()[0]
+            .unwrap()
+            .sound_origin(0, Some(LoopOrigin::Presented)),
+        Some(Vec3([64.0, 0.0, 0.0])),
+    );
+    assert!(paint(&host, &mut source).iter().any(|sample| *sample != 0));
+    for _ in 0..4 {
+        host.publish_client_loops();
+        dispatch(&mut host, &mut source);
+    }
+    assert_eq!(starts(&source), 1);
+    player[47] = 0;
+    snapshot_with_player(&mut host, client, protocol, 2, &[], Some(&player));
+    host.publish_client_loops();
+    dispatch(&mut host, &mut source);
+    assert_eq!(source.observations.last().unwrap().0, SoundAction::StopLoop);
+    assert!(paint(&host, &mut source).iter().all(|sample| *sample == 0));
+
+    // FOLLOW chooses a native player number independently of this connection.
+    player[40] = 1;
+    player[47] = 1;
+    player[1] = 32.0f32.to_bits();
+    snapshot_with_player(&mut host, client, protocol, 3, &[], Some(&player));
+    host.publish_client_loops();
+    dispatch(&mut host, &mut source);
+    assert_eq!(starts(&source), 2);
+    assert_eq!(
+        source.observations.last().unwrap().2,
+        Some(SoundEmitter::Native {
+            namespace: ResourceNamespace::Client(client),
+            slot: 1,
+        })
+    );
+    // A zero packet sound retains PS sound and updates the same emitter pose.
+    let mut packet = record(protocol, client, 0, 1);
+    packet.position = Vec3([96.0, 0.0, 0.0]);
+    snapshot_with_player(
+        &mut host,
+        client,
+        protocol,
+        4,
+        &[(1, packet)],
+        Some(&player),
+    );
+    host.publish_client_loops();
+    dispatch(&mut host, &mut source);
+    assert_eq!(starts(&source), 2);
+    assert_eq!(
+        host.client_entities_inputs()[0]
+            .unwrap()
+            .sound_origin(1, Some(LoopOrigin::Accepted)),
+        Some(packet.position)
+    );
+    packet.appearance.loop_sound = SoundRef::native(ResourceNamespace::Client(client), 2);
+    snapshot_with_player(
+        &mut host,
+        client,
+        protocol,
+        5,
+        &[(1, packet)],
+        Some(&player),
+    );
+    host.publish_client_loops();
+    dispatch(&mut host, &mut source);
+    assert_eq!(starts(&source), 3);
+    assert_eq!(source.observations.last().unwrap().1, SoundId(2));
+    assert!(paint(&host, &mut source).iter().any(|sample| *sample != 0));
+}
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
@@ -828,5 +953,6 @@ fn main() {
     independent_clients_and_reused_lifetime();
     q3_standalone_stop_is_once_until_disappearance();
     q3_cross_target_stop_retires_the_event_rows_old_loop();
+    q3_player_loop_uses_the_existing_emitter_without_a_packet_self_row();
     println!("accepted CLIENT loop fixtures passed");
 }

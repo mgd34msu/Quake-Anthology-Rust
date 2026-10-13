@@ -693,6 +693,9 @@ pub struct PlayerState {
     pub view_offset: Vec3,
     pub punch_angles: Vec3,
     pub view_weapon: ViewWeapon,
+    /// Player presentation can carry a loop when its native entity is omitted
+    /// from the snapshot. The resource remains in its explicit namespace.
+    pub loop_sound: Option<SoundRef>,
     /// Native view target supplied by the player/module boundary, not geometry.
     pub ideal_pitch: f32,
     pub flags: u32,
@@ -1107,6 +1110,17 @@ impl CommandIntent {
 }
 
 impl PlayerState {
+    /// A boundary may consume native metadata only in its declared namespace.
+    pub fn native_for(
+        &self,
+        source: RuleSetId,
+        namespace: Option<ResourceNamespace>,
+    ) -> Option<&NativePlayerTail> {
+        self.native
+            .as_ref()
+            .filter(|tail| tail.source == source && namespace == Some(tail.namespace))
+    }
+
     pub fn eye(&self) -> Vec3 {
         self.body.position + self.view_offset
     }

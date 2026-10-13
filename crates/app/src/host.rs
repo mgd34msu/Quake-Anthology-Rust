@@ -523,7 +523,7 @@ impl FrameHost {
     ) -> [Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT] {
         let alias_roll = self.alias_roll();
         std::array::from_fn(|seat| {
-            let (client, _, _) = self.local_seat(seat)?;
+            let (client, _, player) = self.local_seat(seat)?;
             let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
             let channel = &self
                 .runtime
@@ -532,6 +532,7 @@ impl FrameHost {
                 .channel;
             Some(crate::client_scene::ClientEntities {
                 client,
+                player: Some(player),
                 current: channel.current_snapshot(),
                 previous: channel.previous_snapshot(),
                 projection: snapshot.entity_projection(),
@@ -668,6 +669,10 @@ impl FrameHost {
                 continue;
             };
             snapshot.publish_loops(
+                snapshot
+                    .seat()
+                    .and_then(|seat| runtime.prediction.get(seat.index()))
+                    .map(|prediction| &prediction.player),
                 client.entity,
                 server.presentation,
                 &mut server.events,

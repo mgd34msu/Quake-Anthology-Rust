@@ -200,7 +200,7 @@ impl LoopPublication {
         budget: &mut usize,
     ) {
         let mut active = self.active.partition_point(|&index| index < range.start);
-        entities.visit(|number, pose| {
+        entities.visit_loops(|number, pose| {
             let index = number as usize;
             if !range.contains(&index) || index >= self.rows.len() {
                 return;

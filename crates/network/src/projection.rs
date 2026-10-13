@@ -6,7 +6,8 @@ use qa_core::{
     primitives::{
         AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMagnitude, MovementMode,
         MovementTimer, NativePlayerTail, PlayerState, PlayerValueBindings, Q3StatLayout,
-        ResourceNamespace, ValueBinding, ValueWidth, ViewWeapon, WeaponReadiness, WeaponState,
+        ResourceNamespace, SoundRef, ValueBinding, ValueWidth, ViewWeapon, WeaponReadiness,
+        WeaponState,
     },
 };
 
@@ -68,6 +69,7 @@ enum Source {
     Ground,
     Weapon,
     WeaponModel,
+    LoopSound,
     Gravity,
     Speed,
     InfoFlags,
@@ -234,6 +236,7 @@ static Q3: &[Field] = &[
     f(40, Client, Bits),
     f(41, Weapon, Bits),
     f(42, View(2), Bits),
+    f(47, LoopSound, Bits),
     f(48, Health, Bits),
     f(51, Armor, Bits),
     f(64, Score, Bits),
@@ -568,6 +571,7 @@ impl PlayerProjection {
         context: &PlayerContext,
         out: &mut [u32],
         mut resolve_model: impl FnMut(ModelRef) -> Option<u32>,
+        mut resolve_sound: impl FnMut(SoundRef) -> Option<u32>,
     ) -> bool {
         if !self.layout_valid {
             return false;
@@ -576,16 +580,20 @@ impl PlayerProjection {
             return false;
         };
         out.fill(0);
-        let native = player.native.as_ref().filter(|tail| {
-            tail.source == self.protocol.rule_set() && context.namespace == Some(tail.namespace)
-        });
+        let native = player.native_for(self.protocol.rule_set(), context.namespace);
         for field in &self.fields {
             out[field.word] = if let DeltaAngle(axis) = field.source {
                 field
                     .convert
                     .export_angle(player.movement.delta_angles.0[axis])
             } else {
-                let word = self.value(field.source, player, context, &mut resolve_model);
+                let word = self.value(
+                    field.source,
+                    player,
+                    context,
+                    &mut resolve_model,
+                    &mut resolve_sound,
+                );
                 native
                     .and_then(|tail| match field.source {
                         Flags => Some((tail.flags & !self.flag_mask) | word),
@@ -777,6 +785,7 @@ impl PlayerProjection {
                 WeaponFrame | WeaponOffset(_) | WeaponAngle(_) | WeaponRate | WeaponModel => {
                     self.apply_weapon(field.source, value, &mut player.view_weapon, namespace);
                 }
+                LoopSound => player.loop_sound = SoundRef::native(namespace, value),
                 BodyFrame | BodyModel | BodySkin | BodyEffects => {
                     let body = context.appearance.get_or_insert_with(|| EntityAppearance {
                         source: self.protocol.rule_set(),
@@ -859,6 +868,7 @@ impl PlayerProjection {
         p: &PlayerState,
         c: &PlayerContext,
         resolve_model: &mut impl FnMut(ModelRef) -> Option<u32>,
+        resolve_sound: &mut impl FnMut(SoundRef) -> Option<u32>,
     ) -> u32 {
         match source {
             Position(i) => p.body.position.0[i].to_bits(),
@@ -948,6 +958,7 @@ impl PlayerProjection {
                     model
                 }
             }
+            LoopSound => p.loop_sound.and_then(resolve_sound).unwrap_or(0),
             Gravity => c.gravity.to_bits(),
             Speed => c.speed.to_bits(),
             InfoFlags => u32::from(c.player_info_flags),

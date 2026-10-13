@@ -669,6 +669,46 @@ fn write_inventory(host: &mut FrameHost, offset: i32, value: u32, queued_ms: u64
 }
 
 #[test]
+fn q3_native_player_loop_retains_the_source_and_drops_unpublished_resources() {
+    for viewed in [0, 1] {
+        let (mut host, client) = fixture(800, 320, viewed);
+        write_inventory(&mut host, 444, 0x0001_0005, 137);
+        assert_eq!(
+            host.runtime.server.clients[client.0 as usize]
+                .player
+                .loop_sound,
+            SoundRef::native(ResourceNamespace::Module(MODULE), 0x0001_0005),
+        );
+        let words = transmit(&mut host, client, 200);
+        assert_eq!(words[47], 0); // No precache row has been published or ACKed.
+        let ReceivedFrame::Quake3(frame) = host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap()
+        else {
+            panic!("expected Q3 native frame")
+        };
+        assert!(frame.entities.iter().all(|row| row.number != viewed as u32));
+        let player = &host.runtime.prediction[0].player;
+        assert_eq!(player.loop_sound, None);
+        assert_eq!(player.native.unwrap().client_number, Some(viewed as u32));
+        assert_eq!(
+            (player.movement_rules, player.trace_rules),
+            (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+        );
+        write_inventory(&mut host, 444, 0, 237);
+        let words = transmit(&mut host, client, 300);
+        assert_eq!(words[47], 0);
+        assert_eq!(host.runtime.prediction[0].player.loop_sound, None);
+        assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
+    }
+}
+
+#[test]
 fn q3_clientthink_between_ticks_preserves_native_frame_clock_and_ta_marker() {
     let (mut host, client) = fixture_program(program_inventory(
         800,
