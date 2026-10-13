@@ -2,6 +2,8 @@
 use crate::primitives::{IndexSpan, RuleSetId};
 
 pub const MAX_TEXT: usize = 8192;
+pub const Q3_GAME_STATE_ROWS: usize = 1024;
+pub const Q3_GAME_STATE_DATA_BYTES: usize = 16000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigError {
@@ -174,7 +176,7 @@ impl ConfigLayout {
     };
     pub const QUAKE3: Self = Self {
         rules: RuleSetId::Quake3,
-        count: 1024,
+        count: Q3_GAME_STATE_ROWS,
         resources: [span(32, 256), span(288, 256), span(0, 0)],
         players: span(544, 64),
         lights: span(0, 0),
@@ -184,7 +186,7 @@ impl ConfigLayout {
         scalar: [usize::MAX; 3],
         ordinary_bytes: 8192,
         light_bytes: 8192,
-        general_end: 1024,
+        general_end: Q3_GAME_STATE_ROWS,
     };
     pub const fn for_rules(rules: RuleSetId) -> Self {
         match rules {

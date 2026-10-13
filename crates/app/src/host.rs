@@ -975,6 +975,22 @@ impl FrameHost {
                                     );
                                 }
                             }
+                            Incoming::Gamestate(gamestate) => {
+                                if let Some(resources) =
+                                    self.runtime.client_resources[id.0 as usize].as_mut()
+                                {
+                                    resources.apply_gamestate(
+                                        &gamestate,
+                                        self.runtime.models.as_deref(),
+                                        self.runtime.sound_bank.as_deref(),
+                                    );
+                                }
+                                if let Some(binding) =
+                                    self.runtime.snapshots[id.0 as usize].as_mut()
+                                {
+                                    binding.receive_gamestate(&gamestate);
+                                }
+                            }
                             // Q3 cgame selects retained commands through the
                             // shared CLIENT service after packet intake.
                             Incoming::ReliableCommand { .. } => {}

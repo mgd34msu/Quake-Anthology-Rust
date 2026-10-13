@@ -399,6 +399,18 @@ pub struct Q3ClientSnapshot<'a> {
     pub ping: i32,
 }
 impl Q3Ring {
+    pub(crate) fn native_numbers(&self) -> usize {
+        self.baselines.len()
+    }
+    /// A validated new gamestate replaces native baselines and accepted frames.
+    /// Load-sized storage and cumulative admission counters remain owned here.
+    pub(crate) fn reset_gamestate(&mut self) {
+        self.slots.fill(Slot::ZERO);
+        self.baselines.fill([0; states::ENTITY_WORDS]);
+        self.parsed_rows = 0;
+        self.latest = None;
+        self.previous = None;
+    }
     pub(crate) fn client_number(&self) -> (u32, qa_core::primitives::ThinkTime) {
         self.latest.map_or(
             (0, qa_core::primitives::ThinkTime::Milliseconds(0)),

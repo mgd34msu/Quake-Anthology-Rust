@@ -87,6 +87,7 @@ pub struct StringPolicy {
     signed_terminator: bool,
     stop_at_limit: bool,
     sanitize: bool,
+    sanitize_high: bool,
 }
 impl StringPolicy {
     /// NQ/QW/Q2 MSG_ReadChar strings: 0xff terminates, and a full native
@@ -96,6 +97,7 @@ impl StringPolicy {
         signed_terminator: true,
         stop_at_limit: true,
         sanitize: false,
+        sanitize_high: false,
     };
     /// Rerelease/q2proto strings borrow every byte through their NUL.
     pub const UNSIGNED: Self = Self {
@@ -103,6 +105,7 @@ impl StringPolicy {
         signed_terminator: false,
         stop_at_limit: false,
         sanitize: false,
+        sanitize_high: false,
     };
     /// Q3 MSG_ReadString keeps its original 1024-byte buffer and conversion.
     pub const Q3: Self = Self {
@@ -110,6 +113,13 @@ impl StringPolicy {
         signed_terminator: false,
         stop_at_limit: true,
         sanitize: true,
+        sanitize_high: true,
+    };
+    /// Native MSG_ReadBigString sanitizes percent signs, preserving high bytes.
+    pub const Q3_BIG: Self = Self {
+        maximum: 8191,
+        sanitize_high: false,
+        ..Self::Q3
     };
     pub const fn limited(self, maximum: usize) -> Self {
         Self { maximum, ..self }
@@ -137,12 +147,33 @@ impl StringPolicy {
         };
         &text[..length.min(maximum)]
     }
-    pub(crate) fn byte(self, byte: u8) -> u8 {
-        if self.sanitize && (byte > 127 || byte == b'%') {
+    pub(crate) fn read_byte(self, byte: u8) -> u8 {
+        if self.sanitize && ((self.sanitize_high && byte > 127) || byte == b'%') {
             b'.'
         } else {
             byte
         }
+    }
+    pub(crate) fn write_byte(self, byte: u8) -> u8 {
+        if self.sanitize && byte > 127 {
+            b'.'
+        } else {
+            byte
+        }
+    }
+    /// Native Q3 writers emit an empty string on an oversized input; existing
+    /// legacy generated rows retain their destination truncation policy.
+    pub(crate) fn write_bytes(self, text: &[u8]) -> impl Iterator<Item = u8> + '_ {
+        let text = if self.sanitize {
+            let n = qa_core::text::until_nul(text).len();
+            &text[..if n <= self.maximum { n } else { 0 }]
+        } else {
+            self.payload(text)
+        };
+        text.iter()
+            .copied()
+            .map(move |byte| self.write_byte(byte))
+            .chain(std::iter::once(0))
     }
 }
 
@@ -154,6 +185,7 @@ fn valid_width(encoding: Encoding, width: u8) -> bool {
 }
 
 /// Offset errors drop one message at its boundary; the reader never grows data.
+#[derive(Clone)]
 pub struct Reader<'a> {
     data: &'a [u8],
     encoding: Encoding,
@@ -282,7 +314,7 @@ impl<'a> Reader<'a> {
                 };
             }
             if length < policy.maximum {
-                store(length, policy.byte(byte));
+                store(length, policy.read_byte(byte));
             }
             length += 1;
         }
@@ -440,11 +472,10 @@ impl<'a> Writer<'a> {
     }
     /// Write a generated raw string at its destination's native boundary.
     pub fn write_string(&mut self, policy: StringPolicy, text: &[u8]) -> Result<(), Error> {
-        if self.encoding != Encoding::Bytes || policy.sanitize {
+        if self.encoding != Encoding::Bytes && !(self.encoding == Encoding::Q3 && policy.sanitize) {
             return Err(self.error(ErrorKind::Width));
         }
-        self.write_data(policy.payload(text))?;
-        self.write_bits(0, 8)
+        self.write_data_iter(policy.write_bytes(text))
     }
 }
 

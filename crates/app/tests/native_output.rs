@@ -687,8 +687,14 @@ fn q3_common_prints_keep_the_native_width_limit_and_wait_for_a_real_queued_ack()
                 let sequence = received.header.sequence;
                 if let Delivery::Payload(body) = received.delivery {
                     let mut body = body.to_vec();
-                    peer.decode_server_output(&mut body, sequence, |_, bytes| {
-                        commands.push(bytes.to_vec())
+                    peer.decode_server_output(&mut body, sequence, |message| {
+                        if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                            text,
+                            ..
+                        } = message
+                        {
+                            commands.push(text.to_vec());
+                        }
                     })
                     .unwrap();
                 }
@@ -2080,8 +2086,14 @@ fn typed_native_prints_queue_separate_q3_commands_and_retire_only_on_real_ack() 
             let sequence = received.header.sequence;
             if let Delivery::Payload(body) = received.delivery {
                 let mut body = body.to_vec();
-                peer.decode_server_output(&mut body, sequence, |sequence, text| {
-                    commands.push((sequence, text.to_vec()))
+                peer.decode_server_output(&mut body, sequence, |message| {
+                    if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                        sequence,
+                        text,
+                    } = message
+                    {
+                        commands.push((sequence, text.to_vec()));
+                    }
                 })
                 .unwrap();
             }
@@ -2173,8 +2185,14 @@ fn typed_native_oversized_print_drops_once_and_keeps_following_q3_command() {
             let sequence = received.header.sequence;
             if let Delivery::Payload(body) = received.delivery {
                 let mut body = body.to_vec();
-                peer.decode_server_output(&mut body, sequence, |_, text| {
-                    commands.push(text.to_vec())
+                peer.decode_server_output(&mut body, sequence, |message| {
+                    if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                        text,
+                        ..
+                    } = message
+                    {
+                        commands.push(text.to_vec());
+                    }
                 })
                 .unwrap();
             }
@@ -2363,8 +2381,14 @@ fn typed_print_waits_for_q3_window_space_and_then_its_own_native_ack() {
             let sequence = received.header.sequence;
             if let Delivery::Payload(body) = received.delivery {
                 let mut body = body.to_vec();
-                peer.decode_server_output(&mut body, sequence, |sequence, text| {
-                    commands.push((sequence, text.to_vec()))
+                peer.decode_server_output(&mut body, sequence, |message| {
+                    if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                        sequence,
+                        text,
+                    } = message
+                    {
+                        commands.push((sequence, text.to_vec()));
+                    }
                 })
                 .unwrap();
             }
@@ -2414,8 +2438,14 @@ fn typed_print_waits_for_q3_window_space_and_then_its_own_native_ack() {
             let sequence = received.header.sequence;
             if let Delivery::Payload(body) = received.delivery {
                 let mut body = body.to_vec();
-                peer.decode_server_output(&mut body, sequence, |sequence, text| {
-                    commands.push((sequence, text.to_vec()))
+                peer.decode_server_output(&mut body, sequence, |message| {
+                    if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                        sequence,
+                        text,
+                    } = message
+                    {
+                        commands.push((sequence, text.to_vec()));
+                    }
                 })
                 .unwrap();
             }

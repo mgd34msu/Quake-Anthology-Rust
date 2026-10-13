@@ -106,7 +106,7 @@ fn submit_snapshot(
             if let Delivery::Payload(bytes) = received.delivery {
                 let mut bytes = bytes.to_vec();
                 client
-                    .decode_server_output(&mut bytes, sequence, |_, _| {})
+                    .decode_server_output(&mut bytes, sequence, |_| {})
                     .unwrap();
             }
         }

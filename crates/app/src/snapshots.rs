@@ -124,6 +124,21 @@ impl SnapshotBinding {
     pub fn native_client(&self) -> u32 {
         self.native_client
     }
+    pub(crate) fn receive_gamestate(
+        &mut self,
+        gamestate: &qa_network::channel::commands::Q3GameState<'_>,
+    ) {
+        self.native_client = gamestate.client_num;
+        if let Some(client) = self.presentation.as_mut() {
+            client.clock.reset();
+            client.sequence = None;
+            client.gun_animation = None;
+            if let Some(loops) = client.loops.as_mut() {
+                loops.request_reset();
+            }
+        }
+        self.reset_feedback();
+    }
     /// Explicit native preset selected before the first snapshot publication.
     pub fn set_player_stat_layout(
         &mut self,

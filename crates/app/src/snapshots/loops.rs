@@ -422,6 +422,11 @@ impl LoopPublication {
     pub(crate) fn owns_native(&self) -> bool {
         self.producer.is_some()
     }
+    pub(crate) fn request_reset(&mut self) {
+        // Keep any older fence tracked. Cleanup serializes its completion
+        // before publishing the reset required by the new gamestate.
+        self.reset_needed = true;
+    }
     pub(crate) fn attach(
         &mut self,
         client: ClientId,

@@ -54,6 +54,11 @@ impl PresentationClock {
     pub fn sample(&self) -> Interpolation {
         self.sample
     }
+    pub(crate) fn reset(&mut self) {
+        self.queued_at = None;
+        self.time = None;
+        self.sample = Interpolation::default();
+    }
     pub fn advance(
         &mut self,
         queued: EventTime,

@@ -466,8 +466,13 @@ impl Commands {
     ) -> Result<Option<u32>, packet::Error> {
         let scratch = &mut self.scratch[..length];
         if self.protocol == Protocol::Quake3_68 {
-            channel.decode_server_output(scratch, sequence, |sequence, text| {
-                consume(Incoming::ReliableCommand { sequence, text });
+            channel.decode_server_output(scratch, sequence, |output| match output {
+                crate::channel::commands::ServerOutput::ReliableCommand { sequence, text } => {
+                    consume(Incoming::ReliableCommand { sequence, text });
+                }
+                crate::channel::commands::ServerOutput::Gamestate(gamestate) => {
+                    consume(Incoming::Gamestate(gamestate));
+                }
             })?;
             return Ok(channel.snapshot(sequence).map(|frame| frame.sequence()));
         }

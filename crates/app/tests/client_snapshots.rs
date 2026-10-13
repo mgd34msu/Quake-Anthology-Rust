@@ -771,26 +771,7 @@ fn accepted_connection_snapshot_bytes(factory: fn() -> (Program, u64)) {
     assert_eq!(word(&mut host, 1, output + 8), 45678);
 }
 
-fn qvm_pointer_checks_and_retained_window() {
-    let (mut host, ids, output) = host(qvm, 1);
-    let sequence = snapshot(&mut host, ids[0], 2345, 1, false);
-    fill(&mut host, 0, output);
-    assert_eq!(call(&mut host, 0, 5, &[output, 65535]), Err(()));
-    assert_eq!(word(&mut host, 0, output), 0xa5a5_a5a5);
-    assert_eq!(call(&mut host, 0, 2, &[sequence as u64, 65000]), Err(()));
-    assert_eq!(word(&mut host, 0, output), 0xa5a5_a5a5);
-    assert_eq!(call(&mut host, 0, 5, &[65536, output + 4]), Ok(0));
-    assert_eq!(word(&mut host, 0, 0), sequence);
-    assert_eq!(word(&mut host, 0, output + 4), 2345);
-    assert_eq!(call(&mut host, 0, 2, &[sequence as u64, 65536]), Ok(1));
-    assert_eq!(word(&mut host, 0, 8), 2345);
-    assert_eq!(call(&mut host, 0, 2, &[sequence as u64, 0]), Err(()));
-    for _ in 0..32 {
-        snapshot(&mut host, ids[0], 2345, 0, false);
-    }
-    assert_eq!(call(&mut host, 0, 2, &[sequence as u64, 0]), Ok(0));
-    let lifetime = host.runtime.server.clients[0].entity;
-    assert!(host.runtime.disconnect_client(ids[0]));
+fn complete_presentation(host: &mut FrameHost) {
     struct Sink;
     impl qa_app::host::FrameSource for Sink {
         fn begin_frame(&mut self) -> std::time::Duration {
@@ -818,6 +799,29 @@ fn qvm_pointer_checks_and_retained_window() {
         3.0,
         2.0,
     );
+}
+
+fn qvm_pointer_checks_and_retained_window() {
+    let (mut host, ids, output) = host(qvm, 1);
+    let sequence = snapshot(&mut host, ids[0], 2345, 1, false);
+    fill(&mut host, 0, output);
+    assert_eq!(call(&mut host, 0, 5, &[output, 65535]), Err(()));
+    assert_eq!(word(&mut host, 0, output), 0xa5a5_a5a5);
+    assert_eq!(call(&mut host, 0, 2, &[sequence as u64, 65000]), Err(()));
+    assert_eq!(word(&mut host, 0, output), 0xa5a5_a5a5);
+    assert_eq!(call(&mut host, 0, 5, &[65536, output + 4]), Ok(0));
+    assert_eq!(word(&mut host, 0, 0), sequence);
+    assert_eq!(word(&mut host, 0, output + 4), 2345);
+    assert_eq!(call(&mut host, 0, 2, &[sequence as u64, 65536]), Ok(1));
+    assert_eq!(word(&mut host, 0, 8), 2345);
+    assert_eq!(call(&mut host, 0, 2, &[sequence as u64, 0]), Err(()));
+    for _ in 0..32 {
+        snapshot(&mut host, ids[0], 2345, 0, false);
+    }
+    assert_eq!(call(&mut host, 0, 2, &[sequence as u64, 0]), Ok(0));
+    let lifetime = host.runtime.server.clients[0].entity;
+    assert!(host.runtime.disconnect_client(ids[0]));
+    complete_presentation(&mut host);
     let replacement = host
         .runtime
         .connect_local(
@@ -886,6 +890,289 @@ fn ui_keeps_its_queued_clock() {
     );
 }
 
+fn gamestate_packets(
+    host: &mut FrameHost,
+    client: ClientId,
+    native_client: i32,
+    rows: &[(u32, &[u8])],
+) -> Vec<Vec<u8>> {
+    let channel = &mut host
+        .runtime
+        .network
+        .get_mut(client, Endpoint::Server)
+        .unwrap()
+        .channel;
+    let command_sequence = channel.command_state().unwrap().queued;
+    let mut bytes = [0; 32768];
+    let length = channel
+        .encode_server_output(&mut bytes, |writer, _| {
+            writer.write_bits(2, 8)?;
+            writer.write_bits(command_sequence, 32)?;
+            for &(index, text) in rows {
+                writer.write_bits(3, 8)?;
+                writer.write_bits(index, 16)?;
+                // Incoming reference bytes exercise ReadBigString's native
+                // high-byte preservation and percent conversion separately.
+                for &byte in text {
+                    writer.write_bits(u32::from(byte), 8)?;
+                }
+                writer.write_bits(0, 8)?;
+            }
+            let mut baseline = [0; states::ENTITY_WORDS];
+            baseline[0] = 7;
+            baseline[1] = 12.5f32.to_bits();
+            writer.write_bits(4, 8)?;
+            assert!(states::write_q3_entity(
+                writer,
+                7,
+                &[0; states::ENTITY_WORDS],
+                Some(&baseline),
+                true,
+            )?);
+            writer.write_bits(8, 8)?;
+            writer.write_bits(native_client as u32, 32)?;
+            writer.write_bits(0, 32)?;
+            Ok(())
+        })
+        .unwrap();
+    let time = EventTime::from_milliseconds(100);
+    channel
+        .prepare_server_message(&bytes[..length], time)
+        .unwrap()
+        .unwrap();
+    let mut packets = Vec::new();
+    loop {
+        packets.push(channel.pending_packet().unwrap().bytes.to_vec());
+        channel.submitted(time).unwrap();
+        if !channel.pending_fragments() {
+            break;
+        }
+        channel.prepare_output(time).unwrap().unwrap();
+    }
+    packets
+}
+
+fn receive_gamestate_packets(host: &mut FrameHost, client: ClientId, packets: &[Vec<u8>]) {
+    for packet in packets {
+        host.runtime
+            .loopback
+            .send(Endpoint::Server, client, packet)
+            .unwrap();
+    }
+    host.time = EventTime::from_milliseconds(100);
+    host.drain(&mut FrameResult::default());
+}
+
+fn queued_gamestate_precedes_first_snapshot(factory: fn() -> (Program, u64)) {
+    let (mut host, ids, output) = host(factory, 2);
+    let packets = gamestate_packets(
+        &mut host,
+        ids[0],
+        13,
+        &[(20, b"BASEQ3-1"), (32, b"first model"), (200, b"\x80raw%")],
+    );
+    let channel = &host
+        .runtime
+        .network
+        .get(ids[0], Endpoint::Client)
+        .unwrap()
+        .channel;
+    assert!(channel.q3_startup().is_none());
+    assert!(channel.current_snapshot().is_none());
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(20)
+            .unwrap()
+            .text,
+        b"",
+    );
+    receive_gamestate_packets(&mut host, ids[0], &packets);
+    let channel = &host
+        .runtime
+        .network
+        .get(ids[0], Endpoint::Client)
+        .unwrap()
+        .channel;
+    let startup = channel.q3_startup().unwrap();
+    assert_eq!(startup.client_num, 13);
+    assert_eq!(startup.last_executed_server_command, 0);
+    assert!(channel.current_snapshot().is_none());
+    assert_eq!(
+        host.runtime.snapshots[0].as_ref().unwrap().native_client(),
+        13
+    );
+    assert_eq!(call(&mut host, 0, GET_GAME_STATE, &[output]), Ok(0));
+    let offset = word(&mut host, 0, output + 20 * 4);
+    assert_eq!(
+        word(&mut host, 0, output + 4096 + u64::from(offset)),
+        word_bytes(b"BASE")
+    );
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(200)
+            .unwrap()
+            .text,
+        b"\x80raw."
+    );
+    assert!(
+        host.runtime
+            .network
+            .get(ids[1], Endpoint::Client)
+            .unwrap()
+            .channel
+            .q3_startup()
+            .is_none()
+    );
+    assert_eq!(
+        host.runtime.client_resources[1]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(20)
+            .unwrap()
+            .text,
+        b""
+    );
+
+    let packets = gamestate_packets(&mut host, ids[1], 57, &[(20, b"other seat")]);
+    receive_gamestate_packets(&mut host, ids[1], &packets);
+    assert_eq!(
+        host.runtime.snapshots[1].as_ref().unwrap().native_client(),
+        57
+    );
+    assert_eq!(call(&mut host, 1, GET_GAME_STATE, &[output]), Ok(0));
+    let offset = word(&mut host, 1, output + 20 * 4);
+    assert_eq!(
+        word(&mut host, 1, output + 4096 + u64::from(offset)),
+        word_bytes(b"othe")
+    );
+    assert_eq!(
+        host.runtime.prediction[0].player.movement_rules,
+        RuleSetId::Quake
+    );
+    assert_eq!(
+        host.runtime.prediction[1].player.trace_rules,
+        RuleSetId::QuakeWorld
+    );
+}
+
+fn word_bytes(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes(bytes.try_into().unwrap())
+}
+
+fn rejected_gamestate_preserves_accepted_client_and_reuse_starts_empty() {
+    let (mut host, ids, _) = host(qvm, 1);
+    let packets = gamestate_packets(&mut host, ids[0], 13, &[(20, b"accepted"), (32, b"old")]);
+    receive_gamestate_packets(&mut host, ids[0], &packets);
+    let previous = host
+        .runtime
+        .network
+        .get(ids[0], Endpoint::Client)
+        .unwrap()
+        .channel
+        .q3_startup();
+    let errors = host.runtime.network.command_errors;
+    let packets = gamestate_packets(&mut host, ids[0], 64, &[(20, b"rejected")]);
+    receive_gamestate_packets(&mut host, ids[0], &packets);
+    assert_eq!(host.runtime.network.command_errors, errors + 1);
+    assert_eq!(
+        host.runtime
+            .network
+            .get(ids[0], Endpoint::Client)
+            .unwrap()
+            .channel
+            .q3_startup(),
+        previous
+    );
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(20)
+            .unwrap()
+            .text,
+        b"accepted"
+    );
+    assert_eq!(
+        host.runtime.snapshots[0].as_ref().unwrap().native_client(),
+        13
+    );
+
+    let packets = gamestate_packets(&mut host, ids[0], 15, &[(20, b"replacement")]);
+    receive_gamestate_packets(&mut host, ids[0], &packets);
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(32)
+            .unwrap()
+            .text,
+        b""
+    );
+    assert_eq!(
+        host.runtime.snapshots[0].as_ref().unwrap().native_client(),
+        15
+    );
+    assert!(host.runtime.disconnect_client(ids[0]));
+    assert!(host.runtime.client_resources[0].is_none());
+    assert!(host.runtime.network.get(ids[0], Endpoint::Client).is_none());
+    complete_presentation(&mut host);
+    assert_eq!(
+        host.runtime
+            .connect_local(
+                SeatId::new(0).unwrap(),
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false
+                },
+                ClientPolicy {
+                    client: RuleSetId::Quake3,
+                    movement: RuleSetId::Quake2,
+                    trace: RuleSetId::Quake
+                },
+                Protocol::Quake3_68,
+                0,
+            )
+            .unwrap(),
+        ids[0]
+    );
+    assert!(
+        host.runtime
+            .network
+            .get(ids[0], Endpoint::Client)
+            .unwrap()
+            .channel
+            .q3_startup()
+            .is_none()
+    );
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(20)
+            .unwrap()
+            .text,
+        b""
+    );
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
@@ -900,5 +1187,9 @@ fn main() {
     qvm_pointer_checks_and_retained_window();
     snapshot_entity_count_is_truncated_to_the_native_public_array();
     ui_keeps_its_queued_clock();
+    queued_gamestate_precedes_first_snapshot(qvm);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    queued_gamestate_precedes_first_snapshot(native);
+    rejected_gamestate_preserves_accepted_client_and_reuse_starts_empty();
     println!("CLIENT snapshot getter fixtures passed");
 }

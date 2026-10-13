@@ -133,6 +133,12 @@ impl ClientModelBindings {
         self.reset();
         self.profile = Some(profile);
         self.world = world;
+        self.refresh_all(configs, models)
+    }
+
+    /// A new accepted gamestate replaces rows without changing the loaded
+    /// presentation profile or world binding.
+    pub(crate) fn refresh_all(&mut self, configs: &ConfigStrings, models: &ModelCatalog) -> u32 {
         self.range.range().fold(0, |missing, index| {
             missing + u32::from(!self.config_changed(index, configs, models))
         })

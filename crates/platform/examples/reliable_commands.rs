@@ -83,8 +83,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sequence = received.header.sequence;
             if let Delivery::Payload(body) = received.delivery {
                 let mut bytes = body.to_vec();
-                let result = client.decode_server_output(&mut bytes, sequence, |sequence, text| {
-                    parsed.push((sequence, text.to_vec()))
+                let result = client.decode_server_output(&mut bytes, sequence, |message| {
+                    if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                        sequence,
+                        text,
+                    } = message
+                    {
+                        parsed.push((sequence, text.to_vec()));
+                    }
                 });
                 match result {
                     Ok(()) => {}

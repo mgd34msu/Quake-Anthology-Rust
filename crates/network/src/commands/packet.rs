@@ -310,7 +310,7 @@ pub fn xor(data: &mut [u8], start: usize, mut key: u8, text: &[u8]) {
     let mut at = 0;
     for (i, byte) in data.iter_mut().enumerate().skip(start) {
         let ch = if length == 0 { 0 } else { text[at] };
-        let ch = StringPolicy::Q3.byte(ch);
+        let ch = StringPolicy::Q3.read_byte(ch);
         key ^= ch.wrapping_shl((i & 1) as u32);
         *byte ^= key;
         if length != 0 {

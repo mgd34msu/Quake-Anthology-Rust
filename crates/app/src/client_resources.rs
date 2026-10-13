@@ -77,6 +77,37 @@ impl ClientResources {
     ) -> bool {
         self.state.apply(index, text, catalog, bank)
     }
+
+    pub(crate) fn apply_gamestate(
+        &mut self,
+        gamestate: &qa_network::channel::commands::Q3GameState<'_>,
+        catalog: Option<&ModelCatalog>,
+        bank: Option<&qa_audio::Bank>,
+    ) {
+        // The channel validated every native row, baseline and aggregate byte
+        // count before this callback. Replace the sole CLIENT storage; readiness
+        // still belongs to the channel's completed outer-message marker.
+        self.state.configs.reset();
+        self.commands.reset();
+        self.selected.clear();
+        self.joined.clear();
+        let mut rejected = 0;
+        let result = gamestate.for_each_config(|config| {
+            rejected += u64::from(
+                self.state
+                    .configs
+                    .set(config.index as usize, config.text)
+                    .is_err(),
+            );
+        });
+        self.state.rejected += rejected + u64::from(result.is_err());
+        if let Some(catalog) = catalog {
+            self.state.rejected +=
+                u64::from(self.state.models.refresh_all(&self.state.configs, catalog));
+        }
+        self.state.sounds.clear();
+        self.state.rejected += u64::from(!self.state.refresh_sounds(bank));
+    }
 }
 
 /// The retained channel and current argv storage are borrowed only for one
@@ -230,7 +261,7 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
         use qa_compat::services::CallError;
         self.validate(server)?;
         if self.resources.state.layout.rules != RuleSetId::Quake3
-            || self.channel.q3_snapshot_number().is_none()
+            || (self.channel.q3_startup().is_none() && self.channel.q3_snapshot_number().is_none())
         {
             return Err(CallError::Unsupported);
         }
@@ -331,13 +362,11 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
                     }
                     if index == ConfigLayout::Q3_SYSTEM_INFO {
                         let info = self.resources.joined.as_bytes();
-                        let value = qa_core::text::info_value(info, b"sv_serverid", true)
-                            .map_or(&b""[..], |range| &info[range]);
                         let mut context = self
                             .channel
                             .command_context()
                             .map_err(|_| CallError::Text)?;
-                        context.server_id = qa_core::text::atoi_prefix(value);
+                        context.set_system_info(info);
                         self.channel
                             .set_command_context(context)
                             .map_err(|_| CallError::Text)?;
@@ -443,19 +472,25 @@ impl ResourceState {
                 Some((bank.registered_sound(handle)?, u32::try_from(handle).ok()?))
             });
         }
+        self.refresh_sounds(Some(bank))
+    }
+
+    fn refresh_sounds(&mut self, bank: Option<&qa_audio::Bank>) -> bool {
+        let mut complete = true;
         for (ordinal, index) in self.layout.resources[1].range().enumerate() {
             let Some(config) = self.configs.config(index) else {
-                return false;
+                complete = false;
+                continue;
             };
             if self
                 .sounds
-                .bind_name(Some(bank), ordinal as u32, config.text, self.layout.rules)
+                .bind_name(bank, ordinal as u32, config.text, self.layout.rules)
                 .is_err()
             {
-                return false;
+                complete = false;
             }
         }
-        true
+        complete
     }
     fn apply(
         &mut self,

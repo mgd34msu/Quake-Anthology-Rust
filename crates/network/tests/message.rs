@@ -312,3 +312,67 @@ fn invalid_width_and_q3_reserved_symbol_are_errors() {
     assert_eq!((error.byte, error.kind), (1, ErrorKind::Truncated));
     assert_eq!(reader.bit_position(), 8);
 }
+
+#[test]
+fn q3_string_write_and_read_byte_rules_are_distinct_for_both_native_sizes() {
+    for (policy, decoded_raw) in [
+        (StringPolicy::Q3, &b"a..."[..]),
+        (StringPolicy::Q3_BIG, &b"a\x80.\xff"[..]),
+    ] {
+        let mut wire = [0; 128];
+        let mut writer = Writer::new(&mut wire, Encoding::Q3);
+        writer.write_string(policy, b"a\x80%\xff").unwrap();
+        let mut reader = Reader::new(writer.bytes(), Encoding::Q3);
+        for byte in b"a.%." {
+            assert_eq!(reader.read_bits(8).unwrap(), u32::from(*byte));
+        }
+        assert_eq!(reader.read_bits(8).unwrap(), 0);
+        let mut scratch = [0; 8192];
+        assert_eq!(
+            Reader::new(writer.bytes(), Encoding::Q3)
+                .read_string_into(policy, &mut scratch)
+                .unwrap(),
+            b"a..."
+        );
+
+        let mut writer = Writer::new(&mut wire, Encoding::Q3);
+        writer.write_data(b"a\x80%\xff\0").unwrap();
+        assert_eq!(
+            Reader::new(writer.bytes(), Encoding::Q3)
+                .read_string_into(policy, &mut scratch)
+                .unwrap(),
+            decoded_raw
+        );
+    }
+}
+
+#[test]
+fn q3_string_writer_native_limits_and_cursor_clone_preserve_the_original_boundaries() {
+    for (policy, maximum) in [(StringPolicy::Q3, 1023), (StringPolicy::Q3_BIG, 8191)] {
+        let mut wire = vec![0; 16384];
+        let mut writer = Writer::new(&mut wire, Encoding::Q3);
+        writer.write_bits(21, 5).unwrap();
+        writer.write_string(policy, &vec![b'x'; maximum]).unwrap();
+        let mut reader = Reader::new(writer.bytes(), Encoding::Q3);
+        assert_eq!(reader.read_bits(5).unwrap(), 21);
+        let mut saved = reader.clone();
+        let mut scratch = [0; 8192];
+        assert_eq!(
+            reader.read_string_into(policy, &mut scratch).unwrap().len(),
+            maximum
+        );
+        // At native capacity, MSG_ReadString/BigString leave the NUL unread.
+        assert_eq!(reader.read_bits(8).unwrap(), 0);
+        assert_eq!(saved.read_bits(8).unwrap(), u32::from(b'x'));
+        let mut writer = Writer::new(&mut wire, Encoding::Q3);
+        writer
+            .write_string(policy, &vec![b'x'; maximum + 1])
+            .unwrap();
+        assert_eq!(
+            Reader::new(writer.bytes(), Encoding::Q3)
+                .read_bits(8)
+                .unwrap(),
+            0
+        );
+    }
+}

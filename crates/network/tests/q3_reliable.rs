@@ -128,7 +128,15 @@ fn outputs(server: &mut Channel, client: &mut Channel) -> Vec<Vec<u8>> {
         if let Delivery::Payload(body) = received.delivery {
             let mut body = body.to_vec();
             client
-                .decode_server_output(&mut body, seq, |_, text| texts.push(text.to_vec()))
+                .decode_server_output(&mut body, seq, |output| {
+                    if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                        text,
+                        ..
+                    } = output
+                    {
+                        texts.push(text.to_vec());
+                    }
+                })
                 .unwrap();
             break;
         }
@@ -215,7 +223,15 @@ fn rejected_packet_and_partial_fragments_cannot_ack_queued_commands() {
         if let Delivery::Payload(body) = received.delivery {
             let mut bytes = body.to_vec();
             client
-                .decode_server_output(&mut bytes, seq, |_, text| texts.push(text.to_vec()))
+                .decode_server_output(&mut bytes, seq, |output| {
+                    if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                        text,
+                        ..
+                    } = output
+                    {
+                        texts.push(text.to_vec());
+                    }
+                })
                 .unwrap();
         }
     }
@@ -272,7 +288,15 @@ fn native_string_width_gaps_duplicates_and_future_ack_are_bounded() {
         if let Delivery::Payload(body) = received.delivery {
             let mut bytes = body.to_vec();
             client
-                .decode_server_output(&mut bytes, seq, |_, bytes| text.extend_from_slice(bytes))
+                .decode_server_output(&mut bytes, seq, |output| {
+                    if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                        text: bytes,
+                        ..
+                    } = output
+                    {
+                        text.extend_from_slice(bytes);
+                    }
+                })
                 .unwrap();
             break;
         }

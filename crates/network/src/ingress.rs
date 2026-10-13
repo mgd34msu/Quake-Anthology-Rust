@@ -83,6 +83,7 @@ pub enum Incoming<'a> {
         sequence: u32,
         text: &'a [u8],
     },
+    Gamestate(crate::channel::commands::Q3GameState<'a>),
     Snapshot(crate::snapshots::ReceivedFrame<'a>),
     PlayerInfo(crate::states::QwPlayerInfo),
     PlayerValue {

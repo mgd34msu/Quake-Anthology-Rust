@@ -6,6 +6,14 @@ use crate::{
 };
 use qa_core::{events::NativeReceipt, loopback::Endpoint};
 
+mod gamestate;
+pub use gamestate::{Q3GameState, Q3Startup};
+
+pub enum ServerOutput<'a> {
+    ReliableCommand { sequence: u32, text: &'a [u8] },
+    Gamestate(Q3GameState<'a>),
+}
+
 const SLOTS: usize = 64;
 
 const fn slot(sequence: u32) -> usize {
@@ -159,6 +167,14 @@ pub struct CommandContext {
     pub challenge: u32,
     pub checksum_feed: u32,
 }
+impl CommandContext {
+    /// Original CLIENT systeminfo header projection, shared with selected cs.
+    pub fn set_system_info(&mut self, info: &[u8]) {
+        let value = qa_core::text::info_value(info, b"sv_serverid", true)
+            .map_or(&b""[..], |range| &info[range]);
+        self.server_id = qa_core::text::atoi_prefix(value);
+    }
+}
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct CommandState {
     pub queued: u32,
@@ -173,6 +189,7 @@ pub(super) struct CommandMessages {
     context: CommandContext,
     message_acknowledged: u32,
     last_executed: u32,
+    startup: Option<Q3Startup>,
 }
 impl CommandMessages {
     pub(super) fn load(endpoint: Endpoint, maximum: usize) -> Self {
@@ -197,6 +214,7 @@ impl CommandMessages {
             context: CommandContext::default(),
             message_acknowledged: 0,
             last_executed: 0,
+            startup: None,
         }
     }
     pub(super) fn pending(&self) -> bool {
@@ -217,13 +235,9 @@ impl CommandMessages {
 
 // msg.c uses bytewise native string conversion inside its existing MSG stream.
 fn command_bytes(text: &[u8]) -> impl Iterator<Item = u8> + '_ {
-    let n = qa_core::text::until_nul(text).len();
-    text[..if n < STRING_BYTES { n } else { 0 }]
-        .iter()
-        .copied()
-        .map(|byte| if byte > 127 { b'.' } else { byte })
-        .chain(std::iter::once(0))
+    StringPolicy::Q3.write_bytes(text)
 }
+
 pub fn write_string(writer: &mut Writer<'_>, text: &[u8]) -> Result<(), packet::Error> {
     for byte in command_bytes(text) {
         writer.write_bits(u32::from(byte), 8)?;
@@ -344,6 +358,19 @@ impl Channel {
         Ok(())
     }
 
+    /// Only a complete outer native message makes a new gamestate ready.
+    pub fn q3_startup(&self) -> Option<Q3Startup> {
+        if self.endpoint() != Endpoint::Client {
+            return None;
+        }
+        let commands = self.commands.as_ref()?;
+        let mut startup = commands.startup?;
+        startup.message_sequence = commands.message_acknowledged;
+        startup.server_command_sequence = commands.incoming.sequence;
+        startup.last_executed_server_command = commands.last_executed;
+        Some(startup)
+    }
+
     pub fn received_command(&self) -> Option<(u32, &[u8])> {
         let c = self.commands.as_ref()?;
         Some((c.incoming.sequence, c.incoming.text(c.incoming.sequence)))
@@ -385,13 +412,13 @@ impl Channel {
         packet::xor(&mut out[..n], 4, key, &command_text[..length]);
         Ok(n)
     }
-    /// Native server commands and snapshots share this MSG stream. Gamestate
-    /// and download opcodes remain explicit until their adapters are present.
+    /// Native commands, gamestate and snapshots share this MSG stream.
+    /// Download services remain explicitly unsupported.
     pub fn decode_server_output(
         &mut self,
         bytes: &mut [u8],
         sequence: u32,
-        mut consume: impl FnMut(u32, &[u8]),
+        mut consume: impl FnMut(ServerOutput<'_>),
     ) -> Result<(), packet::Error> {
         if self.endpoint() != Endpoint::Client {
             return Err(packet::Error::Context);
@@ -418,20 +445,44 @@ impl Channel {
         let mut reader = Reader::new(bytes, Encoding::Q3);
         reader.read_bits(32)?;
         let mut text = [0; STRING_BYTES];
+        let mut startup = None;
         // Each opcode consumes bits; the fixed MSG boundary bounds this loop.
         // A full reliable window followed by a snapshot must still reach EOF.
         loop {
             match reader.read_bits(8)? {
                 8 => {
                     c.message_acknowledged = sequence;
+                    if let Some(startup) = startup {
+                        c.startup = Some(startup);
+                    }
                     return Ok(());
                 }
                 5 => {
                     let seq = reader.read_bits(32)?;
                     let text = reader.read_string_into(StringPolicy::Q3, &mut text)?;
                     if c.incoming.receive(seq, text, true)? {
-                        consume(seq, text);
+                        consume(ServerOutput::ReliableCommand {
+                            sequence: seq,
+                            text,
+                        });
                     }
+                }
+                2 => {
+                    let Some(crate::snapshots::Storage::Quake3(snapshots)) =
+                        self.snapshots.as_mut()
+                    else {
+                        return Err(packet::Error::Context);
+                    };
+                    let gamestate =
+                        Q3GameState::read(&mut reader, sequence, snapshots.native_numbers())?;
+                    // A valid replacement body revokes readiness immediately;
+                    // outer trailing errors must not authorize its new rows.
+                    c.startup = None;
+                    gamestate.install_baselines(snapshots)?;
+                    c.incoming.sequence = gamestate.server_command_sequence;
+                    gamestate.install_context(&mut c.context);
+                    startup = Some(gamestate.startup(c.last_executed));
+                    consume(ServerOutput::Gamestate(gamestate));
                 }
                 1 => {} // svc_nop
                 7 => {

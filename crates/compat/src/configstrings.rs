@@ -3,11 +3,10 @@ use crate::{
     memory::ModuleMemory,
     services::{CallError, ServiceStorage},
 };
-use qa_core::configstrings::{ConfigLayout, ConfigStrings};
+use qa_core::configstrings::ConfigStrings;
 use qa_core::primitives::ModuleId;
 
-pub const Q3_GAME_STATE_ROWS: usize = ConfigLayout::QUAKE3.count;
-pub const Q3_GAME_STATE_DATA_BYTES: usize = 16000;
+pub use qa_core::configstrings::{Q3_GAME_STATE_DATA_BYTES, Q3_GAME_STATE_ROWS};
 pub const Q3_GAME_STATE_DATA_OFFSET: usize = Q3_GAME_STATE_ROWS * 4;
 pub const Q3_GAME_STATE_COUNT_OFFSET: usize = Q3_GAME_STATE_DATA_OFFSET + Q3_GAME_STATE_DATA_BYTES;
 pub const Q3_GAME_STATE_BYTES: usize = Q3_GAME_STATE_COUNT_OFFSET + 4;

@@ -39,10 +39,13 @@ pub struct ParsedCommand {
     pub(crate) tokens: Tokens,
 }
 impl ParsedCommand {
-    pub fn parse(&mut self, text: &[u8], source: RuleSetId) -> Result<(), TextError> {
+    pub fn clear(&mut self) {
         self.line.clear();
         self.tokens.len = 0;
         self.tokens.raw = 0..0;
+    }
+    pub fn parse(&mut self, text: &[u8], source: RuleSetId) -> Result<(), TextError> {
+        self.clear();
         self.line
             .append_bytes(text)
             .map_err(|_| TextError::TooLong)?;

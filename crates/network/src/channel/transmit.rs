@@ -16,6 +16,7 @@ pub enum TransmitError {
     PendingPacket,
     NoPacket,
     SnapshotContext,
+    ServerContext,
     Header(headers::Error),
 }
 impl std::fmt::Display for TransmitError {
@@ -635,14 +636,27 @@ impl Channel {
             let length = self
                 .encode_server_output(&mut bytes, |_, _| Ok(()))
                 .map_err(|_| TransmitError::MessageTooLarge)?;
-            let queued = self.command_state().map(|state| state.queued);
-            self.prepare_inner(Some(&bytes[..length]), time, queued, None, None)
+            self.prepare_server_message(&bytes[..length], time)
                 .map(|_| ())
         })();
         self.transmit.command_output = bytes;
         result?;
         Ok(self.pending_packet())
     }
+    /// Pre-encoded native SERVER MSG bytes use the same submission/fragment
+    /// ownership as reliable commands, without claiming snapshot provenance.
+    pub fn prepare_server_message(
+        &mut self,
+        bytes: &[u8],
+        time: EventTime,
+    ) -> Result<Option<Prepared<'_>>, TransmitError> {
+        if self.endpoint() != Endpoint::Server {
+            return Err(TransmitError::ServerContext);
+        }
+        let queued = self.command_state().map(|state| state.queued);
+        self.prepare_inner(Some(bytes), time, queued, None, None)
+    }
+
     pub fn prepare_output(
         &mut self,
         time: EventTime,
