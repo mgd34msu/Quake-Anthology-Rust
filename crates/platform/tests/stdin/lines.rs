@@ -139,7 +139,11 @@ fn eof_publishes_the_partial_line_in_the_intake_that_observes_it() {
 
     input.poll(&clock, &mut queue);
     let final_time = finish_intake(&clock, &mut queue);
-    assert!(line(&mut queue, "tail") <= final_time);
+    let line_time = line(&mut queue, "tail");
+    assert!(
+        line_time <= final_time,
+        "line {line_time:?} followed by time {final_time:?}"
+    );
     assert_eq!(queue.pop().unwrap().kind, EventKind::Time);
     assert_eq!(input.lines, 1);
     input.poll(&clock, &mut queue);

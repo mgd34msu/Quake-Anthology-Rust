@@ -45,6 +45,11 @@ pub trait FrameSource {
     ) {
     }
     fn present(&mut self);
+    /// Cold registration has no consumer backend yet. Retain its presentation
+    /// records while independent native channel consumers continue delivery.
+    fn presentation_ready(&self) -> bool {
+        true
+    }
     /// False reports an unloaded backend, not successful audio/particle proof.
     fn sound(&mut self, _event: SoundEvent) -> bool {
         false
@@ -79,12 +84,14 @@ pub trait FrameSource {
 pub struct LiveFrame<'a> {
     pub pump: &'a mut EventPump,
     pub window: &'a mut Window,
-    pub renderer: &'a mut crate::renderer::Renderer,
-    pub audio: &'a mut crate::audio::Output,
+    pub renderer: Option<&'a mut crate::renderer::Renderer>,
+    pub audio: Option<&'a mut crate::audio::Output>,
 }
 impl FrameSource for LiveFrame<'_> {
     fn effect(&mut self, event: EffectEvent) -> bool {
-        self.renderer.effect(event)
+        self.renderer
+            .as_deref_mut()
+            .is_some_and(|renderer| renderer.effect(event))
     }
     fn effect_clients(
         &mut self,
@@ -92,19 +99,27 @@ impl FrameSource for LiveFrame<'_> {
         time: EventTime,
         gravity: f32,
     ) {
-        self.renderer.set_effect_clients(*clients, time, gravity);
+        if let Some(renderer) = self.renderer.as_deref_mut() {
+            renderer.set_effect_clients(*clients, time, gravity);
+        }
     }
     fn sound(&mut self, event: SoundEvent) -> bool {
-        self.audio.mixer.sound(event)
+        self.audio
+            .as_deref_mut()
+            .is_some_and(|audio| audio.mixer.sound(event))
     }
     fn listeners(&mut self, listeners: &[Option<qa_audio::Listener>; SeatId::COUNT], volume: f32) {
-        self.audio.mixer.listen(listeners, volume);
+        if let Some(audio) = self.audio.as_deref_mut() {
+            audio.mixer.listen(listeners, volume);
+        }
     }
     fn mix_audio(
         &mut self,
         entities: &[Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT],
     ) {
-        self.audio.submit(entities);
+        if let Some(audio) = self.audio.as_deref_mut() {
+            audio.submit(entities);
+        }
     }
     fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
         self.pump.send_udp(socket, to, bytes).is_ok()
@@ -125,7 +140,12 @@ impl FrameSource for LiveFrame<'_> {
         self.pump.elapsed()
     }
     fn present(&mut self) {
-        self.renderer.present(self.window);
+        if let Some(renderer) = self.renderer.as_deref_mut() {
+            renderer.present(self.window);
+        }
+    }
+    fn presentation_ready(&self) -> bool {
+        self.renderer.is_some() && self.audio.is_some()
     }
     fn render(
         &mut self,
@@ -134,7 +154,9 @@ impl FrameSource for LiveFrame<'_> {
         huds: &[Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT],
         console: qa_console::presentation::ConsoleView<'_>,
     ) {
-        self.renderer.frame(views, scenes, huds, console);
+        if let Some(renderer) = self.renderer.as_deref_mut() {
+            renderer.frame(views, scenes, huds, console);
+        }
     }
 }
 

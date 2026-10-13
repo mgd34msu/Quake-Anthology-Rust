@@ -689,17 +689,7 @@ fn run() -> Result<(), String> {
     // Com_Frame reuses these once-only lifecycle entries on subsequent frames.
     if !host.runtime.quit {
         host.initialize_modules(qa_app::modules::Phase::Server);
-        for index in 0..module_count {
-            let module = qa_core::primitives::ModuleId((index + 1) as u16);
-            if host.module_state(module) == Some(qa_app::modules::State::Failed) {
-                let detail = host
-                    .last_unknown_call(module)
-                    .map_or_else(String::new, |number| {
-                        format!("; last unsupported import {number}")
-                    });
-                return Err(format!("module {} failed initialization{detail}", module.0));
-            }
-        }
+        host.registration_pending(qa_app::modules::Phase::Server)?;
     }
     for (seat, id) in local_clients
         .iter()
@@ -795,10 +785,27 @@ fn run() -> Result<(), String> {
         .map_err(|_| "renderer width")?;
     let height = i32::try_from(renderer_context.configuration().display.height)
         .map_err(|_| "renderer height")?;
+    host.local_clients = local_clients;
+    if let Some(world) = &loaded_world {
+        for (seat, presentation) in world.presentations.iter().enumerate() {
+            if local_clients[seat].is_some() {
+                host.local_worlds[seat] = Some((world.world, presentation.id));
+                host.local_presentations[seat] = presentation.defaults;
+            }
+        }
+    }
     if !host.runtime.quit {
         // CLIENT precaches borrow the same cold asset owner as SERVER and
         // configured profiles. Freeze it only after module registration ends.
-        host.initialize_modules(qa_app::modules::Phase::Client);
+        host.register_client_modules(
+            &mut LiveFrame {
+                pump: &mut pump,
+                window: &mut window,
+                renderer: None,
+                audio: None,
+            },
+            Duration::from_secs(10),
+        )?;
     }
     let (mut assets, models) = host
         .runtime
@@ -820,15 +827,6 @@ fn run() -> Result<(), String> {
     host.set_model_catalog(std::sync::Arc::new(models), client_profiles);
     let bank = qa_app::audio::finish_registration(&mut host)?;
     let mut audio = qa_app::audio::Output::open(bank)?;
-    host.local_clients = local_clients;
-    if let Some(world) = &loaded_world {
-        for (seat, presentation) in world.presentations.iter().enumerate() {
-            if local_clients[seat].is_some() {
-                host.local_worlds[seat] = Some((world.world, presentation.id));
-                host.local_presentations[seat] = presentation.defaults;
-            }
-        }
-    }
     let (band_cvar, cpu_bands) = if matches!(renderer_kind, Kind::Cpu) {
         cpu_band_setting(&host.console.cvars, cpu_bands)?
     } else {
@@ -1003,8 +1001,8 @@ fn run() -> Result<(), String> {
             &mut LiveFrame {
                 pump: &mut pump,
                 window: &mut window,
-                renderer: &mut renderer,
-                audio: &mut audio,
+                renderer: Some(&mut renderer),
+                audio: Some(&mut audio),
             },
             uncapped,
         );

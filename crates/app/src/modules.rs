@@ -968,6 +968,48 @@ impl FrameHost {
     pub fn initialize_modules(&mut self, phase: Phase) {
         self.module_lifecycle(Some(phase));
     }
+    /// Pending queued startup is not a completed registration boundary.
+    pub fn registration_pending(&self, phase: Phase) -> Result<bool, String> {
+        let Some(modules) = &self.modules else {
+            return Ok(false);
+        };
+        let mut pending = false;
+        for row in modules
+            .rows
+            .iter()
+            .flatten()
+            .filter(|row| row.request.phase == phase)
+        {
+            if row.state == State::Failed {
+                let module = row.request.context.module;
+                let detail = self
+                    .last_unknown_call(module)
+                    .map_or_else(String::new, |number| {
+                        format!("; last unsupported import {number}")
+                    });
+                return Err(format!("module {} failed initialization{detail}", module.0));
+            }
+            pending |= row.state == State::Pending;
+        }
+        Ok(pending)
+    }
+    /// Keep the cold asset owners live while the ordinary Com_Frame packet
+    /// path delivers startup. This never adds a physical intake point.
+    pub fn register_client_modules(
+        &mut self,
+        source: &mut impl crate::host::FrameSource,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        self.initialize_modules(Phase::Client);
+        let started = qa_platform::Stopwatch::start();
+        while self.registration_pending(Phase::Client)? && !self.runtime.quit {
+            if started.elapsed() >= timeout {
+                return Err("client modules are still waiting for queued startup state".into());
+            }
+            self.frame(source, false);
+        }
+        Ok(())
+    }
     /// Called for ordinary quit and frame-limit exit; repeating it is a no-op.
     pub fn shutdown_modules(&mut self) {
         self.disconnect_module_clients();
@@ -1110,6 +1152,11 @@ impl FrameHost {
     pub fn client_modules(&mut self) {
         self.initialize_modules(Phase::Client);
         self.client_configurations();
+        // Init registers into these owners. Draw exports may use only the
+        // frozen catalogs and scene consumer, after registration completes.
+        if self.runtime.model_loader.is_some() || self.runtime.sound_loader.is_some() {
+            return;
+        }
         let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
         for index in 0..count {
             let Some(row) = self.module_row(ModuleId(index as u16)) else {

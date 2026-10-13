@@ -19,7 +19,6 @@ pub(crate) fn event_epoch_millis() -> i64 {
 }
 #[link(name = "SDL3")]
 unsafe extern "C" {
-    fn SDL_GetTicksNS() -> u64;
     fn SDL_GetPerformanceCounter() -> u64;
     fn SDL_GetPerformanceFrequency() -> u64;
     fn SDL_DelayNS(duration: u64);
@@ -37,22 +36,25 @@ impl Stopwatch {
         }
     }
     pub fn elapsed(&self) -> Duration {
+        Duration::from_nanos(self.elapsed_time().0)
+    }
+    fn elapsed_time(&self) -> EventTime {
         let ticks = unsafe { SDL_GetPerformanceCounter() }.saturating_sub(self.start);
-        Duration::from_nanos(
+        EventTime(
             (u128::from(ticks) * 1_000_000_000 / u128::from(self.frequency))
                 .min(u128::from(u64::MAX)) as u64,
         )
     }
 }
-pub(crate) struct Clock(u64);
+pub(crate) struct Clock(Stopwatch);
 impl Clock {
     pub fn new() -> Self {
-        let start = unsafe { SDL_GetTicksNS() };
+        let start = Stopwatch::start();
         event_epoch_millis();
         Self(start)
     }
     pub fn now(&self) -> EventTime {
-        EventTime(unsafe { SDL_GetTicksNS() }.saturating_sub(self.0))
+        self.0.elapsed_time()
     }
 }
 pub fn pause(duration: Duration) {
@@ -60,3 +62,7 @@ pub fn pause(duration: Duration) {
         SDL_DelayNS(duration.as_nanos().min(u128::from(u64::MAX)) as u64);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/clock/monotonic.rs"]
+mod tests;

@@ -1,3 +1,6 @@
+#[path = "model_assets/support.rs"]
+#[allow(dead_code)]
+mod model_files;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "../../formats/tests/support/native_image.rs"]
 #[allow(dead_code)]
@@ -44,7 +47,7 @@ fn qvm_with_renderer(imports: &'static qa_compat::abi::CallTable, renderer: i32)
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..11 {
+    for command in 0..12 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
@@ -107,13 +110,16 @@ fn qvm_with_renderer(imports: &'static qa_compat::abi::CallTable, renderer: i32)
                 (Const, -renderer - 1),
                 (Call, 0),
             ]),
+            11 => operations.extend([(Const, 128), (Arg, 8), (Const, -40), (Call, 0)]),
             _ => unreachable!(),
         }
         operations.push((Leave, 64));
     }
+    let mut data = [0; 256];
+    data[128..140].copy_from_slice(b"ui/cold.tga\0");
     (
         Program::Qvm {
-            vm: Box::new(service_program::program(&operations, &[0; 256])),
+            vm: Box::new(service_program::program(&operations, &data)),
             imports,
         },
         QVM_OUTPUT,
@@ -146,7 +152,7 @@ fn native_with_renderer(
     pe_text(&mut file, 0x1800, &[0xc3]);
     let mut vm = Vm::map_image(
         Image::parse(&file, None, LoadRole::Library).unwrap(),
-        &(0..11)
+        &(0..12)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -161,7 +167,7 @@ fn native_with_renderer(
     let output = vm.process.base() + 0x2000;
     let callback = vm.import_callback();
     let mut code = Vec::new();
-    for command in 0..11u8 {
+    for command in 0..12u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
@@ -179,12 +185,17 @@ fn native_with_renderer(
                 code.extend([0x49, 0xb8]);
                 code.extend((output + if command == 0 { 4 } else { 0 }).to_le_bytes());
             }
+            if command == 11 {
+                code.extend([0x48, 0xba]);
+                code.extend((vm.process.base() + 0x4000).to_le_bytes());
+            }
             let ordinal = match command {
                 2 => 52,
                 4 => 100,
                 7 => 50,
                 8 => 53,
                 10 => renderer,
+                11 => 39,
                 _ => 51,
             };
             code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
@@ -203,6 +214,7 @@ fn native_with_renderer(
     code.extend([0x31, 0xc0, 0xc3]);
     assert!(code.len() < 0x800);
     vm.process.memory_mut().unwrap()[0x1800..0x1800 + code.len()].copy_from_slice(&code);
+    vm.process.memory_mut().unwrap()[0x4000..0x400c].copy_from_slice(b"ui/cold.tga\0");
     (
         Program::Native {
             vm: Box::new(vm),
@@ -229,6 +241,15 @@ fn host_with_server(
     clients: usize,
     startup: Option<Argument>,
     server: bool,
+) -> (FrameHost, Vec<ClientId>, u64) {
+    host_with_initializer(factory, clients, startup, server, CallbackId(6))
+}
+fn host_with_initializer(
+    factory: fn() -> (Program, u64),
+    clients: usize,
+    startup: Option<Argument>,
+    server: bool,
+    initializer: CallbackId,
 ) -> (FrameHost, Vec<ClientId>, u64) {
     let mut runtime = Runtime::load(clients, []).unwrap();
     let mut requests = Vec::new();
@@ -286,7 +307,7 @@ fn host_with_server(
             rate: TickRate::FrameDriven,
             anchor,
             program,
-            entries: (0..11).collect(),
+            entries: (0..12).collect(),
             frame: Export {
                 client: Some(client),
                 ..Export::clocked(CallbackId(6))
@@ -295,7 +316,7 @@ fn host_with_server(
             initialize: startup
                 .into_iter()
                 .map(|argument| {
-                    let mut export = Export::words(CallbackId(6), &[]);
+                    let mut export = Export::words(initializer, &[]);
                     export.client = Some(client);
                     export.arguments[0] = argument;
                     export
@@ -1494,6 +1515,176 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     );
 }
 
+fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
+    use qa_app::{
+        host::FrameSource,
+        model_assets::{ModelCatalogBuilder, ModelProfile},
+    };
+    use qa_core::{
+        events::{FrameEvent, OutputTarget},
+        sys_events::{EventKind, SysEvent, SysEventQueue},
+    };
+    use std::time::Duration;
+    struct Source {
+        time: EventTime,
+        polls: usize,
+        ready: bool,
+        sounds: usize,
+    }
+    impl FrameSource for Source {
+        fn begin_frame(&mut self) -> Duration {
+            self.time = EventTime::from_milliseconds(self.time.milliseconds() + 100);
+            Duration::from_nanos(self.time.0)
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            self.polls += 1;
+            queue
+                .push(SysEvent {
+                    time: self.time,
+                    kind: EventKind::Time,
+                })
+                .unwrap();
+        }
+        fn wait_time(&mut self, _: Duration) -> Duration {
+            self.begin_frame()
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn present(&mut self) {}
+        fn presentation_ready(&self) -> bool {
+            self.ready
+        }
+        fn sound(&mut self, event: SoundEvent) -> bool {
+            self.sounds += usize::from(event.sound == SoundId(3));
+            true
+        }
+    }
+    let (mut host, ids, _) = host_with_initializer(
+        factory,
+        1,
+        Some(Argument::ClientNativeNumber),
+        true,
+        CallbackId(11),
+    );
+    let mut files = model_files::Fixture::new(&[(
+        "ui/cold.tga",
+        model_files::tga(2, 2, &[[70, 80, 90, 255]; 4]),
+    )]);
+    host.runtime.vfs = std::mem::take(&mut files.vfs);
+    let profile = ModelProfile {
+        source_rules: RuleSetId::Quake3,
+        rules: RuleSetId::Quake3,
+        source_palette: None,
+        palette: None,
+        image_settings: qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+    };
+    host.runtime.model_loader = Some(
+        ModelCatalogBuilder::new(
+            qa_render::Assets::load().unwrap(),
+            [profile],
+            [],
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let sound_sequence = host
+        .runtime
+        .server
+        .events
+        .push_to(
+            OutputTarget::Presentation,
+            FrameEvent::Sound(SoundEvent {
+                sound: SoundId(3),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let mut source = Source {
+        time: EventTime::default(),
+        polls: 0,
+        ready: false,
+        sounds: 0,
+    };
+    assert_eq!(host.registration_pending(Phase::Client), Ok(true));
+    host.register_client_modules(&mut source, Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(host.registration_pending(Phase::Client), Ok(false));
+    assert!(source.polls > 4 && source.polls % 2 == 0);
+    assert_eq!(source.sounds, 0);
+    assert!(
+        host.runtime
+            .server
+            .events
+            .sequence_range()
+            .contains(&sound_sequence)
+    );
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
+    let calls = host.module_counts(ModuleId(1)).unwrap();
+    assert_eq!(
+        calls.calls, 1,
+        "no draw export may run against the cold owner"
+    );
+    assert_eq!(calls.traps, 0);
+    assert!(
+        host.runtime
+            .network
+            .get(ids[0], Endpoint::Client)
+            .unwrap()
+            .channel
+            .q3_startup()
+            .is_some()
+    );
+    let (_, catalog) = host.runtime.model_loader.take().unwrap().finish();
+    use qa_compat::services::ModelLookup;
+    assert_eq!(catalog.shader_handle(b"ui/cold.tga"), Some(1));
+    host.set_model_catalog(std::sync::Arc::new(catalog), []);
+    source.ready = true;
+    host.frame(&mut source, true);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 2);
+    assert_eq!(source.sounds, 1);
+    assert!(
+        !host
+            .runtime
+            .server
+            .events
+            .sequence_range()
+            .contains(&sound_sequence)
+    );
+    host.frame(&mut source, true);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
+    assert_eq!(source.sounds, 1);
+    assert_eq!(host.registration_pending(Phase::Client), Ok(false));
+}
+
+fn registration_wait_rejects_unreceived_state_instead_of_freezing_it() {
+    use qa_app::host::FrameSource;
+    use std::time::Duration;
+    struct Source;
+    impl FrameSource for Source {
+        fn begin_frame(&mut self) -> Duration {
+            panic!("timeout must not poll")
+        }
+        fn poll_events(&mut self, _: &mut qa_core::sys_events::SysEventQueue) {
+            panic!("timeout must not poll")
+        }
+        fn wait_time(&mut self, _: Duration) -> Duration {
+            unreachable!()
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn present(&mut self) {}
+    }
+    let (mut host, _, _) = host_with_startup(qvm, 1, Some(Argument::ClientNativeNumber));
+    assert!(
+        host.register_client_modules(&mut Source, Duration::ZERO)
+            .is_err()
+    );
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
+}
+
 fn renderer_configuration_uses_shared_services(factory: fn() -> (Program, u64)) {
     use qa_core::presentation::{DisplayConfiguration, RendererConfiguration};
     let (mut host, _, output) = host(factory, 1);
@@ -1563,10 +1754,13 @@ fn main() {
     }
     renderer_configuration_uses_shared_services(qvm);
     renderer_configuration_uses_shared_services(qvm_ui_renderer);
+    queued_startup_keeps_registration_open(qvm);
+    registration_wait_rejects_unreceived_state_instead_of_freezing_it();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         renderer_configuration_uses_shared_services(native);
         renderer_configuration_uses_shared_services(native_ui_renderer);
+        queued_startup_keeps_registration_open(native);
     }
     accepted_connection_snapshot_bytes(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

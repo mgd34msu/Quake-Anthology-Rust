@@ -120,7 +120,7 @@ pub fn dispatch(
     let output_range = server.events.sequence_range();
     let now = time.seconds();
     // In-process presentation resynchronization needs no native channel reset.
-    if server.events.resume_if_needed(&mut server.presentation) {
+    if source.presentation_ready() && server.events.resume_if_needed(&mut server.presentation) {
         qa_core::events::dispatch_consumer(
             &mut server.events,
             server.presentation,
