@@ -550,6 +550,8 @@ pub struct ConfigPublication {
     primary_claims: Box<[bool]>,
     pub unsupported: u64,
     pub pending: Option<(u64, usize)>,
+    game_state: Option<(u64, bool)>,
+    game_state_required: bool,
 }
 #[derive(Clone, Copy, Default)]
 struct PublishedConfig {
@@ -578,6 +580,8 @@ impl ConfigPublication {
             primary_claims: vec![false; sounds].into_boxed_slice(),
             unsupported: 0,
             pending: None,
+            game_state: None,
+            game_state_required: false,
         }
     }
     /// Source capacities are fixed when the module set is loaded.
@@ -601,6 +605,8 @@ impl ConfigPublication {
         self.sounds.clear();
         self.primary_claims.fill(false);
         self.pending = None;
+        self.game_state = None;
+        self.game_state_required = false;
     }
     pub fn connection(&mut self, module: ModuleId, layout: ConfigLayout) {
         if self.module != Some(module) || self.layout.map(|old| old.rules) != Some(layout.rules) {
@@ -643,6 +649,33 @@ impl ConfigPublication {
             && row.sequence == Some(sequence)
         {
             row.acknowledged = true;
+        }
+    }
+    pub(crate) fn game_state_published(&self) -> bool {
+        self.game_state.is_some()
+    }
+    pub(crate) fn require_game_state(&mut self) {
+        self.game_state_required = true;
+    }
+    pub(crate) fn publish_game_state(&mut self, sequence: u64) {
+        self.game_state = Some((sequence, false));
+    }
+    pub(crate) fn game_state_waiting(&self) -> bool {
+        self.game_state_required
+            && !self
+                .game_state
+                .is_some_and(|(_, acknowledged)| acknowledged)
+    }
+    pub(crate) fn acknowledge_game_state(&mut self, sequence: u64) {
+        if let Some((published, acknowledged)) = &mut self.game_state
+            && *published == sequence
+        {
+            *acknowledged = true;
+            for row in &mut self.rows {
+                if row.sequence == Some(sequence) {
+                    row.acknowledged = true;
+                }
+            }
         }
     }
     pub fn readiness(&self, destination: usize) -> ResourceReadiness {

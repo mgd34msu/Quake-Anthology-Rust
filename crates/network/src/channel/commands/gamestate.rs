@@ -2,12 +2,85 @@
 use super::CommandContext;
 use crate::{
     commands::packet,
-    message::{Reader, StringPolicy},
+    message::{Reader, StringPolicy, Writer},
     outputs::ConfigString,
-    snapshots::Q3Ring,
+    snapshots::{Entity, Q3Ring},
     states,
 };
-use qa_core::configstrings::{ConfigLayout, Q3_GAME_STATE_DATA_BYTES, Q3_GAME_STATE_ROWS};
+use qa_core::configstrings::{
+    ConfigLayout, MAX_TEXT, Q3_GAME_STATE_DATA_BYTES, Q3_GAME_STATE_ROWS,
+};
+
+/// Original svc_gamestate body, borrowed directly from the source configuration
+/// and baseline rows. Cloneable iterators permit complete input validation before
+/// output begins without a second packed gamestate or baseline buffer.
+pub fn write_gamestate<'a, C, I>(
+    writer: &mut Writer<'_>,
+    command_sequence: u32,
+    native_client: u32,
+    checksum_feed: u32,
+    configs: C,
+    baselines: I,
+) -> Result<(), packet::Error>
+where
+    C: IntoIterator<Item = (usize, &'a [u8])>,
+    C::IntoIter: Clone,
+    I: IntoIterator<Item = Entity<{ states::ENTITY_WORDS }>>,
+    I::IntoIter: Clone,
+{
+    if command_sequence > i32::MAX as u32 || native_client >= 64 {
+        return Err(packet::Error::Context);
+    }
+    let configs = configs.into_iter();
+    let baselines = baselines.into_iter();
+    let mut previous = None;
+    let mut data_count = 1usize;
+    for (index, text) in configs.clone() {
+        if index >= Q3_GAME_STATE_ROWS
+            || previous.is_some_and(|previous| index <= previous)
+            || text.len() >= MAX_TEXT
+            || text.contains(&0)
+        {
+            return Err(packet::Error::Count);
+        }
+        previous = Some(index);
+        if !text.is_empty() {
+            data_count = data_count
+                .checked_add(text.len() + 1)
+                .filter(|&count| count <= Q3_GAME_STATE_DATA_BYTES)
+                .ok_or(packet::Error::Count)?;
+        }
+    }
+    if baselines.clone().any(|entity| entity.number >= 1024) {
+        return Err(packet::Error::Count);
+    }
+    writer.write_bits(2, 8)?;
+    writer.write_bits(command_sequence, 32)?;
+    for (index, text) in configs {
+        if !text.is_empty() {
+            writer.write_bits(3, 8)?;
+            writer.write_bits(index as u32, 16)?;
+            writer.write_string(StringPolicy::Q3_BIG, text)?;
+        }
+    }
+    for entity in baselines {
+        // The original server omits the zero-number baseline, including client0.
+        if entity.number != 0 {
+            writer.write_bits(4, 8)?;
+            states::write_q3_entity(
+                writer,
+                entity.number,
+                &[0; states::ENTITY_WORDS],
+                Some(&entity.words),
+                true,
+            )?;
+        }
+    }
+    writer.write_bits(8, 8)?;
+    writer.write_bits(native_client, 32)?;
+    writer.write_bits(checksum_feed, 32)?;
+    Ok(())
+}
 
 /// Accepted native startup scalars; no packed configuration or frame copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,7 +175,7 @@ fn walk(
 }
 
 impl<'a> Q3GameState<'a> {
-    pub(super) fn read(
+    pub(crate) fn read(
         reader: &mut Reader<'a>,
         message_sequence: u32,
         native_numbers: usize,

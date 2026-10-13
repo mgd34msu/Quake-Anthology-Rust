@@ -425,6 +425,27 @@ fn run() -> Result<(), String> {
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
     let mut palettes = [None; 5];
     if let Some((input, policy)) = staged_map {
+        let virtual_name = input
+            .virtual_path
+            .strip_prefix("maps/")
+            .unwrap_or(&input.virtual_path);
+        let mapname = virtual_name.strip_suffix(".bsp").unwrap_or(virtual_name);
+        let map_view = console
+            .cvars
+            .bind(
+                "mapname",
+                Context {
+                    source: RuleSetId::Quake3,
+                    side: qa_console::catalog::Scope::Server,
+                    role: qa_console::views::Role::Engine,
+                    ..Context::default()
+                },
+            )
+            .ok_or("missing native mapname cvar")?;
+        console
+            .cvars
+            .force_write(map_view, mapname)
+            .map_err(|error| format!("native mapname: {error:?}"))?;
         let source_palette = qa_app::render_settings::palette(
             &runtime.vfs,
             &mut assets,

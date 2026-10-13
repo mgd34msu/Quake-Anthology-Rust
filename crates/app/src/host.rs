@@ -398,10 +398,14 @@ impl FrameHost {
         self.run_pending_commands(frame_span);
         self.publish_module_client_state();
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
+        self.publish_module_game_states();
         self.publish_module_configs();
         self.publish_module_signon();
         for index in 0..self.runtime.snapshots.len() {
             if self.runtime.snapshots[index].is_none() {
+                continue;
+            }
+            if self.runtime.config_publications[index].game_state_waiting() {
                 continue;
             }
             let id = ClientId(index as u32);
@@ -1087,17 +1091,16 @@ impl FrameHost {
                             self.runtime.server.events.acknowledge_with(
                                 output,
                                 receipt,
-                                |record| {
-                                    if let qa_core::events::FrameEvent::ConfigString {
+                                |record| match record.event {
+                                    qa_core::events::FrameEvent::ConfigString {
                                         destination_index,
                                         ..
-                                    } = record.event
-                                    {
-                                        publication.acknowledged(
-                                            destination_index as usize,
-                                            record.sequence,
-                                        );
+                                    } => publication
+                                        .acknowledged(destination_index as usize, record.sequence),
+                                    qa_core::events::FrameEvent::GameState { .. } => {
+                                        publication.acknowledge_game_state(record.sequence);
                                     }
+                                    _ => {}
                                 },
                             );
                         }

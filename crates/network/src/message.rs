@@ -470,6 +470,33 @@ impl<'a> Writer<'a> {
         }
         Ok(())
     }
+    /// Append a checked standalone Q3 MSG body at this stream's current bit
+    /// position. The same raw bit writer preserves its Huffman codes and native
+    /// string bytes rather than decoding and encoding the body a second time.
+    pub fn append_encoded_q3(&mut self, bytes: &[u8], bits: usize) -> Result<(), Error> {
+        if self.encoding != Encoding::Q3 {
+            return Err(self.error(ErrorKind::Width));
+        }
+        if bits > bytes.len().saturating_mul(8) {
+            return Err(self.error(ErrorKind::Truncated));
+        }
+        let end = self
+            .bit
+            .checked_add(bits)
+            .ok_or_else(|| self.error(ErrorKind::Capacity))?;
+        // Q3 MSG cursize includes a trailing byte even at an exact bit boundary.
+        if end / 8 + 1 > self.data.len() {
+            return Err(self.error(ErrorKind::Capacity));
+        }
+        let mut reader = Reader::new(bytes, Encoding::Bits);
+        let mut remaining = bits;
+        while remaining != 0 {
+            let width = remaining.min(32) as u8;
+            self.raw(reader.raw(width)?, width);
+            remaining -= usize::from(width);
+        }
+        Ok(())
+    }
     /// Write a generated raw string at its destination's native boundary.
     pub fn write_string(&mut self, policy: StringPolicy, text: &[u8]) -> Result<(), Error> {
         if self.encoding != Encoding::Bytes && !(self.encoding == Encoding::Q3 && policy.sanitize) {

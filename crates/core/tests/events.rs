@@ -22,6 +22,73 @@ fn consume(ring: &mut EventRing, id: OutputConsumerId, submission: OutputSubmiss
     sequences
 }
 #[test]
+fn game_state_pages_follow_the_client_receipt_and_keep_encoded_watermarks() {
+    let mut ring = EventRing::load(4, 3, 4, 8).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let other = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let delivery = native_delivery(NativeTarget::Client(ClientId(0)));
+    let sequence = ring
+        .game_state(delivery, 37, 129, b"full native state")
+        .unwrap();
+    assert_eq!(consume(&mut ring, other, OutputSubmission::BestEffort), []);
+    assert_eq!(
+        consume(&mut ring, presentation, OutputSubmission::BestEffort),
+        []
+    );
+    let mut batch = ring.batch(client).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::GameState {
+        payload,
+        command_sequence,
+        body_bits,
+    } = record.event
+    else {
+        panic!("native game state");
+    };
+    assert_eq!((command_sequence, body_bits), (37, 129));
+    let mut bytes = [0; 32];
+    assert_eq!(
+        ring.texts.copy_payload(payload, &mut bytes).unwrap(),
+        b"full native state"
+    );
+    assert!(ring.submit(
+        client,
+        sequence,
+        OutputSubmission::Reliable(NativeReceipt(9))
+    ));
+    assert_eq!(ring.acknowledge(client, NativeReceipt(8)), 0);
+    assert!(ring.retained_for(client, sequence));
+    assert_eq!(
+        ring.texts.copy_payload(payload, &mut bytes).unwrap(),
+        b"full native state"
+    );
+    assert_eq!(ring.acknowledge(client, NativeReceipt(9)), 1);
+    assert!(ring.is_empty());
+    assert!(ring.texts.copy_payload(payload, &mut bytes).is_none());
+}
+#[test]
+fn game_state_bit_boundary_rejection_preserves_existing_payload() {
+    let mut ring = EventRing::load(2, 1, 2, 8).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let delivery = native_delivery(NativeTarget::Client(ClientId(0)));
+    let sequence = ring.game_state(delivery, 2, 7, b"x").unwrap();
+    for bits in [0, 9, usize::MAX] {
+        assert_eq!(
+            ring.game_state(delivery, 2, bits, b"x"),
+            Err(EventStorageError::TextCapacity)
+        );
+    }
+    assert!(ring.retained_for(client, sequence));
+    assert_eq!(ring.rejected_publications(), 3);
+    assert!(!ring.needs_resync(client));
+    let mut batch = ring.batch(client).unwrap();
+    let FrameEvent::GameState { payload, .. } = ring.next(&mut batch).unwrap().event else {
+        panic!("retained game state");
+    };
+    assert_eq!(ring.texts.copy_payload(payload, &mut [0; 8]).unwrap(), b"x");
+}
+#[test]
 fn received_local_text_shares_one_record_and_independent_hud_lease() {
     let mut ring = EventRing::load(4, 4, 4, 32).unwrap();
     let presentation = ring.bind(OutputTarget::Presentation).unwrap();

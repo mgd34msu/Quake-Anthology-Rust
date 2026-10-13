@@ -79,6 +79,7 @@ struct Pending {
     snapshot_request: Option<Option<u32>>,
     snapshot: Option<SnapshotSubmission>,
     command_time: Option<i32>,
+    server_state: Option<NativeReceipt>,
 }
 #[derive(Clone, Copy)]
 struct SnapshotSubmission {
@@ -89,6 +90,12 @@ struct SnapshotSubmission {
 struct MoveSubmission {
     time: EventTime,
     command_time: i32,
+}
+#[derive(Clone, Copy)]
+struct ServerStateFlight {
+    body_bits: usize,
+    commands: u32,
+    first_submitted: Option<u32>,
 }
 pub(super) struct Transmit {
     direction: Direction,
@@ -108,6 +115,8 @@ pub(super) struct Transmit {
     command_output: Box<[u8]>,
     fragment_pending: bool,
     command_flight: Option<u32>,
+    server_state: Option<ServerStateFlight>,
+    server_state_flight: Option<NativeReceipt>,
     snapshot_flight: Option<SnapshotSubmission>,
     move_flight: Option<MoveSubmission>,
     last_command_time: i32,
@@ -132,14 +141,23 @@ impl Transmit {
                     RELIABLE_RECORDS
                 },
                 if policy.command_ack {
-                    1
+                    if endpoint == Endpoint::Server {
+                        maximum
+                    } else {
+                        1
+                    }
                 } else {
                     maximum.saturating_mul(2).min(64 * 1024 * 1024)
                 },
             )
             .map_err(|_| Error::Capacity)?,
             receipt: 0,
-            receipts: vec![NativeReceipt(0); RELIABLE_RECORDS].into_boxed_slice(),
+            receipts: vec![
+                NativeReceipt(0);
+                RELIABLE_RECORDS
+                    + usize::from(policy.command_ack && endpoint == Endpoint::Server)
+            ]
+            .into_boxed_slice(),
             receipt_count: 0,
             flight: vec![0; maximum].into_boxed_slice(),
             flight_records: 0,
@@ -159,6 +177,8 @@ impl Transmit {
             .into_boxed_slice(),
             fragment_pending: false,
             command_flight: None,
+            server_state: None,
+            server_state_flight: None,
             snapshot_flight: None,
             move_flight: None,
             last_command_time: 0,
@@ -308,6 +328,79 @@ impl Channel {
             .map_err(|_| TransmitError::Full)?;
         self.transmit.receipt = receipt.0;
         Ok(receipt)
+    }
+    /// Retain a standalone Q3 svc_gamestate body until a native CLIENT message ACK
+    /// covers a fully submitted copy. Each send frames this same body with current
+    /// CLIENT ACK/XOR fields and only the captured SERVER command watermark.
+    pub fn queue_server_state(
+        &mut self,
+        encoded_body: &[u8],
+        body_bits: usize,
+        encoded_command_sequence: u32,
+    ) -> Result<NativeReceipt, TransmitError> {
+        if self.endpoint != Endpoint::Server || !self.policy.command_ack {
+            return Err(TransmitError::ServerContext);
+        }
+        let maximum = self.native_payload_capacity()?;
+        if body_bits == 0
+            || body_bits / 8 + 1 != encoded_body.len()
+            || encoded_body.len() > maximum
+            || self
+                .server_output_bits(encoded_command_sequence, body_bits)
+                .map_err(|_| TransmitError::MessageTooLarge)?
+                > maximum * 8
+        {
+            return Err(TransmitError::MessageTooLarge);
+        }
+        let mut reader = crate::message::Reader::new(encoded_body, crate::message::Encoding::Q3);
+        let valid = (|| {
+            if reader.read_bits(8)? != 2 {
+                return Err(crate::commands::packet::Error::Opcode);
+            }
+            let body = super::commands::Q3GameState::read(&mut reader, 0, 1024)?;
+            if reader.bit_position() != body_bits
+                || body.server_command_sequence != encoded_command_sequence
+            {
+                return Err(crate::commands::packet::Error::Context);
+            }
+            Ok(())
+        })();
+        valid.map_err(|_| TransmitError::MessageTooLarge)?;
+        if !self.transmit.ring.is_empty() {
+            return Err(TransmitError::Full);
+        }
+        if self.transmit.pending.is_some() || self.transmit.fragment_pending {
+            return Err(TransmitError::PendingPacket);
+        }
+        let tx = &mut self.transmit;
+        let receipt = NativeReceipt(tx.receipt.wrapping_add(1));
+        tx.ring
+            .push(receipt, encoded_body, 0)
+            .map_err(|_| TransmitError::Full)?;
+        tx.receipt = receipt.0;
+        tx.state.reliable_bytes = encoded_body.len();
+        tx.server_state = Some(ServerStateFlight {
+            body_bits,
+            commands: encoded_command_sequence,
+            first_submitted: None,
+        });
+        Ok(receipt)
+    }
+    // Only the checked native CLIENT acknowledgement header invokes this path;
+    // reliable-command ACK APIs deliberately cannot retire a server-state body.
+    pub(crate) fn acknowledge_server_state(&mut self, message: u32) {
+        let tx = &mut self.transmit;
+        if tx
+            .server_state
+            .is_some_and(|state| state.first_submitted.is_some_and(|first| message >= first))
+        {
+            if let Some((receipt, _)) = tx.ring.pop() {
+                tx.receipts[tx.receipt_count] = receipt;
+                tx.receipt_count += 1;
+            }
+            tx.server_state = None;
+            tx.state.reliable_bytes = 0;
+        }
     }
     pub fn pending_packet(&self) -> Option<Prepared<'_>> {
         self.transmit.pending.map(|pending| Prepared {
@@ -461,7 +554,7 @@ impl Channel {
                 tx.state.fragment_offset = 0;
             }
             let capacity = body_capacity.min(tx.flight.len());
-            let fresh = tx.select_flight(capacity);
+            let fresh = !self.policy.command_ack && tx.select_flight(capacity);
             if fresh {
                 tx.state.reliable_sequence ^= true;
             }
@@ -522,6 +615,7 @@ impl Channel {
                 .flatten(),
             snapshot_request,
             command_time: None,
+            server_state: None,
             snapshot: (disposition == Unreliable::Included)
                 .then_some(snapshot)
                 .flatten(),
@@ -604,6 +698,24 @@ impl Channel {
         }
         tx.state.last_sent = time;
         tx.state.packets = tx.state.packets.saturating_add(1);
+        if pending.server_state.is_some()
+            && tx
+                .server_state
+                .is_some_and(|state| state.first_submitted.is_some())
+        {
+            tx.state.resends = tx.state.resends.saturating_add(1);
+        }
+        tx.server_state_flight = pending.server_state.or(tx.server_state_flight);
+        if !tx.fragment_pending
+            && let Some(receipt) = tx.server_state_flight.take()
+            && tx
+                .ring
+                .front()
+                .is_some_and(|(current, _)| current == receipt)
+            && let Some(state) = &mut tx.server_state
+        {
+            state.first_submitted.get_or_insert(request_sequence);
+        }
         tx.command_flight = pending.commands.or(tx.command_flight);
         tx.snapshot_flight = pending.snapshot.or(tx.snapshot_flight);
         if !tx.fragment_pending
@@ -643,6 +755,44 @@ impl Channel {
         result?;
         Ok(self.pending_packet())
     }
+    fn prepare_server_state(
+        &mut self,
+        time: EventTime,
+    ) -> Result<Option<Prepared<'_>>, TransmitError> {
+        let state = self.transmit.server_state.ok_or(TransmitError::NoPacket)?;
+        let mut bytes = std::mem::take(&mut self.transmit.command_output);
+        let ring = std::mem::take(&mut self.transmit.ring);
+        let Some((receipt, body)) = ring.front() else {
+            self.transmit.ring = ring;
+            self.transmit.command_output = bytes;
+            return Err(TransmitError::NoPacket);
+        };
+        let result = (|| {
+            let length = self
+                .encode_server_output_through(&mut bytes, state.commands, |writer, _| {
+                    writer.append_encoded_q3(body, state.body_bits)?;
+                    Ok(())
+                })
+                .map_err(|_| TransmitError::MessageTooLarge)?;
+            self.prepare_inner(
+                Some(&bytes[..length]),
+                time,
+                Some(state.commands),
+                None,
+                None,
+            )
+            .map(|_| ())
+        })();
+        self.transmit.ring = ring;
+        self.transmit.command_output = bytes;
+        result?;
+        if let Some(pending) = &mut self.transmit.pending
+            && pending.unreliable == Unreliable::Included
+        {
+            pending.server_state = Some(receipt);
+        }
+        Ok(self.pending_packet())
+    }
     /// Pre-encoded native SERVER MSG bytes use the same submission/fragment
     /// ownership as reliable commands, without claiming snapshot provenance.
     pub fn prepare_server_message(
@@ -664,7 +814,9 @@ impl Channel {
         if self.transmit.pending.is_some() {
             return Err(TransmitError::PendingPacket);
         }
-        if self.commands.is_some() && !self.transmit.fragment_pending {
+        if self.transmit.server_state.is_some() && !self.transmit.fragment_pending {
+            self.prepare_server_state(time)
+        } else if self.commands.is_some() && !self.transmit.fragment_pending {
             self.prepare_command_output(time)
         } else {
             self.prepare(None, time)

@@ -14,7 +14,9 @@ impl EventConsumer for Consumer {
             FrameEvent::Sound(s) => s.sound.0,
             FrameEvent::StaticEntity(_) => 0,
             FrameEvent::Effect(e) => e.effect.0,
-            FrameEvent::Native(_) => u32::from(record.delivery.unwrap().module.0),
+            FrameEvent::Native(_) | FrameEvent::GameState { .. } => {
+                u32::from(record.delivery.unwrap().module.0)
+            }
             FrameEvent::Hud(event) => event.client.0,
             FrameEvent::ViewFeedback(event) => event.client.0,
             FrameEvent::PlayerValue { id, value } => {

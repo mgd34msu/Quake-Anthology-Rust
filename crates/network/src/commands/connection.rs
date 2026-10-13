@@ -211,6 +211,7 @@ impl Commands {
                     ..key
                 };
                 channel.acknowledge_commands(ack.reliable as u32, ack.message as u32)?;
+                channel.acknowledge_server_state(ack.message as u32);
                 key
             } else {
                 Key::default()

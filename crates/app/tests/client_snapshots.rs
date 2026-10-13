@@ -196,6 +196,15 @@ fn host_with_startup(
     clients: usize,
     startup: Option<Argument>,
 ) -> (FrameHost, Vec<ClientId>, u64) {
+    host_with_server(factory, clients, startup, false)
+}
+
+fn host_with_server(
+    factory: fn() -> (Program, u64),
+    clients: usize,
+    startup: Option<Argument>,
+    server: bool,
+) -> (FrameHost, Vec<ClientId>, u64) {
     let mut runtime = Runtime::load(clients, []).unwrap();
     let mut requests = Vec::new();
     let mut ids = Vec::new();
@@ -275,6 +284,68 @@ fn host_with_startup(
             entity_source: None,
         });
         ids.push(client);
+    }
+    if server {
+        use Opcode::*;
+        let module = ModuleId(clients as u16 + 1);
+        let mut context = requests[0].context;
+        context.module = module;
+        context.console.source = RuleSetId::Quake3;
+        context.console.side = qa_console::catalog::Scope::Server;
+        let anchor = runtime
+            .server
+            .entities
+            .allocate(ThinkTime::Milliseconds(0), module, context.allocation)
+            .unwrap()
+            .id;
+        let mut data = vec![0; 16384];
+        data[16..25].copy_from_slice(b"BASEQ3-1\0");
+        data[64..80].copy_from_slice(b"models/test.md3\0");
+        // This row forces native fragmentation and preserves high raw bytes.
+        data[1024..1024 + 8190].fill(0xff);
+        let mut operations = vec![(Enter, 64)];
+        for (index, address) in [(20, 16), (32, 64), (900, 1024)] {
+            operations.extend([
+                (Const, index),
+                (Arg, 8),
+                (Const, address),
+                (Arg, 12),
+                (Const, -19),
+                (Call, 0),
+                (Pop, 0),
+            ]);
+        }
+        operations.extend([(Const, 0), (Leave, 64)]);
+        requests.push(ModuleRequest {
+            context,
+            phase: Phase::Server,
+            timing_rules: RuleSetId::Quake3,
+            rate: TickRate::FrameDriven,
+            anchor,
+            program: Program::Qvm {
+                vm: Box::new(service_program::program(&operations, &data)),
+                imports: &qa_compat::abi::Q3_SERVER,
+            },
+            entries: vec![0],
+            frame: Export::clocked(CallbackId(0)),
+            prepare: vec![],
+            initialize: vec![Export::clocked(CallbackId(0))],
+            api: None,
+            shutdown: vec![],
+            instruction_budget: 10000,
+            configstrings: 1024,
+            files: 0,
+            entity_source: None,
+        });
+        for &id in &ids {
+            assert!(runtime.server.bind_client_native(
+                id,
+                NativeEntity {
+                    module,
+                    slot: id.0 as i32
+                }
+            ));
+        }
     }
     let mut host = FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
@@ -1251,6 +1322,153 @@ fn cgame_startup_waits_for_queued_state_and_resolves_current_arguments(
     }
 }
 
+fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
+    factory: fn() -> (Program, u64),
+) {
+    use qa_app::host::FrameSource;
+    use qa_core::sys_events::{EventKind, SysEvent, SysEventQueue};
+    use std::time::Duration;
+    struct Source {
+        time: EventTime,
+        polls: usize,
+    }
+    impl FrameSource for Source {
+        fn begin_frame(&mut self) -> Duration {
+            Duration::from_nanos(self.time.0)
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            self.polls += 1;
+            queue
+                .push(SysEvent {
+                    time: self.time,
+                    kind: EventKind::Time,
+                })
+                .unwrap();
+        }
+        fn wait_time(&mut self, _: Duration) -> Duration {
+            self.begin_frame()
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn present(&mut self) {}
+    }
+    let (mut host, ids, output) =
+        host_with_server(factory, 1, Some(Argument::ClientNativeNumber), true);
+    let client = ids[0];
+    let owner = host.runtime.server.clients[client.0 as usize]
+        .output
+        .unwrap();
+    let view = host
+        .console
+        .cvars
+        .bind(
+            "mapname",
+            Context {
+                source: RuleSetId::Quake3,
+                side: qa_console::catalog::Scope::Server,
+                ..Context::default()
+            },
+        )
+        .unwrap();
+    host.console
+        .cvars
+        .force_write(view, "native_fixture")
+        .unwrap();
+    host.initialize_modules(Phase::Client);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
+    let mut source = Source {
+        time: EventTime::from_milliseconds(100),
+        polls: 0,
+    };
+    host.frame(&mut source, true);
+    assert_eq!(source.polls, 2);
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
+    assert!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .q3_startup()
+            .is_none()
+    );
+    let sequence = host.runtime.server.events.sequence_range().start;
+    assert!(host.runtime.server.events.retained_for(owner, sequence));
+    let mut frames = 1;
+    while host.module_state(ModuleId(1)) == Some(State::Pending) && frames < 32 {
+        assert!(host.runtime.server.events.retained_for(owner, sequence));
+        assert!(
+            host.runtime
+                .network
+                .get(client, Endpoint::Client)
+                .unwrap()
+                .channel
+                .current_snapshot()
+                .is_none()
+        );
+        frames += 1;
+        source.time = EventTime::from_milliseconds(frames as u64 * 100);
+        host.frame(&mut source, true);
+        assert_eq!(source.polls, frames * 2);
+    }
+    assert!(
+        frames > 2,
+        "the large state must pass through native fragments"
+    );
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    let channel = &host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .channel;
+    let startup = channel.q3_startup().unwrap();
+    assert_eq!(startup.client_num, 0);
+    assert!(channel.current_snapshot().is_none());
+    assert!(host.runtime.server.events.retained_for(owner, sequence));
+    let configs = &host.runtime.client_resources[0]
+        .as_ref()
+        .unwrap()
+        .state
+        .configs;
+    let info = configs.config(0).unwrap().text;
+    let map = qa_core::text::info_value(info, b"mapname", true).unwrap();
+    assert_eq!(&info[map], b"native_fixture");
+    assert_eq!(configs.config(20).unwrap().text, b"BASEQ3-1");
+    assert_eq!(configs.config(32).unwrap().text, b"models/test.md3");
+    assert_eq!(configs.config(900).unwrap().text, vec![b'.'; 8190]);
+    let version_offset =
+        1 + info.len() as u32 + 1 + configs.config(1).unwrap().text.len() as u32 + 1;
+    assert_eq!(call(&mut host, 0, GET_GAME_STATE, &[output]), Ok(0));
+    assert_eq!(word(&mut host, 0, output + 20 * 4), version_offset);
+    frames += 1;
+    source.time = EventTime::from_milliseconds(frames as u64 * 100);
+    host.frame(&mut source, true);
+    assert_eq!(source.polls, frames * 2);
+    assert!(!host.runtime.server.events.retained_for(owner, sequence));
+    assert!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .is_some()
+    );
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .counters(owner)
+            .unwrap()
+            .acknowledgements,
+        1
+    );
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
@@ -1272,5 +1490,8 @@ fn main() {
     cgame_startup_waits_for_queued_state_and_resolves_current_arguments(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     cgame_startup_waits_for_queued_state_and_resolves_current_arguments(native);
+    server_publication_reaches_cgame_through_the_ring_channel_and_queue(qvm);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    server_publication_reaches_cgame_through_the_ring_channel_and_queue(native);
     println!("CLIENT snapshot getter fixtures passed");
 }

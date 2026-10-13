@@ -7,7 +7,7 @@ use crate::{
 use qa_core::{events::NativeReceipt, loopback::Endpoint};
 
 mod gamestate;
-pub use gamestate::{Q3GameState, Q3Startup};
+pub use gamestate::{Q3GameState, Q3Startup, write_gamestate};
 
 pub enum ServerOutput<'a> {
     ReliableCommand { sequence: u32, text: &'a [u8] },
@@ -377,13 +377,43 @@ impl Channel {
     }
     pub fn write_command_records(&self, writer: &mut Writer<'_>) -> Result<(), packet::Error> {
         let c = self.commands.as_ref().ok_or(packet::Error::Context)?;
+        self.write_command_records_through(writer, c.outgoing.sequence)
+    }
+    fn write_command_records_through(
+        &self,
+        writer: &mut Writer<'_>,
+        sequence: u32,
+    ) -> Result<(), packet::Error> {
+        let c = self.commands.as_ref().ok_or(packet::Error::Context)?;
+        if sequence > c.outgoing.sequence {
+            return Err(packet::Error::Context);
+        }
         let opcode = command_opcode(self.endpoint());
-        for n in c.outgoing.acknowledged + 1..=c.outgoing.sequence {
+        for n in c.outgoing.acknowledged + 1..=sequence {
             writer.write_bits(u32::from(opcode), 8)?;
             writer.write_bits(n, 32)?;
             write_string(writer, c.outgoing.text(n))?;
         }
         Ok(())
+    }
+    pub(super) fn server_output_bits(
+        &self,
+        sequence: u32,
+        body_bits: usize,
+    ) -> Result<usize, packet::Error> {
+        let c = self.commands.as_ref().ok_or(packet::Error::Context)?;
+        if sequence > c.outgoing.sequence {
+            return Err(packet::Error::Context);
+        }
+        let mut bits = body_bits
+            .checked_add(crate::message::q3_max_bits(32) + crate::message::q3_bits(8, 8) + 1)
+            .ok_or(packet::Error::Count)?;
+        for number in c.outgoing.acknowledged + 1..=sequence {
+            bits = bits
+                .checked_add(c.outgoing.slots[slot(number)].encoded_bits)
+                .ok_or(packet::Error::Count)?;
+        }
+        Ok(bits)
     }
 
     /// Original SV_UpdateServerCommandsToClient and SV_Netchan_Encode payload.
@@ -391,6 +421,20 @@ impl Channel {
     pub fn encode_server_output(
         &mut self,
         out: &mut [u8],
+        body: impl FnOnce(&mut Writer<'_>, &mut Channel) -> Result<(), packet::Error>,
+    ) -> Result<usize, packet::Error> {
+        let sequence = self
+            .commands
+            .as_ref()
+            .ok_or(packet::Error::Context)?
+            .outgoing
+            .sequence;
+        self.encode_server_output_through(out, sequence, body)
+    }
+    pub(super) fn encode_server_output_through(
+        &mut self,
+        out: &mut [u8],
+        commands: u32,
         body: impl FnOnce(&mut Writer<'_>, &mut Channel) -> Result<(), packet::Error>,
     ) -> Result<usize, packet::Error> {
         if self.endpoint() != Endpoint::Server {
@@ -405,7 +449,7 @@ impl Channel {
         command_text[..length].copy_from_slice(text);
         let mut writer = Writer::new(out, Encoding::Q3);
         writer.write_bits(incoming, 32)?;
-        self.write_command_records(&mut writer)?;
+        self.write_command_records_through(&mut writer, commands)?;
         body(&mut writer, self)?;
         writer.write_bits(8, 8)?; // svc_EOF
         let n = writer.size();

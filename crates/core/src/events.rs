@@ -27,6 +27,13 @@ pub enum FrameEvent {
     },
     SetAngles(Vec3),
     Native(NativePayload),
+    /// One native SERVER state body, retained until its channel acknowledges
+    /// receipt. Framing is regenerated without changing its command watermark.
+    GameState {
+        payload: NativePayload,
+        command_sequence: u32,
+        body_bits: usize,
+    },
     ConfigString {
         module: ModuleId,
         source: RuleSetId,
@@ -403,7 +410,9 @@ impl EventRing {
                 PrintText::Native { wire, .. } => pages = wire.pages,
             },
             FrameEvent::ConfigString { text, .. } => pages[0] = Some(text),
-            FrameEvent::Native(payload) => pages = payload.pages,
+            FrameEvent::Native(payload) | FrameEvent::GameState { payload, .. } => {
+                pages = payload.pages;
+            }
             _ => {}
         }
         for (index, page) in pages.into_iter().enumerate() {
@@ -577,23 +586,42 @@ impl EventRing {
         wire_length: usize,
         bytes: &[u8],
     ) -> Result<u64, EventStorageError> {
-        self.make_room(1);
         let Some((wire, captures)) = bytes.split_at_checked(wire_length) else {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         };
+        self.publish_payload(delivery, wire, captures, FrameEvent::Native)
+    }
+    pub fn game_state(
+        &mut self,
+        delivery: NativeDelivery,
+        command_sequence: u32,
+        body_bits: usize,
+        bytes: &[u8],
+    ) -> Result<u64, EventStorageError> {
+        if body_bits == 0 || body_bits > bytes.len().saturating_mul(8) {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        }
+        self.publish_payload(delivery, bytes, &[], |payload| FrameEvent::GameState {
+            payload,
+            command_sequence,
+            body_bits,
+        })
+    }
+    fn publish_payload(
+        &mut self,
+        delivery: NativeDelivery,
+        wire: &[u8],
+        captures: &[u8],
+        event: impl FnOnce(NativePayload) -> FrameEvent,
+    ) -> Result<u64, EventStorageError> {
+        self.make_room(1);
         let (payload, texts) = self.native_payload(wire, captures).inspect_err(|_| {
             self.rejected_publications += 1;
         })?;
         let sequence = self.tail;
-        self.store_slot(
-            sequence,
-            None,
-            Some(delivery),
-            FrameEvent::Native(payload),
-            texts,
-            0,
-        );
+        self.store_slot(sequence, None, Some(delivery), event(payload), texts, 0);
         self.commit_slot(sequence);
         self.tail += 1;
         self.retire();

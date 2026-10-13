@@ -7,6 +7,160 @@ use qa_core::{
 };
 
 impl FrameHost {
+    /// Native Q3 SERVER storage supplies its own gamestate. Encoding borrows
+    /// the source rows; only the existing output ring retains the message.
+    pub(crate) fn publish_module_game_states(&mut self) {
+        let Some(modules) = &self.modules else { return };
+        let runtime = &mut self.runtime;
+        for (index, client) in runtime.server.clients.iter().enumerate() {
+            let Some(output) = client.output else {
+                continue;
+            };
+            if client.connection.is_none() || runtime.server.events.needs_resync(output) {
+                continue;
+            }
+            let Some(row) = modules.row(client.module).filter(|row| {
+                row.request.phase == super::Phase::Server
+                    && row.request.context.native_rules == RuleSetId::Quake3
+            }) else {
+                continue;
+            };
+            let id = ClientId(index as u32);
+            let Some(connection) = runtime
+                .network
+                .get_mut(id, qa_core::loopback::Endpoint::Server)
+            else {
+                continue;
+            };
+            if connection
+                .commands
+                .as_ref()
+                .map(|commands| commands.protocol)
+                != Some(qa_network::commands::packet::Protocol::Quake3_68)
+            {
+                continue;
+            }
+            let publication = &mut runtime.config_publications[index];
+            publication.connection(client.module, ConfigLayout::QUAKE3);
+            publication.require_game_state();
+            if row.state != State::Running || publication.game_state_published() {
+                continue;
+            }
+            let Some(native_client) = runtime.snapshots[index]
+                .as_ref()
+                .map(|binding| binding.native_client())
+            else {
+                continue;
+            };
+            let channel = &mut connection.channel;
+            let Ok(mut context) = channel.command_context() else {
+                continue;
+            };
+            let mut info = [[0; qa_core::configstrings::MAX_TEXT]; 2];
+            // Native CVAR_SERVERINFO / CVAR_SYSTEMINFO use the unified table's
+            // source projection. They are engine rows, not game-module text.
+            let mut lengths = [0; 2];
+            let mut valid = true;
+            for (slot, flag) in [4, 8].into_iter().enumerate() {
+                match self.console.cvars.info_string(
+                    qa_console::views::Context {
+                        source: RuleSetId::Quake3,
+                        side: qa_console::catalog::Scope::Server,
+                        role: qa_console::views::Role::Engine,
+                        ..row.request.context.console
+                    },
+                    flag,
+                    &mut info[slot],
+                ) {
+                    Ok(length) => lengths[slot] = length,
+                    Err(_) => valid = false,
+                }
+            }
+            if !valid {
+                runtime.server.events.reject_publication();
+                continue;
+            }
+            context.set_system_info(&info[ConfigLayout::Q3_SYSTEM_INFO][..lengths[1]]);
+            let command_sequence = channel.command_state().map_or(0, |state| state.queued);
+            let configs = (0..row.request.configstrings.max(2)).filter_map(|native_index| {
+                if native_index <= ConfigLayout::Q3_SYSTEM_INFO {
+                    Some((native_index, &info[native_index][..lengths[native_index]]))
+                } else {
+                    modules
+                        .storage
+                        .configstring(client.module, native_index)
+                        .ok()
+                        .map(|(text, _)| (native_index, text))
+                }
+            });
+            let mut writer = qa_network::message::Writer::new(
+                &mut runtime.output_native_bytes,
+                qa_network::message::Encoding::Q3,
+            );
+            if qa_network::channel::commands::write_gamestate(
+                &mut writer,
+                command_sequence,
+                native_client,
+                context.checksum_feed,
+                configs,
+                // These connections currently use zero snapshot baselines.
+                // Their first snapshot supplies full zero-base deltas.
+                std::iter::empty(),
+            )
+            .is_err()
+            {
+                runtime.server.events.reject_publication();
+                continue;
+            }
+            let (length, body_bits) = (writer.size(), writer.bit_position());
+            let delivery = qa_core::primitives::NativeDelivery {
+                module: client.module,
+                source: RuleSetId::Quake3,
+                target: qa_core::primitives::NativeTarget::Client(id),
+                origin: client.player.body.position,
+                reliable: true,
+                dupe_key: 0,
+                component: 0,
+                emission: None,
+                check_portals: false,
+            };
+            let Ok(sequence) = runtime.server.events.game_state(
+                delivery,
+                command_sequence,
+                body_bits,
+                &runtime.output_native_bytes[..length],
+            ) else {
+                continue;
+            };
+            let _ = channel.set_command_context(context);
+            publication.publish_game_state(sequence);
+            for native_index in 0..row.request.configstrings {
+                if let Ok((text, revision)) =
+                    modules.storage.configstring(client.module, native_index)
+                {
+                    publication.seen(native_index, revision);
+                    if ConfigLayout::QUAKE3.resources[1].contains(native_index) {
+                        let ordinal =
+                            native_index - ConfigLayout::QUAKE3.resources[1].first as usize;
+                        let sample = modules
+                            .storage
+                            .sound_id(
+                                client.module,
+                                ConfigLayout::QUAKE3.resources[1],
+                                ordinal as i32,
+                            )
+                            .ok()
+                            .flatten();
+                        publication.primary_sound(ordinal as u32, !text.is_empty(), sample);
+                    }
+                    publication.published(native_index, Some(sequence));
+                }
+            }
+            for native_index in [ConfigLayout::Q3_SERVER_INFO, ConfigLayout::Q3_SYSTEM_INFO] {
+                publication.published(native_index, Some(sequence));
+            }
+        }
+    }
     /// Cold registration only. CLIENT rendering never calls module storage.
     pub fn model_precaches(&self) -> Vec<(RuleSetId, &[u8])> {
         let mut names = Vec::new();
@@ -171,6 +325,16 @@ impl FrameHost {
                         continue;
                     };
                     if !publication.needs(native_index, revision) {
+                        continue;
+                    }
+                    if source.rules == RuleSetId::Quake3
+                        && target.rules == RuleSetId::Quake3
+                        && publication.game_state_published()
+                        && native_index <= ConfigLayout::Q3_SYSTEM_INFO
+                    {
+                        // SERVER info is projected from engine cvars, not a
+                        // module's empty or private copy of those two rows.
+                        publication.seen(native_index, revision);
                         continue;
                     }
                     let target_index = target.project_index(source, native_index);

@@ -172,7 +172,7 @@ pub fn dispatch(
                     }
                     // Native messages have per-client channel delivery below;
                     // there is no second presentation copy of their payload.
-                    FrameEvent::Native(_) => true,
+                    FrameEvent::Native(_) | FrameEvent::GameState { .. } => true,
                     FrameEvent::Hud(_) => true,
                     FrameEvent::ViewFeedback(_) => true,
                     FrameEvent::ConfigString { .. } => true,
@@ -332,6 +332,45 @@ pub fn dispatch(
                         }
                         let mut completed = false;
                         let submission = (|| match record.event {
+                            FrameEvent::GameState {
+                                payload,
+                                command_sequence,
+                                body_bits,
+                            } => {
+                                if delivery.source != qa_core::primitives::RuleSetId::Quake3
+                                    || !delivery.reliable
+                                {
+                                    counts.native_unsupported += 1;
+                                    return OutputSubmission::BestEffort;
+                                }
+                                let Some(bytes) =
+                                    texts.copy_payload(payload, &mut runtime.output_bytes)
+                                else {
+                                    counts.stale_texts += 1;
+                                    return OutputSubmission::BestEffort;
+                                };
+                                match connection.channel.queue_server_state(
+                                    &bytes[..payload.len()],
+                                    body_bits,
+                                    command_sequence,
+                                ) {
+                                    Ok(receipt) => {
+                                        counts.native_messages += 1;
+                                        OutputSubmission::Reliable(receipt)
+                                    }
+                                    Err(qa_network::channel::TransmitError::Full) => {
+                                        OutputSubmission::Unsent
+                                    }
+                                    Err(qa_network::channel::TransmitError::PendingPacket) => {
+                                        stopped.set(true);
+                                        OutputSubmission::Unsent
+                                    }
+                                    Err(_) => {
+                                        counts.native_unsupported += 1;
+                                        OutputSubmission::BestEffort
+                                    }
+                                }
+                            }
                             FrameEvent::Native(payload) => {
                                 if let Some(bytes) =
                                     texts.copy_payload(payload, &mut runtime.output_bytes)
