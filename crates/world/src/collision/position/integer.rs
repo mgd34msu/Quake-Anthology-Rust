@@ -64,6 +64,38 @@ impl Int {
         }
     }
 
+    pub fn trailing_zeros(&self) -> usize {
+        self.words[..self.len]
+            .iter()
+            .position(|word| *word != 0)
+            .map_or(LIMBS * 64, |index| {
+                index * 64 + self.words[index].trailing_zeros() as usize
+            })
+    }
+
+    /// Divide only by an exact common power of two; no geometry is rounded.
+    pub fn unshift(&self, bits: usize) -> Result<Self, super::Failure> {
+        if self.is_zero() || bits == 0 {
+            return Ok(*self);
+        }
+        if bits > self.trailing_zeros() {
+            return Err(super::Failure::Arithmetic);
+        }
+        let words = bits / 64;
+        let offset = bits % 64;
+        let mut out = Self::ZERO;
+        out.negative = self.negative;
+        out.len = self.len - words;
+        for index in 0..out.len {
+            out.words[index] = self.words[index + words] >> offset;
+            if offset != 0 && index + words + 1 < self.len {
+                out.words[index] |= self.words[index + words + 1] << (64 - offset);
+            }
+        }
+        out.trim();
+        Ok(out)
+    }
+
     pub fn compare(&self, other: &Self) -> Ordering {
         match (self.negative, other.negative) {
             (true, false) => Ordering::Less,

@@ -1,4 +1,6 @@
-use qa_core::primitives::{Bounds, GeometryId, ModelRotation, ModelRules, Plane, RuleSetId, Vec3};
+use qa_core::primitives::{
+    Bounds, Capsule, GeometryId, ModelRotation, ModelRules, Plane, RuleSetId, Vec3,
+};
 use qa_world::collision::{
     CollisionStore, Contents, HullPositionLimits, HullShape, StoreError, TraceError, TraceQuery,
     TraceRules,
@@ -75,6 +77,127 @@ fn admit(store: &mut CollisionStore, geometry: GeometryId) {
     store
         .prepare_hull_positions(geometry, HullPositionLimits::default())
         .expect("exact position admission");
+}
+
+fn capsule_at(position: Vec3, radius: f32, offset: Vec3) -> TraceQuery<'static> {
+    TraceQuery {
+        capsule: Some(Capsule { radius, offset }),
+        ..box_at(position, Vec3::default(), Vec3::default())
+    }
+}
+
+#[test]
+fn capsule_occupancy_tests_cell_edges_and_corners_not_only_shifted_faces() {
+    let (mut store, geometry) = convex(vec![
+        Plane::oriented(Vec3::axis(0, 1.0), 1.0),
+        Plane::oriented(Vec3::axis(1, 1.0), 1.0),
+        Plane::oriented(Vec3::axis(2, 1.0), 1.0),
+        Plane::oriented(Vec3::axis(0, -1.0), 1.0),
+        Plane::oriented(Vec3::axis(1, -1.0), 1.0),
+        Plane::oriented(Vec3::axis(2, -1.0), 1.0),
+    ]);
+    admit(&mut store, geometry);
+    let mut scratch = store.scratch();
+    for (center, radius, occupied) in [
+        (Vec3([1.75, 1.75, 0.0]), 1.0, false),
+        (Vec3([1.5, 1.5, 0.0]), 1.0, true),
+        (Vec3([4.0, 5.0, 0.0]), 5.0, true),
+        (Vec3([4.0f32.next_up(), 5.0, 0.0]), 5.0, false),
+        (Vec3([4.0, 5.0, 13.0]), 13.0, true),
+        (Vec3([4.0, 5.0, 13.0f32.next_up()]), 13.0, false),
+        (Vec3::default(), 0.0, true),
+        (Vec3([2.0, 0.0, 0.0]), 0.0, false),
+    ] {
+        let query = capsule_at(center, radius, Vec3::default());
+        let trace = store
+            .trace_model(geometry, 0, query, &mut scratch)
+            .expect("sphere feature projection");
+        assert_eq!(trace.start_solid, occupied, "{center:?}, r={radius}");
+        assert_eq!(trace.all_solid, occupied);
+        assert_eq!(trace.fraction, if occupied { 0.0 } else { 1.0 });
+        assert_eq!(trace.end, center);
+    }
+}
+
+#[test]
+fn capsule_segment_extrusion_adds_the_missing_edge_constraints() {
+    let (mut store, geometry) = path_cell(
+        (0..3)
+            .flat_map(|axis| {
+                [
+                    Plane::oriented(Vec3::axis(axis, 1.0), 0.0),
+                    Plane::oriented(Vec3::axis(axis, -1.0), 0.0),
+                ]
+            })
+            .collect(),
+        true,
+    );
+    admit(&mut store, geometry);
+    let mut scratch = store.scratch();
+    // The origin's extrusion is a line along (4,-3,0). (3,4,0) is exactly
+    // five units from its interior, although each shifted authored face alone
+    // would also accept points beyond this round boundary.
+    for (center, offset, radius, occupied) in [
+        (Vec3([1.0, 1.0, 0.0]), Vec3([1.0, -1.0, 0.0]), 1.0, false),
+        (Vec3([0.5, 0.5, 0.0]), Vec3([1.0, -1.0, 0.0]), 1.0, true),
+        (Vec3([3.0, 4.0, 0.0]), Vec3([4.0, -3.0, 0.0]), 5.0, true),
+        (
+            Vec3([3.0f32.next_up(), 4.0, 0.0]),
+            Vec3([4.0, -3.0, 0.0]),
+            5.0,
+            false,
+        ),
+        (Vec3([8.0, -6.0, 0.0]), Vec3([4.0, -3.0, 0.0]), 5.0, true),
+        (
+            Vec3([8.0f32.next_up(), -6.0, 0.0]),
+            Vec3([4.0, -3.0, 0.0]),
+            5.0,
+            false,
+        ),
+        (Vec3([2.0, -1.5, 0.0]), Vec3([4.0, -3.0, 0.0]), 0.0, true),
+        (Vec3([2.0, -1.5, 0.001]), Vec3([4.0, -3.0, 0.0]), 0.0, false),
+    ] {
+        let trace = store
+            .trace_model(
+                geometry,
+                0,
+                capsule_at(center, radius, offset),
+                &mut scratch,
+            )
+            .expect("extruded degenerate cell");
+        assert_eq!(trace.start_solid, occupied, "{center:?}, {offset:?}");
+    }
+}
+
+#[test]
+fn capsule_occupancy_centers_supplied_bounds_before_model_pose() {
+    let (mut store, geometry) = convex(vec![Plane::oriented(Vec3::axis(0, 1.0), 0.0)]);
+    admit(&mut store, geometry);
+    let query = box_at(
+        Vec3([14.0, 0.0, 0.0]),
+        Vec3([-6.0, -1.0, -8.0]),
+        Vec3([-2.0, 1.0, -4.0]),
+    )
+    .with_capsule();
+    let mut scratch = store.scratch();
+    for (origin, occupied) in [
+        (Vec3([8.0, 0.0, 0.0]), true),
+        (Vec3([8.0f32.next_down(), 0.0, 0.0]), false),
+    ] {
+        let trace = store
+            .trace_transformed(
+                geometry,
+                0,
+                query,
+                origin,
+                Vec3::default(),
+                ModelRules::default(),
+                &mut scratch,
+            )
+            .expect("posed capsule");
+        assert_eq!(trace.start_solid, occupied);
+        assert_eq!(trace.end, query.start);
+    }
 }
 
 #[test]

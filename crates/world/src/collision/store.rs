@@ -646,7 +646,10 @@ fn validate_query_shape(
     index: u32,
     query: TraceQuery,
 ) -> Result<(), TraceError> {
-    if query.capsule.is_some() && matches!(resource, Geometry::Hulls(_)) {
+    if query.capsule.is_some()
+        && query.rules.hull_shape != HullShape::ExactBox
+        && matches!(resource, Geometry::Hulls(_))
+    {
         Err(TraceError::Unsupported {
             geometry,
             model: index,

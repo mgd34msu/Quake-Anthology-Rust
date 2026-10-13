@@ -1,4 +1,4 @@
-//! Exact box occupancy and certified exterior sweeps over hull-zero cells.
+//! Exact shape occupancy and certified exterior sweeps over hull-zero cells.
 //! Native compiled hull traversal does not use this predicate.
 mod integer;
 
@@ -6,7 +6,7 @@ use self::integer::Int;
 use super::{AllSolid, Contents, Trace, TraceQuery};
 use qa_core::{
     math,
-    primitives::{Bounds, ClipNode, IndexSpan, Plane, Vec3},
+    primitives::{Bounds, Capsule, ClipNode, IndexSpan, Plane, Vec3},
 };
 use std::cmp::Ordering;
 
@@ -53,6 +53,26 @@ struct Row {
     distance: Int,
     slope: Int,
     strict: bool,
+}
+
+impl Row {
+    fn reduce(&mut self) -> Result<(), Failure> {
+        let shift = self
+            .normal
+            .iter()
+            .chain([&self.distance, &self.slope])
+            .map(Int::trailing_zeros)
+            .min()
+            .ok_or(Failure::Input)?;
+        for value in self
+            .normal
+            .iter_mut()
+            .chain([&mut self.distance, &mut self.slope])
+        {
+            *value = value.unshift(shift)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -599,6 +619,41 @@ fn determinant(matrix: &[[Int; 4]; 4], count: usize, work: &mut Work) -> Result<
     Ok(result)
 }
 
+struct Solution {
+    numerator: [Int; 4],
+    denominator: Int,
+}
+
+fn solve(
+    matrix: &[[Int; 4]; 4],
+    rhs: &[Int; 4],
+    count: usize,
+    work: &mut Work,
+) -> Result<Option<Solution>, Failure> {
+    let mut denominator = determinant(matrix, count, work)?;
+    if denominator.is_zero() {
+        return Ok(None);
+    }
+    let mut numerator = [Int::ZERO; 4];
+    for column in 0..count {
+        let mut replaced = *matrix;
+        for row in 0..count {
+            replaced[row][column] = rhs[row];
+        }
+        numerator[column] = determinant(&replaced, count, work)?;
+    }
+    if denominator.negative() {
+        denominator = denominator.neg();
+        for value in &mut numerator[..count] {
+            *value = value.neg();
+        }
+    }
+    Ok(Some(Solution {
+        numerator,
+        denominator,
+    }))
+}
+
 /// Return nonnegative Cramer numerators for N*lambda=0, sum(lambda)=1.
 /// An independent minor has one unique candidate. A failed full-system check
 /// cannot be repaired by trying another minor of the same columns.
@@ -615,24 +670,17 @@ fn certificate(
                 matrix[row][column] = columns[column][source];
             }
         }
-        let mut denominator = determinant(&matrix, count, work)?;
-        if denominator.is_zero() {
+        let mut rhs = [Int::ZERO; 4];
+        for (row, &source) in selected.iter().enumerate() {
+            rhs[row] = if source == 3 { Int::ONE } else { Int::ZERO };
+        }
+        let Some(Solution {
+            numerator: weights,
+            denominator,
+        }) = solve(&matrix, &rhs, count, work)?
+        else {
             return Ok(true);
-        }
-        let mut weights = [Int::ZERO; 4];
-        for column in 0..count {
-            let mut replaced = matrix;
-            for (row, &source) in selected.iter().enumerate() {
-                replaced[row][column] = if source == 3 { Int::ONE } else { Int::ZERO };
-            }
-            weights[column] = determinant(&replaced, count, work)?;
-        }
-        if denominator.negative() {
-            denominator = denominator.neg();
-            for weight in &mut weights[..count] {
-                *weight = weight.neg();
-            }
-        }
+        };
         if weights[..count].iter().any(|weight| weight.negative()) {
             return Ok(false);
         }
@@ -656,6 +704,115 @@ fn certificate(
         Ok(false)
     })?;
     Ok(answer)
+}
+
+/// KKT projection onto a closed convex cell. An independent basis has at
+/// most three normals, including cells with a lower-dimensional affine hull.
+/// The numerator is the center-to-cell displacement in binary32 units.
+struct Projection {
+    displacement: [Int; 3],
+    denominator: Int,
+}
+
+fn projection(
+    rows: &[Row],
+    indices: &[usize],
+    center: &[Int; 3],
+    work: &mut Work,
+) -> Result<Option<Projection>, Failure> {
+    let mut gram = [[Int::ZERO; 4]; 4];
+    let mut rhs = [Int::ZERO; 4];
+    for (a, &index) in indices.iter().enumerate() {
+        let row = &rows[index];
+        rhs[a] = dot(&row.normal, center)?.add(&row.distance.neg())?;
+        for (b, &other) in indices.iter().enumerate() {
+            gram[a][b] = dot(&row.normal, &rows[other].normal)?;
+        }
+    }
+    let Some(solution) = solve(&gram, &rhs, indices.len(), work)? else {
+        return Ok(None);
+    };
+    if solution.numerator[..indices.len()]
+        .iter()
+        .any(|value| value.negative())
+    {
+        return Ok(None);
+    }
+    let mut displacement = [Int::ZERO; 3];
+    for (column, &index) in indices.iter().enumerate() {
+        for axis in 0..3 {
+            displacement[axis] = displacement[axis]
+                .add(&solution.numerator[column].mul(&rows[index].normal[axis])?)?;
+        }
+    }
+    for (index, row) in rows.iter().enumerate() {
+        work.item()?;
+        if indices.contains(&index) {
+            continue;
+        }
+        let error = dot(&row.normal, center)?.add(&row.distance.neg())?;
+        if error
+            .mul(&solution.denominator)?
+            .add(&dot(&row.normal, &displacement)?.neg())?
+            .compare(&Int::ZERO)
+            == Ordering::Greater
+        {
+            return Ok(None);
+        }
+    }
+    Ok(Some(Projection {
+        displacement,
+        denominator: solution.denominator,
+    }))
+}
+
+fn sphere_occupancy(
+    rows: &[Row],
+    center: &[Int; 3],
+    radius: Int,
+    work: &mut Work,
+) -> Result<bool, Failure> {
+    let mut inside = true;
+    for row in rows {
+        work.item()?;
+        if dot(&row.normal, center)?.compare(&row.distance) == Ordering::Greater {
+            inside = false;
+            break;
+        }
+    }
+    if inside {
+        return Ok(true);
+    }
+    let mut answer = None;
+    for count in 1..=3 {
+        combinations(rows.len(), count, |indices| {
+            work.item()?;
+            let Some(closest) = projection(rows, indices, center, work)? else {
+                return Ok(true);
+            };
+            let bound = radius.mul(&closest.denominator)?;
+            answer = Some(
+                dot(&closest.displacement, &closest.displacement)?.compare(&bound.mul(&bound)?)
+                    != Ordering::Greater,
+            );
+            Ok(false)
+        })?;
+        if let Some(answer) = answer {
+            return Ok(answer);
+        }
+    }
+    // Admission proved this closed cell nonempty; it must have a projection.
+    Err(Failure::Arithmetic)
+}
+
+fn query_rows(sides: usize) -> Result<usize, Failure> {
+    // Eliminating one centered segment parameter adds one row for each pair
+    // of opposite slope signs. Its largest partition has floor(N*N/4) pairs.
+    let capsule = sides
+        .checked_mul(sides)
+        .and_then(|pairs| sides.checked_add(pairs / 4))
+        .ok_or(Failure::Budget)?;
+    Ok(capsule.max(sides.checked_add(6).ok_or(Failure::Budget)?))
 }
 
 /// The Motzkin alternative handles cold mixed-strict paths and hot closed
@@ -1073,11 +1230,16 @@ pub(super) fn prepare(
             count: (retained_cells.len() - first) as u32,
         });
     }
+    let query_rows = query_rows(retained_greatest)?;
+    // Include the eventual query workspace in the admission budget while
+    // builder and retained arrays are still owned. It reuses the same row
+    // arena for boxes and capsule extrusion, rather than another geometry.
+    let _extra_rows = reserve::<Row>(query_rows.saturating_sub(rows), &mut held, limits.bytes)?;
     Ok(Prepared {
         data: Data {
             cells: retained_cells,
             sides: retained_sides,
-            rows: retained_greatest.checked_add(6).ok_or(Failure::Budget)?,
+            rows: query_rows,
             contacts: limits.contact_rows,
             query_work: limits.query_work,
         },
@@ -1094,15 +1256,14 @@ impl Data {
         self.contacts
     }
 
-    fn fill_rows<'a>(
+    fn fill_source_rows<'a>(
         &self,
         planes: &[Plane],
         cell: Cell,
-        path: &BoxPath,
         pose: &Pose,
         rows: &'a mut [Row],
-    ) -> Result<&'a [Row], Failure> {
-        let rows = &mut rows[..cell.sides.count as usize + 6];
+    ) -> Result<&'a mut [Row], Failure> {
+        let rows = &mut rows[..cell.sides.count as usize];
         for (row, &side) in rows.iter_mut().zip(&self.sides[cell.sides.range()]) {
             let source = source_row(planes, side)?;
             let mut transformed = Row {
@@ -1120,6 +1281,19 @@ impl Data {
             }
             *row = transformed;
         }
+        Ok(rows)
+    }
+
+    fn fill_rows<'a>(
+        &self,
+        planes: &[Plane],
+        cell: Cell,
+        path: &BoxPath,
+        pose: &Pose,
+        rows: &'a mut [Row],
+    ) -> Result<&'a [Row], Failure> {
+        self.fill_source_rows(planes, cell, pose, rows)?;
+        let rows = &mut rows[..cell.sides.count as usize + 6];
         for axis in 0..3 {
             for side in 0..2 {
                 let mut row = Row::default();
@@ -1134,6 +1308,97 @@ impl Data {
             }
         }
         Ok(rows)
+    }
+
+    fn fill_capsule_rows<'a>(
+        &self,
+        planes: &[Plane],
+        cell: Cell,
+        offset: &[Int; 3],
+        pose: &Pose,
+        rows: &'a mut [Row],
+        work: &mut Work,
+    ) -> Result<&'a [Row], Failure> {
+        let source_count = cell.sides.count as usize;
+        for row in self.fill_source_rows(planes, cell, pose, rows)? {
+            work.item()?;
+            row.reduce()?;
+            row.slope = dot(&row.normal, offset)?;
+        }
+        let mut count = source_count;
+        // Exact Fourier-Motzkin elimination of u in [-1,1] from
+        // n.(p-u*offset) <= distance. Sphere inflation then tests the distance
+        // to this extruded cell, including edges and corners.
+        for i in 0..source_count {
+            if rows[i].slope.is_zero() || rows[i].slope.negative() {
+                continue;
+            }
+            for j in 0..source_count {
+                if !rows[j].slope.negative() {
+                    continue;
+                }
+                work.item()?;
+                let positive = rows[i].slope;
+                let negative = rows[j].slope.neg();
+                let mut row = Row {
+                    distance: negative
+                        .mul(&rows[i].distance)?
+                        .add(&positive.mul(&rows[j].distance)?)?,
+                    ..Row::default()
+                };
+                for axis in 0..3 {
+                    row.normal[axis] = negative
+                        .mul(&rows[i].normal[axis])?
+                        .add(&positive.mul(&rows[j].normal[axis])?)?;
+                }
+                if zero(&row.normal) {
+                    if row.distance.negative() {
+                        return Err(Failure::Arithmetic);
+                    }
+                    continue;
+                }
+                row.reduce()?;
+                *rows.get_mut(count).ok_or(Failure::Scratch)? = row;
+                count += 1;
+            }
+        }
+        for row in &mut rows[..source_count] {
+            let slope = if row.slope.negative() {
+                row.slope.neg()
+            } else {
+                row.slope
+            };
+            row.distance = row.distance.add(&slope)?;
+            row.slope = Int::ZERO;
+            row.reduce()?;
+        }
+        Ok(&rows[..count])
+    }
+
+    fn capsule_occupancy(
+        &self,
+        planes: &[Plane],
+        cells: IndexSpan,
+        query: TraceQuery,
+        capsule: Capsule,
+        pose: &Pose,
+        rows: &mut [Row],
+        work: &mut Work,
+    ) -> Result<Option<Contents>, Failure> {
+        let center = vector(query.start + math::midpoint(query.mins, query.maxs))?;
+        let offset = vector(capsule.offset)?;
+        let radius = Int::binary32(capsule.radius)?;
+        for &cell in &self.cells[cells.range()] {
+            work.item()?;
+            if !cell.contents.intersects(query.mask) {
+                continue;
+            }
+            let rows = self.fill_capsule_rows(planes, cell, &offset, pose, rows, work)?;
+            if sphere_occupancy(rows, &center, radius, work)? {
+                return Ok(Some(cell.contents));
+            }
+        }
+        Ok(None)
     }
 
     fn occupancy(
@@ -1500,6 +1765,32 @@ impl Data {
         }
         if determinant(&matrix, 3, &mut work)?.is_zero() {
             return Err(Failure::Input);
+        }
+        if let Some(capsule) = query.capsule {
+            if moving
+                || !capsule.radius.is_finite()
+                || capsule.radius < 0.0
+                || !capsule.offset.is_finite()
+            {
+                return Err(Failure::Input);
+            }
+            let contents = self.capsule_occupancy(
+                planes,
+                cells,
+                query,
+                capsule,
+                &pose,
+                &mut scratch.rows,
+                &mut work,
+            )?;
+            let mut trace = Trace::clear(query.end);
+            if let Some(contents) = contents {
+                trace.start_solid = true;
+                trace.all_solid = true;
+                trace.fraction = 0.0;
+                trace.contents = contents;
+            }
+            return Ok(trace);
         }
         if moving {
             return self.moving(planes, cells, query, &path, &pose, scratch, &mut work);
