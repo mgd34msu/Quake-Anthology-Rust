@@ -409,6 +409,42 @@ fn native_ack_observer_sees_the_owned_record_once_before_text_retirement() {
     );
 }
 #[test]
+fn console_parts_preserve_raw_bytes_in_one_bounded_ring_lease() {
+    let mut ring = EventRing::load(4, 2, 1, 8).unwrap();
+    let local = ring.bind(OutputTarget::Presentation).unwrap();
+    let remote = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    ring.console_parts(&[b"raw ", b"\xff\xfe", b" tail"])
+        .unwrap();
+    assert_eq!(ring.len(), 1);
+    assert_eq!(ring.texts.truncated(), 1);
+    let mut batch = ring.batch(local).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::Print(print) = record.event else {
+        panic!("print");
+    };
+    assert_eq!(
+        (print.kind, print.client, print.level),
+        (PrintKind::Console, None, 2)
+    );
+    assert_eq!(ring.texts.get(print.text).unwrap(), b"raw \xff\xfe t");
+    assert_eq!(
+        ring.console_parts(&[b"blocked"]),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.rejected_publications(), 1);
+    assert!(consume(&mut ring, remote, OutputSubmission::Unsent).is_empty());
+    assert!(ring.submit(local, record.sequence, OutputSubmission::BestEffort));
+    assert!(ring.is_empty());
+    ring.console_parts(&[b"", b"next", b""]).unwrap();
+    let mut batch = ring.batch(local).unwrap();
+    let FrameEvent::Print(print) = ring.next(&mut batch).unwrap().event else {
+        panic!("print");
+    };
+    assert_eq!(ring.texts.get(print.text).unwrap(), b"next");
+    assert_eq!(ring.texts.truncated(), 1);
+}
+
+#[test]
 fn formatted_console_uses_local_delivery_and_the_ring_text_boundary() {
     let mut ring = EventRing::load(4, 3, 1, 32).unwrap();
     let local = ring.bind(OutputTarget::Presentation).unwrap();

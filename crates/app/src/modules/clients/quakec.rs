@@ -80,6 +80,18 @@ pub(super) fn connect(
     userinfo: &[u8],
 ) -> Result<u32, String> {
     let info = host.client_info(module).ok_or("missing client lifecycle")?;
+    if info.rules == RuleSetId::Quake
+        && !matches!(
+            host.runtime
+                .server
+                .clients
+                .get(id.0 as usize)
+                .and_then(|client| client.connection),
+            Some(qa_session::clients::Connection::Local | qa_session::clients::Connection::Bot)
+        )
+    {
+        return Err("NetQuake remote signon is not yet admitted".into());
+    }
     let row = host
         .module_row(module)
         .filter(|row| row.state == State::Running)
@@ -127,8 +139,14 @@ pub(super) fn connect(
         callback(host, module, id, ClientCallback::NewParameters)?;
         let parms = edit(host, module, |vm, _, _| vm.read_spawn_parms())?;
         host.runtime.server.clients[id.0 as usize].module_spawn_parms = parms;
+        let color = |key| {
+            let text = qa_core::text::info_value(userinfo, key, false)
+                .map_or(&b""[..], |range| &userinfo[range]);
+            (qa_core::text::integer_prefix(text).0 as u8 & 15).min(13)
+        };
+        let colors = color(b"topcolor") << 4 | color(b"bottomcolor");
         edit(host, module, |vm, services, context| {
-            vm.prepare_client_spawn(services, context, offset, userinfo)?;
+            vm.prepare_client_spawn(services, context, offset, userinfo, colors)?;
             vm.write_spawn_parms(parms)
         })?;
         callback(host, module, id, ClientCallback::Connect)?;
@@ -145,6 +163,94 @@ pub(super) fn connect(
     Ok(native_client)
 }
 
+/// Frame-latest NQ commands update the existing native fields once at ingress.
+/// The provider owns their client phase; no packet-time engine movement runs.
+pub(super) fn receive(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    command: &UserCmd,
+    _: u32,
+) -> Result<(), ClientCommandError> {
+    let offset = native(host, module, id)?;
+    edit(host, module, |vm, _, context| {
+        vm.receive_client_command(context, offset, command)
+    })
+}
+
+fn think(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    time: ThinkTime,
+    step: f64,
+) -> Result<(), ClientCommandError> {
+    let entity = host.runtime.server.clients[id.0 as usize].entity;
+    let functions = Arc::clone(
+        &host
+            .modules
+            .as_ref()
+            .ok_or(ClientCommandError::MissingModule)?
+            .functions,
+    );
+    let result = run_think_with_rebind(
+        host,
+        &functions,
+        entity,
+        |owner| {
+            (owner == module).then_some(ThinkFrame::Seconds {
+                now: time.seconds(),
+                step,
+            })
+        },
+        |host, _| {
+            let row = host.module_row(module)?;
+            let Program::QuakeC(qc) = &row.request.program else {
+                return None;
+            };
+            let current = host.runtime.server.clients.get(id.0 as usize)?;
+            let slot = host.runtime.server.entities.resolve(current.entity)?;
+            let native = host.runtime.server.entities.columns.native_entity[slot]?;
+            qc.vm
+                .bound_entity(&host.runtime.server.entities, native)
+                .ok()
+                .flatten()
+        },
+    );
+    if result.rejected != 0 || result.current_entity != Some(entity) {
+        return Err(ClientCommandError::Inactive);
+    }
+    Ok(())
+}
+
+/// Reserved NQ clients execute at their native ordinal in the provider pass.
+/// This slice admits NONE; other native motion remains explicitly unsupported.
+pub(in crate::modules) fn frame(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    time: ThinkTime,
+    step: f64,
+) -> Result<bool, ClientCommandError> {
+    callback(host, module, id, ClientCallback::BeforeMove)?;
+    let offset = native(host, module, id)?;
+    let phase = edit(host, module, |vm, _, context| {
+        vm.client_phase(context, offset)
+    })?;
+    if phase != qa_core::primitives::Motion::None {
+        return Ok(false);
+    }
+    think(host, module, id, time, step)?;
+    let offset = native(host, module, id)?;
+    edit(host, module, |vm, services, context| {
+        vm.relink_entity(services, context, offset)
+    })?;
+    triggers(host, module, id, time)?;
+    native(host, module, id)?;
+    callback(host, module, id, ClientCallback::AfterMove)?;
+    Ok(true)
+}
+
 pub(super) fn command(
     host: &mut FrameHost,
     module: ModuleId,
@@ -158,44 +264,11 @@ pub(super) fn command(
             vm.prepare_client_command(services, context, offset, &command)
         })?;
         callback(host, module, id, ClientCallback::BeforeMove)?;
-        let entity = host.runtime.server.clients[id.0 as usize].entity;
-        let (functions, time) = {
-            let modules = host
-                .modules
-                .as_ref()
-                .ok_or(ClientCommandError::MissingModule)?;
-            let row = modules
-                .row(module)
-                .ok_or(ClientCommandError::MissingModule)?;
-            (Arc::clone(&modules.functions), row.time(host.time))
-        };
-        let think = run_think_with_rebind(
-            host,
-            &functions,
-            entity,
-            |owner| {
-                (owner == module).then_some(ThinkFrame::Seconds {
-                    now: time.seconds(),
-                    step,
-                })
-            },
-            |host, _| {
-                let row = host.module_row(module)?;
-                let Program::QuakeC(qc) = &row.request.program else {
-                    return None;
-                };
-                let current = host.runtime.server.clients.get(id.0 as usize)?;
-                let slot = host.runtime.server.entities.resolve(current.entity)?;
-                let native = host.runtime.server.entities.columns.native_entity[slot]?;
-                qc.vm
-                    .bound_entity(&host.runtime.server.entities, native)
-                    .ok()
-                    .flatten()
-            },
-        );
-        if think.rejected != 0 || think.current_entity != Some(entity) {
-            return Err(ClientCommandError::Inactive);
-        }
+        let time = host
+            .module_row(module)
+            .ok_or(ClientCommandError::MissingModule)?
+            .time(host.time);
+        think(host, module, id, time, step)?;
         let offset = native(host, module, id)?;
         let origin_offset = edit(host, module, |vm, services, context| {
             vm.read_client(services, context, offset)
@@ -384,13 +457,17 @@ pub(super) fn publish(
     module: ModuleId,
     id: ClientId,
 ) -> Result<(), ClientCommandError> {
-    host.publish_client_values(id, RuleSetId::QuakeWorld, module);
+    let rules = host
+        .client_info(module)
+        .ok_or(ClientCommandError::MissingModule)?
+        .rules;
+    host.publish_client_values(id, rules, module);
     let offset = native(host, module, id)?;
     let angles = edit(host, module, |vm, _, _| vm.client_set_angles(offset))?;
     if let Some(angles) = angles {
         let delivery = qa_core::primitives::NativeDelivery {
             module,
-            source: RuleSetId::QuakeWorld,
+            source: rules,
             target: qa_core::primitives::NativeTarget::Client(id),
             origin: host.runtime.server.clients[id.0 as usize]
                 .player

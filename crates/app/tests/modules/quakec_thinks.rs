@@ -2246,7 +2246,7 @@ fn noclip_qw_motion_uses_only_accepted_accumulated_and_clamped_span() {
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
 }
 
-fn qw_client_vm() -> Vm {
+fn qc_client_vm() -> Vm {
     let mut fields = FIELDS.to_vec();
     fields.extend_from_slice(&[
         (2, 40, b"health".as_slice()),
@@ -2385,9 +2385,11 @@ fn qw_client_vm() -> Vm {
     vm
 }
 
-fn qw_client_host(
+fn qc_client_host(
+    rules: RuleSetId,
     movement: RuleSetId,
     vm: Vm,
+    rows: &[(i32, f32, f32, u32)],
 ) -> (Box<FrameHost>, ClientId, GeometryId, EntityId, EntityId) {
     use qa_app::{WorldCollision, client_policy::ClientPolicy, map::SpawnAnchor};
     use qa_network::commands::packet::Protocol;
@@ -2433,7 +2435,7 @@ fn qw_client_host(
                 movement,
                 trace: RuleSetId::Quake3,
             },
-            Protocol::QuakeWorld28,
+            Protocol::native(rules),
             0,
         )
         .unwrap();
@@ -2441,12 +2443,12 @@ fn qw_client_host(
     let (mut req, _) = request(
         &mut runtime,
         ModuleId(1),
-        RuleSetId::QuakeWorld,
+        rules,
         vm,
         (0..8).collect(),
         7,
         20,
-        &[],
+        rows,
     );
     req.context.clock = ThinkTime::Seconds(7.0);
     let anchor = req.anchor;
@@ -2457,8 +2459,12 @@ fn qw_client_host(
 #[test]
 fn qw_client_lifecycle_uses_canonical_slot_shared_movement_and_packet_postthink_once() {
     use qa_world::collision::WorldTrace;
-    let (mut owned, id, geometry, canonical, anchor) =
-        qw_client_host(RuleSetId::QuakeWorld, qw_client_vm());
+    let (mut owned, id, geometry, canonical, anchor) = qc_client_host(
+        RuleSetId::QuakeWorld,
+        RuleSetId::QuakeWorld,
+        qc_client_vm(),
+        &[],
+    );
     let host = &mut *owned;
     let info = host.client_info(ModuleId(1)).unwrap();
     assert_eq!(
@@ -2573,21 +2579,323 @@ fn qw_client_lifecycle_uses_canonical_slot_shared_movement_and_packet_postthink_
     );
 }
 
+fn replace_client_function(
+    vm: &mut Vm,
+    entry: usize,
+    body: &[(qa_formats::program::quakec::Opcode, i16, i16, i16)],
+) {
+    let mut statements = vm.image.statements.to_vec();
+    vm.image.functions[entry].first_statement = statements.len() as i32;
+    statements.extend(body.iter().map(|&(opcode, a, b, c)| {
+        qa_formats::program::quakec::Statement {
+            opcode,
+            source_opcode: opcode as u16,
+            operands: [a, b, c],
+        }
+    }));
+    vm.image.statements = statements.into_boxed_slice();
+}
+
 #[test]
-fn netquake_load_does_not_silently_admit_the_qw_client_phases() {
+fn netquake_queued_client_runs_none_phases_and_shared_think_at_native_frame_time() {
+    let mut vm = qc_client_vm();
+    for (at, word) in [
+        (110, 7.0f32.to_bits()),
+        (111, 6),
+        (112, 34),
+        (113, 35),
+        (114, 47),
+        (115, 6),
+        (116, 50),
+        (117, 52),
+        (118, 29),
+    ] {
+        vm.image.globals[at] = word;
+    }
+    replace_client_function(
+        &mut vm,
+        4,
+        &[
+            (LoadF, 34, 81, 91),
+            (AddF, 91, 88, 92),
+            (LoadF, 34, 116, 93),
+            (AddF, 92, 93, 92),
+            (Address, 34, 81, 90),
+            (StorePF, 92, 90, 0),
+            (Address, 34, 112, 90),
+            (StorePF, 110, 90, 0),
+            (Address, 34, 113, 90),
+            (StorePF, 111, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    replace_client_function(
+        &mut vm,
+        6,
+        &[
+            (LoadF, 34, 81, 91),
+            (AddF, 91, 91, 92),
+            (Address, 34, 81, 90),
+            (StorePF, 92, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    replace_client_function(
+        &mut vm,
+        5,
+        &[
+            (LoadF, 34, 89, 91),
+            (AddF, 91, 88, 92),
+            (Address, 34, 89, 90),
+            (StorePF, 92, 90, 0),
+            (LoadV, 34, 114, 120),
+            (Address, 34, 115, 90),
+            (StorePV, 120, 90, 0),
+            (LoadF, 34, 117, 91),
+            (Address, 34, 118, 90),
+            (StorePF, 91, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    let (mut owned, id, geometry, canonical, anchor) =
+        qc_client_host(RuleSetId::Quake, RuleSetId::Quake3, vm, &[]);
+    let host = &mut *owned;
+    host.connect_module_client(
+        ModuleId(1),
+        id,
+        b"\\name\\native nq\\topcolor\\3\\bottomcolor\\7",
+    )
+    .unwrap();
+    let client = &host.runtime.server.clients[id.0 as usize];
+    assert_ne!(canonical, anchor);
+    assert_eq!(client.entity, canonical);
+    assert_eq!(client.module_spawn_parms[0], 999.0f32.to_bits());
+    assert_eq!(
+        host.runtime.server.module_moves(id),
+        Some(NativeEntity {
+            module: ModuleId(1),
+            slot: 1
+        })
+    );
+    assert_eq!(
+        (client.player.movement_rules, client.player.trace_rules),
+        (RuleSetId::Quake3, RuleSetId::Quake3)
+    );
+    assert_eq!((client.player.health, client.player.armor), (0, 0));
+    tick(host, 0);
+    let before = host.module_counts(ModuleId(1)).unwrap().calls;
+    let command = UserCmd {
+        duration_ms: 200,
+        movement: [200.0, 0.0, 0.0],
+        view_angles: Vec3([45.0, 90.0, 0.0]),
+        buttons: buttons::ATTACK | buttons::JUMP,
+        impulse: 9,
+        ..Default::default()
+    };
+    assert!(
+        host.runtime
+            .send_local_command(id, &command, EventTime::from_milliseconds(20))
+    );
+    // Framed command ingress consumes no client physics or callbacks.
+    host.drain(&mut Default::default());
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, before);
+    tick(host, 20);
+    let client = &host.runtime.server.clients[id.0 as usize];
+    assert_eq!((client.player.health, client.player.armor), (5, 1));
+    assert_eq!(
+        host.runtime.server.entities.columns.appearance[canonical.slot as usize].frame,
+        9
+    );
+    assert_eq!(
+        host.runtime.server.entities.columns.angles[canonical.slot as usize],
+        command.view_angles
+    );
+    assert_eq!(client.player.body.position, Vec3::default());
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, before + 4); // StartFrame, PreThink, think, PostThink.
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().unsupported_physics,
+        0
+    );
+    let world = host.runtime.collision.as_mut().unwrap();
+    assert_eq!(
+        host.runtime.server.move_pending_clients(
+            &host.runtime.geometry,
+            geometry,
+            0,
+            &mut world.scratch,
+            |_, error| panic!("{error:?}")
+        ),
+        0
+    );
+    // Provider phases continue with the retained command when no new packet arrives.
+    tick(host, 40);
+    let client = &host.runtime.server.clients[id.0 as usize];
+    assert_eq!((client.player.health, client.player.armor), (14, 2));
+    assert_eq!(
+        host.runtime.server.entities.columns.appearance[canonical.slot as usize].frame,
+        9
+    );
+    assert_eq!(client.player.body.position, Vec3::default());
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, before + 8);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
+}
+
+#[test]
+fn netquake_prethink_sanitizes_raw_fields_before_projection_and_routes_diagnostics() {
+    let mut vm = qc_client_vm();
+    for (at, word) in [(110, 0), (111, 3)] {
+        vm.image.globals[at] = word;
+    }
+    for (at, value) in [
+        (112, f32::NAN),
+        (113, -0.0),
+        (114, f32::INFINITY),
+        (115, f32::NEG_INFINITY),
+        (116, 2001.0),
+        (117, -2001.0),
+    ] {
+        vm.image.globals[at] = value.to_bits();
+    }
+    replace_client_function(
+        &mut vm,
+        4,
+        &[
+            (Address, 34, 110, 90),
+            (StorePV, 112, 90, 0),
+            (Address, 34, 111, 90),
+            (StorePV, 115, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    replace_client_function(&mut vm, 5, &[(LoadV, 34, 110, 120), (Return, 120, 0, 0)]);
+    let (mut owned, id, _, canonical, _) =
+        qc_client_host(RuleSetId::Quake, RuleSetId::Quake3, vm, &[]);
+    let host = &mut *owned;
+    host.connect_module_client(ModuleId(1), id, b"\\name\\sanitize")
+        .unwrap();
+    tick(host, 0);
+    tick(host, 20);
+    let body = host.runtime.server.clients[id.0 as usize].player.body;
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::QuakeC([
+            0.0f32.to_bits(),
+            (-0.0f32).to_bits(),
+            0.0f32.to_bits()
+        ]))
+    );
+    assert_eq!(body.position, Vec3::default());
+    assert_eq!(body.velocity, Vec3([0.0, 2000.0, -2000.0]));
+    assert_eq!(
+        host.runtime.server.entities.columns.position[canonical.slot as usize],
+        body.position
+    );
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
+    let messages = host
+        .console
+        .scrollback
+        .chunks(&host.runtime.server.events.texts)
+        .filter(|bytes| bytes.starts_with(b"Got a NaN "))
+        .map(<[u8]>::to_vec)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        messages,
+        [
+            b"Got a NaN velocity on \n".to_vec(),
+            b"Got a NaN origin on \n".to_vec(),
+            b"Got a NaN origin on \n".to_vec()
+        ]
+    );
+}
+
+#[test]
+fn netquake_none_explicitly_relinks_and_retouches_triggers_before_postthink() {
+    use qa_world::area::{LinkFlags, LinkIntent};
+    let mut vm = qc_client_vm();
+    for (at, word) in [(110, 0), (111, 10.0f32.to_bits())] {
+        vm.image.globals[at] = word;
+    }
+    for (at, value) in [(112, 64.0f32), (113, 0.0), (114, 0.0)] {
+        vm.image.globals[at] = value.to_bits();
+    }
+    replace_client_function(
+        &mut vm,
+        4,
+        &[
+            (Address, 34, 110, 90),
+            (StorePV, 112, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    replace_client_function(
+        &mut vm,
+        6,
+        &[
+            (LoadF, 36, 89, 91),
+            (AddF, 91, 111, 92),
+            (Address, 36, 89, 90),
+            (StorePF, 92, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    write(&mut vm, 2, b"solid", 1.0f32.to_bits());
+    write(&mut vm, 2, b"touch", 6);
+    write_vector(&mut vm, 2, b"origin", Vec3([64.0, 0.0, 0.0]));
+    write_vector(&mut vm, 2, b"mins", Vec3([-16.0; 3]));
+    write_vector(&mut vm, 2, b"maxs", Vec3([16.0; 3]));
+    let (mut owned, id, _, canonical, _) =
+        qc_client_host(RuleSetId::Quake, RuleSetId::Quake3, vm, &[(2, 0.0, 0.0, 0)]);
+    let host = &mut *owned;
+    host.connect_module_client(ModuleId(1), id, b"\\name\\trigger")
+        .unwrap();
+    let trigger = native_entity(host, ModuleId(1), 2);
+    assert!(host.runtime.server.area.link(
+        &host.runtime.server.entities,
+        trigger,
+        LinkFlags::TRIGGER,
+        qa_gameplay::rules::link_order(RuleSetId::Quake),
+        LinkIntent::Explicit
+    ));
+    tick(host, 0);
+    let before = host.module_counts(ModuleId(1)).unwrap().calls;
+    tick(host, 20);
+    assert_eq!(host.runtime.server.clients[id.0 as usize].player.armor, 11);
+    assert_eq!(
+        host.runtime.server.clients[id.0 as usize]
+            .player
+            .body
+            .position,
+        Vec3([64.0, 0.0, 0.0])
+    );
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, before + 4); // frame, PreThink, touch, PostThink
+    let bounds = host.runtime.server.area.bounds(canonical).unwrap();
+    assert!(bounds.mins.0[0] > 40.0 && bounds.maxs.0[0] > 64.0);
+    tick(host, 40);
+    assert_eq!(host.runtime.server.clients[id.0 as usize].player.armor, 22);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, before + 8);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
+}
+
+#[test]
+fn netquake_load_selects_frame_clients_and_rejects_inactive_connection() {
     let mut runtime = Runtime::load(1, []).unwrap();
     let (req, _) = request(
         &mut runtime,
         ModuleId(1),
         RuleSetId::Quake,
-        qw_client_vm(),
+        qc_client_vm(),
         (0..8).collect(),
         7,
         20,
         &[],
     );
     let mut host = load(runtime, vec![req]);
-    assert!(host.client_info(ModuleId(1)).is_none());
+    assert_eq!(
+        host.client_info(ModuleId(1)).unwrap().rules,
+        RuleSetId::Quake
+    );
     assert!(
         host.connect_module_client(ModuleId(1), ClientId(0), b"\\name\\nq")
             .is_err()
@@ -2806,7 +3114,8 @@ fn netquake_native_inventory_reaches_client_and_hud_through_queued_packets() {
             host.module_state(module),
             Some(qa_app::modules::State::Running)
         );
-        assert!(host.client_info(module).is_none()); // Client physics is a separate pending path.
+        assert_eq!(host.client_info(module).unwrap().rules, RuleSetId::Quake);
+        assert!(host.runtime.server.module_moves(id).is_none()); // Prebound publication does not connect a module client.
     }
 }
 
@@ -2819,13 +3128,14 @@ fn qw_recovered_packet_stops_at_client_callback_trap_and_reconnects_cleanly() {
     use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
     use qa_core::loopback::Endpoint;
     use qa_network::commands::packet::Protocol;
-    let mut vm = qw_client_vm();
+    let mut vm = qc_client_vm();
     let first = vm.image.functions[4].first_statement as usize;
     vm.image.statements[first].opcode = Call0;
     vm.image.statements[first].source_opcode = Call0 as u16;
     vm.image.statements[first].operands = [189, 0, 0];
     vm.image.globals[189] = u32::MAX;
-    let (mut owned, id, _, _, _) = qw_client_host(RuleSetId::QuakeWorld, vm);
+    let (mut owned, id, _, _, _) =
+        qc_client_host(RuleSetId::QuakeWorld, RuleSetId::QuakeWorld, vm, &[]);
     let host = &mut *owned;
     host.connect_module_client(ModuleId(1), id, b"\\name\\trap")
         .unwrap();
@@ -2887,7 +3197,12 @@ fn qw_recovered_packet_stops_at_client_callback_trap_and_reconnects_cleanly() {
 #[test]
 fn qw_native_command_subdivision_precedes_foreign_q3_movement_limits() {
     use qa_world::collision::WorldTrace;
-    let (mut owned, id, geometry, canonical, _) = qw_client_host(RuleSetId::Quake3, qw_client_vm());
+    let (mut owned, id, geometry, canonical, _) = qc_client_host(
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake3,
+        qc_client_vm(),
+        &[],
+    );
     let host = &mut *owned;
     host.connect_module_client(ModuleId(1), id, b"\\name\\foreign")
         .unwrap();

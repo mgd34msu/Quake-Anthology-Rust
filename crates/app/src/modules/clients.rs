@@ -6,7 +6,7 @@ use qa_core::primitives::{
 };
 use std::fmt;
 
-mod quakec;
+pub(super) mod quakec;
 
 /// Cold ABI metadata, independent of a client's wire, movement and trace roles.
 #[derive(Clone, Copy, Debug)]
@@ -20,6 +20,7 @@ pub struct ClientLifecycleInfo {
 #[derive(Clone, Copy)]
 pub(super) struct ClientLifecycle {
     info: ClientLifecycleInfo,
+    frame_commands: bool,
     q2: Option<Q2Clients>,
     connect: fn(&mut FrameHost, ModuleId, ClientId, &[u8]) -> Result<u32, String>,
     command:
@@ -31,19 +32,29 @@ pub(super) struct ClientLifecycle {
     publish: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
 }
 impl ClientLifecycle {
-    pub(super) fn quakeworld(module: ModuleId, clients: usize) -> Self {
+    pub(super) fn quakec(module: ModuleId, rules: RuleSetId, clients: usize) -> Self {
+        let frame_client = rules == RuleSetId::Quake;
         Self {
             info: ClientLifecycleInfo {
                 module,
-                rules: RuleSetId::QuakeWorld,
+                rules,
                 userinfo_bytes: qa_compat::quakec::QW_USERINFO_BYTES,
                 clients,
                 separate_values: true,
             },
+            frame_commands: frame_client,
             q2: None,
             connect: quakec::connect,
-            command: quakec::command,
-            finish: quakec::finish,
+            command: if frame_client {
+                quakec::receive
+            } else {
+                quakec::command
+            },
+            finish: if frame_client {
+                no_finish
+            } else {
+                quakec::finish
+            },
             disconnect: quakec::disconnect,
             text: quakec::text,
             userinfo: quakec::userinfo,
@@ -59,6 +70,7 @@ impl ClientLifecycle {
                 clients,
                 separate_values: false,
             },
+            frame_commands: false,
             q2: Some(api),
             connect: q2_connect,
             command: q2_command,
@@ -392,6 +404,29 @@ impl FrameHost {
         if execution == qa_network::commands::packet::CommandExecution::PerCommand {
             self.consume_pending_command(id);
             self.runtime.server.commit_attachments();
+        }
+    }
+
+    /// Frame-driven native clients admit their queued fields before StartFrame,
+    /// including catch-up provider ticks that precede the current world tick.
+    pub(super) fn prepare_module_client_commands(&mut self, module: ModuleId) {
+        if !self
+            .module_row(module)
+            .and_then(|row| row.client_lifecycle)
+            .is_some_and(|table| table.frame_commands)
+        {
+            return;
+        }
+        for slot in 0..self.runtime.server.clients.len() {
+            let id = ClientId(slot as u32);
+            if self
+                .runtime
+                .server
+                .module_moves(id)
+                .is_some_and(|native| native.module == module)
+            {
+                self.consume_pending_command(id);
+            }
         }
     }
 

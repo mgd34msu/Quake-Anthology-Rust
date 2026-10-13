@@ -3,12 +3,12 @@
 mod quakec_program;
 
 use qa_compat::{
-    quakec::{Layout, QW_USERINFO_BYTES, Vm},
+    quakec::{Builtins, Layout, QW_USERINFO_BYTES, Trap, Vm},
     services::{CallContext, CallError, ENGINE_CALLS, EngineServices, ServiceStorage},
 };
 use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
 use qa_core::{names::NameTable, primitives::*};
-use qa_formats::program::quakec::{Image, Opcode};
+use qa_formats::program::quakec::{Image, Opcode, Statement};
 use qa_session::{
     clients::{Connection, Server},
     dispatch::{FunctionBinding, FunctionTable},
@@ -67,6 +67,7 @@ const FIELDS: &[(u16, u16, &[u8])] = &[
     (2, 64, b"effects"),
     (3, 65, b"avelocity"),
     (2, 68, b"items2"),
+    (1, 69, b"classname"),
 ];
 
 fn vm(mutate: impl FnOnce(&mut Image)) -> Vm {
@@ -150,6 +151,18 @@ fn number(vm: &mut Vm, native: u32, name: &[u8], value: f32) {
 fn vector(vm: &mut Vm, native: u32, name: &[u8], value: Vec3) {
     write(vm, native, name, &value.0.map(f32::to_bits));
 }
+fn read_vector(vm: &Vm, native: u32, name: &[u8]) -> Vec3 {
+    let field = vm.image.field(name).unwrap();
+    vm.entities
+        .read_vec3(vm.field_address(native, field as u32, 3).unwrap())
+        .unwrap()
+}
+struct NoImports;
+impl Builtins for NoImports {
+    fn call(&mut self, _: &mut Vm, _: u32, _: usize) -> Result<(), Trap> {
+        Err(Trap::Builtin)
+    }
+}
 fn bind_callbacks(vm: &mut Vm) {
     let entries = [6, 5, 4, 3, 2, 1, 0];
     let table = FunctionTable::<Server>::load([(
@@ -224,10 +237,8 @@ fn with_native_client(
     vm.seed_entities(&server.entities, context.module, context.native_rules, 2)
         .unwrap();
     bind_callbacks(vm);
-    if source == RuleSetId::QuakeWorld {
-        vm.bind_client(&server.entities, native_identity, entity)
-            .unwrap();
-    }
+    vm.bind_client(&server.entities, native_identity, entity)
+        .unwrap();
     let player = &mut server.clients[client.0 as usize].player;
     player.movement_rules = RuleSetId::Quake3;
     player.trace_rules = RuleSetId::Quake2;
@@ -302,28 +313,34 @@ fn client_callbacks_use_current_native_words_and_qw_context_phases() {
             vm.client_callback(ClientCallback::Connect),
             Ok(CallbackId(4))
         );
-        vm.prepare_client_call(
-            ClientCallback::NewParameters,
-            native,
-            ThinkTime::Seconds(15.0),
-        )
-        .unwrap();
+        let restore = vm
+            .prepare_client_call(
+                ClientCallback::NewParameters,
+                native,
+                ThinkTime::Seconds(15.0),
+            )
+            .unwrap();
         assert_eq!(&vm.image.globals[34..37], &[111, 9.25f32.to_bits(), 222]);
+        vm.finish_client_call(restore).unwrap();
         for phase in [
             ClientCallback::Connect,
             ClientCallback::Begin,
             ClientCallback::BeforeMove,
             ClientCallback::AfterMove,
         ] {
-            vm.prepare_client_call(phase, native, ThinkTime::Seconds(15.0))
+            let restore = vm
+                .prepare_client_call(phase, native, ThinkTime::Seconds(15.0))
                 .unwrap();
             assert_eq!(&vm.image.globals[34..37], &[native, 15.0f32.to_bits(), 222]);
+            vm.finish_client_call(restore).unwrap();
             vm.image.globals[34] = 777;
             vm.image.globals[35] = 7.0f32.to_bits();
         }
-        vm.prepare_client_call(ClientCallback::Disconnect, native, ThinkTime::Seconds(99.0))
+        let restore = vm
+            .prepare_client_call(ClientCallback::Disconnect, native, ThinkTime::Seconds(99.0))
             .unwrap();
         assert_eq!(&vm.image.globals[34..37], &[native, 7.0f32.to_bits(), 222]);
+        vm.finish_client_call(restore).unwrap();
         vm.image.globals[71] = 6;
         assert_eq!(
             vm.client_callback(ClientCallback::Connect),
@@ -338,11 +355,15 @@ fn client_callbacks_use_current_native_words_and_qw_context_phases() {
             vm.client_callback(ClientCallback::Command),
             Err(CallError::Unsupported)
         );
-        vm.prepare_touch_call(0, native, None).unwrap();
+        let restore = vm.prepare_touch_call(0, native, None).unwrap();
         assert_eq!(&vm.image.globals[34..37], &[0, 7.0f32.to_bits(), native]);
-        vm.prepare_touch_call(0, native, Some(ThinkTime::Seconds(20.0)))
+        vm.finish_client_call(restore).unwrap();
+        assert_eq!(&vm.image.globals[34..37], &[native, 7.0f32.to_bits(), 222]);
+        let restore = vm
+            .prepare_touch_call(0, native, Some(ThinkTime::Seconds(20.0)))
             .unwrap();
         assert_eq!(vm.image.globals[35], 20.0f32.to_bits());
+        vm.finish_client_call(restore).unwrap();
         write(vm, native, b"touch", &[6]);
         assert_eq!(vm.touch_callback(native), Ok(Some(CallbackId(0))));
         write(vm, native, b"touch", &[0]);
@@ -370,7 +391,7 @@ fn spawn_clears_only_selected_reserved_row_and_retains_raw_name() {
             )
             .unwrap();
         services.cvars.force_write(speed, "333").unwrap();
-        vm.prepare_client_spawn(services, context, native, b"\\name\\raw\xff")
+        vm.prepare_client_spawn(services, context, native, b"\\name\\raw\xff", 0)
             .unwrap();
         assert_eq!(read(vm, 0, b"health"), 123.0f32.to_bits());
         assert_eq!(read(vm, native, b"health"), 0);
@@ -393,17 +414,393 @@ fn spawn_clears_only_selected_reserved_row_and_retains_raw_name() {
             RuleSetId::Quake2
         );
         assert_eq!(
-            vm.prepare_client_spawn(services, context, native, &[b'a'; QW_USERINFO_BYTES]),
+            vm.prepare_client_spawn(services, context, native, &[b'a'; QW_USERINFO_BYTES], 0),
             Err(CallError::Memory)
         );
     });
 }
 
 #[test]
+fn nq_callbacks_preserve_connect_globals_and_restore_only_native_saved_words() {
+    let mut vm = vm(|image| {
+        image.statements = [
+            (Opcode::StoreEnt, [110, 34, 0]),
+            (Opcode::StoreF, [111, 35, 0]),
+            (Opcode::StoreEnt, [112, 36, 0]),
+            (Opcode::Return, [1, 0, 0]),
+            (Opcode::StoreEnt, [34, 113, 0]),
+            (Opcode::StoreF, [35, 114, 0]),
+            (Opcode::StoreEnt, [36, 115, 0]),
+            (Opcode::Return, [1, 0, 0]),
+            (Opcode::StoreEnt, [110, 34, 0]),
+            (Opcode::StoreF, [111, 35, 0]),
+            (Opcode::StoreEnt, [112, 36, 0]),
+            (Opcode::Invalid, [0, 0, 0]),
+        ]
+        .map(|(opcode, operands)| Statement {
+            opcode,
+            source_opcode: opcode as u16,
+            operands,
+        })
+        .to_vec()
+        .into_boxed_slice();
+        image.functions[2].first_statement = 0;
+        image.functions[3].first_statement = 4;
+        image.functions[6].first_statement = 8;
+    });
+    with_native_client(&mut vm, RuleSetId::Quake, |vm, _, context, native, _| {
+        for (event, callback) in [
+            (ClientCallback::NewParameters, 5),
+            (ClientCallback::Connect, 4),
+            (ClientCallback::Begin, 3),
+            (ClientCallback::BeforeMove, 2),
+            (ClientCallback::AfterMove, 1),
+            (ClientCallback::Disconnect, 0),
+        ] {
+            assert_eq!(vm.client_callback(event), Ok(CallbackId(callback)));
+        }
+        vm.image.globals[34] = 111;
+        vm.image.globals[35] = 9.25f32.to_bits();
+        vm.image.globals[36] = 222;
+        let restore = vm
+            .prepare_client_call(ClientCallback::NewParameters, native, context.clock)
+            .unwrap();
+        vm.finish_client_call(restore).unwrap();
+        assert_eq!(&vm.image.globals[34..37], &[111, 9.25f32.to_bits(), 222]);
+        let parms = std::array::from_fn(|index| 0x7f80_1234u32.wrapping_add(index as u32));
+        vm.write_spawn_parms(parms).unwrap();
+        assert_eq!(vm.read_spawn_parms().unwrap(), parms);
+
+        vm.image.globals[110..113].copy_from_slice(&[333, 7.5f32.to_bits(), 444]);
+        let restore = vm
+            .prepare_client_call(ClientCallback::Connect, native, context.clock)
+            .unwrap();
+        assert_eq!(&vm.image.globals[34..37], &[native, 10.0f32.to_bits(), 222]);
+        vm.call(&mut NoImports, 2, 64, false).unwrap();
+        vm.finish_client_call(restore).unwrap();
+        let restore = vm
+            .prepare_client_call(ClientCallback::Begin, native, context.clock)
+            .unwrap();
+        assert_eq!(&vm.image.globals[34..37], &[333, 7.5f32.to_bits(), 444]);
+        vm.call(&mut NoImports, 3, 64, false).unwrap();
+        vm.finish_client_call(restore).unwrap();
+        assert_eq!(&vm.image.globals[113..116], &[333, 7.5f32.to_bits(), 444]);
+
+        vm.image.globals[110..113].copy_from_slice(&[777, 9.5f32.to_bits(), 888]);
+        let restore = vm
+            .prepare_client_call(ClientCallback::Disconnect, native, ThinkTime::Seconds(99.0))
+            .unwrap();
+        assert_eq!(&vm.image.globals[34..37], &[native, 7.5f32.to_bits(), 444]);
+        assert_eq!(vm.call(&mut NoImports, 6, 64, false), Err(Trap::Statement));
+        vm.finish_client_call(restore).unwrap();
+        assert_eq!(&vm.image.globals[34..37], &[333, 9.5f32.to_bits(), 888]);
+
+        let restore = vm
+            .prepare_touch_call(0, native, Some(ThinkTime::Seconds(12.0)))
+            .unwrap();
+        vm.image.globals[34] = 999;
+        vm.image.globals[35] = 13.0f32.to_bits();
+        vm.image.globals[36] = 1111;
+        vm.finish_client_call(restore).unwrap();
+        assert_eq!(&vm.image.globals[34..37], &[333, 13.0f32.to_bits(), 888]);
+    });
+}
+
+#[test]
+fn nq_spawn_uses_native_colors_and_keeps_qw_only_fields_cleared() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            number(vm, 0, b"health", 123.0);
+            number(vm, native, b"health", 77.0);
+            number(vm, native, b"gravity", 4.0);
+            number(vm, native, b"maxspeed", 999.0);
+            vm.prepare_client_spawn(services, context, native, b"\\name\\raw\x80", 0x2d)
+                .unwrap();
+            assert_eq!(read(vm, 0, b"health"), 123.0f32.to_bits());
+            assert_eq!(read(vm, native, b"health"), 0);
+            assert_eq!(read(vm, native, b"colormap"), 2.0f32.to_bits());
+            assert_eq!(read(vm, native, b"team"), 14.0f32.to_bits());
+            assert_eq!(read(vm, native, b"gravity"), 0);
+            assert_eq!(read(vm, native, b"maxspeed"), 0);
+            assert_eq!(
+                vm.strings
+                    .cstring(u64::from(read(vm, native, b"netname")))
+                    .unwrap(),
+                b"raw\x80"
+            );
+            assert_eq!(vm.client_phase(context, native), Ok(Motion::None));
+            let player = &services.server.clients[id.0 as usize].player;
+            assert_eq!(
+                (player.movement_rules, player.trace_rules),
+                (RuleSetId::Quake3, RuleSetId::Quake2)
+            );
+            assert_eq!(context.console.source, RuleSetId::Quake2Rerelease);
+        },
+    );
+}
+
+#[test]
+fn nq_spawn_validates_executed_destinations_before_clearing_native_words() {
+    let mut vm = vm(|image| {
+        image
+            .fielddefs
+            .iter_mut()
+            .find(|field| image.names.get(field.name) == Some(b"team".as_slice()))
+            .unwrap()
+            .value_type = 1;
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, _| {
+            number(vm, native, b"health", 77.0);
+            assert_eq!(
+                vm.prepare_client_spawn(services, context, native, b"\\name\\raw", 13),
+                Err(CallError::Memory)
+            );
+            assert_eq!(read(vm, native, b"health"), 77.0f32.to_bits());
+            assert!(vm.client_callback(ClientCallback::BeforeMove).is_ok());
+        },
+    );
+}
+
+#[test]
+fn nq_ingress_ignores_fixangle_but_preserves_zero_impulse_and_body_pose() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, _| {
+            vm.prepare_client_spawn(services, context, native, b"", 0)
+                .unwrap();
+            number(vm, native, b"fixangle", 1.0);
+            number(vm, native, b"impulse", 7.0);
+            vector(vm, native, b"angles", Vec3([40.0, 50.0, 60.0]));
+            vector(vm, native, b"velocity", Vec3([1.0, 2.0, 3.0]));
+            vm.image.globals[37] = 0.125f32.to_bits();
+            vm.receive_client_command(
+                context,
+                native,
+                &UserCmd {
+                    view_angles: Vec3([30.0, 90.0, 12.0]),
+                    buttons: buttons::ATTACK | buttons::JUMP,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                read_vector(vm, native, b"v_angle"),
+                Vec3([30.0, 90.0, 12.0])
+            );
+            assert_eq!(read(vm, native, b"button0"), 1.0f32.to_bits());
+            assert_eq!(read(vm, native, b"button2"), 1.0f32.to_bits());
+            assert_eq!(read(vm, native, b"impulse"), 7.0f32.to_bits());
+            vm.receive_client_command(
+                context,
+                native,
+                &UserCmd {
+                    view_angles: Vec3([12.0, 34.0, 56.0]),
+                    impulse: 9,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                read_vector(vm, native, b"v_angle"),
+                Vec3([12.0, 34.0, 56.0])
+            );
+            assert_eq!(read(vm, native, b"button0"), 0);
+            assert_eq!(read(vm, native, b"button2"), 0);
+            assert_eq!(read(vm, native, b"impulse"), 9.0f32.to_bits());
+            assert_eq!(read_vector(vm, native, b"angles"), Vec3([40.0, 50.0, 60.0]));
+            assert_eq!(read_vector(vm, native, b"velocity"), Vec3([1.0, 2.0, 3.0]));
+            assert_eq!(vm.image.globals[37], 0.125f32.to_bits());
+            assert_eq!(
+                vm.client_set_angles(native),
+                Ok(Some(Vec3([40.0, 50.0, 60.0])))
+            );
+            vm.clear_client_set_angles(native).unwrap();
+            assert_eq!(vm.client_set_angles(native), Ok(None));
+            assert_eq!(
+                vm.receive_client_command(context, 0, &UserCmd::default()),
+                Err(CallError::Entity)
+            );
+            assert_eq!(
+                vm.receive_client_command(context, 3 * vm.stride as u32, &UserCmd::default()),
+                Err(CallError::Entity)
+            );
+        },
+    );
+}
+
+#[test]
+fn native_client_phase_uses_integer_motion_without_admitting_packet_movement() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, _| {
+            for (value, phase) in [
+                (0.75, Motion::None),
+                (8.75, Motion::Noclip),
+                (3.0, Motion::Unsupported),
+                (f32::NAN, Motion::Unsupported),
+            ] {
+                number(vm, native, b"movetype", value);
+                assert_eq!(vm.client_phase(context, native), Ok(phase));
+            }
+            assert_eq!(
+                vm.prepare_client_command(services, context, native, &UserCmd::default()),
+                Err(CallError::Unsupported)
+            );
+            assert_eq!(
+                vm.read_client(services, context, native),
+                Err(CallError::Unsupported)
+            );
+            assert_eq!(
+                vm.write_client(services, context, native, Vec3::default()),
+                Err(CallError::Unsupported)
+            );
+        },
+    );
+    let mut missing = self::vm(|image| {
+        image.fielddefs = image
+            .fielddefs
+            .iter()
+            .copied()
+            .filter(|field| image.names.get(field.name) != Some(b"movetype".as_slice()))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+    });
+    with_native_client(
+        &mut missing,
+        RuleSetId::Quake,
+        |vm, _, context, native, _| {
+            assert!(vm.client_callback(ClientCallback::BeforeMove).is_ok());
+            assert_eq!(vm.client_phase(context, native), Err(CallError::Memory));
+        },
+    );
+}
+
+#[test]
+fn native_client_velocity_uses_shared_sanitizer_without_bounds_or_angular_fields() {
+    let mut vm = vm(|image| {
+        image.fielddefs = image
+            .fielddefs
+            .iter()
+            .copied()
+            .filter(|field| {
+                ![
+                    b"angles".as_slice(),
+                    b"avelocity",
+                    b"mins",
+                    b"maxs",
+                    b"absmin",
+                    b"absmax",
+                ]
+                .contains(&image.names.get(field.name).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            let maximum = services
+                .cvars
+                .bind(
+                    "sv_maxvelocity",
+                    Context {
+                        source: RuleSetId::Quake,
+                        ..Context::default()
+                    },
+                )
+                .unwrap();
+            services.cvars.force_write(maximum, "4").unwrap();
+            let maximum = vm.client_max_velocity(services.cvars).unwrap();
+            assert_eq!(maximum, 4.0);
+            vector(vm, native, b"origin", Vec3([f32::NAN, f32::INFINITY, -2.0]));
+            vector(vm, native, b"velocity", Vec3([f32::INFINITY, 3.0, -99.0]));
+            let classname = vm.insert_string(b"raw\x80_player").unwrap() as u32;
+            write(vm, native, b"classname", &[classname]);
+            assert_eq!(vm.client_classname(native).unwrap(), b"raw\x80_player");
+            vm.prepare_client_velocity(&mut services.server.entities, context, native)
+                .unwrap();
+            let entity = services.server.clients[id.0 as usize].entity;
+            let checked = qa_session::physics::check_velocity(
+                &mut services.server.entities,
+                entity,
+                maximum,
+                |entities, stage, _invalid| vm.write_noclip(entities, context, native, stage),
+            )
+            .unwrap();
+            assert_eq!((checked.invalid_velocity, checked.invalid_origin), (1, 3));
+            assert_eq!(read_vector(vm, native, b"origin"), Vec3([0.0, 0.0, -2.0]));
+            assert_eq!(read_vector(vm, native, b"velocity"), Vec3([0.0, 3.0, -4.0]));
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                Vec3([0.0, 0.0, -2.0])
+            );
+            assert!(services.server.area.bounds(entity).is_none());
+            assert!(services.server.disconnect(id));
+            assert_eq!(
+                vm.prepare_client_velocity(&mut services.server.entities, context, native),
+                Err(CallError::Entity)
+            );
+        },
+    );
+}
+
+#[test]
+fn native_client_velocity_reloads_shifted_origin_aliases_after_every_scalar_write() {
+    let mut vm = vm(|image| {
+        image
+            .fielddefs
+            .iter_mut()
+            .find(|field| image.names.get(field.name) == Some(b"velocity".as_slice()))
+            .unwrap()
+            .offset = 1;
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            vector(vm, native, b"origin", Vec3([10.0, -8.0, 20.0]));
+            vector(vm, native, b"velocity", Vec3([f32::NAN, 10.0, -10.0]));
+            vm.prepare_client_velocity(&mut services.server.entities, context, native)
+                .unwrap();
+            let entity = services.server.clients[id.0 as usize].entity;
+            let checked = qa_session::physics::check_velocity(
+                &mut services.server.entities,
+                entity,
+                4.0,
+                |entities, stage, _invalid| vm.write_noclip(entities, context, native, stage),
+            )
+            .unwrap();
+            assert_eq!((checked.invalid_velocity, checked.invalid_origin), (1, 0));
+            assert_eq!(read_vector(vm, native, b"origin"), Vec3([10.0, 0.0, 4.0]));
+            assert_eq!(read_vector(vm, native, b"velocity"), Vec3([0.0, 4.0, -4.0]));
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                Vec3([10.0, 0.0, 4.0])
+            );
+            assert_eq!(
+                services.server.entities.columns.velocity[entity.slot as usize],
+                Vec3([0.0, 4.0, -4.0])
+            );
+        },
+    );
+}
+
+#[test]
 fn native_player_values_views_and_fractional_alive_state_use_one_client() {
     let mut vm = vm(|_| {});
     with_client(&mut vm, |vm, services, context, native, id| {
-        vm.prepare_client_spawn(services, context, native, b"\\name\\player")
+        vm.prepare_client_spawn(services, context, native, b"\\name\\player", 0)
             .unwrap();
         vector(vm, native, b"origin", Vec3([100.0, 200.0, 300.0]));
         vector(vm, native, b"velocity", Vec3([1.25, 2.5, 3.75]));
@@ -530,7 +927,7 @@ fn native_player_values_views_and_fractional_alive_state_use_one_client() {
 fn command_fixangle_impulse_and_touch_globals_preserve_native_decisions() {
     let mut vm = vm(|_| {});
     with_client(&mut vm, |vm, services, context, native, _| {
-        vm.prepare_client_spawn(services, context, native, b"")
+        vm.prepare_client_spawn(services, context, native, b"", 0)
             .unwrap();
         number(vm, native, b"health", 100.0);
         number(vm, native, b"impulse", 7.0);
@@ -586,7 +983,7 @@ fn command_shifted_vectors_reread_native_components_after_each_store() {
         definition.offset = 5;
     });
     with_client(&mut vm, |vm, services, context, native, _| {
-        vm.prepare_client_spawn(services, context, native, b"")
+        vm.prepare_client_spawn(services, context, native, b"", 0)
             .unwrap();
         number(vm, native, b"health", 100.0);
         vector(vm, native, b"velocity", Vec3([4.0, 5.0, 6.0]));
@@ -620,22 +1017,12 @@ fn command_shifted_vectors_reread_native_components_after_each_store() {
         }
         .calculate(angles, velocity)
             * 4.0;
-        let field = vm.image.field(b"angles").unwrap();
         assert_eq!(
-            vm.entities
-                .read_vec3(vm.field_address(native, field as u32, 3).unwrap())
-                .unwrap()
-                .0
-                .map(f32::to_bits),
+            read_vector(vm, native, b"angles").0.map(f32::to_bits),
             [(-10.0f32).to_bits(), (-10.0f32).to_bits(), roll.to_bits()]
         );
         assert_eq!(read(vm, native, b"v_angle"), 30.0f32.to_bits());
-        assert_eq!(
-            vm.entities
-                .read_vec3(vm.field_address(native, 3, 3).unwrap())
-                .unwrap(),
-            velocity
-        );
+        assert_eq!(read_vector(vm, native, b"velocity"), velocity);
     });
 }
 
@@ -656,7 +1043,7 @@ fn command_button_and_impulse_aliases_change_later_native_decisions() {
         }
     });
     with_client(&mut vm, |vm, services, context, native, _| {
-        vm.prepare_client_spawn(services, context, native, b"")
+        vm.prepare_client_spawn(services, context, native, b"", 0)
             .unwrap();
         number(vm, native, b"health", 0.0);
         number(vm, native, b"fixangle", 1.0);
@@ -696,13 +1083,8 @@ fn command_button_and_impulse_aliases_change_later_native_decisions() {
         }
         .calculate(Vec3([-4.0, 34.0, 60.0]), Vec3([9.0, 2.0, 3.0]))
             * 4.0;
-        let field = vm.image.field(b"angles").unwrap();
         assert_eq!(
-            vm.entities
-                .read_vec3(vm.field_address(native, field as u32, 3).unwrap())
-                .unwrap()
-                .0
-                .map(f32::to_bits),
+            read_vector(vm, native, b"angles").0.map(f32::to_bits),
             [(-4.0f32).to_bits(), 34.0f32.to_bits(), roll.to_bits()]
         );
         assert_eq!(read(vm, native, b"v_angle"), 12.0f32.to_bits());
@@ -713,7 +1095,7 @@ fn command_button_and_impulse_aliases_change_later_native_decisions() {
 }
 
 #[test]
-fn missing_client_abi_is_only_rejected_when_selected_and_nq_is_explicit() {
+fn missing_client_abi_is_only_rejected_when_selected_for_either_qc_source() {
     let mut missing = vm(|image| {
         image
             .globaldefs
@@ -745,12 +1127,13 @@ fn missing_client_abi_is_only_rejected_when_selected_and_nq_is_explicit() {
     });
     nq.seed_entities(&entities, ModuleId(4), RuleSetId::Quake, 1)
         .unwrap();
+    bind_callbacks(&mut nq);
     assert_eq!(nq.client_count(), Ok(1));
     assert_eq!(
         nq.client_callback(ClientCallback::Connect),
-        Err(CallError::Unsupported)
+        Ok(CallbackId(4))
     );
-    assert_eq!(nq.read_spawn_parms(), Err(CallError::Unsupported));
+    assert_eq!(nq.read_spawn_parms(), Ok([0; 16]));
 }
 
 #[test]
@@ -865,7 +1248,7 @@ fn nq_published_players_use_raw_clientdata_items_without_reusing_stat_fifteen() 
             assert_eq!(vm.client_count(), Ok(2));
             assert_eq!(
                 vm.client_callback(ClientCallback::Connect),
-                Err(CallError::Unsupported)
+                Ok(CallbackId(4))
             );
             assert_eq!(
                 vm.read_client(services, context, native),

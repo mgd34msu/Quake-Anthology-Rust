@@ -13,6 +13,56 @@ pub enum PhysicsError {
 pub enum MotionWrite {
     Angles(usize),
     Origin(usize),
+    Velocity(usize),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VelocityCheck {
+    pub invalid_velocity: u8,
+    pub invalid_origin: u8,
+}
+
+/// Native velocity checking visits each velocity, origin, and speed limit in
+/// that order. A scalar ABI write may change another field through overlap;
+/// the next check reads the refreshed columns of the same live entity.
+/// The boundary receives `true` for a nonfinite clear so it can publish the
+/// native diagnostic before the scalar ABI write changes aliased fields.
+pub fn check_velocity<E: From<PhysicsError>>(
+    entities: &mut EntityTable,
+    entity: EntityId,
+    max: f32,
+    mut write: impl FnMut(&mut EntityTable, MotionWrite, bool) -> Result<(), E>,
+) -> Result<VelocityCheck, E> {
+    let mut result = VelocityCheck::default();
+    for axis in 0..3 {
+        let mut slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+        if !entities.columns.velocity[slot].0[axis].is_finite() {
+            entities.columns.velocity[slot].0[axis] = 0.0;
+            result.invalid_velocity |= 1 << axis;
+            write(entities, MotionWrite::Velocity(axis), true)?;
+            slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+        }
+        if !entities.columns.position[slot].0[axis].is_finite() {
+            entities.columns.position[slot].0[axis] = 0.0;
+            result.invalid_origin |= 1 << axis;
+            write(entities, MotionWrite::Origin(axis), true)?;
+            slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+        }
+        let velocity = entities.columns.velocity[slot].0[axis];
+        let limited = if velocity > max {
+            Some(max)
+        } else if velocity < -max {
+            Some(-max)
+        } else {
+            None
+        };
+        if let Some(limited) = limited {
+            entities.columns.velocity[slot].0[axis] = limited;
+            write(entities, MotionWrite::Velocity(axis), false)?;
+            entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+        }
+    }
+    Ok(result)
 }
 
 /// The caller captures NOCLIP before think and resolves the surviving lifetime

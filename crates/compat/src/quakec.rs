@@ -9,6 +9,7 @@ use qa_formats::program::quakec::{Image, Opcode};
 
 mod client;
 mod map;
+pub use client::ClientCallRestore;
 pub use map::{MapAdmission, MapFields};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -484,13 +485,13 @@ impl Vm {
     }
     /// Finish the existing native explicit relink without trigger touches;
     /// native world0 only publishes its pose.
-    pub fn finish_noclip(
+    pub fn relink_entity(
         &mut self,
         services: &mut crate::services::EngineServices<'_>,
         context: crate::services::CallContext,
         value: u32,
     ) -> Result<(), crate::services::CallError> {
-        self.projection.quakec_finish_noclip(
+        self.projection.quakec_relink_entity(
             services,
             &mut self.entities,
             &self.strings,

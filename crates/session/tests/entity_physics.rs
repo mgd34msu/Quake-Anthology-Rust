@@ -1,5 +1,5 @@
 use qa_core::primitives::{ModuleId, Motion, ThinkTime, Vec3};
-use qa_session::physics::{MotionWrite, PhysicsError, noclip};
+use qa_session::physics::{MotionWrite, PhysicsError, VelocityCheck, check_velocity, noclip};
 use qa_world::entities::{AllocationPolicy, EntityTable};
 
 #[test]
@@ -173,4 +173,358 @@ fn boundary_lifetime_change_stops_before_writing_the_replacement() {
         entities.columns.position[replacement.slot as usize],
         Vec3::default()
     );
+}
+
+#[test]
+fn velocity_check_preserves_finite_bits_without_bounds_or_angular_fields() {
+    let mut entities = EntityTable::new(2, 1).unwrap();
+    let entity = entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = entity.slot as usize;
+    let origin = Vec3([-0.0, f32::MIN_POSITIVE, -12.5]);
+    let velocity = Vec3([-0.0, 5.0, -5.0]);
+    entities.columns.position[slot] = origin;
+    entities.columns.velocity[slot] = velocity;
+    entities.columns.mins[slot] = Vec3([f32::NAN; 3]);
+    entities.columns.maxs[slot] = Vec3([f32::NEG_INFINITY; 3]);
+    assert_eq!(entities.columns.angular_velocity[slot], None);
+    let mut writes = 0;
+    assert_eq!(
+        check_velocity::<PhysicsError>(&mut entities, entity, 5.0, |_, _, _| {
+            writes += 1;
+            Ok(())
+        }),
+        Ok(VelocityCheck::default())
+    );
+    assert_eq!(writes, 0);
+    assert_eq!(
+        entities.columns.position[slot].0.map(f32::to_bits),
+        origin.0.map(f32::to_bits)
+    );
+    assert_eq!(
+        entities.columns.velocity[slot].0.map(f32::to_bits),
+        velocity.0.map(f32::to_bits)
+    );
+}
+
+#[test]
+fn velocity_check_clears_nonfinite_scalars_in_native_axis_order() {
+    let mut entities = EntityTable::new(2, 1).unwrap();
+    let entity = entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = entity.slot as usize;
+    entities.columns.position[slot] = Vec3([f32::NEG_INFINITY, f32::NAN, f32::INFINITY]);
+    entities.columns.velocity[slot] = Vec3([f32::NAN, f32::INFINITY, f32::NEG_INFINITY]);
+    let mut writes = Vec::new();
+    assert_eq!(
+        check_velocity::<PhysicsError>(&mut entities, entity, 5.0, |_, write, invalid| {
+            assert!(invalid);
+            writes.push(write);
+            Ok(())
+        }),
+        Ok(VelocityCheck {
+            invalid_velocity: 0b111,
+            invalid_origin: 0b111
+        })
+    );
+    assert_eq!(
+        writes,
+        [
+            MotionWrite::Velocity(0),
+            MotionWrite::Origin(0),
+            MotionWrite::Velocity(1),
+            MotionWrite::Origin(1),
+            MotionWrite::Velocity(2),
+            MotionWrite::Origin(2),
+        ]
+    );
+    assert_eq!(entities.columns.position[slot].0.map(f32::to_bits), [0; 3]);
+    assert_eq!(entities.columns.velocity[slot].0.map(f32::to_bits), [0; 3]);
+}
+
+#[test]
+fn velocity_limits_keep_native_comparison_order_and_boundary_values() {
+    let mut entities = EntityTable::new(2, 1).unwrap();
+    let entity = entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = entity.slot as usize;
+    for (max, input, expected, expected_writes) in [
+        (5.0, [-6.0, 5.0, 6.0], [-5.0, 5.0, 5.0], vec![0, 2]),
+        (-5.0, [0.0, -6.0, 6.0], [-5.0, 5.0, -5.0], vec![0, 1, 2]),
+        (-0.0, [-0.0, -1.0, 1.0], [-0.0, 0.0, -0.0], vec![1, 2]),
+        (f32::NAN, [-6.0, -0.0, 6.0], [-6.0, -0.0, 6.0], vec![]),
+        (f32::INFINITY, [-6.0, -0.0, 6.0], [-6.0, -0.0, 6.0], vec![]),
+        (
+            f32::NEG_INFINITY,
+            [-6.0, -0.0, 6.0],
+            [f32::NEG_INFINITY; 3],
+            vec![0, 1, 2],
+        ),
+    ] {
+        entities.columns.velocity[slot] = Vec3(input);
+        let mut writes = Vec::new();
+        assert_eq!(
+            check_velocity::<PhysicsError>(&mut entities, entity, max, |_, write, invalid| {
+                assert!(!invalid);
+                writes.push(write);
+                Ok(())
+            }),
+            Ok(VelocityCheck::default())
+        );
+        assert_eq!(
+            entities.columns.velocity[slot].0.map(f32::to_bits),
+            expected.map(f32::to_bits)
+        );
+        assert_eq!(
+            writes,
+            expected_writes
+                .into_iter()
+                .map(MotionWrite::Velocity)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn velocity_check_rereads_origin_and_velocity_after_each_native_write() {
+    let mut entities = EntityTable::new(2, 1).unwrap();
+    let entity = entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = entity.slot as usize;
+    entities.columns.velocity[slot] = Vec3([f32::NAN, 1.0, 2.0]);
+    let mut writes = Vec::new();
+    let result =
+        check_velocity::<PhysicsError>(&mut entities, entity, 5.0, |entities, write, invalid| {
+            writes.push(write);
+            assert_eq!(invalid, writes.len() <= 2);
+            match writes.len() {
+                1 => entities.columns.position[slot].0[0] = f32::NAN,
+                2 => entities.columns.velocity[slot].0[0] = 99.0,
+                _ => {}
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        result,
+        VelocityCheck {
+            invalid_velocity: 1,
+            invalid_origin: 1
+        }
+    );
+    assert_eq!(
+        writes,
+        [
+            MotionWrite::Velocity(0),
+            MotionWrite::Origin(0),
+            MotionWrite::Velocity(0)
+        ]
+    );
+    assert_eq!(entities.columns.position[slot], Vec3::default());
+    assert_eq!(entities.columns.velocity[slot], Vec3([5.0, 1.0, 2.0]));
+}
+
+#[test]
+fn velocity_check_preserves_shifted_native_field_aliases() {
+    let mut entities = EntityTable::new(2, 1).unwrap();
+    let entity = entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = entity.slot as usize;
+    // origin starts one native word before velocity. A velocity write can
+    // repair a later origin scalar; an origin write can repair prior velocity.
+    let mut native = [f32::NAN, f32::NAN, 8.0, -8.0];
+    entities.columns.position[slot] = Vec3([native[0], native[1], native[2]]);
+    entities.columns.velocity[slot] = Vec3([native[1], native[2], native[3]]);
+    let mut writes = Vec::new();
+    let mut diagnostics = Vec::new();
+    let result =
+        check_velocity::<PhysicsError>(&mut entities, entity, 5.0, |entities, write, invalid| {
+            writes.push(write);
+            if invalid {
+                // This stands for an aliased native classname cell. The boundary
+                // reads it before committing the scalar that changes its bytes.
+                diagnostics.push((write, native[1].to_bits()));
+            }
+            match write {
+                MotionWrite::Velocity(axis) => {
+                    native[axis + 1] = entities.columns.velocity[slot].0[axis]
+                }
+                MotionWrite::Origin(axis) => native[axis] = entities.columns.position[slot].0[axis],
+                MotionWrite::Angles(_) => panic!("velocity checking must not write angles"),
+            }
+            entities.columns.position[slot] = Vec3([native[0], native[1], native[2]]);
+            entities.columns.velocity[slot] = Vec3([native[1], native[2], native[3]]);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        result,
+        VelocityCheck {
+            invalid_velocity: 1,
+            invalid_origin: 1
+        }
+    );
+    assert_eq!(
+        writes,
+        [
+            MotionWrite::Velocity(0),
+            MotionWrite::Origin(0),
+            MotionWrite::Velocity(1),
+            MotionWrite::Velocity(2)
+        ]
+    );
+    assert_eq!(
+        diagnostics,
+        [
+            (MotionWrite::Velocity(0), f32::NAN.to_bits()),
+            (MotionWrite::Origin(0), 0.0f32.to_bits()),
+        ]
+    );
+    assert_eq!(
+        native.map(f32::to_bits),
+        [0.0f32, 0.0, 5.0, -5.0].map(f32::to_bits)
+    );
+    assert_eq!(entities.columns.position[slot], Vec3([0.0, 0.0, 5.0]));
+    assert_eq!(entities.columns.velocity[slot], Vec3([0.0, 5.0, -5.0]));
+}
+
+#[test]
+fn velocity_check_rejects_a_stale_lifetime_without_writes() {
+    let mut entities = EntityTable::new(2, 1).unwrap();
+    let entity = entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    assert!(entities.release(entity, ThinkTime::Seconds(3.0)));
+    let mut writes = 0;
+    assert_eq!(
+        check_velocity::<PhysicsError>(&mut entities, entity, 5.0, |_, _, _| {
+            writes += 1;
+            Ok(())
+        }),
+        Err(PhysicsError::Entity)
+    );
+    assert_eq!(writes, 0);
+}
+
+#[test]
+fn velocity_check_rejects_reuse_after_first_or_final_scalar_write() {
+    for axis in [0, 2] {
+        let mut entities = EntityTable::new(2, 1).unwrap();
+        let entity = entities
+            .allocate(
+                ThinkTime::Seconds(0.0),
+                ModuleId(4),
+                AllocationPolicy::EDICT,
+            )
+            .unwrap()
+            .id;
+        entities.columns.velocity[entity.slot as usize].0[axis] = 6.0;
+        let mut replacement = None;
+        let mut writes = Vec::new();
+        assert_eq!(
+            check_velocity::<PhysicsError>(
+                &mut entities,
+                entity,
+                5.0,
+                |entities, write, invalid| {
+                    assert!(!invalid);
+                    writes.push(write);
+                    assert!(entities.release(entity, ThinkTime::Seconds(3.0)));
+                    let next = entities
+                        .allocate(
+                            ThinkTime::Seconds(4.0),
+                            ModuleId(4),
+                            AllocationPolicy::EDICT,
+                        )
+                        .unwrap()
+                        .id;
+                    entities.columns.position[next.slot as usize] = Vec3([12.0; 3]);
+                    entities.columns.velocity[next.slot as usize] = Vec3([99.0; 3]);
+                    replacement = Some(next);
+                    Ok(())
+                }
+            ),
+            Err(PhysicsError::Entity)
+        );
+        assert_eq!(writes, [MotionWrite::Velocity(axis)]);
+        let replacement = replacement.unwrap();
+        assert_eq!(replacement.slot, entity.slot);
+        assert_ne!(replacement.generation, entity.generation);
+        assert_eq!(
+            entities.columns.position[replacement.slot as usize],
+            Vec3([12.0; 3])
+        );
+        assert_eq!(
+            entities.columns.velocity[replacement.slot as usize],
+            Vec3([99.0; 3])
+        );
+    }
+}
+
+#[test]
+fn velocity_check_stops_on_boundary_error_before_clamping_or_later_axes() {
+    let mut entities = EntityTable::new(2, 1).unwrap();
+    let entity = entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = entity.slot as usize;
+    entities.columns.position[slot] = Vec3([f32::NAN, 10.0, 20.0]);
+    entities.columns.velocity[slot] = Vec3([f32::NAN, 9.0, -9.0]);
+    let mut writes = Vec::new();
+    assert_eq!(
+        check_velocity::<PhysicsError>(&mut entities, entity, 5.0, |entities, write, invalid| {
+            assert!(invalid);
+            writes.push(write);
+            if write == MotionWrite::Origin(0) {
+                entities.columns.velocity[slot].0[0] = 99.0;
+                Err(PhysicsError::Entity)
+            } else {
+                Ok(())
+            }
+        }),
+        Err(PhysicsError::Entity)
+    );
+    assert_eq!(writes, [MotionWrite::Velocity(0), MotionWrite::Origin(0)]);
+    assert_eq!(entities.columns.position[slot], Vec3([0.0, 10.0, 20.0]));
+    assert_eq!(entities.columns.velocity[slot], Vec3([99.0, 9.0, -9.0]));
 }

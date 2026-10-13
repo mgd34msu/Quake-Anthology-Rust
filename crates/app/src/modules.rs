@@ -9,7 +9,8 @@ use qa_compat::{
     services::{CallContext, ServiceStorage, SignonCursor},
 };
 use qa_core::primitives::{
-    CallbackCall, CallbackId, ClientId, EntityId, IndexSpan, ModuleId, Motion, RuleSetId, ThinkTime,
+    CallbackCall, CallbackId, ClientCallback, ClientId, EntityId, IndexSpan, ModuleId, Motion,
+    RuleSetId, ThinkTime,
 };
 use qa_session::{
     dispatch::{
@@ -589,9 +590,16 @@ impl FrameHost {
             let consumes_server_commands = request.program.consumes_server_commands();
             let produces_client_audio = request.program.produces_client_audio();
             let client_lifecycle = match &request.program {
-                Program::QuakeC(qc) if request.context.native_rules == RuleSetId::QuakeWorld => {
-                    Some(ClientLifecycle::quakeworld(
+                Program::QuakeC(qc)
+                    if request.phase == Phase::Server
+                        && matches!(
+                            request.context.native_rules,
+                            RuleSetId::Quake | RuleSetId::QuakeWorld
+                        ) =>
+                {
+                    Some(ClientLifecycle::quakec(
                         request.context.module,
+                        request.context.native_rules,
                         qc.vm
                             .client_count()
                             .map_err(|e| format!("module client reservation: {e:?}"))?,
@@ -1127,6 +1135,9 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     if physics_due && let Program::QuakeC(qc) = &mut row.request.program {
         qc.vm.frame_time(step);
     }
+    if physics_due {
+        host.prepare_module_client_commands(module);
+    }
     if physics_due && invoke_frame(host, module, time) && quakec {
         quakec_entity_phase(host, module, time, step);
     }
@@ -1177,6 +1188,25 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
         let next = qc
             .vm
             .physics_entity(&host.runtime.server.entities, &mut cursor);
+        if let Ok(Some(entity)) = &next
+            && let Some(id) = host.runtime.server.client_for_native(entity.native)
+            && host.runtime.server.module_moves(id) == Some(entity.native)
+        {
+            match clients::quakec::frame(host, module, id, time, step) {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Some(row) = host.module_row_mut(module) {
+                        row.counts.unsupported_physics += 1;
+                    }
+                }
+                Err(_) => {
+                    if let Some(row) = host.module_row_mut(module) {
+                        row.counts.rejected += 1;
+                    }
+                }
+            }
+            continue;
+        }
         match next {
             Ok(Some(entity)) if matches!(entity.phase, Motion::None | Motion::Noclip) => {
                 let result = run_think_with_rebind(
@@ -1257,7 +1287,7 @@ fn entity_noclip(
         step,
         |entities, write| qc.vm.write_noclip(entities, context, native, write),
     )?;
-    qc.vm.finish_noclip(&mut services, context, native)
+    qc.vm.relink_entity(&mut services, context, native)
 }
 
 fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
@@ -1459,11 +1489,12 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
         _ => qc
             .vm
             .prepare_call(native, world, time, phase)
+            .map(|()| quakec::ClientCallRestore::default())
             .map_err(|_| qa_compat::services::CallError::Memory),
     };
-    if prepared.is_err() {
+    let Ok(restore) = prepared else {
         return false;
-    }
+    };
     let mut services = host
         .runtime
         .engine_services(&mut host.console, storage, &mut row.scratch);
@@ -1485,6 +1516,50 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     let execution = qc
         .vm
         .call(&mut calls, entry, row.request.instruction_budget, false);
+    let restored = qc.vm.finish_client_call(restore);
+    let velocity = if execution.is_ok()
+        && restored.is_ok()
+        && row.request.context.native_rules == RuleSetId::Quake
+        && matches!(
+            call,
+            CallbackCall::Client {
+                event: ClientCallback::BeforeMove,
+                ..
+            }
+        ) {
+        (|| {
+            let native = native.ok_or(qa_compat::services::CallError::Entity)?;
+            let maximum = qc.vm.client_max_velocity(calls.services.cvars)?;
+            qc.vm.prepare_client_velocity(
+                &mut calls.services.server.entities,
+                calls.context,
+                native,
+            )?;
+            let server = &mut calls.services.server;
+            let events = &mut server.events;
+            qa_session::physics::check_velocity(
+                &mut server.entities,
+                entity,
+                maximum,
+                |entities, stage, invalid| {
+                    if invalid {
+                        let prefix = match stage {
+                            qa_session::physics::MotionWrite::Velocity(_) => {
+                                b"Got a NaN velocity on ".as_slice()
+                            }
+                            _ => b"Got a NaN origin on ".as_slice(),
+                        };
+                        let _ =
+                            events.console_parts(&[prefix, qc.vm.client_classname(native)?, b"\n"]);
+                    }
+                    qc.vm.write_noclip(entities, calls.context, native, stage)
+                },
+            )?;
+            Ok::<(), qa_compat::services::CallError>(())
+        })()
+    } else {
+        Ok(())
+    };
     // VM-owned entvars are visible after the call, including admitted writes
     // preceding a call-scoped trap. Importing pose never implicitly relinks.
     let projection = if think {
@@ -1493,6 +1568,7 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
         qc.vm.project_entities(calls.services, calls.context)
     };
     let result = execution.map_err(|_| ()).and_then(|value| {
+        restored.and(velocity).map_err(|_| ())?;
         projection
             .map(|()| ModuleResult::QuakeC(value))
             .map_err(|_| ())

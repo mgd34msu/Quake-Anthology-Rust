@@ -504,7 +504,11 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
     ) -> Result<(u64, qa_core::primitives::ClientId), CallError> {
-        if context.native_rules != RuleSetId::QuakeWorld || self.owner != Some(context.module) {
+        if !matches!(
+            context.native_rules,
+            RuleSetId::Quake | RuleSetId::QuakeWorld
+        ) || self.owner != Some(context.module)
+        {
             return Err(CallError::Unsupported);
         }
         let address = self.quakec_client_address(memory, value)?;
@@ -528,7 +532,11 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
     ) -> Result<(), CallError> {
-        if context.native_rules != RuleSetId::QuakeWorld || self.owner != Some(context.module) {
+        if !matches!(
+            context.native_rules,
+            RuleSetId::Quake | RuleSetId::QuakeWorld
+        ) || self.owner != Some(context.module)
+        {
             return Err(CallError::Unsupported);
         }
         let address = self.quakec_client_address(memory, value)?;
@@ -545,7 +553,8 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
         name: u32,
-        maxspeed: f32,
+        maxspeed: Option<f32>,
+        colors: u8,
     ) -> Result<(), CallError> {
         let (address, client) = self.quakec_client(services, memory, context, value)?;
         let layout = self.quakec_layout()?;
@@ -559,17 +568,24 @@ impl EntityProjection {
             layout.colormap,
             (value as usize / layout.stride) as f32,
         )?;
-        layout.write_number(memory, address, layout.client.team, 0.0)?;
+        let team = if context.native_rules == RuleSetId::Quake {
+            f32::from((colors & 15) + 1)
+        } else {
+            0.0
+        };
+        layout.write_number(memory, address, layout.client.team, team)?;
         memory.write_word(
             address + layout.client.net_name.ok_or(CallError::Memory)? as u64,
             name as i32,
         )?;
-        for (field, value) in [
-            (layout.client.gravity, 1.0),
-            (layout.client.max_speed, maxspeed),
-        ] {
-            if let Some(field) = field {
-                layout.write_number(memory, address, Some(field), value)?;
+        if let Some(maxspeed) = maxspeed {
+            for (field, value) in [
+                (layout.client.gravity, 1.0),
+                (layout.client.max_speed, maxspeed),
+            ] {
+                if let Some(field) = field {
+                    layout.write_number(memory, address, Some(field), value)?;
+                }
             }
         }
         let (motion, angular_velocity) = layout.motion_state(memory, address)?;
@@ -578,21 +594,25 @@ impl EntityProjection {
         services.server.entities.columns.angular_velocity[slot] = angular_velocity;
         Ok(())
     }
-    pub(crate) fn quakec_client_command(
+    pub(crate) fn quakec_receive_client_command(
         &self,
         memory: &mut ModuleMemory<'_>,
         context: CallContext,
         value: u32,
         command: &qa_core::primitives::UserCmd,
-        roll_angle: f32,
-        roll_speed: f32,
     ) -> Result<(), CallError> {
-        if context.native_rules != RuleSetId::QuakeWorld || self.owner != Some(context.module) {
+        if !matches!(
+            context.native_rules,
+            RuleSetId::Quake | RuleSetId::QuakeWorld
+        ) || self.owner != Some(context.module)
+        {
             return Err(CallError::Unsupported);
         }
         let layout = self.quakec_layout()?;
         let address = self.quakec_client_address(memory, value)?;
-        if layout.number(memory, address, layout.client.fix_angle)? == 0.0 {
+        if context.native_rules == RuleSetId::Quake
+            || layout.number(memory, address, layout.client.fix_angle)? == 0.0
+        {
             layout.write_vector(
                 memory,
                 address,
@@ -620,6 +640,23 @@ impl EntityProjection {
                 f32::from(command.impulse),
             )?;
         }
+        Ok(())
+    }
+    pub(crate) fn quakec_client_command(
+        &self,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        command: &qa_core::primitives::UserCmd,
+        roll_angle: f32,
+        roll_speed: f32,
+    ) -> Result<(), CallError> {
+        if context.native_rules != RuleSetId::QuakeWorld {
+            return Err(CallError::Unsupported);
+        }
+        self.quakec_receive_client_command(memory, context, value, command)?;
+        let layout = self.quakec_layout()?;
+        let address = self.quakec_client_address(memory, value)?;
         // SV_RunCmd reads these fields after the preceding stores. QuakeC
         // definitions can overlap, including one angle store with the next
         // v_angle component, so preserve each scalar native read/write.
@@ -644,6 +681,55 @@ impl EntityProjection {
                 * 4.0;
             layout.write_number(memory, address, layout.angles.map(|field| field + 8), roll)?;
         }
+        Ok(())
+    }
+    pub(crate) fn quakec_client_phase(
+        &self,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<Motion, CallError> {
+        self.quakec_identity(memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        let address = self.quakec_client_address(memory, value)?;
+        Ok(motion(crate::numbers::native_integer(layout.number(
+            memory,
+            address,
+            layout.move_type,
+        )?) as f32))
+    }
+    pub(crate) fn quakec_client_classname<'a>(
+        &self,
+        memory: &ModuleMemory<'_>,
+        strings: &'a ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<&'a [u8], CallError> {
+        let layout = self.quakec_layout()?;
+        let address = self.quakec_client_address(memory, value)?;
+        let Some(field) = layout.name_fields[0] else {
+            return Ok(b"");
+        };
+        let word = layout.word(memory, address, Some(field))?;
+        Ok(strings.cstring(u64::from(word))?)
+    }
+    pub(crate) fn quakec_prepare_client_velocity(
+        &self,
+        entities: &mut EntityTable,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        let address = self.quakec_client_address(memory, value)?;
+        let entity = self
+            .quakec_bound_entity(entities, native)?
+            .ok_or(CallError::Entity)?;
+        let layout = self.quakec_layout()?;
+        let origin = layout.vector(memory, address, layout.origin)?;
+        let velocity = layout.vector(memory, address, layout.velocity)?;
+        let slot = entities.resolve(entity).ok_or(CallError::Entity)?;
+        entities.columns.position[slot] = origin;
+        entities.columns.velocity[slot] = velocity;
         Ok(())
     }
     pub(crate) fn quakec_read_client(
@@ -1395,6 +1481,9 @@ impl EntityProjection {
             qa_session::physics::MotionWrite::Origin(axis) => {
                 (axis, layout.origin, entities.columns.position[slot])
             }
+            qa_session::physics::MotionWrite::Velocity(axis) => {
+                (axis, layout.velocity, entities.columns.velocity[slot])
+            }
         };
         let value = *vector.0.get(axis).ok_or(CallError::Memory)?;
         layout.write_number(memory, address, field.map(|at| at + axis * 4), value)?;
@@ -1408,17 +1497,17 @@ impl EntityProjection {
                 entities.columns.angular_velocity[slot] = Some(velocity);
             }
             qa_session::physics::MotionWrite::Angles(_)
-            | qa_session::physics::MotionWrite::Origin(0 | 1) => {
+            | qa_session::physics::MotionWrite::Origin(_)
+            | qa_session::physics::MotionWrite::Velocity(_) => {
                 let origin = layout.vector(memory, address, layout.origin)?;
                 let velocity = layout.vector(memory, address, layout.velocity)?;
                 entities.columns.position[slot] = origin;
                 entities.columns.velocity[slot] = velocity;
             }
-            qa_session::physics::MotionWrite::Origin(_) => {}
         }
         Ok(())
     }
-    pub(crate) fn quakec_finish_noclip(
+    pub(crate) fn quakec_relink_entity(
         &mut self,
         services: &mut EngineServices<'_>,
         memory: &mut ModuleMemory<'_>,
@@ -1562,9 +1651,16 @@ impl EntityProjection {
         }
         self.quakec_publish_client(services, memory, strings, context, address, native)?;
         if let Some(client) = services.server.client_for_native(native) {
+            let provider_motion = context.native_rules == RuleSetId::Quake
+                && services.server.module_moves(client) == Some(native);
             let client = &mut services.server.clients[client.0 as usize];
             if client.module == context.module {
                 client.player.weapon_state = weapon_state;
+                // NQ provider physics publishes the native pose. QW packet
+                // pmove retains its selected-bounds conversion in read_client.
+                if provider_motion {
+                    client.player.body = body;
+                }
             }
         }
         services.server.entities.set_targetname(entity, names[2]);

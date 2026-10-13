@@ -614,7 +614,7 @@ impl EventRing {
             let first = wire.get(start..end.min(wire.len())).unwrap_or(&[]);
             let second =
                 &captures[start.saturating_sub(wire.len())..end.saturating_sub(wire.len())];
-            let Some(lease) = self.texts.insert_parts(first, second) else {
+            let Some(lease) = self.texts.insert_parts(&[first, second]) else {
                 for lease in leases.into_iter().flatten() {
                     self.texts.rollback_new(lease);
                 }
@@ -689,7 +689,10 @@ impl EventRing {
         self.publish_print(target, client, kind, level, |texts| texts.insert(text))
     }
     pub fn console_bytes(&mut self, text: &[u8]) -> Result<u64, EventStorageError> {
-        self.publish_console(|texts| texts.insert(text))
+        self.console_parts(&[text])
+    }
+    pub fn console_parts(&mut self, parts: &[&[u8]]) -> Result<u64, EventStorageError> {
+        self.publish_console(|texts| texts.insert_parts(parts))
     }
     pub fn console_formatted(
         &mut self,
@@ -939,17 +942,25 @@ impl TextStore {
         ))
     }
     pub fn insert(&mut self, text: &[u8]) -> Option<TextLease> {
-        self.insert_parts(text, &[])
+        self.insert_parts(&[text])
     }
-    fn insert_parts(&mut self, first: &[u8], second: &[u8]) -> Option<TextLease> {
+    fn insert_parts(&mut self, parts: &[&[u8]]) -> Option<TextLease> {
         let (slot, lease) = self.reserve()?;
-        let wanted = first.len().saturating_add(second.len());
+        let wanted = parts
+            .iter()
+            .fold(0usize, |length, part| length.saturating_add(part.len()));
         let len = wanted.min(self.width);
         self.truncated += u64::from(len != wanted);
-        let prefix = first.len().min(len);
         let output = &mut self.bytes[slot * self.width..slot * self.width + len];
-        output[..prefix].copy_from_slice(&first[..prefix]);
-        output[prefix..].copy_from_slice(&second[..len - prefix]);
+        let mut at = 0;
+        for part in parts {
+            let count = part.len().min(len - at);
+            output[at..at + count].copy_from_slice(&part[..count]);
+            at += count;
+            if at == len {
+                break;
+            }
+        }
         self.lengths[slot] = len as u16;
         Some(lease)
     }
