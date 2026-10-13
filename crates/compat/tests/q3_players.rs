@@ -8,8 +8,9 @@ use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
 use qa_core::{
     names::NameTable,
     primitives::{
-        ClientId, ModuleId, MovementMode, NativeEntity, NumericValue, ResourceNamespace, RuleSetId,
-        ThinkTime, ValueBinding, ValueId, ValueReset, ValueWidth, Vec3, WeaponReadiness,
+        ClientId, ModuleId, MovementMode, NativeEntity, NumericValue, PlayerValueBindings,
+        Q3StatLayout, ResourceNamespace, RuleSetId, ThinkTime, ValueBinding, ValueId, ValueReset,
+        ValueWidth, Vec3, WeaponReadiness,
     },
     sys_events::EventTime,
 };
@@ -33,6 +34,15 @@ fn bindings(first: u32) -> [ValueBinding; 16] {
         width: ValueWidth::Signed32,
         reset: ValueReset::Life,
     })
+}
+fn player_bindings() -> [[ValueBinding; 16]; 4] {
+    std::array::from_fn(|index| bindings(index as u32 * 16))
+}
+fn value_bindings(arrays: &[[ValueBinding; 16]; 4]) -> PlayerValueBindings<'_> {
+    PlayerValueBindings {
+        arrays: std::array::from_fn(|index| arrays[index].as_slice()),
+        items: None,
+    }
 }
 fn context() -> CallContext {
     CallContext {
@@ -82,7 +92,15 @@ impl Fixture {
         let mut storage =
             ServiceStorage::load_native(&[(MODULE, 1024, RuleSetId::Quake3)], 0, &cvars).unwrap();
         storage.bind_client_capacity(MODULE, 2).unwrap();
-        let mut server = Server::load(2, 16, 1, 1, 1, 32).unwrap();
+        let mut server = Server::load(
+            2,
+            16,
+            registry.items.len() + 1,
+            1,
+            registry.weapons.len() + 1,
+            64,
+        )
+        .unwrap();
         assert_eq!(
             server.connect(Connection::Remote, ModuleId(2), None),
             Some(ClientId(0))
@@ -180,10 +198,13 @@ impl Fixture {
             .unwrap();
     }
     fn publish(&mut self, vm: &mut Vm) -> Result<(), CallError> {
-        vm.publish_entities(&mut self.engine(), context())
+        self.publish_at(vm, EventTime::from_milliseconds(1234))
+    }
+    fn publish_at(&mut self, vm: &mut Vm, time: EventTime) -> Result<(), CallError> {
+        vm.publish_entities(&mut self.engine(), context(), time)
     }
 }
-fn qvm(instructions: &[(Opcode, i32)]) -> Vm {
+fn qvm(instructions: &[(Opcode, i32)], registry: &qa_gameplay::registry::Registry) -> Vm {
     let mut code = Vec::new();
     for &(opcode, argument) in instructions {
         code.push(opcode as u8);
@@ -210,8 +231,9 @@ fn qvm(instructions: &[(Opcode, i32)]) -> Vm {
     bytes.extend(code);
     bytes.resize(bytes.len() + 64, 0);
     let mut vm = Vm::load(Image::parse(&bytes).unwrap()).unwrap();
-    vm.configure_q3_game();
-    vm.bind_player_values(&bindings(0), &bindings(16)).unwrap();
+    vm.configure_q3_game(Q3StatLayout::BASE);
+    vm.bind_player_values(value_bindings(&player_bindings()), registry)
+        .unwrap();
     vm
 }
 fn entity(memory: &mut ModuleMemory<'_>, address: u64) {
@@ -262,17 +284,23 @@ fn player(memory: &mut ModuleMemory<'_>, address: u64) {
     memory
         .write_vec3(address + 152, Vec3([45.25, -0.0, 721.5]))
         .unwrap();
-    for (offset, first) in [(184, 0), (248, 16)] {
+    for (offset, first) in [(184, 0), (248, 16), (376, 32), (312, 48)] {
         for index in 0..16 {
             memory
                 .write_word(
                     address + offset + index * 4,
                     match first + index {
                         0 => 79,
+                        2 => (1 << 2) | (1 << 4) | (1 << 15),
                         3 => 27,
                         14 => i32::MIN,
                         15 => i32::MAX,
                         16 => -9,
+                        34 => -1,
+                        35 => 16_777_217,
+                        46 => i32::MIN,
+                        47 => i32::MAX,
+                        49 => i32::MAX - 1,
                         _ => 90000 + index as i32,
                     },
                 )
@@ -319,7 +347,10 @@ fn verify(f: &Fixture) {
     );
     for (projection, word, expected) in [
         (
-            qa_network::projection::PlayerProjection::load_native_q3(&bindings(0), &bindings(16)),
+            qa_network::projection::PlayerProjection::load_native_q3(
+                value_bindings(&player_bindings()),
+                Q3StatLayout::BASE,
+            ),
             36,
             (i32::MAX - 1) as u32,
         ),
@@ -391,6 +422,35 @@ fn verify(f: &Fixture) {
         p.weapon_state.unwrap().readiness,
         WeaponReadiness::RemainingMilliseconds(-197000071)
     );
+    for (id, expected) in [
+        (34, -1),
+        (35, 16_777_217),
+        (46, i32::MIN),
+        (47, i32::MAX),
+        (49, i32::MAX - 1),
+    ] {
+        assert_eq!(
+            p.values.get(ValueId(id)),
+            Some(NumericValue::integer(expected))
+        );
+    }
+    let ammo = |native| {
+        f.registry
+            .weapon(f.registry.native_weapon(RuleSetId::Quake3, native).unwrap())
+            .unwrap()
+            .ammo
+            .unwrap()
+    };
+    assert_eq!(p.inventory.item_counts[ammo(2).0 as usize], -1);
+    assert_eq!(p.inventory.item_counts[ammo(3).0 as usize], 16_777_217);
+    for (native, owned) in [(2, true), (3, false), (4, true)] {
+        let item = f
+            .registry
+            .weapon(f.registry.native_weapon(RuleSetId::Quake3, native).unwrap())
+            .unwrap()
+            .item;
+        assert_eq!(p.inventory.item_counts[item.0 as usize], i32::from(owned));
+    }
     assert_eq!(
         f.server.entities.columns.position[row.entity.slot as usize],
         Vec3([-900.0, 2.0, 3.0])
@@ -400,7 +460,10 @@ fn verify(f: &Fixture) {
 }
 fn qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin() {
     let mut f = Fixture::new();
-    let mut vm = qvm(&[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)]);
+    let mut vm = qvm(
+        &[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)],
+        &f.registry,
+    );
     entity(&mut vm.memory, ENTITIES);
     player(&mut vm.memory, PLAYERS);
     f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
@@ -430,6 +493,11 @@ fn qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin() {
     vm.memory.write_word(PLAYERS + 52, 0).unwrap();
     vm.memory.write_word(PLAYERS + 140, 1).unwrap();
     vm.memory.write_word(PLAYERS + 144, 999).unwrap();
+    vm.memory.write_word(PLAYERS + 184 + 2 * 4, 1 << 3).unwrap();
+    vm.memory.write_word(PLAYERS + 376 + 3 * 4, 29).unwrap();
+    vm.memory
+        .write_word(PLAYERS + 312 + 1 * 4, -123456789)
+        .unwrap();
     f.publish(&mut vm).unwrap();
     let p = &f.server.clients[1].player;
     assert_eq!(
@@ -443,12 +511,28 @@ fn qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin() {
         before
     );
     assert_eq!(p.health, 81);
+    let shotgun = f
+        .registry
+        .weapon(f.registry.native_weapon(RuleSetId::Quake3, 3).unwrap())
+        .unwrap();
+    assert_eq!(p.inventory.item_counts[shotgun.item.0 as usize], 1);
+    assert_eq!(
+        p.inventory.item_counts[shotgun.ammo.unwrap().0 as usize],
+        29
+    );
+    assert_eq!(
+        p.values.get(ValueId(49)),
+        Some(NumericValue::integer(-123456789))
+    );
 }
 
 fn qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning() {
     use qa_core::primitives::MovementMagnitude;
     let mut f = Fixture::new();
-    let mut vm = qvm(&[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)]);
+    let mut vm = qvm(
+        &[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)],
+        &f.registry,
+    );
     entity(&mut vm.memory, ENTITIES);
     player(&mut vm.memory, PLAYERS);
     f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
@@ -468,7 +552,10 @@ fn qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning() {
     assert_eq!(p.native.unwrap().weapon_number, Some(65539));
     assert_eq!(p.inventory.weapon, Default::default());
     p.movement.ducked = false;
-    let projection = qa_network::projection::PlayerProjection::load_native_q3(&[], &[]);
+    let projection = qa_network::projection::PlayerProjection::load_native_q3(
+        PlayerValueBindings::EMPTY,
+        Q3StatLayout::BASE,
+    );
     let context = qa_network::projection::PlayerContext {
         namespace: Some(ResourceNamespace::Module(MODULE)),
         client_number: Some(0),
@@ -506,14 +593,17 @@ fn qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning() {
 }
 fn qvm_export_relocation_zero_address_and_stale_bindings() {
     let mut f = Fixture::new();
-    let mut vm = qvm(&[
-        (Opcode::Enter, 16),
-        (Opcode::Const, PLAYERS as i32 + 20),
-        (Opcode::Const, 42.5f32.to_bits() as i32),
-        (Opcode::Store4, 0),
-        (Opcode::Const, 0),
-        (Opcode::Leave, 16),
-    ]);
+    let mut vm = qvm(
+        &[
+            (Opcode::Enter, 16),
+            (Opcode::Const, PLAYERS as i32 + 20),
+            (Opcode::Const, 42.5f32.to_bits() as i32),
+            (Opcode::Store4, 0),
+            (Opcode::Const, 0),
+            (Opcode::Leave, 16),
+        ],
+        &f.registry,
+    );
     entity(&mut vm.memory, ENTITIES);
     player(&mut vm.memory, PLAYERS);
     f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
@@ -568,7 +658,10 @@ fn qvm_export_relocation_zero_address_and_stale_bindings() {
 }
 fn locate_uses_the_frozen_module_capacity_after_cvar_mutation() {
     let mut f = Fixture::new();
-    let mut vm = qvm(&[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)]);
+    let mut vm = qvm(
+        &[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)],
+        &f.registry,
+    );
     entity(&mut vm.memory, ENTITIES);
     player(&mut vm.memory, PLAYERS);
     f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
@@ -610,6 +703,142 @@ fn locate_uses_the_frozen_module_capacity_after_cvar_mutation() {
     verify(&f);
 }
 
+fn qvm_stat_layout_and_inventory_use_cached_bindings_and_queued_acquisition_time() {
+    for layout in [Q3StatLayout::BASE, Q3StatLayout::TEAM_ARENA] {
+        let mut f = Fixture::new();
+        let mut vm = qvm(
+            &[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)],
+            &f.registry,
+        );
+        vm.configure_q3_game(layout);
+        vm.bind_player_values(value_bindings(&player_bindings()), &f.registry)
+            .unwrap();
+        assert_eq!(vm.player_stat_layout(), layout);
+        entity(&mut vm.memory, ENTITIES);
+        player(&mut vm.memory, PLAYERS);
+        for index in 0..16 {
+            vm.memory.write_word(PLAYERS + 184 + index * 4, 0).unwrap();
+        }
+        vm.memory
+            .write_word(PLAYERS + 184 + u64::from(layout.health) * 4, 73)
+            .unwrap();
+        vm.memory
+            .write_word(
+                PLAYERS + 184 + u64::from(layout.weapons) * 4,
+                (1 << 3) | (1 << 15),
+            )
+            .unwrap();
+        vm.memory
+            .write_word(PLAYERS + 184 + u64::from(layout.armor) * 4, 31)
+            .unwrap();
+        f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+        f.publish(&mut vm).unwrap();
+        let shotgun = f
+            .registry
+            .weapon(f.registry.native_weapon(RuleSetId::Quake3, 3).unwrap())
+            .unwrap();
+        let weapon_item = shotgun.item.0 as usize;
+        let ammo_item = shotgun.ammo.unwrap().0 as usize;
+        let p = &f.server.clients[1].player;
+        assert_eq!((p.health, p.armor), (73, 31));
+        assert_eq!(p.inventory.item_counts[weapon_item], 1);
+        assert_eq!(p.inventory.item_counts[ammo_item], 16_777_217);
+        assert_eq!(p.inventory.item_acquired_at[weapon_item], 1.234);
+        assert_eq!(p.inventory.item_acquired_at[ammo_item], 1.234);
+        assert_eq!(p.movement.command_time_ms, -1234567);
+        // Removal followed by reacquisition must use the new queued time, not
+        // provider clock900 or the previously retained acquisition time.
+        vm.memory
+            .write_word(PLAYERS + 184 + u64::from(layout.weapons) * 4, 1 << 15)
+            .unwrap();
+        vm.memory.write_word(PLAYERS + 376 + 3 * 4, 0).unwrap();
+        f.publish_at(&mut vm, EventTime::from_milliseconds(2345))
+            .unwrap();
+        assert_eq!(
+            f.server.clients[1].player.inventory.item_counts[weapon_item],
+            0
+        );
+        vm.memory
+            .write_word(PLAYERS + 184 + u64::from(layout.weapons) * 4, 1 << 3)
+            .unwrap();
+        vm.memory.write_word(PLAYERS + 376 + 3 * 4, 29).unwrap();
+        f.publish_at(&mut vm, EventTime::from_milliseconds(3456))
+            .unwrap();
+        let p = &f.server.clients[1].player;
+        assert_eq!(p.inventory.item_acquired_at[weapon_item], 3.456);
+        assert_eq!(p.inventory.item_acquired_at[ammo_item], 3.456);
+        assert_eq!(
+            p.values.get(ValueId(49)),
+            Some(NumericValue::integer(i32::MAX - 1))
+        );
+    }
+}
+
+fn qvm_array_admission_and_inventory_capacity_reject_before_player_mutation() {
+    for reject_inventory in [false, true] {
+        let mut f = Fixture::new();
+        let mut vm = qvm(
+            &[(Opcode::Enter, 16), (Opcode::Const, 0), (Opcode::Leave, 16)],
+            &f.registry,
+        );
+        entity(&mut vm.memory, ENTITIES);
+        player(&mut vm.memory, PLAYERS);
+        f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+        let mut arrays = player_bindings();
+        for index in 0..4 {
+            let mut values = value_bindings(&arrays);
+            values.arrays[index] = &values.arrays[index][..15];
+            assert_eq!(
+                vm.bind_player_values(values, &f.registry),
+                Err(CallError::Capacity)
+            );
+        }
+        f.publish(&mut vm).unwrap(); // A rejected rebind preserves the old metadata.
+        let p = &mut f.server.clients[1].player;
+        p.health = -77;
+        p.armor = -19;
+        p.body.position = Vec3([222.0; 3]);
+        if reject_inventory {
+            p.inventory.item_counts = vec![0; 1].into_boxed_slice();
+            p.inventory.item_acquired_at = vec![0.0; 1].into_boxed_slice();
+        } else {
+            arrays[3][15].id = ValueId(64);
+            vm.bind_player_values(value_bindings(&arrays), &f.registry)
+                .unwrap();
+        }
+        let p = &f.server.clients[1].player;
+        let before = (
+            [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
+            p.movement,
+            p.view_angles,
+            p.native,
+            p.prediction,
+            p.inventory.weapon,
+        );
+        vm.memory.write_word(PLAYERS + 184, 999).unwrap();
+        vm.memory.write_word(PLAYERS + 376 + 3 * 4, 999).unwrap();
+        assert_eq!(f.publish(&mut vm), Err(CallError::Capacity));
+        let p = &f.server.clients[1].player;
+        assert_eq!((p.health, p.armor), (-77, -19));
+        assert_eq!(p.values.get(ValueId(0)), Some(NumericValue::integer(79)));
+        assert_eq!(
+            p.values.get(ValueId(35)),
+            Some(NumericValue::integer(16_777_217))
+        );
+        assert_eq!(
+            (
+                [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
+                p.movement,
+                p.view_angles,
+                p.native,
+                p.prediction,
+                p.inventory.weapon
+            ),
+            before
+        );
+    }
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "../../formats/tests/support/native_image.rs"]
 #[allow(dead_code)]
@@ -642,8 +871,10 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         Duration::from_secs(3),
     )
     .unwrap();
-    vm.configure_q3_game();
-    vm.bind_player_values(&bindings(0), &bindings(16)).unwrap();
+    let mut f = Fixture::new();
+    vm.configure_q3_game(Q3StatLayout::BASE);
+    vm.bind_player_values(value_bindings(&player_bindings()), &f.registry)
+        .unwrap();
     let native_entities = base + 0x1800;
     let native_players = base + 0x2400;
     let mut code = vec![0x48, 0x83, 0xec, 56, 0xb9, 15, 0, 0, 0, 0x48, 0xba];
@@ -663,7 +894,6 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         player(&mut memory, native_players);
         memory.write(base + 0x1200, &code).unwrap();
     }
-    let mut f = Fixture::new();
     let mut unknown = UnknownCalls::load(1).unwrap();
     let invoke = |vm: &mut qa_compat::native::Vm, f: &mut Fixture, unknown: &mut UnknownCalls| {
         let mut engine = f.engine();
@@ -672,7 +902,7 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
                 services: &mut engine,
                 table: &Q3_SERVER,
                 context: context(),
-                platform_time: EventTime(0),
+                platform_time: EventTime::from_milliseconds(4567),
                 command: &[],
                 raw_args: b"",
                 unknown,
@@ -686,6 +916,17 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     vm.bind_client(&f.server.entities, NATIVE, f.server.clients[1].entity)
         .unwrap();
     verify(&f);
+    let weapon_item = f
+        .registry
+        .weapon(f.registry.native_weapon(RuleSetId::Quake3, 4).unwrap())
+        .unwrap()
+        .item
+        .0 as usize;
+    assert_eq!(
+        f.server.clients[1].player.inventory.item_acquired_at[weapon_item],
+        4.567
+    );
+    assert_eq!(vm.player_stat_layout(), Q3StatLayout::BASE);
     let mut moved = vec![0x48, 0xb8];
     moved.extend(native_players.to_le_bytes());
     moved.extend([0xc7, 0x40, 20]);
@@ -711,6 +952,9 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     failing.extend(777.5f32.to_bits().to_le_bytes());
     failing.extend([0xc7, 0x40, 48]);
     failing.extend(7i32.to_le_bytes());
+    failing.extend([0xc7, 0x80]);
+    failing.extend((376 + 3 * 4u32).to_le_bytes());
+    failing.extend(999i32.to_le_bytes());
     failing.extend([0x0f, 0x0b]);
     qa_compat::memory::process_memory(&mut vm.process)
         .unwrap()
@@ -719,6 +963,10 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     assert!(invoke(&mut vm, &mut f, &mut unknown).is_err());
     assert_eq!(f.server.clients[1].player.body.position.0[0], 123.5);
     assert_eq!(f.server.clients[1].player.native, accepted_tail);
+    assert_eq!(
+        f.server.clients[1].player.values.get(ValueId(35)),
+        Some(NumericValue::integer(16_777_217))
+    );
 }
 
 fn main() {
@@ -729,6 +977,8 @@ fn main() {
     qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning();
     qvm_export_relocation_zero_address_and_stale_bindings();
     locate_uses_the_frozen_module_capacity_after_cvar_mutation();
+    qvm_stat_layout_and_inventory_use_cached_bindings_and_queued_acquisition_time();
+    qvm_array_admission_and_inventory_capacity_reject_before_player_mutation();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     owned_native_export_imports_public_player_memory_only_after_success();
     println!("Q3 public player memory: all checks passed");

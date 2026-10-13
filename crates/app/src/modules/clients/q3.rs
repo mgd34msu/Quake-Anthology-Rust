@@ -156,15 +156,24 @@ pub(super) fn connect(
             .as_mut()
             .and_then(|modules| modules.row_mut(module))
             .ok_or("missing client module")?;
-        match &mut row.request.program {
-            Program::Qvm { vm, .. } => vm
-                .bind_client(&host.runtime.server.entities, native, entity)
-                .map_err(|e| format!("QVM client binding: {e:?}"))?,
+        let player_stats = match &mut row.request.program {
+            Program::Qvm { vm, .. } => {
+                vm.bind_client(&host.runtime.server.entities, native, entity)
+                    .map_err(|e| format!("QVM client binding: {e:?}"))?;
+                vm.player_stat_layout()
+            }
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            Program::Native { vm, .. } => vm
-                .bind_client(&host.runtime.server.entities, native, entity)
-                .map_err(|e| format!("native client binding: {e:?}"))?,
+            Program::Native { vm, .. } => {
+                vm.bind_client(&host.runtime.server.entities, native, entity)
+                    .map_err(|e| format!("native client binding: {e:?}"))?;
+                vm.player_stat_layout()
+            }
             _ => return Err("client needs a Q3 module".into()),
+        };
+        if let Some(binding) = host.runtime.snapshots[id.0 as usize].as_mut()
+            && !binding.set_player_stat_layout(player_stats, &host.runtime.catalog.hud.values)
+        {
+            return Err("native stat layout must be selected before the first snapshot".into());
         }
         host.invoke_client(
             id,

@@ -1,7 +1,9 @@
 //! One connection snapshot producer, with optional local CLIENT presentation.
 use qa_core::{
     events::OutputConsumerId,
-    primitives::{ClientId, EntityAppearance, PlayerState, ResourceNamespace, ThinkTime},
+    primitives::{
+        ClientId, EntityAppearance, PlayerState, Q3StatLayout, ResourceNamespace, ThinkTime,
+    },
     sys_events::SeatId,
 };
 use qa_network::{
@@ -78,6 +80,7 @@ pub struct SnapshotBinding {
     pub rejected: u64,
     native_client: u32,
     projection: PlayerProjection,
+    player_stats: Q3StatLayout,
     presentation: Option<ClientPresentation>,
     entities: entities::EntityScratch,
     last_sent: Option<u32>,
@@ -101,6 +104,26 @@ impl SnapshotBinding {
     }
     pub fn native_client(&self) -> u32 {
         self.native_client
+    }
+    /// Explicit native preset selected before the first snapshot publication.
+    pub fn set_player_stat_layout(
+        &mut self,
+        layout: Q3StatLayout,
+        values: &qa_ui::values::ValueLayout,
+    ) -> bool {
+        if layout == self.player_stats {
+            return true;
+        }
+        if self.last_sent.is_some() || self.pending.is_some() || self.applied != 0 {
+            return false;
+        }
+        let native = values.native(self.protocol.rule_set());
+        if self.protocol == Protocol::Quake3_68 && !layout.fits(native.stats.len()) {
+            return false;
+        }
+        self.projection = PlayerProjection::load_values(self.protocol, native.bindings(), layout);
+        self.player_stats = layout;
+        true
     }
     pub fn view_entity(&self, frame: Option<ReceivedFrame<'_>>) -> Option<u32> {
         let client = frame
@@ -287,10 +310,10 @@ impl SnapshotBinding {
             native_client,
             projection: PlayerProjection::load_values(
                 protocol,
-                &native.stats,
-                &native.persistent,
-                native.items,
+                native.bindings(),
+                Q3StatLayout::BASE,
             ),
+            player_stats: Q3StatLayout::BASE,
             presentation: seat.map(|seat| ClientPresentation {
                 seat,
                 appearance: qa_gameplay::rules::appearance::policy(protocol.rule_set()),
@@ -548,7 +571,7 @@ impl SnapshotBinding {
             _ => (None, None),
         };
         if let Some(words) = words {
-            if !hud.native_packet_fits(self.protocol.rule_set(), player) {
+            if !hud.native_packet_fits(self.protocol.rule_set(), self.player_stats, player) {
                 self.rejected += 1;
                 return;
             }
@@ -580,8 +603,13 @@ impl SnapshotBinding {
                 &mut context,
                 ResourceNamespace::Client(self.client),
                 |number| numbers.entity(number),
-            ) && hud.import_native_packet(self.protocol.rule_set(), self.client, player, time)
-            {
+            ) && hud.import_native_packet(
+                self.protocol.rule_set(),
+                self.player_stats,
+                self.client,
+                player,
+                time,
+            ) {
                 registry.project_player_weapon(player);
                 self.applied += 1;
             } else {

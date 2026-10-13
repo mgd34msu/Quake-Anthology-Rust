@@ -176,7 +176,7 @@ fn fixture_program(denial: i32, fail_begin: bool) -> qa_compat::qvm::Vm {
     }
     let mut vm = service_program::program(&code, &data);
     // load_q3 performs this same cold registration for a real server QVM.
-    vm.configure_q3_game();
+    vm.configure_q3_game(qa_core::primitives::Q3StatLayout::BASE);
     vm
 }
 

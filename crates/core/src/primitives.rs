@@ -1720,8 +1720,18 @@ pub enum ValueWidth {
 pub struct NativeValueLayout {
     pub stats: u32,
     pub persistent: u32,
+    pub ammo: u32,
+    pub powerups: u32,
     pub width: ValueWidth,
     pub items: bool,
+}
+impl NativeValueLayout {
+    pub const fn arrays(self) -> [u32; 4] {
+        [self.stats, self.persistent, self.ammo, self.powerups]
+    }
+    pub fn values(self) -> u32 {
+        self.arrays().into_iter().sum::<u32>() + u32::from(self.items)
+    }
 }
 /// Stat ordinals supplied by NQ clientdata, independently of separate updates.
 pub const NQ_PACKET_STATS: [usize; 10] = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -1730,30 +1740,40 @@ pub const NATIVE_VALUE_LAYOUT: [NativeValueLayout; 5] = [
     NativeValueLayout {
         stats: 32,
         persistent: 0,
+        ammo: 0,
+        powerups: 0,
         width: ValueWidth::Signed32,
         items: true,
     },
     NativeValueLayout {
         stats: 32,
         persistent: 0,
+        ammo: 0,
+        powerups: 0,
         width: ValueWidth::Signed32,
         items: false,
     },
     NativeValueLayout {
         stats: 32,
         persistent: 0,
+        ammo: 0,
+        powerups: 0,
         width: ValueWidth::Signed16,
         items: false,
     },
     NativeValueLayout {
         stats: 64,
         persistent: 0,
+        ammo: 0,
+        powerups: 0,
         width: ValueWidth::Signed16,
         items: false,
     },
     NativeValueLayout {
         stats: 16,
         persistent: 16,
+        ammo: 16,
+        powerups: 16,
         width: ValueWidth::Signed32,
         items: false,
     },
@@ -1769,4 +1789,58 @@ pub struct ValueBinding {
     pub id: ValueId,
     pub width: ValueWidth,
     pub reset: ValueReset,
+}
+
+/// Borrowed native array bindings in stats, persistent, ammo, powerup order.
+/// These describe rows in the one value bank and own no additional values.
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerValueBindings<'a> {
+    pub arrays: [&'a [ValueBinding]; 4],
+    pub items: Option<ValueBinding>,
+}
+impl PlayerValueBindings<'_> {
+    pub const EMPTY: Self = Self {
+        arrays: [&[]; 4],
+        items: None,
+    };
+    pub fn iter(&self) -> impl Iterator<Item = ValueBinding> + '_ {
+        self.arrays
+            .iter()
+            .flat_map(|array| array.iter().copied())
+            .chain(self.items)
+    }
+    pub fn fits(&self, bank: &ValueBank) -> bool {
+        self.iter().all(|binding| bank.get(binding.id).is_some())
+    }
+}
+
+/// Public Q3 stat ordinals are module/protocol admission data. Team Arena's
+/// extra stat shifts weapons and armor; movement and presentation do not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Q3StatLayout {
+    pub health: u8,
+    pub weapons: u8,
+    pub armor: u8,
+}
+impl Q3StatLayout {
+    pub const BASE: Self = Self {
+        health: 0,
+        weapons: 2,
+        armor: 3,
+    };
+    pub const TEAM_ARENA: Self = Self {
+        health: 0,
+        weapons: 3,
+        armor: 4,
+    };
+    pub fn fits(self, stats: usize) -> bool {
+        [self.health, self.weapons, self.armor]
+            .into_iter()
+            .all(|index| usize::from(index) < stats)
+    }
+}
+impl Default for Q3StatLayout {
+    fn default() -> Self {
+        Self::BASE
+    }
 }

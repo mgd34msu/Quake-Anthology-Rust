@@ -4,7 +4,13 @@ use crate::{
     memory::{ModuleMemory, Width},
     services::CallError,
 };
-use qa_core::primitives::{ClientId, ModuleId, NativeEntity, ResourceNamespace, ValueBinding};
+use qa_core::{
+    primitives::{
+        ClientId, ModuleId, NativeEntity, PlayerValueBindings, Q3StatLayout, ResourceNamespace,
+        ValueBinding,
+    },
+    sys_events::EventTime,
+};
 use qa_network::{
     commands::packet::Protocol,
     projection::{PlayerContext, PlayerProjection},
@@ -62,7 +68,12 @@ const Q3_PLAYER_FIELDS: &[(usize, u64)] = &[
 pub(crate) struct PlayerValues {
     address: PlayerAddress,
     protocol: Protocol,
-    arrays: [ArrayLayout; 2],
+    arrays: [ArrayLayout; 4],
+    stat_layout: Q3StatLayout,
+    /// Immutable numeric metadata; native values stay in the common ValueBank.
+    bindings: [Box<[ValueBinding]>; 4],
+    items: Option<ValueBinding>,
+    inventory: Option<qa_gameplay::registry::NativePlayerBindings>,
     fields: Box<[MemoryField]>,
     projection: Option<PlayerProjection>,
     words: Box<[u32]>,
@@ -72,72 +83,90 @@ impl PlayerValues {
         Self::load(
             PlayerAddress::EntityClient(client),
             client.stats.protocol,
-            [
-                ArrayLayout {
-                    offset: client.stats.offset,
-                    width: Width::Short,
-                },
-                ArrayLayout {
-                    offset: 0,
-                    width: Width::Short,
-                },
-            ],
+            std::array::from_fn(|index| ArrayLayout {
+                offset: if index == 0 { client.stats.offset } else { 0 },
+                width: Width::Short,
+            }),
+            Q3StatLayout::BASE,
         )
     }
-    pub fn load_q3() -> Self {
+    pub fn load_q3(layout: Q3StatLayout) -> Self {
         // Original q_shared.h playerState_t: pointer-free signed32 arrays.
         let mut values = Self::load(
             PlayerAddress::Registered,
             Protocol::Quake3_68,
-            [
-                ArrayLayout {
-                    offset: 184,
-                    width: Width::Word,
-                },
-                ArrayLayout {
-                    offset: 248,
-                    width: Width::Word,
-                },
-            ],
+            [184, 248, 376, 312].map(|offset| ArrayLayout {
+                offset,
+                width: Width::Word,
+            }),
+            layout,
         );
         // Body/view/movement publication is useful even without HUD bank rows.
-        values.bind_fields(&[], &[]);
+        values.bind_fields(PlayerValueBindings::EMPTY);
         values
     }
-    fn load(address: PlayerAddress, protocol: Protocol, arrays: [ArrayLayout; 2]) -> Self {
+    fn load(
+        address: PlayerAddress,
+        protocol: Protocol,
+        arrays: [ArrayLayout; 4],
+        stat_layout: Q3StatLayout,
+    ) -> Self {
         Self {
             address,
             protocol,
             arrays,
+            stat_layout,
+            bindings: std::array::from_fn(|_| Box::default()),
+            items: None,
+            inventory: None,
             fields: Box::default(),
             projection: None,
             words: Box::default(),
         }
     }
+    pub fn stat_layout(&self) -> Q3StatLayout {
+        self.stat_layout
+    }
     pub fn bind(
         &mut self,
-        stats: &[ValueBinding],
-        persistent: &[ValueBinding],
+        values: PlayerValueBindings<'_>,
+        registry: &qa_gameplay::registry::Registry,
     ) -> Result<(), CallError> {
         let spans = qa_network::states::player_value_layout(self.protocol).1;
-        if spans
-            .into_iter()
-            .zip([stats, persistent])
-            .any(|(span, bindings)| bindings.len() != span.count as usize)
+        if values.items.is_some()
+            || spans
+                .into_iter()
+                .zip(values.arrays)
+                .any(|(span, bindings)| bindings.len() != span.count as usize)
+            || matches!(self.address, PlayerAddress::Registered)
+                && !self.stat_layout.fits(values.arrays[0].len())
         {
             return Err(CallError::Capacity);
         }
-        self.bind_fields(stats, persistent);
+        self.bind_fields(values);
+        self.bindings = values.arrays.map(|array| array.into());
+        self.items = values.items;
+        self.inventory = if matches!(self.address, PlayerAddress::Registered) {
+            qa_gameplay::registry::NativePlayerBindings::load(self.protocol.rule_set(), registry)
+        } else {
+            None
+        };
         Ok(())
     }
-    fn bind_fields(&mut self, stats: &[ValueBinding], persistent: &[ValueBinding]) {
+    fn bindings(&self) -> PlayerValueBindings<'_> {
+        PlayerValueBindings {
+            arrays: std::array::from_fn(|index| self.bindings[index].as_ref()),
+            items: self.items,
+        }
+    }
+    fn bind_fields(&mut self, values: PlayerValueBindings<'_>) {
         let (projection, native_fields) = match self.address {
             PlayerAddress::Registered => (
-                PlayerProjection::load_native_q3(stats, persistent),
+                PlayerProjection::load_native_q3(values, self.stat_layout),
                 Q3_PLAYER_FIELDS,
             ),
             PlayerAddress::EntityClient(_) => (
-                PlayerProjection::load_stat_values(self.protocol, stats, persistent),
+                PlayerProjection::load_stat_values(self.protocol, values, self.stat_layout),
                 &[][..],
             ),
         };
@@ -173,6 +202,7 @@ impl PlayerValues {
         registry: &qa_gameplay::registry::Registry,
         server: &mut Server,
         mut pmove: Option<&mut crate::pmove::Pmove>,
+        time: EventTime,
     ) -> Result<(), CallError> {
         if matches!(self.address, PlayerAddress::EntityClient(_)) && table.address == 0 {
             return Ok(());
@@ -223,6 +253,11 @@ impl PlayerValues {
                 }
             };
             if let Some(projection) = &self.projection {
+                if self.inventory.as_ref().is_some_and(|inventory| {
+                    !inventory.packet_fits(self.bindings(), self.stat_layout, &client.player)
+                }) {
+                    return Err(CallError::Capacity);
+                }
                 for field in &self.fields {
                     let address = pointer.checked_add(field.offset).ok_or(CallError::Memory)?;
                     let value = memory.read_field(address, field.width)?;
@@ -260,6 +295,17 @@ impl PlayerValues {
                     projection.apply_stats(&self.words, &mut client.player, namespace)
                 };
                 if !imported {
+                    return Err(CallError::Capacity);
+                }
+                if let Some(inventory) = &self.inventory
+                    && !inventory.import_packet(
+                        self.bindings(),
+                        self.stat_layout,
+                        namespace,
+                        &mut client.player,
+                        time,
+                    )
+                {
                     return Err(CallError::Capacity);
                 }
                 if module_moves && matches!(self.address, PlayerAddress::Registered) {

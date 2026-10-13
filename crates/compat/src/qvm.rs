@@ -50,16 +50,23 @@ impl Vm {
             stack_bottom: program_stack.saturating_sub(65536),
         })
     }
-    pub fn configure_q3_game(&mut self) {
-        self.projection = Some(crate::projection::Projection::load_q3());
+    pub fn configure_q3_game(&mut self, layout: qa_core::primitives::Q3StatLayout) {
+        self.projection = Some(crate::projection::Projection::load_q3(layout));
+    }
+    pub fn player_stat_layout(&self) -> qa_core::primitives::Q3StatLayout {
+        self.projection
+            .as_ref()
+            .map_or(qa_core::primitives::Q3StatLayout::BASE, |projection| {
+                projection.stat_layout()
+            })
     }
     pub fn bind_player_values(
         &mut self,
-        stats: &[qa_core::primitives::ValueBinding],
-        persistent: &[qa_core::primitives::ValueBinding],
+        values: qa_core::primitives::PlayerValueBindings<'_>,
+        registry: &qa_gameplay::registry::Registry,
     ) -> Result<(), crate::services::CallError> {
         if let Some(projection) = &mut self.projection {
-            projection.bind_values(stats, persistent)?;
+            projection.bind_values(values, registry)?;
         }
         Ok(())
     }
@@ -78,9 +85,10 @@ impl Vm {
         &mut self,
         services: &mut crate::services::EngineServices<'_>,
         context: crate::services::CallContext,
+        time: qa_core::sys_events::EventTime,
     ) -> Result<(), crate::services::CallError> {
         if let Some(projection) = &mut self.projection {
-            projection.publish(&mut self.memory, services, context, None)?;
+            projection.publish(&mut self.memory, services, context, None, time)?;
         }
         Ok(())
     }

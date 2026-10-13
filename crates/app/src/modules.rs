@@ -531,12 +531,12 @@ impl FrameHost {
                 .native(request.context.native_rules);
             match &mut request.program {
                 Program::Qvm { vm, .. } => vm
-                    .bind_player_values(&values.stats, &values.persistent)
+                    .bind_player_values(values.bindings(), &host.runtime.catalog.registry)
                     .map_err(|e| format!("module player values: {e:?}"))?,
                 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                 Program::Native { vm, .. } => {
                     vm.rebind_configstrings();
-                    vm.bind_player_values(&values.stats, &values.persistent)
+                    vm.bind_player_values(values.bindings(), &host.runtime.catalog.registry)
                         .map_err(|e| format!("module player values: {e:?}"))?;
                 }
                 Program::QuakeC(qc) => {
@@ -1405,7 +1405,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 .call(&mut calls, arguments, row.request.instruction_budget, false)
                 .map_err(|_| ());
             result.and_then(|value| {
-                vm.publish_entities(calls.services, call_context)
+                vm.publish_entities(calls.services, call_context, calls.platform_time)
                     .map(|()| ModuleResult::Qvm(value))
                     .map_err(|_| ())
             })

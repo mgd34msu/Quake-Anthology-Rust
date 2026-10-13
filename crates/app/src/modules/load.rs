@@ -55,12 +55,18 @@ pub enum Q3Role {
 pub struct Q3Spec {
     pub role: Q3Role,
     pub path: String,
+    pub player_stats: qa_core::primitives::Q3StatLayout,
 }
 impl Q3Spec {
     pub fn parse(value: &str) -> Result<Self, &'static str> {
         let (kind, rest) = value
             .split_once(':')
             .ok_or("q3-module needs game:path, cgame:seat:path or ui:path")?;
+        let (kind, player_stats) = kind
+            .strip_suffix("-ta")
+            .map_or((kind, qa_core::primitives::Q3StatLayout::BASE), |kind| {
+                (kind, qa_core::primitives::Q3StatLayout::TEAM_ARENA)
+            });
         let (role, path) = match kind {
             "game" => (Q3Role::Game, rest),
             "ui" => (Q3Role::Ui, rest),
@@ -75,12 +81,16 @@ impl Q3Spec {
             }
             _ => return Err("unknown Q3 module role"),
         };
+        if player_stats == qa_core::primitives::Q3StatLayout::TEAM_ARENA && role != Q3Role::Game {
+            return Err("Team Arena player stat preset requires a game module");
+        }
         if path.is_empty() {
             return Err("Q3 module needs a virtual file");
         }
         Ok(Self {
             role,
             path: path.into(),
+            player_stats,
         })
     }
 }
@@ -153,6 +163,9 @@ pub fn load_q3(
 ) -> Result<(), String> {
     let mut reader = ArchiveReader::default();
     for spec in specs {
+        if !spec.player_stats.fits(16) {
+            return Err("invalid Q3 player stat layout".into());
+        }
         let module = module_id(requests)?;
         let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
         let allocation = AllocationPolicy::for_rules(RuleSetId::Quake3, 0);
@@ -273,7 +286,7 @@ pub fn load_q3(
                 });
                 let finalize: Vec<_> = vm.finalizers().iter().map(native_export).collect();
                 if matches!(spec.role, Q3Role::Game) {
-                    vm.configure_q3_game();
+                    vm.configure_q3_game(spec.player_stats);
                 }
                 let count = vm.export_count();
                 (
@@ -295,7 +308,7 @@ pub fn load_q3(
                 .map_err(|e| format!("QVM module: {e:?}"))?;
             let mut vm = qvm::Vm::load(image).map_err(|e| format!("QVM memory: {e:?}"))?;
             if matches!(spec.role, Q3Role::Game) {
-                vm.configure_q3_game();
+                vm.configure_q3_game(spec.player_stats);
             }
             (
                 Program::Qvm {

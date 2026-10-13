@@ -215,7 +215,7 @@ fn netquake_clientdata_bank_enters_one_inventory_and_hud_at_queued_receipt_time(
     let bits = 2 | 16384 | 131072 | 0x0800_0000 | (5 << 28);
     values.items.unwrap().import(&mut player.values, bits);
     let time = EventTime::from_milliseconds(2500);
-    assert!(hud.import_native_packet(source, client, &mut player, time));
+    assert!(hud.import_native_packet(source, Q3StatLayout::BASE, client, &mut player, time));
     let weapon = registry.native_weapon(source, 2).unwrap();
     let weapon_item = registry.weapon(weapon).unwrap().item;
     let shells = registry.native_item(source, 11).unwrap();
@@ -240,6 +240,7 @@ fn netquake_clientdata_bank_enters_one_inventory_and_hud_at_queued_receipt_time(
     );
     assert!(hud.import_native_packet(
         source,
+        Q3StatLayout::BASE,
         client,
         &mut player,
         EventTime::from_milliseconds(4000)
@@ -284,6 +285,7 @@ fn netquake_clientdata_bank_enters_one_inventory_and_hud_at_queued_receipt_time(
     values.stats[6].import(&mut player.values, 0);
     assert!(hud.import_native_packet(
         source,
+        Q3StatLayout::BASE,
         client,
         &mut player,
         EventTime::from_milliseconds(5000)
@@ -312,6 +314,7 @@ fn clientdata_capacity_admission_precedes_all_common_inventory_and_scalar_writes
         values.items.unwrap().import(&mut player.values, u32::MAX);
         assert!(!hud.import_native_packet(
             RuleSetId::Quake,
+            Q3StatLayout::BASE,
             ClientId(0),
             &mut player,
             EventTime::default()
@@ -319,5 +322,197 @@ fn clientdata_capacity_admission_precedes_all_common_inventory_and_scalar_writes
         assert_eq!((player.health, player.armor), (81, 53));
         assert_eq!(player.inventory.collectibles, 9);
         assert_eq!(player.inventory.item_counts[0], 7);
+    }
+}
+
+#[test]
+fn q3_packet_inventory_reaches_hud_through_retained_events_for_both_stat_layouts() {
+    let names = NameTable::load(Registry::names_needed()).unwrap();
+    let registry = Registry::load(&names).unwrap();
+    let hud = HudBindings::load(&registry, &[]).unwrap();
+    let source = RuleSetId::Quake3;
+    let client = ClientId(3);
+    let values = hud.values.native(source);
+    let rocket = registry.native_weapon(source, 5).unwrap();
+    let rocket_def = registry.weapon(rocket).unwrap();
+    let rocket_ammo = rocket_def.ammo.unwrap();
+    let machinegun = registry.native_weapon(source, 2).unwrap();
+    let shotgun = registry.native_weapon(source, 3).unwrap();
+    for layout in [Q3StatLayout::BASE, Q3StatLayout::TEAM_ARENA] {
+        let mut player =
+            PlayerState::with_capacity(registry.items.len() + 1, 16, hud.values.capacity());
+        player.health = 81;
+        player.armor = 53;
+        player.movement_rules = RuleSetId::Quake2;
+        player.trace_rules = RuleSetId::Quake;
+        player.inventory.powerup_until[3] = 12.5;
+        let mut tail = NativePlayerTail::new(source, ResourceNamespace::Client(client));
+        tail.weapon_number = Some(5);
+        player.native = Some(tail);
+        // The other layout's mask slot carries unrelated raw stat data.
+        let other = if layout == Q3StatLayout::BASE { 3 } else { 2 };
+        values.stats[other].import(&mut player.values, 1 << 3);
+        let mask = (1 << 2) | (1 << 5) | (1 << 15);
+        values.stats[usize::from(layout.weapons)].import(&mut player.values, mask);
+        for (ordinal, count) in [(2, 31), (3, 17), (5, -1), (15, -345)] {
+            values.ammo[ordinal].import(&mut player.values, count as u32);
+        }
+        values.powerups[3].import(&mut player.values, 12345);
+        assert!(hud.native_packet_fits(source, layout, &player));
+        assert!(hud.import_native_packet(
+            source,
+            layout,
+            client,
+            &mut player,
+            EventTime::from_milliseconds(2500)
+        ));
+        registry.project_player_weapon(&mut player);
+        assert_eq!(player.inventory.weapon, rocket);
+        assert_eq!(player.inventory.item_counts[rocket_ammo.0 as usize], -1);
+        assert_eq!(player.inventory.powerup_until[3], 12.5);
+        assert_eq!(player.native, Some(tail));
+        assert_eq!(
+            (player.movement_rules, player.trace_rules),
+            (RuleSetId::Quake2, RuleSetId::Quake)
+        );
+        let mut state = hud.state(16, NameId(0));
+        let mut publication = qa_session::clients::HudPublication::with_capacity(
+            player.inventory.item_counts.len(),
+            16,
+        );
+        let mut ring = EventRing::load(4096, 1, 1, 32).unwrap();
+        let consumer = ring.bind(OutputTarget::Client(client)).unwrap();
+        hud.project_stats(&player, &mut state);
+        publication.publish_changes(&player, &mut ring, client);
+        let retained = ring.len();
+        assert!(retained > 0);
+        dispatch_consumer(
+            &mut ring,
+            consumer,
+            &mut |_: OutputRecord, _: &mut qa_core::events::TextStore| OutputSubmission::Unsent,
+        );
+        assert_eq!(ring.len(), retained);
+        // A skipped consumer does not cause the producer to clone its records.
+        assert!(hud.import_native_packet(
+            source,
+            layout,
+            client,
+            &mut player,
+            EventTime::from_milliseconds(4000)
+        ));
+        publication.publish_changes(&player, &mut ring, client);
+        assert_eq!(ring.len(), retained);
+        assert_eq!(
+            player.inventory.item_acquired_at[rocket_def.item.0 as usize],
+            2.5
+        );
+        dispatch_consumer(
+            &mut ring,
+            consumer,
+            &mut |record: OutputRecord, _: &mut qa_core::events::TextStore| {
+                let FrameEvent::Hud(event) = record.event else {
+                    panic!("HUD inventory record");
+                };
+                assert!(hud.apply(&mut state, event.change));
+                OutputSubmission::BestEffort
+            },
+        );
+        assert_eq!(ring.len(), 0);
+        assert_eq!(ring.rejected_publications(), 0);
+        assert_eq!(state.inventory.weapon, rocket);
+        assert_eq!(state.ammo, -1);
+        assert!(state.owned_weapons.contains(rocket.0 as usize));
+        assert!(state.owned_weapons.contains(machinegun.0 as usize));
+        assert!(!state.owned_weapons.contains(shotgun.0 as usize));
+        assert_eq!(
+            values.stats[usize::from(layout.weapons)].export(&state.values),
+            Some(mask)
+        );
+        assert_eq!(
+            values.ammo[15].export(&state.values),
+            Some((-345i32) as u32)
+        );
+        assert_eq!(values.powerups[3].export(&state.values), Some(12345));
+        assert_eq!((state.health, state.armor), (81, 53));
+        assert_eq!(state.clipped_values, 0);
+        values.ammo[5].import(&mut player.values, 0);
+        values.stats[usize::from(layout.weapons)].import(&mut player.values, 1 << 2);
+        assert!(hud.import_native_packet(
+            source,
+            layout,
+            client,
+            &mut player,
+            EventTime::from_milliseconds(5000)
+        ));
+        publication.publish_changes(&player, &mut ring, client);
+        dispatch_consumer(
+            &mut ring,
+            consumer,
+            &mut |record: OutputRecord, _: &mut qa_core::events::TextStore| {
+                let FrameEvent::Hud(event) = record.event else {
+                    panic!("HUD inventory record");
+                };
+                assert!(hud.apply(&mut state, event.change));
+                OutputSubmission::BestEffort
+            },
+        );
+        assert_eq!(state.ammo, 0);
+        assert!(!state.owned_weapons.contains(rocket.0 as usize));
+        assert!(state.owned_weapons.contains(machinegun.0 as usize));
+    }
+}
+
+#[test]
+fn q3_packet_capacity_rejection_and_individual_stat_import_do_not_mutate_inventory() {
+    let names = NameTable::load(Registry::names_needed()).unwrap();
+    let registry = Registry::load(&names).unwrap();
+    let hud = HudBindings::load(&registry, &[]).unwrap();
+    let source = RuleSetId::Quake3;
+    let values = hud.values.native(source);
+    let capacity = registry.items.len() + 1;
+    for (counts, times, bank) in [
+        (1, capacity, hud.values.capacity()),
+        (capacity, 1, hud.values.capacity()),
+        (capacity, capacity, hud.values.capacity() - 1),
+    ] {
+        let mut player = PlayerState::with_capacity(counts, 16, bank);
+        player.inventory.item_acquired_at = vec![0.0; times].into_boxed_slice();
+        player.health = 81;
+        player.view_weapon.frame = 17;
+        player.inventory.item_counts[0] = 7;
+        player.inventory.item_acquired_at[0] = 4.0;
+        player.inventory.weapon = WeaponId(3);
+        // Ordinary stat receipt retains raw Q3 bits even without inventory space.
+        assert!(hud.import_native_stat(
+            source,
+            ClientId(3),
+            2,
+            u32::MAX,
+            &mut player,
+            EventTime::default()
+        ));
+        values.ammo[2].import(&mut player.values, 99);
+        let before_counts = player.inventory.item_counts.to_vec();
+        let before_times = player.inventory.item_acquired_at.to_vec();
+        assert!(!hud.native_packet_fits(source, Q3StatLayout::BASE, &player));
+        assert!(!hud.import_native_packet(
+            source,
+            Q3StatLayout::BASE,
+            ClientId(3),
+            &mut player,
+            EventTime::from_milliseconds(2500)
+        ));
+        assert_eq!(player.inventory.item_counts.as_ref(), before_counts);
+        assert_eq!(player.inventory.item_acquired_at.as_ref(), before_times);
+        assert_eq!(
+            (
+                player.health,
+                player.view_weapon.frame,
+                player.inventory.weapon
+            ),
+            (81, 17, WeaponId(3))
+        );
+        assert_eq!(values.stats[2].export(&player.values), Some(u32::MAX));
+        assert_eq!(values.ammo[2].export(&player.values), Some(99));
     }
 }

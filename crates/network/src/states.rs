@@ -10,7 +10,7 @@ use qa_core::primitives::{IndexSpan, NATIVE_VALUE_LAYOUT, RuleSetId};
 /// map and module roles. NQ/QW publish stats in separate service messages.
 pub fn player_value_layout(
     protocol: crate::commands::packet::Protocol,
-) -> (RuleSetId, [IndexSpan; 2]) {
+) -> (RuleSetId, [IndexSpan; 4]) {
     use crate::commands::packet::Protocol;
     let none = IndexSpan::default();
     let span = |first: usize, count: usize| IndexSpan {
@@ -18,13 +18,18 @@ pub fn player_value_layout(
         count: count as u32,
     };
     let spans = match protocol {
-        Protocol::NetQuake15 | Protocol::QuakeWorld28 => [none; 2],
-        Protocol::Quake2_34 => [span(Q2_STATS[0].word, Q2_STATS.len()), none],
-        Protocol::Quake2Repro1038 => [span(Q2_REPRO_PLAYER_WORDS - Q2_RR_STATS, Q2_RR_STATS), none],
-        Protocol::Quake3_68 => [
-            span(STATS[0].word, STATS.len()),
-            span(PERSISTANT[0].word, PERSISTANT.len()),
+        Protocol::NetQuake15 | Protocol::QuakeWorld28 => [none; 4],
+        Protocol::Quake2_34 => [span(Q2_STATS[0].word, Q2_STATS.len()), none, none, none],
+        Protocol::Quake2Repro1038 => [
+            span(Q2_REPRO_PLAYER_WORDS - Q2_RR_STATS, Q2_RR_STATS),
+            none,
+            none,
+            none,
         ],
+        Protocol::Quake3_68 => std::array::from_fn(|index| {
+            let group = &PLAYER_ARRAYS[index];
+            span(group.fields[0].word, group.fields.len())
+        }),
     };
     (protocol.rule_set(), spans)
 }
@@ -206,6 +211,10 @@ const _: () = {
 };
 static AMMO: [Field; 16] = mask_fields(80, 16, Value::Signed);
 static POWERUPS: [Field; 16] = mask_fields(96, 32, Value::Unsigned);
+const _: () = {
+    assert!(AMMO.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake3 as usize].ammo as usize);
+    assert!(POWERUPS.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake3 as usize].powerups as usize);
+};
 static PLAYER_ARRAYS: [Group<true>; 4] = [
     Group {
         fields: &STATS,

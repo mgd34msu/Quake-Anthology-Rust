@@ -1,6 +1,6 @@
 use qa_core::events::TextStore;
 use qa_core::primitives::{
-    HudChange, HudLine, HudState, ItemId, NameId, PlayerState, PrintEvent, PrintKind,
+    HudChange, HudLine, HudState, ItemId, NameId, PlayerState, PrintEvent, PrintKind, Q3StatLayout,
 };
 use qa_gameplay::registry::{NativePlayerBindings, Registry};
 
@@ -89,57 +89,36 @@ impl HudBindings {
     pub fn native_packet_fits(
         &self,
         rules: qa_core::primitives::RuleSetId,
+        layout: Q3StatLayout,
         player: &PlayerState,
     ) -> bool {
-        let values = self.values.native(rules);
-        let Some(items) = values.items else {
-            return true;
-        };
-        let Some(native) = self.native_players[rules as usize].as_ref() else {
-            return false;
-        };
-        native.fits(player)
-            && items.export(&player.values).is_some()
-            && qa_core::primitives::NQ_PACKET_STATS.iter().all(|&index| {
-                values
-                    .stats
-                    .get(index)
-                    .and_then(|binding| binding.export(&player.values))
-                    .is_some()
-            })
+        let values = self.values.native(rules).bindings();
+        self.native_players[rules as usize].as_ref().map_or_else(
+            || values.fits(&player.values),
+            |native| native.packet_fits(values, layout, player),
+        )
     }
     /// Packet fields have already entered their load-bound bank rows through
     /// the native projection. NQ's mask is independent of ordinary stat 15.
     pub fn import_native_packet(
         &self,
         rules: qa_core::primitives::RuleSetId,
+        layout: Q3StatLayout,
         client: qa_core::primitives::ClientId,
         player: &mut PlayerState,
         time: qa_core::sys_events::EventTime,
     ) -> bool {
-        if !self.native_packet_fits(rules, player) {
-            return false;
-        }
-        let values = self.values.native(rules);
-        let Some(items) = values.items else {
-            return true;
-        };
         let Some(native) = self.native_players[rules as usize].as_ref() else {
-            return false;
+            return self.native_packet_fits(rules, layout, player);
         };
         let namespace = qa_core::primitives::ResourceNamespace::Client(client);
-        for index in qa_core::primitives::NQ_PACKET_STATS {
-            let Some(bits) = values.stats[index].export(&player.values) else {
-                return false;
-            };
-            if !native.import(None, namespace, index, bits, player, time) {
-                return false;
-            }
-        }
-        let Some(bits) = items.export(&player.values) else {
-            return false;
-        };
-        native.import_items(None, bits, player, time)
+        native.import_packet(
+            self.values.native(rules).bindings(),
+            layout,
+            namespace,
+            player,
+            time,
+        )
     }
     pub fn apply(&self, state: &mut HudState, change: HudChange) -> bool {
         if !state.inventory.apply(change) {

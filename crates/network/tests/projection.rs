@@ -1,6 +1,6 @@
 use qa_core::primitives::{
-    EntityId, MovementMode, MovementTimer, NumericValue, PlayerState, RuleSetId, ValueBinding,
-    ValueId, ValueReset, ValueWidth, Vec3,
+    EntityId, MovementMode, MovementTimer, NumericValue, PlayerState, PlayerValueBindings,
+    Q3StatLayout, RuleSetId, ValueBinding, ValueId, ValueReset, ValueWidth, Vec3,
 };
 use qa_network::{
     commands::{QwCmd, packet::Protocol},
@@ -25,7 +25,14 @@ fn nq_clientdata_sparse_values_keep_native_wire_and_raw_items()
         width: ValueWidth::Signed32,
         reset: ValueReset::Life,
     };
-    let projection = PlayerProjection::load_values(Protocol::NetQuake15, &stats, &[], Some(items));
+    let projection = PlayerProjection::load_values(
+        Protocol::NetQuake15,
+        PlayerValueBindings {
+            arrays: [&stats, &[], &[], &[]],
+            items: Some(items),
+        },
+        Q3StatLayout::BASE,
+    );
     let mut source = PlayerState::with_capacity(0, 0, 33);
     source.health = -12;
     source.armor = 55;
@@ -130,7 +137,14 @@ fn nq_clientdata_binding_capacity_rejects_before_common_fields_change() {
         width: ValueWidth::Signed32,
         reset: ValueReset::Life,
     };
-    let projection = PlayerProjection::load_values(Protocol::NetQuake15, &stats, &[], Some(items));
+    let projection = PlayerProjection::load_values(
+        Protocol::NetQuake15,
+        PlayerValueBindings {
+            arrays: [&stats, &[], &[], &[]],
+            items: Some(items),
+        },
+        Q3StatLayout::BASE,
+    );
     let mut target = PlayerState::with_capacity(0, 0, 32);
     target.health = 81;
     target.armor = 53;
@@ -156,7 +170,11 @@ fn numeric_stat_projection_preserves_independent_body_view_and_movement_state() 
         let original = PlayerProjection::load(protocol, &[]);
         let mut words = vec![0; original.words()];
         original.reduce(&source, &context(), &mut words, |model| Some(model.ordinal));
-        let projection = PlayerProjection::load_stat_values(protocol, &[], &[]);
+        let projection = PlayerProjection::load_stat_values(
+            protocol,
+            PlayerValueBindings::EMPTY,
+            Q3StatLayout::BASE,
+        );
         let mut target = player();
         target.body.position = Vec3([500.0, 600.0, 700.0]);
         target.view_angles = Vec3([10.0, 20.0, 30.0]);
@@ -248,7 +266,7 @@ fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values(
     ] {
         let (_, spans) = states::player_value_layout(protocol);
         let mut first = 0;
-        let bindings: [Vec<ValueBinding>; 2] = spans.map(|span| {
+        let bindings: [Vec<ValueBinding>; 4] = spans.map(|span| {
             (0..span.count)
                 .map(|_| {
                     let binding = ValueBinding {
@@ -261,7 +279,14 @@ fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values(
                 })
                 .collect()
         });
-        let projection = PlayerProjection::load_values(protocol, &bindings[0], &bindings[1], None);
+        let projection = PlayerProjection::load_values(
+            protocol,
+            PlayerValueBindings {
+                arrays: bindings.each_ref().map(|array| array.as_slice()),
+                items: None,
+            },
+            Q3StatLayout::BASE,
+        );
         let mut source = player();
         source.values = qa_core::primitives::ValueBank::load(first as usize);
         source.health = 123;
@@ -326,6 +351,169 @@ fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values(
             assert_eq!(target.frags, 0);
         }
     }
+}
+
+#[test]
+fn q3_four_arrays_preserve_native_integers_and_narrow_only_through_the_existing_wire_codec()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{ClientId, ModuleId, PredictionPolicy, ResourceNamespace, ValueBank};
+    let (_, spans) = states::player_value_layout(Protocol::Quake3_68);
+    assert_eq!(spans.map(|span| span.count), [16; 4]);
+    assert_eq!(spans[0].first as usize, states::PLAYER_LAYOUT.len());
+    assert_eq!(spans[3].first + spans[3].count, states::PLAYER_WORDS as u32);
+    let mut next = 0;
+    let arrays: [Vec<ValueBinding>; 4] = spans.map(|span| {
+        span.range()
+            .map(|_| {
+                let binding = ValueBinding {
+                    id: ValueId(next),
+                    width: ValueWidth::Signed32,
+                    reset: ValueReset::Life,
+                };
+                next += 1;
+                binding
+            })
+            .collect()
+    });
+    let values = PlayerValueBindings {
+        arrays: arrays.each_ref().map(|array| array.as_slice()),
+        items: None,
+    };
+    for layout in [Q3StatLayout::BASE, Q3StatLayout::TEAM_ARENA] {
+        let native = PlayerProjection::load_native_q3(values, layout);
+        let wire = PlayerProjection::load_values(Protocol::Quake3_68, values, layout);
+        let mut source = PlayerState::with_capacity(0, 0, next as usize);
+        source.health = 41;
+        source.armor = 73;
+        source.score = -7;
+        for (index, binding) in arrays[0].iter().enumerate() {
+            binding.import(&mut source.values, 1000 + index as u32);
+        }
+        let mask = 0x41;
+        arrays[0][layout.weapons as usize].import(&mut source.values, mask);
+        for (index, bits) in [0, u32::MAX, 0x0100_0001, i32::MIN as u32, 32768, 65535]
+            .into_iter()
+            .enumerate()
+        {
+            arrays[2][index].import(&mut source.values, bits);
+        }
+        for (index, bits) in [0x8123_4567, u32::MAX, 0x0100_0001].into_iter().enumerate() {
+            arrays[3][index].import(&mut source.values, bits);
+        }
+        let mut native_words = [0; states::PLAYER_WORDS];
+        assert!(native.reduce(
+            &source,
+            &PlayerContext::default(),
+            &mut native_words,
+            |_| None
+        ));
+        let stats = spans[0].first as usize;
+        assert_eq!(native_words[stats + layout.health as usize], 41);
+        assert_eq!(native_words[stats + layout.armor as usize], 73);
+        assert_eq!(native_words[stats + layout.weapons as usize], mask);
+        if layout == Q3StatLayout::TEAM_ARENA {
+            assert_eq!(native_words[stats + 2], 1002); // Persistant powerup is not the weapon mask.
+        }
+        assert_eq!(native_words[spans[2].first as usize + 2], 0x0100_0001);
+        assert_eq!(native_words[spans[2].first as usize + 3], i32::MIN as u32);
+        assert_eq!(native_words[spans[3].first as usize], 0x8123_4567);
+
+        let mut published = PlayerState::with_capacity(0, 0, next as usize);
+        published.movement_rules = RuleSetId::Quake2;
+        published.trace_rules = RuleSetId::QuakeWorld;
+        published.prediction = PredictionPolicy::DISABLED;
+        published.body.position = Vec3([123.0; 3]);
+        published.view_angles = Vec3([45.0; 3]);
+        assert!(native.apply_stats(
+            &native_words,
+            &mut published,
+            ResourceNamespace::Module(ModuleId(7))
+        ));
+        assert_eq!(published.body.position, Vec3([123.0; 3]));
+        assert_eq!(published.view_angles, Vec3([45.0; 3]));
+        assert_eq!(published.prediction, PredictionPolicy::DISABLED);
+        assert_eq!(published.native, None);
+        assert_eq!(
+            (published.movement_rules, published.trace_rules),
+            (RuleSetId::Quake2, RuleSetId::QuakeWorld)
+        );
+        assert_eq!(arrays[2][2].export(&published.values), Some(0x0100_0001));
+        assert_eq!(arrays[2][1].export(&published.values), Some(u32::MAX));
+
+        let mut outgoing = [0; states::PLAYER_WORDS];
+        assert!(wire.reduce(&source, &PlayerContext::default(), &mut outgoing, |_| None));
+        let mut bytes = [0; 1400];
+        let mut writer = Writer::new(&mut bytes, Encoding::Q3);
+        states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &outgoing)?;
+        let incoming = states::read_q3_player(
+            &mut Reader::new(writer.bytes(), Encoding::Q3),
+            &[0; states::PLAYER_WORDS],
+        )?;
+        let mut client = PlayerState::with_capacity(0, 0, next as usize);
+        client.values = ValueBank::load(next as usize);
+        client.movement_rules = RuleSetId::Quake2;
+        client.trace_rules = RuleSetId::QuakeWorld;
+        assert!(wire.apply(
+            &incoming,
+            &mut client,
+            &mut PlayerContext::default(),
+            ResourceNamespace::Client(ClientId(3)),
+            |_| None
+        ));
+        for (array, span) in spans.into_iter().enumerate() {
+            for (ordinal, word) in span.range().enumerate() {
+                let expected = if array == 3 {
+                    outgoing[word]
+                } else {
+                    outgoing[word] as i16 as i32 as u32
+                };
+                assert_eq!(incoming[word], expected);
+                assert_eq!(
+                    arrays[array][ordinal].export(&client.values),
+                    Some(expected)
+                );
+            }
+        }
+        assert_eq!((client.health, client.armor), (41, 73));
+        assert_eq!(
+            arrays[0][layout.weapons as usize].export(&client.values),
+            Some(mask)
+        );
+        assert_eq!(arrays[2][1].export(&client.values), Some(u32::MAX));
+        assert_eq!(arrays[2][2].export(&client.values), Some(1));
+        assert_eq!(arrays[3][0].export(&client.values), Some(0x8123_4567));
+        assert_eq!(
+            (client.movement_rules, client.trace_rules),
+            (RuleSetId::Quake2, RuleSetId::QuakeWorld)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn invalid_q3_stat_layout_rejects_before_raw_values_or_common_fields_change() {
+    use qa_core::primitives::{ClientId, ResourceNamespace};
+    let layout = Q3StatLayout {
+        health: 16,
+        ..Q3StatLayout::BASE
+    };
+    let projection = PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, layout);
+    let mut source = PlayerState::default();
+    source.health = 81;
+    source.armor = 53;
+    let mut words = [99; states::PLAYER_WORDS];
+    assert!(!projection.reduce(&source, &PlayerContext::default(), &mut words, |_| None));
+    assert_eq!(words, [99; states::PLAYER_WORDS]);
+    assert!(!projection.apply(
+        &words,
+        &mut source,
+        &mut PlayerContext::default(),
+        ResourceNamespace::Client(ClientId(0)),
+        |_| None
+    ));
+    assert_eq!((source.health, source.armor), (81, 53));
+    assert!(!projection.apply_stats(&words, &mut source, ResourceNamespace::Client(ClientId(0))));
+    assert_eq!((source.health, source.armor), (81, 53));
 }
 
 fn context() -> PlayerContext {
@@ -753,7 +941,7 @@ fn delta_angles_keep_the_native_macro_order_and_signedness() {
 #[test]
 fn native_q3_delta_units_keep_full_signed_words_until_the_target_boundary() {
     use qa_core::primitives::{AngleOffset, ClientId, ModuleId, ResourceNamespace};
-    let native = PlayerProjection::load_native_q3(&[], &[]);
+    let native = PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
     let wire = PlayerProjection::load(Protocol::Quake3_68, &[]);
     let raw = [i32::MIN + 1, i32::MAX - 1, 65537];
     let mut source = vec![0; native.words()];
@@ -818,7 +1006,7 @@ fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
 -> Result<(), qa_network::message::Error> {
     use qa_core::primitives::{ModuleId, MovementMagnitude, NativePlayerTail, ResourceNamespace};
     let namespace = ResourceNamespace::Module(ModuleId(7));
-    let native = PlayerProjection::load_native_q3(&[], &[]);
+    let native = PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
     let wire = PlayerProjection::load(Protocol::Quake3_68, &[]);
     assert_eq!(native.movement_flag_mask(), 0x163);
     let mut words = [0; states::PLAYER_WORDS];
@@ -957,7 +1145,8 @@ fn accepted_native_tuning_with_zero_multipliers_remains_effective() {
 fn native_world_ground_survives_until_airborne_or_an_explicit_mapping_replaces_it() {
     use qa_core::primitives::{ModuleId, ResourceNamespace};
     let namespace = ResourceNamespace::Module(ModuleId(7));
-    let projection = PlayerProjection::load_native_q3(&[], &[]);
+    let projection =
+        PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
     let mut words = [0; states::PLAYER_WORDS];
     words[20] = 1022;
     let mut player = PlayerState::default();
@@ -1173,7 +1362,11 @@ fn native_prediction_flags_keep_independent_capabilities_and_exact_wire_words()
             words[flag_word] = 0;
             assert!(projection.apply_stats(&words, &mut player, namespace));
             assert_eq!(player.prediction, expected);
-            let stats = PlayerProjection::load_stat_values(protocol, &[], &[]);
+            let stats = PlayerProjection::load_stat_values(
+                protocol,
+                PlayerValueBindings::EMPTY,
+                Q3StatLayout::BASE,
+            );
             assert!(stats.apply(&words, &mut player, &mut context, namespace, |_| None));
             assert_eq!(player.prediction, expected);
             assert!(projection.apply(&words, &mut player, &mut context, namespace, |_| None));

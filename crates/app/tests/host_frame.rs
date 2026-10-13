@@ -358,7 +358,7 @@ fn registered_q3_player_values_reach_client_and_hud_through_session_packets() {
         ],
         &data,
     );
-    vm.configure_q3_game();
+    vm.configure_q3_game(qa_core::primitives::Q3StatLayout::BASE);
     let module = ModuleId(1);
     let allocation = AllocationPolicy::q3(0);
     let anchor = runtime

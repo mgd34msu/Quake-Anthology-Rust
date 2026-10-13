@@ -184,6 +184,14 @@ fn qvm_game_selection_does_not_schedule_client_exports_as_server_ticks() {
     );
     assert_eq!(Q3Spec::parse("ui:vm/ui.qvm").unwrap().role, Q3Role::Ui);
     assert_eq!(
+        Q3Spec::parse("game:vm/qagame.qvm").unwrap().player_stats,
+        Q3StatLayout::BASE
+    );
+    assert_eq!(
+        Q3Spec::parse("game-ta:vm/qagame.qvm").unwrap().player_stats,
+        Q3StatLayout::TEAM_ARENA
+    );
+    assert_eq!(
         Q3Spec::parse("cgame:1:vm/cgame.qvm").unwrap().role,
         Q3Role::Cgame(SeatId::new(1).unwrap())
     );
@@ -194,6 +202,8 @@ fn qvm_game_selection_does_not_schedule_client_exports_as_server_ticks() {
         "cgame:4:file",
         "cgame:0:",
         "ui:",
+        "cgame-ta:1:vm/cgame.qvm",
+        "ui-ta:vm/ui.qvm",
     ] {
         assert!(Q3Spec::parse(input).is_err());
     }

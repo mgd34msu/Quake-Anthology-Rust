@@ -5,8 +5,8 @@ use qa_core::{
     math::{AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
         AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMagnitude, MovementMode,
-        MovementTimer, NativePlayerTail, PlayerState, ResourceNamespace, ValueBinding, ValueWidth,
-        ViewWeapon, WeaponReadiness, WeaponState,
+        MovementTimer, NativePlayerTail, PlayerState, PlayerValueBindings, Q3StatLayout,
+        ResourceNamespace, ValueBinding, ValueWidth, ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -251,6 +251,7 @@ pub struct PlayerProjection {
     flag_mask: u32,
     prediction_masks: [u32; 2],
     stats_only: bool,
+    layout_valid: bool,
     client_limit: u32,
     bindings: Box<[Field<ValueBinding>]>,
     write_bindings: Box<[Field<ValueBinding>]>,
@@ -260,7 +261,7 @@ impl PlayerProjection {
     /// Native pmove_state_t carries movement only; inventory and presentation
     /// remain in the module's player_state_t and are imported separately.
     pub fn load_movement(protocol: Protocol) -> Self {
-        let mut projection = Self::load_fields(protocol, &[], false);
+        let mut projection = Self::load_fields(protocol, &[], false, Q3StatLayout::BASE);
         projection.fields = projection
             .fields
             .iter()
@@ -272,32 +273,30 @@ impl PlayerProjection {
         projection
     }
     pub fn load(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
-        Self::load_fields(protocol, bindings, false)
+        Self::load_fields(protocol, bindings, false, Q3StatLayout::BASE)
     }
     /// Native array ordinals enter their explicitly reserved common bank rows.
     /// Shared hot fields remain authoritative when writing a snapshot.
     pub fn load_values(
         protocol: Protocol,
-        stats: &[ValueBinding],
-        persistent: &[ValueBinding],
-        items: Option<ValueBinding>,
+        values: PlayerValueBindings<'_>,
+        layout: Q3StatLayout,
     ) -> Self {
-        Self::load_value_fields(protocol, stats, persistent, items, false)
+        Self::load_value_fields(protocol, values, layout, false)
     }
     /// Native module stats enter their ordinal bank rows without importing
     /// movement/view columns, whose capability roles remain independent.
     pub fn load_stat_values(
         protocol: Protocol,
-        stats: &[ValueBinding],
-        persistent: &[ValueBinding],
+        values: PlayerValueBindings<'_>,
+        layout: Q3StatLayout,
     ) -> Self {
-        Self::load_value_fields(protocol, stats, persistent, None, true)
+        Self::load_value_fields(protocol, values, layout, true)
     }
     /// Q3's public playerState_t has signed32 angle offsets and exact native
     /// movement modes. Its wire adapter retains its own narrower conversions.
-    pub fn load_native_q3(stats: &[ValueBinding], persistent: &[ValueBinding]) -> Self {
-        let mut projection =
-            Self::load_value_fields(Protocol::Quake3_68, stats, persistent, None, false);
+    pub fn load_native_q3(values: PlayerValueBindings<'_>, layout: Q3StatLayout) -> Self {
+        let mut projection = Self::load_value_fields(Protocol::Quake3_68, values, layout, false);
         for field in &mut projection.fields {
             if matches!(field.source, DeltaAngle(_)) {
                 field.convert = IntegerAngle;
@@ -308,29 +307,38 @@ impl PlayerProjection {
     }
     fn load_value_fields(
         protocol: Protocol,
-        stats: &[ValueBinding],
-        persistent: &[ValueBinding],
-        items: Option<ValueBinding>,
+        values: PlayerValueBindings<'_>,
+        layout: Q3StatLayout,
         stats_only: bool,
     ) -> Self {
         let (_, spans) = states::player_value_layout(protocol);
-        let bindings: Vec<_> = stats
-            .iter()
-            .copied()
+        let bindings: Vec<_> = values
+            .arrays
+            .into_iter()
             .enumerate()
-            .filter_map(|(index, binding)| {
-                states::player_stat_word(protocol, index).map(|word| (word, binding))
+            .flat_map(|(array, bindings)| {
+                bindings
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter_map(move |(index, binding)| {
+                        let word = if array == 0 {
+                            states::player_stat_word(protocol, index)
+                        } else {
+                            spans[array].range().nth(index)
+                        }?;
+                        Some((word, binding))
+                    })
             })
-            .chain(spans[1].range().zip(persistent.iter().copied()))
             .chain(
-                items
+                values
+                    .items
                     .filter(|_| protocol == Protocol::NetQuake15)
                     .map(|binding| (8, binding)),
             )
             .collect();
-        let mut projection = Self::load_fields(protocol, &bindings, stats_only);
-        projection.dropped_bindings +=
-            stats.len() + persistent.len() + usize::from(items.is_some()) - bindings.len();
+        let mut projection = Self::load_fields(protocol, &bindings, stats_only, layout);
+        projection.dropped_bindings += values.iter().count() - bindings.len();
         for field in &mut projection.bindings {
             if protocol == Protocol::NetQuake15 {
                 field.convert = NQ
@@ -360,6 +368,7 @@ impl PlayerProjection {
         protocol: Protocol,
         bindings: &[(usize, ValueBinding)],
         stats_only: bool,
+        layout: Q3StatLayout,
     ) -> Self {
         use MovementMode as M;
         let (fields, words, modes, received_modes, flags) = match protocol {
@@ -413,6 +422,9 @@ impl PlayerProjection {
                 convert: Bits,
             })
             .collect();
+        let layout_valid = protocol != Protocol::Quake3_68
+            || layout.fits(states::player_value_layout(protocol).1[0].count as usize);
+        let stat_first = states::player_value_layout(protocol).1[0].first as usize;
         Self {
             protocol,
             fields: fields
@@ -420,6 +432,16 @@ impl PlayerProjection {
                 .copied()
                 .filter(|field| {
                     !stats_only || matches!(field.source, Health | Armor | Score | Frags)
+                })
+                .map(|mut field| {
+                    if protocol == Protocol::Quake3_68 && layout_valid {
+                        match field.source {
+                            Health => field.word = stat_first + usize::from(layout.health),
+                            Armor => field.word = stat_first + usize::from(layout.armor),
+                            _ => {}
+                        }
+                    }
+                    field
                 })
                 .collect(),
             words,
@@ -435,6 +457,7 @@ impl PlayerProjection {
                 _ => [0; 2],
             },
             stats_only,
+            layout_valid,
             client_limit: if protocol == Protocol::Quake2Repro1038 {
                 256
             } else {
@@ -546,6 +569,9 @@ impl PlayerProjection {
         out: &mut [u32],
         mut resolve_model: impl FnMut(ModelRef) -> Option<u32>,
     ) -> bool {
+        if !self.layout_valid {
+            return false;
+        }
         let Some(out) = out.get_mut(..self.words) else {
             return false;
         };
@@ -644,6 +670,9 @@ impl PlayerProjection {
         stats_only: bool,
     ) -> bool {
         let stats_only = stats_only || self.stats_only;
+        if !self.layout_valid {
+            return false;
+        }
         let Some(words) = words.get(..self.words) else {
             return false;
         };

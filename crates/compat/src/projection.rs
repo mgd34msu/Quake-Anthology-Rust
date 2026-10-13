@@ -5,7 +5,10 @@ use crate::{
     players::PlayerValues,
     services::{CallContext, CallError, EngineServices},
 };
-use qa_core::primitives::{EntityId, ModuleId, NativeEntity, ValueBinding};
+use qa_core::{
+    primitives::{EntityId, ModuleId, NativeEntity, PlayerValueBindings, Q3StatLayout},
+    sys_events::EventTime,
+};
 use qa_world::entities::EntityTable;
 
 pub(crate) struct Projection {
@@ -13,10 +16,10 @@ pub(crate) struct Projection {
     values: PlayerValues,
 }
 impl Projection {
-    pub fn load_q3() -> Self {
+    pub fn load_q3(layout: Q3StatLayout) -> Self {
         Self {
             entities: EntityProjection::load_q3(),
-            values: PlayerValues::load_q3(),
+            values: PlayerValues::load_q3(layout),
         }
     }
     pub fn load_q2(
@@ -30,10 +33,13 @@ impl Projection {
     }
     pub fn bind_values(
         &mut self,
-        stats: &[ValueBinding],
-        persistent: &[ValueBinding],
+        values: PlayerValueBindings<'_>,
+        registry: &qa_gameplay::registry::Registry,
     ) -> Result<(), CallError> {
-        self.values.bind(stats, persistent)
+        self.values.bind(values, registry)
+    }
+    pub fn stat_layout(&self) -> Q3StatLayout {
+        self.values.stat_layout()
     }
     pub fn seed(&mut self, table: &EntityTable, module: ModuleId) -> Result<(), CallError> {
         self.entities.seed(table, module)
@@ -58,6 +64,7 @@ impl Projection {
         services: &mut EngineServices<'_>,
         context: CallContext,
         pmove: Option<&mut crate::pmove::Pmove>,
+        time: EventTime,
     ) -> Result<(), CallError> {
         if self.entities.ready() {
             let table = self.entities.project(services, memory, context)?;
@@ -69,6 +76,7 @@ impl Projection {
                 services.registry,
                 services.server,
                 pmove,
+                time,
             )?;
         }
         Ok(())

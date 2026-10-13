@@ -1,24 +1,27 @@
 //! Native ordinal/width bindings over the common bank, resolved at load.
 use qa_core::primitives::{
-    NATIVE_VALUE_LAYOUT, NameId, RuleSetId, ValueBank, ValueBinding, ValueId, ValueReset,
-    ValueWidth,
+    NATIVE_VALUE_LAYOUT, NameId, PlayerValueBindings, RuleSetId, ValueBank, ValueBinding, ValueId,
+    ValueReset, ValueWidth,
 };
 pub struct NativeValues {
     /// These are immutable numeric bindings, not additional value storage.
     pub stats: Box<[ValueBinding]>,
     pub persistent: Box<[ValueBinding]>,
+    pub ammo: Box<[ValueBinding]>,
+    pub powerups: Box<[ValueBinding]>,
     /// NQ clientdata owns its mask independently of STAT_ITEMS.
     pub items: Option<ValueBinding>,
 }
 impl NativeValues {
+    pub fn bindings(&self) -> PlayerValueBindings<'_> {
+        PlayerValueBindings {
+            arrays: [&self.stats, &self.persistent, &self.ammo, &self.powerups],
+            items: self.items,
+        }
+    }
     /// A module life transition clears only its explicitly bound fields.
     pub fn reset_life(&self, bank: &mut ValueBank) {
-        for binding in self
-            .stats
-            .iter()
-            .chain(&self.persistent)
-            .chain(self.items.iter())
-        {
+        for binding in self.bindings().iter() {
             binding.reset_life(bank);
         }
     }
@@ -26,25 +29,32 @@ impl NativeValues {
     /// Source/protocol/presentation choices never change the bank's identity.
     pub fn load(rules: RuleSetId, first: ValueId) -> Option<Self> {
         let layout = NATIVE_VALUE_LAYOUT[rules as usize];
-        let arrays = layout.stats.checked_add(layout.persistent)?;
-        first
-            .0
-            .checked_add(arrays)?
-            .checked_add(u32::from(layout.items))?;
-        let fields = |offset: u32, count: u32, reset| {
-            (0..count)
+        first.0.checked_add(layout.values())?;
+        let counts = layout.arrays();
+        let mut offset = first.0;
+        let [stats, persistent, ammo, powerups] = std::array::from_fn(|array| {
+            let reset = if array == 1 {
+                ValueReset::Session
+            } else {
+                ValueReset::Life
+            };
+            let fields = (0..counts[array])
                 .map(|ordinal| ValueBinding {
-                    id: ValueId(first.0 + offset + ordinal),
+                    id: ValueId(offset + ordinal),
                     width: layout.width,
                     reset,
                 })
-                .collect::<Box<[_]>>()
-        };
+                .collect::<Box<[_]>>();
+            offset += counts[array];
+            fields
+        });
         Some(Self {
-            stats: fields(0, layout.stats, ValueReset::Life),
-            persistent: fields(layout.stats, layout.persistent, ValueReset::Session),
+            stats,
+            persistent,
+            ammo,
+            powerups,
             items: layout.items.then_some(ValueBinding {
-                id: ValueId(first.0 + arrays),
+                id: ValueId(offset),
                 width: ValueWidth::Signed32,
                 reset: ValueReset::Life,
             }),
@@ -64,18 +74,15 @@ pub struct ValueLayout {
 }
 impl ValueLayout {
     pub fn load(extensions: &[ExtensionValue]) -> Option<Self> {
-        let native_count: u32 = NATIVE_VALUE_LAYOUT
+        let native_count = NATIVE_VALUE_LAYOUT
             .iter()
-            .map(|layout| layout.stats + layout.persistent + u32::from(layout.items))
-            .sum();
+            .try_fold(0u32, |count, layout| count.checked_add(layout.values()))?;
         let capacity = native_count.checked_add(u32::try_from(extensions.len()).ok()?)?;
-        let mut first = 0;
+        let mut first = 0u32;
         let mut native = Vec::with_capacity(RuleSetId::ALL.len());
         for rules in RuleSetId::ALL {
             let values = NativeValues::load(rules, ValueId(first))?;
-            first += (values.stats.len()
-                + values.persistent.len()
-                + usize::from(values.items.is_some())) as u32;
+            first = first.checked_add(NATIVE_VALUE_LAYOUT[rules as usize].values())?;
             native.push(values);
         }
         Some(Self {

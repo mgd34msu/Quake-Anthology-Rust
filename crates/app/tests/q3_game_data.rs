@@ -12,7 +12,9 @@ use qa_compat::{
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
-    primitives::{CollisionOwner, EntityId, ModuleId, NativeEntity, RuleSetId, ThinkTime, Vec3},
+    primitives::{
+        CollisionOwner, EntityId, ModuleId, NativeEntity, Q3StatLayout, RuleSetId, ThinkTime, Vec3,
+    },
     sys_events::EventTime,
 };
 use qa_world::{
@@ -64,9 +66,9 @@ impl Fixture {
         storage.bind_client_capacity(ModuleId(1), clients).unwrap();
         let mut vm =
             service_program::program(&[(qa_formats::program::qvm::Opcode::Ignore, 0)], &[]);
-        vm.configure_q3_game();
+        vm.configure_q3_game(Q3StatLayout::BASE);
         let values = runtime.catalog.hud.values.native(RuleSetId::Quake3);
-        vm.bind_player_values(&values.stats, &values.persistent)
+        vm.bind_player_values(values.bindings(), &runtime.catalog.registry)
             .unwrap();
         Self {
             runtime,
@@ -101,7 +103,9 @@ impl Fixture {
         let mut services =
             self.runtime
                 .engine_services(&mut self.console, &mut self.storage, &mut scratch);
-        self.vm.publish_entities(&mut services, context()).unwrap();
+        self.vm
+            .publish_entities(&mut services, context(), EventTime(0))
+            .unwrap();
     }
     fn export(&mut self, context: CallContext) -> Result<i32, Trap> {
         let mut scratch = self.runtime.geometry.scratch();
@@ -702,15 +706,14 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
 }
 
 #[test]
-fn registered_player_binding_requires_both_native_array_sizes() {
+fn registered_player_binding_requires_all_four_native_array_sizes() {
     let mut f = Fixture::new();
     let values = f.runtime.catalog.hud.values.native(RuleSetId::Quake3);
-    for (stats, persistent) in [
-        (&values.stats[..15], &values.persistent[..]),
-        (&values.stats[..], &values.persistent[..15]),
-    ] {
+    for index in 0..4 {
+        let mut bindings = values.bindings();
+        bindings.arrays[index] = &bindings.arrays[index][..15];
         assert_eq!(
-            f.vm.bind_player_values(stats, persistent),
+            f.vm.bind_player_values(bindings, &f.runtime.catalog.registry),
             Err(qa_compat::services::CallError::Capacity)
         );
     }
@@ -1049,7 +1052,7 @@ fn export_without_imports_binds_the_projection_owner_before_execution() {
     use qa_formats::program::qvm::Opcode::*;
     let mut f = Fixture::new();
     f.vm = service_program::program(&[(Enter, 16), (Const, 83), (Leave, 16)], &[]);
-    f.vm.configure_q3_game();
+    f.vm.configure_q3_game(Q3StatLayout::BASE);
     assert_eq!(f.export(context()), Ok(83));
     assert_eq!(f.vm.hooks.instructions, 3);
     let mut foreign = context();

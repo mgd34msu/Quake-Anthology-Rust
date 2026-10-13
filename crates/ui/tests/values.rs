@@ -8,7 +8,7 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
     let names = NameTable::load(Registry::names_needed()).unwrap();
     let registry = Registry::load(&names).unwrap();
     let bindings = HudBindings::load(&registry, &[]).unwrap();
-    assert_eq!(bindings.values.capacity(), 193);
+    assert_eq!(bindings.values.capacity(), 225);
     let mut player =
         PlayerState::with_capacity(registry.items.len() + 1, 16, bindings.values.capacity());
     let mut state = bindings.state(16, NameId(1));
@@ -26,7 +26,15 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
         let table = bindings.values.native(rules);
         assert_eq!(table.stats.len(), slots);
         assert_eq!(table.persistent.len(), persistent);
-        for field in table.stats.iter().chain(&table.persistent) {
+        assert_eq!(
+            table.ammo.len(),
+            if rules == RuleSetId::Quake3 { 16 } else { 0 }
+        );
+        assert_eq!(
+            table.powerups.len(),
+            if rules == RuleSetId::Quake3 { 16 } else { 0 }
+        );
+        for field in table.bindings().iter() {
             for value in [i32::MIN, -32768, -1, 0, 1234, 32767, i32::MAX] {
                 assert!(field.import(&mut player.values, value as u32));
                 bindings.project_stats(&player, &mut state);
@@ -65,8 +73,8 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
     player.reset();
     state.reset(&mut texts);
     assert!(texts.get(text).is_none());
-    assert_eq!(player.values.capacity(), 193);
-    assert_eq!(state.values.capacity(), 193);
+    assert_eq!(player.values.capacity(), 225);
+    assert_eq!(state.values.capacity(), 225);
     assert_eq!(held.export(&player.values), Some(0));
 }
 
@@ -126,4 +134,105 @@ fn netquake_clientdata_mask_has_its_own_life_binding_without_moving_native_ordin
     assert_eq!(nq.stats[15].export(&bank), Some(0));
     assert_eq!(qw.stats[15].export(&bank), Some(2 | 256));
     assert_eq!(q3.persistent[15].export(&bank), Some(0x8123_4567));
+}
+
+#[test]
+fn q3_arrays_share_one_checked_native_range_and_reset_only_life_fields() {
+    let first = ValueId(7);
+    let values = NativeValues::load(RuleSetId::Quake3, first).unwrap();
+    let bindings = values.bindings();
+    assert_eq!(bindings.arrays.map(<[ValueBinding]>::len), [16; 4]);
+    assert!(bindings.items.is_none());
+    let mut bank = ValueBank::load(80);
+    for (array, fields) in bindings.arrays.into_iter().enumerate() {
+        for (ordinal, field) in fields.iter().enumerate() {
+            assert_eq!(field.id, ValueId(first.0 + (array * 16 + ordinal) as u32));
+            assert_eq!(field.width, ValueWidth::Signed32);
+            assert_eq!(
+                field.reset,
+                if array == 1 {
+                    ValueReset::Session
+                } else {
+                    ValueReset::Life
+                }
+            );
+            let bits = [0x8000_0000, 0x7fff_ffff, 0xffff_ffff, 0x8123_4567][ordinal % 4];
+            assert!(field.import(&mut bank, bits));
+            assert_eq!(field.export(&bank), Some(bits));
+            assert_eq!(bank.get(field.id).unwrap().as_integer(), bits as i32);
+        }
+    }
+    values.reset_life(&mut bank);
+    for (array, fields) in bindings.arrays.into_iter().enumerate() {
+        for (ordinal, field) in fields.iter().enumerate() {
+            let bits = [0x8000_0000, 0x7fff_ffff, 0xffff_ffff, 0x8123_4567][ordinal % 4];
+            assert_eq!(field.export(&bank), Some(if array == 1 { bits } else { 0 }));
+        }
+    }
+}
+
+#[test]
+fn native_counts_place_extensions_after_all_arrays_without_changing_legacy_ordinals() {
+    let extensions = [
+        ExtensionValue {
+            name: NameId(30),
+            width: ValueWidth::Signed32,
+            reset: ValueReset::Life,
+        },
+        ExtensionValue {
+            name: NameId(31),
+            width: ValueWidth::Float32,
+            reset: ValueReset::Session,
+        },
+    ];
+    let layout = ValueLayout::load(&extensions).unwrap();
+    assert_eq!(layout.capacity(), 227);
+    let q3 = layout.native(RuleSetId::Quake3);
+    assert_eq!(q3.stats[0].id, ValueId(161));
+    assert_eq!(q3.persistent[0].id, ValueId(177));
+    assert_eq!(q3.ammo[0].id, ValueId(193));
+    assert_eq!(q3.powerups[15].id, ValueId(224));
+    assert_eq!(layout.extensions[0].1.id, ValueId(225));
+    assert_eq!(layout.extensions[1].1.id, ValueId(226));
+    assert_eq!(
+        layout.native(RuleSetId::Quake).items.unwrap().id,
+        ValueId(32)
+    );
+    assert_eq!(
+        layout.native(RuleSetId::QuakeWorld).stats[0].id,
+        ValueId(33)
+    );
+    assert_eq!(layout.native(RuleSetId::Quake2).stats[0].id, ValueId(65));
+    assert_eq!(
+        layout.native(RuleSetId::Quake2Rerelease).stats[0].id,
+        ValueId(97)
+    );
+    let mut bank = ValueBank::load(layout.capacity());
+    for field in q3
+        .bindings()
+        .iter()
+        .chain(layout.extensions.iter().map(|(_, field)| *field))
+    {
+        assert!(field.import(&mut bank, 0x8123_4567));
+    }
+    layout.reset_life(&mut bank);
+    assert_eq!(q3.ammo[15].export(&bank), Some(0));
+    assert_eq!(q3.powerups[15].export(&bank), Some(0));
+    assert_eq!(q3.persistent[15].export(&bank), Some(0x8123_4567));
+    assert_eq!(layout.extensions[0].1.export(&bank), Some(0));
+    assert_eq!(layout.extensions[1].1.export(&bank), Some(0x8123_4567));
+}
+
+#[test]
+fn native_offset_checks_cover_the_last_new_array_and_nq_items() {
+    let q3 = NativeValues::load(RuleSetId::Quake3, ValueId(u32::MAX - 64)).unwrap();
+    assert_eq!(q3.powerups[15].id, ValueId(u32::MAX - 1));
+    assert!(NativeValues::load(RuleSetId::Quake3, ValueId(u32::MAX - 63)).is_none());
+    let nq = NativeValues::load(RuleSetId::Quake, ValueId(u32::MAX - 33)).unwrap();
+    assert_eq!(nq.items.unwrap().id, ValueId(u32::MAX - 1));
+    assert!(NativeValues::load(RuleSetId::Quake, ValueId(u32::MAX - 32)).is_none());
+    let q2 = NativeValues::load(RuleSetId::Quake2, ValueId(u32::MAX - 32)).unwrap();
+    assert_eq!(q2.stats[31].id, ValueId(u32::MAX - 1));
+    assert!(q2.ammo.is_empty());
+    assert!(q2.powerups.is_empty());
 }

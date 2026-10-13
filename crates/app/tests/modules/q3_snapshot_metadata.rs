@@ -17,9 +17,26 @@ const RESIDUAL: u32 = 512 | 1024;
 const HOT: u32 = 1 | 2 | 32 | 64 | 256;
 
 fn program(gravity: i32, speed: i32, followed_client: i32) -> qa_compat::qvm::Vm {
+    program_inventory(
+        gravity,
+        speed,
+        followed_client,
+        Q3StatLayout::BASE,
+        0,
+        [0; 16],
+    )
+}
+fn program_inventory(
+    gravity: i32,
+    speed: i32,
+    followed_client: i32,
+    layout: Q3StatLayout,
+    weapons: u32,
+    ammo: [i32; 16],
+) -> qa_compat::qvm::Vm {
     let mut code = vec![(Op::Enter, 64)];
     let mut branches = Vec::new();
-    for export in [0, 7, 9] {
+    for export in [0, 7, 9, 10] {
         code.extend([
             (Op::Local, 72),
             (Op::Load4, 0),
@@ -65,6 +82,16 @@ fn program(gravity: i32, speed: i32, followed_client: i32) -> qa_compat::qvm::Vm
         (Op::Load4, 0),
         (Op::Leave, 64),
     ]);
+    code[branches[3]].1 = code.len() as i32;
+    code.extend([
+        (Op::Local, 76),
+        (Op::Load4, 0),
+        (Op::Local, 80),
+        (Op::Load4, 0),
+        (Op::Store4, 0),
+        (Op::Const, 0),
+        (Op::Leave, 64),
+    ]);
     let mut data = vec![0; PLAYERS as usize + PLAYER_STRIDE as usize * 2];
     for index in 0..2 {
         let at = ENTITIES as usize + index * ENTITY_STRIDE as usize;
@@ -86,12 +113,26 @@ fn program(gravity: i32, speed: i32, followed_client: i32) -> qa_compat::qvm::Vm
         let at = PLAYERS as usize + offset;
         data[at..at + 4].copy_from_slice(&word.to_le_bytes());
     }
+    for (offset, word) in [(184 + usize::from(layout.weapons) * 4, weapons)]
+        .into_iter()
+        .chain(
+            ammo.into_iter()
+                .enumerate()
+                .map(|(ordinal, word)| (376 + ordinal * 4, word as u32)),
+        )
+    {
+        let at = PLAYERS as usize + offset;
+        data[at..at + 4].copy_from_slice(&word.to_le_bytes());
+    }
     let mut vm = service_program::program(&code, &data);
-    vm.configure_q3_game();
+    vm.configure_q3_game(layout);
     vm
 }
 
 fn fixture(gravity: i32, speed: i32, followed_client: i32) -> (Box<FrameHost>, ClientId) {
+    fixture_program(program(gravity, speed, followed_client))
+}
+fn fixture_program(vm: qa_compat::qvm::Vm) -> (Box<FrameHost>, ClientId) {
     let mut runtime = Runtime::load(2, []).unwrap();
     assert_eq!(
         runtime.server.connect(Connection::Bot, ModuleId(2), None),
@@ -153,10 +194,10 @@ fn fixture(gravity: i32, speed: i32, followed_client: i32) -> (Box<FrameHost>, C
         rate: TickRate::fixed(50).unwrap(),
         anchor,
         program: Program::Qvm {
-            vm: Box::new(program(gravity, speed, followed_client)),
+            vm: Box::new(vm),
             imports: &Q3_SERVER,
         },
-        entries: (0..=9).collect(),
+        entries: (0..=10).collect(),
         frame: Export::clocked(CallbackId(8)),
         prepare: vec![],
         initialize: vec![Export::words(CallbackId(0), &[])],
@@ -190,6 +231,14 @@ fn transmit(
     client: ClientId,
     milliseconds: u64,
 ) -> [u32; states::PLAYER_WORDS] {
+    transmit_with(host, client, milliseconds, |_| {})
+}
+fn transmit_with(
+    host: &mut FrameHost,
+    client: ClientId,
+    milliseconds: u64,
+    after_send: impl FnOnce(&mut FrameHost),
+) -> [u32; states::PLAYER_WORDS] {
     let time = EventTime::from_milliseconds(milliseconds);
     assert!(host.runtime.send_snapshot(
         client,
@@ -198,6 +247,7 @@ fn transmit(
         &mut Source { time, polls: 0 },
         |_, _| None
     ));
+    after_send(host);
     // Ordinary loopback packets enter the system-event queue before CLIENT import.
     host.queue
         .push(SysEvent {
@@ -577,4 +627,150 @@ fn q3_accepted_follow_flag_keeps_received_pose_when_prediction_has_a_nonzero_com
         host.runtime.prediction[0].player.prediction,
         Default::default()
     );
+}
+
+fn write_inventory(host: &mut FrameHost, offset: i32, value: u32, queued_ms: u64) {
+    host.time = EventTime::from_milliseconds(queued_ms);
+    host.call_module_export(
+        MODULE,
+        Export::words(
+            CallbackId(10),
+            &[(PLAYERS + offset) as u64, u64::from(value)],
+        ),
+        // Provider clock deliberately differs from the queued acquisition time.
+        ThinkTime::Milliseconds(5000),
+    )
+    .unwrap();
+}
+
+#[test]
+fn q3_native_inventory_reaches_queued_client_and_hud_with_explicit_base_or_ta_layout() {
+    for layout in [Q3StatLayout::BASE, Q3StatLayout::TEAM_ARENA] {
+        let mut ammo = [0; 16];
+        ammo[2] = 0x0100_0001;
+        ammo[3] = 37;
+        ammo[5] = -1;
+        ammo[14] = -0x0100_1235;
+        let mask = (1 << 2) | (1 << 3) | (1 << 5) | (1 << 14);
+        let (mut host, client) =
+            fixture_program(program_inventory(800, 320, 0, layout, mask, ammo));
+        let registry = &host.runtime.catalog.registry;
+        let rocket_weapon = registry.native_weapon(RuleSetId::Quake3, 5).unwrap();
+        let rocket = registry.weapon(rocket_weapon).unwrap();
+        let rocket_item = rocket.item;
+        let rocket_ammo = rocket.ammo.unwrap();
+        let machinegun = registry.native_weapon(RuleSetId::Quake3, 2).unwrap();
+        let bullets = registry.weapon(machinegun).unwrap().ammo.unwrap();
+        let raw_ammo = host
+            .runtime
+            .catalog
+            .hud
+            .values
+            .native(RuleSetId::Quake3)
+            .ammo[2];
+        let reserved_ammo = host
+            .runtime
+            .catalog
+            .hud
+            .values
+            .native(RuleSetId::Quake3)
+            .ammo[14];
+        let powerup = host
+            .runtime
+            .catalog
+            .hud
+            .values
+            .native(RuleSetId::Quake3)
+            .powerups[3];
+        assert_eq!(
+            host.runtime.server.clients[1].player.inventory.item_counts[bullets.0 as usize],
+            0x0100_0001
+        );
+        assert_eq!(
+            host.runtime.server.clients[1]
+                .player
+                .values
+                .get(raw_ammo.id)
+                .unwrap()
+                .0,
+            0x0100_0001
+        );
+        // Acquire after removal: the queued clock, never module level.time, owns
+        // the common inventory timestamp.
+        write_inventory(
+            &mut host,
+            184 + i32::from(layout.weapons) * 4,
+            mask & !(1 << 5),
+            80,
+        );
+        write_inventory(&mut host, 184 + i32::from(layout.weapons) * 4, mask, 137);
+        write_inventory(&mut host, 144, 5, 137);
+        write_inventory(&mut host, 184 + i32::from(layout.armor) * 4, 63, 137);
+        write_inventory(&mut host, 312 + 3 * 4, 0x8123_4567, 137);
+        assert_eq!(
+            host.runtime.server.clients[1]
+                .player
+                .inventory
+                .item_acquired_at[rocket_item.0 as usize],
+            0.137
+        );
+        assert_eq!(
+            host.runtime.server.clients[1].player.inventory.weapon,
+            rocket_weapon
+        );
+        assert_eq!(host.runtime.server.clients[1].player.armor, 63);
+        let words = transmit_with(&mut host, client, 300, |host| {
+            let server = &mut host.runtime.server.clients[1].player;
+            server.inventory.item_counts[rocket_ammo.0 as usize] = 999;
+            assert!(raw_ammo.import(&mut server.values, 999));
+        });
+        assert_eq!(words[80 + 2], 1);
+        assert_eq!(words[80 + 5], (-1i32) as u32);
+        assert_eq!(words[80 + 14], (ammo[14] as i16 as i32) as u32);
+        assert_eq!(words[96 + 3], 0x8123_4567);
+        assert_eq!(words[48 + usize::from(layout.weapons)], mask);
+        assert_eq!(words[48 + usize::from(layout.armor)], 63);
+        let player = &host.runtime.prediction[0].player;
+        assert_eq!(player.inventory.weapon, rocket_weapon);
+        assert_eq!(player.inventory.item_counts[rocket_ammo.0 as usize], -1);
+        assert_eq!(player.inventory.item_counts[bullets.0 as usize], 1);
+        assert_eq!(player.inventory.item_counts[rocket_item.0 as usize], 1);
+        assert_eq!(
+            player.inventory.item_acquired_at[rocket_item.0 as usize],
+            0.3
+        );
+        assert_eq!(player.armor, 63);
+        assert_eq!(
+            player.values.get(reserved_ammo.id).unwrap().0,
+            (ammo[14] as i16 as i32) as u32
+        );
+        assert_eq!(player.values.get(powerup.id).unwrap().0, 0x8123_4567);
+        assert!(
+            player
+                .inventory
+                .powerup_until
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+        assert_eq!(
+            (player.movement_rules, player.trace_rules),
+            (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+        );
+        // The normal CLIENT frame publishes HUD deltas and the existing output
+        // dispatcher applies them; no direct HUD inventory copy.
+        host.local_clients[0] = Some(client);
+        let mut source = Source {
+            time: EventTime::from_milliseconds(300),
+            polls: 0,
+        };
+        let result = host.frame(&mut source, true);
+        assert_eq!(result.drains, 2);
+        assert!(result.output.hud > 0);
+        let hud = &host.runtime.server.clients[1].hud;
+        assert_eq!(hud.inventory.weapon, rocket_weapon);
+        assert_eq!(hud.ammo, -1);
+        assert!(hud.owned_weapons.contains(rocket_weapon.0 as usize));
+        assert!(hud.owned_items.contains(rocket_item.0 as usize));
+        assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
+    }
 }
