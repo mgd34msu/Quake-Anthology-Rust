@@ -1,5 +1,7 @@
 #[path = "support/service_program.rs"]
 mod service_program;
+#[path = "support/sound_registration.rs"]
+mod sound_registration;
 
 use qa_app::{
     Runtime,
@@ -21,6 +23,35 @@ use std::{num::NonZeroU32, sync::Arc, time::Duration};
 const MODULE: ModuleId = ModuleId(1);
 const ENTITIES: i32 = 4096;
 const PLAYERS: i32 = 16384;
+
+static NEXT_MEDIA: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+struct MediaFiles(std::path::PathBuf);
+impl MediaFiles {
+    fn new(missing: &[&str]) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "qa-rust-player-event-media-{}-{}",
+            std::process::id(),
+            NEXT_MEDIA.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let wav = sound_registration::wav();
+        for path in ["sound/feedback/hit.wav", "sound/one.wav", "sound/two.wav"]
+            .into_iter()
+            .chain(qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS)
+            .filter(|path| !missing.contains(path))
+        {
+            let path = root.join(path);
+            qa_platform::files::create_dir_all(path.parent().unwrap()).unwrap();
+            qa_platform::files::write(path, &wav).unwrap();
+        }
+        Self(root)
+    }
+}
+impl Drop for MediaFiles {
+    fn drop(&mut self) {
+        let _ = qa_platform::files::remove_dir_all(&self.0);
+    }
+}
 
 struct Source {
     mixer: Mixer,
@@ -303,6 +334,28 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>) {
         observations: vec![],
         time: EventTime::from_milliseconds(100),
     };
+    listen(&mut source, client);
+    write(&mut host, 100, &[]);
+    host.frame(&mut source, true);
+    assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
+    acknowledge_configs(&mut host, client, &mut source);
+    let resources = &mut host.runtime.client_resources[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .state;
+    assert_eq!(resources.sound(1), bank.find("sound/one.wav"));
+    assert_eq!(resources.sound(2), bank.find("sound/two.wav"));
+    resources.set_sound_policy(qa_gameplay::rules::sound_policy(RuleSetId::Quake));
+    write(&mut host, 101, &[(108, 0), (128, 0)]);
+    transmit(&mut host, client, &mut source, 101);
+    due(&mut host, client, 101);
+    host.publish_client_feedback();
+    dispatch(&mut host, &mut source);
+    source.observations.clear();
+    (host, client, source, bank)
+}
+
+fn listen(source: &mut Source, client: ClientId) {
     source.mixer.listen(
         &[
             Some(Listener {
@@ -321,42 +374,47 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>) {
         ],
         1.0,
     );
-    write(&mut host, 100, &[]);
-    host.frame(&mut source, true);
-    assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
+}
+
+fn fixed_fixture(
+    owned: bool,
+    missing: &[&str],
+) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>, MediaFiles) {
+    let (mut host, client, mut source, _) = fixture_owned(owned);
+    let files = MediaFiles::new(missing);
+    host.runtime.vfs.mount_directory(&files.0, 0).unwrap();
+    // Exercise the actual cold registration call site before Bank freezes.
+    host.runtime.sound_bank = None;
+    qa_app::audio::begin_registration(&mut host, &[], RuleSetId::Quake3).unwrap();
+    qa_app::audio::load_registered_sounds(&mut host, &[], RuleSetId::Quake3).unwrap();
+    let counts = {
+        let loader = host.runtime.sound_loader.as_ref().unwrap();
+        (loader.reads, loader.decodes)
+    };
+    qa_app::audio::load_registered_sounds(&mut host, &[], RuleSetId::Quake3).unwrap();
+    let loader = host.runtime.sound_loader.as_ref().unwrap();
+    assert_eq!((loader.reads, loader.decodes), counts);
+    let bank = qa_app::audio::finish_registration(&mut host).unwrap();
+    source.mixer = Mixer::load(Arc::clone(&bank), 16, SeatId::COUNT);
+    listen(&mut source, client);
+    acknowledge_configs(&mut host, client, &mut source);
+    source.observations.clear();
+    (host, client, source, bank, files)
+}
+
+fn acknowledge_configs(host: &mut FrameHost, client: ClientId, source: &mut Source) {
+    let milliseconds = host.time.milliseconds();
     for _ in 0..8 {
-        dispatch(&mut host, &mut source);
-        drain(&mut host, 100);
+        dispatch(host, source);
+        drain(host, milliseconds);
         assert!(host.runtime.send_local_command(
             client,
             &UserCmd::default(),
-            EventTime::from_milliseconds(100),
+            EventTime::from_milliseconds(milliseconds),
         ));
-        drain(&mut host, 100);
-        if host.runtime.client_resources[client.0 as usize]
-            .as_ref()
-            .unwrap()
-            .state
-            .sound(2)
-            .is_some()
-        {
-            break;
-        }
+        drain(host, milliseconds);
     }
-    let resources = &mut host.runtime.client_resources[client.0 as usize]
-        .as_mut()
-        .unwrap()
-        .state;
-    assert_eq!(resources.sound(1), bank.find("sound/one.wav"));
-    assert_eq!(resources.sound(2), bank.find("sound/two.wav"));
-    resources.set_sound_policy(qa_gameplay::rules::sound_policy(RuleSetId::Quake));
-    write(&mut host, 101, &[(108, 0), (128, 0)]);
-    transmit(&mut host, client, &mut source, 101);
-    due(&mut host, client, 101);
-    host.publish_client_feedback();
-    dispatch(&mut host, &mut source);
-    source.observations.clear();
-    (host, client, source, bank)
+    dispatch(host, source);
 }
 
 fn dispatch(host: &mut FrameHost, source: &mut Source) -> qa_app::output::OutputCounts {
@@ -732,4 +790,219 @@ fn native_audio_ownership_suppresses_fallback_and_release_never_replays_suppress
     due(&mut host, client, 300);
     assert_eq!(consume(&mut host, &mut source), 1);
     assert_eq!(source.observations[0].7, Some(2));
+}
+
+#[test]
+fn fixed_native_media_cross_the_queued_channel_and_mixer_with_independent_sound_roles() {
+    // Literal CG_EntityEvent expectations, not the production media table.
+    let recipes = [
+        (10, "sound/player/land1.wav", 0),
+        (15, "sound/player/watr_in.wav", 0),
+        (16, "sound/player/watr_out.wav", 0),
+        (17, "sound/player/watr_un.wav", 0),
+        (22, "sound/weapons/change.wav", 0),
+        (24, "sound/items/use_nothing.wav", 5),
+        (26, "sound/items/use_medkit.wav", 5),
+        (30, "sound/items/use_nothing.wav", 5),
+        (31, "sound/items/use_nothing.wav", 5),
+        (32, "sound/items/use_nothing.wav", 5),
+        (33, "sound/items/use_nothing.wav", 5),
+        (34, "sound/items/use_nothing.wav", 5),
+        (35, "sound/items/use_nothing.wav", 5),
+        (36, "sound/items/use_nothing.wav", 5),
+        (37, "sound/items/use_nothing.wav", 5),
+        (38, "sound/items/use_nothing.wav", 5),
+        (40, "sound/items/respawn1.wav", 0),
+        (41, "sound/items/respawn1.wav", 0),
+        (42, "sound/world/telein.wav", 0),
+        (43, "sound/world/teleout.wav", 0),
+        (61, "sound/items/damage3.wav", 4),
+        (62, "sound/items/protect3.wav", 4),
+        (63, "sound/items/regen.wav", 4),
+    ];
+    for sound_role in [RuleSetId::Quake3, RuleSetId::Quake2] {
+        let (mut host, client, mut source, bank, _files) = fixed_fixture(false, &[]);
+        let spatial = qa_gameplay::rules::sound_policy(sound_role);
+        host.runtime.client_resources[client.0 as usize]
+            .as_mut()
+            .unwrap()
+            .state
+            .set_sound_policy(spatial);
+        for (index, (code, path, expected_channel)) in recipes.into_iter().enumerate() {
+            let milliseconds = 300 + index as u64 * 100;
+            // Fixed recipes ignore eventParm, even when it is not a sound ordinal.
+            write(
+                &mut host,
+                milliseconds as i64,
+                &[(128, code | 0x100), (132, 255)],
+            );
+            transmit_native(
+                &mut host,
+                client,
+                &mut source,
+                milliseconds,
+                milliseconds - 50,
+            );
+            assert_eq!(consume(&mut host, &mut source), 0);
+            due(&mut host, client, milliseconds);
+            assert_eq!(consume(&mut host, &mut source), 1);
+            let event = source.observations.last().unwrap();
+            assert_eq!(event.0, bank.find(path).unwrap());
+            assert_eq!((event.1, event.2), (expected_channel, SoundBus::Spatial));
+            assert_eq!(event.3, spatial);
+            assert_eq!(
+                event.4,
+                qa_gameplay::rules::native_sound_playback(RuleSetId::Quake3),
+            );
+            assert_eq!(
+                event.7,
+                Some(bank.registered_handle(path.as_bytes()).unwrap() as u32),
+            );
+            assert_eq!(
+                event.6,
+                Some(SoundEmitter::Native {
+                    namespace: ResourceNamespace::Client(client),
+                    slot: 0,
+                }),
+            );
+            let mut pcm = [0; 16];
+            assert!(source.mixer.paint(&mut pcm));
+            assert!(pcm.iter().any(|&sample| sample != 0));
+            assert_eq!(consume(&mut host, &mut source), 0);
+        }
+        assert_eq!(
+            host.runtime.prediction[0].player.movement_rules,
+            RuleSetId::QuakeWorld,
+        );
+        assert_eq!(
+            host.runtime.prediction[0].player.trace_rules,
+            RuleSetId::Quake2,
+        );
+        assert_eq!(
+            host.runtime.snapshots[client.0 as usize]
+                .as_ref()
+                .unwrap()
+                .player_event_drops(),
+            0,
+        );
+    }
+}
+
+#[test]
+fn fixed_media_retry_keeps_external_then_predictable_order_without_repeating() {
+    let (mut host, client, mut source, bank, _files) = fixed_fixture(false, &[]);
+    write(
+        &mut host,
+        300,
+        &[
+            (108, 2),
+            (112, 15),
+            (116, 61),
+            (128, 10 | 0x100),
+            (132, 255),
+        ],
+    );
+    transmit(&mut host, client, &mut source, 300);
+    due(&mut host, client, 300);
+    let capacity = host.runtime.server.events.capacity();
+    for _ in 0..capacity {
+        host.runtime
+            .server
+            .events
+            .push_to(
+                qa_core::events::OutputTarget::Presentation,
+                FrameEvent::Effect(EffectEvent::default()),
+            )
+            .unwrap();
+    }
+    host.publish_client_feedback();
+    assert_eq!(dispatch(&mut host, &mut source).sounds, 0);
+    assert_eq!(consume(&mut host, &mut source), 3);
+    assert_eq!(
+        source
+            .observations
+            .iter()
+            .map(|event| (event.0, event.1))
+            .collect::<Vec<_>>(),
+        vec![
+            (bank.find("sound/player/land1.wav").unwrap(), 0),
+            (bank.find("sound/player/watr_in.wav").unwrap(), 0),
+            (bank.find("sound/items/damage3.wav").unwrap(), 4),
+        ],
+    );
+    assert_eq!(consume(&mut host, &mut source), 0);
+    let mut pcm = [0; 16];
+    assert!(source.mixer.paint(&mut pcm));
+    assert!(pcm.iter().any(|&sample| sample != 0));
+}
+
+#[test]
+fn missing_fixed_registration_uses_native_zero_without_reinterpreting_config_zero() {
+    let (mut host, client, mut source, bank, _files) =
+        fixed_fixture(false, &["sound/player/land1.wav"]);
+    assert_eq!(bank.find("sound/player/land1.wav"), None);
+    assert_eq!(bank.registered_handle(b"sound/player/land1.wav"), Some(0));
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .sound(0),
+        None,
+    );
+    write(&mut host, 300, &[(128, 10), (132, 0)]);
+    transmit(&mut host, client, &mut source, 300);
+    due(&mut host, client, 300);
+    assert_eq!(consume(&mut host, &mut source), 1);
+    assert_eq!(source.observations[0].0, bank.registered_sound(0).unwrap());
+    assert_eq!(source.observations[0].7, Some(0));
+    let mut pcm = [0; 16];
+    assert!(source.mixer.paint(&mut pcm));
+    assert!(pcm.iter().any(|&sample| sample != 0));
+}
+
+#[test]
+fn missing_fixed_and_default_pcm_drops_once_while_later_fixed_media_continue() {
+    let (mut host, client, mut source, _, _files) =
+        fixed_fixture(false, &["sound/player/land1.wav", "sound/feedback/hit.wav"]);
+    write(&mut host, 300, &[(128, 10)]);
+    transmit(&mut host, client, &mut source, 300);
+    due(&mut host, client, 300);
+    assert_eq!(consume(&mut host, &mut source), 0);
+    assert_eq!(consume(&mut host, &mut source), 0);
+    assert_eq!(
+        host.runtime.snapshots[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .player_event_drops(),
+        1,
+    );
+    write(&mut host, 400, &[(128, 15)]);
+    transmit(&mut host, client, &mut source, 400);
+    due(&mut host, client, 400);
+    assert_eq!(consume(&mut host, &mut source), 1);
+}
+
+#[test]
+fn native_cgame_owns_fixed_media_and_release_establishes_a_new_event_baseline() {
+    let (mut host, client, mut source, bank, _files) = fixed_fixture(true, &[]);
+    write(&mut host, 300, &[(128, 10)]);
+    transmit(&mut host, client, &mut source, 300);
+    due(&mut host, client, 300);
+    assert_eq!(consume(&mut host, &mut source), 0);
+    assert!(host.shutdown_module(ModuleId(2)));
+    for _ in 0..3 {
+        host.publish_client_loops();
+        dispatch(&mut host, &mut source);
+    }
+    source.observations.clear();
+    assert_eq!(consume(&mut host, &mut source), 0);
+    write(&mut host, 400, &[(128, 15)]);
+    transmit(&mut host, client, &mut source, 400);
+    due(&mut host, client, 400);
+    assert_eq!(consume(&mut host, &mut source), 1);
+    assert_eq!(
+        source.observations[0].0,
+        bank.find("sound/player/watr_in.wav").unwrap(),
+    );
 }

@@ -209,6 +209,9 @@ fn e1m1_default_exact_admission_and_supplied_boxes_preserve_native_queries() {
             Vec3([-15.0, -13.0, -23.0]),
             Vec3([14.0, 16.0, 31.0]),
         ),
+        ("point", Vec3::default(), Vec3::default()),
+        ("line", Vec3([0.0, 0.0, -24.0]), Vec3([0.0, 0.0, 32.0])),
+        ("flat", Vec3([-15.0, -15.0, 0.0]), Vec3([15.0, 15.0, 0.0])),
     ] {
         let query = exact_query(start, start, mins, maxs);
         let stationary = run_exact(&store, geometry, name, query, limits);

@@ -366,6 +366,11 @@ pub fn begin_registration(
                 .iter()
                 .map(|path| path.as_bytes()),
         )
+        .chain(
+            qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS
+                .iter()
+                .map(|path| path.as_bytes()),
+        )
     {
         count = count.checked_add(1).ok_or("sound registration capacity")?;
         bytes = bytes.checked_add(path.len()).ok_or("sound path capacity")?;
@@ -389,42 +394,71 @@ pub fn load_registered_sounds(
         .take()
         .ok_or("sound registration not started")?;
     let mut warnings = Vec::new();
-    let result = (|| {
-        for path in paths {
-            loader.precache_path(&host.runtime.vfs, path.as_bytes(), rules, true)?;
-        }
-        host.for_each_native_sound(|sample, source| {
-            if let Some(warning) = loader.precache_native(&host.runtime.vfs, sample, source)? {
-                warnings.push(warning);
+    let result =
+        (|| {
+            for path in paths {
+                loader.precache_path(&host.runtime.vfs, path.as_bytes(), rules, true)?;
             }
-            Ok(())
-        })?;
-        // Native cue sources, not map or movement roles, select this cold
-        // recipe admission. A foreign client protocol can still receive cues.
-        let q2_cues = host.runtime.snapshots.iter().flatten().any(|client| {
-            matches!(
-                client.protocol,
-                qa_network::commands::packet::Protocol::Quake2_34
-                    | qa_network::commands::packet::Protocol::Quake2Repro1038
-            )
-        }) || host.modules.as_ref().is_some_and(|modules| {
-            modules.has_sound_source(RuleSetId::Quake2)
-                || modules.has_sound_source(RuleSetId::Quake2Rerelease)
-        });
-        if q2_cues {
-            for path in qa_gameplay::rules::q2::sounds::PATHS {
-                if let Some(warning) = loader.precache_path(
-                    &host.runtime.vfs,
-                    path.as_bytes(),
-                    RuleSetId::Quake2,
-                    false,
-                )? {
+            host.for_each_native_sound(|sample, source| {
+                if let Some(warning) = loader.precache_native(&host.runtime.vfs, sample, source)? {
                     warnings.push(warning);
                 }
+                Ok(())
+            })?;
+            // Native cue sources, not map or movement roles, select this cold
+            // recipe admission. A foreign client protocol can still receive cues.
+            let q2_cues = host.runtime.snapshots.iter().flatten().any(|client| {
+                matches!(
+                    client.protocol,
+                    qa_network::commands::packet::Protocol::Quake2_34
+                        | qa_network::commands::packet::Protocol::Quake2Repro1038
+                )
+            }) || host.modules.as_ref().is_some_and(|modules| {
+                modules.has_sound_source(RuleSetId::Quake2)
+                    || modules.has_sound_source(RuleSetId::Quake2Rerelease)
+            });
+            if q2_cues {
+                for path in qa_gameplay::rules::q2::sounds::PATHS {
+                    if let Some(warning) = loader.precache_path(
+                        &host.runtime.vfs,
+                        path.as_bytes(),
+                        RuleSetId::Quake2,
+                        false,
+                    )? {
+                        warnings.push(warning);
+                    }
+                }
             }
-        }
-        Ok(())
-    })();
+            let q3_cues =
+                host.runtime.snapshots.iter().flatten().any(|client| {
+                    client.protocol == qa_network::commands::packet::Protocol::Quake3_68
+                }) || host
+                    .modules
+                    .as_ref()
+                    .is_some_and(|modules| modules.has_sound_source(RuleSetId::Quake3));
+            if q3_cues {
+                for path in qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS {
+                    let attempted = loader.bank.registered_handle(path.as_bytes()).is_some();
+                    match qa_compat::services::SoundRegistrar::register(
+                        loader.as_mut(),
+                        &host.runtime.vfs,
+                        path.as_bytes(),
+                        RuleSetId::Quake3,
+                    ) {
+                        Ok(_) => {}
+                        Err(qa_compat::services::CallError::File) => {
+                            // Native registration failures retain handle zero. A
+                            // repeated cold call never reopens or repeats the warning.
+                            if !attempted {
+                                warnings.push(format!("sound {path}: native media unavailable"));
+                            }
+                        }
+                        Err(error) => return Err(format!("player sound registration: {error:?}")),
+                    }
+                }
+            }
+            Ok(())
+        })();
     host.runtime.sound_loader = Some(loader);
     for warning in warnings {
         host.runtime.print_event(

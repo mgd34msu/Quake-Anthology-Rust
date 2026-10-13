@@ -1,4 +1,4 @@
-//! Exact box occupancy and full-volume sweeps over admitted hull-zero cells.
+//! Exact box occupancy and certified exterior sweeps over hull-zero cells.
 //! Native compiled hull traversal does not use this predicate.
 mod integer;
 
@@ -373,6 +373,15 @@ struct BoxPath {
     bounds: [[Int; 3]; 2],
 }
 
+impl BoxPath {
+    fn full_volume(&self) -> bool {
+        self.bounds[0]
+            .iter()
+            .zip(&self.bounds[1])
+            .all(|(min, max)| min.compare(max) == Ordering::Less)
+    }
+}
+
 fn backoff(contact: Contact, epsilon: Option<usize>, work: &mut Work) -> Result<f32, Failure> {
     let normal_squared = dot(&contact.normal, &contact.normal)?;
     // At a binary32 parameter the cost has denominator S=2^149; center
@@ -424,6 +433,7 @@ struct Side {
 struct Cell {
     sides: IndexSpan,
     contents: Contents,
+    full_dim: bool,
 }
 
 pub(super) struct Data {
@@ -965,7 +975,22 @@ pub(super) fn prepare(
             |path, contents, work| {
                 let first = retained_sides.len();
                 let count = reduce_path(planes, path, &mut workspace, &mut retained_sides, work)?;
-                if feasible(&workspace[..count], 0, work)? {
+                // All source normals are nonzero. Strict satisfaction of every
+                // retained inequality is exactly a 3D-interior certificate,
+                // and also proves the original mixed-strict path nonempty.
+                for row in &mut workspace[..count] {
+                    row.strict = true;
+                }
+                let full_dim = feasible(&workspace[..count], 0, work)?;
+                let keep = if full_dim {
+                    true
+                } else {
+                    for (row, side) in workspace[..count].iter_mut().zip(&retained_sides[first..]) {
+                        row.strict = side.strict;
+                    }
+                    feasible(&workspace[..count], 0, work)?
+                };
+                if keep {
                     retained_greatest = retained_greatest.max(count);
                     retained_cells.push(Cell {
                         sides: IndexSpan {
@@ -973,6 +998,7 @@ pub(super) fn prepare(
                             count: count as u32,
                         },
                         contents,
+                        full_dim,
                     });
                 } else {
                     retained_sides.truncate(first);
@@ -1082,6 +1108,7 @@ impl Data {
         work: &mut Work,
         mut visit: impl FnMut(Interval, Contents) -> Result<(), Failure>,
     ) -> Result<(), Failure> {
+        let requires_interior = !path.full_volume();
         for &cell in &self.cells[cells.range()] {
             work.item()?;
             if !cell.contents.intersects(mask) {
@@ -1089,6 +1116,14 @@ impl Data {
             }
             let rows = self.fill_rows(planes, cell, path, pose, rows)?;
             if let Some(interval) = interval(rows, work)? {
+                // A full-volume box makes every expanded cell full-dimensional.
+                // Degenerate boxes need that guarantee from the source cell:
+                // the exterior facet/tangent proof cannot use opposing affine
+                // equality normals as an open 3D boundary. Reject only a cell
+                // that actually intersects this bounded sweep.
+                if requires_interior && !cell.full_dim {
+                    return Err(Failure::Input);
+                }
                 visit(interval, cell.contents)?;
             }
         }
@@ -1363,15 +1398,9 @@ impl Data {
         }
         let moving = query.start != query.end;
         if moving
-            && (query
-                .mins
-                .0
+            && axes
                 .iter()
-                .zip(query.maxs.0)
-                .any(|(min, max)| *min >= max)
-                || axes
-                    .iter()
-                    .any(|axis| axis.0.iter().any(|value| value.abs() > 2.0)))
+                .any(|axis| axis.0.iter().any(|value| value.abs() > 2.0))
         {
             return Err(Failure::Input);
         }

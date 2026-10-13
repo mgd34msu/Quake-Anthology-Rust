@@ -179,9 +179,10 @@ impl FeedbackPublication {
             if let Some(signal) = signal.filter(|signal| rules.code(signal.code) != 0) {
                 let desired = rules.sound(signal).and_then(|cue| {
                     let resources = resources?;
+                    let (sound, ordinal) = resources.player_sound(cue.binding)?;
                     Some(SoundEvent {
-                        sound: resources.sound(cue.ordinal)?,
-                        source_ordinal: Some(cue.ordinal),
+                        sound,
+                        source_ordinal: Some(ordinal),
                         spatial: resources.sound_policy(),
                         playback: rules.playback,
                         bus: cue.bus,

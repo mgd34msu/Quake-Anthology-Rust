@@ -10,20 +10,94 @@ use qa_core::{
 #[derive(Clone, Copy)]
 pub struct PlayerEventRules {
     toggle_mask: u32,
-    sounds: [(u32, i32, SoundBus); 2],
+    sounds: &'static [Option<PlayerSoundCue>; 64],
     pub playback: Option<SoundPlayback>,
+}
+
+/// File-backed media and native configstring ordinals are different domains.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerSoundBinding {
+    Config(u32),
+    Fixed(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayerSoundCue {
-    pub ordinal: u32,
+    pub binding: PlayerSoundBinding,
     pub channel: i32,
     pub bus: SoundBus,
 }
 
+/// CG_RegisterSounds media used by the immediate, context-free event recipes.
+pub const PLAYER_SOUND_PATHS: [&str; 13] = [
+    "sound/player/land1.wav",
+    "sound/player/watr_in.wav",
+    "sound/player/watr_out.wav",
+    "sound/player/watr_un.wav",
+    "sound/weapons/change.wav",
+    "sound/items/use_nothing.wav",
+    "sound/items/use_medkit.wav",
+    "sound/items/respawn1.wav",
+    "sound/world/telein.wav",
+    "sound/world/teleout.wav",
+    "sound/items/damage3.wav",
+    "sound/items/protect3.wav",
+    "sound/items/regen.wav",
+];
+
+const fn q3_player_sounds() -> [Option<PlayerSoundCue>; 64] {
+    let mut sounds = [None; 64];
+    // CG_EntityEvent native channels: AUTO=0, ITEM=4, BODY=5.
+    let fixed = [
+        (10, 0, 0),
+        (15, 1, 0),
+        (16, 2, 0),
+        (17, 3, 0),
+        (22, 4, 0),
+        (24, 5, 5),
+        (26, 6, 5),
+        (40, 7, 0),
+        (41, 7, 0),
+        (42, 8, 0),
+        (43, 9, 0),
+        (61, 10, 4),
+        (62, 11, 4),
+        (63, 12, 4),
+    ];
+    let mut index = 0;
+    while index < fixed.len() {
+        let (event, media, channel) = fixed[index];
+        sounds[event] = Some(PlayerSoundCue {
+            binding: PlayerSoundBinding::Fixed(media),
+            channel,
+            bus: SoundBus::Spatial,
+        });
+        index += 1;
+    }
+    // HI_NUM_HOLDABLE=6. CG_UseItem uses > rather than >=, then its
+    // default switch case handles the tie as well. BASE/TA use3..5 differ.
+    let mut event = 30;
+    while event <= 38 {
+        sounds[event] = sounds[24];
+        event += 1;
+    }
+    sounds[45] = Some(PlayerSoundCue {
+        binding: PlayerSoundBinding::Config(0),
+        channel: 3,
+        bus: SoundBus::Spatial,
+    });
+    sounds[46] = Some(PlayerSoundCue {
+        binding: PlayerSoundBinding::Config(0),
+        channel: 0,
+        bus: SoundBus::Local,
+    });
+    sounds
+}
+
+const Q3_PLAYER_SOUNDS: [Option<PlayerSoundCue>; 64] = q3_player_sounds();
+
 pub const fn player_event_rules(source: RuleSetId) -> Option<PlayerEventRules> {
-    // CG_EntityEvent, EV_GENERAL_SOUND/EV_GLOBAL_SOUND. Native channel numbers
-    // differ from Q2; the global event plays from this recipient's head.
+    // Source capability, independently of the map, movement and sound role.
     [
         None,
         None,
@@ -31,7 +105,7 @@ pub const fn player_event_rules(source: RuleSetId) -> Option<PlayerEventRules> {
         None,
         Some(PlayerEventRules {
             toggle_mask: 0x300,
-            sounds: [(45, 3, SoundBus::Spatial), (46, 0, SoundBus::Local)],
+            sounds: &Q3_PLAYER_SOUNDS,
             playback: super::native_sound_playback(RuleSetId::Quake3),
         }),
     ][source as usize]
@@ -43,12 +117,11 @@ impl PlayerEventRules {
     }
     pub fn sound(self, signal: PlayerSignal) -> Option<PlayerSoundCue> {
         let code = self.code(signal.code);
-        let &(_, channel, bus) = self.sounds.iter().find(|&&(event, _, _)| event == code)?;
-        Some(PlayerSoundCue {
-            ordinal: signal.parameter,
-            channel,
-            bus,
-        })
+        let mut cue = self.sounds.get(code as usize).copied().flatten()?;
+        if matches!(cue.binding, PlayerSoundBinding::Config(_)) {
+            cue.binding = PlayerSoundBinding::Config(signal.parameter);
+        }
+        Some(cue)
     }
 }
 

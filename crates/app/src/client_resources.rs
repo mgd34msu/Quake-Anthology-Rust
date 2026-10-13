@@ -22,6 +22,8 @@ pub struct ResourceState {
     pub layout: ConfigLayout,
     pub rejected: u64,
     sounds: qa_audio::SoundBindings,
+    player_sounds: [Option<(qa_core::primitives::SoundId, u32)>;
+        qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS.len()],
     sound_policy: SpatialPolicy,
     loop_spatial: SpatialPolicy,
     static_sounds: u32,
@@ -51,6 +53,7 @@ impl ClientResources {
                 layout,
                 rejected: 0,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
+                player_sounds: [None; qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS.len()],
                 sound_policy: qa_gameplay::rules::sound_policy(sound_rules),
                 loop_spatial: qa_gameplay::rules::loop_spatial_policy(sound_rules),
                 static_sounds: 0,
@@ -414,9 +417,32 @@ impl ResourceState {
     pub fn sound(&self, ordinal: u32) -> Option<qa_core::primitives::SoundId> {
         self.sounds.sound(ordinal)
     }
+    /// Fixed media retains the Bank's native engine handle for native channel
+    /// suppression; received config ordinals keep their existing wire domain.
+    pub(crate) fn player_sound(
+        &self,
+        binding: qa_gameplay::rules::feedback::PlayerSoundBinding,
+    ) -> Option<(qa_core::primitives::SoundId, u32)> {
+        use qa_gameplay::rules::feedback::PlayerSoundBinding;
+        match binding {
+            PlayerSoundBinding::Config(ordinal) => Some((self.sound(ordinal)?, ordinal)),
+            PlayerSoundBinding::Fixed(index) => {
+                self.player_sounds.get(index as usize).copied().flatten()
+            }
+        }
+    }
     /// Cold bank attachment reserves numeric inverse rows before packet intake.
     pub fn bind_sounds(&mut self, bank: &qa_audio::Bank) -> bool {
         self.sounds.attach(bank);
+        for (binding, path) in self
+            .player_sounds
+            .iter_mut()
+            .zip(qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS)
+        {
+            *binding = bank.registered_handle(path.as_bytes()).and_then(|handle| {
+                Some((bank.registered_sound(handle)?, u32::try_from(handle).ok()?))
+            });
+        }
         for (ordinal, index) in self.layout.resources[1].range().enumerate() {
             let Some(config) = self.configs.config(index) else {
                 return false;
