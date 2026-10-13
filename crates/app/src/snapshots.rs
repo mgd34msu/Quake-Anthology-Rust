@@ -281,11 +281,16 @@ impl SnapshotBinding {
         events: &mut qa_core::events::EventRing,
         owner: OutputConsumerId,
     ) -> Result<(), qa_compat::services::CallError> {
+        let owned = self.owns_client_audio();
         self.presentation
             .as_mut()
             .and_then(|row| row.loops.as_mut())
             .ok_or(qa_compat::services::CallError::Entity)?
-            .attach(self.client, module, lifetime, rules, events, owner)
+            .attach(self.client, module, lifetime, rules, events, owner)?;
+        if !owned {
+            self.baseline_player_events();
+        }
+        Ok(())
     }
     pub(crate) fn detach_client_audio(
         &mut self,
@@ -300,6 +305,7 @@ impl SnapshotBinding {
             .and_then(|row| row.loops.as_mut())
         {
             loops.detach(self.client, module, lifetime, events, owner);
+            self.baseline_player_events();
         }
     }
     pub fn entity_rejections(&self) -> u64 {

@@ -30,12 +30,15 @@ use qa_world::{area::LinkOrder, entities::AllocationPolicy};
 
 const SNAPSHOT_BYTES: usize = 53772;
 const QVM_OUTPUT: u64 = 1024;
+const GET_GAME_STATE: u32 = 7;
+const SELECT_COMMAND: u32 = 8;
+const READ_BYTE: u32 = 9;
 
 fn qvm() -> (Program, u64) {
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..7 {
+    for command in 0..10 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
@@ -83,6 +86,14 @@ fn qvm() -> (Program, u64) {
                 (Call, 0),
             ]),
             6 => operations.extend([(Local, 76), (Load4, 0)]),
+            7 | 8 => operations.extend([
+                (Local, 76),
+                (Load4, 0),
+                (Arg, 8),
+                (Const, if command == 7 { -51 } else { -54 }),
+                (Call, 0),
+            ]),
+            9 => operations.extend([(Local, 76), (Load4, 0), (Load1, 0)]),
             _ => unreachable!(),
         }
         operations.push((Leave, 64));
@@ -111,7 +122,7 @@ fn native() -> (Program, u64) {
     pe_text(&mut file, 0x1800, &[0xc3]);
     let mut vm = Vm::map_image(
         Image::parse(&file, None, LoadRole::Library).unwrap(),
-        &(0..7)
+        &(0..10)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -126,7 +137,7 @@ fn native() -> (Program, u64) {
     let output = vm.process.base() + 0x2000;
     let callback = vm.import_callback();
     let mut code = Vec::new();
-    for command in 0..7u8 {
+    for command in 0..10u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
@@ -134,6 +145,8 @@ fn native() -> (Program, u64) {
             code.extend([0x8b, 0x02, 0xc3]); // mov eax,[rdx]; ret
         } else if command == 6 {
             code.extend([0x89, 0xd0, 0xc3]); // mov eax,edx; ret
+        } else if command == 9 {
+            code.extend([0x0f, 0xb6, 0x02, 0xc3]); // movzx eax,byte [rdx]; ret
         } else {
             code.extend([0x48, 0x83, 0xec, 0x28]);
             if matches!(command, 0 | 1) {
@@ -145,6 +158,8 @@ fn native() -> (Program, u64) {
             let ordinal = match command {
                 2 => 52,
                 4 => 100,
+                7 => 50,
+                8 => 53,
                 _ => 51,
             };
             code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
@@ -229,7 +244,7 @@ fn host(factory: fn() -> (Program, u64), clients: usize) -> (FrameHost, Vec<Clie
             rate: TickRate::FrameDriven,
             anchor,
             program,
-            entries: (0..7).collect(),
+            entries: (0..10).collect(),
             frame: Export {
                 client: Some(client),
                 ..Export::clocked(CallbackId(6))
@@ -282,6 +297,283 @@ fn word(host: &mut FrameHost, seat: usize, address: u64) -> u32 {
 }
 fn fill(host: &mut FrameHost, seat: usize, address: u64) {
     call(host, seat, 4, &[address, 0xa5, SNAPSHOT_BYTES as u64]).unwrap();
+}
+
+fn config_commands(host: &mut FrameHost, client: ClientId, rows: &[(u32, &[u8])]) -> (u32, u32) {
+    let channel = &mut host
+        .runtime
+        .network
+        .get_mut(client, Endpoint::Server)
+        .unwrap()
+        .channel;
+    let first = channel.command_state().unwrap().queued + 1;
+    for &(index, text) in rows {
+        let mut sent = 0;
+        loop {
+            let mut bytes = [0; 1024];
+            let chunk = qa_network::outputs::config_command(index, text, sent, &mut bytes).unwrap();
+            channel.queue_reliable(&bytes[..chunk.length]).unwrap();
+            if chunk.complete {
+                break;
+            }
+            sent = chunk.next;
+        }
+    }
+    let last = channel.command_state().unwrap().queued;
+    let time = EventTime::from_milliseconds(100);
+    loop {
+        let Some(packet) = channel.prepare_output(time).unwrap() else {
+            break;
+        };
+        host.runtime
+            .loopback
+            .send(Endpoint::Server, client, packet.bytes)
+            .unwrap();
+        channel.submitted(time).unwrap();
+        if !channel.pending_fragments() {
+            break;
+        }
+    }
+    host.time = time;
+    host.drain(&mut FrameResult::default());
+    (first, last)
+}
+
+fn select_configs(host: &mut FrameHost, seat: usize, range: (u32, u32)) {
+    for sequence in range.0..=range.1 {
+        call(host, seat, SELECT_COMMAND, &[u64::from(sequence)]).unwrap();
+    }
+}
+
+fn assert_game_state(host: &mut FrameHost, seat: usize, output: u64, rows: &[(u32, &[u8])]) {
+    use qa_compat::configstrings::{
+        Q3_GAME_STATE_BYTES, Q3_GAME_STATE_COUNT_OFFSET, Q3_GAME_STATE_DATA_OFFSET,
+        Q3_GAME_STATE_ROWS,
+    };
+    fill(host, seat, output);
+    assert_eq!(call(host, seat, GET_GAME_STATE, &[output]), Ok(0));
+    let mut expected = vec![0; Q3_GAME_STATE_BYTES];
+    let mut position = 1usize;
+    let mut checks = vec![
+        0,
+        8,
+        19 * 4,
+        22 * 4,
+        31 * 4,
+        33 * 4,
+        511 * 4,
+        1023 * 4,
+        Q3_GAME_STATE_DATA_OFFSET,
+        Q3_GAME_STATE_COUNT_OFFSET - 4,
+        Q3_GAME_STATE_COUNT_OFFSET,
+    ];
+    for index in 0..Q3_GAME_STATE_ROWS {
+        let Some((_, text)) = rows.iter().find(|(row, _)| *row as usize == index) else {
+            continue;
+        };
+        if text.is_empty() {
+            continue;
+        }
+        expected[index * 4..index * 4 + 4].copy_from_slice(&(position as i32).to_le_bytes());
+        checks.push(index * 4);
+        let first = Q3_GAME_STATE_DATA_OFFSET + position;
+        expected[first..first + text.len()].copy_from_slice(text);
+        checks.extend((first..first + text.len() + 1).step_by(4));
+        position += text.len() + 1;
+    }
+    expected[Q3_GAME_STATE_COUNT_OFFSET..].copy_from_slice(&(position as i32).to_le_bytes());
+    for offset in checks {
+        let bytes = &expected[offset..offset + 4];
+        assert_eq!(
+            word(host, seat, output + offset as u64),
+            u32::from_le_bytes(bytes.try_into().unwrap()),
+            "gameState byte {offset}"
+        );
+    }
+    assert_eq!(
+        word(host, seat, output + Q3_GAME_STATE_BYTES as u64),
+        0xa5a5_a5a5
+    );
+}
+
+fn accepted_client_game_state(factory: fn() -> (Program, u64)) {
+    let (mut host, ids, output) = host(factory, 2);
+    assert_game_state(&mut host, 0, output, &[]);
+    let rows: [(u32, &[u8]); 5] = [
+        (32, b"models/raw\x80%.md3"),
+        (20, b"baseq3-1"),
+        (0, b"\\mapname\\q3dm1"),
+        (21, b"1000"),
+        (1, b"\\sv_serverid\\42"),
+    ];
+    let accepted: [(u32, &[u8]); 5] = [
+        (32, b"models/raw...md3"),
+        rows[1],
+        rows[2],
+        rows[3],
+        rows[4],
+    ];
+    let commands = config_commands(&mut host, ids[0], &rows);
+    // Receipt retains commands; selecting them owns config mutation.
+    assert_game_state(&mut host, 0, output, &[]);
+    select_configs(&mut host, 0, commands);
+    assert_game_state(&mut host, 0, output, &accepted);
+    let commands = config_commands(&mut host, ids[1], &[(20, b"other seat")]);
+    select_configs(&mut host, 1, commands);
+    assert_game_state(&mut host, 1, output, &[(20, b"other seat")]);
+    assert_game_state(&mut host, 0, output, &accepted);
+
+    let revision = host.runtime.client_resources[0]
+        .as_ref()
+        .unwrap()
+        .state
+        .configs
+        .config(32)
+        .unwrap()
+        .revision;
+    let commands = config_commands(&mut host, ids[0], &[(32, rows[0].1)]);
+    select_configs(&mut host, 0, commands);
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(32)
+            .unwrap()
+            .revision,
+        revision
+    );
+    let commands = config_commands(&mut host, ids[0], &[(20, b"replacement"), (32, b"")]);
+    assert_game_state(&mut host, 0, output, &accepted);
+    select_configs(&mut host, 0, commands);
+    let changed: [(u32, &[u8]); 4] = [
+        (0, rows[2].1),
+        (1, rows[4].1),
+        (20, b"replacement"),
+        (21, rows[3].1),
+    ];
+    assert_game_state(&mut host, 0, output, &changed);
+    // Packing itself preserves accepted raw bytes. Q3 wire sanitation above
+    // is a separate boundary and must not be repeated by the guest getter.
+    assert!(host.runtime.client_resources[0].as_mut().unwrap().apply(
+        8,
+        b"local\x80\xff%",
+        None,
+        None
+    ));
+    let mut with_raw = changed.to_vec();
+    with_raw.push((8, b"local\x80\xff%"));
+    assert_game_state(&mut host, 0, output, &with_raw);
+    assert_eq!(call(&mut host, 0, GET_GAME_STATE, &[0]), Err(()));
+    assert_game_state(&mut host, 1, output, &[(20, b"other seat")]);
+}
+
+fn game_state_pointer_and_aggregate_limits() {
+    use qa_compat::configstrings::*;
+    let (mut host, ids, output) = host(qvm, 1);
+    fill(&mut host, 0, output);
+    assert_eq!(call(&mut host, 0, GET_GAME_STATE, &[65000]), Err(()));
+    assert_eq!(word(&mut host, 0, output), 0xa5a5_a5a5);
+    assert_eq!(call(&mut host, 0, GET_GAME_STATE, &[65536]), Ok(0));
+    assert_eq!(word(&mut host, 0, Q3_GAME_STATE_COUNT_OFFSET as u64), 1);
+    assert_eq!(
+        call(&mut host, 0, READ_BYTE, &[Q3_GAME_STATE_DATA_OFFSET as u64]),
+        Ok(0)
+    );
+
+    let first = vec![b'e'; 7998];
+    let second = vec![b'h'; 7999];
+    let commands = config_commands(&mut host, ids[0], &[(700, &first), (701, &second)]);
+    select_configs(&mut host, 0, commands);
+    assert_eq!(call(&mut host, 0, GET_GAME_STATE, &[output]), Ok(0));
+    assert_eq!(
+        word(&mut host, 0, output + Q3_GAME_STATE_COUNT_OFFSET as u64),
+        Q3_GAME_STATE_DATA_BYTES as u32
+    );
+    assert_eq!(word(&mut host, 0, output + 700 * 4), 1);
+    assert_eq!(word(&mut host, 0, output + 701 * 4), 8000);
+    assert_eq!(
+        call(
+            &mut host,
+            0,
+            READ_BYTE,
+            &[output + Q3_GAME_STATE_COUNT_OFFSET as u64 - 1]
+        ),
+        Ok(0)
+    );
+    let revision = host.runtime.client_resources[0]
+        .as_ref()
+        .unwrap()
+        .state
+        .configs
+        .config(700)
+        .unwrap()
+        .revision;
+    // Retire the first native command flight through a real queued CLIENT ACK.
+    assert!(
+        host.runtime
+            .send_local_command(ids[0], &UserCmd::default(), host.time)
+    );
+    host.drain(&mut FrameResult::default());
+    let commands = config_commands(&mut host, ids[0], &[(700, &first)]);
+    select_configs(&mut host, 0, commands);
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(700)
+            .unwrap()
+            .revision,
+        revision
+    );
+
+    let commands = config_commands(&mut host, ids[0], &[(702, b"x")]);
+    // The same row admission checks the complete native extent before changing
+    // the accepted text or its revision. The queued command is consumed below.
+    assert!(
+        !host.runtime.client_resources[0]
+            .as_mut()
+            .unwrap()
+            .apply(702, b"x", None, None)
+    );
+    let configs = &host.runtime.client_resources[0]
+        .as_ref()
+        .unwrap()
+        .state
+        .configs;
+    assert_eq!(configs.config(702).unwrap().text, b"");
+    assert_eq!(configs.config(702).unwrap().revision, 0);
+    assert_eq!(configs.config(700).unwrap().revision, revision);
+    assert_eq!(q3_game_state_data_count(configs, None), Ok(16000));
+
+    // Even an invalid trusted table must fail the guest-copy boundary atomically.
+    host.runtime.client_resources[0]
+        .as_mut()
+        .unwrap()
+        .state
+        .configs
+        .set(702, b"x")
+        .unwrap();
+    fill(&mut host, 0, output);
+    assert_eq!(call(&mut host, 0, GET_GAME_STATE, &[output]), Err(()));
+    for offset in [0, 4096, Q3_GAME_STATE_COUNT_OFFSET] {
+        assert_eq!(word(&mut host, 0, output + offset as u64), 0xa5a5_a5a5);
+    }
+    host.runtime.client_resources[0]
+        .as_mut()
+        .unwrap()
+        .state
+        .configs
+        .set(702, b"")
+        .unwrap();
+    assert_eq!(
+        call(&mut host, 0, SELECT_COMMAND, &[u64::from(commands.0)]),
+        Err(())
+    );
+    assert!(host.runtime.server.clients[0].connection.is_none());
 }
 
 fn snapshot(
@@ -550,6 +842,8 @@ fn qvm_pointer_checks_and_retained_window() {
     let calls = host.module_counts(ModuleId(1)).unwrap().calls;
     assert_eq!(call(&mut host, 0, 0, &[]), Err(()));
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
+    assert_eq!(call(&mut host, 0, GET_GAME_STATE, &[output]), Err(()));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
 }
 
 fn snapshot_entity_count_is_truncated_to_the_native_public_array() {
@@ -599,6 +893,10 @@ fn main() {
     accepted_connection_snapshot_bytes(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     accepted_connection_snapshot_bytes(native);
+    accepted_client_game_state(qvm);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    accepted_client_game_state(native);
+    game_state_pointer_and_aggregate_limits();
     qvm_pointer_checks_and_retained_window();
     snapshot_entity_count_is_truncated_to_the_native_public_array();
     ui_keeps_its_queued_clock();

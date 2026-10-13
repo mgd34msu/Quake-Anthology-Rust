@@ -252,10 +252,10 @@ fn feedback_reader_preserves_native_cells_and_observes_the_accepted_wire_widths(
     words[40] = 63;
     words[states::player_stat_word(Protocol::Quake3_68, 0).unwrap()] = (-73i32) as u32;
     assert_eq!(
-        native.damage_feedback(&words),
+        native.feedback_sample(&words),
         Some(PlayerFeedbackSample {
             client_number: 63,
-            damage: native_sample().damage,
+            signals: native_sample(),
             health: -73,
         })
     );
@@ -267,14 +267,31 @@ fn feedback_reader_preserves_native_cells_and_observes_the_accepted_wire_widths(
         &[0; states::PLAYER_WORDS],
     )?;
     assert_eq!(
-        wire.damage_feedback(&received),
+        wire.feedback_sample(&received),
         Some(PlayerFeedbackSample {
             client_number: 63,
-            damage: PlayerDamageSample {
-                sequence: 171,
-                yaw: 254,
-                pitch: 255,
-                count: 135,
+            signals: PlayerSignals {
+                sequence: 65535,
+                events: [
+                    PlayerSignal {
+                        code: 119,
+                        parameter: 161
+                    },
+                    PlayerSignal {
+                        code: 255,
+                        parameter: 178
+                    },
+                ],
+                external: PlayerSignal {
+                    code: 838,
+                    parameter: 234
+                },
+                damage: PlayerDamageSample {
+                    sequence: 171,
+                    yaw: 254,
+                    pitch: 255,
+                    count: 135,
+                },
             },
             health: -73,
         })
@@ -297,10 +314,10 @@ fn feedback_reader_uses_the_selected_health_stat_without_importing_a_player() {
         PlayerProjection::load_values(Protocol::Quake3_68, PlayerValueBindings::EMPTY, layout),
     ] {
         assert_eq!(
-            projection.damage_feedback(&words),
+            projection.feedback_sample(&words),
             Some(PlayerFeedbackSample {
                 client_number: 0,
-                damage: native_sample().damage,
+                signals: native_sample(),
                 health: i32::MIN + 5,
             })
         );
@@ -312,14 +329,14 @@ fn feedback_reader_rejects_truncation_and_invalid_native_view_targets() {
     let projection = PlayerProjection::load(Protocol::Quake3_68, &[]);
     let mut words = native_words();
     words[40] = 63;
-    assert!(projection.damage_feedback(&words).is_some());
+    assert!(projection.feedback_sample(&words).is_some());
     assert_eq!(
-        projection.damage_feedback(&words[..projection.words() - 1]),
+        projection.feedback_sample(&words[..projection.words() - 1]),
         None
     );
     for client in [64, u32::MAX] {
         words[40] = client;
-        assert_eq!(projection.damage_feedback(&words), None);
+        assert_eq!(projection.feedback_sample(&words), None);
     }
 }
 
@@ -342,7 +359,7 @@ fn feedback_reader_requires_an_admitted_full_damage_projection() {
         ),
         PlayerProjection::load(Protocol::Quake2_34, &[]),
     ] {
-        assert_eq!(projection.damage_feedback(&words), None);
+        assert_eq!(projection.feedback_sample(&words), None);
     }
 }
 

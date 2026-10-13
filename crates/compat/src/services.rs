@@ -117,6 +117,7 @@ pub trait ClientConnection {
     fn select(&mut self, number: i32, server: &mut Server) -> Result<bool, CallError>;
     fn arguments(&self) -> qa_console::command_text::Arguments<'_>;
     fn disconnected(&self) -> bool;
+    fn configstrings(&self, server: &Server) -> Result<&ConfigStrings, CallError>;
     fn snapshot_number(&self, server: &Server) -> Result<(u32, ThinkTime), CallError>;
     fn snapshot(
         &mut self,
@@ -859,6 +860,8 @@ pub type ClientSnapshotCall =
         &'a mut EngineServices<'_>,
         i32,
     ) -> Result<Option<qa_network::snapshots::Q3ClientSnapshot<'a>>, CallError>;
+pub type ClientConfigStringsCall =
+    for<'a> fn(&'a EngineServices<'_>) -> Result<&'a ConfigStrings, CallError>;
 pub type CvarRegisterCall =
     fn(&mut EngineServices<'_>, Context, &str, Option<&str>, u32) -> Result<View, CallError>;
 pub type ResourceIndexCall =
@@ -884,6 +887,7 @@ pub struct EngineCallTable {
     pub set_userinfo: fn(&mut EngineServices<'_>, NativeEntity, &[u8]) -> Result<(), CallError>,
     pub serverinfo: fn(&mut EngineServices<'_>, ModuleId, &mut [u8]) -> Result<usize, CallError>,
     pub server_command: fn(&mut EngineServices<'_>, i32) -> Result<bool, CallError>,
+    pub client_configstrings: ClientConfigStringsCall,
     pub snapshot_number: fn(&EngineServices<'_>) -> Result<(u32, ThinkTime), CallError>,
     pub snapshot: ClientSnapshotCall,
     pub pmove: fn(
@@ -1010,6 +1014,12 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .as_deref_mut()
             .ok_or(CallError::Text)?
             .select(number, s.server)
+    },
+    client_configstrings: |s| {
+        s.client_connection
+            .as_deref()
+            .ok_or(CallError::Entity)?
+            .configstrings(s.server)
     },
     snapshot_number: |s| {
         s.client_connection

@@ -1,8 +1,56 @@
 //! Native player damage becomes a shared camera response at its source boundary.
 use qa_core::{
     math::{angle_vectors_radians, length, radians_from_degrees_f32},
-    primitives::{ClockObservation, PlayerDamageSample, RuleSetId, ThinkTime, Vec3, ViewFeedback},
+    primitives::{
+        ClockObservation, PlayerDamageSample, PlayerSignal, RuleSetId, SoundBus, SoundPlayback,
+        ThinkTime, Vec3, ViewFeedback,
+    },
 };
+
+#[derive(Clone, Copy)]
+pub struct PlayerEventRules {
+    toggle_mask: u32,
+    sounds: [(u32, i32, SoundBus); 2],
+    pub playback: Option<SoundPlayback>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerSoundCue {
+    pub ordinal: u32,
+    pub channel: i32,
+    pub bus: SoundBus,
+}
+
+pub const fn player_event_rules(source: RuleSetId) -> Option<PlayerEventRules> {
+    // CG_EntityEvent, EV_GENERAL_SOUND/EV_GLOBAL_SOUND. Native channel numbers
+    // differ from Q2; the global event plays from this recipient's head.
+    [
+        None,
+        None,
+        None,
+        None,
+        Some(PlayerEventRules {
+            toggle_mask: 0x300,
+            sounds: [(45, 3, SoundBus::Spatial), (46, 0, SoundBus::Local)],
+            playback: super::native_sound_playback(RuleSetId::Quake3),
+        }),
+    ][source as usize]
+}
+
+impl PlayerEventRules {
+    pub fn code(self, code: u32) -> u32 {
+        code & !self.toggle_mask
+    }
+    pub fn sound(self, signal: PlayerSignal) -> Option<PlayerSoundCue> {
+        let code = self.code(signal.code);
+        let &(_, channel, bus) = self.sounds.iter().find(|&&(event, _, _)| event == code)?;
+        Some(PlayerSoundCue {
+            ordinal: signal.parameter,
+            channel,
+            bus,
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct DamageFeedbackRules {

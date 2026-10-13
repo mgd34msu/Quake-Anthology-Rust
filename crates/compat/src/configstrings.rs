@@ -3,7 +3,42 @@ use crate::{
     memory::ModuleMemory,
     services::{CallError, ServiceStorage},
 };
+use qa_core::configstrings::{ConfigLayout, ConfigStrings};
 use qa_core::primitives::ModuleId;
+
+pub const Q3_GAME_STATE_ROWS: usize = ConfigLayout::QUAKE3.count;
+pub const Q3_GAME_STATE_DATA_BYTES: usize = 16000;
+pub const Q3_GAME_STATE_DATA_OFFSET: usize = Q3_GAME_STATE_ROWS * 4;
+pub const Q3_GAME_STATE_COUNT_OFFSET: usize = Q3_GAME_STATE_DATA_OFFSET + Q3_GAME_STATE_DATA_BYTES;
+pub const Q3_GAME_STATE_BYTES: usize = Q3_GAME_STATE_COUNT_OFFSET + 4;
+
+/// Native CLIENT rows pack into one gameState_t with a reserved empty string.
+/// The optional replacement is checked before changing any accepted row.
+pub fn q3_game_state_data_count(
+    configs: &ConfigStrings,
+    replacement: Option<(usize, &[u8])>,
+) -> Result<usize, CallError> {
+    if configs.len() != Q3_GAME_STATE_ROWS
+        || replacement.is_some_and(|(index, text)| index >= Q3_GAME_STATE_ROWS || text.contains(&0))
+    {
+        return Err(CallError::ConfigString);
+    }
+    let mut count = 1usize;
+    for index in 0..Q3_GAME_STATE_ROWS {
+        let text = match replacement {
+            Some((changed, text)) if changed == index => text,
+            _ => configs.config(index).ok_or(CallError::ConfigString)?.text,
+        };
+        if !text.is_empty() {
+            count = count
+                .checked_add(text.len())
+                .and_then(|count| count.checked_add(1))
+                .filter(|&count| count <= Q3_GAME_STATE_DATA_BYTES)
+                .ok_or(CallError::ConfigString)?;
+        }
+    }
+    Ok(count)
+}
 
 struct Row {
     address: u64,

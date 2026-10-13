@@ -220,6 +220,19 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     fn arguments(&self) -> qa_console::command_text::Arguments<'_> {
         self.resources.selected.arguments()
     }
+    fn configstrings(
+        &self,
+        server: &qa_session::clients::Server,
+    ) -> Result<&ConfigStrings, qa_compat::services::CallError> {
+        use qa_compat::services::CallError;
+        self.validate(server)?;
+        if self.resources.state.layout.rules != RuleSetId::Quake3
+            || self.channel.q3_snapshot_number().is_none()
+        {
+            return Err(CallError::Unsupported);
+        }
+        Ok(&self.resources.state.configs)
+    }
     fn snapshot_number(
         &self,
         server: &qa_session::clients::Server,
@@ -425,6 +438,20 @@ impl ResourceState {
         catalog: Option<&ModelCatalog>,
         bank: Option<&qa_audio::Bank>,
     ) -> bool {
+        if self.layout.rules == RuleSetId::Quake3
+            && self
+                .configs
+                .config(index)
+                .is_some_and(|row| row.text != text)
+            && qa_compat::configstrings::q3_game_state_data_count(
+                &self.configs,
+                Some((index, text)),
+            )
+            .is_err()
+        {
+            self.rejected += 1;
+            return false;
+        }
         match self.configs.set(index, text) {
             Ok(changed) => {
                 if changed && let Some(catalog) = catalog {

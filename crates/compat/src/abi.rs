@@ -446,6 +446,7 @@ const fn client() -> CallTable {
     t.entries[32] = client_audio!(client_sound::position);
     t.entries[33] = client_audio!(client_sound::listener);
     t.entries[34] = scalar!(register_sound);
+    t.entries[50] = scalar!(client_game_state);
     t.entries[51] = scalar!(client_snapshot_number);
     t.entries[52] = scalar!(client_snapshot);
     t.entries[53] = Some(CallEntry {
@@ -1869,6 +1870,31 @@ fn client_server_command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
     Ok(u64::from((ENGINE_CALLS.server_command)(
         c.services, number,
     )?))
+}
+
+fn client_game_state(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    use crate::configstrings::{
+        Q3_GAME_STATE_BYTES, Q3_GAME_STATE_COUNT_OFFSET, Q3_GAME_STATE_DATA_OFFSET,
+        Q3_GAME_STATE_ROWS, q3_game_state_data_count,
+    };
+    let target = c.required_pointer(0)?;
+    let configs = (ENGINE_CALLS.client_configstrings)(c.services)?;
+    let count = q3_game_state_data_count(configs, None)?;
+    let output = c.memory.read_mut(target, Q3_GAME_STATE_BYTES)?;
+    output.fill(0);
+    let mut position = 1usize;
+    for index in 0..Q3_GAME_STATE_ROWS {
+        let text = configs.config(index).ok_or(CallError::ConfigString)?.text;
+        if text.is_empty() {
+            continue;
+        }
+        output[index * 4..index * 4 + 4].copy_from_slice(&(position as i32).to_le_bytes());
+        let first = Q3_GAME_STATE_DATA_OFFSET + position;
+        output[first..first + text.len()].copy_from_slice(text);
+        position += text.len() + 1;
+    }
+    output[Q3_GAME_STATE_COUNT_OFFSET..].copy_from_slice(&(count as i32).to_le_bytes());
+    Ok(0)
 }
 
 fn client_snapshot_number(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

@@ -5,9 +5,9 @@ use qa_core::{
     math::{AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
         AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMagnitude, MovementMode,
-        MovementTimer, NativePlayerTail, PlayerDamageSample, PlayerPresentation, PlayerSignals,
-        PlayerState, PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding,
-        ValueWidth, ViewWeapon, WeaponReadiness, WeaponState,
+        MovementTimer, NativePlayerTail, PlayerPresentation, PlayerSignals, PlayerState,
+        PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding, ValueWidth,
+        ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -290,53 +290,62 @@ static Q3: &[Field] = &[
     f(64, Score, Bits),
 ];
 
-/// A borrowed snapshot's native view target and damage, without another player bank.
+/// A borrowed snapshot's native view target and feedback, without another player bank.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayerFeedbackSample {
     pub client_number: u32,
-    pub damage: PlayerDamageSample,
+    pub signals: PlayerSignals,
     pub health: i32,
 }
 
 struct FeedbackFields {
     client: Field,
     health: Field,
-    sequence: Field,
-    yaw: Field,
-    pitch: Field,
-    count: Field,
+    signals: [Field; 11],
 }
 impl FeedbackFields {
     fn load(fields: &[Field]) -> Option<Self> {
+        let mut signals = [*fields.first()?; 11];
+        let mut count = 0;
+        for field in fields.iter().filter(|field| {
+            matches!(
+                field.source,
+                EventSequence
+                    | Event(_)
+                    | EventParameter(_)
+                    | ExternalEvent
+                    | ExternalParameter
+                    | DamageSequence
+                    | DamageYaw
+                    | DamagePitch
+                    | DamageCount
+            )
+        }) {
+            *signals.get_mut(count)? = *field;
+            count += 1;
+        }
+        if count != signals.len() {
+            return None;
+        }
         Some(Self {
             client: *fields.iter().find(|field| matches!(field.source, Client))?,
             health: *fields.iter().find(|field| matches!(field.source, Health))?,
-            sequence: *fields
-                .iter()
-                .find(|field| matches!(field.source, DamageSequence))?,
-            yaw: *fields
-                .iter()
-                .find(|field| matches!(field.source, DamageYaw))?,
-            pitch: *fields
-                .iter()
-                .find(|field| matches!(field.source, DamagePitch))?,
-            count: *fields
-                .iter()
-                .find(|field| matches!(field.source, DamageCount))?,
+            signals,
         })
     }
     fn read(&self, words: &[u32], client_limit: u32) -> Option<PlayerFeedbackSample> {
         let read = |field: Field| field.convert.import(words[field.word]);
         let client_number = read(self.client);
-        (client_number < client_limit).then(|| PlayerFeedbackSample {
-            client_number,
-            health: read(self.health) as i32,
-            damage: PlayerDamageSample {
-                sequence: read(self.sequence),
-                yaw: read(self.yaw),
-                pitch: read(self.pitch),
-                count: read(self.count),
-            },
+        (client_number < client_limit).then(|| {
+            let mut signals = PlayerSignals::default();
+            for field in self.signals {
+                field.source.apply_signal(read(field), &mut signals);
+            }
+            PlayerFeedbackSample {
+                client_number,
+                health: read(self.health) as i32,
+                signals,
+            }
         })
     }
 }
@@ -588,9 +597,9 @@ impl PlayerProjection {
         self.flag_mask
     }
 
-    /// Read the load-selected view/damage fields from a retained native frame.
+    /// Read the load-selected view/signal fields from a retained native frame.
     /// Native and wire conversion share the same descriptors as full import.
-    pub fn damage_feedback(&self, words: &[u32]) -> Option<PlayerFeedbackSample> {
+    pub fn feedback_sample(&self, words: &[u32]) -> Option<PlayerFeedbackSample> {
         self.feedback
             .as_ref()?
             .read(words.get(..self.words)?, self.client_limit)

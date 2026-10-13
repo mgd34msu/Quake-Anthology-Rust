@@ -518,6 +518,12 @@ impl FrameHost {
                 snapshot.publish_feedback(
                     client.entity,
                     &connection.channel,
+                    self.runtime
+                        .client_resources
+                        .get(snapshot.client.0 as usize)
+                        .and_then(Option::as_ref)
+                        .map(|row| &row.state),
+                    self.runtime.server.presentation,
                     &mut client.hud,
                     &mut self.runtime.server.events,
                     self.time,
