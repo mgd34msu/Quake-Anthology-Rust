@@ -118,6 +118,11 @@ fn register_sound(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.register_sound)(c.services, sample, c.context.native_rules)
         .map(|handle| handle as u32 as u64)
 }
+fn register_shader<const MIPMAPS: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let name = c.memory.cstring(c.required_pointer(0)?)?;
+    (ENGINE_CALLS.register_shader)(c.services, name, c.context.native_rules, MIPMAPS)
+        .map(|handle| handle as u32 as u64)
+}
 
 enum CallValue {
     Word(u64),
@@ -446,6 +451,7 @@ const fn client() -> CallTable {
     t.entries[32] = client_audio!(client_sound::position);
     t.entries[33] = client_audio!(client_sound::listener);
     t.entries[34] = scalar!(register_sound);
+    t.entries[39] = scalar!(register_shader::<true>);
     t.entries[50] = scalar!(client_game_state);
     t.entries[51] = scalar!(client_snapshot_number);
     t.entries[52] = scalar!(client_snapshot);
@@ -456,6 +462,7 @@ const fn client() -> CallTable {
         quakec: None,
     });
     t.entries[56] = scalar!(q3_set_usercmd_value);
+    t.entries[57] = scalar!(register_shader::<false>);
     t.entries[71] = scalar!(snap_vector);
     t.entries[80] = client_audio!(client_sound::add_loop::<true>);
     t.entries[81] = client_audio!(client_sound::stop_loop);

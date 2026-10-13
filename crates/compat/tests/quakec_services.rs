@@ -399,6 +399,9 @@ struct Models {
     fail: bool,
 }
 impl ModelLookup for Models {
+    fn shader_handle(&self, _: &[u8]) -> Option<i32> {
+        None
+    }
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds> {
         (!self.fail
             && self
@@ -412,6 +415,15 @@ impl ModelLookup for Models {
     }
 }
 impl ModelLoader for Models {
+    fn register_shader(
+        &mut self,
+        _: &qa_content::vfs::Vfs,
+        _: &[u8],
+        _: RuleSetId,
+        _: bool,
+    ) -> Result<i32, CallError> {
+        Err(CallError::Unsupported)
+    }
     fn precache(
         &mut self,
         _: &qa_content::vfs::Vfs,

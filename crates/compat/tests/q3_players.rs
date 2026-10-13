@@ -19,6 +19,10 @@ use qa_formats::program::qvm::{Image, Opcode};
 use qa_session::clients::{Connection, Server};
 use qa_world::{area::LinkOrder, collision::CollisionStore, entities::AllocationPolicy};
 
+#[path = "support/shaders.rs"]
+mod shaders;
+use shaders::ShaderLoader;
+
 const ENTITIES: u64 = 4096;
 const PLAYERS: u64 = 16384;
 const ENTITY_STRIDE: u64 = 608;
@@ -1864,6 +1868,82 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     );
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn owned_pe64_shader_imports_borrow_only_the_parked_child_and_share_cold_dispatch() {
+    use native_image::*;
+    use qa_compat::abi::Q3_CLIENT;
+    use qa_compat::native::{NamedExport, NativeCalls, Vm};
+    use qa_formats::program::native::{Image, LoadRole};
+    use qa_platform::native::NativeScalar;
+    let mut file = pe_export_fixture(64);
+    put(&mut file, 208, 12288, 4);
+    put(&mut file, 392 + 8, 8192, 4);
+    put(&mut file, 392 + 16, 8192, 4);
+    pe_rva(&mut file, 0x1140, 0x1200, 4);
+    file.resize(8704, 0);
+    // The shared PE fixture advertises DllMain at RVA 0x1080. Keep its
+    // attach/detach entry executable and successful, separate from vmMain.
+    pe_text(&mut file, 0x1080, &[0xb8, 1, 0, 0, 0, 0xc3]);
+    pe_text(&mut file, 0x1200, &[0x31, 0xc0, 0xc3]);
+    let mut vm = Vm::map_image(
+        Image::parse(&file, None, LoadRole::Library).unwrap(),
+        &[
+            NamedExport {
+                name: b"GetGameAPI",
+                command: Some(39),
+                parameters: &[NativeScalar::Word; 2],
+                result: NativeScalar::Word,
+            },
+            NamedExport {
+                name: b"GetGameAPI",
+                command: Some(57),
+                parameters: &[NativeScalar::Word; 2],
+                result: NativeScalar::Word,
+            },
+        ],
+        &[],
+        std::time::Duration::from_secs(3),
+    )
+    .unwrap();
+    let base = vm.process.base();
+    let mut code = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0xb8];
+    code.extend(vm.import_callback().to_le_bytes());
+    code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0xc3]);
+    {
+        let mut memory = qa_compat::memory::process_memory(&mut vm.process).unwrap();
+        memory.write(base + 0x1200, &code).unwrap();
+        memory.write(base + 0x1800, b"ui/pic\0").unwrap();
+    }
+    let mut fixture = Fixture::new();
+    let mut shader = ShaderLoader::default();
+    let mut unknown = UnknownCalls::load(1).unwrap();
+    {
+        let mut engine = fixture.engine();
+        engine.model_loader = Some(&mut shader);
+        let mut calls = NativeCalls {
+            services: &mut engine,
+            table: &Q3_CLIENT,
+            context: context(),
+            platform_time: EventTime(17),
+            command: &[],
+            raw_args: b"",
+            unknown: &mut unknown,
+            native_player: None,
+        };
+        for ordinal in [0, 1] {
+            assert_eq!(vm.call(&mut calls, ordinal, &[base + 0x1800]).unwrap(), 42);
+        }
+    }
+    assert_eq!(
+        shader.calls,
+        vec![
+            (b"ui/pic".to_vec(), RuleSetId::Quake3, true),
+            (b"ui/pic".to_vec(), RuleSetId::Quake3, false)
+        ]
+    );
+    assert_eq!(unknown.calls, 0);
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
@@ -1882,5 +1962,7 @@ fn main() {
     qvm_player_signals_preserve_native_cells_and_publication_boundaries();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     owned_native_export_imports_public_player_memory_only_after_success();
-    println!("Q3 public player memory: all checks passed");
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    owned_pe64_shader_imports_borrow_only_the_parked_child_and_share_cold_dispatch();
+    println!("Q3 public player memory and owned shader imports: all checks passed");
 }

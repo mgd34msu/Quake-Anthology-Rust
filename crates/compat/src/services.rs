@@ -93,9 +93,17 @@ impl From<qa_session::clients::ClientInfoError> for CallError {
 /// The cold and frozen model catalog share the same native metadata owner.
 pub trait ModelLookup {
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
+    fn shader_handle(&self, name: &[u8]) -> Option<i32>;
 }
 pub trait ModelLoader: ModelLookup {
     fn precache(&mut self, vfs: &Vfs, path: &[u8], source: RuleSetId) -> Result<Bounds, CallError>;
+    fn register_shader(
+        &mut self,
+        vfs: &Vfs,
+        name: &[u8],
+        source: RuleSetId,
+        mipmaps: bool,
+    ) -> Result<i32, CallError>;
 }
 
 /// Sound registration extends the one bank only during cold module loading.
@@ -995,6 +1003,8 @@ pub struct EngineCallTable {
         fn(&mut EngineServices<'_>, ModuleId, IndexSpan, &[u8]) -> Result<Option<u32>, CallError>,
     pub model_precache: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<Bounds, CallError>,
     pub model_bounds: fn(&EngineServices<'_>, &[u8], RuleSetId) -> Result<Bounds, CallError>,
+    pub register_shader:
+        fn(&mut EngineServices<'_>, &[u8], RuleSetId, bool) -> Result<i32, CallError>,
     pub file_open: FileOpenCall,
     pub entity_token: EntityTokenCall,
     pub file_length: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
@@ -1188,6 +1198,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .or_else(|| s.model_lookup.and_then(|models| models.bounds(path, rules)))
             .ok_or(CallError::Geometry)
     },
+    register_shader: |s, name, source, mipmaps| s.register_shader(name, source, mipmaps),
     file_open: |s, m, p| s.file_open(m, p),
     entity_token: |s, m| s.storage.entity_token(m),
     file_length: |s, p| s.file_length(p),
@@ -1330,7 +1341,7 @@ impl EngineServices<'_> {
             match loader.precache(self.vfs, sample, row.native_rules) {
                 Ok(_) => {}
                 Err(error @ (CallError::File | CallError::Capacity | CallError::Text)) => {
-                    Self::registration_diagnostic(&mut self.server.events, error);
+                    Self::registration_diagnostic(&mut self.server.events, "sound", error);
                 }
                 Err(error) => return Err(error),
             }
@@ -1338,10 +1349,14 @@ impl EngineServices<'_> {
         row.bind_sound_at(&self.storage.configs, index, Some(loader.bank()))?;
         Ok(row.bound_sound(ordinal as u32))
     }
-    fn registration_diagnostic(events: &mut qa_core::events::EventRing, error: CallError) {
+    fn registration_diagnostic(
+        events: &mut qa_core::events::EventRing,
+        kind: &str,
+        error: CallError,
+    ) {
         let _ = Self::console_formatted(
             events,
-            format_args!("sound registration rejected: {error:?}\n"),
+            format_args!("{kind} registration rejected: {error:?}\n"),
         );
     }
     fn registered_bank(&self) -> Result<&qa_audio::Bank, CallError> {
@@ -1369,7 +1384,34 @@ impl EngineServices<'_> {
         match result {
             Ok(handle) => Ok(handle),
             Err(error @ (CallError::File | CallError::Capacity | CallError::Text)) => {
-                Self::registration_diagnostic(&mut self.server.events, error);
+                Self::registration_diagnostic(&mut self.server.events, "sound", error);
+                Ok(0)
+            }
+            Err(error) => Err(error),
+        }
+    }
+    pub fn register_shader(
+        &mut self,
+        name: &[u8],
+        source: RuleSetId,
+        mipmaps: bool,
+    ) -> Result<i32, CallError> {
+        if name.is_empty() {
+            return Ok(0);
+        }
+        let result = if name.len() >= 64 {
+            Err(CallError::Text)
+        } else if let Some(loader) = self.model_loader.as_deref_mut() {
+            loader.register_shader(self.vfs, name, source, mipmaps)
+        } else {
+            self.model_lookup
+                .and_then(|lookup| lookup.shader_handle(name))
+                .ok_or(CallError::File)
+        };
+        match result {
+            Ok(handle) => Ok(handle),
+            Err(error @ (CallError::File | CallError::Capacity | CallError::Text)) => {
+                Self::registration_diagnostic(&mut self.server.events, "shader", error);
                 Ok(0)
             }
             Err(error) => Err(error),

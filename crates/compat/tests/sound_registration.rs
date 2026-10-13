@@ -19,10 +19,15 @@ use qa_core::{
 use qa_world::{collision::CollisionStore, entities::AllocationPolicy};
 use std::num::NonZeroU32;
 
+#[path = "support/shaders.rs"]
+mod shaders;
+use shaders::ShaderLoader;
+
 struct Registrar {
     bank: qa_audio::Bank,
     calls: Vec<(Vec<u8>, RuleSetId)>,
 }
+
 impl SoundRegistrar for Registrar {
     fn register(
         &mut self,
@@ -269,6 +274,210 @@ fn invoke_call(
     let result = table.invoke(number, &mut call, &mut unknown);
     assert_eq!(unknown.calls, 0);
     result
+}
+
+#[test]
+fn cgame_shader_registration_shares_checked_native_and_qvm_dispatch_and_frozen_lookup() {
+    for addresses in modes() {
+        let mut fixture = Fixture::new();
+        let mut shader = ShaderLoader::default();
+        let base = base(addresses);
+        let mut bytes = [0; 512];
+        let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
+        memory.write(base + 16, b"ui/pic\0").unwrap();
+        memory.write(base + 48, b"ui/missing\0").unwrap();
+        memory.write(base + 96, &[b'x'; 64]).unwrap();
+        memory.write(base + 160, &[0]).unwrap();
+        memory.write(base + 176, &[0]).unwrap();
+        {
+            let mut engine = fixture.engine(true);
+            engine.model_loader = Some(&mut shader);
+            for ordinal in [39, 57] {
+                assert_eq!(
+                    invoke_call(
+                        &mut engine,
+                        &mut memory,
+                        addresses,
+                        &Q3_CLIENT,
+                        ordinal,
+                        &[base + 16]
+                    ),
+                    Ok(42)
+                );
+                assert_eq!(
+                    invoke_call(
+                        &mut engine,
+                        &mut memory,
+                        addresses,
+                        &Q3_CLIENT,
+                        ordinal,
+                        &[0]
+                    ),
+                    Err(CallError::Memory)
+                );
+                assert_eq!(
+                    invoke_call(
+                        &mut engine,
+                        &mut memory,
+                        addresses,
+                        &Q3_CLIENT,
+                        ordinal,
+                        &[base + 176]
+                    ),
+                    Ok(0)
+                );
+                assert_eq!(
+                    invoke_call(
+                        &mut engine,
+                        &mut memory,
+                        addresses,
+                        &Q3_CLIENT,
+                        ordinal,
+                        &[base + 96]
+                    ),
+                    Ok(0)
+                );
+                assert_eq!(
+                    invoke_call(
+                        &mut engine,
+                        &mut memory,
+                        addresses,
+                        &Q3_CLIENT,
+                        ordinal,
+                        &[base + 48]
+                    ),
+                    Ok(0)
+                );
+            }
+            if matches!(addresses, Addresses::Qvm { .. }) {
+                memory.write(0, b"ui/pic\0").unwrap();
+                assert_eq!(
+                    invoke_call(&mut engine, &mut memory, addresses, &Q3_CLIENT, 39, &[512]),
+                    Ok(42)
+                );
+            }
+        }
+        assert_eq!(
+            &shader.calls[..4],
+            &[
+                (b"ui/pic".to_vec(), RuleSetId::Quake3, true),
+                (b"ui/missing".to_vec(), RuleSetId::Quake3, true),
+                (b"ui/pic".to_vec(), RuleSetId::Quake3, false),
+                (b"ui/missing".to_vec(), RuleSetId::Quake3, false),
+            ]
+        );
+        let before = shader.calls.len();
+        {
+            let mut engine = fixture.engine(false);
+            engine.model_lookup = Some(&shader);
+            assert_eq!(
+                invoke_call(
+                    &mut engine,
+                    &mut memory,
+                    addresses,
+                    &Q3_CLIENT,
+                    57,
+                    &[base + 16]
+                ),
+                Ok(42)
+            );
+            assert_eq!(
+                invoke_call(
+                    &mut engine,
+                    &mut memory,
+                    addresses,
+                    &Q3_CLIENT,
+                    39,
+                    &[base + 48]
+                ),
+                Ok(0)
+            );
+            memory.write(base + 48, b"ui/unknown\0").unwrap();
+            assert_eq!(
+                invoke_call(
+                    &mut engine,
+                    &mut memory,
+                    addresses,
+                    &Q3_CLIENT,
+                    39,
+                    &[base + 48]
+                ),
+                Ok(0)
+            );
+        }
+        assert_eq!(shader.calls.len(), before);
+    }
+}
+
+#[test]
+fn executed_qvm_shader_imports_share_the_same_cold_service() {
+    use Opcode::*;
+    use qa_formats::program::qvm::{Image, Opcode};
+    let operations: [(Opcode, i32); 11] = [
+        (Enter, 32),
+        (Const, 16),
+        (Arg, 8),
+        (Const, -40),
+        (Call, 0),
+        (Pop, 0),
+        (Const, 16),
+        (Arg, 8),
+        (Const, -58),
+        (Call, 0),
+        (Leave, 32),
+    ];
+    let mut code = Vec::new();
+    for (opcode, argument) in operations {
+        code.push(opcode as u8);
+        match opcode.operand_bytes() {
+            1 => code.push(argument as u8),
+            4 => code.extend(argument.to_le_bytes()),
+            _ => {}
+        }
+    }
+    code.resize((code.len() + 3) & !3, 0);
+    let mut file = Vec::new();
+    for value in [
+        0x12721444i32,
+        operations.len() as i32,
+        32,
+        code.len() as i32,
+        32 + code.len() as i32,
+        64,
+        0,
+        65536 - 64,
+    ] {
+        file.extend(value.to_le_bytes());
+    }
+    file.extend(code);
+    let data = file.len();
+    file.resize(data + 64, 0);
+    file[data + 16..data + 23].copy_from_slice(b"ui/pic\0");
+    let mut vm = qa_compat::qvm::Vm::load(Image::parse(&file).unwrap()).unwrap();
+    let mut fixture = Fixture::new();
+    let mut shader = ShaderLoader::default();
+    let mut unknown = UnknownCalls::load(1).unwrap();
+    {
+        let mut engine = fixture.engine(true);
+        engine.model_loader = Some(&mut shader);
+        let mut calls = qa_compat::abi::QvmCalls {
+            services: &mut engine,
+            table: &Q3_CLIENT,
+            context: context(),
+            platform_time: EventTime(19),
+            command: &[],
+            unknown: &mut unknown,
+        };
+        assert_eq!(vm.call(&mut calls, [0; 10], 100, false), Ok(42));
+    }
+    assert_eq!(
+        shader.calls,
+        vec![
+            (b"ui/pic".to_vec(), RuleSetId::Quake3, true),
+            (b"ui/pic".to_vec(), RuleSetId::Quake3, false)
+        ]
+    );
+    assert_eq!(unknown.calls, 0);
 }
 
 #[test]

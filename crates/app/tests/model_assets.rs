@@ -27,6 +27,231 @@ fn load(
 fn native_profile(rules: RuleSetId, palette: PaletteId) -> ModelProfile {
     ModelRequest::native("", rules, Some(palette)).profile()
 }
+
+fn shader_profile(presentation: RuleSetId) -> ModelProfile {
+    ModelProfile {
+        source_rules: RuleSetId::Quake3,
+        rules: presentation,
+        source_palette: None,
+        palette: None,
+        image_settings: qa_render::material::resources::ImageSettings::native(presentation),
+    }
+}
+
+#[test]
+fn native_shader_first_registration_keeps_mips_display_and_exact_profiles() {
+    for mipmaps in [false, true] {
+        let fixture =
+            support::Fixture::new(&[("ui/pic.tga", support::tga(4, 4, &[[80, 30, 10, 255]; 16]))]);
+        let q3 = shader_profile(RuleSetId::Quake3);
+        let q2 = shader_profile(RuleSetId::Quake2);
+        let mut builder = ModelCatalogBuilder::new(
+            Assets::load().unwrap(),
+            [q3, q2],
+            [],
+            ModelLimits::default(),
+        )
+        .unwrap();
+        let handle = builder
+            .register_shader(&fixture.vfs, b"UI/Pic.tga", RuleSetId::Quake3, mipmaps)
+            .unwrap();
+        assert!(handle > 0);
+        fixture.remove("ui/pic.tga");
+        assert_eq!(
+            builder.register_shader(&fixture.vfs, b"ui/pic.jpg", RuleSetId::Quake3, !mipmaps),
+            Ok(handle)
+        );
+        let (assets, catalog) = builder.finish();
+        assert_eq!(catalog.shader_handle(b"uI/pIC"), Some(handle));
+        assert_eq!(catalog.shader_name(handle), Some(b"UI/Pic".as_slice()));
+        assert_eq!(catalog.shader_binding(0, q3), None);
+        assert_eq!(
+            catalog.shader_binding(handle, shader_profile(RuleSetId::QuakeWorld)),
+            None
+        );
+        let q3_material = catalog.shader_binding(handle, q3).unwrap();
+        let q2_material = catalog.shader_binding(handle, q2).unwrap();
+        for material in [q3_material, q2_material] {
+            let material = assets.material(material).unwrap();
+            let stage = material.stages[0];
+            assert_eq!(stage.sampler.mipmaps, mipmaps);
+            assert_eq!(
+                stage.sampler.wrap,
+                if mipmaps {
+                    qa_render::assets::Wrap::Repeat
+                } else {
+                    qa_render::assets::Wrap::Clamp
+                }
+            );
+            assert_eq!(stage.rgb_gen, RgbGen::Vertex);
+            assert_eq!(stage.alpha_gen, AlphaGen::Vertex);
+            assert_eq!(stage.blend, Some(StageBlend::ALPHA));
+            assert_eq!(stage.depth_func, qa_render::assets::DepthFunc::Always);
+            assert!(!stage.depth_write);
+        }
+        let StageTexture::Image(q3_image) = assets.material(q3_material).unwrap().stages[0].texture
+        else {
+            panic!("shader image");
+        };
+        let StageTexture::Image(q2_image) = assets.material(q2_material).unwrap().stages[0].texture
+        else {
+            panic!("shader image");
+        };
+        if mipmaps {
+            assert_eq!(
+                assets
+                    .image(q3_image)
+                    .unwrap()
+                    .prepared
+                    .as_ref()
+                    .unwrap()
+                    .levels[0]
+                    .width,
+                2
+            );
+            assert_eq!(
+                assets
+                    .image(q2_image)
+                    .unwrap()
+                    .prepared
+                    .as_ref()
+                    .unwrap()
+                    .levels[0]
+                    .width,
+                4
+            );
+            assert_ne!(q3_material, q2_material);
+        }
+    }
+}
+
+#[test]
+fn native_shader_explicit_stages_use_the_shared_cached_catalog_and_compiler() {
+    let script = b"ui/first\n{\n cull none\n { map $whiteimage\n blendFunc add\n rgbGen vertex\n }\n { map $lightmap\n blendFunc filter\n }\n}\nui/second\n{\n nomipmaps\n { map ui/pic.tga\n blendFunc blend\n rgbGen vertex\n alphaGen vertex\n }\n}\n";
+    let fixture = support::Fixture::new(&[
+        ("scripts/ui.shader", script.to_vec()),
+        ("ui/pic.tga", support::tga(4, 4, &[[80, 30, 10, 255]; 16])),
+    ]);
+    let profile = shader_profile(RuleSetId::Quake3);
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let first = builder
+        .register_shader(&fixture.vfs, b"ui/first", RuleSetId::Quake3, false)
+        .unwrap();
+    fixture.remove("scripts/ui.shader");
+    let second = builder
+        .register_shader(&fixture.vfs, b"ui/second", RuleSetId::Quake3, true)
+        .unwrap();
+    let (assets, catalog) = builder.finish();
+    let material = assets
+        .material(catalog.shader_binding(first, profile).unwrap())
+        .unwrap();
+    assert_eq!(material.settings.cull, qa_render::shader::Cull::None);
+    assert_eq!(material.stages.len(), 2);
+    assert_eq!(material.stages[0].rgb_gen, RgbGen::Vertex);
+    assert_eq!(
+        material.stages[0].blend.unwrap().source,
+        qa_render::shader::BlendFactor::One
+    );
+    assert_eq!(
+        material.stages[1].texture,
+        StageTexture::Image(qa_render::ImageId(0))
+    );
+    assert!(
+        !assets
+            .material(catalog.shader_binding(second, profile).unwrap())
+            .unwrap()
+            .stages[0]
+            .sampler
+            .mipmaps
+    );
+}
+
+#[test]
+fn native_shader_first_dot_folded_key_keeps_separator_identities_and_named_misses() {
+    let fixture = support::Fixture::new(&[
+        ("dir.part/pic.tga", support::tga(1, 1, &[[80, 30, 10, 255]])),
+        ("ui/pic.tga", support::tga(1, 1, &[[80, 30, 10, 255]])),
+    ]);
+    let profile = shader_profile(RuleSetId::Quake3);
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        builder.register_shader(&fixture.vfs, b"", RuleSetId::Quake3, false),
+        Ok(0)
+    );
+    let dot = builder
+        .register_shader(&fixture.vfs, b"dir.part/pic.tga", RuleSetId::Quake3, false)
+        .unwrap();
+    assert_eq!(
+        builder.register_shader(
+            &fixture.vfs,
+            b"DIR.other/missing.tga",
+            RuleSetId::Quake3,
+            true
+        ),
+        Ok(dot)
+    );
+    let forward = builder
+        .register_shader(&fixture.vfs, b"ui/pic.tga", RuleSetId::Quake3, false)
+        .unwrap();
+    let backward = builder
+        .register_shader(&fixture.vfs, b"ui\\pic.tga", RuleSetId::Quake3, false)
+        .unwrap();
+    assert_ne!(forward, backward);
+    assert_eq!(
+        builder.register_shader(&fixture.vfs, b"ui/missing.tga", RuleSetId::Quake3, true),
+        Err(qa_compat::services::CallError::File)
+    );
+    assert_eq!(
+        builder.register_shader(&fixture.vfs, b"UI/Missing.jpg", RuleSetId::Quake3, false),
+        Ok(0)
+    );
+    let (_, catalog) = builder.finish();
+    assert_eq!(catalog.shader_handle(b"ui/missing"), Some(0));
+    assert_eq!(catalog.shader_handle(b"ui/unknown"), None);
+    assert_eq!(
+        catalog.shader_binding(forward, profile),
+        catalog.shader_binding(backward, profile)
+    );
+}
+
+#[test]
+fn shader_admitted_names_do_not_block_later_model_admission() {
+    let fixture = support::Fixture::new(&[
+        ("progs/test.tga", support::tga(1, 1, &[[80, 30, 10, 255]])),
+        ("progs/test", support::mdl()),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let shader = shader_profile(RuleSetId::Quake3);
+    let model = native_profile(RuleSetId::Quake, palette);
+    let mut builder =
+        ModelCatalogBuilder::new(assets, [shader, model], [], ModelLimits::default()).unwrap();
+    let handle = builder
+        .register_shader(&fixture.vfs, b"progs/test.tga", RuleSetId::Quake3, false)
+        .unwrap();
+    builder
+        .register_request(
+            &fixture.vfs,
+            ModelRequest::native("progs/test", RuleSetId::Quake, Some(palette)),
+        )
+        .unwrap();
+    let (_, catalog) = builder.finish();
+    assert!(binding(&catalog, "progs/test", model, 0).is_some());
+    assert!(catalog.shader_binding(handle, shader).is_some());
+    assert_eq!(catalog.shader_name(handle), Some(b"progs/test".as_slice()));
+}
 fn binding(
     catalog: &ModelCatalog,
     path: &str,

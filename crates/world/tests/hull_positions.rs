@@ -255,6 +255,136 @@ fn equal_parallel_bounds_preserve_strict_ownership_but_loose_bounds_do_not() {
 }
 
 #[test]
+fn rounded_projection_equality_cannot_admit_an_exactly_empty_strict_path() {
+    let rounded_third = 1.0f32 / 3.0;
+    // The proposed binary32 point looks equal to the upper plane in ordinary
+    // arithmetic, but its exact 3*x is greater than one. No point satisfies
+    // both the closed lower bound and the strict upper bound.
+    assert_eq!(rounded_third * 3.0, 1.0);
+    let (mut store, geometry) = load_geometry(
+        vec![
+            Plane::oriented(Vec3([1.0, 0.0, 0.0]), rounded_third),
+            Plane::oriented(Vec3([3.0, 0.0, 0.0]), 1.0),
+        ],
+        vec![
+            ClipNode {
+                plane: 0,
+                children: [1, -1],
+            },
+            ClipNode {
+                plane: 1,
+                children: [-1, -2],
+            },
+        ],
+        vec![0],
+    );
+    admit(&mut store, geometry);
+    let trace = store
+        .trace_model(
+            geometry,
+            0,
+            radius(Vec3([rounded_third, 0.0, 0.0]), 100.0),
+            &mut store.scratch(),
+        )
+        .expect("exact rejection after rounded proposal");
+    assert!(!trace.start_solid && !trace.all_solid);
+    assert_eq!(trace.fraction, 1.0);
+}
+
+#[test]
+fn translated_query_witness_uses_the_posed_coordinate_scale() {
+    let (mut store, geometry) = convex(vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 2.0)]);
+    admit(&mut store, geometry);
+    let origin = Vec3([10.0, -20.0, 3.0]);
+    for (offset, extent, solid) in [(1.0, 0.25, true), (2.0, 0.0, true), (2.5, 0.25, false)] {
+        let query = radius(origin + Vec3([offset, 0.0, 0.0]), extent);
+        let trace = store
+            .trace_transformed(
+                geometry,
+                0,
+                query,
+                origin,
+                Vec3::default(),
+                ModelRules::default(),
+                &mut store.scratch(),
+            )
+            .expect("scaled exact translated occupancy");
+        assert_eq!(trace.start_solid, solid);
+        assert_eq!(trace.all_solid, solid);
+    }
+}
+
+#[test]
+fn finite_extreme_support_without_a_binary32_witness_uses_exact_fallback() {
+    let (mut store, geometry) = convex(vec![Plane::oriented(
+        Vec3([f32::from_bits(1), 0.0, 0.0]),
+        -f32::MAX,
+    )]);
+    // This consistent halfspace begins below -f32::MAX / 2^-149, so every
+    // finite binary32 candidate fails. Admission must still retain the cell.
+    admit(&mut store, geometry);
+    let query = radius(Vec3([-f32::MAX, 0.0, 0.0]), 0.0);
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("finite query outside extreme unbounded cell");
+    assert!(!trace.start_solid && !trace.all_solid);
+    assert_eq!(trace.fraction, 1.0);
+    assert_eq!(trace.end, query.end);
+}
+
+#[test]
+fn a_nonempty_strict_strip_between_adjacent_floats_is_retained_without_a_witness() {
+    let upper = 1.0f32.next_up();
+    let (mut store, geometry) = convex(vec![
+        Plane::oriented(Vec3([-1.0, 0.0, 0.0]), -1.0),
+        Plane::oriented(Vec3([1.0, 0.0, 0.0]), upper),
+    ]);
+    // There is no binary32 point strictly between these planes, but the
+    // real-valued cell is nonempty and a finite supplied box intersects it.
+    admit(&mut store, geometry);
+    let trace = store
+        .trace_model(
+            geometry,
+            0,
+            radius(Vec3([1.0, 0.0, 0.0]), 0.25),
+            &mut store.scratch(),
+        )
+        .expect("exact fallback retains the narrow strict cell");
+    assert!(trace.start_solid && trace.all_solid);
+}
+
+#[test]
+fn witness_proposals_and_checks_are_charged_to_the_query_budget() {
+    let (mut store, geometry) = convex(vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 10.0)]);
+    store
+        .prepare_hull_positions(
+            geometry,
+            HullPositionLimits {
+                query_work: 8,
+                ..Default::default()
+            },
+        )
+        .expect("bounded cold admission");
+    let query = radius(Vec3([2.0, 0.0, 0.0]), 1.0);
+    assert_eq!(
+        store
+            .trace_model(geometry, 0, query, &mut store.scratch())
+            .unwrap_err(),
+        TraceError::Unsupported { geometry, model: 0 }
+    );
+    // Admission fixes this resource's limits; a repeated call does not replace
+    // its already-published storage. Admit the same geometry in a fresh store.
+    let (mut store, geometry) = convex(vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 10.0)]);
+    admit(&mut store, geometry);
+    assert!(
+        store
+            .trace_model(geometry, 0, query, &mut store.scratch())
+            .expect("same geometry with sufficient query work")
+            .all_solid
+    );
+}
+
+#[test]
 fn repeated_opposing_constraints_preserve_closed_rank_deficient_occupancy() {
     let planes = (0..128)
         .map(|index| {

@@ -9,7 +9,10 @@ use qa_formats::model::{Image, Mesh, Model, ModelFormat};
 use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSource};
 use qa_render::assets::{MaterialSettings, SoftwareAlias, Stage, StageTexture};
 use qa_render::material::resources::{ImageSettings, ImageUse, Images, ImagesState, IndexedTarget};
-use qa_render::shader::{AlphaGen, RgbGen, StageBlend};
+use qa_render::shader::{
+    AlphaFunc, AlphaGen, Cull, DepthFunc, RgbGen, ShaderCatalog, ShaderDef, ShaderStage,
+    StageBlend, TexCoordGen, TextureMap,
+};
 use qa_render::surface_cache::IndexedTexture;
 use qa_render::world::WorldId;
 use qa_render::{Assets, MaterialId, ModelId, PaletteId, Vertex};
@@ -161,6 +164,15 @@ struct RegisteredProfile {
     skins: Option<IndexSpan>,
     error: Option<String>,
 }
+struct RegisteredShader {
+    name: NameId,
+    profiles: IndexSpan,
+    ready: bool,
+}
+struct ShaderProfileBinding {
+    profile: ModelProfile,
+    material: Option<MaterialId>,
+}
 
 /// File-native metadata survives unsupported renderer features. It is not the
 /// bounds of an interpolated mesh or a selected presentation profile.
@@ -224,6 +236,9 @@ pub struct ModelCatalog {
     names: NameTable,
     files: Box<[ModelFile]>,
     models: Box<[IndexSpan]>,
+    shader_indices: Box<[Option<u32>]>,
+    shaders: Box<[RegisteredShader]>,
+    shader_bindings: Box<[ShaderProfileBinding]>,
     registrations: Box<[RegisteredProfile]>,
     bindings: Box<[ModelMaterials]>,
     worlds: Box<[IndexSpan]>,
@@ -240,6 +255,10 @@ pub struct ModelCatalogBuilder {
     names: NameTable,
     files: Vec<ModelFile>,
     models: Vec<IndexSpan>,
+    shader_indices: Vec<Option<u32>>,
+    shaders: Vec<RegisteredShader>,
+    shader_bindings: Vec<ShaderProfileBinding>,
+    shader_catalog: Option<Result<ShaderCatalog, String>>,
     profiles: Vec<ProfileImages>,
     registrations: Vec<RegisteredProfile>,
     bindings: Vec<ModelMaterials>,
@@ -291,6 +310,10 @@ impl ModelCatalogBuilder {
             names,
             files: vec![ModelFile::Empty],
             models: vec![IndexSpan::default()],
+            shader_indices: vec![None],
+            shaders: Vec::new(),
+            shader_bindings: Vec::new(),
+            shader_catalog: None,
             profiles: unique,
             registrations: Vec::new(),
             bindings: Vec::new(),
@@ -300,6 +323,19 @@ impl ModelCatalogBuilder {
             limits,
             diagnostics: Vec::new(),
         })
+    }
+
+    fn admit_name(&mut self, bytes: &[u8]) -> Result<NameId, CallError> {
+        let previous = self.names.len();
+        let name = self.names.intern(bytes).map_err(|_| CallError::Capacity)?;
+        if self.names.len() != previous {
+            self.files.push(ModelFile::Empty);
+            self.models.push(IndexSpan::default());
+            self.shader_indices.push(None);
+            self.capacity.names = self.names.len();
+            self.capacity.name_bytes += bytes.len();
+        }
+        Ok(name)
     }
 
     /// Admit the already-loaded world as native model metadata. Its surface
@@ -319,7 +355,10 @@ impl ModelCatalogBuilder {
         let binding =
             inline_binding(&self.worlds, &self.inline, world, 0).ok_or("loaded world model0")?;
         let path = canonical_path(path);
-        if let Some(name) = self.names.find(path.as_bytes()) {
+        let name = self
+            .admit_name(path.as_bytes())
+            .map_err(|_| "model name capacity".to_owned())?;
+        if !matches!(self.files[name.0 as usize], ModelFile::Empty) {
             return match self.files.get(name.0 as usize) {
                 Some(ModelFile::LoadedWorld {
                     binding: existing,
@@ -328,16 +367,10 @@ impl ModelCatalogBuilder {
                 _ => Err("loaded world filename conflict".to_owned()),
             };
         }
-        self.names
-            .intern(path.as_bytes())
-            .map_err(|_| "model name capacity".to_owned())?;
-        self.files.push(ModelFile::LoadedWorld {
+        self.files[name.0 as usize] = ModelFile::LoadedWorld {
             binding,
             bounds: native_bounds,
-        });
-        self.models.push(IndexSpan::default());
-        self.capacity.names = self.names.len();
-        self.capacity.name_bytes += path.len();
+        };
         Ok(())
     }
 
@@ -378,13 +411,15 @@ impl ModelCatalogBuilder {
     fn ensure_file(&mut self, vfs: &Vfs, path: &str) -> Result<Bounds, FileError> {
         if let Some(name) = self.names.find(path.as_bytes()) {
             let file = &self.files[name.0 as usize];
-            return file.bounds().ok_or_else(|| match file {
-                ModelFile::Failed(error) => error.clone(),
-                _ => FileError {
-                    kind: CallError::File,
-                    message: "empty model filename".to_owned(),
-                },
-            });
+            if !matches!(file, ModelFile::Empty) {
+                return file.bounds().ok_or_else(|| match file {
+                    ModelFile::Failed(error) => error.clone(),
+                    _ => FileError {
+                        kind: CallError::File,
+                        message: "empty model filename".to_owned(),
+                    },
+                });
+            }
         }
         let next = self
             .registrations
@@ -393,16 +428,13 @@ impl ModelCatalogBuilder {
             .filter(|&count| count <= self.limits.models && count <= u32::MAX as usize)
             .ok_or_else(|| FileError::capacity("model registration capacity"))?;
         let name = self
-            .names
-            .intern(path.as_bytes())
+            .admit_name(path.as_bytes())
             .map_err(|_| FileError::capacity("model name capacity"))?;
         let span = IndexSpan {
             first: self.registrations.len() as u32,
             count: (next - self.registrations.len()) as u32,
         };
-        self.models.push(span);
-        self.capacity.names = self.names.len();
-        self.capacity.name_bytes += path.len();
+        self.models[name.0 as usize] = span;
         let bytes = vfs
             .read_file(path.as_bytes(), self.limits.file_bytes, &mut self.reader)
             .map_err(|error| FileError {
@@ -422,10 +454,10 @@ impl ModelCatalogBuilder {
                 format: model.format,
                 bounds: model.bounds,
             });
-        self.files.push(match &metadata {
+        self.files[name.0 as usize] = match &metadata {
             Ok(metadata) => ModelFile::Ready(*metadata),
             Err(error) => ModelFile::Failed(error.clone()),
-        });
+        };
         let mut mesh = None;
         for images in &mut self.profiles {
             let registration = Registration {
@@ -492,11 +524,139 @@ impl ModelCatalogBuilder {
         metadata.map(|metadata| metadata.bounds)
     }
 
+    fn admit_shader(
+        &mut self,
+        vfs: &Vfs,
+        raw: &[u8],
+        source: RuleSetId,
+        mipmaps: bool,
+    ) -> Result<i32, CallError> {
+        if raw.is_empty() {
+            return Ok(0);
+        }
+        if raw.len() >= 64 {
+            return Err(CallError::Text);
+        }
+        if let Some(handle) = shader_handle(&self.names, &self.shader_indices, &self.shaders, raw) {
+            return Ok(handle);
+        }
+        let full_name = std::str::from_utf8(raw).map_err(|_| CallError::Text)?;
+        let key = shader_key(raw);
+        let display = std::str::from_utf8(key).map_err(|_| CallError::Text)?;
+        let count = self
+            .profiles
+            .iter()
+            .filter(|entry| entry.profile.source_rules == source)
+            .count();
+        let next = self
+            .shader_bindings
+            .len()
+            .checked_add(count)
+            .filter(|&n| n <= self.limits.models && n <= u32::MAX as usize)
+            .ok_or(CallError::Capacity)?;
+        if self.shaders.len() >= self.limits.models || self.shaders.len() >= i32::MAX as usize {
+            return Err(CallError::Capacity);
+        }
+        let name = self.admit_name(key)?;
+        let group = self.names.folded(name).ok_or(CallError::Aborted)?;
+        let index = self.shaders.len() as u32;
+        self.shader_indices[group.0 as usize] = Some(index);
+        let span = IndexSpan {
+            first: self.shader_bindings.len() as u32,
+            count: (next - self.shader_bindings.len()) as u32,
+        };
+        self.shaders.push(RegisteredShader {
+            name,
+            profiles: span,
+            ready: false,
+        });
+        let catalog = self.shader_catalog.get_or_insert_with(|| {
+            qa_render::material::load_catalog(vfs)
+                .map_err(|error| format!("shader scripts: {error:?}"))
+        });
+        let definition = match catalog {
+            Ok(catalog) => Ok(catalog
+                .find_canonical(&canonical_path(display))
+                .cloned()
+                .unwrap_or_else(|| implicit_shader(display, full_name, mipmaps))),
+            Err(error) => Err(error.clone()),
+        };
+        // The same compiler serves world and native LIGHTMAP_2D registrations.
+        // Native negative lightmap indices resolve explicit $lightmap to white.
+        let definition = definition.map(|mut definition| {
+            for stage in &mut definition.stages {
+                if matches!(stage.map, Some(TextureMap::Lightmap)) {
+                    stage.map = Some(TextureMap::White);
+                }
+            }
+            definition
+        });
+        let mut ready = false;
+        for images in self
+            .profiles
+            .iter_mut()
+            .filter(|entry| entry.profile.source_rules == source)
+        {
+            let result = match images.state.take() {
+                Some(Ok(state)) => {
+                    let mut temporary = Images::from_state(vfs, &mut self.assets, state);
+                    let result = definition
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|definition| {
+                            if !definition.valid {
+                                return Err("invalid shader definition".to_owned());
+                            }
+                            qa_render::material::world_load::compile_definition(
+                                definition,
+                                &mut temporary,
+                            )
+                            .map_err(|error| format!("shader material: {error:?}"))
+                        });
+                    images.state = Some(Ok(temporary.into_state()));
+                    result
+                }
+                Some(Err(error)) => {
+                    images.state = Some(Err(error.clone()));
+                    Err(error)
+                }
+                None => Err("shader image state already borrowed".to_owned()),
+            };
+            let material = match result {
+                Ok(material) => {
+                    ready = true;
+                    Some(material)
+                }
+                Err(error) => {
+                    self.diagnostics.push(ModelDiagnostic {
+                        name,
+                        profile: images.profile,
+                        error,
+                    });
+                    None
+                }
+            };
+            self.shader_bindings.push(ShaderProfileBinding {
+                profile: images.profile,
+                material,
+            });
+        }
+        self.shaders[index as usize].ready = ready;
+        if ready {
+            Ok(index as i32 + 1)
+        } else {
+            Err(CallError::File)
+        }
+    }
+
     pub fn finish(self) -> (Assets, ModelCatalog) {
         let catalog = ModelCatalog {
             names: self.names,
             files: self.files.into_boxed_slice(),
             models: self.models.into_boxed_slice(),
+            shader_indices: self.shader_indices.into_boxed_slice(),
+            shaders: self.shaders.into_boxed_slice(),
+            shader_bindings: self.shader_bindings.into_boxed_slice(),
             registrations: self.registrations.into_boxed_slice(),
             bindings: self.bindings.into_boxed_slice(),
             worlds: self.worlds,
@@ -505,6 +665,68 @@ impl ModelCatalogBuilder {
             diagnostics: self.diagnostics.into_boxed_slice(),
         };
         (self.assets, catalog)
+    }
+}
+
+fn shader_key(name: &[u8]) -> &[u8] {
+    &name[..name
+        .iter()
+        .position(|&byte| byte == b'.')
+        .unwrap_or(name.len())]
+}
+fn shader_handle(
+    names: &NameTable,
+    indices: &[Option<u32>],
+    shaders: &[RegisteredShader],
+    raw: &[u8],
+) -> Option<i32> {
+    if raw.is_empty() {
+        return Some(0);
+    }
+    let group = names.find_folded(shader_key(raw))?;
+    let index = indices.get(group.0 as usize).copied().flatten()?;
+    let entry = shaders.get(index as usize)?;
+    Some(if entry.ready { index as i32 + 1 } else { 0 })
+}
+fn implicit_shader(display: &str, image: &str, mipmaps: bool) -> ShaderDef {
+    ShaderDef {
+        name: display.to_owned(),
+        source: String::new(),
+        line: 0,
+        valid: true,
+        cull: Cull::Front,
+        sort: 9.0,
+        sort_explicit: false,
+        surface_flags: 0,
+        content_flags: 0,
+        sky: None,
+        fog: None,
+        sun: None,
+        polygon_offset: false,
+        no_mipmaps: !mipmaps,
+        no_picmip: !mipmaps,
+        entity_mergable: false,
+        portal: false,
+        clamp_time: None,
+        stages: vec![ShaderStage {
+            map: Some(TextureMap::Image {
+                name: image.to_owned(),
+                clamp: !mipmaps,
+            }),
+            blend: Some(StageBlend::ALPHA),
+            rgb_gen: RgbGen::Vertex,
+            alpha_gen: AlphaGen::Vertex,
+            tc_gen: TexCoordGen::Texture,
+            tc_mods: Box::new([]),
+            alpha_func: AlphaFunc::None,
+            depth_func: DepthFunc::Always,
+            depth_write: false,
+            detail: false,
+            unsupported: Box::new([]),
+        }]
+        .into_boxed_slice(),
+        deforms: Box::new([]),
+        unsupported: Box::new([]),
     }
 }
 
@@ -519,6 +741,9 @@ fn file_lookup<'a>(
 impl ModelLookup for ModelCatalogBuilder {
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
         file_lookup(&self.names, &self.files, path)?.bounds()
+    }
+    fn shader_handle(&self, name: &[u8]) -> Option<i32> {
+        shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
     }
 }
 impl ModelLoader for ModelCatalogBuilder {
@@ -535,13 +760,39 @@ impl ModelLoader for ModelCatalogBuilder {
         self.ensure_file(vfs, &canonical_path(path))
             .map_err(|error| error.kind)
     }
+    fn register_shader(
+        &mut self,
+        vfs: &Vfs,
+        name: &[u8],
+        source: RuleSetId,
+        mipmaps: bool,
+    ) -> Result<i32, CallError> {
+        self.admit_shader(vfs, name, source, mipmaps)
+    }
 }
 impl ModelLookup for ModelCatalog {
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
         file_lookup(&self.names, &self.files, path)?.bounds()
     }
+    fn shader_handle(&self, name: &[u8]) -> Option<i32> {
+        shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
+    }
 }
 impl ModelCatalog {
+    pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<MaterialId> {
+        let index = usize::try_from(handle.checked_sub(1)?).ok()?;
+        self.shaders
+            .get(index)?
+            .profiles
+            .range()
+            .map(|i| &self.shader_bindings[i])
+            .find(|entry| entry.profile == profile)?
+            .material
+    }
+    pub fn shader_name(&self, handle: i32) -> Option<&[u8]> {
+        let index = usize::try_from(handle.checked_sub(1)?).ok()?;
+        self.names.get(self.shaders.get(index)?.name)
+    }
     /// All requests delegate to the same staged native precache implementation.
     pub fn load<'a>(
         vfs: &Vfs,

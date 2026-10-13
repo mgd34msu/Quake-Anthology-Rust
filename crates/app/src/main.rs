@@ -765,6 +765,12 @@ fn run() -> Result<(), String> {
             Some((client, profile, world))
         })
         .collect();
+    qa_app::audio::load_registered_sounds(&mut host, &precache_sounds, sound_rules)?;
+    if !host.runtime.quit {
+        // CLIENT precaches borrow the same cold asset owner as SERVER and
+        // configured profiles. Freeze it only after module registration ends.
+        host.initialize_modules(qa_app::modules::Phase::Client);
+    }
     let (mut assets, models) = host
         .runtime
         .model_loader
@@ -783,10 +789,6 @@ fn run() -> Result<(), String> {
         );
     }
     host.set_model_catalog(std::sync::Arc::new(models), client_profiles);
-    qa_app::audio::load_registered_sounds(&mut host, &precache_sounds, sound_rules)?;
-    if !host.runtime.quit {
-        host.initialize_modules(qa_app::modules::Phase::Client);
-    }
     let bank = qa_app::audio::finish_registration(&mut host)?;
     let mut audio = qa_app::audio::Output::open(bank)?;
     host.local_clients = local_clients;

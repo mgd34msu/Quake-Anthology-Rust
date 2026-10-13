@@ -621,7 +621,99 @@ fn visit_certificates(
     Ok(())
 }
 
-fn feasible(rows: &[Row], work: &mut Work) -> Result<bool, Failure> {
+/// A primal witness is accepted only by the same exact row arithmetic. Source
+/// cells use physical coordinates (scale 0); posed/query rows use P=2^149*x.
+fn witness_violation(
+    rows: &[Row],
+    candidate: Vec3,
+    coordinate_scale: usize,
+    work: &mut Work,
+) -> Result<Option<usize>, Failure> {
+    let candidate = vector(candidate)?;
+    let shift = 149usize
+        .checked_sub(coordinate_scale)
+        .ok_or(Failure::Input)?;
+    for (index, row) in rows.iter().enumerate() {
+        work.item()?;
+        let order = dot(&row.normal, &candidate)?.compare(&row.distance.shift(shift)?);
+        if order == Ordering::Greater || row.strict && order == Ordering::Equal {
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
+}
+
+/// Floating arithmetic proposes a point only. Underflow, rounding and failed
+/// projections cannot establish occupancy or reject a source cell.
+fn project_witness(
+    row: &Row,
+    candidate: Vec3,
+    coordinate_scale: usize,
+    force: bool,
+) -> Option<Vec3> {
+    let shift = row
+        .normal
+        .iter()
+        .map(Int::bit_length)
+        .max()
+        .filter(|shift| *shift != 0)?;
+    let normal = Vec3(row.normal.map(|value| value.scaled_f64(shift) as f32));
+    let distance = row
+        .distance
+        .scaled_f64(shift.checked_add(coordinate_scale)?) as f32;
+    let error = normal.dot(candidate) - distance;
+    if !normal.is_finite() || !distance.is_finite() || !error.is_finite() {
+        return None;
+    }
+    if !force && (error < 0.0 || error == 0.0 && !row.strict) {
+        return Some(candidate);
+    }
+    // Max-bit scaling leaves at least one component in [0.5, 1], so this
+    // finite squared length is nonzero even if smaller components underflow.
+    let mut projected = candidate - normal * (error.max(0.0) / normal.dot(normal));
+    for axis in 0..3 {
+        projected.0[axis] = if normal.0[axis] > 0.0 {
+            projected.0[axis].next_down()
+        } else if normal.0[axis] < 0.0 {
+            projected.0[axis].next_up()
+        } else {
+            projected.0[axis]
+        };
+    }
+    projected.is_finite().then_some(projected)
+}
+
+fn feasible(rows: &[Row], coordinate_scale: usize, work: &mut Work) -> Result<bool, Failure> {
+    let mut candidate = Vec3::default();
+    let Some(mut violated) = witness_violation(rows, candidate, coordinate_scale, work)? else {
+        return Ok(true);
+    };
+    // Bound proposal work independently of convergence or cell geometry. A
+    // missed narrow/rank-deficient witness retains the exact certificate path.
+    for _ in 0..8 {
+        let before = candidate.0.map(f32::to_bits);
+        let mut projected = true;
+        for (index, row) in rows.iter().enumerate() {
+            work.item()?;
+            let Some(next) = project_witness(row, candidate, coordinate_scale, index == violated)
+            else {
+                projected = false;
+                break;
+            };
+            candidate = next;
+        }
+        if !projected {
+            break;
+        }
+        let Some(next_violated) = witness_violation(rows, candidate, coordinate_scale, work)?
+        else {
+            return Ok(true);
+        };
+        violated = next_violated;
+        if candidate.0.map(f32::to_bits) == before {
+            break;
+        }
+    }
     let mut answer = true;
     visit_certificates(rows, work, |indices, weights, _| {
         let cost = cost(rows, indices, weights)?;
@@ -873,7 +965,7 @@ pub(super) fn prepare(
             |path, contents, work| {
                 let first = retained_sides.len();
                 let count = reduce_path(planes, path, &mut workspace, &mut retained_sides, work)?;
-                if feasible(&workspace[..count], work)? {
+                if feasible(&workspace[..count], 0, work)? {
                     retained_greatest = retained_greatest.max(count);
                     retained_cells.push(Cell {
                         sides: IndexSpan {
@@ -972,7 +1064,7 @@ impl Data {
                 continue;
             }
             let rows = self.fill_rows(planes, cell, path, pose, rows)?;
-            if feasible(rows, work)? {
+            if feasible(rows, 149, work)? {
                 return Ok(Some(cell.contents));
             }
         }
