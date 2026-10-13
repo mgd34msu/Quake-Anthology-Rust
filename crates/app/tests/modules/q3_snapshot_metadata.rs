@@ -530,7 +530,10 @@ fn q3_accepted_follow_flag_keeps_received_pose_when_prediction_has_a_nonzero_com
     let words = transmit(&mut host, client, 100);
     assert_eq!(words[19] & 4096, 4096);
     let prediction = &mut host.runtime.prediction[0];
-    assert!(prediction.player.interpolate_only);
+    assert_eq!(
+        prediction.player.prediction,
+        qa_core::primitives::PredictionPolicy::DISABLED
+    );
     let before = prediction.player.body;
     let view = prediction.player.view_angles;
     let command_time = prediction.player.movement.command_time_ms;
@@ -570,5 +573,8 @@ fn q3_accepted_follow_flag_keeps_received_pose_when_prediction_has_a_nonzero_com
         .flags &= !4096;
     let words = transmit(&mut host, client, 200);
     assert_eq!(words[19] & 4096, 0);
-    assert!(!host.runtime.prediction[0].player.interpolate_only);
+    assert_eq!(
+        host.runtime.prediction[0].player.prediction,
+        Default::default()
+    );
 }

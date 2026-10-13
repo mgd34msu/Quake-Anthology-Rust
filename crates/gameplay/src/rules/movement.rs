@@ -2,6 +2,61 @@
 use qa_core::primitives::{Bounds, MovementMode, MovementTimer, RuleSetId, Vec3};
 
 #[derive(Clone, Copy)]
+pub struct ViewAnglePolicy {
+    pub short_angles: bool,
+    pub signed_pitch_limit: bool,
+    pub circular_pitch: bool,
+}
+#[derive(Clone, Copy)]
+pub struct ViewAnglePolicies {
+    pub movement: ViewAnglePolicy,
+    pub prediction: ViewAnglePolicy,
+}
+const RAW_ANGLES: ViewAnglePolicy = ViewAnglePolicy {
+    short_angles: false,
+    signed_pitch_limit: false,
+    circular_pitch: false,
+};
+const CLASSIC_ANGLES: ViewAnglePolicy = ViewAnglePolicy {
+    short_angles: true,
+    circular_pitch: true,
+    ..RAW_ANGLES
+};
+const RERELEASE_ANGLES: ViewAnglePolicy = ViewAnglePolicy {
+    circular_pitch: true,
+    ..RAW_ANGLES
+};
+const ARENA_ANGLES: ViewAnglePolicy = ViewAnglePolicy {
+    short_angles: true,
+    signed_pitch_limit: true,
+    ..RAW_ANGLES
+};
+const VIEW_ANGLES: [ViewAnglePolicies; 5] = [
+    ViewAnglePolicies {
+        movement: RAW_ANGLES,
+        prediction: RAW_ANGLES,
+    },
+    ViewAnglePolicies {
+        movement: RAW_ANGLES,
+        prediction: RAW_ANGLES,
+    },
+    ViewAnglePolicies {
+        movement: CLASSIC_ANGLES,
+        // Native cl_pred's no-position branch does not apply Pmove clamps.
+        prediction: RAW_ANGLES,
+    },
+    ViewAnglePolicies {
+        movement: RERELEASE_ANGLES,
+        // q2repro CL_PredictAngles adds command and float delta directly.
+        prediction: RAW_ANGLES,
+    },
+    ViewAnglePolicies {
+        movement: ARENA_ANGLES,
+        prediction: ARENA_ANGLES,
+    },
+];
+
+#[derive(Clone, Copy)]
 pub enum FreeWish {
     Existing,
     NativeControl,
@@ -526,7 +581,7 @@ pub struct Capabilities {
     pub special: SpecialMovement,
     pub landing: LandingPolicy,
     pub stance: StancePolicy,
-    pub circular_pitch: bool,
+    pub view_angles: ViewAnglePolicies,
     pub dead_friction: Option<f32>,
 }
 pub fn capabilities(rules: RuleSetId) -> Capabilities {
@@ -546,7 +601,7 @@ pub fn capabilities(rules: RuleSetId) -> Capabilities {
         special: SPECIAL[rules as usize],
         landing: LANDING[rules as usize],
         stance: STANCE[rules as usize],
-        circular_pitch: [false, false, true, true, false][rules as usize],
+        view_angles: VIEW_ANGLES[rules as usize],
         dead_friction: [None, None, Some(20.0), Some(20.0), Some(20.0)][rules as usize],
     }
 }

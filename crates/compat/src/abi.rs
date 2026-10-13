@@ -2072,7 +2072,7 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         client.player.view_offset,
         client.command,
         client.player.native,
-        client.player.interpolate_only,
+        client.player.prediction,
     );
     let result = (|| {
         let client = &mut c.services.server.clients[id.0 as usize];
@@ -2195,7 +2195,7 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
             client.player.view_offset,
             client.command,
             client.player.native,
-            client.player.interpolate_only,
+            client.player.prediction,
         ) = saved;
     }
     result

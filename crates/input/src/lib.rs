@@ -488,7 +488,7 @@ impl Input {
         player: &qa_core::primitives::PlayerState,
         forward: f32,
     ) -> Option<Vec3> {
-        if player.interpolate_only
+        if !player.prediction.angles
             || !policy.pitch_drift()
             || self.seats[seat.index()].catchers != 0
         {

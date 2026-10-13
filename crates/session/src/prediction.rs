@@ -17,7 +17,7 @@ impl Prediction {
         self.player.trace_rules = source.trace_rules;
         self.player.movement = source.movement;
         self.player.native = source.native;
-        self.player.interpolate_only = source.interpolate_only;
+        self.player.prediction = source.prediction;
         self.player.view_angles = source.view_angles;
         self.player.view_offset = source.view_offset;
         self.player.ideal_pitch = source.ideal_pitch;
@@ -27,14 +27,21 @@ impl Prediction {
         command: UserCmd,
         trace: &mut dyn TraceServices,
     ) -> Result<MovementResult, TraceError> {
-        if self.player.interpolate_only {
+        if !self.player.prediction.position {
+            if self.player.prediction.angles {
+                qa_movement::predict_view_angles(command, &mut self.player);
+            }
             return Ok(MovementResult::default());
         }
+        let options = qa_movement::MoveOptions {
+            keep_view_angles: !self.player.prediction.angles,
+            ..Default::default()
+        };
         qa_movement::pmove(
             command,
             &mut self.player,
             trace,
-            Default::default(),
+            options,
             qa_movement::no_boundary,
         )
     }

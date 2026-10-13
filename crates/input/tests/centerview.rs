@@ -18,7 +18,7 @@ fn accepted_interpolated_view_is_not_replaced_by_local_quake_pitch_drift() {
         let time = EventTime::from_milliseconds(16);
         input.build_frame_with_policy(time, &[policy; SeatId::COUNT]);
         let mut player = PlayerState {
-            interpolate_only: true,
+            prediction: qa_core::primitives::PredictionPolicy::DISABLED,
             view_angles: Vec3([-17.0, 133.0, 9.0]),
             ideal_pitch: 20.0,
             ..Default::default()
@@ -29,7 +29,7 @@ fn accepted_interpolated_view_is_not_replaced_by_local_quake_pitch_drift() {
             None
         );
         assert_eq!(player.view_angles, Vec3([-17.0, 133.0, 9.0]));
-        player.interpolate_only = false;
+        player.prediction = Default::default();
         assert!(
             input
                 .drift_view(SeatId::FIRST, time, policy, &player, 0.0)

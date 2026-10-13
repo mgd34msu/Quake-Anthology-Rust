@@ -8,7 +8,7 @@ use qa_core::{
 };
 use qa_gameplay::rules::movement::{
     FreeAcceleration, FreeFinish, FreeFriction, FreeModes, FreeMotion, FreeMovePolicy, FreeWish,
-    LandingPolicy, ProbePhase, SpecialMovement, StancePolicy, capabilities,
+    LandingPolicy, ProbePhase, SpecialMovement, StancePolicy, ViewAnglePolicy, capabilities,
 };
 use qa_world::collision::{
     Contents, EntityTracePolicy, Trace, TraceError, TraceQuery, TraceRules, TraceScope, WorldTrace,
@@ -61,6 +61,8 @@ pub enum MovePhase {
 pub struct MoveOptions {
     pub initial_snap: bool,
     pub phase: MovePhase,
+    /// Position prediction can consume the accepted view without changing it.
+    pub keep_view_angles: bool,
 }
 pub type MoveEntry<E, B> = fn(
     UserCmd,
@@ -98,6 +100,49 @@ where
     B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
 {
     entry(player.movement_rules)(command, player, trace, options, &mut boundary)
+}
+
+fn update_view_angles(command: UserCmd, player: &mut PlayerState, policy: ViewAnglePolicy) {
+    if policy.short_angles {
+        for i in 0..3 {
+            let command_angle =
+                math::angle_to_short(command.view_angles.0[i], math::AngleShortForm::Factored);
+            let mut angle = command_angle.wrapping_add(
+                player.movement.delta_angles.0[i].units(math::AngleShortForm::Factored),
+            ) as i16;
+            if policy.signed_pitch_limit && i == 0 {
+                let clamped = angle.clamp(-16000, 16000);
+                if clamped != angle {
+                    let command_angle = command_angle as u16;
+                    player.movement.delta_angles.0[i] =
+                        AngleOffset::Units(i32::from(clamped) - i32::from(command_angle));
+                    angle = clamped;
+                }
+            }
+            player.view_angles.0[i] = math::short_to_angle(i32::from(angle));
+        }
+    } else {
+        player.view_angles = command.view_angles + player.movement.delta_angles.degrees();
+    }
+    if policy.circular_pitch {
+        let pitch = &mut player.view_angles.0[0];
+        if *pitch > 89.0 && *pitch < 180.0 {
+            *pitch = 89.0;
+        } else if *pitch < 271.0 && *pitch >= 180.0 {
+            *pitch = 271.0;
+        }
+        if player.movement.timer.contains(MovementTimer::TELEPORT) {
+            player.view_angles.0[0] = 0.0;
+            player.view_angles.0[2] = 0.0;
+        }
+    }
+}
+
+/// Angle-only prediction consumes the player's movement capability without
+/// advancing position, timers, traces or native memory boundaries.
+pub fn predict_view_angles(command: UserCmd, player: &mut PlayerState) {
+    let policy = capabilities(player.movement_rules).view_angles.prediction;
+    update_view_angles(command, player, policy);
 }
 
 fn with_rollback<E>(
@@ -247,7 +292,7 @@ pub(crate) struct Parameters {
     pub special: SpecialMovement,
     pub landing: LandingPolicy,
     stance: StancePolicy,
-    circular_pitch: bool,
+    angles: ViewAnglePolicy,
     fly_accel: f32,
     exclusive_button: Option<u32>,
     dead_friction: Option<f32>,
@@ -286,7 +331,7 @@ impl Parameters {
             special: capabilities.special,
             landing: capabilities.landing,
             stance: capabilities.stance,
-            circular_pitch: capabilities.circular_pitch,
+            angles: capabilities.view_angles.movement,
             fly_accel: 8.0,
             exclusive_button: if arena { Some(buttons::TALK) } else { None },
             dead_friction: capabilities.dead_friction,
@@ -1395,41 +1440,8 @@ impl Step<'_> {
             self.command.movement = [0.0; 3];
         }
         let mut previous = self.player.body.position;
-        if self.classic() || self.arena() {
-            for i in 0..3 {
-                let command_angle = math::angle_to_short(
-                    self.command.view_angles.0[i],
-                    math::AngleShortForm::Factored,
-                );
-                let mut angle = command_angle.wrapping_add(
-                    self.player.movement.delta_angles.0[i].units(math::AngleShortForm::Factored),
-                ) as i16;
-                if self.arena() && i == 0 {
-                    let clamped = angle.clamp(-16000, 16000);
-                    if clamped != angle {
-                        let command_angle = command_angle as u16;
-                        self.player.movement.delta_angles.0[i] =
-                            AngleOffset::Units(i32::from(clamped) - i32::from(command_angle));
-                        angle = clamped;
-                    }
-                }
-                self.player.view_angles.0[i] = math::short_to_angle(i32::from(angle));
-            }
-        } else {
-            self.player.view_angles =
-                self.command.view_angles + self.player.movement.delta_angles.degrees();
-        }
-        if self.parameters.circular_pitch {
-            let pitch = &mut self.player.view_angles.0[0];
-            if *pitch > 89.0 && *pitch < 180.0 {
-                *pitch = 89.0;
-            } else if *pitch < 271.0 && *pitch >= 180.0 {
-                *pitch = 271.0;
-            }
-            if self.player.movement.timer.contains(MovementTimer::TELEPORT) {
-                self.player.view_angles.0[0] = 0.0;
-                self.player.view_angles.0[2] = 0.0;
-            }
+        if !self.options.keep_view_angles {
+            update_view_angles(self.command, self.player, self.parameters.angles);
         }
         if self.parameters.special.ladder.is_none() {
             self.player.movement.ladder = false;

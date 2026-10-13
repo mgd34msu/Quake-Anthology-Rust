@@ -32,16 +32,23 @@ fn native_metadata_follows_the_bound_lifetime_and_clears_on_rebind_or_disconnect
     tail.weapon_number = Some(0);
     tail.flags = 0x8000_3163;
     server.clients[id.0 as usize].player.native = Some(tail);
-    server.clients[id.0 as usize].player.interpolate_only = true;
+    server.clients[id.0 as usize].player.prediction =
+        qa_core::primitives::PredictionPolicy::DISABLED;
     assert!(server.bind_client_native(id, native));
     assert_eq!(server.clients[id.0 as usize].player.native, Some(tail));
-    assert!(server.clients[id.0 as usize].player.interpolate_only);
+    assert_eq!(
+        server.clients[id.0 as usize].player.prediction,
+        qa_core::primitives::PredictionPolicy::DISABLED
+    );
     assert!(!server.bind_client_native(id, occupied));
     assert_eq!(server.clients[id.0 as usize].player.native, Some(tail));
     let changed = NativeEntity { slot: 1, ..native };
     assert!(server.bind_client_native(id, changed));
     assert_eq!(server.clients[id.0 as usize].player.native, None);
-    assert!(!server.clients[id.0 as usize].player.interpolate_only);
+    assert_eq!(
+        server.clients[id.0 as usize].player.prediction,
+        Default::default()
+    );
     server.clients[id.0 as usize].player.native = Some(tail);
     assert!(server.disconnect(id));
     let replacement = server
@@ -61,6 +68,10 @@ fn prediction_copies_metadata_and_effective_hot_inputs_without_copying_inventory
     tail.speed = Some(250);
     tail.client_number = Some(1);
     source.native = Some(tail);
+    source.prediction = qa_core::primitives::PredictionPolicy {
+        position: false,
+        angles: true,
+    };
     source.movement.tuning.gravity_multiplier = 0.0;
     source.movement.tuning.gravity = Some(MovementMagnitude::native(1200.0, 0.0));
     source.inventory.item_counts[0] = 99;
@@ -71,6 +82,7 @@ fn prediction_copies_metadata_and_effective_hot_inputs_without_copying_inventory
     let inventory = prediction.player.inventory.item_counts.as_ptr();
     prediction.apply_snapshot(&source);
     assert_eq!(prediction.player.native, source.native);
+    assert_eq!(prediction.player.prediction, source.prediction);
     assert_eq!(prediction.player.movement, source.movement);
     assert_eq!(
         (
@@ -84,4 +96,5 @@ fn prediction_copies_metadata_and_effective_hot_inputs_without_copying_inventory
     source.reset();
     prediction.apply_snapshot(&source);
     assert_eq!(prediction.player.native, None);
+    assert_eq!(prediction.player.prediction, Default::default());
 }

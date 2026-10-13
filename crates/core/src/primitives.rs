@@ -616,6 +616,28 @@ impl NativePlayerTail {
     }
 }
 
+/// Accepted protocol capabilities, independent of movement and presentation.
+/// A native client may predict angles while retaining its received position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PredictionPolicy {
+    pub position: bool,
+    pub angles: bool,
+}
+impl PredictionPolicy {
+    pub const DISABLED: Self = Self {
+        position: false,
+        angles: false,
+    };
+}
+impl Default for PredictionPolicy {
+    fn default() -> Self {
+        Self {
+            position: true,
+            angles: true,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct PlayerState {
     pub values: ValueBank,
@@ -623,8 +645,7 @@ pub struct PlayerState {
     /// Caller clipping/filtering policy, independent of movement and geometry.
     pub trace_rules: RuleSetId,
     pub movement: MovementState,
-    /// Accepted native follow/no-position-prediction state is presented directly.
-    pub interpolate_only: bool,
+    pub prediction: PredictionPolicy,
     pub body: Body,
     pub view_angles: Vec3,
     pub health: i32,

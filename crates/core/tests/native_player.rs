@@ -22,7 +22,7 @@ fn native_player_metadata_keeps_full_integer_words_and_explicit_zero_ordinals() 
             player.movement_rules = RuleSetId::QuakeWorld;
             player.trace_rules = RuleSetId::Quake2;
             player.native = Some(tail);
-            player.interpolate_only = true;
+            player.prediction = qa_core::primitives::PredictionPolicy::DISABLED;
             assert_eq!(player.native, Some(tail));
             assert_eq!(player.native.unwrap().gravity, Some(native));
             assert_eq!(player.native.unwrap().speed, Some(native));
@@ -31,7 +31,7 @@ fn native_player_metadata_keeps_full_integer_words_and_explicit_zero_ordinals() 
             assert_eq!(player.native.unwrap().ground_number, Some(1022));
             player.reset();
             assert_eq!(player.native, None);
-            assert!(!player.interpolate_only);
+            assert_eq!(player.prediction, Default::default());
             assert_eq!(player.inventory.item_counts.len(), 2);
         }
     }

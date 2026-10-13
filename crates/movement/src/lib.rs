@@ -5,7 +5,7 @@ mod slide;
 mod special;
 pub use physics::{
     EffectiveTuning, MoveEntry, MoveOptions, MovePhase, MovementResult, TraceServices,
-    effective_tuning, entry, no_boundary, pmove, set_bounds,
+    effective_tuning, entry, no_boundary, pmove, predict_view_angles, set_bounds,
 };
 use qa_core::{
     primitives::{RuleSetId, UserCmd},

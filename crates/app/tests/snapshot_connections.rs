@@ -602,3 +602,173 @@ fn rejected_snapshot_fragment_keeps_provenance_pending_while_local_client_and_ti
         assert_eq!(host.runtime.network.command_errors, 0);
     }
 }
+
+struct NoPredictionQueries;
+impl qa_movement::TraceServices for NoPredictionQueries {
+    fn trace(
+        &mut self,
+        _: qa_world::collision::TraceQuery,
+    ) -> Result<qa_world::collision::Trace, qa_world::collision::TraceError> {
+        panic!("queued nonpositional or noclip prediction must not trace")
+    }
+    fn point_contents(
+        &self,
+        _: Vec3,
+        _: qa_world::collision::EntityTracePolicy,
+    ) -> Result<qa_world::collision::Contents, qa_world::collision::TraceError> {
+        panic!("queued nonpositional or noclip prediction must not sample contents")
+    }
+}
+
+#[test]
+fn queued_native_flags_select_position_and_angle_permissions_independently_of_movement() {
+    for (protocol, flags, expected) in [
+        (
+            Protocol::Quake2_34,
+            64,
+            PredictionPolicy {
+                position: false,
+                angles: true,
+            },
+        ),
+        (
+            Protocol::Quake2Repro1038,
+            64,
+            PredictionPolicy {
+                position: false,
+                angles: true,
+            },
+        ),
+        (
+            Protocol::Quake2Repro1038,
+            256,
+            PredictionPolicy {
+                position: true,
+                angles: false,
+            },
+        ),
+        (Protocol::Quake2Repro1038, 320, PredictionPolicy::DISABLED),
+    ] {
+        let (mut host, local, _, _) = host(protocol);
+        let slot = local.0 as usize;
+        let player = &mut host.runtime.server.clients[slot].player;
+        player.movement_rules = RuleSetId::Quake3;
+        player.trace_rules = RuleSetId::QuakeWorld;
+        player.movement.mode = MovementMode::Noclip;
+        player.movement.delta_angles = AngleOffsets([AngleOffset::Degrees(45.0); 3]);
+        player.view_angles = Vec3([-0.0, 90.0, 0.0]);
+        let mut native =
+            NativePlayerTail::new(protocol.rule_set(), ResourceNamespace::Module(ENTITIES));
+        native.flags = flags;
+        player.native = Some(native);
+        // Capability identities are explicit CLIENT choices, not wire fields.
+        host.runtime.prediction[0].player.trace_rules = RuleSetId::QuakeWorld;
+        let time = EventTime::from_milliseconds(100);
+        let mut source = Source {
+            time,
+            ..Default::default()
+        };
+        assert!(
+            host.runtime
+                .send_snapshot(local, time, None, &mut source, |_, _| None)
+        );
+
+        // Deliberately diverge SERVER after submission. CLIENT permissions and
+        // angles must come from the accepted packet, not the live server row.
+        let server = &mut host.runtime.server.clients[slot].player;
+        server.native.as_mut().unwrap().flags = 0;
+        server.view_angles = Vec3([999.0; 3]);
+        server.body.position = Vec3([999.0; 3]);
+        host.queue
+            .push(SysEvent {
+                time,
+                kind: EventKind::Time,
+            })
+            .unwrap();
+        host.drain(&mut Default::default());
+        let prediction = &mut host.runtime.prediction[0];
+        assert_eq!(
+            prediction.player.prediction, expected,
+            "{protocol:?} {flags}"
+        );
+        assert_eq!(prediction.player.native.unwrap().flags & 320, flags);
+        assert_eq!(
+            (
+                prediction.player.movement_rules,
+                prediction.player.trace_rules
+            ),
+            (RuleSetId::Quake3, RuleSetId::QuakeWorld)
+        );
+        assert_eq!(prediction.player.view_angles.0[1], 90.0);
+        let before = prediction.player.body;
+        let accepted_view = prediction.player.view_angles;
+        let movement = prediction.player.movement;
+        let command = UserCmd {
+            duration_ms: 16,
+            server_time_ms: 116,
+            movement: [127.0, 0.0, 0.0],
+            view_angles: Vec3([179.0, 0.0, -19.0]),
+            ..Default::default()
+        };
+        prediction
+            .advance(command, &mut NoPredictionQueries)
+            .unwrap();
+        if expected.position {
+            assert!(prediction.player.body.position.0[1] > before.position.0[1]);
+        } else {
+            for (actual, original) in [
+                (prediction.player.body.position, before.position),
+                (prediction.player.body.velocity, before.velocity),
+                (prediction.player.body.mins, before.mins),
+                (prediction.player.body.maxs, before.maxs),
+            ] {
+                assert_eq!(actual.0.map(f32::to_bits), original.0.map(f32::to_bits));
+            }
+            assert_eq!(
+                prediction.player.movement.command_time_ms,
+                movement.command_time_ms
+            );
+            assert_eq!(
+                prediction.player.movement.remaining_ms,
+                movement.remaining_ms
+            );
+            assert_eq!(prediction.player.movement.timer, movement.timer);
+        }
+        let view = if expected.angles {
+            // Foreign protocol flags select permissions, while this player
+            // retains the Q3 movement role's native angle kernel.
+            Vec3(std::array::from_fn(|axis| {
+                let short = qa_core::math::angle_to_short(
+                    command.view_angles.0[axis],
+                    qa_core::math::AngleShortForm::Factored,
+                )
+                .wrapping_add(
+                    movement.delta_angles.0[axis].units(qa_core::math::AngleShortForm::Factored),
+                ) as i16;
+                qa_core::math::short_to_angle(i32::from(if axis == 0 {
+                    short.clamp(-16000, 16000)
+                } else {
+                    short
+                }))
+            }))
+        } else {
+            accepted_view
+        };
+        assert_eq!(
+            prediction.player.view_angles.0.map(f32::to_bits),
+            view.0.map(f32::to_bits)
+        );
+        assert_eq!(
+            host.runtime.server.clients[slot].player.body.position,
+            Vec3([999.0; 3])
+        );
+        assert_eq!(
+            host.runtime.server.clients[slot]
+                .player
+                .native
+                .unwrap()
+                .flags,
+            0
+        );
+    }
+}

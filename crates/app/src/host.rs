@@ -1089,7 +1089,7 @@ impl FrameHost {
         if self.runtime.collision.is_some() {
             let mut predicted_poses = std::array::from_fn::<_, { SeatId::COUNT }, _>(|seat| {
                 self.local_seat(seat)
-                    .filter(|(_, _, player)| !player.interpolate_only)
+                    .filter(|(_, _, player)| player.prediction.position)
                     .map(|(_, client, player)| (client.entity, player.body.position))
             });
             self.runtime

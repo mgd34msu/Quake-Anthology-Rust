@@ -1006,7 +1006,7 @@ fn native_world_ground_survives_until_airborne_or_an_explicit_mapping_replaces_i
 
 #[test]
 fn accepted_follow_capability_and_client_target_use_the_existing_field_table() {
-    use qa_core::primitives::{ClientId, ResourceNamespace};
+    use qa_core::primitives::{ClientId, PredictionPolicy, ResourceNamespace};
     let namespace = ResourceNamespace::Client(ClientId(0));
     let projection = PlayerProjection::load(Protocol::Quake3_68, &[]);
     let mut words = [0; states::PLAYER_WORDS];
@@ -1027,10 +1027,10 @@ fn accepted_follow_capability_and_client_target_use_the_existing_field_table() {
         namespace,
         |_| None
     ));
-    assert!(player.interpolate_only);
+    assert_eq!(player.prediction, PredictionPolicy::DISABLED);
     words[19] = 0;
     assert!(projection.apply_stats(&words, &mut player, namespace));
-    assert!(player.interpolate_only);
+    assert_eq!(player.prediction, PredictionPolicy::DISABLED);
     assert!(projection.apply(
         &words,
         &mut player,
@@ -1038,7 +1038,7 @@ fn accepted_follow_capability_and_client_target_use_the_existing_field_table() {
         namespace,
         |_| None
     ));
-    assert!(!player.interpolate_only);
+    assert_eq!(player.prediction, PredictionPolicy::default());
     for protocol in [
         Protocol::NetQuake15,
         Protocol::QuakeWorld28,
@@ -1050,7 +1050,7 @@ fn accepted_follow_capability_and_client_target_use_the_existing_field_table() {
         if matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
             foreign[8] = 64 | 256 | 4096;
         }
-        player.interpolate_only = true;
+        player.prediction = PredictionPolicy::DISABLED;
         assert!(other.apply(
             &foreign,
             &mut player,
@@ -1058,7 +1058,17 @@ fn accepted_follow_capability_and_client_target_use_the_existing_field_table() {
             namespace,
             |_| None
         ));
-        assert!(!player.interpolate_only); // Partial Q2 prediction policy is not full FOLLOW.
+        assert_eq!(
+            player.prediction,
+            match protocol {
+                Protocol::Quake2_34 => PredictionPolicy {
+                    position: false,
+                    angles: true
+                },
+                Protocol::Quake2Repro1038 => PredictionPolicy::DISABLED,
+                _ => PredictionPolicy::default(),
+            }
+        );
         assert_eq!(player.movement_rules, RuleSetId::QuakeWorld);
     }
     let repro = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
@@ -1067,6 +1077,110 @@ fn accepted_follow_capability_and_client_target_use_the_existing_field_table() {
     assert_eq!(repro.client_number(&repro_words), Some(255));
     repro_words[42] = 256;
     assert_eq!(repro.client_number(&repro_words), None);
+}
+
+#[test]
+fn native_prediction_flags_keep_independent_capabilities_and_exact_wire_words()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{ClientId, PredictionPolicy, ResourceNamespace};
+    let namespace = ResourceNamespace::Client(ClientId(3));
+    for (protocol, cases) in [
+        (Protocol::Quake2_34, &[0, 64, 65][..]),
+        (Protocol::Quake2Repro1038, &[0, 64, 256, 320, 321][..]),
+        (Protocol::Quake3_68, &[0, 64, 256, 4096, 4097][..]),
+    ] {
+        let projection = PlayerProjection::load(protocol, &[]);
+        let flag_word = if protocol == Protocol::Quake3_68 {
+            19
+        } else {
+            8
+        };
+        for &flags in cases {
+            let mut words = vec![0; projection.words()];
+            words[flag_word] = flags;
+            let mut bytes = [0; 1400];
+            let received = match protocol {
+                Protocol::Quake2_34 => {
+                    let native: [u32; states::Q2_PLAYER_WORDS] =
+                        words.as_slice().try_into().unwrap();
+                    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+                    states::write_q2_player(&mut writer, &[0; states::Q2_PLAYER_WORDS], &native)?;
+                    states::read_q2_player(
+                        &mut Reader::new(writer.bytes(), Encoding::Bytes),
+                        &[0; states::Q2_PLAYER_WORDS],
+                    )?
+                    .to_vec()
+                }
+                Protocol::Quake2Repro1038 => {
+                    let mut native = states::Q2ReproPlayer::default();
+                    let scalars = native.words.len();
+                    native.words.copy_from_slice(&words[..scalars]);
+                    native.stats.copy_from_slice(&words[scalars..]);
+                    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+                    let extra =
+                        states::write_q2_repro_player(&mut writer, &Default::default(), &native)?;
+                    let decoded = states::read_q2_repro_player(
+                        &mut Reader::new(writer.bytes(), Encoding::Bytes),
+                        &Default::default(),
+                        extra,
+                    )?;
+                    decoded.words.into_iter().chain(decoded.stats).collect()
+                }
+                Protocol::Quake3_68 => {
+                    let native: [u32; states::PLAYER_WORDS] = words.as_slice().try_into().unwrap();
+                    let mut writer = Writer::new(&mut bytes, Encoding::Q3);
+                    states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &native)?;
+                    states::read_q3_player(
+                        &mut Reader::new(writer.bytes(), Encoding::Q3),
+                        &[0; states::PLAYER_WORDS],
+                    )?
+                    .to_vec()
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(received[flag_word], flags);
+            let expected = match protocol {
+                Protocol::Quake2_34 => PredictionPolicy {
+                    position: flags & 64 == 0,
+                    angles: true,
+                },
+                Protocol::Quake2Repro1038 => PredictionPolicy {
+                    position: flags & 64 == 0,
+                    angles: flags & 256 == 0,
+                },
+                Protocol::Quake3_68 => PredictionPolicy {
+                    position: flags & 4096 == 0,
+                    angles: flags & 4096 == 0,
+                },
+                _ => unreachable!(),
+            };
+            let mut player = PlayerState::default();
+            player.movement_rules = RuleSetId::QuakeWorld;
+            player.trace_rules = RuleSetId::Quake2;
+            player.prediction = PredictionPolicy::DISABLED;
+            let mut context = PlayerContext::default();
+            assert!(projection.apply(&received, &mut player, &mut context, namespace, |_| None));
+            assert_eq!(player.prediction, expected);
+            assert_eq!(
+                (player.movement_rules, player.trace_rules),
+                (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+            );
+            assert_eq!(player.native.unwrap().flags, flags);
+            let mut projected = vec![0; projection.words()];
+            assert!(projection.reduce(&player, &context, &mut projected, |_| None));
+            assert_eq!(projected[flag_word], flags);
+            words.copy_from_slice(&received);
+            words[flag_word] = 0;
+            assert!(projection.apply_stats(&words, &mut player, namespace));
+            assert_eq!(player.prediction, expected);
+            let stats = PlayerProjection::load_stat_values(protocol, &[], &[]);
+            assert!(stats.apply(&words, &mut player, &mut context, namespace, |_| None));
+            assert_eq!(player.prediction, expected);
+            assert!(projection.apply(&words, &mut player, &mut context, namespace, |_| None));
+            assert_eq!(player.prediction, PredictionPolicy::default());
+        }
+    }
+    Ok(())
 }
 
 #[test]

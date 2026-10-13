@@ -249,7 +249,8 @@ pub struct PlayerProjection {
     exact_modes: bool,
     flags: [u32; 8],
     flag_mask: u32,
-    interpolation_mask: u32,
+    prediction_masks: [u32; 2],
+    stats_only: bool,
     client_limit: u32,
     bindings: Box<[Field<ValueBinding>]>,
     write_bindings: Box<[Field<ValueBinding>]>,
@@ -427,10 +428,13 @@ impl PlayerProjection {
             exact_modes: false,
             flags,
             flag_mask: flags.into_iter().fold(0, |mask, flag| mask | flag),
-            interpolation_mask: match protocol {
-                Protocol::Quake3_68 => 4096,
-                _ => 0,
+            prediction_masks: match protocol {
+                Protocol::Quake2_34 => [64, 0],
+                Protocol::Quake2Repro1038 => [64, 256],
+                Protocol::Quake3_68 => [4096; 2],
+                _ => [0; 2],
             },
+            stats_only,
             client_limit: if protocol == Protocol::Quake2Repro1038 {
                 256
             } else {
@@ -639,6 +643,7 @@ impl PlayerProjection {
         mut resolve_ground: impl FnMut(u32) -> Option<EntityId>,
         stats_only: bool,
     ) -> bool {
+        let stats_only = stats_only || self.stats_only;
         let Some(words) = words.get(..self.words) else {
             return false;
         };
@@ -652,7 +657,7 @@ impl PlayerProjection {
         let mut native = NativePlayerTail::new(self.protocol.rule_set(), namespace);
         if !stats_only {
             context.namespace = Some(namespace);
-            player.interpolate_only = false;
+            player.prediction = Default::default();
         }
         for field in &self.fields {
             if stats_only && !matches!(field.source, Health | Armor | Score | Frags | WeaponTime) {
@@ -677,7 +682,8 @@ impl PlayerProjection {
                 Timer => player.movement.remaining_ms = value,
                 Flags => {
                     native.flags = word;
-                    player.interpolate_only = word & self.interpolation_mask != 0;
+                    player.prediction.position = word & self.prediction_masks[0] == 0;
+                    player.prediction.angles = word & self.prediction_masks[1] == 0;
                     if self.flags[0] != 0 {
                         player.movement.ducked = value & self.flags[0] != 0;
                     }
