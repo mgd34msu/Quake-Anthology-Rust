@@ -1151,6 +1151,7 @@ fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
             weapon_number: Some(65539),
             gravity: Some(16_777_217),
             speed: Some(-16_777_219),
+            signals: Some(Default::default()),
         })
     );
     assert_eq!(

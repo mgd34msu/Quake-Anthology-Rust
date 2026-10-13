@@ -674,6 +674,7 @@ pub(crate) const RERELEASE_IMPORTS: [Import; 71] = project(true);
 
 const fn call_table(imports: &[Import]) -> CallTable {
     let mut table = CallTable {
+        client_view: false,
         entries: [None; 256],
     };
     let mut ordinal = 0;

@@ -8,9 +8,10 @@ use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
 use qa_core::{
     names::NameTable,
     primitives::{
-        ClientId, ClockObservation, ModuleId, MovementMode, NativeEntity, NumericValue,
-        PlayerValueBindings, Q3StatLayout, ResourceNamespace, RuleSetId, SoundRef, ThinkTime,
-        ValueBinding, ValueId, ValueReset, ValueWidth, Vec3, WeaponReadiness,
+        ClientId, ClockObservation, ModuleId, MovementMode, NativeEntity, NativePlayerTail,
+        NumericValue, PlayerDamageSample, PlayerSignal, PlayerSignals, PlayerValueBindings,
+        Q3StatLayout, ResourceNamespace, RuleSetId, SoundRef, ThinkTime, ValueBinding, ValueId,
+        ValueReset, ValueWidth, Vec3, WeaponReadiness,
     },
     sys_events::EventTime,
 };
@@ -27,6 +28,42 @@ const NATIVE: NativeEntity = NativeEntity {
     module: MODULE,
     slot: 0,
 };
+const SIGNAL_SAMPLE: PlayerSignals = PlayerSignals {
+    sequence: 0x8001_0001,
+    events: [
+        PlayerSignal {
+            code: 0x8002_0301,
+            parameter: 0x8101_0005,
+        },
+        PlayerSignal {
+            code: 0xffff_ffff,
+            parameter: 0x8202_0006,
+        },
+    ],
+    external: PlayerSignal {
+        code: 0x8303_0307,
+        parameter: 0x8404_0008,
+    },
+    damage: PlayerDamageSample {
+        sequence: 0x8505_0009,
+        yaw: 0x8606_000a,
+        pitch: 0x8707_000b,
+        count: 0x8808_000c,
+    },
+};
+const SIGNAL_CELLS: [(u64, u32); 11] = [
+    (108, 0x8001_0001),
+    (112, 0x8002_0301),
+    (116, 0xffff_ffff),
+    (120, 0x8101_0005),
+    (124, 0x8202_0006),
+    (128, 0x8303_0307),
+    (132, 0x8404_0008),
+    (168, 0x8505_0009),
+    (172, 0x8606_000a),
+    (176, 0x8707_000b),
+    (180, 0x8808_000c),
+];
 
 fn bindings(first: u32) -> [ValueBinding; 16] {
     std::array::from_fn(|index| ValueBinding {
@@ -279,9 +316,20 @@ fn player(memory: &mut ModuleMemory<'_>, address: u64) {
         (60, 131073),
         (64, i32::MAX - 1),
         (68, 1022),
+        (108, 0),
+        (112, 0),
+        (116, 0),
+        (120, 0),
+        (124, 0),
+        (128, 0),
+        (132, 0),
         (140, 0),
         (144, 4),
         (164, -71),
+        (168, 0),
+        (172, 0),
+        (176, 0),
+        (180, 0),
         (444, 0),
     ] {
         memory.write_word(address + offset, value).unwrap();
@@ -408,6 +456,7 @@ fn verify(f: &Fixture) {
     let tail = p.native.unwrap();
     assert_eq!(tail.source, RuleSetId::Quake3);
     assert_eq!(tail.namespace, ResourceNamespace::Module(MODULE));
+    assert_eq!(tail.signals, Some(PlayerSignals::default()));
     assert_eq!(tail.flags, 1 | 2 | 32 | 64 | 256);
     assert_eq!((tail.gravity, tail.speed), (Some(1200), Some(250)));
     assert_eq!((tail.client_number, tail.weapon_number), (Some(0), Some(4)));
@@ -1313,6 +1362,144 @@ fn qvm_player_loop_sound_uses_public_memory_and_the_owning_namespace() {
     }
 }
 
+fn qvm_player_signals_preserve_native_cells_and_publication_boundaries() {
+    let mut f = Fixture::new();
+    let mut instructions = vec![(Opcode::Enter, 16)];
+    for (offset, value) in SIGNAL_CELLS {
+        instructions.extend([
+            (Opcode::Const, (PLAYERS + offset) as i32),
+            (Opcode::Const, value as i32),
+            (Opcode::Local, 32),
+            (Opcode::Load4, 0),
+            (Opcode::Add, 0),
+            (Opcode::Store4, 0),
+        ]);
+    }
+    instructions.extend([(Opcode::Const, 0), (Opcode::Leave, 16)]);
+    let mut vm = qvm(&instructions, &f.registry);
+    entity(&mut vm.memory, ENTITIES);
+    player(&mut vm.memory, PLAYERS);
+    f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+    let invoke = |vm: &mut Vm, f: &mut Fixture, increment: i32| {
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let mut engine = f.engine();
+        let mut calls = QvmCalls {
+            services: &mut engine,
+            table: &Q3_SERVER,
+            context: context(),
+            platform_time: EventTime::from_milliseconds(1234),
+            command: &[],
+            unknown: &mut unknown,
+        };
+        vm.call(
+            &mut calls,
+            [8, 900, increment, 0, 0, 0, 0, 0, 0, 0],
+            200,
+            false,
+        )
+    };
+    let mut foreign =
+        NativePlayerTail::new(RuleSetId::Quake2, ResourceNamespace::Client(ClientId(0)));
+    foreign.signals = Some(PlayerSignals::default());
+    f.server.clients[1].player.native = Some(foreign);
+    assert_eq!(invoke(&mut vm, &mut f, 0), Ok(0));
+    f.publish(&mut vm).unwrap();
+    let accepted = f.server.clients[1].player.native.unwrap();
+    assert_eq!(accepted.source, RuleSetId::Quake3);
+    assert_eq!(accepted.namespace, ResourceNamespace::Module(MODULE));
+    assert_eq!(accepted.signals, Some(SIGNAL_SAMPLE));
+    assert_eq!(
+        f.server.clients[1].player.movement_rules,
+        RuleSetId::QuakeWorld
+    );
+    assert_eq!(f.server.clients[1].player.trace_rules, RuleSetId::Quake2);
+    for (offset, value) in SIGNAL_CELLS {
+        assert_eq!(vm.memory.read_word(PLAYERS + offset), Ok(value as i32));
+    }
+    let projection = qa_network::projection::PlayerProjection::load_native_q3(
+        PlayerValueBindings::EMPTY,
+        Q3StatLayout::BASE,
+    );
+    for (source, namespace) in [
+        (RuleSetId::Quake3, ResourceNamespace::Module(MODULE)),
+        (RuleSetId::Quake3, ResourceNamespace::Module(ModuleId(9))),
+        (RuleSetId::Quake3, ResourceNamespace::Client(ClientId(1))),
+        (RuleSetId::Quake2, ResourceNamespace::Module(MODULE)),
+    ] {
+        let p = &mut f.server.clients[1].player;
+        p.native.as_mut().unwrap().source = source;
+        let mut words = [0; qa_network::states::PLAYER_WORDS];
+        assert!(projection.reduce(
+            p,
+            &qa_network::projection::PlayerContext {
+                namespace: Some(namespace),
+                ..Default::default()
+            },
+            &mut words,
+            |_| None,
+            |_| None,
+        ));
+        let native = source == RuleSetId::Quake3 && namespace == ResourceNamespace::Module(MODULE);
+        assert_eq!(
+            [13, 16, 18, 38, 39, 23, 27, 29, 30, 31, 32].map(|word| words[word]),
+            SIGNAL_CELLS.map(|(_, value)| if native { value } else { 0 })
+        );
+    }
+    f.server.clients[1].player.native = Some(accepted);
+
+    f.server.clients[1].module_movement = false;
+    assert_eq!(invoke(&mut vm, &mut f, 1), Ok(0));
+    f.publish(&mut vm).unwrap();
+    assert_eq!(f.server.clients[1].player.native, Some(accepted));
+    for (offset, value) in SIGNAL_CELLS {
+        assert_eq!(
+            vm.memory.read_word(PLAYERS + offset),
+            Ok(value.wrapping_add(1) as i32)
+        );
+    }
+
+    // Failed publication keeps the sample even after the guest changed it.
+    f.server.clients[1].module_movement = true;
+    assert_eq!(invoke(&mut vm, &mut f, 2), Ok(0));
+    assert_eq!(
+        f.publish_with_clock(
+            &mut vm,
+            EventTime::from_milliseconds(2234),
+            ThinkTime::Seconds(900.0),
+        ),
+        Err(CallError::Capacity)
+    );
+    assert_eq!(f.server.clients[1].player.native, Some(accepted));
+
+    let old_entity = f.server.clients[1].entity;
+    f.server.entities.columns.owner[old_entity.slot as usize] = ModuleId(2);
+    f.publish(&mut vm).unwrap();
+    assert_eq!(f.server.clients[1].player.native, Some(accepted));
+    f.server.entities.columns.owner[old_entity.slot as usize] = MODULE;
+    assert!(f.server.disconnect(ClientId(1)));
+    assert!(f.server.clients[1].player.native.is_none());
+    f.publish(&mut vm).unwrap();
+    assert!(f.server.clients[1].player.native.is_none());
+    assert_eq!(
+        vm.bind_client(&f.server.entities, NATIVE, old_entity),
+        Err(CallError::Entity)
+    );
+    assert_eq!(
+        f.server.connect(Connection::Local, MODULE, Some(NATIVE)),
+        Some(ClientId(1))
+    );
+    assert_ne!(f.server.clients[1].entity, old_entity);
+    assert!(f.server.clients[1].player.native.is_none());
+    f.server.clients[1].module_movement = true;
+    f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+    assert_eq!(invoke(&mut vm, &mut f, 0), Ok(0));
+    f.publish(&mut vm).unwrap();
+    assert_eq!(
+        f.server.clients[1].player.native.unwrap().signals,
+        Some(SIGNAL_SAMPLE)
+    );
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "../../formats/tests/support/native_image.rs"]
 #[allow(dead_code)]
@@ -1472,6 +1659,11 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     moved.extend([0xc7, 0x80]);
     moved.extend(444u32.to_le_bytes());
     moved.extend(0x8001_0005u32.to_le_bytes());
+    for (offset, value) in SIGNAL_CELLS {
+        moved.extend([0xc7, 0x80]);
+        moved.extend((offset as u32).to_le_bytes());
+        moved.extend(value.to_le_bytes());
+    }
     moved.extend(&code);
     f.server.clients[1].player.loop_sound =
         SoundRef::native(ResourceNamespace::Client(ClientId(0)), 5);
@@ -1504,6 +1696,7 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     let accepted_tail = f.server.clients[1].player.native;
     assert_eq!(accepted_tail.unwrap().gravity, Some(16_777_217));
     assert_eq!(accepted_tail.unwrap().speed, Some(-16_777_219));
+    assert_eq!(accepted_tail.unwrap().signals, Some(SIGNAL_SAMPLE));
     let mut clear_loop = vec![0x48, 0xb8];
     clear_loop.extend(native_players.to_le_bytes());
     clear_loop.extend([0xc7, 0x80]);
@@ -1567,6 +1760,11 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     stats_only.extend([0xc7, 0x80]);
     stats_only.extend(444u32.to_le_bytes());
     stats_only.extend(0u32.to_le_bytes());
+    for (offset, _) in SIGNAL_CELLS {
+        stats_only.extend([0xc7, 0x80]);
+        stats_only.extend((offset as u32).to_le_bytes());
+        stats_only.extend(0u32.to_le_bytes());
+    }
     stats_only.extend(&code);
     qa_compat::memory::process_memory(&mut vm.process)
         .unwrap()
@@ -1602,11 +1800,13 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         queued: EventTime::from_milliseconds(103_000),
     });
     assert_eq!(p.native_clock, accepted_clock);
+    assert_eq!(p.native.unwrap().signals, Some(SIGNAL_SAMPLE));
     assert_eq!(
         p.values.get(ValueId(49)),
         Some(NumericValue::integer(9_014_000))
     );
     // A failed native export does not publish bytes written before its trap.
+    f.server.clients[1].module_movement = true;
     let mut failing = vec![0x48, 0xb8];
     failing.extend(native_players.to_le_bytes());
     failing.extend([0xc7, 0x40, 20]);
@@ -1622,6 +1822,11 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     failing.extend([0xc7, 0x80]);
     failing.extend(444u32.to_le_bytes());
     failing.extend(17u32.to_le_bytes());
+    for (offset, value) in SIGNAL_CELLS {
+        failing.extend([0xc7, 0x80]);
+        failing.extend((offset as u32).to_le_bytes());
+        failing.extend(value.wrapping_add(1).to_le_bytes());
+    }
     failing.extend([0x0f, 0x0b]);
     qa_compat::memory::process_memory(&mut vm.process)
         .unwrap()
@@ -1639,6 +1844,10 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     );
     assert_eq!(f.server.clients[1].player.body.position.0[0], 123.5);
     assert_eq!(f.server.clients[1].player.native, accepted_tail);
+    assert_eq!(
+        f.server.clients[1].player.native.unwrap().signals,
+        Some(SIGNAL_SAMPLE)
+    );
     assert_eq!(f.server.clients[1].player.loop_sound, accepted_loop);
     assert_eq!(f.server.clients[1].player.native_clock, accepted_clock);
     assert_eq!(
@@ -1670,6 +1879,7 @@ fn main() {
     qvm_powerups_observe_the_signed_clock_supplied_to_the_guest();
     qvm_nonframe_exports_keep_the_frame_clock_and_current_acquisition_time();
     qvm_player_loop_sound_uses_public_memory_and_the_owning_namespace();
+    qvm_player_signals_preserve_native_cells_and_publication_boundaries();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     owned_native_export_imports_public_player_memory_only_after_success();
     println!("Q3 public player memory: all checks passed");

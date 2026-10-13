@@ -225,6 +225,99 @@ fn frame(host: &mut FrameHost, source: &mut Source) {
     source.time.0 += 100_000_000;
     host.frame(source, true);
 }
+
+fn damage_snapshot(host: &mut FrameHost, source: &mut Source, sequence: u32) {
+    use qa_core::loopback::Endpoint;
+    let client = host.local_clients[0].unwrap();
+    let module = ModuleId(99);
+    assert!(
+        host.runtime
+            .server
+            .bind_client_native(client, NativeEntity { module, slot: 0 })
+    );
+    source.time = EventTime::from_milliseconds(u64::from(sequence) * 100);
+    let player = &mut host.runtime.server.clients[client.0 as usize].player;
+    player.health = 90;
+    let mut tail = NativePlayerTail::new(RuleSetId::Quake3, ResourceNamespace::Module(module));
+    tail.client_number = Some(0);
+    tail.signals = Some(PlayerSignals {
+        damage: PlayerDamageSample {
+            sequence,
+            yaw: 255,
+            pitch: 255,
+            count: 20,
+        },
+        ..Default::default()
+    });
+    player.native = Some(tail);
+    player.native_clock = Some(ClockObservation {
+        native: ThinkTime::Milliseconds(1000 + i64::from(sequence) * 100),
+        queued: source.time,
+    });
+    assert!(
+        host.runtime
+            .send_snapshot(client, source.time, None, source, |_, _| None)
+    );
+    host.queue
+        .push(SysEvent {
+            time: source.time,
+            kind: EventKind::Time,
+        })
+        .unwrap();
+    host.drain(&mut Default::default());
+    let channel = &host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .channel;
+    host.runtime.snapshots[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .advance_presentation(channel, source.time);
+    host.publish_client_feedback();
+}
+
+#[test]
+fn native_cgame_view_ownership_suppresses_fallback_and_release_baselines_without_replay() {
+    assert!(Q3_CLIENT.produces_client_view());
+    assert!(!Q3_UI.produces_client_view());
+    assert!(!qa_compat::abi::Q3_SERVER.produces_client_view());
+    let (mut host, mut source, _) =
+        fixture(Some(qa_network::commands::packet::Protocol::Quake3_68));
+    host.initialize_modules(Phase::Client);
+    let client = host.local_clients[0].unwrap();
+    let before = host.runtime.server.events.sequence_range().end;
+    damage_snapshot(&mut host, &mut source, 1);
+    damage_snapshot(&mut host, &mut source, 2);
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .hud
+            .view_feedback
+            .is_none()
+    );
+    assert_eq!(host.runtime.server.events.sequence_range().end, before);
+    // Actual module shutdown releases the view; retained suppressed frames
+    // establish its baseline rather than replaying historical damage.
+    assert!(host.shutdown_module(ModuleId(1)));
+    let released = host.runtime.server.events.sequence_range().end;
+    host.publish_client_feedback();
+    assert_eq!(host.runtime.server.events.sequence_range().end, released);
+    damage_snapshot(&mut host, &mut source, 3);
+    damage_snapshot(&mut host, &mut source, 4);
+    let time = host.time;
+    let counts = qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut source,
+        &mut host.console.scrollback,
+        &host.local_clients,
+        time,
+        3.0,
+        2.0,
+    );
+    assert_eq!(counts.view_feedback, 2);
+}
+
 fn listener(host: &mut FrameHost) {
     call(host, 33, &[0, 16, 64, 0]);
 }

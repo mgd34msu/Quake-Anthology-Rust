@@ -25,6 +25,9 @@ impl EventConsumer for Consumer {
             FrameEvent::Hud(event) => {
                 std::hint::black_box(event);
             }
+            FrameEvent::ViewFeedback(event) => {
+                std::hint::black_box(event);
+            }
             FrameEvent::PlayerValue { id, value } => {
                 std::hint::black_box((id, value));
             }

@@ -268,6 +268,7 @@ macro_rules! qc {
 }
 pub struct CallTable {
     entries: [Option<CallEntry>; 256],
+    client_view: bool,
 }
 pub struct UnknownCalls {
     numbers: NameTable,
@@ -311,6 +312,10 @@ impl UnknownCalls {
     }
 }
 impl CallTable {
+    /// Independent presentation ownership, selected by the loaded ABI table.
+    pub const fn produces_client_view(&self) -> bool {
+        self.client_view
+    }
     /// Resolved once when a CLIENT module is loaded, from its actual service
     /// entries rather than its module format or frame phase.
     pub fn consumes_server_commands(&self) -> bool {
@@ -357,6 +362,7 @@ impl CallTable {
 const fn common() -> CallTable {
     let mut table = CallTable {
         entries: [None; 256],
+        client_view: false,
     };
     table.entries[100] = scalar!(memset);
     table.entries[101] = scalar!(memcpy);
@@ -415,6 +421,7 @@ const fn server() -> CallTable {
 }
 const fn client() -> CallTable {
     let mut t = common();
+    t.client_view = true;
     t.entries[0] = scalar!(print);
     t.entries[1] = scalar!(abort);
     t.entries[2] = scalar!(milliseconds);
@@ -488,6 +495,7 @@ pub use q2::{CLASSIC as Q2_CLASSIC, RERELEASE as Q2_RERELEASE};
 const fn quakec() -> CallTable {
     let mut t = CallTable {
         entries: [None; 256],
+        client_view: false,
     };
     let vector = QcSignature::new(QcArgc::Fixed(1), QcArgs::Vector, true);
     let scalar = QcSignature::new(QcArgc::Fixed(1), QcArgs::Scalars, true);

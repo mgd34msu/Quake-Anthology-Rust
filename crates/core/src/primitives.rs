@@ -383,6 +383,60 @@ impl ClockObservation {
     }
 }
 
+/// A camera-only response. Its clock is the accepted native frame sample;
+/// player movement and command angles remain independently owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewFeedback {
+    pub kick: Vec3,
+    pub screen: [f32; 2],
+    pub value: f32,
+    pub clock: ClockObservation,
+    pub deflect_ms: f32,
+    pub return_ms: f64,
+}
+impl ViewFeedback {
+    /// Native integer presentation clocks subtract after conversion to float.
+    /// The return division is float; its outer subtraction is double.
+    pub fn kick_at(self, now: ThinkTime) -> Option<Vec3> {
+        let elapsed = match (self.clock.native, now) {
+            (ThinkTime::Milliseconds(start), ThinkTime::Milliseconds(now)) => {
+                now as f32 - start as f32
+            }
+            (ThinkTime::Seconds(start), ThinkTime::Seconds(now)) => ((now - start) * 1000.0) as f32,
+            _ => return None,
+        };
+        if !elapsed.is_finite()
+            || !self.deflect_ms.is_finite()
+            || self.deflect_ms <= 0.0
+            || !self.return_ms.is_finite()
+            || self.return_ms <= 0.0
+        {
+            return None;
+        }
+        let ratio = if elapsed < self.deflect_ms {
+            elapsed / self.deflect_ms
+        } else {
+            let remaining = (elapsed - self.deflect_ms) / self.return_ms as f32;
+            let ratio = (1.0 - f64::from(remaining)) as f32;
+            if ratio <= 0.0 {
+                return None;
+            }
+            ratio
+        };
+        Some(self.kick * ratio)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewFeedbackEvent {
+    pub client: ClientId,
+    pub client_lifetime: EntityId,
+    pub source: RuleSetId,
+    pub namespace: ResourceNamespace,
+    pub native_client: u32,
+    pub feedback: ViewFeedback,
+}
+
 /// Borrowed command tokens survive only the synchronous module invocation.
 /// The console owns tokenization; ABI adapters only project these bytes.
 #[derive(Clone, Copy, Debug, Default)]
@@ -623,6 +677,30 @@ pub struct WeaponState {
     pub readiness: WeaponReadiness,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerSignal {
+    pub code: u32,
+    pub parameter: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerDamageSample {
+    pub sequence: u32,
+    pub yaw: u32,
+    pub pitch: u32,
+    pub count: u32,
+}
+
+/// Raw native signals share the enclosing player tail's source and namespace.
+/// These two native event cells are ABI state, not command recording/history.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerSignals {
+    pub sequence: u32,
+    pub events: [PlayerSignal; 2],
+    pub external: PlayerSignal,
+    pub damage: PlayerDamageSample,
+}
+
 /// Native player metadata retains source widths independently of movement and
 /// connection identity. Hot movement fields overlay only their mapped flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -635,6 +713,7 @@ pub struct NativePlayerTail {
     pub weapon_number: Option<u32>,
     pub gravity: Option<i32>,
     pub speed: Option<i32>,
+    pub signals: Option<PlayerSignals>,
 }
 impl NativePlayerTail {
     pub const fn new(source: RuleSetId, namespace: ResourceNamespace) -> Self {
@@ -647,6 +726,7 @@ impl NativePlayerTail {
             weapon_number: None,
             gravity: None,
             speed: None,
+            signals: None,
         }
     }
 }
@@ -1708,6 +1788,7 @@ pub struct HudState {
     pub layout_text: Option<TextLease>,
     pub centerprint: Option<HudLine>,
     pub notify: [Option<HudLine>; 4],
+    pub view_feedback: Option<ViewFeedback>,
 }
 
 impl HudState {

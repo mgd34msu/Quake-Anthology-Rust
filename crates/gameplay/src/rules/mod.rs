@@ -1,4 +1,5 @@
 pub mod appearance;
+pub mod feedback;
 pub mod movement;
 pub mod presentation;
 pub mod q1;

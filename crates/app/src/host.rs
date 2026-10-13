@@ -421,12 +421,21 @@ impl FrameHost {
         self.advance_client_presentation();
         result.commands = self.client_frame();
         self.client_modules();
+        self.publish_client_feedback();
         self.publish_client_loops();
         result.client_ns = client.elapsed().as_nanos() as u64;
         self.dispatch_output(source, &mut result);
         result.input_ns = source.elapsed().as_nanos() as u64;
+        let views = self.client_views();
+        for (seat, view) in views.iter().enumerate() {
+            if let (Some(view), Some(client)) = (view, self.local_clients[seat])
+                && let Some(snapshot) = self.runtime.snapshots[client.0 as usize].as_mut()
+            {
+                snapshot.submitted_view(qa_core::math::angle_vectors(view.angles).axes());
+            }
+        }
         source.render(
-            &self.client_views(),
+            &views,
             &self.client_scene_inputs(),
             &self.client_hud_inputs(),
             qa_console::presentation::ConsoleView {
@@ -448,18 +457,73 @@ impl FrameHost {
     )]
     pub fn client_views(&self) -> [Option<ClientView>; SeatId::COUNT] {
         std::array::from_fn(|seat| {
-            let (_, _, player) = self.local_seat(seat)?;
+            let (client, row, player) = self.local_seat(seat)?;
             let (world, world_presentation) = self.local_worlds[seat]?;
             Some(ClientView {
                 world,
                 world_presentation,
                 presentation: self.local_presentations[seat],
                 origin: player.eye(),
-                angles: player.view_angles,
+                angles: self.client_angles(client, row, player),
                 fov_x: self.console.cvars.value(self.fov),
                 time_ms: self.time.milliseconds(),
             })
         })
+    }
+
+    fn client_angles(
+        &self,
+        client: ClientId,
+        row: &qa_session::clients::Client,
+        player: &qa_core::primitives::PlayerState,
+    ) -> qa_core::primitives::Vec3 {
+        let Some(snapshot) = self.runtime.snapshots[client.0 as usize].as_ref() else {
+            return player.view_angles;
+        };
+        if snapshot.owns_client_view() {
+            return player.view_angles;
+        }
+        let Some(interpolation) = snapshot.interpolation() else {
+            return player.view_angles;
+        };
+        qa_ui::hud::view_angles(
+            &row.hud,
+            player.view_angles,
+            player.health,
+            interpolation.time,
+        )
+    }
+
+    /// Transition due frames from the connection ring without replacing an
+    /// active envelope with a snapshot ahead of the presentation clock.
+    pub fn publish_client_feedback(&mut self) {
+        for snapshot in self.runtime.snapshots.iter_mut().flatten() {
+            let Some(_seat) = snapshot.seat() else {
+                continue;
+            };
+            let Some(client) = self
+                .runtime
+                .server
+                .clients
+                .get_mut(snapshot.client.0 as usize)
+            else {
+                continue;
+            };
+            if client.connection.is_some()
+                && let Some(connection) = self
+                    .runtime
+                    .network
+                    .get(snapshot.client, qa_core::loopback::Endpoint::Client)
+            {
+                snapshot.publish_feedback(
+                    client.entity,
+                    &connection.channel,
+                    &mut client.hud,
+                    &mut self.runtime.server.events,
+                    self.time,
+                );
+            }
+        }
     }
 
     pub(crate) fn publish_client_values(
@@ -735,7 +799,34 @@ impl FrameHost {
                 .cvars
                 .value_in(self.particle_gravity, qa_core::primitives::RuleSetId::Quake),
         );
-        let listeners = std::array::from_fn(|seat| {
+        // Channel replacement/protection observes this frame's listener even
+        // before newly received camera feedback is consumed.
+        source.listeners(
+            &self.client_listeners(),
+            self.console.cvars.value(self.volume),
+        );
+        result.output = crate::output::dispatch(
+            &mut self.runtime,
+            source,
+            &mut self.console.scrollback,
+            &self.local_clients,
+            self.time,
+            f64::from(self.console.cvars.value(self.notify_time)),
+            f64::from(self.console.cvars.value(self.center_time)),
+        );
+        result.output_drains += 1;
+        // Feedback has reached the HUD cursor before camera/listener sampling.
+        if result.output.view_feedback != 0 {
+            source.listeners(
+                &self.client_listeners(),
+                self.console.cvars.value(self.volume),
+            );
+        }
+        source.mix_audio(&self.client_entities_inputs());
+    }
+
+    fn client_listeners(&self) -> [Option<qa_audio::Listener>; SeatId::COUNT] {
+        std::array::from_fn(|seat| {
             let (client, row, player) = self.local_seat(seat)?;
             if self.runtime.snapshots[client.0 as usize]
                 .as_ref()
@@ -766,21 +857,9 @@ impl FrameHost {
                         ),
                 ),
                 origin: player.eye(),
-                right: qa_core::math::angle_vectors(player.view_angles).right,
+                right: qa_core::math::angle_vectors(self.client_angles(client, row, player)).right,
             })
-        });
-        source.listeners(&listeners, self.console.cvars.value(self.volume));
-        result.output = crate::output::dispatch(
-            &mut self.runtime,
-            source,
-            &mut self.console.scrollback,
-            &self.local_clients,
-            self.time,
-            f64::from(self.console.cvars.value(self.notify_time)),
-            f64::from(self.console.cvars.value(self.center_time)),
-        );
-        result.output_drains += 1;
-        source.mix_audio(&self.client_entities_inputs());
+        })
     }
 
     fn receive_packet(

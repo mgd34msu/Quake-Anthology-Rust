@@ -299,6 +299,268 @@ fn read(host: &mut FrameHost, address: i32) -> u32 {
     value as u32
 }
 
+fn write_damage(host: &mut FrameHost, native_ms: i64, sequence: u32, count: u32) {
+    host.call_module_export(
+        MODULE,
+        Export::clocked(CallbackId(8)),
+        ThinkTime::Milliseconds(native_ms),
+    )
+    .unwrap();
+    for (offset, value) in [(168, sequence), (172, 255), (176, 255), (180, count)] {
+        write_player_word(host, offset, value, native_ms);
+    }
+}
+
+fn write_player_word(host: &mut FrameHost, offset: i32, value: u32, native_ms: i64) {
+    host.call_module_export(
+        MODULE,
+        Export::words(
+            CallbackId(10),
+            &[(PLAYERS + offset) as u64, u64::from(value)],
+        ),
+        ThinkTime::Milliseconds(native_ms),
+    )
+    .unwrap();
+}
+
+fn advance_damage_view(host: &mut FrameHost, client: ClientId, queued_ms: u64) {
+    let channel = &host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .channel;
+    host.runtime.snapshots[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .advance_presentation(channel, EventTime::from_milliseconds(queued_ms));
+}
+
+fn consume_damage(host: &mut FrameHost) -> qa_app::output::OutputCounts {
+    host.publish_client_feedback();
+    qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut Source {
+            time: host.time,
+            polls: 0,
+        },
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.0,
+        2.0,
+    )
+}
+
+#[test]
+fn qvm_damage_crosses_queued_native_snapshot_ring_hud_and_real_refdef_without_mutating_angles() {
+    let (mut host, client) = fixture(800, 320, 0);
+    host.local_clients[0] = Some(client);
+    host.local_worlds[0] = Some((
+        qa_render::world::WorldId(0),
+        qa_render::world::WorldPresentationId(0),
+    ));
+    write_damage(&mut host, 1000, 0, 0);
+    transmit(&mut host, client, 100);
+    advance_damage_view(&mut host, client, 100);
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    let angles = host.runtime.prediction[0].player.view_angles;
+    let server_angles = host.runtime.server.clients[client.0 as usize]
+        .player
+        .view_angles;
+    write_damage(&mut host, 1100, 0x0101, 20);
+    let words = transmit(&mut host, client, 200);
+    assert_eq!(
+        (words[29], words[30], words[31], words[32]),
+        (1, 255, 255, 20)
+    );
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .hud
+            .view_feedback
+            .is_none()
+    );
+    advance_damage_view(&mut host, client, 200);
+    assert_eq!(consume_damage(&mut host).view_feedback, 1);
+    let feedback = host.runtime.server.clients[client.0 as usize]
+        .hud
+        .view_feedback
+        .unwrap();
+    assert_eq!(feedback.clock.native, ThinkTime::Milliseconds(1100));
+    assert_eq!(feedback.kick, Vec3([-8.888889, 0.0, 0.0]));
+    // A later frame advances presentation time without repeating the same damage.
+    write_damage(&mut host, 1300, 0x0101, 20);
+    transmit(&mut host, client, 250);
+    advance_damage_view(&mut host, client, 250);
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    let view = host.client_views()[0].unwrap();
+    let expected = qa_ui::hud::view_angles(
+        &host.runtime.server.clients[client.0 as usize].hud,
+        angles,
+        90,
+        ThinkTime::Milliseconds(1150),
+    );
+    assert_eq!(view.angles, expected);
+    assert_ne!(view.angles, angles);
+    let refdef = qa_app::renderer::view_refdef(
+        view,
+        qa_render::Viewport {
+            width: 320,
+            height: 200,
+            ..Default::default()
+        },
+        qa_app::renderer::Kind::Cpu,
+    );
+    assert_eq!(refdef.axes, qa_core::math::angle_vectors(expected).axes());
+    assert_eq!(host.runtime.prediction[0].player.view_angles, angles);
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize]
+            .player
+            .view_angles,
+        server_angles
+    );
+    assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
+}
+
+#[test]
+fn damage_overflow_resync_and_follow_changes_never_replay_retired_feedback() {
+    let (mut host, client) = fixture(800, 320, 0);
+    host.local_clients[0] = Some(client);
+    write_damage(&mut host, 1000, 0, 0);
+    transmit(&mut host, client, 100);
+    advance_damage_view(&mut host, client, 100);
+    consume_damage(&mut host);
+    for _ in 0..host.runtime.server.events.capacity() + 1 {
+        host.runtime
+            .server
+            .events
+            .push_to(
+                qa_core::events::OutputTarget::Local(client),
+                qa_core::events::FrameEvent::SetAngles(Vec3::default()),
+            )
+            .unwrap();
+    }
+    let before = host.runtime.server.events.rejected_publications();
+    write_damage(&mut host, 1100, 1, 20);
+    transmit(&mut host, client, 200);
+    advance_damage_view(&mut host, client, 200);
+    host.publish_client_feedback();
+    assert!(host.runtime.server.events.rejected_publications() > before);
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .hud
+            .view_feedback
+            .is_none()
+    );
+    consume_damage(&mut host);
+    // Production resync resets both the consumer and producer baseline.
+    host.publish_client_feedback();
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    write_damage(&mut host, 1200, 2, 20);
+    transmit(&mut host, client, 250);
+    advance_damage_view(&mut host, client, 300);
+    host.publish_client_feedback();
+    assert_eq!(consume_damage(&mut host).view_feedback, 1);
+    host.publish_client_feedback();
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    write_damage(&mut host, 1400, 2, 20);
+    write_player_word(&mut host, 140, 1, 1400);
+    transmit(&mut host, client, 500);
+    advance_damage_view(&mut host, client, 500);
+    host.publish_client_feedback();
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .hud
+            .view_feedback
+            .is_none()
+    );
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+}
+
+#[test]
+fn queued_damage_does_not_cross_a_follow_target_change_before_output_consumption() {
+    let (mut host, client) = fixture(800, 320, 0);
+    host.local_clients[0] = Some(client);
+    write_damage(&mut host, 1000, 0, 0);
+    transmit(&mut host, client, 100);
+    advance_damage_view(&mut host, client, 100);
+    consume_damage(&mut host);
+    write_damage(&mut host, 1100, 1, 20);
+    transmit(&mut host, client, 200);
+    write_damage(&mut host, 1200, 1, 20);
+    write_player_word(&mut host, 140, 1, 1200);
+    transmit(&mut host, client, 300);
+    advance_damage_view(&mut host, client, 300);
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .hud
+            .view_feedback
+            .is_none()
+    );
+    host.publish_client_feedback();
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+}
+
+#[test]
+fn future_damage_preserves_the_active_envelope_until_its_native_transition() {
+    let (mut host, client) = fixture(800, 320, 0);
+    host.local_clients[0] = Some(client);
+    host.local_worlds[0] = Some((
+        qa_render::world::WorldId(0),
+        qa_render::world::WorldPresentationId(0),
+    ));
+    write_damage(&mut host, 1000, 0, 0);
+    transmit(&mut host, client, 100);
+    advance_damage_view(&mut host, client, 100);
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    write_damage(&mut host, 1100, 1, 20);
+    transmit(&mut host, client, 200);
+    advance_damage_view(&mut host, client, 200);
+    assert_eq!(consume_damage(&mut host).view_feedback, 1);
+    let active = host.runtime.server.clients[client.0 as usize]
+        .hud
+        .view_feedback
+        .unwrap();
+    write_damage(&mut host, 1200, 2, 40);
+    transmit(&mut host, client, 250);
+    advance_damage_view(&mut host, client, 250);
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize]
+            .hud
+            .view_feedback,
+        Some(active)
+    );
+    let angles = host.runtime.prediction[0].player.view_angles;
+    assert_eq!(
+        host.client_views()[0].unwrap().angles,
+        qa_ui::hud::view_angles(
+            &host.runtime.server.clients[client.0 as usize].hud,
+            angles,
+            90,
+            ThinkTime::Milliseconds(1150)
+        )
+    );
+    advance_damage_view(&mut host, client, 300);
+    assert_eq!(consume_damage(&mut host).view_feedback, 1);
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize]
+            .hud
+            .view_feedback
+            .unwrap()
+            .clock
+            .native,
+        ThinkTime::Milliseconds(1200)
+    );
+    assert_eq!(host.client_views()[0].unwrap().angles, angles);
+    write_damage(&mut host, 1300, 2, 40);
+    transmit(&mut host, client, 350);
+    advance_damage_view(&mut host, client, 350);
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    assert_ne!(host.client_views()[0].unwrap().angles, angles);
+}
+
 fn presented_entity(host: &FrameHost, client: ClientId) -> Option<u32> {
     let frame = host
         .runtime

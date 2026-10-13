@@ -5,9 +5,9 @@ use qa_core::{
     math::{AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
         AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMagnitude, MovementMode,
-        MovementTimer, NativePlayerTail, PlayerState, PlayerValueBindings, Q3StatLayout,
-        ResourceNamespace, SoundRef, ValueBinding, ValueWidth, ViewWeapon, WeaponReadiness,
-        WeaponState,
+        MovementTimer, NativePlayerTail, PlayerDamageSample, PlayerSignals, PlayerState,
+        PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding, ValueWidth,
+        ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -70,6 +70,15 @@ enum Source {
     Weapon,
     WeaponModel,
     LoopSound,
+    EventSequence,
+    Event(usize),
+    EventParameter(usize),
+    ExternalEvent,
+    ExternalParameter,
+    DamageSequence,
+    DamageYaw,
+    DamagePitch,
+    DamageCount,
     Gravity,
     Speed,
     InfoFlags,
@@ -224,15 +233,26 @@ static Q3: &[Field] = &[
     f(9, Position(2), Bits),
     f(10, Velocity(2), Bits),
     f(12, Timer, Bits),
+    f(13, EventSequence, Bits),
+    f(16, Event(0), Bits),
+    f(18, Event(1), Bits),
     f(19, Flags, Bits),
     f(20, Ground, Bits),
+    f(23, ExternalEvent, Bits),
     f(24, Gravity, FloatInteger),
     f(25, Speed, FloatInteger),
     f(26, DeltaAngle(1), UnsignedShortAngle),
+    f(27, ExternalParameter, Bits),
     f(28, ViewOffset(2), FloatInteger),
+    f(29, DamageSequence, Bits),
+    f(30, DamageYaw, Bits),
+    f(31, DamagePitch, Bits),
+    f(32, DamageCount, Bits),
     f(34, Mode, Bits),
     f(35, DeltaAngle(0), UnsignedShortAngle),
     f(36, DeltaAngle(2), UnsignedShortAngle),
+    f(38, EventParameter(0), Bits),
+    f(39, EventParameter(1), Bits),
     f(40, Client, Bits),
     f(41, Weapon, Bits),
     f(42, View(2), Bits),
@@ -241,6 +261,57 @@ static Q3: &[Field] = &[
     f(51, Armor, Bits),
     f(64, Score, Bits),
 ];
+
+/// A borrowed snapshot's native view target and damage, without another player bank.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerFeedbackSample {
+    pub client_number: u32,
+    pub damage: PlayerDamageSample,
+    pub health: i32,
+}
+
+struct FeedbackFields {
+    client: Field,
+    health: Field,
+    sequence: Field,
+    yaw: Field,
+    pitch: Field,
+    count: Field,
+}
+impl FeedbackFields {
+    fn load(fields: &[Field]) -> Option<Self> {
+        Some(Self {
+            client: *fields.iter().find(|field| matches!(field.source, Client))?,
+            health: *fields.iter().find(|field| matches!(field.source, Health))?,
+            sequence: *fields
+                .iter()
+                .find(|field| matches!(field.source, DamageSequence))?,
+            yaw: *fields
+                .iter()
+                .find(|field| matches!(field.source, DamageYaw))?,
+            pitch: *fields
+                .iter()
+                .find(|field| matches!(field.source, DamagePitch))?,
+            count: *fields
+                .iter()
+                .find(|field| matches!(field.source, DamageCount))?,
+        })
+    }
+    fn read(&self, words: &[u32], client_limit: u32) -> Option<PlayerFeedbackSample> {
+        let read = |field: Field| field.convert.import(words[field.word]);
+        let client_number = read(self.client);
+        (client_number < client_limit).then(|| PlayerFeedbackSample {
+            client_number,
+            health: read(self.health) as i32,
+            damage: PlayerDamageSample {
+                sequence: read(self.sequence),
+                yaw: read(self.yaw),
+                pitch: read(self.pitch),
+                count: read(self.count),
+            },
+        })
+    }
+}
 
 /// One walker; the native format selects data at load, not another player store.
 pub struct PlayerProjection {
@@ -254,8 +325,10 @@ pub struct PlayerProjection {
     flag_mask: u32,
     prediction_masks: [u32; 2],
     stats_only: bool,
+    movement_only: bool,
     layout_valid: bool,
     client_limit: u32,
+    feedback: Option<FeedbackFields>,
     bindings: Box<[Field<ValueBinding>]>,
     write_bindings: Box<[Field<ValueBinding>]>,
     pub dropped_bindings: usize,
@@ -265,6 +338,7 @@ impl PlayerProjection {
     /// remain in the module's player_state_t and are imported separately.
     pub fn load_movement(protocol: Protocol) -> Self {
         let mut projection = Self::load_fields(protocol, &[], false, Q3StatLayout::BASE);
+        projection.movement_only = true;
         projection.fields = projection
             .fields
             .iter()
@@ -273,6 +347,7 @@ impl PlayerProjection {
                 field.word < MOVEMENT_WORDS && !matches!(field.source, Source::WeaponTime)
             })
             .collect();
+        projection.feedback = None;
         projection
     }
     pub fn load(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
@@ -428,25 +503,29 @@ impl PlayerProjection {
         let layout_valid = protocol != Protocol::Quake3_68
             || layout.fits(states::player_value_layout(protocol).1[0].count as usize);
         let stat_first = states::player_value_layout(protocol).1[0].first as usize;
+        let fields: Box<[_]> = fields
+            .iter()
+            .copied()
+            .filter(|field| !stats_only || matches!(field.source, Health | Armor | Score | Frags))
+            .map(|mut field| {
+                if protocol == Protocol::Quake3_68 && layout_valid {
+                    match field.source {
+                        Health => field.word = stat_first + usize::from(layout.health),
+                        Armor => field.word = stat_first + usize::from(layout.armor),
+                        _ => {}
+                    }
+                }
+                field
+            })
+            .collect();
+        let feedback = if layout_valid {
+            FeedbackFields::load(&fields)
+        } else {
+            None
+        };
         Self {
             protocol,
-            fields: fields
-                .iter()
-                .copied()
-                .filter(|field| {
-                    !stats_only || matches!(field.source, Health | Armor | Score | Frags)
-                })
-                .map(|mut field| {
-                    if protocol == Protocol::Quake3_68 && layout_valid {
-                        match field.source {
-                            Health => field.word = stat_first + usize::from(layout.health),
-                            Armor => field.word = stat_first + usize::from(layout.armor),
-                            _ => {}
-                        }
-                    }
-                    field
-                })
-                .collect(),
+            fields,
             words,
             modes,
             received_modes,
@@ -460,12 +539,14 @@ impl PlayerProjection {
                 _ => [0; 2],
             },
             stats_only,
+            movement_only: false,
             layout_valid,
             client_limit: if protocol == Protocol::Quake2Repro1038 {
                 256
             } else {
                 64
             },
+            feedback,
             dropped_bindings: bindings.len() - admitted.len(),
             write_bindings: admitted.clone(),
             bindings: admitted,
@@ -476,6 +557,14 @@ impl PlayerProjection {
     }
     pub fn movement_flag_mask(&self) -> u32 {
         self.flag_mask
+    }
+
+    /// Read the load-selected view/damage fields from a retained native frame.
+    /// Native and wire conversion share the same descriptors as full import.
+    pub fn damage_feedback(&self, words: &[u32]) -> Option<PlayerFeedbackSample> {
+        self.feedback
+            .as_ref()?
+            .read(words.get(..self.words)?, self.client_limit)
     }
 
     /// The native view target is independent of this connection's callback id.
@@ -608,7 +697,9 @@ impl PlayerProjection {
                             tail.ground_number
                         }
                         Weapon => tail.weapon_number,
-                        _ => None,
+                        _ => tail
+                            .signals
+                            .and_then(|signals| field.source.signal_value(signals)),
                     })
                     .unwrap_or_else(|| field.convert.export(word))
             };
@@ -786,6 +877,11 @@ impl PlayerProjection {
                     self.apply_weapon(field.source, value, &mut player.view_weapon, namespace);
                 }
                 LoopSound => player.loop_sound = SoundRef::native(namespace, value),
+                EventSequence | Event(_) | EventParameter(_) | ExternalEvent
+                | ExternalParameter | DamageSequence | DamageYaw | DamagePitch | DamageCount => {
+                    let signals = native.signals.get_or_insert_with(PlayerSignals::default);
+                    field.source.apply_signal(value, signals);
+                }
                 BodyFrame | BodyModel | BodySkin | BodyEffects => {
                     let body = context.appearance.get_or_insert_with(|| EntityAppearance {
                         source: self.protocol.rule_set(),
@@ -839,7 +935,7 @@ impl PlayerProjection {
                 BodyYaw | NativeValue => {}
             }
         }
-        if !stats_only {
+        if !stats_only && !self.movement_only {
             player.native = Some(native);
         }
         for field in &self.bindings {
@@ -959,6 +1055,8 @@ impl PlayerProjection {
                 }
             }
             LoopSound => p.loop_sound.and_then(resolve_sound).unwrap_or(0),
+            EventSequence | Event(_) | EventParameter(_) | ExternalEvent | ExternalParameter
+            | DamageSequence | DamageYaw | DamagePitch | DamageCount => 0,
             Gravity => c.gravity.to_bits(),
             Speed => c.speed.to_bits(),
             InfoFlags => u32::from(c.player_info_flags),
@@ -966,6 +1064,38 @@ impl PlayerProjection {
             IdealPitch => p.ideal_pitch.to_bits(),
             BodyYaw => c.body_yaw.to_bits(),
             NativeValue => 0,
+        }
+    }
+}
+
+impl Source {
+    fn signal_value(self, signals: PlayerSignals) -> Option<u32> {
+        Some(match self {
+            EventSequence => signals.sequence,
+            Event(i) => signals.events[i].code,
+            EventParameter(i) => signals.events[i].parameter,
+            ExternalEvent => signals.external.code,
+            ExternalParameter => signals.external.parameter,
+            DamageSequence => signals.damage.sequence,
+            DamageYaw => signals.damage.yaw,
+            DamagePitch => signals.damage.pitch,
+            DamageCount => signals.damage.count,
+            _ => return None,
+        })
+    }
+
+    fn apply_signal(self, value: u32, signals: &mut PlayerSignals) {
+        match self {
+            EventSequence => signals.sequence = value,
+            Event(i) => signals.events[i].code = value,
+            EventParameter(i) => signals.events[i].parameter = value,
+            ExternalEvent => signals.external.code = value,
+            ExternalParameter => signals.external.parameter = value,
+            DamageSequence => signals.damage.sequence = value,
+            DamageYaw => signals.damage.yaw = value,
+            DamagePitch => signals.damage.pitch = value,
+            DamageCount => signals.damage.count = value,
+            _ => unreachable!("the signal branch only contains signal sources"),
         }
     }
 }

@@ -1,4 +1,4 @@
-use super::{AllSolid, Contents, Trace, TraceError, TraceQuery};
+use super::{AllSolid, Contents, Trace, TraceError, TraceQuery, position};
 pub use qa_core::primitives::ClipNode;
 use qa_core::primitives::{Axis, Plane, Vec3};
 
@@ -195,6 +195,8 @@ pub(super) struct Q1Hulls {
     drawing: Box<[ClipNode]>,
     clips: Box<[ClipNode]>,
     stack_capacity: usize,
+    drawing_depth: usize,
+    positions: Option<position::Data>,
 }
 
 /// Per-caller traversal state, allocated from its immutable geometry at load.
@@ -235,6 +237,7 @@ impl Q1Hulls {
         let drawing_depth = validate(&drawing, planes.len())?;
         let clip_depth = validate(&clips, planes.len())?;
         let mut depth = 0;
+        let mut position_depth = 0;
         for model in models {
             for (index, root) in model.roots.iter().enumerate() {
                 let depths = if index == 0 {
@@ -243,7 +246,11 @@ impl Q1Hulls {
                     &clip_depth
                 };
                 if *root >= 0 {
-                    depth = depth.max(*depths.get(*root as usize).ok_or(HullError::Root)?);
+                    let root_depth = *depths.get(*root as usize).ok_or(HullError::Root)?;
+                    depth = depth.max(root_depth);
+                    if index == 0 {
+                        position_depth = position_depth.max(root_depth);
+                    }
                 }
             }
         }
@@ -252,11 +259,53 @@ impl Q1Hulls {
             drawing: drawing.into_boxed_slice(),
             clips: clips.into_boxed_slice(),
             stack_capacity: depth + 1,
+            drawing_depth: position_depth,
+            positions: None,
         })
     }
 
     pub(crate) fn scratch_capacity(&self) -> usize {
         self.stack_capacity
+    }
+
+    pub(crate) fn position_rows(&self) -> usize {
+        self.positions
+            .as_ref()
+            .map_or(0, position::Data::scratch_rows)
+    }
+
+    pub(crate) fn prepare_positions(
+        &self,
+        models: usize,
+        root: impl Fn(usize) -> i32,
+        limits: position::HullPositionLimits,
+    ) -> Result<position::Prepared, position::Failure> {
+        position::prepare(
+            &self.planes,
+            &self.drawing,
+            models,
+            root,
+            self.drawing_depth,
+            limits,
+        )
+    }
+
+    pub(crate) fn publish_positions(&mut self, data: position::Data) {
+        self.positions = Some(data);
+    }
+
+    pub(crate) fn trace_position(
+        &self,
+        cells: qa_core::primitives::IndexSpan,
+        query: TraceQuery,
+        origin: Vec3,
+        axes: [Vec3; 3],
+        scratch: &mut position::Scratch,
+    ) -> Result<Trace, position::Failure> {
+        self.positions
+            .as_ref()
+            .ok_or(position::Failure::Input)?
+            .trace(&self.planes, cells, query, origin, axes, scratch)
     }
 
     pub(crate) fn point_contents(&self, model: HullModel, point: Vec3) -> Contents {

@@ -18,6 +18,26 @@ pub struct HudBindings {
     native_players: Box<[Option<NativePlayerBindings>; 5]>,
 }
 
+/// A presentation copy leaves accepted/predicted input angles untouched.
+pub fn view_angles(
+    state: &HudState,
+    angles: qa_core::primitives::Vec3,
+    health: i32,
+    time: qa_core::primitives::ThinkTime,
+) -> qa_core::primitives::Vec3 {
+    if health > 0
+        && let Some(feedback) = state.view_feedback
+        && feedback.clock.native.milliseconds() != 0
+        && let Some(kick) = feedback.kick_at(time)
+    {
+        let mut adjusted = angles;
+        adjusted.0[0] += kick.0[0];
+        adjusted.0[2] += kick.0[2];
+        return adjusted;
+    }
+    angles
+}
+
 impl HudBindings {
     /// Resolved once from the common registry, including mixed character arsenals.
     pub fn load(registry: &Registry, extensions: &[crate::values::ExtensionValue]) -> Option<Self> {

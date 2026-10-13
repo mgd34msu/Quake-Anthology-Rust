@@ -30,6 +30,12 @@ mod cues;
 mod map_start;
 mod resources;
 
+fn host_clear_feedback(runtime: &mut Runtime, client: ClientId) {
+    if let Some(client) = runtime.server.clients.get_mut(client.0 as usize) {
+        client.hud.view_feedback = None;
+    }
+}
+
 pub enum Program {
     Qvm {
         vm: Box<qvm::Vm>,
@@ -85,6 +91,9 @@ impl Program {
     }
     fn produces_client_audio(&self) -> bool {
         self.imports().is_some_and(CallTable::produces_client_audio)
+    }
+    fn produces_client_view(&self) -> bool {
+        self.imports().is_some_and(CallTable::produces_client_view)
     }
 }
 pub struct ModuleRequest {
@@ -239,6 +248,7 @@ struct Module {
     client_connection: Option<(ClientId, EntityId)>,
     consumes_server_commands: bool,
     produces_client_audio: bool,
+    produces_client_view: bool,
 }
 impl Module {
     fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
@@ -589,6 +599,7 @@ impl FrameHost {
             };
             let consumes_server_commands = request.program.consumes_server_commands();
             let produces_client_audio = request.program.produces_client_audio();
+            let produces_client_view = request.program.produces_client_view();
             let q3_clients = request
                 .program
                 .imports()
@@ -651,6 +662,7 @@ impl FrameHost {
                 client_connection,
                 consumes_server_commands,
                 produces_client_audio,
+                produces_client_view,
                 clock,
                 physics,
                 duration,
@@ -666,16 +678,16 @@ impl FrameHost {
             storage,
             signon,
         });
-        host.bind_client_audio()?;
+        host.bind_client_presentation()?;
         host.configure_output_resources();
         Ok(host)
     }
-    fn bind_client_audio(&mut self) -> Result<(), String> {
+    fn bind_client_presentation(&mut self) -> Result<(), String> {
         let Some(modules) = self.modules.as_ref() else {
             return Ok(());
         };
         for row in modules.rows.iter().flatten() {
-            if !row.produces_client_audio {
+            if !row.produces_client_audio && !row.produces_client_view {
                 continue;
             }
             let Some((client, lifetime)) = row.client_connection else {
@@ -687,24 +699,34 @@ impl FrameHost {
                 .get_mut(client.0 as usize)
                 .and_then(Option::as_mut)
                 .ok_or("missing CLIENT audio publisher")?;
-            binding
-                .attach_client_audio(
-                    row.request.context.module,
-                    lifetime,
-                    row.request.context.native_rules,
-                    &mut self.runtime.server.events,
-                    self.runtime.server.presentation,
-                )
-                .map_err(|error| format!("CLIENT audio binding: {error:?}"))?;
+            if row.produces_client_audio {
+                binding
+                    .attach_client_audio(
+                        row.request.context.module,
+                        lifetime,
+                        row.request.context.native_rules,
+                        &mut self.runtime.server.events,
+                        self.runtime.server.presentation,
+                    )
+                    .map_err(|error| format!("CLIENT audio binding: {error:?}"))?;
+            }
+            if row.produces_client_view {
+                binding.attach_client_view(row.request.context.module, lifetime);
+                host_clear_feedback(&mut self.runtime, client);
+            }
         }
         Ok(())
     }
-    fn release_module_audio(&mut self, module: ModuleId) {
-        let Some((client, lifetime)) = self
-            .module_row(module)
-            .filter(|row| row.produces_client_audio)
-            .and_then(|row| row.client_connection)
-        else {
+    fn release_module_presentation(&mut self, module: ModuleId) {
+        let Some(row) = self.module_row(module) else {
+            return;
+        };
+        let (audio, view, connection) = (
+            row.produces_client_audio,
+            row.produces_client_view,
+            row.client_connection,
+        );
+        let Some((client, lifetime)) = connection else {
             return;
         };
         if let Some(binding) = self
@@ -713,12 +735,18 @@ impl FrameHost {
             .get_mut(client.0 as usize)
             .and_then(Option::as_mut)
         {
-            binding.detach_client_audio(
-                module,
-                lifetime,
-                &mut self.runtime.server.events,
-                self.runtime.server.presentation,
-            );
+            if audio {
+                binding.detach_client_audio(
+                    module,
+                    lifetime,
+                    &mut self.runtime.server.events,
+                    self.runtime.server.presentation,
+                );
+            }
+            if view {
+                binding.detach_client_view(module, lifetime);
+                host_clear_feedback(&mut self.runtime, client);
+            }
         }
     }
     pub fn module_counts(&self, module: ModuleId) -> Option<&Counts> {
@@ -962,7 +990,7 @@ impl FrameHost {
             self.disconnect_module_recipients(module);
         }
         if shutdown || result.is_err() {
-            self.release_module_audio(module);
+            self.release_module_presentation(module);
         }
     }
     fn check_module_api(
@@ -1097,7 +1125,7 @@ impl FrameHost {
             && self.module_state(module) == Some(State::Failed)
         {
             self.disconnect_module_recipients(module);
-            self.release_module_audio(module);
+            self.release_module_presentation(module);
         }
         result
     }

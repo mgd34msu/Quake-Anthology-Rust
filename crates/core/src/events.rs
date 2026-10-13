@@ -2,7 +2,7 @@ use crate::primitives::{
     ClientId, EffectEvent, EntityRecord, HudEvent, IndexSpan, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
     NATIVE_PAYLOAD_BYTES, NATIVE_PAYLOAD_PAGES, NATIVE_WIRE_BYTES, NATIVE_WIRE_PAGES,
     NativeDelivery, NativePayload, NativeTarget, NumericValue, PrintEvent, PrintKind, PrintText,
-    RuleSetId, SoundEvent, TextId, TextLease, ValueId, Vec3,
+    RuleSetId, SoundEvent, TextId, TextLease, ValueId, Vec3, ViewFeedbackEvent,
 };
 use std::fmt::{self, Write};
 
@@ -20,6 +20,7 @@ pub enum FrameEvent {
     Effect(EffectEvent),
     Print(PrintEvent),
     Hud(HudEvent),
+    ViewFeedback(ViewFeedbackEvent),
     PlayerValue {
         id: ValueId,
         value: NumericValue,
@@ -482,6 +483,10 @@ impl EventRing {
                         (
                             Some(OutputTarget::Client(id) | OutputTarget::Local(id)),
                             FrameEvent::Hud(event),
+                        ) => event.client == id,
+                        (
+                            Some(OutputTarget::Client(id) | OutputTarget::Local(id)),
+                            FrameEvent::ViewFeedback(event),
                         ) => event.client == id,
                         _ => true,
                     });

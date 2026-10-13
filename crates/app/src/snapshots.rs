@@ -17,6 +17,7 @@ use qa_network::{
 };
 
 mod entities;
+mod feedback;
 mod loops;
 mod presentation;
 pub use entities::EntitySource;
@@ -97,6 +98,7 @@ struct ClientPresentation {
     sequence: Option<u32>,
     gun_animation: Option<GunAnimation>,
     loops: Option<loops::LoopPublication>,
+    feedback: feedback::FeedbackPublication,
 }
 
 impl SnapshotBinding {
@@ -353,6 +355,7 @@ impl SnapshotBinding {
                 )),
                 sequence: None,
                 gun_animation: None,
+                feedback: feedback::FeedbackPublication::load(protocol.rule_set()),
             }),
             entities: entities::EntityScratch::load(protocol),
             last_sent: None,

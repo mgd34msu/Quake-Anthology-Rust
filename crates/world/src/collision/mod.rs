@@ -2,12 +2,14 @@ pub mod boxes;
 pub mod brushes;
 pub mod contents;
 pub mod hulls;
+mod position;
 pub mod scene;
 pub mod store;
 pub mod surfaces;
 pub mod tree;
 
 pub use contents::Contents;
+pub use position::HullPositionLimits;
 use qa_core::primitives::{
     CollisionOwner, EntityId, GeometryId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
 };
@@ -18,8 +20,16 @@ pub use store::{CollisionStore, StoreError, TraceScratch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraceError {
-    Geometry { geometry: GeometryId, model: u32 },
+    Geometry {
+        geometry: GeometryId,
+        model: u32,
+    },
     Scratch,
+    /// The resolved geometry cannot perform the explicitly requested shape.
+    Unsupported {
+        geometry: GeometryId,
+        model: u32,
+    },
 }
 
 impl std::fmt::Display for TraceError {
@@ -32,6 +42,10 @@ impl std::fmt::Display for TraceError {
                 )
             }
             Self::Scratch => formatter.write_str("insufficient collision scratch"),
+            Self::Unsupported { geometry, model } => write!(
+                formatter,
+                "unsupported collision query for geometry {geometry:?}, model {model}"
+            ),
         }
     }
 }
@@ -187,10 +201,19 @@ pub enum PositionEndpoint {
     ByFraction,
 }
 
+/// Compiled Q1 hull compatibility and exact supplied boxes are caller choices.
+/// The initial exact capability handles stationary queries only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HullShape {
+    CompiledWidth,
+    ExactBox,
+}
+
 /// Caller-owned clipping choices. Geometry never selects a game or movement.
 /// These are engine query values, not fields of any legacy wire protocol.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TraceRules {
+    pub hull_shape: HullShape,
     /// Plane distances and stored fractions stay f32; the native epsilon
     /// expression's precision is selected independently below.
     pub contact_epsilon: f64,
@@ -214,6 +237,7 @@ impl TraceRules {
     /// Q1/QW hull contact and Q2 convex clipping use the same contact epsilon.
     /// Convex brushes are a shared extension for Q1 callers, not Q1 topology.
     pub const LEGACY: Self = Self {
+        hull_shape: HullShape::CompiledWidth,
         contact_epsilon: 0.03125,
         fraction_binary32: false,
         outside_brush: OutsideBrush::MovingAway,
@@ -229,6 +253,7 @@ impl TraceRules {
         secondary_contact: false,
     };
     pub const ARENA: Self = Self {
+        hull_shape: HullShape::CompiledWidth,
         contact_epsilon: 0.125,
         fraction_binary32: false,
         outside_brush: OutsideBrush::EndBeyondEpsilon,

@@ -20,6 +20,7 @@ pub struct OutputCounts {
     pub effects: u64,
     pub prints: u64,
     pub hud: u64,
+    pub view_feedback: u64,
     pub native_messages: u64,
     pub native_filtered: u64,
     pub unhandled_sounds: u64,
@@ -173,6 +174,7 @@ pub fn dispatch(
                     // there is no second presentation copy of their payload.
                     FrameEvent::Native(_) => true,
                     FrameEvent::Hud(_) => true,
+                    FrameEvent::ViewFeedback(_) => true,
                     FrameEvent::ConfigString { .. } => true,
                     FrameEvent::StaticEntity(_) => true,
                     FrameEvent::PlayerValue { .. } | FrameEvent::SetAngles(_) => true,
@@ -501,6 +503,20 @@ pub fn dispatch(
                             }
                             true
                         }
+                        FrameEvent::ViewFeedback(event) => {
+                            if event.client == client_id
+                                && event.client_lifetime == client.entity
+                                && event.namespace
+                                    == qa_core::primitives::ResourceNamespace::Client(client_id)
+                                && runtime.snapshots[slot]
+                                    .as_ref()
+                                    .is_some_and(|snapshot| snapshot.accepts_feedback(event))
+                            {
+                                client.hud.view_feedback = Some(event.feedback);
+                                counts.view_feedback += 1;
+                            }
+                            true
+                        }
                         FrameEvent::Print(event) => qa_ui::hud::print(
                             &mut client.hud,
                             texts,
@@ -625,10 +641,12 @@ pub fn dispatch(
             }
             if let Some(snapshot) = runtime.snapshots[slot].as_mut() {
                 snapshot.output = resumed;
+                snapshot.reset_feedback();
             }
             // Rebuild discrete HUD state from CLIENT on its next publication.
             // Independently leased text stays valid through the resync.
             client.hud.reset_inventory();
+            client.hud.view_feedback = None;
             client.hud_publication.reset();
             // Separate native stat services rebuild from the producer after a
             // cancelled delivery, just like the discrete inventory above.

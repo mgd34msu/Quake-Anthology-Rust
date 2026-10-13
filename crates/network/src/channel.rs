@@ -204,6 +204,17 @@ impl Channel {
     pub fn current_snapshot(&self) -> Option<crate::snapshots::ReceivedFrame<'_>> {
         self.snapshots.as_ref()?.current()
     }
+    /// Borrow accepted frames in native sequence order from the one ring.
+    /// Missing, invalid and expired slots never become presentation transitions.
+    pub fn retained_snapshots(&self) -> impl Iterator<Item = crate::snapshots::ReceivedFrame<'_>> {
+        self.current_snapshot()
+            .into_iter()
+            .flat_map(move |current| {
+                let latest = current.sequence();
+                let first = latest.saturating_sub((crate::snapshots::SLOTS - 1) as u32);
+                (first..=latest).filter_map(move |sequence| self.snapshot(sequence))
+            })
+    }
     /// The prior accepted native snapshot, borrowing this connection's ring.
     pub fn previous_snapshot(&self) -> Option<crate::snapshots::ReceivedFrame<'_>> {
         self.snapshots.as_ref()?.previous()

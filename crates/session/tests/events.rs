@@ -16,6 +16,7 @@ impl EventConsumer for Consumer {
             FrameEvent::Effect(e) => e.effect.0,
             FrameEvent::Native(_) => u32::from(record.delivery.unwrap().module.0),
             FrameEvent::Hud(event) => event.client.0,
+            FrameEvent::ViewFeedback(event) => event.client.0,
             FrameEvent::PlayerValue { id, value } => {
                 assert_eq!(value, NumericValue::integer(17));
                 id.0

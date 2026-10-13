@@ -1,7 +1,8 @@
 use super::{
-    Contents, EntityTracePolicy, Trace, TraceError, TraceQuery,
+    Contents, EntityTracePolicy, HullPositionLimits, HullShape, Trace, TraceError, TraceQuery,
     brushes::{Brush, BrushMap, BrushTree, GeometryError, ModelRoot},
     hulls::{HullError, HullModel, HullScratch, Q1Hulls},
+    position,
     surfaces::{SurfaceTable, SurfaceView},
     tree::BrushScratch,
 };
@@ -11,8 +12,8 @@ use qa_core::{
         radians_from_degrees_f32,
     },
     primitives::{
-        Body, Bounds, ClipNode, CollisionShape, EntityId, GeometryId, ModelRotation, ModelRules,
-        Plane, SurfaceId, Vec3,
+        Body, Bounds, ClipNode, CollisionShape, EntityId, GeometryId, IndexSpan, ModelRotation,
+        ModelRules, Plane, SurfaceId, Vec3,
     },
 };
 use std::ops::Range;
@@ -40,6 +41,7 @@ enum Root {
 struct Model {
     root: Root,
     bounds: Bounds,
+    position_cells: Option<IndexSpan>,
 }
 
 struct Resource {
@@ -64,6 +66,7 @@ pub struct CollisionStore {
 pub struct TraceScratch {
     hulls: HullScratch,
     brushes: BrushScratch,
+    position: position::Scratch,
 }
 
 fn validate_bounds(count: usize, bounds: &[Bounds]) -> Result<(), StoreError> {
@@ -99,6 +102,7 @@ impl CollisionStore {
             .map(|(root, bounds)| Model {
                 root: Root::Hull(root),
                 bounds,
+                position_cells: None,
             })
             .collect();
         self.insert(Geometry::Hulls(geometry), models)
@@ -121,6 +125,7 @@ impl CollisionStore {
             .map(|(root, bounds)| Model {
                 root: Root::Brush(root),
                 bounds,
+                position_cells: None,
             })
             .collect();
         self.insert(Geometry::Brushes(geometry), models)
@@ -167,6 +172,47 @@ impl CollisionStore {
             models: first..end,
         });
         Ok(id)
+    }
+
+    /// Optional cold capability admission. Native geometry remains usable if
+    /// limits reject the new capability. Call before allocating caller scratch.
+    /// The same resource and flat model rows receive all cells atomically.
+    pub fn prepare_hull_positions(
+        &mut self,
+        geometry: GeometryId,
+        limits: HullPositionLimits,
+    ) -> Result<(), StoreError> {
+        let resource = self.resource(geometry).ok_or(StoreError::Models)?;
+        let Geometry::Hulls(hulls) = &resource.geometry else {
+            return Err(StoreError::Models);
+        };
+        if hulls.position_rows() != 0 {
+            return Ok(());
+        }
+        let models = resource.models.clone();
+        let prepared = hulls
+            .prepare_positions(
+                models.len(),
+                |index| match self.models[models.start + index].root {
+                    Root::Hull(model) => model.roots[0],
+                    Root::Brush(_) => -1,
+                },
+                limits,
+            )
+            .map_err(|_| StoreError::Capacity)?;
+        let Some(resource) = self.slots[geometry.slot as usize].resource.as_mut() else {
+            return Err(StoreError::Models);
+        };
+        let Geometry::Hulls(hulls) = &mut resource.geometry else {
+            return Err(StoreError::Models);
+        };
+        // Everything below is infallible and occurs under the sole mutable
+        // store borrow. No partially admitted model is visible to a query.
+        hulls.publish_positions(prepared.data);
+        for (model, cells) in self.models[models].iter_mut().zip(prepared.models) {
+            model.position_cells = Some(cells);
+        }
+        Ok(())
     }
 
     fn resource(&self, geometry: GeometryId) -> Option<&Resource> {
@@ -245,14 +291,16 @@ impl CollisionStore {
         true
     }
 
-    fn scratch_dimensions(&self) -> (usize, usize, usize) {
+    fn scratch_dimensions(&self) -> (usize, usize, usize, usize) {
         let mut hull_depth = 0;
         let mut brush_depth = 0;
         let mut brushes = 0;
+        let mut positions = 0;
         for resource in self.slots.iter().filter_map(|slot| slot.resource.as_ref()) {
             match &resource.geometry {
                 Geometry::Hulls(geometry) => {
                     hull_depth = hull_depth.max(geometry.scratch_capacity());
+                    positions = positions.max(geometry.position_rows());
                 }
                 Geometry::Brushes(geometry) => {
                     let (depth, count) = geometry.scratch_capacity();
@@ -261,14 +309,15 @@ impl CollisionStore {
                 }
             }
         }
-        (hull_depth, brush_depth, brushes)
+        (hull_depth, brush_depth, brushes, positions)
     }
 
     fn make_scratch(&self, position_capacity: usize) -> TraceScratch {
-        let (hull_depth, brush_depth, brushes) = self.scratch_dimensions();
+        let (hull_depth, brush_depth, brushes, positions) = self.scratch_dimensions();
         TraceScratch {
             hulls: HullScratch::new(hull_depth),
             brushes: BrushScratch::new(brush_depth, brushes, position_capacity),
+            position: position::Scratch::new(positions),
         }
     }
 
@@ -332,6 +381,20 @@ impl CollisionStore {
             model: index,
         };
         let (resource, model) = self.resolve(geometry, index).ok_or(invalid)?;
+        if query.rules.hull_shape == HullShape::ExactBox
+            && let Geometry::Hulls(hulls) = resource
+        {
+            return trace_position(
+                hulls,
+                model.position_cells,
+                geometry,
+                index,
+                query,
+                Vec3::default(),
+                [Vec3::axis(0, 1.0), Vec3::axis(1, 1.0), Vec3::axis(2, 1.0)],
+                &mut scratch.position,
+            );
+        }
         let offset = match resource {
             Geometry::Hulls(_) => Some(Q1Hulls::clip_offset(query)),
             Geometry::Brushes(_) => None,
@@ -404,6 +467,27 @@ impl CollisionStore {
             model: index,
         };
         let (resource, model) = self.resolve(geometry, index).ok_or(invalid)?;
+        if query.rules.hull_shape == HullShape::ExactBox
+            && let Geometry::Hulls(hulls) = resource
+        {
+            let axes = if rules.rotation != ModelRotation::TranslationOnly
+                && angles.0.iter().any(|&angle| angle != 0.0)
+            {
+                basis(angles, rules.rotation).axes()
+            } else {
+                [Vec3::axis(0, 1.0), Vec3::axis(1, 1.0), Vec3::axis(2, 1.0)]
+            };
+            return trace_position(
+                hulls,
+                model.position_cells,
+                geometry,
+                index,
+                query,
+                origin,
+                axes,
+                &mut scratch.position,
+            );
+        }
         let mut local = query;
         if rules.rotation == ModelRotation::TransposeBasis {
             local.center_box();
@@ -481,6 +565,35 @@ impl CollisionStore {
         }
         self.point_contents_model(geometry, index, local, caller)
     }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "One resource/model trace boundary resolves optional shape admission"
+)]
+fn trace_position(
+    hulls: &Q1Hulls,
+    cells: Option<IndexSpan>,
+    geometry: GeometryId,
+    index: u32,
+    query: TraceQuery,
+    origin: Vec3,
+    axes: [Vec3; 3],
+    scratch: &mut position::Scratch,
+) -> Result<Trace, TraceError> {
+    let unsupported = TraceError::Unsupported {
+        geometry,
+        model: index,
+    };
+    if query.start != query.end {
+        return Err(unsupported);
+    }
+    hulls
+        .trace_position(cells.ok_or(unsupported)?, query, origin, axes, scratch)
+        .map_err(|error| match error {
+            position::Failure::Scratch => TraceError::Scratch,
+            _ => unsupported,
+        })
 }
 
 fn trace_native(
