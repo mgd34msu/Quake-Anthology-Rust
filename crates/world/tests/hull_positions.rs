@@ -201,6 +201,254 @@ fn capsule_occupancy_centers_supplied_bounds_before_model_pose() {
 }
 
 #[test]
+fn moving_capsule_face_contact_uses_radius_segment_and_caller_epsilon() {
+    for (axis, offset, start, end, fraction) in [
+        (0, Vec3::default(), 4.0, -4.0, 0.359375),
+        (2, Vec3([0.0, 0.0, 2.0]), 6.0, -6.0, (6.0f32 - 3.125) / 12.0),
+    ] {
+        let (mut store, geometry) = convex(vec![Plane::oriented(Vec3::axis(axis, 1.0), 0.0)]);
+        admit(&mut store, geometry);
+        let query = TraceQuery {
+            end: Vec3::axis(axis, end),
+            ..capsule_at(Vec3::axis(axis, start), 1.0, offset)
+        };
+        let trace = store
+            .trace_model(geometry, 0, query, &mut store.scratch())
+            .expect("capsule face sweep");
+        assert!((trace.fraction - fraction).abs() <= f32::EPSILON);
+        assert_eq!(trace.plane.normal, Vec3::axis(axis, 1.0));
+        assert_eq!(trace.plane.distance, 0.0);
+        assert!(!trace.start_solid && !trace.all_solid);
+        assert_clear_endpoint(&store, geometry, query, &trace);
+    }
+}
+
+#[test]
+fn moving_capsule_uses_round_edge_contact_and_rejects_face_inflation_misses() {
+    let (mut store, geometry) = convex(vec![
+        Plane::oriented(Vec3::axis(0, 1.0), 1.0),
+        Plane::oriented(Vec3::axis(1, 1.0), 1.0),
+    ]);
+    admit(&mut store, geometry);
+    let query = TraceQuery {
+        end: Vec3::default(),
+        ..capsule_at(Vec3([4.0, 4.0, 0.0]), 1.0, Vec3::default())
+    };
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("round edge sweep");
+    let expected = ((4.0 - (1.0 + 1.125 / 2.0f64.sqrt())) / 4.0) as f32;
+    assert!((trace.fraction - expected).abs() < 2.0e-7);
+    assert!((trace.plane.normal.0[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 2.0e-7);
+    assert_eq!(trace.plane.normal.0[0], trace.plane.normal.0[1]);
+    assert_clear_endpoint(&store, geometry, query, &trace);
+    let missed = TraceQuery {
+        end: Vec3([1.75, 1.75, 10.0]),
+        ..capsule_at(Vec3([1.75, 1.75, -10.0]), 1.0, Vec3::default())
+    };
+    let trace = store
+        .trace_model(geometry, 0, missed, &mut store.scratch())
+        .expect("round edge miss");
+    assert_eq!(trace.fraction, 1.0);
+    assert!(!trace.start_solid);
+}
+
+#[test]
+fn moving_capsule_segment_uses_its_extruded_edge_constraints() {
+    let (mut store, geometry) = path_cell(
+        (0..3)
+            .flat_map(|axis| {
+                [
+                    Plane::oriented(Vec3::axis(axis, 1.0), 0.0),
+                    Plane::oriented(Vec3::axis(axis, -1.0), 0.0),
+                ]
+            })
+            .collect(),
+        true,
+    );
+    admit(&mut store, geometry);
+    let query = TraceQuery {
+        end: Vec3::default(),
+        ..capsule_at(Vec3([6.0, 8.0, 0.0]), 1.0, Vec3([4.0, -3.0, 0.0]))
+    };
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("extruded line sweep");
+    assert!((trace.fraction - 0.8875).abs() < 2.0e-7);
+    assert!((trace.plane.normal.0[0] - 0.6).abs() < 2.0e-7);
+    assert!((trace.plane.normal.0[1] - 0.8).abs() < 2.0e-7);
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn moving_capsule_grazing_contact_obeys_zero_epsilon_policy() {
+    let (mut store, geometry) = path_cell(
+        (0..3)
+            .flat_map(|axis| {
+                [
+                    Plane::oriented(Vec3::axis(axis, 1.0), 0.0),
+                    Plane::oriented(Vec3::axis(axis, -1.0), 0.0),
+                ]
+            })
+            .collect(),
+        true,
+    );
+    admit(&mut store, geometry);
+    let query = TraceQuery {
+        start: Vec3([-2.0, 1.0, 0.0]),
+        end: Vec3([2.0, 1.0, 0.0]),
+        rules: TraceRules {
+            contact_epsilon: 0.0,
+            ..TraceRules::ARENA
+        },
+        ..capsule_at(Vec3::default(), 1.0, Vec3::default())
+    };
+    let clear = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("zero-margin graze");
+    assert_eq!(clear.fraction, 1.0);
+    let padded = TraceQuery {
+        rules: TraceRules::ARENA,
+        ..query
+    };
+    let hit = store
+        .trace_model(geometry, 0, padded, &mut store.scratch())
+        .expect("native-margin graze");
+    assert!(hit.fraction > 0.0 && hit.fraction < 0.5);
+    assert_clear_endpoint(&store, geometry, padded, &hit);
+}
+
+fn two_point_cells() -> (CollisionStore, GeometryId) {
+    let mut planes = vec![Plane::oriented(Vec3::axis(0, 1.0), 0.0)];
+    let mut nodes = vec![ClipNode {
+        plane: 0,
+        children: [7, 1],
+    }];
+    for center in [Vec3([-2.0, 0.0, 0.0]), Vec3([2.0, 0.0, 0.0])] {
+        for axis in 0..3 {
+            for sign in [1.0, -1.0] {
+                let normal = Vec3::axis(axis, sign);
+                planes.push(Plane::oriented(normal, normal.dot(center)));
+                let next = if axis == 2 && sign == -1.0 {
+                    -2
+                } else {
+                    nodes.len() as i32 + 1
+                };
+                nodes.push(ClipNode {
+                    plane: planes.len() as u32 - 1,
+                    children: [next, -1],
+                });
+            }
+        }
+    }
+    load_geometry(planes, nodes, vec![0])
+}
+
+#[test]
+fn moving_capsule_union_orders_quadratic_endpoints_and_shared_roots() {
+    let (mut store, geometry) = two_point_cells();
+    admit(&mut store, geometry);
+    for (height, radius) in [(0.5, 2.5), (0.0, 2.0)] {
+        let query = TraceQuery {
+            end: Vec3([2.0, height, 0.0]),
+            ..capsule_at(Vec3([-2.0, height, 0.0]), radius, Vec3::default())
+        };
+        let trace = store
+            .trace_model(geometry, 0, query, &mut store.scratch())
+            .expect("connected sphere union");
+        assert!(trace.start_solid && trace.all_solid);
+        assert_eq!(trace.fraction, 0.0);
+    }
+    let query = TraceQuery {
+        end: Vec3([2.0, 0.5, 0.0]),
+        ..capsule_at(Vec3([-2.0, 0.5, 0.0]), 1.5, Vec3::default())
+    };
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("exit and round-boundary reentry");
+    assert!(trace.start_solid && !trace.all_solid);
+    assert!(trace.end.0[0] > 0.0 && trace.end.0[0] < 0.59);
+    assert!(trace.plane.normal.0[0] < 0.0 && trace.plane.normal.0[1] > 0.0);
+    assert_clear_endpoint(&store, geometry, query, &trace);
+}
+
+#[test]
+fn moving_capsule_can_leave_initial_solid_and_rejects_an_unrepresentable_gap() {
+    let (mut store, geometry) = convex(vec![Plane::oriented(Vec3::axis(0, 1.0), 0.0)]);
+    admit(&mut store, geometry);
+    let query = TraceQuery {
+        end: Vec3([4.0, 0.0, 0.0]),
+        ..capsule_at(Vec3::default(), 1.0, Vec3::default())
+    };
+    let trace = store
+        .trace_model(geometry, 0, query, &mut store.scratch())
+        .expect("capsule leaves solid");
+    assert!(trace.start_solid && !trace.all_solid);
+    assert_eq!(trace.fraction, 1.0);
+    let (mut store, geometry) = disjoint_halfspaces(16_777_216.0, 16_777_218.0);
+    admit(&mut store, geometry);
+    let query = TraceQuery {
+        end: Vec3([16_777_220.0, 0.0, 0.0]),
+        ..capsule_at(Vec3([16_777_216.0, 0.0, 0.0]), 0.25, Vec3::default())
+    };
+    assert_eq!(
+        store
+            .trace_model(geometry, 0, query, &mut store.scratch())
+            .unwrap_err(),
+        TraceError::Unsupported { geometry, model: 0 }
+    );
+}
+
+#[test]
+fn moving_capsule_keeps_world_segment_orientation_on_a_rotated_model() {
+    let (mut store, geometry) = convex(vec![Plane::oriented(Vec3::axis(0, 1.0), 0.0)]);
+    admit(&mut store, geometry);
+    let query = TraceQuery {
+        end: Vec3([10.0, -4.0, 0.0]),
+        ..capsule_at(Vec3([10.0, 4.0, 0.0]), 1.0, Vec3([0.0, 2.0, 0.0]))
+    };
+    let mut scratch = store.scratch();
+    let trace = store
+        .trace_transformed(
+            geometry,
+            0,
+            query,
+            Vec3([10.0, 0.0, 0.0]),
+            Vec3([0.0, 90.0, 0.0]),
+            ModelRules {
+                rotation: ModelRotation::TransposeBasis,
+                ..ModelRules::default()
+            },
+            &mut scratch,
+        )
+        .expect("world-space capsule segment against rotated hull");
+    assert!((trace.fraction - 0.109375).abs() < 2.0e-7);
+    assert!(trace.plane.normal.0[1] > 0.99999);
+    let clear = TraceQuery {
+        start: trace.end,
+        end: trace.end,
+        ..query
+    };
+    assert!(
+        !store
+            .trace_transformed(
+                geometry,
+                0,
+                clear,
+                Vec3([10.0, 0.0, 0.0]),
+                Vec3([0.0, 90.0, 0.0]),
+                ModelRules {
+                    rotation: ModelRotation::TransposeBasis,
+                    ..ModelRules::default()
+                },
+                &mut scratch,
+            )
+            .expect("posed published endpoint")
+            .start_solid
+    );
+}
+
+#[test]
 fn tetrahedron_rejects_shifted_face_false_positive_and_accepts_edge_touch() {
     let (mut store, geometry) = convex(vec![
         Plane::oriented(Vec3([-1.0, 0.0, 0.0]), 0.0),

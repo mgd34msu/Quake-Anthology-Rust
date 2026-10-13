@@ -1,6 +1,7 @@
 //! Exact shape occupancy and certified exterior sweeps over hull-zero cells.
 //! Native compiled hull traversal does not use this predicate.
 mod integer;
+mod sphere;
 
 use self::integer::Int;
 use super::{AllSolid, Contents, Trace, TraceQuery};
@@ -148,17 +149,133 @@ impl Cost {
 }
 
 #[derive(Clone, Copy)]
-struct Interval {
-    first: Fraction,
-    last: Fraction,
+struct Interval<T = Fraction> {
+    first: T,
+    last: T,
     isolated: bool,
 }
 
-impl Interval {
-    fn contains(self, parameter: Fraction) -> Result<bool, Failure> {
-        Ok(self.first.compare(parameter)? != Ordering::Greater
-            && self.last.compare(parameter)? != Ordering::Less)
+trait Parameter: Copy {
+    const ZERO: Self;
+    const ONE: Self;
+    fn order(self, other: Self, work: &mut Work) -> Result<Ordering, Failure>;
+}
+
+impl Parameter for Fraction {
+    const ZERO: Self = Self::ZERO;
+    const ONE: Self = Self::ONE;
+    fn order(self, other: Self, _: &mut Work) -> Result<Ordering, Failure> {
+        self.compare(other)
     }
+}
+
+impl<T: Parameter> Interval<T> {
+    fn contains(self, parameter: T, work: &mut Work) -> Result<bool, Failure> {
+        Ok(self.first.order(parameter, work)? != Ordering::Greater
+            && self.last.order(parameter, work)? != Ordering::Less)
+    }
+}
+
+struct Component<T> {
+    start_contents: Option<Contents>,
+    reach: T,
+    hit: Option<(T, Contents)>,
+    all_solid: bool,
+}
+
+impl<T> Component<T> {
+    fn solid_trace(&self, query: TraceQuery) -> Option<Trace> {
+        if !self.all_solid {
+            return None;
+        }
+        let mut trace = Trace::clear(query.end);
+        trace.start_solid = true;
+        trace.all_solid = true;
+        trace.contents = self.start_contents?;
+        if query.rules.all_solid == AllSolid::BlockAtStart {
+            trace.fraction = 0.0;
+            trace.end = query.start;
+        }
+        Some(trace)
+    }
+}
+
+/// One interval-union reducer serves both polyhedral and rounded shapes.
+/// Re-enumeration stays bounded by cells and work, without a query allocation.
+fn component<T: Parameter>(
+    cells: u32,
+    include_isolated: bool,
+    work: &mut Work,
+    mut intervals: impl FnMut(
+        &mut Work,
+        &mut dyn FnMut(Interval<T>, Contents, &mut Work) -> Result<(), Failure>,
+    ) -> Result<(), Failure>,
+) -> Result<Component<T>, Failure> {
+    let mut result = Component {
+        start_contents: None,
+        reach: T::ZERO,
+        hit: None,
+        all_solid: false,
+    };
+    intervals(work, &mut |interval, contents, work| {
+        if interval.contains(T::ZERO, work)? && result.start_contents.is_none() {
+            result.start_contents = Some(contents);
+        }
+        if interval.contains(result.reach, work)?
+            && interval.last.order(result.reach, work)? == Ordering::Greater
+        {
+            result.reach = interval.last;
+        }
+        if (!interval.isolated || include_isolated)
+            && (result.hit.is_none()
+                || interval
+                    .first
+                    .order(result.hit.map_or(T::ONE, |hit| hit.0), work)?
+                    == Ordering::Less)
+        {
+            result.hit = Some((interval.first, contents));
+        }
+        Ok(())
+    })?;
+    if result.start_contents.is_none() {
+        return Ok(result);
+    }
+    for _ in 0..=cells {
+        if result.reach.order(T::ONE, work)? != Ordering::Less {
+            break;
+        }
+        let old = result.reach;
+        intervals(work, &mut |interval, _, work| {
+            if interval.contains(result.reach, work)?
+                && interval.last.order(result.reach, work)? == Ordering::Greater
+            {
+                result.reach = interval.last;
+            }
+            Ok(())
+        })?;
+        if result.reach.order(old, work)? == Ordering::Equal {
+            break;
+        }
+    }
+    result.all_solid = result.reach.order(T::ONE, work)? != Ordering::Less;
+    if result.all_solid {
+        return Ok(result);
+    }
+    result.hit = None;
+    intervals(work, &mut |interval, contents, work| {
+        if interval.first.order(result.reach, work)? == Ordering::Greater
+            && (!interval.isolated || include_isolated)
+            && (result.hit.is_none()
+                || interval
+                    .first
+                    .order(result.hit.map_or(T::ONE, |hit| hit.0), work)?
+                    == Ordering::Less)
+        {
+            result.hit = Some((interval.first, contents));
+        }
+        Ok(())
+    })?;
+    Ok(result)
 }
 
 /// The existing certificate stream eliminates the point variables once. Its
@@ -706,105 +823,6 @@ fn certificate(
     Ok(answer)
 }
 
-/// KKT projection onto a closed convex cell. An independent basis has at
-/// most three normals, including cells with a lower-dimensional affine hull.
-/// The numerator is the center-to-cell displacement in binary32 units.
-struct Projection {
-    displacement: [Int; 3],
-    denominator: Int,
-}
-
-fn projection(
-    rows: &[Row],
-    indices: &[usize],
-    center: &[Int; 3],
-    work: &mut Work,
-) -> Result<Option<Projection>, Failure> {
-    let mut gram = [[Int::ZERO; 4]; 4];
-    let mut rhs = [Int::ZERO; 4];
-    for (a, &index) in indices.iter().enumerate() {
-        let row = &rows[index];
-        rhs[a] = dot(&row.normal, center)?.add(&row.distance.neg())?;
-        for (b, &other) in indices.iter().enumerate() {
-            gram[a][b] = dot(&row.normal, &rows[other].normal)?;
-        }
-    }
-    let Some(solution) = solve(&gram, &rhs, indices.len(), work)? else {
-        return Ok(None);
-    };
-    if solution.numerator[..indices.len()]
-        .iter()
-        .any(|value| value.negative())
-    {
-        return Ok(None);
-    }
-    let mut displacement = [Int::ZERO; 3];
-    for (column, &index) in indices.iter().enumerate() {
-        for axis in 0..3 {
-            displacement[axis] = displacement[axis]
-                .add(&solution.numerator[column].mul(&rows[index].normal[axis])?)?;
-        }
-    }
-    for (index, row) in rows.iter().enumerate() {
-        work.item()?;
-        if indices.contains(&index) {
-            continue;
-        }
-        let error = dot(&row.normal, center)?.add(&row.distance.neg())?;
-        if error
-            .mul(&solution.denominator)?
-            .add(&dot(&row.normal, &displacement)?.neg())?
-            .compare(&Int::ZERO)
-            == Ordering::Greater
-        {
-            return Ok(None);
-        }
-    }
-    Ok(Some(Projection {
-        displacement,
-        denominator: solution.denominator,
-    }))
-}
-
-fn sphere_occupancy(
-    rows: &[Row],
-    center: &[Int; 3],
-    radius: Int,
-    work: &mut Work,
-) -> Result<bool, Failure> {
-    let mut inside = true;
-    for row in rows {
-        work.item()?;
-        if dot(&row.normal, center)?.compare(&row.distance) == Ordering::Greater {
-            inside = false;
-            break;
-        }
-    }
-    if inside {
-        return Ok(true);
-    }
-    let mut answer = None;
-    for count in 1..=3 {
-        combinations(rows.len(), count, |indices| {
-            work.item()?;
-            let Some(closest) = projection(rows, indices, center, work)? else {
-                return Ok(true);
-            };
-            let bound = radius.mul(&closest.denominator)?;
-            answer = Some(
-                dot(&closest.displacement, &closest.displacement)?.compare(&bound.mul(&bound)?)
-                    != Ordering::Greater,
-            );
-            Ok(false)
-        })?;
-        if let Some(answer) = answer {
-            return Ok(answer);
-        }
-    }
-    // Admission proved this closed cell nonempty; it must have a projection.
-    Err(Failure::Arithmetic)
-}
-
 fn query_rows(sides: usize) -> Result<usize, Failure> {
     // Eliminating one centered segment parameter adds one row for each pair
     // of opposite slope signs. Its largest partition has floor(N*N/4) pairs.
@@ -958,6 +976,35 @@ fn vector(value: Vec3) -> Result<[Int; 3], Failure> {
         Int::binary32(value.0[1])?,
         Int::binary32(value.0[2])?,
     ])
+}
+
+fn difference(start: &[Int; 3], end: &[Int; 3]) -> Result<[Int; 3], Failure> {
+    let mut delta = [Int::ZERO; 3];
+    for axis in 0..3 {
+        delta[axis] = end[axis].add(&start[axis].neg())?;
+    }
+    Ok(delta)
+}
+
+struct CapsulePath {
+    start: [Int; 3],
+    delta: [Int; 3],
+    offset: [Int; 3],
+    radius: Int,
+}
+
+impl CapsulePath {
+    fn new(query: TraceQuery, capsule: Capsule) -> Result<Self, Failure> {
+        let center = math::midpoint(query.mins, query.maxs);
+        let start = vector(query.start + center)?;
+        let end = vector(query.end + center)?;
+        Ok(Self {
+            start,
+            delta: difference(&start, &end)?,
+            offset: vector(capsule.offset)?,
+            radius: Int::binary32(capsule.radius)?,
+        })
+    }
 }
 
 fn source_row(planes: &[Plane], side: Side) -> Result<Row, Failure> {
@@ -1394,11 +1441,211 @@ impl Data {
                 continue;
             }
             let rows = self.fill_capsule_rows(planes, cell, &offset, pose, rows, work)?;
-            if sphere_occupancy(rows, &center, radius, work)? {
+            if sphere::occupancy(rows, &center, radius, work)? {
                 return Ok(Some(cell.contents));
             }
         }
         Ok(None)
+    }
+
+    fn capsule_intervals(
+        &self,
+        planes: &[Plane],
+        cells: IndexSpan,
+        mask: Contents,
+        path: &CapsulePath,
+        pose: &Pose,
+        rows: &mut [Row],
+        work: &mut Work,
+        mut visit: impl FnMut(sphere::SweepInterval, Contents, usize, &mut Work) -> Result<(), Failure>,
+    ) -> Result<(), Failure> {
+        for index in cells.range() {
+            work.item()?;
+            let cell = self.cells[index];
+            if !cell.contents.intersects(mask) {
+                continue;
+            }
+            let rows = self.fill_capsule_rows(planes, cell, &path.offset, pose, rows, work)?;
+            if let Some(interval) =
+                sphere::interval(rows, &path.start, &path.delta, path.radius, work)?
+            {
+                visit(interval, cell.contents, index, work)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn moving_capsule(
+        &self,
+        planes: &[Plane],
+        cells: IndexSpan,
+        query: TraceQuery,
+        capsule: Capsule,
+        pose: &Pose,
+        scratch: &mut Scratch,
+        work: &mut Work,
+    ) -> Result<Trace, Failure> {
+        if !query.rules.contact_epsilon.is_finite() || query.rules.contact_epsilon < 0.0 {
+            return Err(Failure::Input);
+        }
+        let path = CapsulePath::new(query, capsule)?;
+        let component = component(
+            cells.count,
+            query.rules.contact_epsilon != 0.0,
+            work,
+            |work, visit| {
+                self.capsule_intervals(
+                    planes,
+                    cells,
+                    query.mask,
+                    &path,
+                    pose,
+                    &mut scratch.rows,
+                    work,
+                    |interval, contents, _, work| visit(interval, contents, work),
+                )
+            },
+        )?;
+        if let Some(trace) = component.solid_trace(query) {
+            return Ok(trace);
+        }
+        let start_solid = component.start_contents.is_some();
+        let Some((parameter, contents)) = component.hit else {
+            let endpoint = TraceQuery {
+                start: query.end,
+                ..query
+            };
+            if self
+                .capsule_occupancy(
+                    planes,
+                    cells,
+                    endpoint,
+                    capsule,
+                    pose,
+                    &mut scratch.rows,
+                    work,
+                )?
+                .is_some()
+            {
+                return Err(Failure::Input);
+            }
+            let mut trace = Trace::clear(query.end);
+            trace.start_solid = start_solid;
+            return Ok(trace);
+        };
+        let mut selected = None;
+        self.capsule_intervals(
+            planes,
+            cells,
+            query.mask,
+            &path,
+            pose,
+            &mut scratch.rows,
+            work,
+            |interval, _, index, work| {
+                if selected.is_none() && interval.first.compare(parameter, work)? == Ordering::Equal
+                {
+                    selected = Some(index);
+                }
+                Ok(())
+            },
+        )?;
+        let cell = self.cells[selected.ok_or(Failure::Arithmetic)?];
+        let rows =
+            self.fill_capsule_rows(planes, cell, &path.offset, pose, &mut scratch.rows, work)?;
+        let padded = (f64::from(capsule.radius) + query.rules.contact_epsilon) as f32;
+        if !padded.is_finite() {
+            return Err(Failure::Input);
+        }
+        let padded =
+            sphere::interval(rows, &path.start, &path.delta, Int::binary32(padded)?, work)?
+                .ok_or(Failure::Arithmetic)?;
+        let mut fraction = padded.first.floor(work)?;
+        loop {
+            work.item()?;
+            let value = sphere::Bound::Rational(Fraction::binary32(fraction)?);
+            if value.compare(parameter, work)? != Ordering::Less {
+                if fraction == 0.0 {
+                    return Err(Failure::Input);
+                }
+                fraction = fraction.next_down();
+                continue;
+            }
+            if start_solid && value.compare(component.reach, work)? != Ordering::Greater {
+                return Err(Failure::Input);
+            }
+            let end = query.start.lerp(query.end, fraction);
+            let endpoint = TraceQuery {
+                start: end,
+                end,
+                ..query
+            };
+            if self
+                .capsule_occupancy(
+                    planes,
+                    cells,
+                    endpoint,
+                    capsule,
+                    pose,
+                    &mut scratch.rows,
+                    work,
+                )?
+                .is_none()
+            {
+                let center = end + math::midpoint(query.mins, query.maxs);
+                let rows = self.fill_capsule_rows(
+                    planes,
+                    cell,
+                    &path.offset,
+                    pose,
+                    &mut scratch.rows,
+                    work,
+                )?;
+                let nearest = sphere::closest(rows, &vector(center)?, work)?;
+                let shift = nearest.denominator.bit_length();
+                let denominator = nearest.denominator.scaled_f64(shift);
+                let displacement = Vec3(
+                    nearest
+                        .displacement
+                        .map(|value| (value.scaled_f64(shift + 149) / denominator) as f32),
+                );
+                // Scale by the largest component using division before the
+                // shared normalize. A truly axial projection stays exactly
+                // +/-1 instead of losing a bit to length's reciprocal product.
+                let largest = displacement
+                    .0
+                    .iter()
+                    .map(|value| value.abs())
+                    .fold(0.0f32, f32::max);
+                let mut normal = displacement / largest;
+                let distance = math::length(displacement);
+                math::normalize(&mut normal);
+                if distance == 0.0 || !distance.is_finite() || !normal.is_finite() {
+                    return Err(Failure::Input);
+                }
+                let closing = dot(&vector(normal)?, &path.delta)?;
+                if closing.is_zero() || !closing.negative() {
+                    return Err(Failure::Input);
+                }
+                let plane = Plane::oriented(
+                    normal,
+                    normal.dot(center) - distance - normal.dot(capsule.offset).abs(),
+                );
+                if !plane.is_valid() {
+                    return Err(Failure::Input);
+                }
+                let mut trace = Trace::clear(end);
+                trace.fraction = fraction;
+                trace.plane = plane;
+                trace.start_solid = start_solid;
+                trace.contents = contents;
+                return Ok(trace);
+            }
+            if fraction == 0.0 {
+                return Err(Failure::Input);
+            }
+            fraction = fraction.next_down();
+        }
     }
 
     fn occupancy(
@@ -1433,7 +1680,7 @@ impl Data {
         pose: &Pose,
         rows: &mut [Row],
         work: &mut Work,
-        mut visit: impl FnMut(Interval, Contents) -> Result<(), Failure>,
+        mut visit: impl FnMut(Interval, Contents, &mut Work) -> Result<(), Failure>,
     ) -> Result<(), Failure> {
         for &cell in &self.cells[cells.range()] {
             work.item()?;
@@ -1442,7 +1689,7 @@ impl Data {
             }
             let rows = self.fill_rows(planes, cell, path, pose, rows)?;
             if let Some(interval) = interval(rows, work)? {
-                visit(interval, cell.contents)?;
+                visit(interval, cell.contents, work)?;
             }
         }
         Ok(())
@@ -1470,7 +1717,7 @@ impl Data {
             let Some(interval) = interval(rows, work)? else {
                 continue;
             };
-            if !interval.contains(parameter)? {
+            if !interval.contains(parameter, work)? {
                 continue;
             }
             let relative = !cell.full_dim && !path.full_volume();
@@ -1529,80 +1776,7 @@ impl Data {
             0.125 => Some(3),
             _ => return Err(Failure::Input),
         };
-        let mut start_solid = false;
-        let mut start_contents = Contents::EMPTY;
-        let mut reach = Fraction::ZERO;
-        let mut hit: Option<(Fraction, Contents)> = None;
-        self.intervals(
-            planes,
-            cells,
-            query.mask,
-            path,
-            pose,
-            &mut scratch.rows,
-            work,
-            |interval, contents| {
-                if interval.contains(Fraction::ZERO)? && !start_solid {
-                    start_solid = true;
-                    start_contents = contents;
-                }
-                if interval.contains(reach)? && interval.last.compare(reach)? == Ordering::Greater {
-                    reach = interval.last;
-                }
-                if !interval.isolated || epsilon.is_some() {
-                    if hit.is_none()
-                        || interval
-                            .first
-                            .compare(hit.map_or(Fraction::ONE, |hit| hit.0))?
-                            == Ordering::Less
-                    {
-                        hit = Some((interval.first, contents));
-                    }
-                }
-                Ok(())
-            },
-        )?;
-        if start_solid {
-            // Each successful pass advances to a new cell endpoint. Charged
-            // exhaustion cannot publish an incomplete component as clear.
-            for _ in 0..=cells.count {
-                if reach.compare(Fraction::ONE)? != Ordering::Less {
-                    break;
-                }
-                let old = reach;
-                self.intervals(
-                    planes,
-                    cells,
-                    query.mask,
-                    path,
-                    pose,
-                    &mut scratch.rows,
-                    work,
-                    |interval, _| {
-                        if interval.contains(reach)?
-                            && interval.last.compare(reach)? == Ordering::Greater
-                        {
-                            reach = interval.last;
-                        }
-                        Ok(())
-                    },
-                )?;
-                if reach.compare(old)? == Ordering::Equal {
-                    break;
-                }
-            }
-            if reach.compare(Fraction::ONE)? != Ordering::Less {
-                let mut trace = Trace::clear(query.end);
-                trace.start_solid = true;
-                trace.all_solid = true;
-                trace.contents = start_contents;
-                if query.rules.all_solid == AllSolid::BlockAtStart {
-                    trace.fraction = 0.0;
-                    trace.end = query.start;
-                }
-                return Ok(trace);
-            }
-            hit = None;
+        let component = component(cells.count, epsilon.is_some(), work, |work, visit| {
             self.intervals(
                 planes,
                 cells,
@@ -1611,21 +1785,15 @@ impl Data {
                 pose,
                 &mut scratch.rows,
                 work,
-                |interval, contents| {
-                    if interval.first.compare(reach)? == Ordering::Greater
-                        && (!interval.isolated || epsilon.is_some())
-                        && (hit.is_none()
-                            || interval
-                                .first
-                                .compare(hit.map_or(Fraction::ONE, |hit| hit.0))?
-                                == Ordering::Less)
-                    {
-                        hit = Some((interval.first, contents));
-                    }
-                    Ok(())
-                },
-            )?;
+                visit,
+            )
+        })?;
+        if let Some(trace) = component.solid_trace(query) {
+            return Ok(trace);
         }
+        let start_solid = component.start_contents.is_some();
+        let reach = component.reach;
+        let hit = component.hit;
         let Some((parameter, contents)) = hit else {
             let endpoint = BoxPath {
                 start: vector(query.end)?,
@@ -1747,10 +1915,7 @@ impl Data {
         };
         let start = vector(query.start)?;
         let end = vector(query.end)?;
-        let mut delta = [Int::ZERO; 3];
-        for axis in 0..3 {
-            delta[axis] = end[axis].add(&start[axis].neg())?;
-        }
+        let delta = difference(&start, &end)?;
         let path = BoxPath {
             start,
             delta,
@@ -1767,12 +1932,12 @@ impl Data {
             return Err(Failure::Input);
         }
         if let Some(capsule) = query.capsule {
-            if moving
-                || !capsule.radius.is_finite()
-                || capsule.radius < 0.0
-                || !capsule.offset.is_finite()
-            {
+            if !capsule.radius.is_finite() || capsule.radius < 0.0 || !capsule.offset.is_finite() {
                 return Err(Failure::Input);
+            }
+            if moving {
+                return self
+                    .moving_capsule(planes, cells, query, capsule, &pose, scratch, &mut work);
             }
             let contents = self.capsule_occupancy(
                 planes,

@@ -45,7 +45,7 @@ fn wall() -> (Vec<Plane>, Vec<ClipNode>, Vec<HullModel>) {
 #[test]
 fn capsule_queries_never_select_an_unrelated_compiled_box_hull() {
     let (planes, nodes, models) = wall();
-    let hulls = load(planes, nodes.clone(), nodes, models).unwrap();
+    let mut hulls = load(planes, nodes.clone(), nodes, models).unwrap();
     let mut scratch = hulls.store.scratch();
     let (rules, entity_rules) =
         qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3);
@@ -83,6 +83,29 @@ fn capsule_queries_never_select_an_unrelated_compiled_box_hull() {
                 qa_core::primitives::ModelRules::default(),
                 &mut scratch
             )
+            .unwrap_err(),
+        unsupported
+    );
+    hulls
+        .store
+        .prepare_hull_positions(hulls.geometry, Default::default())
+        .unwrap();
+    let mut scratch = hulls.store.scratch();
+    let trace = hulls
+        .store
+        .trace_model(hulls.geometry, 0, query, &mut scratch)
+        .expect("admitted capsule uses hull-zero geometry");
+    assert!((trace.fraction - (40.0f32 - 15.125) / 80.0).abs() <= f32::EPSILON);
+    assert_eq!(trace.plane.normal, Vec3::axis(0, 1.0));
+    assert_eq!(trace.plane.distance, 0.0);
+    let compiled = TraceQuery {
+        rules: TraceRules::LEGACY,
+        ..query
+    };
+    assert_eq!(
+        hulls
+            .store
+            .trace_model(hulls.geometry, 0, compiled, &mut scratch)
             .unwrap_err(),
         unsupported
     );

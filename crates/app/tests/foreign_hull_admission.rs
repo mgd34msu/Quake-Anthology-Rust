@@ -138,12 +138,7 @@ fn module_trace_admission_precedes_initialize_and_allocates_shared_trace_scratch
     use qa_world::{area::LinkOrder, entities::AllocationPolicy};
     let mut operations = vec![(Enter, 64)];
     for (argument, value) in [
-        64,
-        128,
-        144,
-        160,
-        176,
-        1023, // Q3 ENTITYNUM_NONE in the guest ABI.
+        64, 128, 144, 160, 176, 1023, // Q3 ENTITYNUM_NONE in the guest ABI.
         1,
     ]
     .into_iter()
@@ -171,73 +166,80 @@ fn module_trace_admission_precedes_initialize_and_allocates_shared_trace_scratch
                 .copy_from_slice(&component.to_le_bytes());
         }
     }
-    for rules in [
-        RuleSetId::Quake2,
-        RuleSetId::Quake2Rerelease,
-        RuleSetId::Quake3,
-    ] {
-        let mut runtime = half_space_runtime();
-        let module = ModuleId(1);
-        let anchor = runtime
-            .server
-            .entities
-            .allocate(ThinkTime::Milliseconds(0), module, AllocationPolicy::q3(0))
-            .unwrap()
-            .id;
-        let mut host = FrameHost::load_modules(
-            Console::new(Context::default()).unwrap(),
-            runtime,
-            TickRate::FrameDriven,
-            vec![ModuleRequest {
-                context: CallContext {
-                    native_rules: RuleSetId::Quake3,
-                    trace_rules: rules,
-                    sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
-                    server_frame: 0,
-                    module,
-                    clock: ThinkTime::Milliseconds(0),
-                    console: Context::default(),
-                    allocation: AllocationPolicy::q3(0),
-                    link_order: LinkOrder::Head,
-                },
-                timing_rules: RuleSetId::Quake3,
-                phase: Phase::Server,
-                rate: TickRate::FrameDriven,
-                anchor,
-                program: Program::Qvm {
-                    vm: Box::new(service_program::program(&operations, &data)),
-                    imports: &Q3_SERVER,
-                },
-                entries: vec![0],
-                frame: Export::clocked(CallbackId(0)),
-                prepare: vec![],
-                initialize: vec![Export::clocked(CallbackId(0))],
-                api: None,
-                shutdown: vec![],
-                instruction_budget: 100,
-                configstrings: 0,
-                files: 0,
-                entity_source: None,
-            }],
-        )
+    let call = operations
+        .iter()
+        .position(|op| *op == (Const, -25))
         .unwrap();
-        host.initialize_modules(Phase::Server);
-        assert_eq!(
-            host.module_counts(module).unwrap().traps,
-            0,
-            "{:?}",
-            host.module_counts(module)
-        );
-        let epsilon = if rules == RuleSetId::Quake3 {
-            0.125f32
-        } else {
-            0.03125
-        };
-        assert_eq!(
-            host.module_counts(module).unwrap().last_result,
-            Some(ModuleResult::Qvm(((2.0 - epsilon) / 8.0).to_bits() as i32))
-        );
-        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    for trap in [24, 43] {
+        operations[call].1 = -trap - 1;
+        for rules in [
+            RuleSetId::Quake2,
+            RuleSetId::Quake2Rerelease,
+            RuleSetId::Quake3,
+        ] {
+            let mut runtime = half_space_runtime();
+            let module = ModuleId(1);
+            let anchor = runtime
+                .server
+                .entities
+                .allocate(ThinkTime::Milliseconds(0), module, AllocationPolicy::q3(0))
+                .unwrap()
+                .id;
+            let mut host = FrameHost::load_modules(
+                Console::new(Context::default()).unwrap(),
+                runtime,
+                TickRate::FrameDriven,
+                vec![ModuleRequest {
+                    context: CallContext {
+                        native_rules: RuleSetId::Quake3,
+                        trace_rules: rules,
+                        sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
+                        server_frame: 0,
+                        module,
+                        clock: ThinkTime::Milliseconds(0),
+                        console: Context::default(),
+                        allocation: AllocationPolicy::q3(0),
+                        link_order: LinkOrder::Head,
+                    },
+                    timing_rules: RuleSetId::Quake3,
+                    phase: Phase::Server,
+                    rate: TickRate::FrameDriven,
+                    anchor,
+                    program: Program::Qvm {
+                        vm: Box::new(service_program::program(&operations, &data)),
+                        imports: &Q3_SERVER,
+                    },
+                    entries: vec![0],
+                    frame: Export::clocked(CallbackId(0)),
+                    prepare: vec![],
+                    initialize: vec![Export::clocked(CallbackId(0))],
+                    api: None,
+                    shutdown: vec![],
+                    instruction_budget: 100,
+                    configstrings: 0,
+                    files: 0,
+                    entity_source: None,
+                }],
+            )
+            .unwrap();
+            host.initialize_modules(Phase::Server);
+            assert_eq!(
+                host.module_counts(module).unwrap().traps,
+                0,
+                "{:?}",
+                host.module_counts(module)
+            );
+            let epsilon = if rules == RuleSetId::Quake3 {
+                0.125f32
+            } else {
+                0.03125
+            };
+            assert_eq!(
+                host.module_counts(module).unwrap().last_result,
+                Some(ModuleResult::Qvm(((2.0 - epsilon) / 8.0).to_bits() as i32))
+            );
+            assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        }
     }
 }
 
@@ -424,22 +426,41 @@ fn e1m1_default_exact_admission_and_supplied_boxes_preserve_native_queries() {
     }
     admission.expect("default-budget e1m1 admission; no compiled-width fallback for exact queries");
 
-    for (name, mins, maxs) in [
+    for (name, mins, maxs, capsule) in [
         (
             "full-volume",
             Vec3([-15.0, -15.0, -24.0]),
             Vec3([15.0, 15.0, 32.0]),
+            false,
         ),
         (
             "asymmetric",
             Vec3([-15.0, -13.0, -23.0]),
             Vec3([14.0, 16.0, 31.0]),
+            false,
         ),
-        ("point", Vec3::default(), Vec3::default()),
-        ("line", Vec3([0.0, 0.0, -24.0]), Vec3([0.0, 0.0, 32.0])),
-        ("flat", Vec3([-15.0, -15.0, 0.0]), Vec3([15.0, 15.0, 0.0])),
+        ("point", Vec3::default(), Vec3::default(), false),
+        (
+            "line",
+            Vec3([0.0, 0.0, -24.0]),
+            Vec3([0.0, 0.0, 32.0]),
+            false,
+        ),
+        (
+            "flat",
+            Vec3([-15.0, -15.0, 0.0]),
+            Vec3([15.0, 15.0, 0.0]),
+            false,
+        ),
+        (
+            "capsule",
+            Vec3([-15.0, -15.0, -24.0]),
+            Vec3([15.0, 15.0, 32.0]),
+            true,
+        ),
     ] {
         let query = exact_query(start, start, mins, maxs);
+        let query = if capsule { query.with_capsule() } else { query };
         let stationary = run_exact(&store, geometry, name, query, limits);
         assert!(
             !stationary.start_solid && !stationary.all_solid,
