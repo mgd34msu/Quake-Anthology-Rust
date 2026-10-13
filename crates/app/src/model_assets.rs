@@ -197,7 +197,10 @@ impl FileError {
 }
 enum ModelFile {
     Empty,
-    Ready(ModelMetadata),
+    Ready {
+        metadata: ModelMetadata,
+        renderer_sources: u8,
+    },
     LoadedWorld {
         binding: InlineBinding,
         bounds: Bounds,
@@ -207,7 +210,7 @@ enum ModelFile {
 impl ModelFile {
     fn bounds(&self) -> Option<Bounds> {
         match self {
-            Self::Ready(metadata) => Some(metadata.bounds),
+            Self::Ready { metadata, .. } => Some(metadata.bounds),
             Self::LoadedWorld { bounds, .. } => Some(*bounds),
             Self::Empty | Self::Failed(_) => None,
         }
@@ -462,7 +465,10 @@ impl ModelCatalogBuilder {
                 },
             });
         self.files[name.0 as usize] = match &metadata {
-            Ok(metadata) => ModelFile::Ready(*metadata),
+            Ok(metadata) => ModelFile::Ready {
+                metadata: *metadata,
+                renderer_sources: 0,
+            },
             Err(error) => ModelFile::Failed(error.clone()),
         };
         let mut mesh = None;
@@ -509,6 +515,12 @@ impl ModelCatalogBuilder {
                     let first = self.bindings.len() as u32;
                     let count = skins.len() as u32;
                     self.bindings.extend(skins);
+                    if let ModelFile::Ready {
+                        renderer_sources, ..
+                    } = &mut self.files[name.0 as usize]
+                    {
+                        *renderer_sources |= 1 << images.profile.source_rules as u8;
+                    }
                     (Some(IndexSpan { first, count }), None)
                 }
                 Err(error) => {
@@ -748,27 +760,34 @@ fn file_lookup<'a>(
 fn model_handle(
     names: &NameTable,
     files: &[ModelFile],
-    models: &[IndexSpan],
-    registrations: &[RegisteredProfile],
     path: &[u8],
     source: RuleSetId,
 ) -> Option<i32> {
     let name = names.find_path(std::str::from_utf8(path).ok()?)?;
-    let file = files.get(name.0 as usize)?;
-    file.bounds()?;
-    if !matches!(file, ModelFile::LoadedWorld { .. })
-        && !models.get(name.0 as usize)?.range().any(|index| {
-            let entry = &registrations[index];
-            entry.profile.source_rules == source && entry.skins.is_some()
-        })
-    {
-        return None;
+    let handle = i32::try_from(name.0).ok()?;
+    renderer_file(files, handle, Some(source))?;
+    Some(handle)
+}
+fn renderer_file(
+    files: &[ModelFile],
+    handle: i32,
+    source: Option<RuleSetId>,
+) -> Option<&ModelFile> {
+    let index = usize::try_from(handle).ok().filter(|&index| index > 0)?;
+    let file = files.get(index)?;
+    match file {
+        ModelFile::LoadedWorld { .. } => Some(file),
+        ModelFile::Ready {
+            renderer_sources, ..
+        } if renderer_sources & source.map_or(u8::MAX, |source| 1 << source as u8) != 0 => {
+            Some(file)
+        }
+        _ => None,
     }
-    i32::try_from(name.0).ok().filter(|&handle| handle > 0)
 }
 fn model_bounds(files: &[ModelFile], handle: i32) -> Option<Bounds> {
-    match files.get(usize::try_from(handle).ok()?)? {
-        ModelFile::Ready(metadata) => Some(metadata.renderer_bounds),
+    match renderer_file(files, handle, None)? {
+        ModelFile::Ready { metadata, .. } => Some(metadata.renderer_bounds),
         file => file.bounds(),
     }
 }
@@ -780,14 +799,7 @@ impl ModelLookup for ModelCatalogBuilder {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
     }
     fn model_handle(&self, path: &[u8], source: RuleSetId) -> Option<i32> {
-        model_handle(
-            &self.names,
-            &self.files,
-            &self.models,
-            &self.registrations,
-            path,
-            source,
-        )
+        model_handle(&self.names, &self.files, path, source)
     }
     fn model_bounds(&self, handle: i32) -> Option<Bounds> {
         model_bounds(&self.files, handle)
@@ -825,14 +837,7 @@ impl ModelLookup for ModelCatalog {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
     }
     fn model_handle(&self, path: &[u8], source: RuleSetId) -> Option<i32> {
-        model_handle(
-            &self.names,
-            &self.files,
-            &self.models,
-            &self.registrations,
-            path,
-            source,
-        )
+        model_handle(&self.names, &self.files, path, source)
     }
     fn model_bounds(&self, handle: i32) -> Option<Bounds> {
         model_bounds(&self.files, handle)
@@ -900,7 +905,7 @@ impl ModelCatalog {
     }
     pub fn metadata(&self, path: &[u8]) -> Option<ModelMetadata> {
         match file_lookup(&self.names, &self.files, path)? {
-            ModelFile::Ready(metadata) => Some(*metadata),
+            ModelFile::Ready { metadata, .. } => Some(*metadata),
             ModelFile::Empty | ModelFile::LoadedWorld { .. } | ModelFile::Failed(_) => None,
         }
     }

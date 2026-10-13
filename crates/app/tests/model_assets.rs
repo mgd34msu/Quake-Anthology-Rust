@@ -126,6 +126,57 @@ fn unsupported_model_registration_keeps_native_bounds_without_a_render_handle() 
         catalog.model_handle(b"models/test.md3", RuleSetId::Quake3),
         None
     );
+    let rejected = catalog.diagnostics[0].name.0 as i32;
+    assert!(rejected > 0);
+    assert_eq!(
+        catalog.name(qa_core::primitives::NameId(rejected as u32)),
+        Some("models/test.md3")
+    );
+    assert_eq!(catalog.model_bounds(rejected), None);
+}
+
+#[test]
+fn cached_native_model_admission_keeps_failed_source_profiles_separate() {
+    let fixture = support::Fixture::new(&[
+        ("models/test.md2", support::md2_skin(b"textures/body.tga")),
+        (
+            "textures/body.tga",
+            support::tga(2, 2, &[[80, 30, 10, 255]; 4]),
+        ),
+    ]);
+    let healthy = shader_profile(RuleSetId::Quake3);
+    let mut failed = healthy;
+    failed.source_rules = RuleSetId::Quake2;
+    failed.image_settings.gamma_exponent = f32::NAN;
+    let mut builder = ModelCatalogBuilder::new(
+        Assets::load().unwrap(),
+        [failed, healthy],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = builder
+        .register_model(&fixture.vfs, b"models/test.md2", RuleSetId::Quake3)
+        .unwrap();
+    assert!(handle > 0);
+    assert_eq!(
+        builder.register_model(&fixture.vfs, b"models/test.md2", RuleSetId::Quake2),
+        Err(qa_compat::services::CallError::File)
+    );
+    let bounds = builder.model_bounds(handle).unwrap();
+    fixture.remove("models/test.md2");
+    fixture.remove("textures/body.tga");
+    let (_, catalog) = builder.finish();
+    assert_eq!(
+        catalog.model_handle(b"MODELS\\TEST.MD2", RuleSetId::Quake3),
+        Some(handle)
+    );
+    assert_eq!(
+        catalog.model_handle(b"models/test.md2", RuleSetId::Quake2),
+        None
+    );
+    assert_eq!(catalog.model_bounds(handle), Some(bounds));
+    assert_eq!(catalog.diagnostics.len(), 1);
 }
 
 #[test]
