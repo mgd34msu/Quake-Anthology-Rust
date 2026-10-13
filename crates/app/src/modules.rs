@@ -159,6 +159,17 @@ pub enum Argument {
     Word(u64),
     ClockMilliseconds,
     PlatformMilliseconds,
+    ClientMessageSequence,
+    ClientExecutedCommand,
+    ClientNativeNumber,
+}
+impl Argument {
+    fn requires_startup(self) -> bool {
+        matches!(
+            self,
+            Self::ClientMessageSequence | Self::ClientExecutedCommand | Self::ClientNativeNumber
+        )
+    }
 }
 #[derive(Clone, Copy)]
 pub struct Export {
@@ -246,6 +257,7 @@ struct Module {
     duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
     signon: IndexSpan,
     client_connection: Option<(ClientId, EntityId)>,
+    requires_startup: bool,
     consumes_server_commands: bool,
     produces_client_audio: bool,
     produces_client_view: bool,
@@ -597,6 +609,15 @@ impl FrameHost {
             } else {
                 None
             };
+            let requires_startup = request.initialize.iter().any(|export| {
+                export
+                    .arguments
+                    .iter()
+                    .any(|&argument| argument.requires_startup())
+            });
+            if requires_startup && client_connection.is_none() {
+                return Err("CLIENT startup arguments require a bound connection".into());
+            }
             let consumes_server_commands = request.program.consumes_server_commands();
             let produces_client_audio = request.program.produces_client_audio();
             let produces_client_view = request.program.produces_client_view();
@@ -660,6 +681,7 @@ impl FrameHost {
                 ),
                 client_triggers: Vec::with_capacity(host.runtime.server.entities.capacity()),
                 client_connection,
+                requires_startup,
                 consumes_server_commands,
                 produces_client_audio,
                 produces_client_view,
@@ -867,6 +889,25 @@ impl FrameHost {
         }
     }
 
+    fn client_startup(
+        &self,
+        connection: Option<(ClientId, EntityId)>,
+    ) -> Option<qa_network::channel::commands::Q3Startup> {
+        let (id, lifetime) = connection?;
+        let client = self.runtime.server.clients.get(id.0 as usize)?;
+        if client.connection.is_none()
+            || client.entity != lifetime
+            || self.runtime.server.entities.resolve(lifetime).is_none()
+        {
+            return None;
+        }
+        self.runtime
+            .network
+            .get(id, qa_core::loopback::Endpoint::Client)?
+            .channel
+            .q3_startup()
+    }
+
     pub fn call_module_export(
         &mut self,
         module: ModuleId,
@@ -894,11 +935,24 @@ impl FrameHost {
         if self.runtime.server.entities.columns.owner[slot] != module {
             return Err(CallError::MissingModule);
         }
-        let arguments = export.arguments.map(|argument| match argument {
-            Argument::Word(word) => word,
-            Argument::ClockMilliseconds => time.milliseconds() as u64,
-            Argument::PlatformMilliseconds => self.time.milliseconds(),
-        });
+        let mut cached_startup = None;
+        let mut startup = || {
+            (*cached_startup.get_or_insert_with(|| self.client_startup(row.client_connection)))
+                .ok_or(CallError::Rejected)
+        };
+        let mut arguments = [0; 9];
+        for (word, argument) in arguments.iter_mut().zip(export.arguments) {
+            *word = match argument {
+                Argument::Word(word) => word,
+                Argument::ClockMilliseconds => time.milliseconds() as u64,
+                Argument::PlatformMilliseconds => self.time.milliseconds(),
+                Argument::ClientMessageSequence => u64::from(startup()?.message_sequence),
+                Argument::ClientExecutedCommand => {
+                    u64::from(startup()?.last_executed_server_command)
+                }
+                Argument::ClientNativeNumber => u64::from(startup()?.client_num),
+            };
+        }
         self.call_module(
             export.callback,
             CallbackCall::Export {
@@ -936,6 +990,14 @@ impl FrameHost {
                 continue;
             }
             if phase.is_some_and(|phase| row.request.phase != phase) {
+                continue;
+            }
+            if !shutdown
+                && row.requires_startup
+                && self.client_startup(row.client_connection).is_none()
+            {
+                // Await the receiving channel's completed gamestate, without
+                // trapping or claiming resources from SERVER state.
                 continue;
             }
             self.module_lifecycle_row(ModuleId(index as u16), shutdown);

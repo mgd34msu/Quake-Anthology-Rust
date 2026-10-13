@@ -13,7 +13,7 @@ use qa_console::{
 };
 use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{CallbackId, ClientId, ModuleId, NativeEntity, RuleSetId};
-use qa_core::{loopback::Endpoint, sys_events::SeatId};
+use qa_core::sys_events::SeatId;
 use qa_formats::{archive::ArchiveReader, program::quakec::Image};
 use qa_session::timing::TickRate;
 use qa_world::entities::AllocationPolicy;
@@ -204,22 +204,10 @@ pub fn load_q3(
                 if binding.native_client() >= 64 {
                     return Err("cgame native client number needs 0..64".into());
                 }
-                let connection = runtime
-                    .network
-                    .get(
-                        qa_core::primitives::ClientId(index as u32),
-                        Endpoint::Client,
-                    )
-                    .ok_or("cgame needs a bound native channel")?;
                 client_binding = Some(ClientId(index as u32));
-                initialize[0] = Argument::Word(u64::from(connection.channel.state().sequence));
-                initialize[1] = Argument::Word(u64::from(
-                    connection
-                        .channel
-                        .last_executed_server_command()
-                        .map_err(|_| "cgame needs native server-command retention")?,
-                ));
-                initialize[2] = Argument::Word(u64::from(binding.native_client()));
+                initialize[0] = Argument::ClientMessageSequence;
+                initialize[1] = Argument::ClientExecutedCommand;
+                initialize[2] = Argument::ClientNativeNumber;
                 (
                     Phase::Client,
                     Scope::Client,

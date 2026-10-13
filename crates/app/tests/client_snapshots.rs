@@ -10,7 +10,7 @@ use qa_app::{
     client_policy::ClientPolicy,
     host::{FrameHost, FrameResult},
     map::SpawnAnchor,
-    modules::{Export, ModuleRequest, ModuleResult, Phase, Program},
+    modules::{Argument, Export, ModuleRequest, ModuleResult, Phase, Program, State},
 };
 use qa_compat::{abi::Q3_CLIENT, services::CallContext};
 use qa_console::{commands::Console, views::Context};
@@ -188,6 +188,14 @@ fn native() -> (Program, u64) {
 }
 
 fn host(factory: fn() -> (Program, u64), clients: usize) -> (FrameHost, Vec<ClientId>, u64) {
+    host_with_startup(factory, clients, None)
+}
+
+fn host_with_startup(
+    factory: fn() -> (Program, u64),
+    clients: usize,
+    startup: Option<Argument>,
+) -> (FrameHost, Vec<ClientId>, u64) {
     let mut runtime = Runtime::load(clients, []).unwrap();
     let mut requests = Vec::new();
     let mut ids = Vec::new();
@@ -250,7 +258,15 @@ fn host(factory: fn() -> (Program, u64), clients: usize) -> (FrameHost, Vec<Clie
                 ..Export::clocked(CallbackId(6))
             },
             prepare: vec![],
-            initialize: vec![],
+            initialize: startup
+                .into_iter()
+                .map(|argument| {
+                    let mut export = Export::words(CallbackId(6), &[]);
+                    export.client = Some(client);
+                    export.arguments[0] = argument;
+                    export
+                })
+                .collect(),
             api: None,
             shutdown: vec![],
             instruction_budget: 10000,
@@ -1173,6 +1189,68 @@ fn rejected_gamestate_preserves_accepted_client_and_reuse_starts_empty() {
     );
 }
 
+fn cgame_startup_waits_for_queued_state_and_resolves_current_arguments(
+    factory: fn() -> (Program, u64),
+) {
+    for (argument, expected) in [
+        (Argument::ClientMessageSequence, 2),
+        (Argument::ClientExecutedCommand, 2),
+        (Argument::ClientNativeNumber, 57),
+    ] {
+        let (mut host, ids, _) = host_with_startup(factory, 1, Some(argument));
+        let module = ModuleId(1);
+        assert_eq!(host.module_state(module), Some(State::Pending));
+        host.initialize_modules(Phase::Client);
+        assert_eq!(host.module_state(module), Some(State::Pending));
+        assert_eq!(host.module_counts(module).unwrap().calls, 0);
+        let packets = gamestate_packets(&mut host, ids[0], 64, &[(20, b"bad state")]);
+        receive_gamestate_packets(&mut host, ids[0], &packets);
+        host.initialize_modules(Phase::Client);
+        assert_eq!(host.module_state(module), Some(State::Pending));
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        {
+            let channel = &mut host
+                .runtime
+                .network
+                .get_mut(ids[0], Endpoint::Server)
+                .unwrap()
+                .channel;
+            channel.queue_reliable(b"print before").unwrap();
+            channel.queue_reliable(b"print second").unwrap();
+        }
+        let packets = gamestate_packets(&mut host, ids[0], 57, &[(20, b"BASEQ3-1")]);
+        receive_gamestate_packets(&mut host, ids[0], &packets);
+        host.runtime
+            .network
+            .get_mut(ids[0], Endpoint::Client)
+            .unwrap()
+            .channel
+            .executed_server_command(2)
+            .unwrap();
+        assert!(
+            host.runtime
+                .network
+                .get(ids[0], Endpoint::Client)
+                .unwrap()
+                .channel
+                .current_snapshot()
+                .is_none()
+        );
+        host.initialize_modules(Phase::Client);
+        assert_eq!(host.module_state(module), Some(State::Running));
+        assert_eq!(host.module_counts(module).unwrap().calls, 1);
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        let actual = match host.module_counts(module).unwrap().last_result.unwrap() {
+            ModuleResult::Qvm(value) => value as u64,
+            ModuleResult::Native(value) => value,
+            ModuleResult::QuakeC(_) => panic!("word module result"),
+        };
+        assert_eq!(actual, expected);
+        host.initialize_modules(Phase::Client);
+        assert_eq!(host.module_counts(module).unwrap().calls, 1);
+    }
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
@@ -1191,5 +1269,8 @@ fn main() {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     queued_gamestate_precedes_first_snapshot(native);
     rejected_gamestate_preserves_accepted_client_and_reuse_starts_empty();
+    cgame_startup_waits_for_queued_state_and_resolves_current_arguments(qvm);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    cgame_startup_waits_for_queued_state_and_resolves_current_arguments(native);
     println!("CLIENT snapshot getter fixtures passed");
 }
