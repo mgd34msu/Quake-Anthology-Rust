@@ -195,6 +195,58 @@ impl SnapshotBinding {
             loops.completed(owner, sequence, event, accepted);
         }
     }
+    /// Ownership cleanup needs no accepted snapshot or native configstrings.
+    /// In particular, a foreign cgame over NQ must still retry its fences.
+    pub(crate) fn maintain_client_audio(
+        &mut self,
+        lifetime: qa_core::primitives::EntityId,
+        owner: OutputConsumerId,
+        events: &mut qa_core::events::EventRing,
+        budget: &mut usize,
+    ) {
+        if let Some(loops) = self
+            .presentation
+            .as_mut()
+            .and_then(|row| row.loops.as_mut())
+        {
+            loops.maintain(self.client, lifetime, owner, events, budget);
+        }
+    }
+    pub(crate) fn owns_client_audio(&self) -> bool {
+        self.presentation
+            .as_ref()
+            .and_then(|row| row.loops.as_ref())
+            .is_some_and(loops::LoopPublication::owns_native)
+    }
+    pub(crate) fn attach_client_audio(
+        &mut self,
+        module: qa_core::primitives::ModuleId,
+        lifetime: qa_core::primitives::EntityId,
+        rules: qa_core::primitives::RuleSetId,
+        events: &mut qa_core::events::EventRing,
+        owner: OutputConsumerId,
+    ) -> Result<(), qa_compat::services::CallError> {
+        self.presentation
+            .as_mut()
+            .and_then(|row| row.loops.as_mut())
+            .ok_or(qa_compat::services::CallError::Entity)?
+            .attach(self.client, module, lifetime, rules, events, owner)
+    }
+    pub(crate) fn detach_client_audio(
+        &mut self,
+        module: qa_core::primitives::ModuleId,
+        lifetime: qa_core::primitives::EntityId,
+        events: &mut qa_core::events::EventRing,
+        owner: OutputConsumerId,
+    ) {
+        if let Some(loops) = self
+            .presentation
+            .as_mut()
+            .and_then(|row| row.loops.as_mut())
+        {
+            loops.detach(self.client, module, lifetime, events, owner);
+        }
+    }
     pub fn entity_rejections(&self) -> u64 {
         self.entities.rejected
     }
@@ -231,12 +283,15 @@ impl SnapshotBinding {
                 )),
                 fixed_period: (protocol == Protocol::Quake2_34).then_some(100),
                 negotiated_period: protocol == Protocol::Quake2Repro1038,
-                loops: qa_gameplay::rules::loop_rules(protocol.rule_set()).map(|rules| {
-                    loops::LoopPublication::load(
-                        rules,
-                        qa_network::snapshots::snapshot_limits(protocol).native_numbers,
-                    )
-                }),
+                loops: Some(loops::LoopPublication::load(
+                    qa_gameplay::rules::loop_rules(protocol.rule_set()),
+                    qa_network::snapshots::snapshot_limits(protocol)
+                        .native_numbers
+                        .max(
+                            qa_network::snapshots::snapshot_limits(Protocol::Quake3_68)
+                                .native_numbers,
+                        ),
+                )),
                 sequence: None,
                 gun_animation: None,
                 context: PlayerContext {
@@ -506,5 +561,43 @@ impl SnapshotBinding {
                 self.rejected += 1;
             }
         }
+    }
+}
+
+impl qa_compat::services::ClientAudio for SnapshotBinding {
+    fn publish(
+        &mut self,
+        events: &mut qa_core::events::EventRing,
+        event: qa_core::primitives::SoundEvent,
+        native_entity: Option<i32>,
+    ) -> Result<(), qa_compat::services::CallError> {
+        self.presentation
+            .as_mut()
+            .and_then(|row| row.loops.as_mut())
+            .ok_or(qa_compat::services::CallError::Entity)?
+            .native_publish(self.client, events, event, native_entity)
+    }
+    fn respatialize(
+        &mut self,
+        events: &mut qa_core::events::EventRing,
+        producer: qa_core::primitives::ModuleId,
+        queued_at: qa_core::sys_events::EventTime,
+        native_entity: u32,
+        origin: qa_core::primitives::Vec3,
+        right: qa_core::primitives::Vec3,
+    ) -> Result<(), qa_compat::services::CallError> {
+        self.presentation
+            .as_mut()
+            .and_then(|row| row.loops.as_mut())
+            .ok_or(qa_compat::services::CallError::Entity)?
+            .native_listener(
+                self.client,
+                events,
+                producer,
+                queued_at,
+                native_entity,
+                origin,
+                right,
+            )
     }
 }

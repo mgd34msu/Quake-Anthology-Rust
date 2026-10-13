@@ -3,8 +3,8 @@ use qa_core::{
     math,
     names::NameTable,
     primitives::{
-        ClientId, LoopGain, LoopOrigin, LoopPhase, Pcm, ResourceNamespace, SoundAction,
-        SoundEmitter, SoundEvent, SoundId, Vec3,
+        ClientId, EntityId, LoopGain, LoopLifetime, LoopOrigin, LoopPhase, LoopPlayback, ModuleId,
+        Pcm, ResourceNamespace, SoundAction, SoundBus, SoundEmitter, SoundEvent, SoundId, Vec3,
     },
     stamps::StampSet,
 };
@@ -231,12 +231,33 @@ impl Bank {
     }
 }
 
+pub use qa_core::primitives::Listener;
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ListenerOwner {
+    module: ModuleId,
+    client: ClientId,
+    lifetime: EntityId,
+}
+impl ListenerOwner {
+    fn from_event(event: SoundEvent) -> Option<Self> {
+        Some(Self {
+            module: event.listener_owner?,
+            client: event.client?,
+            lifetime: event.client_lifetime?,
+        })
+    }
+}
+#[derive(Clone, Copy, Default)]
+struct ListenerSlot {
+    listener: Option<Listener>,
+    owner: Option<ListenerOwner>,
+}
 #[derive(Clone, Copy)]
-pub struct Listener {
-    pub client: ClientId,
-    pub entity: Option<SoundEmitter>,
-    pub origin: Vec3,
-    pub right: Vec3,
+struct LoopMix {
+    sound: SoundId,
+    source_ordinal: Option<u32>,
+    playback: LoopPlayback,
+    gain: Gain,
 }
 struct Voice {
     event: SoundEvent,
@@ -245,6 +266,30 @@ struct Voice {
     loop_leader: bool,
     begin: Option<u64>,
     order: u64,
+    loop_registered: bool,
+    loop_mix: Option<LoopMix>,
+    paint_scale: Option<i64>,
+}
+impl Voice {
+    fn latched(&self) -> bool {
+        self.event.looping.is_some_and(|p| p.latched)
+            || self.event.playback.is_some_and(|p| p.latched)
+    }
+    /// Only audible numeric state is latched. The current event remains the
+    /// sole registration and position authority for the next Respatialize.
+    fn paint_event(&self) -> Option<SoundEvent> {
+        if self.event.looping.is_some_and(|p| p.latched) {
+            let mix = self.loop_mix?;
+            Some(SoundEvent {
+                sound: mix.sound,
+                source_ordinal: mix.source_ordinal,
+                looping: Some(mix.playback),
+                ..self.event
+            })
+        } else {
+            Some(self.event)
+        }
+    }
 }
 #[derive(Clone, Copy)]
 enum Gain {
@@ -324,6 +369,14 @@ fn same_loop(a: &SoundEvent, b: &SoundEvent) -> bool {
         && a.client == b.client
         && a.client_lifetime == b.client_lifetime
 }
+fn same_client(a: &SoundEvent, b: &SoundEvent) -> bool {
+    a.client == b.client && a.client_lifetime == b.client_lifetime
+}
+enum ChannelChoice {
+    Slot(usize),
+    Suppressed,
+    Full,
+}
 fn loop_order(event: SoundEvent) -> (u32, u32, u32, u32) {
     let client = event.client.map_or(0, |client| client.0);
     let (slot, generation) = event
@@ -335,7 +388,7 @@ fn loop_order(event: SoundEvent) -> (u32, u32, u32, u32) {
     };
     (client, slot, generation, entity)
 }
-fn loop_group(event: SoundEvent, index: usize) -> (u32, u32, u32, u32, u16, usize) {
+fn loop_group(event: SoundEvent, index: usize) -> (u32, u32, u32, (u32, Option<u32>), u16, usize) {
     let (client, slot, generation, _) = loop_order(event);
     let (scale, separate) = event.looping.map_or((0, index + 1), |playback| {
         let scale = match playback.master {
@@ -349,7 +402,18 @@ fn loop_group(event: SoundEvent, index: usize) -> (u32, u32, u32, u32, u16, usiz
         };
         (scale, separate)
     });
-    (client, slot, generation, event.sound.0, scale, separate)
+    let handle = event
+        .looping
+        .filter(|p| p.latched)
+        .and(event.source_ordinal);
+    (
+        client,
+        slot,
+        generation,
+        (event.sound.0, handle),
+        scale,
+        separate,
+    )
 }
 #[derive(Default, Debug)]
 pub struct MixCounts {
@@ -361,11 +425,12 @@ pub struct MixCounts {
     pub frames: u64,
     pub respatialized: u64,
     pub missing_origins: u64,
+    pub suppressed: u64,
 }
 pub struct Mixer {
     pub bank: Arc<Bank>,
     voices: Box<[Option<Voice>]>,
-    listeners: Box<[Option<Listener>]>,
+    listeners: Box<[ListenerSlot]>,
     loop_order: Box<[usize]>,
     pub counts: MixCounts,
     volume: f32,
@@ -376,7 +441,7 @@ impl Mixer {
         Self {
             bank,
             voices: std::iter::repeat_with(|| None).take(voices).collect(),
-            listeners: vec![None; listeners].into_boxed_slice(),
+            listeners: vec![ListenerSlot::default(); listeners].into_boxed_slice(),
             loop_order: vec![0; voices].into_boxed_slice(),
             counts: MixCounts::default(),
             volume: 1.0,
@@ -384,17 +449,31 @@ impl Mixer {
         }
     }
     pub fn listen(&mut self, listeners: &[Option<Listener>], volume: f32) {
-        for (index, slot) in self.listeners.iter_mut().enumerate() {
-            *slot = listeners.get(index).copied().flatten();
+        for index in 0..self.listeners.len() {
+            if self.listeners[index].owner.is_some() {
+                continue;
+            }
+            let mut listener = listeners.get(index).copied().flatten();
+            // The attached CLIENT owns its listener until an exact release,
+            // even when the host has no active view for that connection.
+            if listener.is_some_and(|candidate| {
+                self.listeners.iter().any(|slot| {
+                    slot.owner
+                        .is_some_and(|owner| owner.client == candidate.client)
+                })
+            }) {
+                listener = None;
+            }
             // Repeated views of one client are one audible listener.
-            if slot.is_some_and(|l| {
+            if listener.is_some_and(|l| {
                 listeners[..index.min(listeners.len())]
                     .iter()
                     .flatten()
                     .any(|earlier| earlier.client == l.client)
             }) {
-                *slot = None;
+                listener = None;
             }
+            self.listeners[index].listener = listener;
         }
         self.volume = if volume.is_finite() {
             volume.clamp(0.0, 1.0)
@@ -410,7 +489,7 @@ impl Mixer {
         mut resolve: impl FnMut(ClientId, u32, Option<LoopOrigin>) -> Option<Vec3>,
     ) {
         for voice in self.voices.iter_mut().flatten() {
-            if voice.event.positioned {
+            if voice.event.positioned || voice.latched() {
                 continue;
             }
             let Some(SoundEmitter::Native {
@@ -452,7 +531,31 @@ impl Mixer {
                     self.counts.stopped += 1;
                 }
             }
+            if event.action == SoundAction::RetireClient {
+                for slot in &mut self.listeners {
+                    if slot
+                        .owner
+                        .is_some_and(|owner| owner.client == client && owner.lifetime == lifetime)
+                    {
+                        *slot = ListenerSlot::default();
+                    }
+                }
+            }
             return true;
+        }
+        if !self.owner_allows(event) {
+            self.counts.invalid += 1;
+            return false;
+        }
+        if matches!(
+            event.action,
+            SoundAction::ClearTemporaryLoops
+                | SoundAction::ClearClientLoops
+                | SoundAction::UpdateEmitterPosition
+                | SoundAction::Respatialize
+                | SoundAction::ReleaseListener
+        ) {
+            return self.control(event);
         }
         if matches!(event.action, SoundAction::Stop | SoundAction::StopLoop) {
             for slot in &mut self.voices {
@@ -463,7 +566,18 @@ impl Mixer {
                         v.event.looping.is_none() && same_channel(&v.event, &event)
                     }
                 }) {
-                    *slot = None;
+                    if event.action == SoundAction::StopLoop
+                        && slot.as_ref().is_some_and(Voice::latched)
+                    {
+                        if let Some(voice) = slot {
+                            voice.loop_registered = false;
+                            if voice.loop_mix.is_none() {
+                                *slot = None;
+                            }
+                        }
+                    } else {
+                        *slot = None;
+                    }
                     self.counts.stopped += 1;
                 }
             }
@@ -481,6 +595,12 @@ impl Mixer {
             || !event.time_offset.is_finite()
             || event.time_offset < 0.0
             || !event.position.is_finite()
+            || event.playback.is_some_and(|playback| {
+                event.looping.is_some()
+                    || event.action != SoundAction::Play
+                    || playback.volume_scale == 0
+                    || event.time_offset != 0.0
+            })
             || event.looping.is_some_and(|playback| {
                 event.action != SoundAction::StartLoop
                     || event.time_offset != 0.0
@@ -499,6 +619,9 @@ impl Mixer {
             self.counts.invalid += 1;
             return false;
         }
+        if event.looping.is_some_and(|p| p.latched) {
+            self.update_emitter_position(event);
+        }
         for voice in &mut self.voices {
             let Some(voice) = voice else { continue };
             let matches = if event.looping.is_some() {
@@ -511,10 +634,11 @@ impl Mixer {
             }
             if event.action == SoundAction::StartLoop
                 && voice.event.action == SoundAction::StartLoop
-                && voice.event.sound == event.sound
+                && (voice.event.sound == event.sound || voice.latched())
                 && voice.begin.is_none()
             {
                 voice.event = event;
+                voice.loop_registered = true;
                 return true;
             }
         }
@@ -527,7 +651,21 @@ impl Mixer {
                     .is_some_and(|voice| same_loop(&voice.event, &event))
             })
         } else if begin.is_none() {
-            self.channel_voice(event)
+            if event.playback.is_some_and(|p| p.channels.is_some()) {
+                match self.native_channel(event) {
+                    ChannelChoice::Slot(index) => Some(index),
+                    ChannelChoice::Suppressed => {
+                        self.counts.suppressed += 1;
+                        return true;
+                    }
+                    ChannelChoice::Full => {
+                        self.counts.full += 1;
+                        return false;
+                    }
+                }
+            } else {
+                self.channel_voice(event)
+            }
         } else {
             None
         };
@@ -536,20 +674,226 @@ impl Mixer {
             self.counts.full += 1;
             return false;
         };
-        self.counts.replaced += u64::from(replacement.is_some());
+        self.counts.replaced += u64::from(self.voices[index].is_some());
         self.voices[index] = Some(Voice {
             event,
             frame: 0,
-            gain: Gain::zero(event),
+            gain: if event.playback.is_some_and(|p| p.latched) {
+                full_gain(event)
+            } else {
+                Gain::zero(event)
+            },
             loop_leader: false,
             begin,
             order: self.counts.started,
+            loop_registered: true,
+            loop_mix: None,
+            paint_scale: None,
         });
         if let Some(begin) = begin {
             self.next_start = Some(self.next_start.map_or(begin, |next| next.min(begin)));
         }
         self.counts.started += 1;
         true
+    }
+    fn owner_allows(&self, event: SoundEvent) -> bool {
+        let Some(owner) = ListenerOwner::from_event(event) else {
+            // Unbound UI Local audio has no CLIENT listener ownership.
+            return event.listener_owner.is_none() || event.client.is_none();
+        };
+        self.listeners.iter().all(|slot| {
+            slot.owner
+                .is_none_or(|current| current.client != owner.client || current == owner)
+        })
+    }
+    fn control(&mut self, event: SoundEvent) -> bool {
+        let Some(owner) = ListenerOwner::from_event(event) else {
+            self.counts.invalid += 1;
+            return false;
+        };
+        if event.action == SoundAction::ReleaseListener {
+            if let Some(slot) = self
+                .listeners
+                .iter_mut()
+                .find(|slot| slot.owner == Some(owner))
+            {
+                *slot = ListenerSlot::default();
+            }
+            // An attached module may fail before its first Respatialize.
+            // Exact release remains an idempotent cleanup boundary.
+            return true;
+        }
+        if event.action == SoundAction::Respatialize {
+            let Some(listener) = event.listener.filter(|listener| {
+                listener.client == owner.client
+                    && listener.origin.is_finite()
+                    && listener.right.is_finite()
+            }) else {
+                self.counts.invalid += 1;
+                return false;
+            };
+            let slot = self
+                .listeners
+                .iter()
+                .position(|slot| slot.owner == Some(owner))
+                .or_else(|| {
+                    self.listeners.iter().position(|slot| {
+                        slot.owner.is_none()
+                            && slot.listener.is_some_and(|l| l.client == owner.client)
+                    })
+                })
+                .or_else(|| {
+                    self.listeners
+                        .iter()
+                        .position(|slot| slot.owner.is_none() && slot.listener.is_none())
+                });
+            let Some(index) = slot else {
+                self.counts.full += 1;
+                return false;
+            };
+            self.listeners[index] = ListenerSlot {
+                listener: Some(listener),
+                owner: Some(owner),
+            };
+            for slot in &mut self.voices {
+                let Some(voice) = slot else { continue };
+                if !same_client(&voice.event, &event) || !voice.latched() {
+                    continue;
+                }
+                if let Some(playback) = voice.event.looping {
+                    if voice.loop_registered {
+                        voice.loop_mix = Some(LoopMix {
+                            sound: voice.event.sound,
+                            source_ordinal: voice.event.source_ordinal,
+                            playback,
+                            gain: gains(voice.event, &listener),
+                        });
+                    } else {
+                        *slot = None;
+                    }
+                } else {
+                    voice.gain = gains(voice.event, &listener);
+                }
+            }
+            return true;
+        }
+        if event.action == SoundAction::UpdateEmitterPosition {
+            if !event.position.is_finite()
+                || !matches!(event.entity, Some(SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(client), slot
+            }) if client == owner.client && slot >= 0)
+            {
+                self.counts.invalid += 1;
+                return false;
+            }
+            self.update_emitter_position(event);
+            return true;
+        }
+        for slot in &mut self.voices {
+            let Some(voice) = slot else { continue };
+            let Some(playback) = voice.event.looping.filter(|p| p.latched) else {
+                continue;
+            };
+            if !same_client(&voice.event, &event) {
+                continue;
+            }
+            // Both native clear modes immediately mute the audible loop mix.
+            voice.loop_mix = None;
+            if event.action == SoundAction::ClearClientLoops
+                || playback.lifetime == LoopLifetime::Temporary
+            {
+                *slot = None;
+                self.counts.stopped += 1;
+            }
+        }
+        true
+    }
+    fn update_emitter_position(&mut self, event: SoundEvent) {
+        for voice in self.voices.iter_mut().flatten() {
+            if voice.latched()
+                && same_client(&voice.event, &event)
+                && voice.event.entity == event.entity
+                && (voice.event.looping.is_some() || !voice.event.positioned)
+            {
+                voice.event.position = event.position;
+            }
+        }
+    }
+    fn is_listener(&self, event: SoundEvent) -> bool {
+        event.bus == SoundBus::Local
+            || self.listeners.iter().any(|slot| {
+                slot.listener.is_some_and(|listener| {
+                    event.applies_to_client(listener.client)
+                        && event
+                            .entity
+                            .is_some_and(|entity| listener.entity == Some(entity))
+                })
+            })
+    }
+    /// Native per-emitter limits and strict-oldest selection operate on the
+    /// existing bounded channel table. No out-of-bounds reference is copied.
+    fn native_channel(&self, event: SoundEvent) -> ChannelChoice {
+        let Some(channels) = event.playback.and_then(|p| p.channels) else {
+            return ChannelChoice::Full;
+        };
+        let now = event.queued_at.milliseconds();
+        let mut in_play = 0usize;
+        for voice in self.voices.iter().flatten().filter(|voice| {
+            voice.event.looping.is_none()
+                && same_client(&voice.event, &event)
+                && voice.event.entity == event.entity
+                && voice.event.sound == event.sound
+                && voice.event.source_ordinal == event.source_ordinal
+        }) {
+            if now.saturating_sub(voice.event.queued_at.milliseconds())
+                < u64::from(channels.suppress_ms)
+            {
+                return ChannelChoice::Suppressed;
+            }
+            in_play += 1;
+        }
+        let allowed = if self.is_listener(event) {
+            channels.listener_limit
+        } else {
+            channels.emitter_limit
+        };
+        if in_play > usize::from(allowed) {
+            return ChannelChoice::Suppressed;
+        }
+        if let Some(index) = self.voices.iter().position(Option::is_none) {
+            return ChannelChoice::Slot(index);
+        }
+        for pass in 0..3 {
+            if pass == 2 && !self.is_listener(event) {
+                break;
+            }
+            let mut oldest = now;
+            let mut chosen = None;
+            for (index, voice) in self.voices.iter().enumerate() {
+                let Some(voice) = voice else { continue };
+                if voice.event.looping.is_some() || !same_client(&voice.event, &event) {
+                    continue;
+                }
+                if pass < 2
+                    && (self.is_listener(voice.event)
+                        || voice.event.channel == channels.protected_channel)
+                {
+                    continue;
+                }
+                if pass == 0 && voice.event.entity != event.entity {
+                    continue;
+                }
+                let allocated = voice.event.queued_at.milliseconds();
+                if allocated < oldest {
+                    oldest = allocated;
+                    chosen = Some(index);
+                }
+            }
+            if let Some(index) = chosen {
+                return ChannelChoice::Slot(index);
+            }
+        }
+        ChannelChoice::Full
     }
     fn channel_voice(&self, event: SoundEvent) -> Option<usize> {
         if event.entity.is_none() || event.channel == 0 {
@@ -602,13 +946,30 @@ impl Mixer {
             return false;
         }
         for voice in self.voices.iter_mut().flatten() {
-            voice.gain = Gain::zero(voice.event);
             voice.loop_leader = false;
+            voice.paint_scale = voice
+                .event
+                .playback
+                .map(|playback| (self.volume * f32::from(playback.volume_scale)) as i64);
+            if voice.event.looping.is_some_and(|p| p.latched) {
+                voice.gain = voice
+                    .loop_mix
+                    .map_or_else(|| Gain::zero(voice.event), |mix| mix.gain);
+                continue;
+            }
+            if voice.event.playback.is_some_and(|p| p.latched) {
+                continue;
+            }
+            voice.gain = Gain::zero(voice.event);
+            if voice.event.bus == SoundBus::Local {
+                voice.gain = full_gain(voice.event);
+                continue;
+            }
             let mut listeners = 0;
             for listener in self
                 .listeners
                 .iter()
-                .flatten()
+                .filter_map(|slot| slot.listener.as_ref())
                 .filter(|l| voice.event.applies_to_client(l.client))
             {
                 listeners += 1;
@@ -625,6 +986,7 @@ impl Mixer {
                 self.start_ready(time);
             }
             let mut sum = [0i64; 2];
+            let mut native = [0i64; 2];
             for slot in &mut self.voices {
                 let Some(voice) = slot.as_mut() else {
                     continue;
@@ -641,16 +1003,26 @@ impl Mixer {
                 let channels = sample.channels as usize;
                 let offset = voice.frame * channels;
                 if let Gain::Integer(gain) = voice.gain {
-                    for (side, total) in sum.iter_mut().enumerate() {
+                    let totals = if voice.paint_scale.is_some() {
+                        &mut native
+                    } else {
+                        &mut sum
+                    };
+                    for (side, total) in totals.iter_mut().enumerate() {
                         let value = sample.samples[offset + side.min(channels - 1)];
-                        *total += (i64::from(value) * gain[side]) >> 8;
+                        *total +=
+                            (i64::from(value) * (gain[side] * voice.paint_scale.unwrap_or(1))) >> 8;
                     }
                 }
                 voice.frame += 1;
                 if voice.frame == sample.frames() {
-                    let start = sample
-                        .loop_start
-                        .or_else(|| (voice.event.action == SoundAction::StartLoop).then_some(0));
+                    let start = if voice.event.playback.is_some() {
+                        None
+                    } else {
+                        sample
+                            .loop_start
+                            .or_else(|| (voice.event.action == SoundAction::StartLoop).then_some(0))
+                    };
                     if let Some(start) = start {
                         voice.frame = start;
                     } else {
@@ -660,17 +1032,21 @@ impl Mixer {
             }
             // Native integer loops multiply their grouped volume before the
             // sample product. Ordinary channels retain their existing order.
-            let mut integer = sum.map(|sum| sum * volume);
+            let mut integer =
+                std::array::from_fn::<_, 2, _>(|side| sum[side] * volume + native[side]);
             let mut floating = [0.0f32; 2];
             let mut has_float = false;
             for &index in &self.loop_order[..loops] {
                 let Some(voice) = self.voices[index].as_mut() else {
                     continue;
                 };
-                let Some(playback) = voice.event.looping else {
+                let Some(event) = voice.paint_event() else {
                     continue;
                 };
-                let Some(sample) = self.bank.samples[voice.event.sound.0 as usize].as_ref() else {
+                let Some(playback) = event.looping else {
+                    continue;
+                };
+                let Some(sample) = self.bank.samples[event.sound.0 as usize].as_ref() else {
                     continue;
                 };
                 let sample_frame = match playback.phase {
@@ -719,10 +1095,11 @@ impl Mixer {
     fn prepare_loops(&mut self) -> usize {
         let mut count = 0;
         for (index, voice) in self.voices.iter().enumerate() {
-            if voice
-                .as_ref()
-                .is_some_and(|voice| voice.event.looping.is_some())
-            {
+            if voice.as_ref().is_some_and(|voice| {
+                voice
+                    .paint_event()
+                    .is_some_and(|event| event.looping.is_some())
+            }) {
                 self.loop_order[count] = index;
                 count += 1;
             }
@@ -731,20 +1108,25 @@ impl Mixer {
         self.loop_order[..count].sort_unstable_by_key(|&index| {
             let event = voices[index]
                 .as_ref()
-                .map_or_else(SoundEvent::default, |v| v.event);
+                .and_then(Voice::paint_event)
+                .unwrap_or_default();
             (loop_group(event, index), loop_order(event), index)
         });
         let mut leader: Option<usize> = None;
         for &index in &self.loop_order[..count] {
-            let Some((event, gain)) = self.voices[index].as_ref().map(|v| (v.event, v.gain)) else {
+            let Some((event, gain)) = self.voices[index]
+                .as_ref()
+                .and_then(|v| Some((v.paint_event()?, v.gain)))
+            else {
                 continue;
             };
             let grouped = leader.is_some_and(|first| {
                 let Some(first_voice) = self.voices[first].as_mut() else {
                     return false;
                 };
-                loop_group(first_voice.event, first) == loop_group(event, index)
-                    && first_voice.gain.add(gain)
+                first_voice.paint_event().is_some_and(|first_event| {
+                    loop_group(first_event, first) == loop_group(event, index)
+                }) && first_voice.gain.add(gain)
             });
             if !grouped {
                 leader = Some(index);
@@ -754,7 +1136,7 @@ impl Mixer {
             }
         }
         for voice in self.voices.iter_mut().flatten().filter(|v| v.loop_leader) {
-            if let Some(playback) = voice.event.looping {
+            if let Some(playback) = voice.paint_event().and_then(|event| event.looping) {
                 let scale = match playback.master {
                     LoopGain::Integer { volume_scale, .. } => volume_scale,
                     LoopGain::Float(_) => 0,
@@ -768,7 +1150,8 @@ impl Mixer {
         self.loop_order[..count].sort_unstable_by_key(|&index| {
             let event = voices[index]
                 .as_ref()
-                .map_or_else(SoundEvent::default, |v| v.event);
+                .and_then(Voice::paint_event)
+                .unwrap_or_default();
             (loop_order(event), index)
         });
         let mut leaders = 0;
@@ -785,10 +1168,17 @@ impl Mixer {
         leaders
     }
 }
+fn full_gain(event: SoundEvent) -> Gain {
+    let master = event
+        .playback
+        .map_or(255.0, |playback| f32::from(playback.master));
+    Gain::Integer([i64::from((event.volume * master) as i32); 2])
+}
 fn gains(event: SoundEvent, listener: &Listener) -> Gain {
-    let master = (event.volume * 255.0) as i32;
+    let master = (event.volume * event.playback.map_or(255.0, |p| f32::from(p.master))) as i32;
     if event.looping.is_none()
-        && (event.attenuation == 0.0
+        && (event.bus == SoundBus::Local
+            || event.attenuation == 0.0
             || event
                 .entity
                 .is_some_and(|entity| listener.entity == Some(entity)))
@@ -799,6 +1189,7 @@ fn gains(event: SoundEvent, listener: &Listener) -> Gain {
     let mut direction = delta;
     let distance = math::normalize(&mut direction);
     let dot = listener.right.dot(direction);
+    let dot = if listener.negate_dot { -dot } else { dot };
     let distance = (distance - event.spatial.distance_offset).max(0.0)
         * event.attenuation
         * event.spatial.distance_scale;
@@ -826,10 +1217,12 @@ fn gains(event: SoundEvent, listener: &Listener) -> Gain {
         }
     } else {
         Gain::Integer(pan.map(|pan| {
-            i64::from(
-                (master as f32 * ((1.0 - distance) * pan * event.spatial.separation)).max(0.0)
-                    as i32,
-            )
+            let attenuated = if event.playback.is_some_and(|p| p.clamp_pan) {
+                (1.0 - distance) * (event.spatial.separation * pan).max(0.0)
+            } else {
+                (1.0 - distance) * pan * event.spatial.separation
+            };
+            i64::from((master as f32 * attenuated).max(0.0) as i32)
         }))
     }
 }

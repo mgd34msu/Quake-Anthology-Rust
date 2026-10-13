@@ -2,14 +2,18 @@ use qa_compat::{
     abi::{Addresses, Invocation, Q3_CLIENT, Q3_UI, UnknownCalls},
     memory::ModuleMemory,
     services::{
-        CallContext, CallError, ENGINE_CALLS, EngineServices, ServiceStorage, SoundRegistrar,
+        CallContext, CallError, ClientAudio, ENGINE_CALLS, EngineServices, ServiceStorage,
+        SoundRegistrar,
     },
 };
 use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
 use qa_core::{
-    events::{FrameEvent, OutputConsumerId, OutputTarget},
+    events::{EventRing, FrameEvent, OutputConsumerId, OutputSubmission, OutputTarget},
     names::NameTable,
-    primitives::{ModuleId, Pcm, PcmChannels, RuleSetId, ThinkTime},
+    primitives::{
+        ClientId, EntityId, Listener, LoopLifetime, ModuleId, Pcm, PcmChannels, ResourceNamespace,
+        RuleSetId, SoundAction, SoundBus, SoundEmitter, SoundEvent, ThinkTime, Vec3,
+    },
     sys_events::EventTime,
 };
 use qa_world::{collision::CollisionStore, entities::AllocationPolicy};
@@ -147,6 +151,7 @@ impl Fixture {
             cvars: &mut self.cvars,
             commands: &mut self.commands,
             client_commands: None,
+            client_audio: None,
             vfs: &self.vfs,
             model_loader: None,
             model_lookup: None,
@@ -224,6 +229,23 @@ fn invoke(
     pointer: u64,
 ) -> Result<u64, CallError> {
     let arguments = [pointer, u64::MAX];
+    invoke_call(
+        services,
+        memory,
+        addresses,
+        if ui { &Q3_UI } else { &Q3_CLIENT },
+        if ui { 31 } else { 34 },
+        &arguments,
+    )
+}
+fn invoke_call(
+    services: &mut EngineServices<'_>,
+    memory: &mut ModuleMemory<'_>,
+    addresses: Addresses,
+    table: &qa_compat::abi::CallTable,
+    number: u32,
+    arguments: &[u64],
+) -> Result<u64, CallError> {
     let mut call = Invocation {
         services,
         memory,
@@ -236,17 +258,13 @@ fn invoke(
         native_pmove: None,
         native_player: None,
         context: context(),
-        platform_time: EventTime(0),
+        platform_time: EventTime(123_456_789),
         command: &[],
         addresses,
-        arguments: &arguments,
+        arguments,
     };
     let mut unknown = UnknownCalls::load(1).unwrap();
-    let result = if ui { &Q3_UI } else { &Q3_CLIENT }.invoke(
-        if ui { 31 } else { 34 },
-        &mut call,
-        &mut unknown,
-    );
+    let result = table.invoke(number, &mut call, &mut unknown);
     assert_eq!(unknown.calls, 0);
     result
 }
@@ -575,6 +593,7 @@ fn cold_native_config_sound_uses_the_existing_numeric_cache_then_rebinds_frozen_
             cvars: &mut fixture.cvars,
             commands: &mut fixture.commands,
             client_commands: None,
+            client_audio: None,
             vfs: &fixture.vfs,
             model_loader: None,
             model_lookup: None,
@@ -731,4 +750,468 @@ fn native_config_precache_cannot_claim_a_cgame_handle_for_a_different_file() {
         (ENGINE_CALLS.registered_sound)(&services, handle),
         Ok(Some(root_sample))
     );
+}
+
+struct AudioBoundary {
+    client: ClientId,
+    lifetime: EntityId,
+    producer: ModuleId,
+    listener: i32,
+}
+impl AudioBoundary {
+    fn load(fixture: &mut Fixture) -> Self {
+        let client = fixture
+            .server
+            .connect(qa_session::clients::Connection::Local, ModuleId(1), None)
+            .unwrap();
+        Self {
+            client,
+            lifetime: fixture.server.clients[client.0 as usize].entity,
+            producer: ModuleId(1),
+            listener: 0,
+        }
+    }
+    fn emitter(&self, slot: i32) -> SoundEmitter {
+        SoundEmitter::Native {
+            namespace: ResourceNamespace::Client(self.client),
+            slot,
+        }
+    }
+}
+impl ClientAudio for AudioBoundary {
+    fn publish(
+        &mut self,
+        events: &mut EventRing,
+        mut event: SoundEvent,
+        native_entity: Option<i32>,
+    ) -> Result<(), CallError> {
+        if event.listener_owner != Some(self.producer) {
+            return Err(CallError::Entity);
+        }
+        event.client = Some(self.client);
+        event.client_lifetime = Some(self.lifetime);
+        event.entity = native_entity
+            .or_else(|| (event.bus == SoundBus::Local).then_some(self.listener))
+            .map(|native| self.emitter(native));
+        events
+            .push_to(OutputTarget::Presentation, FrameEvent::Sound(event))
+            .map(|_| ())
+            .map_err(|_| CallError::Capacity)
+    }
+    fn respatialize(
+        &mut self,
+        events: &mut EventRing,
+        producer: ModuleId,
+        queued_at: EventTime,
+        native_entity: u32,
+        origin: Vec3,
+        right: Vec3,
+    ) -> Result<(), CallError> {
+        let event = SoundEvent {
+            action: SoundAction::Respatialize,
+            queued_at,
+            listener_owner: Some(producer),
+            listener: Some(Listener {
+                client: self.client,
+                entity: Some(self.emitter(native_entity as i32)),
+                origin,
+                right,
+                negate_dot: true,
+            }),
+            ..SoundEvent::default()
+        };
+        self.publish(events, event, Some(native_entity as i32))?;
+        self.listener = native_entity as i32;
+        Ok(())
+    }
+}
+fn take_sound(fixture: &mut Fixture) -> SoundEvent {
+    let mut batch = fixture.server.events.batch(fixture.output).unwrap();
+    let record = fixture.server.events.next(&mut batch).unwrap();
+    assert!(fixture.server.events.submit(
+        fixture.output,
+        record.sequence,
+        OutputSubmission::BestEffort
+    ));
+    let FrameEvent::Sound(sound) = record.event else {
+        panic!("expected CLIENT sound record")
+    };
+    sound
+}
+
+#[test]
+fn native_client_sound_controls_use_one_ring_and_exact_widths_in_all_address_modes() {
+    assert!(Q3_CLIENT.produces_client_audio());
+    assert!(!Q3_UI.produces_client_audio());
+    assert!(!qa_compat::abi::Q3_SERVER.produces_client_audio());
+    for addresses in modes() {
+        let mut fixture = Fixture::new();
+        let mut audio = AudioBoundary::load(&mut fixture);
+        let client = audio.client;
+        let lifetime = audio.lifetime;
+        let default = fixture.registrar.bank.registered_sound(0).unwrap();
+        let handle = fixture
+            .registrar
+            .bank
+            .registered_handle(b"sound/a.wav")
+            .unwrap();
+        let sample = fixture.registrar.bank.registered_sound(handle).unwrap();
+        let base = base(addresses);
+        let wrap = if base == 0 { 512 } else { 0 };
+        let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
+        memory
+            .write_vec3(base + 16, Vec3([8.0, -3.0, 9.0]))
+            .unwrap();
+        memory.write_vec3(base + 32, Vec3([1.0, 2.0, 3.0])).unwrap();
+        for (index, axis) in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            .into_iter()
+            .enumerate()
+        {
+            memory
+                .write_vec3(base + 64 + index as u64 * 12, Vec3(axis))
+                .unwrap();
+        }
+        let origin = base + 16 + wrap;
+        let velocity = base + 32 + wrap;
+        let axes = base + 64 + wrap;
+        {
+            let mut services = fixture.engine(false);
+            services.client_audio = Some(&mut audio);
+            for (number, arguments) in [
+                (28, [0, 0, (-3i32) as u32 as u64, 0]),
+                (
+                    28,
+                    [
+                        origin,
+                        (-12i32) as u32 as u64,
+                        0x1234_0000_0007,
+                        handle as u64,
+                    ],
+                ),
+                (29, [handle as u64, (-9i32) as u32 as u64, 0, 0]),
+                (30, [0, 0, 0, 0]),
+                (31, [0, origin, velocity, handle as u64]),
+                (32, [1023, origin, 0, 0]),
+                (33, [2, origin, axes, u64::MAX]),
+                (80, [1023, origin, velocity, handle as u64]),
+                (81, [0, 0, 0, 0]),
+                (30, [0x8000_0000, 0, 0, 0]),
+            ] {
+                assert_eq!(
+                    invoke_call(
+                        &mut services,
+                        &mut memory,
+                        addresses,
+                        &Q3_CLIENT,
+                        number,
+                        &arguments
+                    ),
+                    Ok(0)
+                );
+            }
+        }
+        let dynamic = take_sound(&mut fixture);
+        assert_eq!(dynamic.sound, default);
+        assert_eq!(dynamic.source_ordinal, Some(0));
+        assert!(!dynamic.positioned);
+        assert_eq!(dynamic.channel, -3);
+        assert_eq!(
+            dynamic.entity,
+            Some(SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(client),
+                slot: 0
+            })
+        );
+        assert_eq!(dynamic.client_lifetime, Some(lifetime));
+        assert_eq!(dynamic.listener_owner, Some(ModuleId(1)));
+        assert_eq!(dynamic.queued_at, EventTime(123_456_789));
+        assert_eq!(dynamic.spatial, context().sound_policy);
+        assert_eq!(
+            dynamic.playback,
+            qa_gameplay::rules::native_sound_playback(RuleSetId::Quake3)
+        );
+        let positioned = take_sound(&mut fixture);
+        assert_eq!(positioned.sound, sample);
+        assert_eq!(positioned.source_ordinal, Some(handle as u32));
+        assert!(positioned.positioned);
+        assert_eq!(positioned.position, Vec3([8.0, -3.0, 9.0]));
+        assert_eq!(positioned.channel, 7);
+        assert_eq!(
+            positioned.entity,
+            Some(SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(client),
+                slot: -12
+            })
+        );
+        let local = take_sound(&mut fixture);
+        assert_eq!(local.bus, SoundBus::Local);
+        assert_eq!(local.channel, -9);
+        assert_eq!(local.entity, dynamic.entity);
+        assert_eq!(
+            take_sound(&mut fixture).action,
+            SoundAction::ClearTemporaryLoops
+        );
+        let temporary = take_sound(&mut fixture);
+        assert_eq!(temporary.action, SoundAction::StartLoop);
+        assert_eq!(temporary.looping.unwrap().lifetime, LoopLifetime::Temporary);
+        assert!(temporary.looping.unwrap().latched);
+        let position = take_sound(&mut fixture);
+        assert_eq!(position.action, SoundAction::UpdateEmitterPosition);
+        let spatialize = take_sound(&mut fixture);
+        assert_eq!(spatialize.action, SoundAction::Respatialize);
+        let listener = spatialize.listener.unwrap();
+        assert_eq!(listener.client, client);
+        assert_eq!(listener.origin, Vec3([8.0, -3.0, 9.0]));
+        assert_eq!(listener.right, Vec3([0.0, 1.0, 0.0]));
+        assert!(listener.negate_dot);
+        let real = take_sound(&mut fixture);
+        assert_eq!(real.looping.unwrap().lifetime, LoopLifetime::Persistent);
+        assert!(real.looping.unwrap().latched);
+        assert_eq!(take_sound(&mut fixture).action, SoundAction::StopLoop);
+        assert_eq!(
+            take_sound(&mut fixture).action,
+            SoundAction::ClearClientLoops
+        );
+        assert!(fixture.registrar.calls.is_empty());
+    }
+}
+
+#[test]
+fn ui_local_sound_publishes_without_a_fabricated_client_or_listener() {
+    for addresses in modes() {
+        let mut fixture = Fixture::new();
+        let default = fixture.registrar.bank.registered_sound(0).unwrap();
+        let mut memory = ModuleMemory::load(base(addresses), 512, &[]).unwrap();
+        let mut services = fixture.engine(false);
+        assert!(
+            services
+                .server
+                .clients
+                .iter()
+                .all(|client| client.connection.is_none())
+        );
+        assert_eq!(
+            invoke_call(
+                &mut services,
+                &mut memory,
+                addresses,
+                &Q3_UI,
+                32,
+                &[0, u64::MAX]
+            ),
+            Ok(0)
+        );
+        drop(services);
+        let event = take_sound(&mut fixture);
+        assert_eq!(event.sound, default);
+        assert_eq!(event.channel, -1);
+        assert_eq!(event.bus, SoundBus::Local);
+        assert_eq!(event.client, None);
+        assert_eq!(event.client_lifetime, None);
+        assert_eq!(event.entity, None);
+        assert_eq!(event.listener, None);
+        assert_eq!(
+            event.playback,
+            qa_gameplay::rules::native_sound_playback(RuleSetId::Quake3)
+        );
+    }
+}
+
+#[test]
+fn client_audio_rejects_executed_bad_rows_pointers_and_stale_owner_without_partial_events() {
+    for addresses in modes() {
+        let mut fixture = Fixture::new();
+        let mut audio = AudioBoundary::load(&mut fixture);
+        let base = base(addresses);
+        let wrap = if base == 0 { 512 } else { 0 };
+        let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
+        memory.write_vec3(base, Vec3([4.0, 5.0, 6.0])).unwrap();
+        let mut services = fixture.engine(false);
+        assert_eq!(
+            invoke_call(
+                &mut services,
+                &mut memory,
+                addresses,
+                &Q3_CLIENT,
+                29,
+                &[0, 0]
+            ),
+            Err(CallError::Entity)
+        );
+        services.client_audio = Some(&mut audio);
+        for (number, arguments, expected) in [
+            (28, [0, u64::MAX, 0, 0], CallError::Entity),
+            (28, [0, 1024, 0, 0], CallError::Entity),
+            (31, [0, 0, base + 32 + wrap, 0], CallError::Memory),
+            (
+                80,
+                [1024, base + 16 + wrap, base + 32 + wrap, 0],
+                CallError::Entity,
+            ),
+            (32, [0, 0, 0, 0], CallError::Memory),
+            (81, [u64::MAX, 0, 0, 0], CallError::Entity),
+            (
+                33,
+                [0, base + 16 + wrap, base + 480 + wrap, 0],
+                CallError::Memory,
+            ),
+        ] {
+            assert_eq!(
+                invoke_call(
+                    &mut services,
+                    &mut memory,
+                    addresses,
+                    &Q3_CLIENT,
+                    number,
+                    &arguments
+                ),
+                Err(expected)
+            );
+        }
+        drop(services);
+        assert!(
+            fixture
+                .server
+                .events
+                .next(&mut fixture.server.events.batch(fixture.output).unwrap())
+                .is_none()
+        );
+        audio.producer = ModuleId(2);
+        let mut services = fixture.engine(false);
+        services.client_audio = Some(&mut audio);
+        assert_eq!(
+            invoke_call(&mut services, &mut memory, addresses, &Q3_CLIENT, 30, &[0]),
+            Err(CallError::Entity)
+        );
+        assert_eq!(
+            invoke_call(
+                &mut services,
+                &mut memory,
+                addresses,
+                &Q3_CLIENT,
+                33,
+                &[0, base + 16 + wrap, base + 64 + wrap, 0]
+            ),
+            Err(CallError::Entity)
+        );
+        drop(services);
+        assert!(
+            fixture
+                .server
+                .events
+                .next(&mut fixture.server.events.batch(fixture.output).unwrap())
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn unavailable_engine_handles_publish_diagnostics_only_and_qvm_wrapped_zero_is_real_origin() {
+    let mut fixture = Fixture::new();
+    let mut audio = AudioBoundary::load(&mut fixture);
+    let mut memory = ModuleMemory::load(0, 512, &[]).unwrap();
+    memory.write_vec3(0, Vec3([4.0, 5.0, 6.0])).unwrap();
+    let addresses = Addresses::Qvm { mask: 511 };
+    {
+        let mut services = fixture.engine(false);
+        services.client_audio = Some(&mut audio);
+        for (number, arguments) in [
+            (28, [16, u64::MAX, 0, u64::MAX]),
+            (29, [i32::MAX as u64, 0, 0, 0]),
+            (31, [0, 0, 0, u64::MAX]),
+            (80, [0, 0, 0, i32::MAX as u64]),
+        ] {
+            assert_eq!(
+                invoke_call(
+                    &mut services,
+                    &mut memory,
+                    addresses,
+                    &Q3_CLIENT,
+                    number,
+                    &arguments
+                ),
+                Ok(0)
+            );
+        }
+    }
+    let mut batch = fixture.server.events.batch(fixture.output).unwrap();
+    let mut diagnostics = 0;
+    while let Some(record) = fixture.server.events.next(&mut batch) {
+        assert!(matches!(record.event, FrameEvent::Print(_)));
+        assert!(fixture.server.events.submit(
+            fixture.output,
+            record.sequence,
+            OutputSubmission::BestEffort
+        ));
+        diagnostics += 1;
+    }
+    assert_eq!(diagnostics, 4);
+    {
+        let mut services = fixture.engine(false);
+        services.client_audio = Some(&mut audio);
+        assert_eq!(
+            invoke_call(
+                &mut services,
+                &mut memory,
+                addresses,
+                &Q3_CLIENT,
+                28,
+                &[512, u64::MAX, 0, 0]
+            ),
+            Ok(0)
+        );
+    }
+    let event = take_sound(&mut fixture);
+    assert!(event.positioned);
+    assert_eq!(event.position, Vec3([4.0, 5.0, 6.0]));
+    assert_eq!(event.entity, Some(audio.emitter(-1)));
+    assert_eq!(fixture.server.events.rejected_publications(), 0);
+}
+
+#[test]
+fn client_playback_keeps_distinct_registration_ordinals_for_shared_pcm_aliases() {
+    for addresses in modes() {
+        let mut fixture = Fixture::new();
+        let sample = fixture.registrar.bank.find_bytes(b"sound/a.wav").unwrap();
+        let first = fixture
+            .registrar
+            .bank
+            .registered_handle(b"sound/a.wav")
+            .unwrap();
+        fixture
+            .registrar
+            .bank
+            .attempt_registration(b"sound\\a.wav", Some(b"sound/a.wav"))
+            .unwrap();
+        let second = fixture
+            .registrar
+            .bank
+            .registered_handle(b"sound\\a.wav")
+            .unwrap();
+        assert_ne!(first, second);
+        let mut memory = ModuleMemory::load(base(addresses), 512, &[]).unwrap();
+        {
+            let mut services = fixture.engine(false);
+            for handle in [first, second] {
+                assert_eq!(
+                    invoke_call(
+                        &mut services,
+                        &mut memory,
+                        addresses,
+                        &Q3_UI,
+                        32,
+                        &[handle as u64, 0]
+                    ),
+                    Ok(0)
+                );
+            }
+        }
+        let first_event = take_sound(&mut fixture);
+        let second_event = take_sound(&mut fixture);
+        assert_eq!(first_event.sound, sample);
+        assert_eq!(second_event.sound, sample);
+        assert_eq!(first_event.source_ordinal, Some(first as u32));
+        assert_eq!(second_event.source_ordinal, Some(second as u32));
+        assert!(fixture.registrar.calls.is_empty());
+    }
 }

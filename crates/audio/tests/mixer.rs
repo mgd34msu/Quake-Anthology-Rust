@@ -28,6 +28,7 @@ fn listener(client: u32, origin: Vec3) -> Option<Listener> {
         })),
         origin,
         right: Vec3([1.0, 0.0, 0.0]),
+        negate_dot: false,
     })
 }
 fn event(m: &Mixer) -> SoundEvent {
@@ -390,6 +391,7 @@ fn native_self_relative_gain_uses_the_client_voice_namespace() {
             entity: Some(own),
             origin: Vec3::default(),
             right: Vec3([1.0, 0.0, 0.0]),
+            negate_dot: false,
         })],
         1.0,
     );

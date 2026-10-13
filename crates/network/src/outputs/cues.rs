@@ -55,7 +55,7 @@ impl Sound {
             }),
             spatial,
             entity,
-            channel: u16::from(self.channel),
+            channel: i32::from(self.channel),
             position,
             positioned: self.position().is_some(),
             volume: f32::from(self.volume) / 255.0,
@@ -64,6 +64,7 @@ impl Sound {
             client,
             client_lifetime: None,
             action,
+            ..SoundEvent::default()
         }
     }
     pub fn entity(self) -> Option<u16> {
@@ -131,10 +132,7 @@ pub fn sound(
                 Cue::Sound(wire)
             }
             SoundAction::StartLoop => Cue::StaticSound(wire),
-            SoundAction::Stop
-            | SoundAction::StopLoop
-            | SoundAction::ResetClientLoops
-            | SoundAction::RetireClient => return Err(Error::Unsupported),
+            _ => return Err(Error::Unsupported),
         };
         return write_cue(protocol, project_cue(protocol, cue)?, output);
     }

@@ -282,6 +282,7 @@ fn publish(
                     client_lifetime: None,
                     time_offset: 0.0,
                     positioned: true,
+                    ..SoundEvent::default()
                 };
                 (FrameEvent::Sound(event), position)
             }

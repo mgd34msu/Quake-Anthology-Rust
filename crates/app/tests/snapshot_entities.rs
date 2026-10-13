@@ -1251,6 +1251,7 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
     };
     source.mixer.listen(
         &[Some(qa_audio::Listener {
+            negate_dot: false,
             client,
             entity: None,
             origin: Vec3::default(),

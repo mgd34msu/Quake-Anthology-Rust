@@ -249,6 +249,7 @@ fn with_client(
         cvars: &mut cvars,
         commands: &mut commands,
         client_commands: None,
+        client_audio: None,
         vfs: &vfs,
         model_loader: None,
         model_lookup: None,

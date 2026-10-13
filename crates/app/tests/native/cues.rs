@@ -294,6 +294,7 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
     };
     audio.mixer.listen(
         &[Some(qa_audio::Listener {
+            negate_dot: false,
             client,
             entity: Some(emitter(client, 1)),
             origin,
@@ -428,7 +429,7 @@ impl FrameSource for MuzzleAudio {
                 event.time_offset
             ),
             (
-                expected.channel,
+                i32::from(expected.channel),
                 expected.volume,
                 expected.attenuation,
                 expected.delay
@@ -505,6 +506,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
     };
     audio.audio.mixer.listen(
         &[Some(qa_audio::Listener {
+            negate_dot: false,
             client,
             entity: Some(emitter(client, 1)),
             origin,

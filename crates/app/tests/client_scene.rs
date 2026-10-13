@@ -1252,6 +1252,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
     let mut mixer = qa_audio::Mixer::load(std::sync::Arc::new(bank), 1, 1);
     mixer.listen(
         &[Some(qa_audio::Listener {
+            negate_dot: false,
             client,
             entity: None,
             origin: Vec3::default(),

@@ -348,7 +348,7 @@ pub struct NativeProcess {
     base: u64,
     pointer_bytes: u8,
     regions: Box<[NativeRegion]>,
-    listener: Option<gate::Listener>,
+    listener: Option<gate::NotificationGate>,
     parked: Option<gate::Parked>,
     handoff: u64,
     sequence: u64,
@@ -392,7 +392,7 @@ impl NativeProcess {
         mut command: Command,
         image: NativeImage<'_>,
     ) -> Result<Self, NativeError> {
-        gate::Listener::check_sizes()?;
+        gate::NotificationGate::check_sizes()?;
         if !matches!(image.pointer_bytes, 4 | 8)
             || (image.pointer_bytes == 4
                 && image.runtime.is_some_and(|runtime| runtime.teb.is_some()))

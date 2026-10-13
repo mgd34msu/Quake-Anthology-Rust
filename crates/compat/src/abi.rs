@@ -7,6 +7,8 @@ use crate::{
 use qa_core::{names::NameTable, primitives::PrintKind, sys_events::EventTime, text::FixedText};
 use std::fmt::Write;
 
+mod client_sound;
+
 #[derive(Clone, Copy)]
 pub enum Addresses {
     Qvm {
@@ -200,6 +202,7 @@ type QcEntry =
 enum Handler {
     Shared(Entry),
     ClientCommands(Entry),
+    ClientAudio(Entry),
     QuakeC(QcEntry),
 }
 #[derive(Clone, Copy)]
@@ -214,7 +217,9 @@ impl CallEntry {
         string_start: Option<usize>,
     ) -> Result<CallValue, CallError> {
         match self.handler {
-            Handler::Shared(entry) | Handler::ClientCommands(entry) => entry(call, string_start),
+            Handler::Shared(entry)
+            | Handler::ClientCommands(entry)
+            | Handler::ClientAudio(entry) => entry(call, string_start),
             Handler::QuakeC(_) => Err(CallError::Memory),
         }
     }
@@ -227,6 +232,14 @@ macro_rules! scalar {
         Some(CallEntry {
             handler: Handler::Shared(|call, _| ($handler)(call).map(CallValue::Word)),
             quakec: $signature,
+        })
+    };
+}
+macro_rules! client_audio {
+    ($handler:expr) => {
+        Some(CallEntry {
+            handler: Handler::ClientAudio(|call, _| ($handler)(call).map(CallValue::Word)),
+            quakec: None,
         })
     };
 }
@@ -305,6 +318,12 @@ impl CallTable {
             .iter()
             .flatten()
             .any(|entry| matches!(entry.handler, Handler::ClientCommands(_)))
+    }
+    pub fn produces_client_audio(&self) -> bool {
+        self.entries
+            .iter()
+            .flatten()
+            .any(|entry| matches!(entry.handler, Handler::ClientAudio(_)))
     }
     pub fn invoke(
         &self,
@@ -407,6 +426,12 @@ const fn client() -> CallTable {
     t.entries[11] = scalar!(file_read);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command_append);
+    t.entries[28] = scalar!(client_sound::play);
+    t.entries[29] = scalar!(client_sound::local::<false>);
+    t.entries[30] = client_audio!(client_sound::clear);
+    t.entries[31] = client_audio!(client_sound::add_loop::<false>);
+    t.entries[32] = client_audio!(client_sound::position);
+    t.entries[33] = client_audio!(client_sound::listener);
     t.entries[34] = scalar!(register_sound);
     t.entries[53] = Some(CallEntry {
         handler: Handler::ClientCommands(|call, _| {
@@ -416,6 +441,8 @@ const fn client() -> CallTable {
     });
     t.entries[56] = scalar!(q3_set_usercmd_value);
     t.entries[71] = scalar!(snap_vector);
+    t.entries[80] = client_audio!(client_sound::add_loop::<true>);
+    t.entries[81] = client_audio!(client_sound::stop_loop);
     t.entries[89] = scalar!(file_seek);
     t.entries[111] = scalar!(acos::<false>);
     t
@@ -438,6 +465,7 @@ const fn ui() -> CallTable {
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
     t.entries[31] = scalar!(register_sound);
+    t.entries[32] = scalar!(client_sound::local::<true>);
     t.entries[86] = scalar!(file_seek);
     t.entries[50] = scalar!(q3_cvar_register);
     t.entries[51] = scalar!(q3_cvar_update);
@@ -996,7 +1024,8 @@ fn qc_sound(
         spatial: c.context.sound_policy,
         entity: Some(SoundEmitter::Entity(entity)),
         position,
-        channel: (channel & 7) as u16,
+        channel: channel & 7,
+        queued_at: c.platform_time,
         volume: volume as f32 / 255.0,
         attenuation,
         positioned,
@@ -1468,9 +1497,11 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool, const WIDE: bool>(
             volume,
             attenuation,
             time_offset,
-            channel: channel & 7,
+            channel: i32::from(channel & 7),
+            queued_at: c.platform_time,
             positioned,
             action: SoundAction::Play,
+            ..SoundEvent::default()
         },
     ) {
         Ok(_) | Err(CallError::Capacity) => Ok(0),

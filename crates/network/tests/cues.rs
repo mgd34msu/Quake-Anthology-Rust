@@ -485,6 +485,7 @@ fn client_loop_controls_are_never_reinterpreted_as_native_static_sound() {
         panning: true,
         clamp_pan: false,
         origin: LoopOrigin::Accepted,
+        latched: false,
     };
     for protocol in [
         Protocol::NetQuake15,
@@ -493,21 +494,21 @@ fn client_loop_controls_are_never_reinterpreted_as_native_static_sound() {
         Protocol::Quake2Repro1038,
         Protocol::Quake3_68,
     ] {
-        for event in [
-            SoundEvent {
-                action: SoundAction::StartLoop,
-                looping: Some(playback),
-                ..Default::default()
-            },
-            SoundEvent {
-                action: SoundAction::StopLoop,
-                ..Default::default()
-            },
-            SoundEvent {
-                action: SoundAction::ResetClientLoops,
-                ..Default::default()
-            },
+        for action in [
+            SoundAction::StartLoop,
+            SoundAction::StopLoop,
+            SoundAction::ResetClientLoops,
+            SoundAction::ClearTemporaryLoops,
+            SoundAction::ClearClientLoops,
+            SoundAction::UpdateEmitterPosition,
+            SoundAction::Respatialize,
+            SoundAction::ReleaseListener,
         ] {
+            let event = SoundEvent {
+                action,
+                looping: (action == SoundAction::StartLoop).then_some(playback),
+                ..Default::default()
+            };
             let mut bytes = [0xcc; 128];
             assert_eq!(
                 outputs::sound(protocol, event, 1, Some(1), true, &mut bytes),

@@ -79,6 +79,26 @@ pub trait ClientServerCommands {
     fn disconnected(&self) -> bool;
 }
 
+/// Synchronous CLIENT audio publication uses the receiving connection's
+/// existing loop state and the shared output ring, never the mixer directly.
+pub trait ClientAudio {
+    fn publish(
+        &mut self,
+        events: &mut qa_core::events::EventRing,
+        event: SoundEvent,
+        native_entity: Option<i32>,
+    ) -> Result<(), CallError>;
+    fn respatialize(
+        &mut self,
+        events: &mut qa_core::events::EventRing,
+        producer: ModuleId,
+        queued_at: qa_core::sys_events::EventTime,
+        native_entity: u32,
+        origin: Vec3,
+        right: Vec3,
+    ) -> Result<(), CallError>;
+}
+
 /// Supplied by the module host. No capability inherits another role's rules.
 #[derive(Clone, Copy)]
 pub struct CallContext {
@@ -650,6 +670,7 @@ pub struct EngineServices<'a> {
     pub cvars: &'a mut Cvars,
     pub commands: &'a mut CommandBuffer,
     pub client_commands: Option<&'a mut dyn ClientServerCommands>,
+    pub client_audio: Option<&'a mut dyn ClientAudio>,
     pub vfs: &'a Vfs,
     pub model_loader: Option<&'a mut dyn ModelLoader>,
     pub model_lookup: Option<&'a dyn ModelLookup>,
@@ -754,6 +775,16 @@ pub struct EngineCallTable {
         f32,
     ),
     pub sound: fn(&mut EngineServices<'_>, NativeDelivery, SoundEvent) -> Result<u64, CallError>,
+    pub client_sound: fn(&mut EngineServices<'_>, SoundEvent, Option<i32>) -> Result<(), CallError>,
+    pub client_listener: fn(
+        &mut EngineServices<'_>,
+        ModuleId,
+        qa_core::sys_events::EventTime,
+        u32,
+        Vec3,
+        Vec3,
+    ) -> Result<(), CallError>,
+    pub local_sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<(), CallError>,
     pub register_sound: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
     pub registered_sound:
         fn(&EngineServices<'_>, i32) -> Result<Option<qa_core::primitives::SoundId>, CallError>,
@@ -894,6 +925,28 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     usercmd: |s, native| s.usercmd(native),
     set_usercmd_value: |s, seat, weapon, scale| s.input.set_usercmd_value(seat, weapon, scale),
     sound: |s, delivery, e| s.sound(delivery, e),
+    client_sound: |s, event, entity| {
+        s.client_audio
+            .as_deref_mut()
+            .ok_or(CallError::Entity)?
+            .publish(&mut s.server.events, event, entity)
+    },
+    client_listener: |s, producer, time, entity, origin, right| {
+        s.client_audio
+            .as_deref_mut()
+            .ok_or(CallError::Entity)?
+            .respatialize(&mut s.server.events, producer, time, entity, origin, right)
+    },
+    local_sound: |s, event| {
+        s.server
+            .events
+            .push_to(
+                qa_core::events::OutputTarget::Presentation,
+                FrameEvent::Sound(event),
+            )
+            .map(|_| ())
+            .map_err(|_| CallError::Capacity)
+    },
     register_sound: |s, sample, source| s.register_sound(sample, source),
     registered_sound: |s, handle| Ok(s.registered_bank()?.registered_sound(handle)),
     ambient: |s, context, sound| {

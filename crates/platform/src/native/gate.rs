@@ -95,14 +95,14 @@ pub(super) struct Parked {
     pub handoff: u64,
 }
 
-pub(super) struct Listener(OwnedFd);
+pub(super) struct NotificationGate(OwnedFd);
 
 unsafe extern "C" {
     fn ioctl(fd: i32, command: std::ffi::c_ulong, ...) -> i32;
     fn recvmsg(fd: i32, message: *mut Message, flags: i32) -> isize;
 }
 
-impl Listener {
+impl NotificationGate {
     pub fn check_sizes() -> Result<(), NativeError> {
         let mut sizes = Sizes::default();
         let architecture = Architecture::for_width(size_of::<usize>() as u8)?;
@@ -329,7 +329,7 @@ pub(super) fn receive_listener(
     stream: i32,
     started: &Stopwatch,
     timeout: Duration,
-) -> Result<Listener, NativeError> {
+) -> Result<NotificationGate, NativeError> {
     loop {
         wait(stream, started, timeout)?;
         let mut marker = 0u8;
@@ -381,6 +381,6 @@ pub(super) fn receive_listener(
             return Err(NativeError::Protocol);
         }
         compiler_fence(Ordering::Acquire);
-        return listener.map(Listener).ok_or(NativeError::Protocol);
+        return listener.map(NotificationGate).ok_or(NativeError::Protocol);
     }
 }

@@ -1066,6 +1066,45 @@ pub enum SoundEmitter {
     },
 }
 
+/// The selected listening view, supplied by the host or an owning CLIENT module.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Listener {
+    pub client: ClientId,
+    pub entity: Option<SoundEmitter>,
+    pub origin: Vec3,
+    pub right: Vec3,
+    /// Some native listeners supply their left axis. Negate the completed
+    /// dot product, preserving that ABI's original floating-point order.
+    pub negate_dot: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SoundBus {
+    #[default]
+    Spatial,
+    /// UI/menu audio remains audible with no connected CLIENT/listener.
+    Local,
+}
+
+/// Load-selected channel behavior, independent of PCM and client protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoundChannels {
+    pub suppress_ms: u32,
+    pub emitter_limit: u8,
+    pub listener_limit: u8,
+    pub protected_channel: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoundPlayback {
+    pub master: u8,
+    pub volume_scale: u16,
+    pub clamp_pan: bool,
+    /// Native CLIENT channels change spatial gain only on Respatialize.
+    pub latched: bool,
+    pub channels: Option<SoundChannels>,
+}
+
 /// Spatial capability parameters selected at the emitting role's boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpatialPolicy {
@@ -1113,6 +1152,8 @@ pub struct LoopPlayback {
     pub panning: bool,
     pub clamp_pan: bool,
     pub origin: LoopOrigin,
+    /// Native CLIENT imports latch their audible mix only on Respatialize.
+    pub latched: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1125,8 +1166,12 @@ pub struct SoundEvent {
     /// Spatial behavior belongs to this emission, independently of shared PCM.
     pub spatial: SpatialPolicy,
     pub looping: Option<LoopPlayback>,
+    pub playback: Option<SoundPlayback>,
+    pub bus: SoundBus,
     pub entity: Option<SoundEmitter>,
-    pub channel: u16,
+    pub channel: i32,
+    /// Captured queued event time, never a module-clock or raw-clock sample.
+    pub queued_at: crate::sys_events::EventTime,
     pub position: Vec3,
     pub volume: f32,
     pub attenuation: f32,
@@ -1137,6 +1182,8 @@ pub struct SoundEvent {
     pub time_offset: f32,
     /// The emission needs its supplied position rather than an entity origin.
     pub positioned: bool,
+    pub listener: Option<Listener>,
+    pub listener_owner: Option<ModuleId>,
 }
 impl SoundEvent {
     /// Presentation-only retirement; native protocols never encode this control.
@@ -1179,6 +1226,14 @@ pub enum SoundAction {
     StopLoop,
     /// Remove admitted loops for a CLIENT lifetime, preserving static cues.
     ResetClientLoops,
+    /// Native Clear(false): remove temporary registrations and mute latched
+    /// output immediately. Persistent registrations resume at Respatialize.
+    ClearTemporaryLoops,
+    /// Native Clear(true), distinct from connection/ownership retirement.
+    ClearClientLoops,
+    UpdateEmitterPosition,
+    Respatialize,
+    ReleaseListener,
     /// Remove only voices received during one canonical CLIENT connection.
     RetireClient,
 }

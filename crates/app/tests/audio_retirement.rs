@@ -60,6 +60,7 @@ fn fixture(capacity: usize) -> (Runtime, Source) {
     let mut mixer = Mixer::load(Arc::clone(&bank), 8, 1);
     mixer.listen(
         &[Some(Listener {
+            negate_dot: false,
             client: ClientId(0),
             entity: None,
             origin: Vec3::default(),

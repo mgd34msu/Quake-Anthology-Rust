@@ -622,6 +622,19 @@ impl FrameHost {
             if client.connection.is_none() || server.entities.resolve(client.entity).is_none() {
                 continue;
             }
+            if snapshot.owns_client_audio() {
+                snapshot.maintain_client_audio(
+                    client.entity,
+                    server.presentation,
+                    &mut server.events,
+                    &mut budget,
+                );
+                if budget == 0 {
+                    self.loop_client_cursor = (index + 1) % count;
+                    break;
+                }
+                continue;
+            }
             let Some(resources) = runtime.client_resources[snapshot.client.0 as usize].as_ref()
             else {
                 continue;
@@ -683,7 +696,14 @@ impl FrameHost {
     fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
         let listeners = std::array::from_fn(|seat| {
             let (client, row, player) = self.local_seat(seat)?;
+            if self.runtime.snapshots[client.0 as usize]
+                .as_ref()
+                .is_some_and(crate::snapshots::SnapshotBinding::owns_client_audio)
+            {
+                return None;
+            }
             Some(qa_audio::Listener {
+                negate_dot: false,
                 client,
                 entity: Some(
                     self.runtime.snapshots[client.0 as usize]

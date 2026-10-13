@@ -38,6 +38,7 @@ fn listen(mixer: &mut Mixer, volume: f32) {
             }),
             origin: Vec3::default(),
             right: Vec3([1.0, 0.0, 0.0]),
+            negate_dot: false,
         })],
         volume,
     );

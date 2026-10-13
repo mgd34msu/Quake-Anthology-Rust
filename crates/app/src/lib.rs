@@ -147,6 +147,12 @@ impl Runtime {
                 self.sound_bank.as_deref(),
             )
         });
+        let client_audio = client.and_then(|(client, _)| {
+            self.snapshots
+                .get_mut(client.0 as usize)?
+                .as_mut()
+                .map(|binding| binding as &mut dyn qa_compat::services::ClientAudio)
+        });
         let (cvars, commands) = console.module_parts();
         let world = self.collision.as_mut();
         let (identity, visibility, portals) = match world {
@@ -173,6 +179,7 @@ impl Runtime {
             cvars,
             commands,
             client_commands: None,
+            client_audio,
             vfs: &self.vfs,
             localization: &self.localization,
             registry: &self.catalog.registry,

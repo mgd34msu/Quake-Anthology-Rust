@@ -959,6 +959,7 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
         let mut mixer = qa_audio::Mixer::load(Arc::clone(&bank), 2, 1);
         mixer.listen(
             &[Some(qa_audio::Listener {
+                negate_dot: false,
                 client,
                 entity: None,
                 origin: Vec3::default(),

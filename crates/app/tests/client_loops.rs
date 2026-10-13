@@ -123,6 +123,7 @@ fn fixture(
         &ids.iter()
             .map(|&client| {
                 Some(Listener {
+                    negate_dot: false,
                     client,
                     entity: None,
                     origin: Vec3::default(),

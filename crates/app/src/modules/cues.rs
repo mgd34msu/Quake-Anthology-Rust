@@ -38,6 +38,7 @@ impl FrameHost {
             return;
         };
         event.client_lifetime = Some(client.entity);
+        event.queued_at = self.time;
         // Received CLIENT cues cannot be encoded again for SERVER consumers.
         let _ = self
             .runtime
@@ -104,7 +105,8 @@ impl FrameHost {
                         namespace: ResourceNamespace::Client(client),
                         slot: i32::from(flash.entity),
                     }),
-                    channel: recipe.channel,
+                    channel: i32::from(recipe.channel),
+                    queued_at: self.time,
                     position,
                     volume: recipe.volume(rules, flash.silenced),
                     attenuation: recipe.attenuation,

@@ -315,24 +315,28 @@ pub fn load_q3(
                 arguments: [Argument::Word(0); 9],
             },
         );
-        requests.push(ModuleRequest {
-            context: call_context(
-                module,
-                clock,
-                allocation,
-                RuleSetId::Quake3,
-                Context {
-                    source: RuleSetId::Quake3,
-                    side,
-                    role,
-                    seat: if let Q3Role::Cgame(seat) = spec.role {
-                        seat
-                    } else {
-                        SeatId::FIRST
-                    },
-                    ..Context::default()
+        let mut context = call_context(
+            module,
+            clock,
+            allocation,
+            RuleSetId::Quake3,
+            Context {
+                source: RuleSetId::Quake3,
+                side,
+                role,
+                seat: if let Q3Role::Cgame(seat) = spec.role {
+                    seat
+                } else {
+                    SeatId::FIRST
                 },
-            ),
+                ..Context::default()
+            },
+        );
+        if phase == Phase::Client {
+            context.sound_policy = qa_gameplay::rules::native_sound_spatial(RuleSetId::Quake3);
+        }
+        requests.push(ModuleRequest {
+            context,
             timing_rules: RuleSetId::Quake3,
             phase,
             rate: if phase == Phase::Server {

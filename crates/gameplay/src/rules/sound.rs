@@ -1,6 +1,6 @@
 use qa_core::primitives::{
     EntityAppearance, LoopGain, LoopLifetime, LoopOrigin, LoopPhase, LoopPlayback,
-    NativeAppearanceTail, RuleSetId, SpatialPolicy,
+    NativeAppearanceTail, RuleSetId, SoundChannels, SoundPlayback, SpatialPolicy,
 };
 
 const Q1: SpatialPolicy = SpatialPolicy {
@@ -32,6 +32,25 @@ const Q3_LOOP_SPATIAL: SpatialPolicy = SpatialPolicy {
     distance_scale: 0.0008,
     ..Q3
 };
+const Q3_PLAYBACK: SoundPlayback = SoundPlayback {
+    master: 127,
+    volume_scale: 255,
+    clamp_pan: true,
+    latched: true,
+    channels: Some(SoundChannels {
+        suppress_ms: 50,
+        emitter_limit: 4,
+        listener_limit: 8,
+        protected_channel: 7,
+    }),
+};
+/// Native CLIENT imports use the original DMA spatial/gain capabilities.
+pub const fn native_sound_playback(rules: RuleSetId) -> Option<SoundPlayback> {
+    [None, None, None, None, Some(Q3_PLAYBACK)][rules as usize]
+}
+pub const fn native_sound_spatial(rules: RuleSetId) -> SpatialPolicy {
+    [Q1, Q1, Q2, Q2, Q3_LOOP_SPATIAL][rules as usize]
+}
 const LOOP_SPATIAL: [SpatialPolicy; 5] =
     [Q1, Q1, Q2_LOOP_SPATIAL, Q2_LOOP_SPATIAL, Q3_LOOP_SPATIAL];
 
@@ -50,6 +69,7 @@ const Q2_LOOP: LoopPlayback = LoopPlayback {
     panning: true,
     clamp_pan: false,
     origin: LoopOrigin::Accepted,
+    latched: false,
 };
 const RR_LOOP: LoopPlayback = LoopPlayback {
     master: LoopGain::Float(1.0),
@@ -85,6 +105,17 @@ pub struct LoopRules {
     spatial: fn(f32, SpatialPolicy) -> SpatialPolicy,
 }
 impl LoopRules {
+    /// Direct CLIENT imports select temporary/real capability data without
+    /// manufacturing an entity appearance or inferring another game role.
+    pub fn native(self, persistent: bool) -> LoopPlayback {
+        let mut playback = if persistent {
+            self.speaker.map_or(self.ordinary, |(_, playback)| playback)
+        } else {
+            self.ordinary
+        };
+        playback.latched = true;
+        playback
+    }
     /// Standalone native events fire once while the accepted entity remains.
     pub fn event_once(self, native: &NativeAppearanceTail) -> bool {
         self.event_base

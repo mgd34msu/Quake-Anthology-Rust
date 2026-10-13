@@ -415,6 +415,7 @@ fn decoded_static_loops_stop_at_disconnect_while_other_clients_and_ticks_continu
     let mut mixer = qa_audio::Mixer::load(Arc::clone(&bank), 16, 1);
     let listen = |client| {
         Some(qa_audio::Listener {
+            negate_dot: false,
             client,
             entity: None,
             origin: Vec3::default(),
@@ -477,6 +478,7 @@ fn stopping_secondary_module_retires_primary_recipient_without_stopping_other_pr
     let mut mixer = qa_audio::Mixer::load(bank, 8, 1);
     mixer.listen(
         &[Some(qa_audio::Listener {
+            negate_dot: false,
             client,
             entity: None,
             origin: Vec3::default(),

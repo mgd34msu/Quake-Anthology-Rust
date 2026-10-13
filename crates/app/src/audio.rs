@@ -480,6 +480,8 @@ pub fn play(
                 qa_core::events::OutputTarget::Presentation,
                 FrameEvent::Sound(SoundEvent {
                     sound,
+                    bus: qa_core::primitives::SoundBus::Local,
+                    queued_at: context.event_time.unwrap_or(runtime.input_time),
                     spatial: qa_gameplay::rules::sound_policy(context.source),
                     entity: None,
                     channel: 0,

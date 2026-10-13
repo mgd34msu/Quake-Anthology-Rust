@@ -70,13 +70,20 @@ impl Program {
             Self::QuakeC(_) => quakec_entry,
         }
     }
-    fn consumes_server_commands(&self) -> bool {
+    fn imports(&self) -> Option<&'static CallTable> {
         match self {
-            Self::Qvm { imports, .. } => imports.consumes_server_commands(),
+            Self::Qvm { imports, .. } => Some(imports),
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            Self::Native { imports, .. } => imports.consumes_server_commands(),
-            Self::QuakeC(_) => false,
+            Self::Native { imports, .. } => Some(imports),
+            Self::QuakeC(_) => None,
         }
+    }
+    fn consumes_server_commands(&self) -> bool {
+        self.imports()
+            .is_some_and(CallTable::consumes_server_commands)
+    }
+    fn produces_client_audio(&self) -> bool {
+        self.imports().is_some_and(CallTable::produces_client_audio)
     }
 }
 pub struct ModuleRequest {
@@ -230,6 +237,7 @@ struct Module {
     signon: IndexSpan,
     client_connection: Option<(ClientId, EntityId)>,
     consumes_server_commands: bool,
+    produces_client_audio: bool,
 }
 impl Module {
     fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
@@ -584,6 +592,7 @@ impl FrameHost {
                 None
             };
             let consumes_server_commands = request.program.consumes_server_commands();
+            let produces_client_audio = request.program.produces_client_audio();
             let client_lifecycle = match &request.program {
                 Program::QuakeC(qc) if request.context.native_rules == RuleSetId::QuakeWorld => {
                     Some(ClientLifecycle::quakeworld(
@@ -609,6 +618,7 @@ impl FrameHost {
                 client_triggers: Vec::with_capacity(host.runtime.server.entities.capacity()),
                 client_connection,
                 consumes_server_commands,
+                produces_client_audio,
                 clock,
                 physics,
                 duration,
@@ -624,8 +634,60 @@ impl FrameHost {
             storage,
             signon,
         });
+        host.bind_client_audio()?;
         host.configure_output_resources();
         Ok(host)
+    }
+    fn bind_client_audio(&mut self) -> Result<(), String> {
+        let Some(modules) = self.modules.as_ref() else {
+            return Ok(());
+        };
+        for row in modules.rows.iter().flatten() {
+            if !row.produces_client_audio {
+                continue;
+            }
+            let Some((client, lifetime)) = row.client_connection else {
+                continue;
+            };
+            let binding = self
+                .runtime
+                .snapshots
+                .get_mut(client.0 as usize)
+                .and_then(Option::as_mut)
+                .ok_or("missing CLIENT audio publisher")?;
+            binding
+                .attach_client_audio(
+                    row.request.context.module,
+                    lifetime,
+                    row.request.context.native_rules,
+                    &mut self.runtime.server.events,
+                    self.runtime.server.presentation,
+                )
+                .map_err(|error| format!("CLIENT audio binding: {error:?}"))?;
+        }
+        Ok(())
+    }
+    fn release_module_audio(&mut self, module: ModuleId) {
+        let Some((client, lifetime)) = self
+            .module_row(module)
+            .filter(|row| row.produces_client_audio)
+            .and_then(|row| row.client_connection)
+        else {
+            return;
+        };
+        if let Some(binding) = self
+            .runtime
+            .snapshots
+            .get_mut(client.0 as usize)
+            .and_then(Option::as_mut)
+        {
+            binding.detach_client_audio(
+                module,
+                lifetime,
+                &mut self.runtime.server.events,
+                self.runtime.server.presentation,
+            );
+        }
     }
     pub fn module_counts(&self, module: ModuleId) -> Option<&Counts> {
         Some(&self.module_row(module)?.counts)
@@ -867,6 +929,9 @@ impl FrameHost {
         if !shutdown && result.is_err() {
             self.disconnect_module_recipients(module);
         }
+        if shutdown || result.is_err() {
+            self.release_module_audio(module);
+        }
     }
     fn check_module_api(
         &mut self,
@@ -1000,6 +1065,7 @@ impl FrameHost {
             && self.module_state(module) == Some(State::Failed)
         {
             self.disconnect_module_recipients(module);
+            self.release_module_audio(module);
         }
         result
     }
@@ -1258,9 +1324,9 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         &mut row.scratch,
         client_connection,
     );
-    if client_connection.is_some() && client_commands.is_none() {
-        return false;
-    }
+    // A live connection can lack this protocol's configstring/command view.
+    // Each executed import checks its own service; independent CLIENT audio
+    // and scene calls still use their load-bound publisher and common state.
     services.client_commands = client_commands
         .as_mut()
         .map(|view| view as &mut dyn qa_compat::services::ClientServerCommands);
