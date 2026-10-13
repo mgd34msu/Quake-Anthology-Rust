@@ -118,6 +118,7 @@ impl Pmove {
                 address + self.layout.initial_snap.0 as u64,
                 self.layout.initial_snap.1,
             )? != 0,
+            ..Default::default()
         })
     }
     pub(crate) fn load(

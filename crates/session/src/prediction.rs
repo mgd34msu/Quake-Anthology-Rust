@@ -25,6 +25,12 @@ impl Prediction {
         command: UserCmd,
         trace: &mut dyn TraceServices,
     ) -> Result<MovementResult, TraceError> {
-        qa_movement::pmove(command, &mut self.player, trace, Default::default())
+        qa_movement::pmove(
+            command,
+            &mut self.player,
+            trace,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
     }
 }

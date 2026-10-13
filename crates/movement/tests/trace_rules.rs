@@ -132,6 +132,7 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
                 &mut player,
                 &mut queries,
                 Default::default(),
+                qa_movement::no_boundary,
             )
             .expect("valid movement query");
             assert!(queries.calls > 0);

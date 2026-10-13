@@ -1065,7 +1065,13 @@ impl EngineServices<'_> {
         let client = &mut clients[id.0 as usize];
         let mut trace = trace.with_pass(CollisionOwner::Lifetime(client.entity));
         let base = std::mem::replace(&mut client.player.movement.tuning, tuning);
-        let result = qa_movement::pmove(client.command, &mut client.player, &mut trace, options);
+        let result = qa_movement::pmove(
+            client.command,
+            &mut client.player,
+            &mut trace,
+            options,
+            qa_movement::no_boundary,
+        );
         client.player.movement.tuning = base;
         result.map_err(|_| CallError::Geometry)
     }

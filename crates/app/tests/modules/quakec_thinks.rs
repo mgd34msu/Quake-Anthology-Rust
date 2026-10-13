@@ -2265,6 +2265,7 @@ fn qc_client_vm() -> Vm {
         (2, 55, b"teleport_time"),
         (4, 56, b"groundentity"),
         (6, 57, b"touch"),
+        (3, 58, b"punchangle"),
     ]);
     let mut globals = GLOBALS.to_vec();
     let names = [
@@ -2451,6 +2452,9 @@ fn qc_client_host(
         rows,
     );
     req.context.clock = ThinkTime::Seconds(7.0);
+    if rules == RuleSetId::Quake {
+        req.rate = TickRate::FrameDriven;
+    }
     let anchor = req.anchor;
     let host = load_clients(runtime, vec![req], 1);
     (Box::new(host), id, geometry, canonical, anchor)
@@ -2524,7 +2528,14 @@ fn qw_client_lifecycle_uses_canonical_slot_shared_movement_and_packet_postthink_
             &mut scratch,
             CollisionOwner::Lifetime(canonical),
         );
-        qa_movement::pmove(leaf, &mut expected, &mut trace, Default::default()).unwrap();
+        qa_movement::pmove(
+            leaf,
+            &mut expected,
+            &mut trace,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .unwrap();
     }
     let before = host.module_counts(ModuleId(1)).unwrap().calls;
     assert!(
@@ -3241,7 +3252,14 @@ fn qw_native_command_subdivision_precedes_foreign_q3_movement_limits() {
             &mut scratch,
             CollisionOwner::Lifetime(canonical),
         );
-        qa_movement::pmove(leaf, &mut expected, &mut trace, Default::default()).unwrap();
+        qa_movement::pmove(
+            leaf,
+            &mut expected,
+            &mut trace,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .unwrap();
     }
     let before = host.module_counts(ModuleId(1)).unwrap().calls;
     assert!(
@@ -3255,4 +3273,364 @@ fn qw_native_command_subdivision_precedes_foreign_q3_movement_limits() {
     assert_eq!(client.player.movement.command_time_ms, 248);
     assert_eq!((client.player.health, client.player.armor), (8, 1));
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, before + 9);
+}
+
+fn noclip_client_vm(velocity: Vec3) -> Vm {
+    let mut vm = qc_client_vm();
+    let first = vm.image.functions[3].first_statement as usize;
+    let mut begin = vm.image.statements[first..]
+        .iter()
+        .take_while(|s| s.opcode != Return)
+        .map(|s| (s.opcode, s.operands[0], s.operands[1], s.operands[2]))
+        .collect::<Vec<_>>();
+    begin.extend_from_slice(&[
+        (Address, 34, 125, 90),
+        (StorePF, 126, 90, 0),
+        (Address, 34, 127, 90),
+        (StorePV, 128, 90, 0),
+        (Address, 34, 131, 90),
+        (StorePV, 132, 90, 0),
+        (Return, 0, 0, 0),
+    ]);
+    vm.image.globals[125] = 36;
+    vm.image.globals[126] = 8.0f32.to_bits();
+    vm.image.globals[127] = 3;
+    vm.image.globals[128..131].copy_from_slice(&velocity.0.map(f32::to_bits));
+    vm.image.globals[131] = 37;
+    vm.image.globals[132..135].copy_from_slice(&[1000.0f32, 2000.0, 3000.0].map(f32::to_bits));
+    replace_client_function(&mut vm, 3, &begin);
+    vm
+}
+
+#[test]
+fn netquake_noclip_control_precedes_frame_and_integrates_think_velocity_once() {
+    let mut vm = noclip_client_vm(Vec3::default());
+    for (at, word) in [
+        (110, 3),
+        (111, 37),
+        (112, 34),
+        (113, 35),
+        (114, 6),
+        (115, 0),
+        (150, vm.stride as u32),
+        (151, 0),
+    ] {
+        vm.image.globals[at] = word;
+    }
+    vm.image.globals[120..123].copy_from_slice(&[11.0f32, 5.0, -2.0].map(f32::to_bits));
+    vm.image.globals[180..183].copy_from_slice(&[7.0f32, -2.0, 3.0].map(f32::to_bits));
+    replace_client_function(
+        &mut vm,
+        7,
+        &[
+            // StartFrame publishes the still-unintegrated origin and controlled
+            // velocity to the world row, independently of the client callbacks.
+            (LoadV, 150, 110, 97),
+            (Address, 150, 111, 90),
+            (StorePV, 97, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    replace_client_function(
+        &mut vm,
+        4,
+        &[
+            (Address, 34, 110, 90),
+            (StorePV, 180, 90, 0),
+            (Address, 34, 112, 90),
+            (StorePF, 35, 90, 0),
+            (Address, 34, 113, 90),
+            (StorePF, 114, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    replace_client_function(
+        &mut vm,
+        6,
+        &[
+            (Address, 34, 110, 90),
+            (StorePV, 120, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    let (mut host, id, geometry, canonical, _) =
+        qc_client_host(RuleSetId::Quake, RuleSetId::Quake, vm, &[]);
+    host.connect_module_client(ModuleId(1), id, b"\\name\\noclip")
+        .unwrap();
+    tick(&mut host, 0);
+    let command = UserCmd {
+        movement: [3.0, 2.0, 6.0],
+        buttons: buttons::JUMP | buttons::CROUCH,
+        ..Default::default()
+    };
+    assert!(
+        host.runtime
+            .send_local_command(id, &command, EventTime::from_milliseconds(20))
+    );
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.server.clients[id.0 as usize]
+            .player
+            .body
+            .position,
+        Vec3::default()
+    );
+    tick(&mut host, 20);
+    let columns = &host.runtime.server.entities.columns;
+    assert_eq!(
+        columns.angular_velocity[canonical.slot as usize]
+            .unwrap()
+            .0
+            .map(f32::to_bits),
+        [3.0f32, -2.0, 6.0].map(f32::to_bits)
+    );
+    let advanced = Vec3([0.02f32 * 11.0, 0.02f32 * 5.0, 0.02f32 * -2.0]);
+    assert_eq!(
+        host.runtime.server.clients[id.0 as usize]
+            .player
+            .body
+            .position,
+        advanced
+    );
+    assert_eq!(columns.position[canonical.slot as usize], advanced);
+    assert_eq!(
+        columns.angles[canonical.slot as usize].0.map(f32::to_bits),
+        [-0.0f32, 0.0, 0.0].map(f32::to_bits)
+    );
+    assert!(host.runtime.server.area.bounds(canonical).is_some());
+    let world = host.runtime.collision.as_mut().unwrap();
+    assert_eq!(
+        host.runtime.server.move_pending_clients(
+            &host.runtime.geometry,
+            geometry,
+            0,
+            &mut world.scratch,
+            |_, error| panic!("{error:?}")
+        ),
+        0
+    );
+    tick(&mut host, 40);
+    let columns = &host.runtime.server.entities.columns;
+    assert_eq!(
+        columns.angular_velocity[canonical.slot as usize].unwrap().0[0].to_bits(),
+        3.0f32.to_bits()
+    );
+    assert_eq!(
+        columns.angular_velocity[canonical.slot as usize].unwrap().0[2].to_bits(),
+        6.0f32.to_bits()
+    );
+    assert_eq!(
+        host.runtime.server.clients[id.0 as usize]
+            .player
+            .body
+            .position,
+        advanced + advanced
+    );
+    let counts = host.module_counts(ModuleId(1)).unwrap();
+    assert_eq!(
+        (counts.rejected, counts.traps, counts.unsupported_physics),
+        (0, 0, 0)
+    );
+}
+
+#[test]
+fn netquake_captured_noclip_continues_after_think_changes_mode_to_none() {
+    let mut vm = noclip_client_vm(Vec3::default());
+    for (at, word) in [
+        (110, 3),
+        (111, 34),
+        (112, 35),
+        (113, 6),
+        (114, 36),
+        (115, 0),
+    ] {
+        vm.image.globals[at] = word;
+    }
+    vm.image.globals[120..123].copy_from_slice(&[7.0f32, -2.0, 3.0].map(f32::to_bits));
+    replace_client_function(
+        &mut vm,
+        4,
+        &[
+            (Address, 34, 111, 90),
+            (StorePF, 35, 90, 0),
+            (Address, 34, 112, 90),
+            (StorePF, 113, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    replace_client_function(
+        &mut vm,
+        6,
+        &[
+            (Address, 34, 110, 90),
+            (StorePV, 120, 90, 0),
+            (Address, 34, 114, 90),
+            (StorePF, 115, 90, 0),
+            (Return, 0, 0, 0),
+        ],
+    );
+    let (mut host, id, _, canonical, _) =
+        qc_client_host(RuleSetId::Quake, RuleSetId::Quake, vm, &[]);
+    host.connect_module_client(ModuleId(1), id, b"\\name\\captured")
+        .unwrap();
+    tick(&mut host, 0);
+    tick(&mut host, 20);
+    let advanced = Vec3([0.02f32 * 7.0, 0.02f32 * -2.0, 0.02f32 * 3.0]);
+    assert_eq!(
+        host.runtime.server.clients[id.0 as usize]
+            .player
+            .body
+            .position,
+        advanced
+    );
+    assert_eq!(
+        host.runtime.server.entities.columns.motion[canonical.slot as usize],
+        Motion::None
+    );
+    tick(&mut host, 40);
+    assert_eq!(
+        host.runtime.server.clients[id.0 as usize]
+            .player
+            .body
+            .position,
+        advanced
+    );
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().unsupported_physics,
+        0
+    );
+}
+
+#[test]
+fn netquake_foreign_noclip_preserves_substeps_and_final_native_snap() {
+    for (rules, seconds, milliseconds, axes, velocity, steps) in [
+        (
+            RuleSetId::Quake3,
+            0.15,
+            150,
+            [127.0, -19.0, 23.0],
+            Vec3([0.25, -0.125, 0.375]),
+            3,
+        ),
+        (
+            RuleSetId::Quake2,
+            0.001,
+            1,
+            [50.0, 0.0, 0.0],
+            Vec3::default(),
+            1,
+        ),
+    ] {
+        use qa_world::collision::WorldTrace;
+        let mut vm = noclip_client_vm(velocity);
+        for entry in [4, 5, 7] {
+            replace_client_function(&mut vm, entry, &[(Return, 0, 0, 0)]);
+        }
+        let (mut host, id, geometry, canonical, _) =
+            qc_client_host(RuleSetId::Quake, rules, vm, &[]);
+        host.connect_module_client(ModuleId(1), id, b"\\name\\foreign q3")
+            .unwrap();
+        tick(&mut host, 0);
+        host.console
+            .append(
+                &format!("host_framerate {seconds}\n"),
+                Context {
+                    source: RuleSetId::Quake,
+                    ..Context::default()
+                },
+            )
+            .unwrap();
+        host.console.execute_frame(&mut host.runtime);
+        host.runtime.server.clients[id.0 as usize]
+            .player
+            .trace_rules = RuleSetId::Quake2;
+        let player = &host.runtime.server.clients[id.0 as usize].player;
+        let base = player.movement.tuning;
+        let mut expected = PlayerState {
+            movement_rules: player.movement_rules,
+            trace_rules: player.trace_rules,
+            movement: player.movement,
+            body: player.body,
+            view_angles: player.view_angles,
+            view_offset: player.view_offset,
+            ..Default::default()
+        };
+        expected.movement.mode = MovementMode::Noclip;
+        expected.movement.tuning = qa_console::movement::MovementHandles::bind(&host.console.cvars)
+            .unwrap()
+            .resolve(&host.console.cvars, rules, base);
+        let command = UserCmd {
+            movement: axes,
+            ..Default::default()
+        };
+        let mut scratch = host.runtime.geometry.scratch();
+        let mut trace = WorldTrace::new(
+            &host.runtime.geometry,
+            geometry,
+            0,
+            &host.runtime.server.entities,
+            &host.runtime.server.area,
+            &mut scratch,
+            CollisionOwner::Lifetime(canonical),
+        );
+        let result = qa_movement::pmove(
+            UserCmd {
+                server_time_ms: milliseconds,
+                duration_ms: milliseconds as u16,
+                ..command
+            },
+            &mut expected,
+            &mut trace,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .unwrap();
+        assert_eq!(result.steps, steps);
+        if rules == RuleSetId::Quake2 {
+            assert_eq!(expected.body.position, Vec3::default());
+        }
+        assert_ne!(expected.body.velocity, player.body.velocity);
+        assert!(
+            host.runtime
+                .send_local_command(id, &command, EventTime::from_milliseconds(20))
+        );
+        host.drain(&mut Default::default());
+        tick(&mut host, 20);
+        let actual = &host.runtime.server.clients[id.0 as usize].player;
+        assert_eq!(
+            actual.body.position.0.map(f32::to_bits),
+            expected.body.position.0.map(f32::to_bits)
+        );
+        assert_eq!(
+            actual.body.velocity.0.map(f32::to_bits),
+            expected.body.velocity.0.map(f32::to_bits)
+        );
+        if rules == RuleSetId::Quake3 {
+            assert_eq!(actual.movement.command_time_ms, milliseconds);
+        }
+        assert_eq!(
+            (actual.movement_rules, actual.trace_rules),
+            (rules, RuleSetId::Quake2)
+        );
+        assert_eq!(
+            host.runtime.server.entities.columns.position[canonical.slot as usize],
+            expected.body.position
+        );
+        let world = host.runtime.collision.as_mut().unwrap();
+        assert_eq!(
+            host.runtime.server.move_pending_clients(
+                &host.runtime.geometry,
+                geometry,
+                0,
+                &mut world.scratch,
+                |_, error| panic!("{error:?}")
+            ),
+            0
+        );
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        assert_eq!(
+            (counts.rejected, counts.traps, counts.unsupported_physics),
+            (0, 0, 0)
+        );
+    }
 }

@@ -528,3 +528,77 @@ fn velocity_check_stops_on_boundary_error_before_clamping_or_later_axes() {
     assert_eq!(entities.columns.position[slot], Vec3([0.0, 10.0, 20.0]));
     assert_eq!(entities.columns.velocity[slot], Vec3([99.0, 9.0, -9.0]));
 }
+
+#[test]
+fn shared_noclip_ma_rereads_shifted_native_position_velocity_after_each_axis() {
+    let mut entities = EntityTable::new(2, 1).unwrap();
+    let entity = entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = entity.slot as usize;
+    let mut words = [2.0_f32, 3.0, 4.0, 5.0];
+    entities.columns.position[slot] = Vec3([words[1], words[2], words[3]]);
+    entities.columns.velocity[slot] = Vec3([words[0], words[1], words[2]]);
+    entities.columns.angular_velocity[slot] = Some(Vec3::default());
+    let mut origins = Vec::new();
+    noclip::<PhysicsError>(&mut entities, entity, 2.0, |entities, write| {
+        if let MotionWrite::Origin(axis) = write {
+            words[axis + 1] = entities.columns.position[slot].0[axis];
+            entities.columns.position[slot] = Vec3([words[1], words[2], words[3]]);
+            entities.columns.velocity[slot] = Vec3([words[0], words[1], words[2]]);
+            origins.push(axis);
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(words, [2.0, 7.0, 18.0, 41.0]);
+    assert_eq!(origins, [0, 1, 2]);
+}
+
+#[test]
+fn final_noclip_scalar_callback_must_preserve_the_captured_lifetime() {
+    let mut entities = EntityTable::new(2, 1).unwrap();
+    let entity = entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = entity.slot as usize;
+    entities.columns.angular_velocity[slot] = Some(Vec3::default());
+    entities.columns.velocity[slot] = Vec3([1.0; 3]);
+    let mut replacement = None;
+    assert_eq!(
+        noclip::<PhysicsError>(&mut entities, entity, 1.0, |entities, write| {
+            if write == MotionWrite::Origin(2) {
+                assert!(entities.release(entity, ThinkTime::Seconds(3.0)));
+                replacement = Some(
+                    entities
+                        .allocate(
+                            ThinkTime::Seconds(4.0),
+                            ModuleId(4),
+                            AllocationPolicy::EDICT,
+                        )
+                        .unwrap()
+                        .id,
+                );
+            }
+            Ok(())
+        }),
+        Err(PhysicsError::Entity)
+    );
+    let replacement = replacement.unwrap();
+    assert_eq!(replacement.slot, entity.slot);
+    assert_ne!(replacement.generation, entity.generation);
+    assert_eq!(
+        entities.columns.position[replacement.slot as usize],
+        Vec3::default()
+    );
+}

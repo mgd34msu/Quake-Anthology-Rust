@@ -370,3 +370,67 @@ fn leaf_encoding_plane_validity_and_midpoint_keep_native_values() {
         }
     }
 }
+
+#[test]
+fn scalar_vector_ma_reads_aliases_after_each_native_store() {
+    let mut words = [2.0_f32, 3.0, 4.0, 5.0];
+    let mut order = Vec::new();
+    vector_ma(
+        &mut words,
+        2.0,
+        |words, axis| Ok::<_, ()>((words[axis + 1], words[axis])),
+        |words, axis, value| {
+            words[axis + 1] = value;
+            order.push(axis);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(words, [2.0, 7.0, 18.0, 41.0]);
+    assert_eq!(order, [0, 1, 2]);
+}
+
+#[test]
+fn scalar_vector_ma_keeps_separate_float_operations_and_failure_prefix() {
+    let base = [-0.0_f32, 1234.5679, -9.875];
+    let rate = [-0.0_f32, -23.125, 0.125];
+    let mut result = base;
+    vector_ma(
+        &mut result,
+        0.333,
+        |result, axis| Ok::<_, ()>((result[axis], rate[axis])),
+        |result, axis, value| {
+            result[axis] = value;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result.map(f32::to_bits),
+        std::array::from_fn::<_, 3, _>(|axis| (base[axis] + 0.333f32 * rate[axis]).to_bits())
+    );
+    let mut writes = 0;
+    let mut result = base;
+    assert_eq!(
+        vector_ma(
+            &mut result,
+            0.333,
+            |result, axis| Ok((result[axis], rate[axis])),
+            |result, axis, value| {
+                writes += 1;
+                if axis == 1 {
+                    return Err("boundary");
+                }
+                result[axis] = value;
+                Ok(())
+            },
+        ),
+        Err("boundary")
+    );
+    assert_eq!(writes, 2);
+    assert_eq!(
+        result[0].to_bits(),
+        (base[0] + 0.333f32 * rate[0]).to_bits()
+    );
+    assert_eq!(result[1..], base[1..]);
+}

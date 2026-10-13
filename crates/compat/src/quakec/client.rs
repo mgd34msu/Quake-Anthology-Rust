@@ -64,6 +64,13 @@ impl ClientGlobals {
             Err(CallError::Unsupported)
         }
     }
+    fn require_frame_movement(&self, context: CallContext) -> Result<(), CallError> {
+        if self.require()? == RuleSetId::Quake && context.native_rules == RuleSetId::Quake {
+            Ok(())
+        } else {
+            Err(CallError::Unsupported)
+        }
+    }
     fn callback(&self, event: ClientCallback) -> Result<usize, CallError> {
         self.require()?;
         let index = match event {
@@ -308,6 +315,80 @@ impl Vm {
         let step = (f64::from(command.duration_ms) * 0.001).min(0.1);
         self.image.globals[frame_time] = (step as f32).to_bits();
         Ok(step)
+    }
+    pub fn prepare_control(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        native: u32,
+        seconds: f64,
+    ) -> Result<Option<qa_movement::MoveOptions>, CallError> {
+        self.client_globals.require_frame_movement(context)?;
+        let settings = self.client_globals.settings.ok_or(CallError::Cvar)?;
+        let number = |handle| {
+            services
+                .cvars
+                .native_number(handle, context.native_rules)
+                .ok_or(CallError::Cvar)
+        };
+        let roll = qa_gameplay::rules::appearance::AliasRoll {
+            angle: number(settings[1])?,
+            speed: number(settings[2])?,
+        };
+        self.projection
+            .quakec_prepare_control(&mut self.entities, context, native, seconds, roll)
+            .map(|angles| {
+                angles.map(|body_angles| qa_movement::MoveOptions {
+                    phase: qa_movement::MovePhase::Control {
+                        body_angles,
+                        clock: context.clock,
+                    },
+                    ..Default::default()
+                })
+            })
+    }
+    pub fn client_noclip(&self, context: CallContext, native: u32) -> Result<(), CallError> {
+        self.client_globals.require_frame_movement(context)?;
+        self.projection
+            .quakec_client_noclip(&self.entities, context, native)
+    }
+    pub fn read_frame_client(
+        &self,
+        entities: &qa_world::entities::EntityTable,
+        context: CallContext,
+        native: u32,
+        entity: EntityId,
+        player: &mut qa_core::primitives::PlayerState,
+    ) -> Result<(), CallError> {
+        self.client_globals.require_frame_movement(context)?;
+        self.projection.quakec_read_frame_client(
+            entities,
+            &self.entities,
+            context,
+            native,
+            entity,
+            player,
+        )
+    }
+    pub fn write_frame_scalar(
+        &mut self,
+        entities: &qa_world::entities::EntityTable,
+        context: CallContext,
+        native: u32,
+        entity: EntityId,
+        player: &mut qa_core::primitives::PlayerState,
+        stage: qa_core::primitives::MotionWrite,
+    ) -> Result<(), CallError> {
+        self.client_globals.require_frame_movement(context)?;
+        self.projection.quakec_write_frame_scalar(
+            entities,
+            &mut self.entities,
+            context,
+            native,
+            entity,
+            player,
+            stage,
+        )
     }
     pub(super) fn sync_client_globals(&mut self) -> Result<(), CallError> {
         let number =

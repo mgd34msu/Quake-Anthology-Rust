@@ -1136,7 +1136,7 @@ fn frame(host: &mut FrameHost, tick: Tick) {
         qc.vm.frame_time(step);
     }
     if physics_due {
-        host.prepare_module_client_commands(module);
+        host.prepare_module_client_commands(module, step);
     }
     if physics_due && invoke_frame(host, module, time) && quakec {
         quakec_entity_phase(host, module, time, step);

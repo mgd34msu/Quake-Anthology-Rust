@@ -57,6 +57,21 @@ pub fn lerp(start: f32, end: f32, fraction: f32) -> f32 {
     lerp_array([start], [end], fraction)[0]
 }
 
+/// Native VectorMA commits one scalar before reading the next. The boundary
+/// may refresh aliased inputs; multiplication and addition stay separate.
+pub fn vector_ma<S, E>(
+    state: &mut S,
+    scale: f32,
+    mut read: impl FnMut(&mut S, usize) -> Result<(f32, f32), E>,
+    mut write: impl FnMut(&mut S, usize, f32) -> Result<(), E>,
+) -> Result<(), E> {
+    for axis in 0..3 {
+        let (base, rate) = read(state, axis)?;
+        write(state, axis, base + scale * rate)?;
+    }
+    Ok(())
+}
+
 /// Q2 pitch wrapping keeps the native strict tie and single subtraction.
 pub fn wrap_above_180(angle: f32) -> f32 {
     if angle > 180.0 { angle - 360.0 } else { angle }

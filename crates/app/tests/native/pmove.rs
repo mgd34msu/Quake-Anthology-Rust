@@ -433,6 +433,7 @@ pub(super) fn commands_move_a_native_client_once() {
                 &mut expected,
                 &mut trace,
                 Default::default(),
+                qa_movement::no_boundary,
             )
             .unwrap();
             assert!(host.runtime.send_local_command(

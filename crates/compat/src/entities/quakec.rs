@@ -1,7 +1,7 @@
 //! QuakeC byte-offset edicts use the same namespace/lifetime projection as
 //! native modules. Only ABI field storage and ordinal reuse live here.
 use super::*;
-use qa_core::primitives::{Motion, WeaponReadiness, WeaponState};
+use qa_core::primitives::{Motion, PlayerState, WeaponReadiness, WeaponState};
 use qa_formats::program::quakec::Image;
 use qa_world::entities::FullTable;
 
@@ -309,6 +309,26 @@ impl QuakeCLayout {
         value: Vec3,
     ) -> Result<(), CallError> {
         memory.write_vec3(address + field.ok_or(CallError::Memory)? as u64, value)?;
+        Ok(())
+    }
+    fn read_client_pose(
+        self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+        player: &mut PlayerState,
+    ) -> Result<(), CallError> {
+        let origin = self.vector(memory, address, self.origin)?;
+        let velocity = self.vector(memory, address, self.velocity)?;
+        player.body.position = origin;
+        player.body.velocity = velocity;
+        Ok(())
+    }
+    fn client_noclip(self, memory: &ModuleMemory<'_>, address: u64) -> Result<(), CallError> {
+        if self.number(memory, address, self.move_type)? != 8.0
+            || self.flags(memory, address)? & (1 << 11) != 0
+        {
+            return Err(CallError::Unsupported);
+        }
         Ok(())
     }
     fn removal_words(self) -> [Option<usize>; 7] {
@@ -697,6 +717,118 @@ impl EntityProjection {
             address,
             layout.move_type,
         )?) as f32))
+    }
+    pub(crate) fn quakec_client_noclip(
+        &self,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(), CallError> {
+        self.quakec_identity(memory, context, value)?;
+        let address = self.quakec_client_address(memory, value)?;
+        self.quakec_layout()?.client_noclip(memory, address)
+    }
+    pub(crate) fn quakec_prepare_control(
+        &self,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        seconds: f64,
+        roll: qa_gameplay::rules::appearance::AliasRoll,
+    ) -> Result<Option<Vec3>, CallError> {
+        self.quakec_identity(memory, context, value)?;
+        let address = self.quakec_client_address(memory, value)?;
+        let layout = self.quakec_layout()?;
+        if layout.number(memory, address, layout.move_type)? == 0.0 {
+            return Ok(None);
+        }
+        let mut punch = layout.vector(memory, address, layout.client.punch)?;
+        let length = qa_core::math::normalize(&mut punch);
+        layout.write_vector(memory, address, layout.client.punch, punch)?;
+        let mut length = (f64::from(length) - 10.0 * seconds) as f32;
+        if length < 0.0 {
+            length = 0.0;
+        }
+        for axis in 0..3 {
+            let field = layout.client.punch.map(|at| at + axis * 4);
+            let value = layout.number(memory, address, field)? * length;
+            layout.write_number(memory, address, field, value)?;
+        }
+        if layout.number(memory, address, layout.client.health)? <= 0.0 {
+            return Ok(None);
+        }
+        let view = layout.vector(memory, address, layout.client.view_angles)?
+            + layout.vector(memory, address, layout.client.punch)?;
+        let body_angles = layout.vector(memory, address, layout.angles)?;
+        let velocity = layout.vector(memory, address, layout.velocity)?;
+        layout.write_number(
+            memory,
+            address,
+            layout.angles.map(|at| at + 8),
+            roll.calculate(body_angles, velocity) * 4.0,
+        )?;
+        if layout.number(memory, address, layout.client.fix_angle)? == 0.0 {
+            layout.write_number(memory, address, layout.angles, -view.0[0] / 3.0)?;
+            layout.write_number(memory, address, layout.angles.map(|at| at + 4), view.0[1])?;
+        }
+        layout.client_noclip(memory, address)?;
+        Ok(Some(layout.vector(memory, address, layout.angles)?))
+    }
+    fn quakec_client_lifetime(
+        &self,
+        entities: &EntityTable,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        entity: EntityId,
+    ) -> Result<u64, CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        if self.quakec_bound_entity(entities, native)? != Some(entity) {
+            return Err(CallError::Entity);
+        }
+        self.quakec_client_address(memory, value)
+    }
+    pub(crate) fn quakec_read_frame_client(
+        &self,
+        entities: &EntityTable,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        entity: EntityId,
+        player: &mut PlayerState,
+    ) -> Result<(), CallError> {
+        let address = self.quakec_client_lifetime(entities, memory, context, value, entity)?;
+        let layout = self.quakec_layout()?;
+        let deadline = layout.number(memory, address, layout.client.water_jump)?;
+        layout.read_client_pose(memory, address, player)?;
+        player.movement.mode = qa_core::primitives::MovementMode::Noclip;
+        player.movement.teleport_hold_until = f64::from(deadline);
+        Ok(())
+    }
+    pub(crate) fn quakec_write_frame_scalar(
+        &self,
+        entities: &EntityTable,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        entity: EntityId,
+        player: &mut PlayerState,
+        stage: qa_core::primitives::MotionWrite,
+    ) -> Result<(), CallError> {
+        let address = self.quakec_client_lifetime(entities, memory, context, value, entity)?;
+        let layout = self.quakec_layout()?;
+        let (axis, field, vector) = match stage {
+            qa_core::primitives::MotionWrite::Origin(axis) => {
+                (axis, layout.origin, player.body.position)
+            }
+            qa_core::primitives::MotionWrite::Velocity(axis) => {
+                (axis, layout.velocity, player.body.velocity)
+            }
+            qa_core::primitives::MotionWrite::Angles(_) => return Err(CallError::Unsupported),
+        };
+        let value = *vector.0.get(axis).ok_or(CallError::Memory)?;
+        layout.write_number(memory, address, field.map(|at| at + axis * 4), value)?;
+        layout.read_client_pose(memory, address, player)
     }
     pub(crate) fn quakec_client_classname<'a>(
         &self,

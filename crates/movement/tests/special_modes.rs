@@ -154,6 +154,7 @@ fn classic_ladder_uses_signed_pitch_and_vertical_controls_before_acceleration() 
             &mut state,
             &mut world,
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert!(state.movement.ladder);
@@ -175,6 +176,7 @@ fn ladder_idle_braking_uses_ground_friction_and_approaches_zero() {
             &mut state,
             &mut world,
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         let after_friction = 100.0f32 * ((100.0 - 100.0 * 6.0 * 0.008) / 100.0);
@@ -205,6 +207,7 @@ fn classic_ladder_flag_is_transient_but_rerelease_retains_it_during_a_native_tim
             &mut state,
             &mut world,
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert_eq!(state.movement.ladder, rules == RuleSetId::Quake2Rerelease);
@@ -222,6 +225,7 @@ fn rerelease_ladder_strafe_projects_onto_the_ladder_plane_and_stops_at_waist_wat
         &mut state,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert!(state.movement.ladder);
@@ -235,6 +239,7 @@ fn rerelease_ladder_strafe_projects_onto_the_ladder_plane_and_stops_at_waist_wat
         &mut submerged,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert!(!submerged.movement.ladder);
@@ -253,6 +258,7 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
         &mut dry,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     world.water = true;
@@ -261,6 +267,7 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
         &mut wet,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(wet.body.velocity.0[0], dry.body.velocity.0[0]);
@@ -272,6 +279,7 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
         &mut current,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert!(current.body.velocity.0[0] > 0.0);
@@ -286,6 +294,7 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
         &mut conveyor,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(conveyor.body.velocity.0[0], 8.0);
@@ -303,6 +312,7 @@ fn q2_and_q3_water_jump_preserve_their_impulses_timer_phase_and_gravity_order() 
             &mut state,
             &mut world,
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert!(state.movement.timer.contains(MovementTimer::WATER_JUMP));
@@ -348,6 +358,7 @@ fn water_jump_ignores_input_and_cancels_native_timers_on_descent() {
             &mut state,
             &mut world,
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert_eq!(state.movement.timer, MovementTimer::NONE);
@@ -367,7 +378,14 @@ fn qw_water_jump_uses_seconds_and_only_held_jump_decrements_the_native_clock() {
         world.ledge_points = true;
         let mut cmd = command(8, [300.0, 0.0, 0.0], 0.0);
         cmd.buttons = if held { buttons::JUMP } else { 0 };
-        pmove(cmd, &mut state, &mut world, Default::default()).expect("valid movement query");
+        pmove(
+            cmd,
+            &mut state,
+            &mut world,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("valid movement query");
         assert_eq!(
             state.movement.water_jump_seconds,
             if held { 2.0 - 0.008 } else { 2.0 }
@@ -387,6 +405,7 @@ fn qw_water_jump_uses_seconds_and_only_held_jump_decrements_the_native_clock() {
         &mut state,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(state.movement.water_jump_seconds, 0.0);
@@ -403,6 +422,7 @@ fn rerelease_water_jump_preview_accepts_a_dry_ledge_and_keeps_live_contacts_isol
         &mut state,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert!(state.movement.timer.contains(MovementTimer::WATER_JUMP));
@@ -434,6 +454,7 @@ fn rerelease_water_jump_rejects_no_intent_forbidden_water_and_missing_or_wet_flo
             &mut state,
             &mut world,
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert!(!state.movement.timer.contains(MovementTimer::WATER_JUMP));
@@ -450,6 +471,7 @@ fn q3_native_movement_does_not_acquire_ladder_behavior_from_foreign_geometry() {
         &mut state,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert!(!state.movement.ladder);
@@ -472,6 +494,7 @@ fn landing_from_water_jump_keeps_the_new_native_landing_cooldown() {
             &mut state,
             &mut world,
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert!(
@@ -497,7 +520,14 @@ fn rerelease_swim_buttons_accelerate_without_a_jump_impulse_and_crouch_wins() {
         world.water_height = 100.0;
         let mut cmd = command(8, [0.0, 0.0, 99.0], 0.0);
         cmd.buttons = buttons;
-        pmove(cmd, &mut state, &mut world, Default::default()).expect("valid movement query");
+        pmove(
+            cmd,
+            &mut state,
+            &mut world,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.velocity.0[2], expected_z);
     }
     let mut state = player(RuleSetId::Quake2Rerelease);
@@ -510,6 +540,7 @@ fn rerelease_swim_buttons_accelerate_without_a_jump_impulse_and_crouch_wins() {
         &mut state,
         &mut world,
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(state.body.velocity, Vec3::default());
@@ -565,7 +596,14 @@ fn native_q2_water_speed_caps_do_not_reuse_the_air_duck_cap() {
         if rules == RuleSetId::Quake2 {
             expected.0 = expected.0.map(math::narrow_eighth);
         }
-        pmove(cmd, &mut state, &mut world, Default::default()).expect("valid movement query");
+        pmove(
+            cmd,
+            &mut state,
+            &mut world,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("valid movement query");
         assert!(state.movement.ducked);
         assert_eq!(state.body.velocity, expected, "{rules:?}");
     }

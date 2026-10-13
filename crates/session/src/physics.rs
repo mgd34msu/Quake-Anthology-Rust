@@ -1,6 +1,11 @@
 //! Engine-owned entity motion over the one live entity table. Providers choose
 //! its phase; native adapters only synchronize ABI writes and explicit links.
-use qa_core::primitives::EntityId;
+pub use qa_core::primitives::MotionWrite;
+use qa_core::{
+    math,
+    primitives::{EntityId, PlayerState},
+};
+use qa_world::collision::TraceError;
 use qa_world::entities::EntityTable;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9,11 +14,13 @@ pub enum PhysicsError {
     AngularVelocity,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MotionWrite {
-    Angles(usize),
-    Origin(usize),
-    Velocity(usize),
+/// Ordinary authoritative movement has no native scalar synchronization.
+pub fn no_body_boundary(
+    _: &EntityTable,
+    _: &mut PlayerState,
+    _: MotionWrite,
+) -> Result<(), TraceError> {
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,20 +81,39 @@ pub fn noclip<E: From<PhysicsError>>(
     step: f32,
     mut write: impl FnMut(&mut EntityTable, MotionWrite) -> Result<(), E>,
 ) -> Result<(), E> {
-    for axis in 0..3 {
-        let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
-        let columns = &mut entities.columns;
-        let angular = columns.angular_velocity[slot].ok_or(PhysicsError::AngularVelocity)?;
-        let next = columns.angles[slot] + angular * step;
-        columns.angles[slot].0[axis] = next.0[axis];
-        write(entities, MotionWrite::Angles(axis))?;
-    }
-    for axis in 0..3 {
-        let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
-        let columns = &mut entities.columns;
-        let next = columns.position[slot] + columns.velocity[slot] * step;
-        columns.position[slot].0[axis] = next.0[axis];
-        write(entities, MotionWrite::Origin(axis))?;
+    for angles in [true, false] {
+        let mut state = (&mut *entities, &mut write);
+        math::vector_ma(
+            &mut state,
+            step,
+            |(entities, _), axis| {
+                let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+                let columns = &entities.columns;
+                if angles {
+                    let rate =
+                        columns.angular_velocity[slot].ok_or(PhysicsError::AngularVelocity)?;
+                    Ok::<_, E>((columns.angles[slot].0[axis], rate.0[axis]))
+                } else {
+                    Ok((
+                        columns.position[slot].0[axis],
+                        columns.velocity[slot].0[axis],
+                    ))
+                }
+            },
+            |(entities, write), axis, value| {
+                let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+                let field = if angles {
+                    entities.columns.angles[slot].0[axis] = value;
+                    MotionWrite::Angles(axis)
+                } else {
+                    entities.columns.position[slot].0[axis] = value;
+                    MotionWrite::Origin(axis)
+                };
+                write(entities, field)?;
+                entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+                Ok(())
+            },
+        )?;
     }
     Ok(())
 }

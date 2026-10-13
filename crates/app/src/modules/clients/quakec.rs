@@ -1,7 +1,7 @@
 //! QuakeC native client phases over the common lifetime and movement services.
 use super::*;
 use qa_compat::services::CallError as ServiceError;
-use qa_core::primitives::{CallbackCall, EntityId, MovementMode};
+use qa_core::primitives::{CallbackCall, EntityId, Motion, MovementMode};
 use qa_session::dispatch::{ThinkFrame, run_think_with_rebind};
 use std::sync::Arc;
 
@@ -223,8 +223,107 @@ fn think(
     Ok(())
 }
 
+/// Resolve movement-role tuning for the duration of one native phase.
+fn with_tuning<R>(
+    host: &mut FrameHost,
+    id: ClientId,
+    call: impl FnOnce(&mut FrameHost) -> Result<R, ClientCommandError>,
+) -> Result<R, ClientCommandError> {
+    let player = &mut host.runtime.server.clients[id.0 as usize].player;
+    let base = player.movement.tuning;
+    player.movement.tuning =
+        host.movement_handles
+            .resolve(&host.console.cvars, player.movement_rules, base);
+    let result = call(host);
+    host.runtime.server.clients[id.0 as usize]
+        .player
+        .movement
+        .tuning = base;
+    result
+}
+
+fn move_frame_client(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    offset: u32,
+    options: qa_movement::MoveOptions,
+) -> Result<qa_movement::MovementResult, ClientCommandError> {
+    let captured = host.runtime.server.clients[id.0 as usize].entity;
+    let command = host.runtime.server.clients[id.0 as usize].command;
+    with_tuning(host, id, |host| {
+        edit(host, module, |vm, services, context| {
+            vm.read_frame_client(
+                &services.server.entities,
+                context,
+                offset,
+                captured,
+                &mut services.server.clients[id.0 as usize].player,
+            )?;
+            let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
+            services.server.move_client(
+                id,
+                command,
+                services.geometry,
+                geometry,
+                index,
+                services.scratch,
+                options,
+                |entities, player, write| {
+                    vm.write_frame_scalar(entities, context, offset, captured, player, write)
+                },
+            )
+        })
+    })
+}
+
+/// Native control uses the retained command, in edict order, before StartFrame.
+pub(super) fn controls(host: &mut FrameHost, module: ModuleId, seconds: f64) {
+    let Some(info) = host.client_info(module) else {
+        return;
+    };
+    for ordinal in 1..=info.clients {
+        let Ok(slot) = i32::try_from(ordinal) else {
+            break;
+        };
+        let binding = NativeEntity { module, slot };
+        let Some(id) = host.runtime.server.client_for_native(binding) else {
+            continue;
+        };
+        if host.runtime.server.module_moves(id) != Some(binding) {
+            continue;
+        }
+        let result = (|| {
+            let offset = native(host, module, id)?;
+            let options = edit(host, module, |vm, services, context| {
+                vm.prepare_control(services, context, offset, seconds)
+            })?;
+            if let Some(options) = options {
+                move_frame_client(host, module, id, offset, options)?;
+            }
+            Ok::<(), ClientCommandError>(())
+        })();
+        if let Err(error) = result {
+            let unsupported = matches!(
+                error,
+                ClientCommandError::Usercmd(ServiceError::Unsupported)
+            );
+            if let Some(row) = host.module_row_mut(module) {
+                if unsupported {
+                    row.counts.unsupported_physics += 1;
+                } else {
+                    row.counts.rejected += 1;
+                }
+            }
+            if !unsupported {
+                host.disconnect_client(id);
+            }
+        }
+    }
+}
+
 /// Reserved NQ clients execute at their native ordinal in the provider pass.
-/// This slice admits NONE; other native motion remains explicitly unsupported.
+/// NONE and exact NOCLIP are admitted; other motion remains counted.
 pub(in crate::modules) fn frame(
     host: &mut FrameHost,
     module: ModuleId,
@@ -237,11 +336,36 @@ pub(in crate::modules) fn frame(
     let phase = edit(host, module, |vm, _, context| {
         vm.client_phase(context, offset)
     })?;
-    if phase != qa_core::primitives::Motion::None {
-        return Ok(false);
+    match phase {
+        Motion::None => {}
+        Motion::Noclip => {
+            let admitted = edit(host, module, |vm, _, context| {
+                vm.client_noclip(context, offset)
+            });
+            if matches!(
+                admitted,
+                Err(ClientCommandError::Usercmd(ServiceError::Unsupported))
+            ) {
+                return Ok(false);
+            }
+            admitted?;
+        }
+        _ => return Ok(false),
     }
     think(host, module, id, time, step)?;
     let offset = native(host, module, id)?;
+    if phase == Motion::Noclip {
+        move_frame_client(
+            host,
+            module,
+            id,
+            offset,
+            qa_movement::MoveOptions {
+                phase: qa_movement::MovePhase::Integrate { seconds: step },
+                ..Default::default()
+            },
+        )?;
+    }
     edit(host, module, |vm, services, context| {
         vm.relink_entity(services, context, offset)
     })?;
@@ -276,12 +400,8 @@ pub(super) fn command(
         if host.runtime.collision.is_none() {
             return Err(ClientCommandError::Usercmd(ServiceError::Geometry));
         }
-        let player = &mut host.runtime.server.clients[id.0 as usize].player;
+        let player = &host.runtime.server.clients[id.0 as usize].player;
         let spectator = player.movement.mode == MovementMode::Spectator;
-        let base = player.movement.tuning;
-        player.movement.tuning =
-            host.movement_handles
-                .resolve(&host.console.cvars, player.movement_rules, base);
         // Q3's shared executor consumes an absolute command clock. A QW leaf
         // retains native duration while progressing that clock explicitly.
         if player.movement_rules == RuleSetId::Quake3 {
@@ -290,23 +410,26 @@ pub(super) fn command(
                 .command_time_ms
                 .wrapping_add(i32::from(command.duration_ms));
         }
-        let moved = if let Some(world) = &mut host.runtime.collision {
-            host.runtime.server.move_client(
-                id,
-                command,
-                &host.runtime.geometry,
-                world.geometry,
-                world.index,
-                &mut world.scratch,
-            )
-        } else {
-            return Err(ClientCommandError::Usercmd(ServiceError::Geometry));
-        };
-        host.runtime.server.clients[id.0 as usize]
-            .player
-            .movement
-            .tuning = base;
-        let moved = moved.map_err(|_| ClientCommandError::Usercmd(ServiceError::Geometry))?;
+        let moved = with_tuning(host, id, |host| {
+            let world = host
+                .runtime
+                .collision
+                .as_mut()
+                .ok_or(ClientCommandError::Usercmd(ServiceError::Geometry))?;
+            host.runtime
+                .server
+                .move_client(
+                    id,
+                    command,
+                    &host.runtime.geometry,
+                    world.geometry,
+                    world.index,
+                    &mut world.scratch,
+                    Default::default(),
+                    qa_session::physics::no_body_boundary,
+                )
+                .map_err(|_| ClientCommandError::Usercmd(ServiceError::Geometry))
+        })?;
         edit(host, module, |vm, services, context| {
             vm.write_client(services, context, offset, origin_offset)
         })?;

@@ -119,7 +119,14 @@ fn every_selected_entry_rolls_back_the_command_on_trace_error() {
         let mut world = FaultWorld::new(state.body.position);
         world.fail_at = 1;
         assert_eq!(
-            entry(rules)(command(16), &mut state, &mut world, Default::default()).unwrap_err(),
+            entry(rules)(
+                command(16),
+                &mut state,
+                &mut world,
+                Default::default(),
+                &mut qa_movement::no_boundary
+            )
+            .unwrap_err(),
             TraceError::Scratch,
             "{rules:?}"
         );
@@ -140,6 +147,7 @@ fn qw_and_q3_roll_back_earlier_completed_substeps() {
             &mut baseline,
             &mut baseline_world,
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("first substep");
         assert_eq!(first.steps, 1);
@@ -153,7 +161,8 @@ fn qw_and_q3_roll_back_earlier_completed_substeps() {
                 command(total_ms),
                 &mut state,
                 &mut world,
-                Default::default()
+                Default::default(),
+                qa_movement::no_boundary
             )
             .unwrap_err(),
             TraceError::Scratch
@@ -173,7 +182,14 @@ fn contents_failure_is_not_empty_water_and_restores_the_command() {
     let mut world = FaultWorld::new(state.body.position);
     world.fail_contents = true;
     assert_eq!(
-        pmove(command(16), &mut state, &mut world, Default::default()).unwrap_err(),
+        pmove(
+            command(16),
+            &mut state,
+            &mut world,
+            Default::default(),
+            qa_movement::no_boundary
+        )
+        .unwrap_err(),
         TraceError::Scratch
     );
     assert!(world.contents_failed.get());

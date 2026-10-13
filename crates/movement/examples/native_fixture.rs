@@ -81,8 +81,14 @@ fn main() -> Result<(), &'static str> {
                     0.0
                 };
             }
-            qa_movement::pmove(command, &mut player, &mut world, Default::default())
-                .map_err(|_| "movement trace failed")?;
+            qa_movement::pmove(
+                command,
+                &mut player,
+                &mut world,
+                Default::default(),
+                qa_movement::no_boundary,
+            )
+            .map_err(|_| "movement trace failed")?;
             if arena {
                 let p = player.body.position.0;
                 let v = player.body.velocity.0;

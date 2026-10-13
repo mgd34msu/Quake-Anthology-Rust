@@ -1,7 +1,8 @@
 use qa_core::{
     math,
     primitives::{
-        MovementMode, MovementTimer, PlayerState, RuleSetId, SurfaceFlags, UserCmd, Vec3, buttons,
+        MotionWrite, MovementMode, MovementTimer, PlayerState, RuleSetId, SurfaceFlags, ThinkTime,
+        UserCmd, Vec3, buttons,
     },
     sys_events::EventTime,
 };
@@ -41,39 +42,69 @@ pub struct MovementResult {
     pub step_clip: bool,
     pub impact_delta: f32,
 }
+/// Native providers split control from position integration. Ordinary callers
+/// execute the full command, retaining their existing duration policy.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum MovePhase {
+    #[default]
+    Complete,
+    Control {
+        body_angles: Vec3,
+        clock: ThinkTime,
+    },
+    Integrate {
+        seconds: f64,
+    },
+}
 /// Inputs belonging to this invocation, never retained as player state.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MoveOptions {
     pub initial_snap: bool,
+    pub phase: MovePhase,
 }
-pub type MoveEntry = fn(
+pub type MoveEntry<E, B> = fn(
     UserCmd,
     &mut PlayerState,
     &mut dyn TraceServices,
     MoveOptions,
-) -> Result<MovementResult, TraceError>;
-pub fn entry(rules: RuleSetId) -> MoveEntry {
+    &mut B,
+) -> Result<MovementResult, E>;
+pub fn entry<E, B>(rules: RuleSetId) -> MoveEntry<E, B>
+where
+    E: From<TraceError>,
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
     match rules {
-        RuleSetId::Quake => quake,
-        RuleSetId::QuakeWorld => quakeworld,
-        RuleSetId::Quake2 => quake2,
-        RuleSetId::Quake2Rerelease => rerelease,
-        RuleSetId::Quake3 => arena,
+        RuleSetId::Quake => quake::<E, B>,
+        RuleSetId::QuakeWorld => quakeworld::<E, B>,
+        RuleSetId::Quake2 => quake2::<E, B>,
+        RuleSetId::Quake2Rerelease => rerelease::<E, B>,
+        RuleSetId::Quake3 => arena::<E, B>,
     }
 }
-pub fn pmove(
+/// No native memory boundary is needed by ordinary engine callers.
+pub fn no_boundary(_: &mut PlayerState, _: MotionWrite) -> Result<(), TraceError> {
+    Ok(())
+}
+pub fn pmove<E, B>(
     command: UserCmd,
     player: &mut PlayerState,
     trace: &mut dyn TraceServices,
     options: MoveOptions,
-) -> Result<MovementResult, TraceError> {
-    entry(player.movement_rules)(command, player, trace, options)
+    mut boundary: B,
+) -> Result<MovementResult, E>
+where
+    E: From<TraceError>,
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
+    entry(player.movement_rules)(command, player, trace, options, &mut boundary)
 }
 
-fn with_rollback(
+fn with_rollback<E>(
     player: &mut PlayerState,
-    run: impl FnOnce(&mut PlayerState) -> Result<MovementResult, TraceError>,
-) -> Result<MovementResult, TraceError> {
+    phase: MovePhase,
+    run: impl FnOnce(&mut PlayerState) -> Result<MovementResult, E>,
+) -> Result<MovementResult, E> {
     let saved = (
         player.body,
         player.movement,
@@ -81,7 +112,9 @@ fn with_rollback(
         player.view_offset,
     );
     let result = run(player);
-    if result.is_err() {
+    // A staged native boundary already committed its admitted scalar prefix.
+    // Restoring only Rust state would diverge from the surviving native row.
+    if result.is_err() && matches!(phase, MovePhase::Complete) {
         (
             player.body,
             player.movement,
@@ -90,6 +123,56 @@ fn with_rollback(
         ) = saved;
     }
     result
+}
+
+fn direct_motion<E, B>(player: &mut PlayerState, dt: f32, boundary: &mut B) -> Result<(), E>
+where
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
+    let mut state = (player, boundary);
+    math::vector_ma(
+        &mut state,
+        dt,
+        |(player, _), axis| Ok((player.body.position.0[axis], player.body.velocity.0[axis])),
+        |(player, boundary), axis, value| {
+            player.body.position.0[axis] = value;
+            boundary(player, MotionWrite::Origin(axis))
+        },
+    )
+}
+
+fn copy_body<E, B>(
+    player: &mut PlayerState,
+    position: Option<Vec3>,
+    velocity: Vec3,
+    baseline: Option<(Vec3, Vec3)>,
+    boundary: &mut B,
+) -> Result<(), E>
+where
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
+    for (origin, values) in [(false, Some(velocity)), (true, position)] {
+        let Some(values) = values else { continue };
+        for axis in 0..3 {
+            if baseline.is_some_and(|(position, velocity)| {
+                let previous = if origin { position } else { velocity };
+                previous.0[axis].to_bits() == values.0[axis].to_bits()
+            }) {
+                continue;
+            }
+            // Keep final values in scratch: readback after a native store may
+            // replace the hot vectors, including another component's input.
+            let field = if origin {
+                player.body.position.0[axis] = values.0[axis];
+                MotionWrite::Origin(axis)
+            } else {
+                player.body.velocity.0[axis] = values.0[axis];
+                MotionWrite::Velocity(axis)
+            };
+            boundary(player, field)?;
+        }
+    }
+    Ok(())
 }
 
 /// Spawn/stance initialization, independent of the module or map family.
@@ -123,6 +206,8 @@ pub(crate) struct Parameters {
     pub water_friction: f32,
     pub no_step: bool,
     free: FreeModes,
+    control: Option<FreeMovePolicy>,
+    relative_command_clock: bool,
     pub special: SpecialMovement,
     pub landing: LandingPolicy,
     stance: StancePolicy,
@@ -170,6 +255,8 @@ impl Parameters {
             }),
             no_step: t.no_step,
             free: capabilities.free,
+            control: capabilities.control,
+            relative_command_clock: capabilities.relative_command_clock,
             special: capabilities.special,
             landing: capabilities.landing,
             stance: capabilities.stance,
@@ -179,6 +266,14 @@ impl Parameters {
             dead_friction: capabilities.dead_friction,
         }
     }
+}
+struct Wish {
+    direction: Vec3,
+    speed: f32,
+    vertical: f32,
+    raw: Vec3,
+    length: f32,
+    maximum: f32,
 }
 pub(crate) struct Step<'a> {
     pub player: &'a mut PlayerState,
@@ -742,13 +837,19 @@ impl Step<'_> {
         };
         true
     }
-    fn wish(
-        &mut self,
-        water: bool,
-        free: Option<FreeMovePolicy>,
-    ) -> Result<(Vec3, f32, f32), TraceError> {
+    fn wish(&mut self, water: bool, free: Option<FreeMovePolicy>) -> Result<Wish, TraceError> {
+        let native_control =
+            free.is_some_and(|policy| matches!(policy.wish, FreeWish::NativeControl));
         let full_basis = free.is_some_and(|policy| !matches!(policy.wish, FreeWish::Existing));
-        let mut angles = self.player.view_angles;
+        let mut angles = if native_control {
+            if let MovePhase::Control { body_angles, .. } = self.options.phase {
+                body_angles
+            } else {
+                self.player.view_angles
+            }
+        } else {
+            self.player.view_angles
+        };
         if !full_basis && self.nq() && !water {
             angles.0[0] = -angles.0[0] / 3.0;
             angles.0[2] = 0.0;
@@ -756,7 +857,11 @@ impl Step<'_> {
             angles.0[0] = math::wrap_above_180(angles.0[0]);
             angles.0[0] /= 3.0;
         }
-        let mut basis = self.view_basis(angles);
+        let mut basis = if native_control {
+            math::angle_vectors(angles)
+        } else {
+            self.view_basis(angles)
+        };
         if !full_basis && (self.qw() || self.arena()) && !water {
             basis.forward.0[2] = 0.0;
             basis.right.0[2] = 0.0;
@@ -774,11 +879,16 @@ impl Step<'_> {
             math::normalize(&mut basis.right);
         }
         let mut move_axes = self.command.movement;
-        if self.nq()
-            && f64::from(self.command.server_time_ms) * 0.001
-                < self.player.movement.teleport_hold_until
-            && move_axes[0] < 0.0
-        {
+        let clock = if native_control {
+            if let MovePhase::Control { clock, .. } = self.options.phase {
+                clock.seconds()
+            } else {
+                f64::from(self.command.server_time_ms) * 0.001
+            }
+        } else {
+            f64::from(self.command.server_time_ms) * 0.001
+        };
+        if self.nq() && clock < self.player.movement.teleport_hold_until && move_axes[0] < 0.0 {
             move_axes[0] = 0.0;
         }
         let button_vertical = free.is_some_and(|policy| policy.button_vertical);
@@ -786,10 +896,18 @@ impl Step<'_> {
         if button_vertical || swim_buttons {
             move_axes[2] = 0.0;
         }
-        if !button_vertical && !swim_buttons && self.command.buttons & buttons::JUMP != 0 {
+        if !native_control
+            && !button_vertical
+            && !swim_buttons
+            && self.command.buttons & buttons::JUMP != 0
+        {
             move_axes[2] = move_axes[2].max(if self.arena() { 127.0 } else { 200.0 });
         }
-        if !button_vertical && !swim_buttons && self.command.buttons & buttons::CROUCH != 0 {
+        if !native_control
+            && !button_vertical
+            && !swim_buttons
+            && self.command.buttons & buttons::CROUCH != 0
+        {
             move_axes[2] = move_axes[2].min(if self.arena() { -127.0 } else { -200.0 });
         }
         let total = math::length(Vec3(move_axes));
@@ -811,7 +929,9 @@ impl Step<'_> {
             move_axes[2] *= scale;
         }
         let mut wish = basis.forward * move_axes[0] + basis.right * move_axes[1];
-        if water
+        if native_control {
+            wish.0[2] = move_axes[2];
+        } else if water
             || matches!(
                 self.player.movement.mode,
                 MovementMode::Noclip | MovementMode::Fly | MovementMode::Spectator
@@ -850,6 +970,7 @@ impl Step<'_> {
         if free.is_none() {
             self.adjust_wish(&mut wish)?;
         }
+        let raw = wish;
         let vertical = wish.0[2];
         let length = math::normalize(&mut wish);
         let max = if self.player.movement.ducked
@@ -890,7 +1011,14 @@ impl Step<'_> {
         if let Some(policy) = free {
             speed *= policy.speed_multiplier;
         }
-        Ok((wish, speed, vertical))
+        Ok(Wish {
+            direction: wish,
+            speed,
+            vertical,
+            raw,
+            length,
+            maximum: max,
+        })
     }
     fn walk(&mut self) -> Result<(), TraceError> {
         let water = self.player.movement.water_level >= 2;
@@ -912,7 +1040,12 @@ impl Step<'_> {
             }
         }
         self.friction(FrictionContext::Native)?;
-        let (direction, speed, vertical) = self.wish(water, None)?;
+        let Wish {
+            direction,
+            speed,
+            vertical,
+            ..
+        } = self.wish(water, None)?;
         if !water && self.player.movement.ladder {
             self.accelerate(direction, speed, self.parameters.accel, false);
             if vertical == 0.0 {
@@ -1029,7 +1162,11 @@ impl Step<'_> {
         Ok(())
     }
     fn quake_water(&mut self) -> Result<(), TraceError> {
-        let (direction, wish_speed, _) = self.wish(true, None)?;
+        let Wish {
+            direction,
+            speed: wish_speed,
+            ..
+        } = self.wish(true, None)?;
         let speed = math::length(self.player.body.velocity);
         let new_speed = if speed == 0.0 {
             0.0
@@ -1116,7 +1253,17 @@ impl Step<'_> {
             self.player.movement.timer = MovementTimer::NONE;
         }
     }
-    fn run_free(&mut self, policy: FreeMovePolicy, previous: Vec3) -> Result<(), TraceError> {
+    fn run_free<E, B>(
+        &mut self,
+        policy: FreeMovePolicy,
+        previous: Vec3,
+        boundary: &mut B,
+    ) -> Result<(), E>
+    where
+        E: From<TraceError>,
+        B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+    {
+        let mut synchronized = (self.player.body.position, self.player.body.velocity);
         if policy.reset_flags {
             self.player.movement.timer = MovementTimer::NONE;
             self.player.movement.ducked = false;
@@ -1156,7 +1303,9 @@ impl Step<'_> {
         if !matches!(policy.acceleration, FreeAcceleration::Immediate) {
             self.friction(FrictionContext::Free(policy.friction))?;
         }
-        let (direction, speed, _) = self.wish(false, Some(policy))?;
+        let Wish {
+            direction, speed, ..
+        } = self.wish(false, Some(policy))?;
         let accelerated = match policy.acceleration {
             FreeAcceleration::Immediate => {
                 self.player.body.velocity = direction * speed;
@@ -1178,8 +1327,10 @@ impl Step<'_> {
         if accelerated || !policy.abort_without_acceleration {
             match policy.motion {
                 FreeMotion::Direct => {
-                    self.player.body.position =
-                        self.player.body.position + self.player.body.velocity * self.dt;
+                    let velocity = self.player.body.velocity;
+                    copy_body(self.player, None, velocity, None, boundary)?;
+                    direct_motion(self.player, self.dt, boundary)?;
+                    synchronized = (self.player.body.position, self.player.body.velocity);
                 }
                 FreeMotion::StepSlide => super::slide::step_slide(self, false)?,
             }
@@ -1194,9 +1345,22 @@ impl Step<'_> {
                 self.player.movement.previous_position = previous;
             }
         }
+        let position = self.player.body.position;
+        let velocity = self.player.body.velocity;
+        copy_body(
+            self.player,
+            Some(position),
+            velocity,
+            Some(synchronized),
+            boundary,
+        )?;
         Ok(())
     }
-    fn run(&mut self) -> Result<(), TraceError> {
+    fn run<E, B>(&mut self, boundary: &mut B) -> Result<(), E>
+    where
+        E: From<TraceError>,
+        B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+    {
         self.result.steps += 1;
         if let Some(exclusive) = self.parameters.exclusive_button
             && self.command.buttons & exclusive != 0
@@ -1259,7 +1423,7 @@ impl Step<'_> {
             return Ok(());
         }
         if let Some(policy) = self.parameters.free.get(self.player.movement.mode) {
-            self.run_free(policy, previous)?;
+            self.run_free(policy, previous, boundary)?;
             return Ok(());
         }
         let stance_after_ground = self.parameters.stance.after_ground;
@@ -1317,14 +1481,19 @@ impl Step<'_> {
         Ok(())
     }
 }
-fn run_step(
+fn run_step<E, B>(
     command: UserCmd,
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
     parameters: Parameters,
     result: &mut MovementResult,
     options: MoveOptions,
-) -> Result<(), TraceError> {
+    boundary: &mut B,
+) -> Result<(), E>
+where
+    E: From<TraceError>,
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
     let exact_dt = if parameters.rules == RuleSetId::Quake {
         EventTime(command.duration_ns).seconds()
     } else {
@@ -1359,100 +1528,279 @@ fn run_step(
         previous_velocity,
         options,
     }
-    .run()?;
+    .run(boundary)?;
     Ok(())
 }
-fn quake(
+fn run_entry<E, B>(
+    rules: RuleSetId,
     command: UserCmd,
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
     options: MoveOptions,
-) -> Result<MovementResult, TraceError> {
-    with_rollback(player, |player| {
-        let command = super::prepare_command(RuleSetId::Quake, command);
-        let parameters = Parameters::load(RuleSetId::Quake, player);
-        let mut result = MovementResult::default();
-        run_step(command, player, world, parameters, &mut result, options)?;
-        Ok(result)
-    })
-}
-fn quakeworld(
-    command: UserCmd,
-    player: &mut PlayerState,
-    world: &mut dyn TraceServices,
-    options: MoveOptions,
-) -> Result<MovementResult, TraceError> {
-    with_rollback(player, |player| {
-        let commands = super::quakeworld_steps(command);
-        let parameters = Parameters::load(RuleSetId::QuakeWorld, player);
-        let mut result = MovementResult::default();
-        for command in commands {
-            run_step(command, player, world, parameters, &mut result, options)?;
-        }
-        Ok(result)
-    })
-}
-fn quake2(
-    command: UserCmd,
-    player: &mut PlayerState,
-    world: &mut dyn TraceServices,
-    options: MoveOptions,
-) -> Result<MovementResult, TraceError> {
-    with_rollback(player, |player| {
-        // Native pmove_state_t carries signed 16-bit coordinates and velocities
-        // in eighth units. Rerelease deliberately keeps its floating ABI.
-        player.body.position.0 = player.body.position.0.map(math::narrow_eighth);
-        player.body.velocity.0 = player.body.velocity.0.map(math::narrow_eighth);
-        let command = super::prepare_command(RuleSetId::Quake2, command);
-        let parameters = Parameters::load(RuleSetId::Quake2, player);
-        let mut result = MovementResult::default();
-        run_step(command, player, world, parameters, &mut result, options)?;
-        Ok(result)
-    })
-}
-fn rerelease(
-    command: UserCmd,
-    player: &mut PlayerState,
-    world: &mut dyn TraceServices,
-    options: MoveOptions,
-) -> Result<MovementResult, TraceError> {
-    with_rollback(player, |player| {
-        let command = super::prepare_command(RuleSetId::Quake2Rerelease, command);
-        let parameters = Parameters::load(RuleSetId::Quake2Rerelease, player);
-        let mut result = MovementResult::default();
-        run_step(command, player, world, parameters, &mut result, options)?;
-        Ok(result)
-    })
-}
-fn arena(
-    mut command: UserCmd,
-    player: &mut PlayerState,
-    world: &mut dyn TraceServices,
-    options: MoveOptions,
-) -> Result<MovementResult, TraceError> {
-    with_rollback(player, |player| {
-        let parameters = Parameters::load(RuleSetId::Quake3, player);
-        let mut result = MovementResult::default();
-        let end = command.server_time_ms;
-        if end < player.movement.command_time_ms {
-            return Ok(result);
-        }
-        if i64::from(end) > i64::from(player.movement.command_time_ms) + 1000 {
-            player.movement.command_time_ms = end - 1000;
-        }
-        let fixed = player.movement.tuning.fixed_step_ms;
-        let maximum = if fixed == 0 { 66 } else { fixed.clamp(1, 200) };
-        while player.movement.command_time_ms < end {
-            let ms = (i64::from(end) - i64::from(player.movement.command_time_ms))
-                .min(i64::from(maximum)) as u16;
-            command.duration_ms = ms;
-            player.movement.command_time_ms += i32::from(ms);
-            command.server_time_ms = player.movement.command_time_ms;
-            run_step(command, player, world, parameters, &mut result, options)?;
-            if player.movement.jump_held {
-                command.movement[2] = 20.0;
+    boundary: &mut B,
+    run: impl FnOnce(
+        UserCmd,
+        &mut PlayerState,
+        &mut dyn TraceServices,
+        Parameters,
+        MoveOptions,
+        &mut B,
+    ) -> Result<MovementResult, E>,
+) -> Result<MovementResult, E>
+where
+    E: From<TraceError>,
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
+    with_rollback(player, options.phase, |player| {
+        let parameters = Parameters::load(rules, player);
+        match options.phase {
+            MovePhase::Control { .. } => {
+                let mut result = MovementResult::default();
+                if let Some(policy) = parameters.control {
+                    let previous_velocity = player.body.velocity;
+                    let mut step = Step {
+                        player,
+                        world,
+                        result: &mut result,
+                        parameters,
+                        command,
+                        dt: 0.0,
+                        exact_dt: 0.0,
+                        ground_plane: false,
+                        ground_normal: Vec3::default(),
+                        mask: Contents::EMPTY,
+                        scope: TraceScope::Scene,
+                        previous_velocity,
+                        options,
+                    };
+                    let wish = step.wish(false, Some(policy))?;
+                    let velocity = if wish.length > wish.maximum {
+                        wish.raw * (wish.maximum / wish.length)
+                    } else {
+                        wish.raw
+                    };
+                    copy_body(step.player, None, velocity, None, boundary)?;
+                }
+                Ok(result)
             }
+            MovePhase::Integrate { seconds } if parameters.control.is_some() => {
+                direct_motion(player, seconds as f32, boundary)?;
+                Ok(MovementResult {
+                    steps: 1,
+                    ..Default::default()
+                })
+            }
+            MovePhase::Integrate { seconds } => {
+                // NQ commands have no native msec or absolute Q3 command clock.
+                // Foreign movement consumes the admitted provider duration,
+                // then retains its own command subdivision and width policy.
+                let mut command = command;
+                command.duration_ms = (seconds * 1000.0) as u16;
+                command.duration_ns =
+                    EventTime::from_milliseconds(u64::from(command.duration_ms)).0;
+                if parameters.relative_command_clock {
+                    command.server_time_ms = player
+                        .movement
+                        .command_time_ms
+                        .saturating_add(i32::from(command.duration_ms));
+                }
+                run(command, player, world, parameters, options, boundary)
+            }
+            MovePhase::Complete => run(command, player, world, parameters, options, boundary),
         }
-        Ok(result)
     })
+}
+fn quake<E, B>(
+    command: UserCmd,
+    player: &mut PlayerState,
+    world: &mut dyn TraceServices,
+    options: MoveOptions,
+    boundary: &mut B,
+) -> Result<MovementResult, E>
+where
+    E: From<TraceError>,
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
+    run_entry(
+        RuleSetId::Quake,
+        command,
+        player,
+        world,
+        options,
+        boundary,
+        |command, player, world, parameters, options, boundary| {
+            let command = super::prepare_command(RuleSetId::Quake, command);
+            let mut result = MovementResult::default();
+            run_step(
+                command,
+                player,
+                world,
+                parameters,
+                &mut result,
+                options,
+                boundary,
+            )?;
+            Ok(result)
+        },
+    )
+}
+fn quakeworld<E, B>(
+    command: UserCmd,
+    player: &mut PlayerState,
+    world: &mut dyn TraceServices,
+    options: MoveOptions,
+    boundary: &mut B,
+) -> Result<MovementResult, E>
+where
+    E: From<TraceError>,
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
+    run_entry(
+        RuleSetId::QuakeWorld,
+        command,
+        player,
+        world,
+        options,
+        boundary,
+        |command, player, world, parameters, options, boundary| {
+            let commands = super::quakeworld_steps(command);
+            let mut result = MovementResult::default();
+            for command in commands {
+                run_step(
+                    command,
+                    player,
+                    world,
+                    parameters,
+                    &mut result,
+                    options,
+                    boundary,
+                )?;
+            }
+            Ok(result)
+        },
+    )
+}
+fn quake2<E, B>(
+    command: UserCmd,
+    player: &mut PlayerState,
+    world: &mut dyn TraceServices,
+    options: MoveOptions,
+    boundary: &mut B,
+) -> Result<MovementResult, E>
+where
+    E: From<TraceError>,
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
+    run_entry(
+        RuleSetId::Quake2,
+        command,
+        player,
+        world,
+        options,
+        boundary,
+        |command, player, world, parameters, options, boundary| {
+            // Native pmove_state_t carries signed 16-bit coordinates and velocities
+            // in eighth units. Rerelease deliberately keeps its floating ABI.
+            player.body.position.0 = player.body.position.0.map(math::narrow_eighth);
+            player.body.velocity.0 = player.body.velocity.0.map(math::narrow_eighth);
+            let command = super::prepare_command(RuleSetId::Quake2, command);
+            let mut result = MovementResult::default();
+            run_step(
+                command,
+                player,
+                world,
+                parameters,
+                &mut result,
+                options,
+                boundary,
+            )?;
+            Ok(result)
+        },
+    )
+}
+fn rerelease<E, B>(
+    command: UserCmd,
+    player: &mut PlayerState,
+    world: &mut dyn TraceServices,
+    options: MoveOptions,
+    boundary: &mut B,
+) -> Result<MovementResult, E>
+where
+    E: From<TraceError>,
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
+    run_entry(
+        RuleSetId::Quake2Rerelease,
+        command,
+        player,
+        world,
+        options,
+        boundary,
+        |command, player, world, parameters, options, boundary| {
+            let command = super::prepare_command(RuleSetId::Quake2Rerelease, command);
+            let mut result = MovementResult::default();
+            run_step(
+                command,
+                player,
+                world,
+                parameters,
+                &mut result,
+                options,
+                boundary,
+            )?;
+            Ok(result)
+        },
+    )
+}
+fn arena<E, B>(
+    command: UserCmd,
+    player: &mut PlayerState,
+    world: &mut dyn TraceServices,
+    options: MoveOptions,
+    boundary: &mut B,
+) -> Result<MovementResult, E>
+where
+    E: From<TraceError>,
+    B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
+{
+    run_entry(
+        RuleSetId::Quake3,
+        command,
+        player,
+        world,
+        options,
+        boundary,
+        |mut command, player, world, parameters, options, boundary| {
+            let mut result = MovementResult::default();
+            let end = command.server_time_ms;
+            if end < player.movement.command_time_ms {
+                return Ok(result);
+            }
+            if i64::from(end) > i64::from(player.movement.command_time_ms) + 1000 {
+                player.movement.command_time_ms = end - 1000;
+            }
+            let fixed = player.movement.tuning.fixed_step_ms;
+            let maximum = if fixed == 0 { 66 } else { fixed.clamp(1, 200) };
+            while player.movement.command_time_ms < end {
+                let ms = (i64::from(end) - i64::from(player.movement.command_time_ms))
+                    .min(i64::from(maximum)) as u16;
+                command.duration_ms = ms;
+                player.movement.command_time_ms += i32::from(ms);
+                command.server_time_ms = player.movement.command_time_ms;
+                run_step(
+                    command,
+                    player,
+                    world,
+                    parameters,
+                    &mut result,
+                    options,
+                    boundary,
+                )?;
+                if player.movement.jump_held {
+                    command.movement[2] = 20.0;
+                }
+            }
+            Ok(result)
+        },
+    )
 }

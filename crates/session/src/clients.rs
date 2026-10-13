@@ -398,7 +398,16 @@ impl Server {
         if module_moves {
             return Ok(0);
         }
-        let result = self.move_client(id, command, store, geometry, index, scratch)?;
+        let result = self.move_client(
+            id,
+            command,
+            store,
+            geometry,
+            index,
+            scratch,
+            Default::default(),
+            crate::physics::no_body_boundary,
+        )?;
         let client = &mut self.clients[id.0 as usize];
         self.entities
             .columns
@@ -415,7 +424,7 @@ impl Server {
 
     /// The same authoritative movement entry also serves a module lifecycle's
     /// native phase. Its ABI adapter commits and relinks the returned pose.
-    pub fn move_client(
+    pub fn move_client<E, B>(
         &mut self,
         id: ClientId,
         command: UserCmd,
@@ -423,7 +432,13 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
-    ) -> Result<qa_movement::MovementResult, TraceError> {
+        options: qa_movement::MoveOptions,
+        mut boundary: B,
+    ) -> Result<qa_movement::MovementResult, E>
+    where
+        E: From<TraceError>,
+        B: FnMut(&EntityTable, &mut PlayerState, qa_core::primitives::MotionWrite) -> Result<(), E>,
+    {
         let client = &mut self.clients[id.0 as usize];
         let mut trace = WorldTrace::new(
             store,
@@ -434,7 +449,13 @@ impl Server {
             scratch,
             CollisionOwner::Lifetime(client.entity),
         );
-        qa_movement::pmove(command, &mut client.player, &mut trace, Default::default())
+        qa_movement::pmove(
+            command,
+            &mut client.player,
+            &mut trace,
+            options,
+            |player, field| boundary(&self.entities, player, field),
+        )
     }
 
     /// Local, network and bot clients share the same authoritative entry.

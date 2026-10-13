@@ -73,6 +73,11 @@ impl From<qa_session::physics::PhysicsError> for crate::services::CallError {
         }
     }
 }
+impl From<qa_world::collision::TraceError> for crate::services::CallError {
+    fn from(_: qa_world::collision::TraceError) -> Self {
+        Self::Geometry
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallPhase {
     Export,

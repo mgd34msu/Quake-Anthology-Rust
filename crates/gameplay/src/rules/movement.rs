@@ -4,6 +4,7 @@ use qa_core::primitives::{Bounds, MovementMode, MovementTimer, RuleSetId, Vec3};
 #[derive(Clone, Copy)]
 pub enum FreeWish {
     Existing,
+    NativeControl,
     Full,
     Normalized,
     ScaledBasis,
@@ -520,6 +521,8 @@ const STANCE: [StancePolicy; 5] = [
 #[derive(Clone, Copy)]
 pub struct Capabilities {
     pub free: FreeModes,
+    pub control: Option<FreeMovePolicy>,
+    pub relative_command_clock: bool,
     pub special: SpecialMovement,
     pub landing: LandingPolicy,
     pub stance: StancePolicy,
@@ -529,6 +532,17 @@ pub struct Capabilities {
 pub fn capabilities(rules: RuleSetId) -> Capabilities {
     Capabilities {
         free: FREE_MODES[rules as usize],
+        control: [
+            Some(FreeMovePolicy {
+                wish: FreeWish::NativeControl,
+                ..QUAKE_FREE
+            }),
+            None,
+            None,
+            None,
+            None,
+        ][rules as usize],
+        relative_command_clock: [false, false, false, false, true][rules as usize],
         special: SPECIAL[rules as usize],
         landing: LANDING[rules as usize],
         stance: STANCE[rules as usize],

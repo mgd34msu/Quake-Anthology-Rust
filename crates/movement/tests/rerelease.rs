@@ -82,6 +82,7 @@ fn dead_move_removes_native_speed_once_before_the_teleport_pause() {
                 &mut state,
                 &mut support::FixtureWorld::default(),
                 Default::default(),
+                qa_movement::no_boundary,
             )
             .expect("valid movement query");
             assert_eq!(
@@ -102,6 +103,7 @@ fn dead_move_removes_native_speed_once_before_the_teleport_pause() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(state.body.velocity.0.map(f32::to_bits), [0; 3]);
@@ -161,8 +163,14 @@ fn rerelease_steep_ground_uses_the_wall_probe_without_replacing_its_contact() {
             wall_start_solid,
             probes: 0,
         };
-        let result = pmove(command(0), &mut state, &mut world, Default::default())
-            .expect("valid movement query");
+        let result = pmove(
+            command(0),
+            &mut state,
+            &mut world,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("valid movement query");
         assert_eq!(
             state.movement.grounded, grounded,
             "{rules:?} fraction={fraction} start_solid={start_solid} wall_fraction={wall_fraction} wall_start_solid={wall_start_solid}"
@@ -198,6 +206,7 @@ fn native_land_and_trick_timers_use_fresh_landing_rules_and_publish_impact() {
             &mut state,
             &mut support::FixtureWorld::default(),
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert_eq!(state.movement.timer, timer);
@@ -218,6 +227,7 @@ fn crouching_on_the_landing_frame_does_not_create_an_old_stance_land_timer() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert!(state.movement.ducked);
@@ -237,6 +247,7 @@ fn n64_crouch_is_disabled_while_its_native_landing_pause_is_retained() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert!(!state.movement.ducked);
@@ -277,6 +288,7 @@ fn native_circular_pitch_clamp_keeps_rerelease_float_ties_and_classic_short_sema
                 &mut state,
                 &mut support::FixtureWorld::default(),
                 Default::default(),
+                qa_movement::no_boundary,
             )
             .expect("valid movement query");
             assert_eq!(
@@ -313,6 +325,7 @@ fn native_teleport_angle_pause_zeroes_pitch_and_roll_without_narrowing_rerelease
             &mut state,
             &mut support::FixtureWorld::default(),
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert_eq!(
@@ -368,6 +381,7 @@ fn rerelease_air_ducking_uses_solid_then_water_probes_and_refuses_the_water_surf
             &mut state,
             &mut world,
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert_eq!(state.movement.ducked, ducked);
@@ -390,6 +404,7 @@ fn rerelease_dead_and_gib_dimensions_are_native_even_with_n64_enabled() {
             &mut state,
             &mut support::FixtureWorld::default(),
             Default::default(),
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         if mode == MovementMode::Dead {
@@ -457,7 +472,11 @@ fn initial_snap_uses_native_candidate_order_between_old_stance_and_ducking() {
         command(buttons::CROUCH),
         &mut state,
         &mut world,
-        qa_movement::MoveOptions { initial_snap: true },
+        qa_movement::MoveOptions {
+            initial_snap: true,
+            ..Default::default()
+        },
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     let origin = Vec3([0.0, 0.0, 64.0]);
@@ -523,7 +542,11 @@ fn initial_snap_updates_the_native_recovery_fallback_origin() {
             command(0),
             &mut state,
             &mut world,
-            qa_movement::MoveOptions { initial_snap: true },
+            qa_movement::MoveOptions {
+                initial_snap: true,
+                ..Default::default()
+            },
+            qa_movement::no_boundary,
         )
         .expect("valid movement query");
         assert_eq!(state.body.position, Vec3([expected_x, 0.0, 64.0]));
@@ -562,7 +585,11 @@ fn classic_initial_snap_uses_eighth_units_before_ground_categorization() {
         command(0),
         &mut state,
         &mut world,
-        qa_movement::MoveOptions { initial_snap: true },
+        qa_movement::MoveOptions {
+            initial_snap: true,
+            ..Default::default()
+        },
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(
@@ -595,6 +622,7 @@ fn water_jump_cancellation_precedes_rerelease_landing_and_timer_expiry() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(state.movement.timer, MovementTimer::LAND);
@@ -606,6 +634,7 @@ fn water_jump_cancellation_precedes_rerelease_landing_and_timer_expiry() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(state.movement.timer, MovementTimer::NONE);
@@ -623,12 +652,24 @@ fn native_landing_gate_preserves_jump_held_until_the_timer_allows_release() {
         state.movement.timer = MovementTimer::LAND;
         state.movement.remaining_ms = 16;
         let mut world = support::FixtureWorld::default();
-        pmove(command(0), &mut state, &mut world, Default::default())
-            .expect("valid movement query");
+        pmove(
+            command(0),
+            &mut state,
+            &mut world,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("valid movement query");
         assert!(state.movement.jump_held, "{rules:?}");
         assert_eq!(state.movement.remaining_ms, 8);
-        pmove(command(0), &mut state, &mut world, Default::default())
-            .expect("valid movement query");
+        pmove(
+            command(0),
+            &mut state,
+            &mut world,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("valid movement query");
         assert!(!state.movement.jump_held, "{rules:?}");
         assert_eq!(state.movement.remaining_ms, 0);
     }
@@ -667,6 +708,7 @@ fn a_trick_landing_rechecks_the_same_jump_after_final_categorization() {
         &mut state,
         &mut Landing { quarter_traces: 0 },
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(
@@ -717,8 +759,14 @@ fn raised_stair_path_checks_the_lower_endpoint_then_uses_the_real_descent() {
             blocked,
             drops: Vec::new(),
         };
-        let result = pmove(command(0), &mut state, &mut world, Default::default())
-            .expect("valid movement query");
+        let result = pmove(
+            command(0),
+            &mut state,
+            &mut world,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("valid movement query");
         assert_eq!(world.drops[0].1.0[2], 63.0);
         assert_eq!(world.drops.len(), if blocked { 1 } else { 2 });
         assert_eq!(result.step_clip, !blocked);
@@ -774,7 +822,14 @@ fn grounded_stair_descent_follows_the_floor_but_ladder_motion_does_not() {
         let mut world = Down { ladder, drops: 0 };
         let mut cmd = command(0);
         cmd.movement[0] = if ladder { 0.0 } else { 100.0 };
-        pmove(cmd, &mut state, &mut world, Default::default()).expect("valid movement query");
+        pmove(
+            cmd,
+            &mut state,
+            &mut world,
+            Default::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("valid movement query");
         assert_eq!(world.drops, if ladder { 2 } else { 3 });
         assert_eq!(state.body.position.0[2], if ladder { 64.0 } else { 56.0 });
         assert!(state.movement.grounded);
@@ -791,6 +846,7 @@ fn native_recovery_uses_the_clear_face_and_one_eighth_unit_separation() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
+        qa_movement::no_boundary,
     )
     .expect("valid movement query");
     assert_eq!(state.body.position.0[2], 24.125);
@@ -830,7 +886,14 @@ fn failed_native_recovery_restores_the_previous_position_without_growing_state()
     state.body.velocity.0[0] = 100.0;
     state.movement.tuning.no_step = true;
     let mut world = Sealed { stationary: 0 };
-    pmove(command(0), &mut state, &mut world, Default::default()).expect("valid movement query");
+    pmove(
+        command(0),
+        &mut state,
+        &mut world,
+        Default::default(),
+        qa_movement::no_boundary,
+    )
+    .expect("valid movement query");
     assert_eq!(state.body.position, previous);
     assert_eq!(world.stationary, 32);
 }
@@ -882,7 +945,14 @@ fn repeated_native_planes_use_the_same_position_recovery() {
         hits: 0,
         recovered: false,
     };
-    pmove(command(0), &mut state, &mut world, Default::default()).expect("valid movement query");
+    pmove(
+        command(0),
+        &mut state,
+        &mut world,
+        Default::default(),
+        qa_movement::no_boundary,
+    )
+    .expect("valid movement query");
     assert_eq!(world.hits, 2);
     assert!(world.recovered);
     assert!(state.body.position.0[0] >= 16.125);

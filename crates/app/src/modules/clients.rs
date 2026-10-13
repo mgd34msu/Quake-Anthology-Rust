@@ -409,7 +409,7 @@ impl FrameHost {
 
     /// Frame-driven native clients admit their queued fields before StartFrame,
     /// including catch-up provider ticks that precede the current world tick.
-    pub(super) fn prepare_module_client_commands(&mut self, module: ModuleId) {
+    pub(super) fn prepare_module_client_commands(&mut self, module: ModuleId, seconds: f64) {
         if !self
             .module_row(module)
             .and_then(|row| row.client_lifecycle)
@@ -428,6 +428,7 @@ impl FrameHost {
                 self.consume_pending_command(id);
             }
         }
+        quakec::controls(self, module, seconds);
     }
 
     /// The host calls this ordered batch for frame-latest commands and bots.

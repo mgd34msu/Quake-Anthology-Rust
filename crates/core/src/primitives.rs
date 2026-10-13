@@ -454,6 +454,15 @@ pub enum Motion {
     Unsupported,
 }
 
+/// Scalar ABI synchronization after common motion arithmetic. A native store
+/// may overlap the inputs of a later component.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MotionWrite {
+    Angles(usize),
+    Origin(usize),
+    Velocity(usize),
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Body {
     pub position: Vec3,

@@ -163,6 +163,22 @@ impl Builtins for NoImports {
         Err(Trap::Builtin)
     }
 }
+struct NoQueries;
+impl qa_movement::TraceServices for NoQueries {
+    fn trace(
+        &mut self,
+        _: qa_world::collision::TraceQuery,
+    ) -> Result<qa_world::collision::Trace, qa_world::collision::TraceError> {
+        panic!("NOCLIP must not trace");
+    }
+    fn point_contents(
+        &self,
+        _: Vec3,
+        _: qa_world::collision::EntityTracePolicy,
+    ) -> Result<Contents, qa_world::collision::TraceError> {
+        panic!("NOCLIP must not query contents");
+    }
+}
 fn bind_callbacks(vm: &mut Vm) {
     let entries = [6, 5, 4, 3, 2, 1, 0];
     let table = FunctionTable::<Server>::load([(
@@ -792,6 +808,335 @@ fn native_client_velocity_reloads_shifted_origin_aliases_after_every_scalar_writ
                 services.server.entities.columns.velocity[entity.slot as usize],
                 Vec3([0.0, 4.0, -4.0])
             );
+        },
+    );
+}
+
+#[test]
+fn nq_control_returns_before_missing_punch_for_exact_none_only() {
+    let mut vm = vm(|image| {
+        image.fielddefs = image
+            .fielddefs
+            .iter()
+            .copied()
+            .filter(|field| {
+                ![b"punchangle".as_slice(), b"health", b"fixangle", b"v_angle"]
+                    .contains(&image.names.get(field.name).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, _| {
+            assert!(
+                vm.prepare_control(services, context, native, 0.1)
+                    .unwrap()
+                    .is_none()
+            );
+            number(vm, native, b"movetype", 0.5);
+            assert!(matches!(
+                vm.prepare_control(services, context, native, 0.1),
+                Err(CallError::Memory)
+            ));
+        },
+    );
+}
+
+#[test]
+fn nq_control_decays_punch_before_raw_fractional_health_and_uses_prior_roll() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            number(vm, native, b"movetype", 8.0);
+            number(vm, native, b"health", 0.5);
+            vector(vm, native, b"punchangle", Vec3([3.0, 4.0, 0.0]));
+            vector(vm, native, b"v_angle", Vec3([12.0, 20.0, 1.0]));
+            vector(vm, native, b"angles", Vec3::default());
+            vector(vm, native, b"velocity", Vec3([0.0, 100.0, 0.0]));
+            services.server.clients[id.0 as usize].player.health = 0;
+            let options = vm
+                .prepare_control(services, context, native, 0.13)
+                .unwrap()
+                .unwrap();
+            let decayed = Vec3([0.6f32 * 3.7f32, 0.8f32 * 3.7f32, 0.0]);
+            assert_eq!(
+                read_vector(vm, native, b"punchangle").0.map(f32::to_bits),
+                decayed.0.map(f32::to_bits)
+            );
+            let expected = Vec3([-(12.0 + decayed.0[0]) / 3.0, 20.0 + decayed.0[1], -4.0]);
+            assert_eq!(
+                read_vector(vm, native, b"angles").0.map(f32::to_bits),
+                expected.0.map(f32::to_bits)
+            );
+            match options.phase {
+                qa_movement::MovePhase::Control { body_angles, clock } => {
+                    assert_eq!(body_angles, expected);
+                    assert_eq!(clock, context.clock);
+                }
+                _ => panic!("native control phase required"),
+            }
+        },
+    );
+}
+
+#[test]
+fn nq_punch_decay_uses_native_double_provider_seconds_before_float_store() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, _| {
+            number(vm, native, b"movetype", 8.0);
+            number(vm, native, b"health", 1.0);
+            vector(vm, native, b"punchangle", Vec3([1.0, 0.0, 0.0]));
+            vm.prepare_control(services, context, native, 0.0710135)
+                .unwrap()
+                .unwrap();
+            assert_eq!(read(vm, native, b"punchangle"), 0x3e94_692f);
+            assert_ne!(
+                read(vm, native, b"punchangle"),
+                (1.0f32 - 10.0f32 * 0.0710135f32).to_bits()
+            );
+        },
+    );
+}
+
+#[test]
+fn nq_control_rereads_health_after_overlapping_punch_decay() {
+    let mut vm = vm(|image| {
+        image
+            .fielddefs
+            .iter_mut()
+            .find(|field| image.names.get(field.name) == Some(b"health".as_slice()))
+            .unwrap()
+            .offset = 42;
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, _| {
+            number(vm, native, b"movetype", 8.0);
+            vector(vm, native, b"punchangle", Vec3([0.5, 0.0, 0.0]));
+            vector(vm, native, b"angles", Vec3([11.0, 22.0, 33.0]));
+            assert!(
+                vm.prepare_control(services, context, native, 0.1)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(read(vm, native, b"health"), 0);
+            assert_eq!(read_vector(vm, native, b"angles"), Vec3([11.0, 22.0, 33.0]));
+        },
+    );
+}
+
+#[test]
+fn nq_control_captures_view_before_scalar_angles_and_rereads_fixangle_after_roll() {
+    for fix_alias in [false, true] {
+        let mut vm = vm(|image| {
+            image
+                .fielddefs
+                .iter_mut()
+                .find(|field| image.names.get(field.name) == Some(b"v_angle".as_slice()))
+                .unwrap()
+                .offset = 5;
+            if fix_alias {
+                image
+                    .fielddefs
+                    .iter_mut()
+                    .find(|field| image.names.get(field.name) == Some(b"fixangle".as_slice()))
+                    .unwrap()
+                    .offset = 8;
+            }
+        });
+        with_native_client(
+            &mut vm,
+            RuleSetId::Quake,
+            |vm, services, context, native, _| {
+                number(vm, native, b"movetype", 8.0);
+                number(vm, native, b"health", 1.0);
+                vector(vm, native, b"velocity", Vec3([0.0, 100.0, 0.0]));
+                vector(vm, native, b"angles", Vec3([30.0, 60.0, 0.0]));
+                vector(vm, native, b"v_angle", Vec3([12.0, 30.0, 60.0]));
+                let prior = read_vector(vm, native, b"angles");
+                let roll = qa_gameplay::rules::appearance::AliasRoll {
+                    angle: services
+                        .cvars
+                        .native_number(
+                            services.cvars.find("cl_rollangle").unwrap(),
+                            context.native_rules,
+                        )
+                        .unwrap(),
+                    speed: services
+                        .cvars
+                        .native_number(
+                            services.cvars.find("cl_rollspeed").unwrap(),
+                            context.native_rules,
+                        )
+                        .unwrap(),
+                }
+                .calculate(prior, read_vector(vm, native, b"velocity"))
+                    * 4.0;
+                vm.prepare_control(services, context, native, 0.1)
+                    .unwrap()
+                    .unwrap();
+                let expected = if fix_alias {
+                    Vec3([prior.0[0], prior.0[1], roll])
+                } else {
+                    Vec3([-4.0, 30.0, roll])
+                };
+                assert_eq!(
+                    read_vector(vm, native, b"angles").0.map(f32::to_bits),
+                    expected.0.map(f32::to_bits)
+                );
+            },
+        );
+    }
+}
+
+#[test]
+fn nq_exact_noclip_admission_rejects_waterjump_and_fractional_alternatives() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, _| {
+            number(vm, native, b"health", 1.0);
+            for (mode, flags, accepted) in [
+                (8.0, 0.0, true),
+                (8.5, 0.0, false),
+                (8.0, 2048.0, false),
+                (3.0, 0.0, false),
+            ] {
+                number(vm, native, b"movetype", mode);
+                number(vm, native, b"flags", flags);
+                assert_eq!(vm.client_noclip(context, native).is_ok(), accepted);
+                assert_eq!(
+                    vm.prepare_control(services, context, native, 0.1).is_ok(),
+                    accepted
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn nq_frame_pose_keeps_native_origin_absolute_time_and_captured_phase() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            number(vm, native, b"movetype", 8.0);
+            vm.client_noclip(context, native).unwrap();
+            number(vm, native, b"movetype", 0.0);
+            number(vm, native, b"teleport_time", 10.25);
+            vector(vm, native, b"origin", Vec3([100.0, 200.0, 300.0]));
+            vector(vm, native, b"velocity", Vec3([3.0, -2.0, 6.0]));
+            vector(vm, native, b"mins", Vec3([-7.0, -8.0, -9.0]));
+            let entity = services.server.clients[id.0 as usize].entity;
+            let player = &mut services.server.clients[id.0 as usize].player;
+            let bounds = (player.body.mins, player.body.maxs);
+            player.movement.water_jump_seconds = 7.0;
+            vm.read_frame_client(&services.server.entities, context, native, entity, player)
+                .unwrap();
+            assert_eq!(player.body.position, Vec3([100.0, 200.0, 300.0]));
+            assert_eq!(player.body.velocity, Vec3([3.0, -2.0, 6.0]));
+            assert_eq!((player.body.mins, player.body.maxs), bounds);
+            assert_eq!(player.movement.teleport_hold_until, 10.25);
+            assert_eq!(player.movement.water_jump_seconds, 7.0);
+            assert_eq!(player.movement.mode, MovementMode::Noclip);
+            assert_eq!(
+                (player.movement_rules, player.trace_rules),
+                (RuleSetId::Quake3, RuleSetId::Quake2)
+            );
+        },
+    );
+}
+
+#[test]
+fn nq_frame_scalar_integration_rereads_shifted_native_aliases_without_table_mutation() {
+    let mut vm = vm(|image| {
+        image
+            .fielddefs
+            .iter_mut()
+            .find(|field| image.names.get(field.name) == Some(b"velocity".as_slice()))
+            .unwrap()
+            .offset = 1;
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            vector(vm, native, b"origin", Vec3([10.0, 20.0, 30.0]));
+            vector(vm, native, b"velocity", Vec3([2.0, 3.0, 4.0]));
+            let entity = services.server.clients[id.0 as usize].entity;
+            let player = &mut services.server.clients[id.0 as usize].player;
+            player.movement_rules = RuleSetId::Quake;
+            vm.read_frame_client(&services.server.entities, context, native, entity, player)
+                .unwrap();
+            let common_origin = services.server.entities.columns.position[entity.slot as usize];
+            let result = qa_movement::pmove(
+                UserCmd::default(),
+                player,
+                &mut NoQueries,
+                qa_movement::MoveOptions {
+                    phase: qa_movement::MovePhase::Integrate { seconds: 0.5 },
+                    ..Default::default()
+                },
+                |player, stage| {
+                    vm.write_frame_scalar(
+                        &services.server.entities,
+                        context,
+                        native,
+                        entity,
+                        player,
+                        stage,
+                    )
+                },
+            )
+            .unwrap();
+            assert_eq!((result.steps, result.traces), (1, 0));
+            assert_eq!(player.body.position, Vec3([11.0, 3.5, 5.0]));
+            assert_eq!(player.body.velocity, Vec3([3.5, 5.0, 4.0]));
+            assert_eq!(read_vector(vm, native, b"origin"), player.body.position);
+            assert_eq!(read_vector(vm, native, b"velocity"), player.body.velocity);
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                common_origin
+            );
+            assert!(services.server.area.bounds(entity).is_none());
+        },
+    );
+}
+
+#[test]
+fn nq_frame_scalar_rejects_reused_binding_before_any_native_write() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            vector(vm, native, b"origin", Vec3([1.0, 2.0, 3.0]));
+            let entity = services.server.clients[id.0 as usize].entity;
+            assert!(services.server.disconnect(id));
+            let mut player = PlayerState::default();
+            player.body.position = Vec3([99.0; 3]);
+            assert_eq!(
+                vm.write_frame_scalar(
+                    &services.server.entities,
+                    context,
+                    native,
+                    entity,
+                    &mut player,
+                    MotionWrite::Origin(0)
+                ),
+                Err(CallError::Entity)
+            );
+            assert_eq!(read_vector(vm, native, b"origin"), Vec3([1.0, 2.0, 3.0]));
         },
     );
 }
