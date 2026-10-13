@@ -340,7 +340,7 @@ fn qvm_capsule_queries_share_world_and_unlinked_target_clipping() {
     );
     assert_eq!(f.unknown.calls, 0);
     f.row(ENTITIES, 0, 1);
-    f.runtime.collision = None;
+    let collision = f.runtime.collision.take();
     let live = f.runtime.server.entities.active().count();
     let mins = f.vector(640, Vec3([-2.5, -0.5, -0.5]));
     let maxs = f.vector(656, Vec3([-1.5, 0.5, 0.5]));
@@ -362,7 +362,19 @@ fn qvm_capsule_queries_share_world_and_unlinked_target_clipping() {
     f.vm.memory.write_word(ENTITIES + 424, 0x400).unwrap();
     let mins = f.vector(600, Vec3([-1.0; 3]));
     let maxs = f.vector(616, Vec3([1.0; 3]));
-    assert!(f.call(33, &[0, mins, maxs, ENTITIES as i32]).is_err());
+    assert_eq!(f.call(33, &[0, mins, maxs, ENTITIES as i32]), Ok(1));
+    // Native capsule/capsule position uses strict sphere overlap at this tie.
+    assert_eq!(f.call(44, &[0, mins, maxs, ENTITIES as i32]), Ok(0));
+    let mins = f.vector(600, Vec3([-3.0, -1.0, -1.0]));
+    let maxs = f.vector(616, Vec3([-1.0, 1.0, 1.0]));
+    assert_eq!(f.call(44, &[0, mins, maxs, ENTITIES as i32]), Ok(1));
+    f.runtime.collision = collision;
+    f.call(30, &[0, ENTITIES as i32]).unwrap();
+    let capsule = f.binding(0);
+    assert_eq!(
+        f.runtime.server.entities.columns.collision_shape[capsule.slot as usize],
+        qa_core::primitives::CollisionShape::Capsule
+    );
 }
 
 #[test]
@@ -875,7 +887,7 @@ fn qvm_registered_entity_zero_links_with_word_flags_and_reuses_owned_lifetimes()
     let pose = f.runtime.server.entities.columns.point_contents_pose[zero.slot as usize];
     f.vm.memory.write_word(ENTITIES + 424, 0x400).unwrap();
     f.vm.memory
-        .write_vec3(ENTITIES + 488, Vec3([8.0, 0.0, 0.0]))
+        .write_vec3(ENTITIES + 488, Vec3([f32::NAN, 0.0, 0.0]))
         .unwrap();
     assert_eq!(f.call(30, &[0, ENTITIES as i32]), Err(Trap::Syscall));
     let rejected_body = f.runtime.server.entities.columns.body(zero.slot as usize);
@@ -977,12 +989,14 @@ fn qvm_count_growth_borrowed_client_and_trigger_roles_use_the_shared_projection(
     f.vm.memory
         .write_word(ENTITIES + STRIDE + 424, 0x400)
         .unwrap();
+    f.call(30, &[0, (ENTITIES + STRIDE) as i32]).unwrap();
+    let capsule = f.binding(1);
+    assert_eq!(f.runtime.server.entities.active().count(), live + 1);
+    assert_eq!(f.candidates(LinkFlags::LINKED), vec![capsule, client]);
     assert_eq!(
-        f.call(30, &[0, (ENTITIES + STRIDE) as i32]),
-        Err(Trap::Syscall)
+        f.runtime.server.entities.columns.collision_shape[capsule.slot as usize],
+        qa_core::primitives::CollisionShape::Capsule
     );
-    assert_eq!(f.runtime.server.entities.active().count(), live);
-    assert_eq!(f.candidates(LinkFlags::LINKED), vec![client]);
     f.vm.memory.write_word(ENTITIES + STRIDE + 424, 0).unwrap();
     f.call(30, &[0, (ENTITIES + STRIDE) as i32]).unwrap();
     let trigger = f.binding(1);
@@ -1057,9 +1071,9 @@ fn qvm_live_contents_reads_zero_contents_boxes_and_rejects_only_executed_targets
         .unwrap();
     assert_eq!(f.call(25, &[0, point as i32, 1023]).unwrap(), 0x0200_0000);
     f.vm.memory.write_word(ENTITIES + 424, 0x400).unwrap();
-    // Native pass filtering precedes the unsupported target decode.
+    // Native pass filtering precedes the temporary capsule target decode.
     assert_eq!(f.call(25, &[0, point as i32, 0]).unwrap(), 0);
-    assert_eq!(f.call(25, &[0, point as i32, 1023]), Err(Trap::Syscall));
+    assert_eq!(f.call(25, &[0, point as i32, 1023]), Ok(0x0200_0000));
     assert_eq!(f.runtime.server.area.bounds(entity), bounds);
     assert_eq!(f.vm.memory.read_word(ENTITIES + 420).unwrap(), 1);
     f.vm.memory.write_word(ENTITIES + 424, 0).unwrap();

@@ -154,10 +154,18 @@ pub(super) struct BrushWork<'a> {
 
 impl<'a> BrushWork<'a> {
     pub fn new(query: TraceQuery<'a>) -> Self {
+        Self::build(query, true)
+    }
+
+    pub(super) fn centered(query: TraceQuery<'a>) -> Self {
+        Self::build(query, false)
+    }
+
+    fn build(query: TraceQuery<'a>, recenter: bool) -> Self {
         let centered =
             query.rules.bounds_origin == BoundsOrigin::Centered || query.capsule.is_some();
         let mut centered_query = query;
-        if centered {
+        if centered && recenter {
             centered_query.center_box();
         }
         let TraceQuery {
@@ -378,12 +386,12 @@ pub(super) fn clip_brush(
 
 /// Loaded geometry and stack-built temporary bodies share these kernels.
 pub(super) fn trace_brushes(
-    query: TraceQuery,
+    work: &BrushWork<'_>,
     planes: &[Plane],
     brushes: &[Brush],
     surfaces: SurfaceRows<'_>,
 ) -> Trace {
-    let work = BrushWork::new(query);
+    let query = work.query;
     let mut trace = Trace::clear(query.end);
     for &brush in brushes {
         if !brush.contents.intersects(query.mask) {
@@ -391,9 +399,9 @@ pub(super) fn trace_brushes(
         }
         if query.start == query.end {
             let sides = &planes[brush.sides.range()];
-            position_brush(&work, planes, brush, axial_prefix(sides), &mut trace);
+            position_brush(work, planes, brush, axial_prefix(sides), &mut trace);
         } else {
-            clip_brush(&work, planes, brush, surfaces, &mut trace);
+            clip_brush(work, planes, brush, surfaces, &mut trace);
         }
         if trace.fraction == 0.0 {
             break;

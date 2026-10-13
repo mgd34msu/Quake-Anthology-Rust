@@ -229,6 +229,7 @@ pub enum CollisionShape {
     #[default]
     None,
     Box,
+    Capsule,
     Model {
         geometry: GeometryId,
         index: u32,
@@ -244,6 +245,18 @@ pub struct Capsule {
     pub offset: Vec3,
 }
 impl Capsule {
+    pub fn contains(self, center: Vec3, point: Vec3) -> bool {
+        let delta = point - center;
+        let length_squared = self.offset.dot(self.offset);
+        let fraction = if length_squared == 0.0 {
+            0.0
+        } else {
+            (delta.dot(self.offset) / length_squared).clamp(-1.0, 1.0)
+        };
+        let nearest = delta - self.offset * fraction;
+        nearest.dot(nearest) <= self.radius * self.radius
+    }
+
     pub fn from_bounds(bounds: Bounds) -> Self {
         let half = bounds.maxs - crate::math::midpoint(bounds.mins, bounds.maxs);
         let radius = if half.0[0] > half.0[2] {

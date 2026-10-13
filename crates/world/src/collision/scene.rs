@@ -311,6 +311,17 @@ impl<'a> WorldTrace<'a> {
                     )?;
                     continue;
                 }
+                CollisionShape::Capsule => {
+                    let bounds = Bounds {
+                        mins: target.body.mins,
+                        maxs: target.body.maxs,
+                    };
+                    let center = pose.position + qa_core::math::midpoint(bounds.mins, bounds.maxs);
+                    if qa_core::primitives::Capsule::from_bounds(bounds).contains(center, point) {
+                        result |= Contents::BODY;
+                    }
+                    continue;
+                }
                 CollisionShape::Box => {}
             }
             // CM_TransformedPointContents temporary-box contents are the native
@@ -375,7 +386,10 @@ impl<'a> WorldTrace<'a> {
                     NativeTraceFields {
                         tags: columns.collision_tags[slot],
                         enabled: columns.collision_shape[slot] != CollisionShape::None,
-                        box_target: columns.collision_shape[slot] == CollisionShape::Box,
+                        box_target: matches!(
+                            columns.collision_shape[slot],
+                            CollisionShape::Box | CollisionShape::Capsule
+                        ),
                         contents: Contents(columns.collision_contents[slot]),
                     },
                 )

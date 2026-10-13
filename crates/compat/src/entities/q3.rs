@@ -50,8 +50,7 @@ const LAYOUT: EntityLayout = EntityLayout {
     snapshot_exclusion_mask: 1,
     player_flag: 0,
     projectile_flag: 0,
-    // The common collision store has no capsule target representation yet.
-    unsupported_flags: 0x400,
+    capsule_flag: 0x400,
     mins: 436,
     maxs: 448,
     abs_min: 464,

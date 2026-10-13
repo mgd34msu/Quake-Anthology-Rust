@@ -1,5 +1,6 @@
 pub mod boxes;
 pub mod brushes;
+pub mod capsules;
 pub mod contents;
 pub mod hulls;
 mod position;

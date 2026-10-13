@@ -40,7 +40,7 @@ pub(crate) struct EntityLayout {
     pub snapshot_exclusion_mask: u32,
     pub player_flag: u32,
     pub projectile_flag: u32,
-    pub unsupported_flags: u32,
+    pub capsule_flag: u32,
     pub mins: usize,
     pub maxs: usize,
     pub abs_min: usize,
@@ -88,6 +88,13 @@ pub(crate) struct ExtendedAppearance {
     pub old_frame: usize,
 }
 impl EntityLayout {
+    fn box_shape(self, flags: u32) -> CollisionShape {
+        if flags & self.capsule_flag != 0 {
+            CollisionShape::Capsule
+        } else {
+            CollisionShape::Box
+        }
+    }
     fn tags(self, flags: u32) -> CollisionTags {
         if self.contents.is_some() {
             return CollisionTags::default();
@@ -206,13 +213,7 @@ impl NativeTraceView<'_, '_> {
         names: Option<&dyn NativeModelNames>,
     ) -> Result<NativeTraceTarget, CallError> {
         let solid = field(self.memory, address, self.layout.solid)?;
-        if !self.layout.model_target(solid)
-            && self.memory.read_word(address + self.layout.flags as u64)? as u32
-                & self.layout.unsupported_flags
-                != 0
-        {
-            return Err(CallError::Geometry);
-        }
+        let flags = self.memory.read_word(address + self.layout.flags as u64)? as u32;
         let model = || {
             resolve_model(
                 self.layout,
@@ -234,7 +235,7 @@ impl NativeTraceView<'_, '_> {
             // ordinary linked movement still treats that trigger as a box.
             model().map_or(CollisionShape::Box, |value| value.0)
         } else if self.layout.contents.is_some() || (0..=2).contains(&solid) {
-            CollisionShape::Box
+            self.layout.box_shape(flags)
         } else {
             return Err(CallError::Entity);
         };
@@ -986,9 +987,6 @@ impl EntityProjection {
             return Err(CallError::Entity);
         }
         let flags = memory.read_word(address + layout.flags as u64)? as u32;
-        if flags & layout.unsupported_flags != 0 {
-            return Err(CallError::Geometry);
-        }
         let (body, angles) = self.body(memory, address)?;
         let origin = body.position;
         let bounds = Bounds {
@@ -1020,7 +1018,7 @@ impl EntityProjection {
         let shape = if solid == 3 {
             self.model(services, memory, context, address)?.0
         } else if solid == 2 {
-            CollisionShape::Box
+            layout.box_shape(flags)
         } else {
             CollisionShape::None
         };

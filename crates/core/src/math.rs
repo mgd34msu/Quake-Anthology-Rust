@@ -120,8 +120,37 @@ pub fn normalized_or_zero(mut v: Vec3) -> Vec3 {
 /// Native reciprocal-square-root estimate, shared by stage evaluation and guests.
 pub fn normalized_fast(v: Vec3) -> Vec3 {
     let x = v.dot(v);
-    let y = f32::from_bits(0x5f3759df - (x.to_bits() >> 1));
-    v * (y * (1.5 - (x * 0.5 * y * y)))
+    v * reciprocal_sqrt_fast(x, 1)
+}
+
+/// Native Q3 reciprocal estimate; collision refines twice, normal packing once.
+pub fn reciprocal_sqrt_fast(number: f32, refinements: u8) -> f32 {
+    let half = number * 0.5;
+    let mut result = f32::from_bits(0x5f3759df - (number.to_bits() >> 1));
+    for _ in 0..refinements {
+        result = result * (1.5 - (half * result * result));
+    }
+    result
+}
+
+/// Distance to a native projected segment, preserving its first-axis tie rule.
+pub fn segment_distance_squared(point: Vec3, start: Vec3, end: Vec3, direction: Vec3) -> f32 {
+    let projected = start + direction * (point - start).dot(direction);
+    let relative = if let Some(axis) = (0..3).find(|&axis| {
+        (projected.0[axis] > start.0[axis] && projected.0[axis] > end.0[axis])
+            || (projected.0[axis] < start.0[axis] && projected.0[axis] < end.0[axis])
+    }) {
+        point
+            - if (projected.0[axis] - start.0[axis]).abs() < (projected.0[axis] - end.0[axis]).abs()
+            {
+                start
+            } else {
+                end
+            }
+    } else {
+        point - projected
+    };
+    relative.dot(relative)
 }
 
 pub fn cross(a: Vec3, b: Vec3) -> Vec3 {

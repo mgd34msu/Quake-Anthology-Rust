@@ -351,6 +351,7 @@ impl CollisionStore {
     ) -> Result<Trace, TraceError> {
         match shape {
             CollisionShape::Box => Ok(super::boxes::trace_box(query, body, entity)),
+            CollisionShape::Capsule => Ok(super::capsules::trace_capsule(query, body, entity)),
             CollisionShape::Model { geometry, index } => {
                 let mut trace = self.trace_transformed(
                     geometry,

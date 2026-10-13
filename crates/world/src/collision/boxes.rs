@@ -2,7 +2,7 @@ use super::EntityTraceFlags;
 use super::surfaces::{SurfaceRecord, SurfaceRows};
 use super::{
     Contents, Trace, TraceQuery,
-    brushes::{Brush, trace_brushes},
+    brushes::{Brush, BrushWork, trace_brushes},
     hulls::{ClipNode, Frame, Hull},
 };
 use qa_core::primitives::{Axis, Body, EntityId, Plane, Vec3};
@@ -24,7 +24,7 @@ static NODES: [ClipNode; 6] = nodes();
 
 pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Trace {
     if query.entity_rules.quake_kind().is_none() || query.capsule.is_some() {
-        return trace_convex_box(query, body, entity);
+        return trace_convex_box(query, body, entity, None);
     }
     let TraceQuery {
         start,
@@ -71,14 +71,20 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Tr
     trace
 }
 
-fn trace_convex_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Trace {
+pub(super) fn trace_convex_box(
+    query: TraceQuery,
+    body: &Body,
+    entity: Option<EntityId>,
+    culling_bounds: Option<qa_core::primitives::Bounds>,
+) -> Trace {
     let original = query;
     let mut query = query;
-    if query.capsule.is_some()
-        || query
-            .entity_rules
-            .filtering
-            .contains(EntityTraceFlags::CENTER_BOX)
+    if culling_bounds.is_none()
+        && (query.capsule.is_some()
+            || query
+                .entity_rules
+                .filtering
+                .contains(EntityTraceFlags::CENTER_BOX))
     {
         query.center_box();
     }
@@ -115,12 +121,21 @@ fn trace_convex_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) ->
         }
     });
     let local = |point: Vec3| point - body.position;
+    let local_query = TraceQuery {
+        start: local(query.start),
+        end: local(query.end),
+        ..query
+    };
+    let mut work = if culling_bounds.is_some() {
+        BrushWork::centered(local_query)
+    } else {
+        BrushWork::new(local_query)
+    };
+    if let Some(bounds) = culling_bounds {
+        work.bounds = bounds;
+    }
     let mut trace = trace_brushes(
-        TraceQuery {
-            start: local(query.start),
-            end: local(query.end),
-            ..query
-        },
+        &work,
         &planes,
         &[Brush {
             sides: qa_core::primitives::IndexSpan { first: 0, count: 6 },

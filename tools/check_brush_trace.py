@@ -29,7 +29,7 @@ def extract_function(source, name):
     # comment must not truncate or extend the extracted implementation.
     tokens = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
     code = tokens.sub(lambda match: ''.join('\n' if c == '\n' else ' ' for c in match[0]), source)
-    match = re.search(r'^[ \t]*(?:static[ \t]+)?void[ \t]+' + re.escape(name)
+    match = re.search(r'^[ \t]*(?:static[ \t]+)?(?:void|float|vec_t)[ \t]+' + re.escape(name)
                       + r'\s*\([^;{}]*\)\s*\{', code, re.MULTILINE)
     if match is None:
         raise ValueError('native function definition missing: ' + name)
