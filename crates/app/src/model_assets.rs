@@ -1654,11 +1654,23 @@ fn register(
         let id = if let Some(id) = *shared_mesh {
             id
         } else {
-            let (vertices, frame_size, indices) = mesh_vertices(mesh, capacity, limits)?;
+            let native = (model.format == ModelFormat::Md2).then_some(model.frames.as_slice());
+            let (vertices, frame_size, indices, packed) =
+                mesh_vertices(mesh, native, capacity, limits)?;
             let material = materials.first().ok_or("model has no skin material")?[0];
             let id = images
                 .assets
                 .register_animated_model(&vertices, frame_size, &indices, material)?;
+            if let Some(frames) = native {
+                let frames: Vec<_> = frames
+                    .iter()
+                    .map(|frame| qa_render::assets::AliasFrame {
+                        scale: frame.scale,
+                        translation: frame.translation,
+                    })
+                    .collect();
+                images.assets.set_alias_frames(id, &frames, &packed)?;
+            }
             *shared_mesh = Some(id);
             id
         };
@@ -1877,11 +1889,12 @@ fn alias_materials(
 
 fn mesh_vertices(
     mesh: &Mesh<'_>,
+    native: Option<&[qa_formats::model::Frame<'_>]>,
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
-) -> Result<(Vec<Vertex>, usize, Vec<u32>), String> {
+) -> Result<(Vec<Vertex>, usize, Vec<u32>, Vec<[u8; 3]>), String> {
     if mesh.vertices_per_frame == 0 {
-        return Ok((Vec::new(), 0, Vec::new()));
+        return Ok((Vec::new(), 0, Vec::new(), Vec::new()));
     }
     let index_count = mesh
         .triangles
@@ -1923,8 +1936,17 @@ fn mesh_vertices(
         }
     }
     let mut vertices = Vec::with_capacity(vertex_count);
-    for frame in mesh.vertices.chunks_exact(mesh.vertices_per_frame) {
+    let mut packed = Vec::with_capacity(if native.is_some() { vertex_count } else { 0 });
+    for (frame_index, frame) in mesh
+        .vertices
+        .chunks_exact(mesh.vertices_per_frame)
+        .enumerate()
+    {
         for &(vertex, texcoord) in &pairs {
+            if let Some(frames) = native {
+                let bytes = &frames[frame_index].packed_vertices[vertex as usize * 4..];
+                packed.push([bytes[0], bytes[1], bytes[2]]);
+            }
             let vertex = frame[vertex as usize];
             vertices.push(Vertex {
                 position: vertex.position,
@@ -1936,5 +1958,5 @@ fn mesh_vertices(
     }
     capacity.frame_vertices = next_vertices;
     capacity.indices = next_indices;
-    Ok((vertices, pairs.len(), indices))
+    Ok((vertices, pairs.len(), indices, packed))
 }

@@ -294,6 +294,10 @@ fn rerelease_keeps_old_frame_selection_separate_from_discrete_origin_selection()
     appearance.native.render_flags = 64;
     let discrete = policy(appearance.source).project(&appearance);
     assert!(!discrete.state_old_frame && discrete.frame_lerp);
+    assert!(!discrete.alias_motion);
+    appearance.source = RuleSetId::Quake2;
+    let classic = policy(appearance.source).project(&appearance);
+    assert!(classic.frame_lerp && classic.alias_motion);
 }
 
 #[test]

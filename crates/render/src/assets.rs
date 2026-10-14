@@ -309,6 +309,21 @@ pub struct Model {
     pub vertices_per_frame: usize,
     frame_count: u32,
     pub sprite: Option<SpriteGeometry>,
+    alias: Option<AliasFrames>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct AliasFrame {
+    pub scale: Vec3,
+    pub translation: Vec3,
+}
+struct AliasFrames {
+    frames: Box<[AliasFrame]>,
+    positions: Box<[[u8; 3]]>,
+}
+#[derive(Clone, Copy)]
+struct AliasBlend {
+    translation: Vec3,
+    scale: [Vec3; 2],
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpriteGeometry {
@@ -324,6 +339,8 @@ pub struct ModelFrames<'a> {
     current: Span,
     previous: Span,
     weights: [f32; 2],
+    alias: Option<AliasBlend>,
+    motion: Vec3,
 }
 impl Model {
     pub fn frame_count(&self) -> u32 {
@@ -331,6 +348,26 @@ impl Model {
     }
 
     pub fn frames(&self, frame: u32, old_frame: u32, back_lerp: f32) -> Option<ModelFrames<'_>> {
+        self.frames_at(frame, old_frame, back_lerp, Vec3::default())
+    }
+
+    pub fn posed_frames(&self, entity: &crate::SceneEntity) -> Option<ModelFrames<'_>> {
+        let motion = entity.previous_origin.map_or(Vec3::default(), |previous| {
+            qa_core::math::inverse_transform_point(entity.origin, entity.axes, previous)
+        });
+        if !motion.is_finite() {
+            return None;
+        }
+        self.frames_at(entity.frame, entity.old_frame, entity.back_lerp, motion)
+    }
+
+    fn frames_at(
+        &self,
+        frame: u32,
+        old_frame: u32,
+        back_lerp: f32,
+        motion: Vec3,
+    ) -> Option<ModelFrames<'_>> {
         if frame >= self.frame_count
             || old_frame >= self.frame_count
             || !back_lerp.is_finite()
@@ -338,7 +375,21 @@ impl Model {
         {
             return None;
         }
-        let back_lerp = if frame == old_frame { 0.0 } else { back_lerp };
+        let back_lerp = if frame == old_frame && self.alias.is_none() && motion == Vec3::default() {
+            0.0
+        } else {
+            back_lerp
+        };
+        let weights = [back_lerp, 1.0 - back_lerp];
+        let alias = self.alias.as_ref().map(|alias| {
+            let current = alias.frames[frame as usize];
+            let previous = alias.frames[old_frame as usize];
+            AliasBlend {
+                translation: (previous.translation + motion) * weights[0]
+                    + current.translation * weights[1],
+                scale: [previous.scale * weights[0], current.scale * weights[1]],
+            }
+        });
         let count = self.vertices_per_frame as u32;
         Some(ModelFrames {
             model: self,
@@ -350,7 +401,9 @@ impl Model {
                 first: old_frame * count,
                 count,
             },
-            weights: [back_lerp, 1.0 - back_lerp],
+            weights,
+            alias,
+            motion,
         })
     }
 }
@@ -363,16 +416,34 @@ impl ModelFrames<'_> {
         self.current.count == 0
     }
 
-    /// Q3's decoded frame blend, before material deforms and stage evaluation.
-    /// UVs/colors belong to the current frame; only position and normal blend.
+    /// One pose path before material deforms: native packed alias arithmetic
+    /// or decoded frame blending. UVs/colors stay with the current frame.
     pub fn vertex(self, index: usize) -> Vertex {
         let current = self.current_vertex(index);
+        if let (Some(blend), Some(alias)) = (self.alias, self.model.alias.as_ref()) {
+            let new = alias.positions[self.current.first as usize + index];
+            let old = alias.positions[self.previous.first as usize + index];
+            return Vertex {
+                // GL_LerpVerts and R_AliasLerpFrames: translation, old packed
+                // contribution, then new packed contribution. Keep the order.
+                position: Vec3(std::array::from_fn(|axis| {
+                    (blend.translation.0[axis] + f32::from(old[axis]) * blend.scale[0].0[axis])
+                        + f32::from(new[axis]) * blend.scale[1].0[axis]
+                })),
+                ..current
+            };
+        }
         if self.weights[0] == 0.0 {
             return current;
         }
         let previous = self.model.vertices[self.previous.range()][index];
+        let position = if self.motion == Vec3::default() {
+            previous.position
+        } else {
+            previous.position + self.motion
+        };
         Vertex {
-            position: previous.position * self.weights[0] + current.position * self.weights[1],
+            position: position * self.weights[0] + current.position * self.weights[1],
             normal: qa_core::math::normalized_fast(
                 previous.normal * self.weights[0] + current.normal * self.weights[1],
             ),
@@ -392,6 +463,9 @@ impl ModelFrames<'_> {
 
     pub(crate) fn weights(self) -> [f32; 2] {
         self.weights
+    }
+    pub(crate) fn resolved_vertices(self) -> bool {
+        self.alias.is_some() || self.motion != Vec3::default()
     }
 }
 pub struct Assets {
@@ -439,6 +513,7 @@ impl Assets {
                 vertices_per_frame: 0,
                 frame_count: 1,
                 sprite: None,
+                alias: None,
             }],
             worlds: Vec::new(),
             presentations: Vec::new(),
@@ -681,6 +756,7 @@ impl Assets {
             vertices_per_frame,
             frame_count,
             sprite: None,
+            alias: None,
         });
         Ok(id)
     }
@@ -704,8 +780,35 @@ impl Assets {
             vertices_per_frame: 0,
             frame_count: 1,
             sprite: Some(geometry),
+            alias: None,
         });
         Ok(id)
+    }
+
+    pub fn set_alias_frames(
+        &mut self,
+        id: ModelId,
+        frames: &[AliasFrame],
+        positions: &[[u8; 3]],
+    ) -> Result<(), &'static str> {
+        let model = self
+            .models
+            .get_mut(id.0 as usize)
+            .ok_or("unknown alias model")?;
+        if frames.len() != model.frame_count as usize
+            || positions.len() != model.vertices.len()
+            || frames
+                .iter()
+                .any(|frame| !frame.scale.is_finite() || !frame.translation.is_finite())
+            || model.sprite.is_some()
+        {
+            return Err("invalid packed alias frames");
+        }
+        model.alias = Some(AliasFrames {
+            frames: frames.into(),
+            positions: positions.into(),
+        });
+        Ok(())
     }
     pub fn image(&self, id: ImageId) -> Option<&Image> {
         self.images.get(id.0 as usize)

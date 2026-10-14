@@ -13,6 +13,9 @@ pub struct AppearanceCapabilities {
     /// Use the current origin/old_origin frame path instead of interpolating
     /// origins: Q2 RF_FRAMELERP and rerelease RF_NO_ORIGIN_LERP.
     pub frame_lerp: bool,
+    /// Classic Q2 applies transmitted origin motion inside alias blending.
+    /// Rerelease bit 6 instead suppresses origin interpolation completely.
+    pub alias_motion: bool,
     pub state_old_frame: bool,
     pub alpha: f32,
     pub scale: f32,
@@ -38,6 +41,7 @@ struct NativeRules {
     fullbright: u32,
     translucent: u32,
     frame_lerp: u32,
+    alias_motion: bool,
     old_frame: u32,
     beam: u32,
     bfg: u64,
@@ -68,6 +72,7 @@ const NEUTRAL: NativeRules = NativeRules {
     fullbright: 0,
     translucent: 0,
     frame_lerp: 0,
+    alias_motion: false,
     old_frame: 0,
     beam: 0,
     bfg: 0,
@@ -100,6 +105,7 @@ const Q2: NativeRules = NativeRules {
     depth: 16,
     translucent: 32,
     frame_lerp: 64,
+    alias_motion: true,
     beam: 128,
     bfg: 1 << 7,
     plasma: 1 << 24,
@@ -132,6 +138,7 @@ const RULES: [NativeRules; 5] = [
     Q2,
     NativeRules {
         old_frame: 1 << 22,
+        alias_motion: false,
         explicit_alpha: true,
         zero_scale: true,
         player_interpolation_events: true,
@@ -359,6 +366,7 @@ impl AppearancePolicy {
             depth_hack: flags & rules.depth != 0,
             fullbright: flags & rules.fullbright != 0,
             frame_lerp: flags & rules.frame_lerp != 0,
+            alias_motion: flags & rules.frame_lerp != 0 && rules.alias_motion,
             state_old_frame: flags & rules.old_frame != 0,
             alpha,
             scale: if rules.zero_scale && appearance.scale == 0.0 {

@@ -573,12 +573,6 @@ impl ClientSceneInput<'_> {
             return;
         }
         let previous = pose.previous;
-        if capabilities.frame_lerp
-            && record.appearance.old_origin != record.position
-            && fraction != 1.0
-        {
-            counts.unsupported += 1;
-        }
         for (slot, reference) in record.appearance.models.iter().enumerate() {
             let Some(reference) = *reference else {
                 continue;
@@ -635,6 +629,9 @@ impl ClientSceneInput<'_> {
                         };
                         let angles = binding.pose.angles(pose.angles, software);
                         entity.model = binding.model.into();
+                        if capabilities.alias_motion && model.sprite.is_none() {
+                            entity.previous_origin = Some(record.appearance.old_origin);
+                        }
                         entity.material = Some(binding.material);
                         entity.frame = current_frame;
                         entity.old_frame = old_frame;

@@ -62,6 +62,142 @@ fn assert_vertex_bits(actual: Vertex, expected: Vertex) {
 }
 
 #[test]
+fn packed_alias_pose_preserves_native_scale_translate_motion_and_current_normal() {
+    use qa_render::assets::AliasFrame;
+    let frames = [
+        AliasFrame {
+            scale: Vec3([0.13, 1.25, 0.1]),
+            translation: Vec3([3.1, -15., 0.17]),
+        },
+        AliasFrame {
+            scale: Vec3([0.21, 0.1, 2.5]),
+            translation: Vec3([-4.3, 0.3, -22.]),
+        },
+    ];
+    let packed = [[127, 14, 4], [79, 145, 23]];
+    let vertices = std::array::from_fn::<_, 2, _>(|frame| {
+        vertex(
+            std::array::from_fn(|axis| {
+                f32::from(packed[frame][axis]) * frames[frame].scale.0[axis]
+                    + frames[frame].translation.0[axis]
+            }),
+            if frame == 0 {
+                [1., 0., 0.]
+            } else {
+                [0., 0., 1.]
+            },
+        )
+    });
+    let mut assets = Assets::load().unwrap();
+    let id = assets
+        .register_animated_model(&vertices, 1, &[], MaterialId(0))
+        .unwrap();
+    assert!(assets.set_alias_frames(id, &frames[..1], &packed).is_err());
+    assert!(assets.set_alias_frames(id, &frames, &packed[..1]).is_err());
+    assets.set_alias_frames(id, &frames, &packed).unwrap();
+    let model = assets.model(id).unwrap();
+    for (current, old) in [(1, 0), (0, 1), (1, 1)] {
+        for back in [0., 0.1, 0.25, 0.5, 0.9, 1.] {
+            let entity = SceneEntity {
+                model: id.into(),
+                origin: Vec3([10., 20., 30.]),
+                previous_origin: Some(Vec3([21., 7., 15.])),
+                axes: [Vec3([0., 1., 0.]), Vec3([-1., 0., 0.]), Vec3([0., 0., 1.])],
+                frame: current,
+                old_frame: old,
+                back_lerp: back,
+                ..Default::default()
+            };
+            let current = current as usize;
+            let old = old as usize;
+            let front = 1. - back;
+            let delta = [-13., -11., -15.];
+            let mut expected = vertices[current];
+            // Independent scalar oracle for quake-2 gl_mesh.c:129-152.
+            for axis in 0..3 {
+                let move_axis = back * (delta[axis] + frames[old].translation.0[axis])
+                    + front * frames[current].translation.0[axis];
+                let old_scale = back * frames[old].scale.0[axis];
+                let new_scale = front * frames[current].scale.0[axis];
+                expected.position.0[axis] = (move_axis + f32::from(packed[old][axis]) * old_scale)
+                    + f32::from(packed[current][axis]) * new_scale;
+            }
+            assert_vertex_bits(model.posed_frames(&entity).unwrap().vertex(0), expected);
+        }
+    }
+}
+
+#[test]
+fn cpu_packed_alias_origin_motion_matches_the_resolved_static_geometry() {
+    use qa_render::assets::AliasFrame;
+    let mut assets = Assets::load().unwrap();
+    let material = assets
+        .register_material(
+            "alias/motion",
+            &[Stage {
+                rgb_gen: RgbGen::ExactVertex,
+                ..Default::default()
+            }],
+            MaterialSettings {
+                cull: Cull::None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let positions = [[16, 12, 12], [16, 20, 12], [16, 12, 20]];
+    let vertices = positions.map(|point| {
+        vertex(
+            [
+                f32::from(point[0]),
+                f32::from(point[1]) - 16.,
+                f32::from(point[2]) - 16.,
+            ],
+            [-1., 0., 0.],
+        )
+    });
+    let model = assets
+        .register_animated_model(&vertices, 3, &[0, 1, 2], material)
+        .unwrap();
+    assets
+        .set_alias_frames(
+            model,
+            &[AliasFrame {
+                scale: Vec3([1.; 3]),
+                translation: Vec3([0., -16., -16.]),
+            }],
+            &positions,
+        )
+        .unwrap();
+    let expected = vertices.map(|mut vertex| {
+        vertex.position.0[1] += 3.;
+        vertex
+    });
+    let resolved = assets
+        .register_model(&expected, &[0, 1, 2], material)
+        .unwrap();
+    let moving = render(
+        &assets,
+        SceneEntity {
+            model: model.into(),
+            previous_origin: Some(Vec3([0., 4., 0.])),
+            back_lerp: 0.75,
+            ..Default::default()
+        },
+    );
+    let explicit = render(
+        &assets,
+        SceneEntity {
+            model: resolved.into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(moving.0, explicit.0);
+    assert_eq!(moving.1, explicit.1);
+    assert!(moving.2.triangles > 0);
+    assert_eq!(moving.2.rejected, 0);
+}
+
+#[test]
 fn registration_rejects_malformed_frame_tables_without_consuming_handles() {
     let mut assets = Assets::load().unwrap();
     let vertices = [vertex([8.0, 1.0, 2.0], [0.0, 0.0, 1.0]); 6];

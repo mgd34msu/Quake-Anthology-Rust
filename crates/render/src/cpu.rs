@@ -646,7 +646,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp) else {
+        let Some(frames) = model.posed_frames(entity) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };

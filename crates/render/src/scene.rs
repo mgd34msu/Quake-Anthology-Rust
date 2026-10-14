@@ -256,6 +256,8 @@ impl SceneModel {
 pub struct SceneEntity {
     pub model: SceneModel,
     pub origin: Vec3,
+    /// Native alias origin motion, separate from frame-major vertex blending.
+    pub previous_origin: Option<Vec3>,
     pub axes: [Vec3; 3],
     pub non_normalized_axes: bool,
     pub color: [u8; 4],
@@ -305,6 +307,7 @@ impl Default for SceneEntity {
         Self {
             model: SceneModel::Mesh(ModelId(0)),
             origin: Vec3::default(),
+            previous_origin: None,
             axes: Orientation::default().axes,
             non_normalized_axes: false,
             color: [255; 4],

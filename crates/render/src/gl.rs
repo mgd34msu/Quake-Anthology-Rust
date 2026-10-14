@@ -1001,15 +1001,23 @@ impl GlBackend {
     }
 
     fn upload(&mut self, vertices: &[Vertex]) -> Option<usize> {
-        let first = self.reserve(vertices.len())?;
+        self.upload_with(vertices.len(), |index| vertices[index])
+    }
+
+    fn upload_with(
+        &mut self,
+        count: usize,
+        mut vertex: impl FnMut(usize) -> Vertex,
+    ) -> Option<usize> {
+        let first = self.reserve(count)?;
         let mapped = self.dynamic.mapped?;
-        unsafe {
-            ptr::copy_nonoverlapping(
-                vertices.as_ptr(),
-                mapped.as_ptr().add(first),
-                vertices.len(),
-            )
-        };
+        for index in 0..count {
+            // SAFETY: reserve bounds this range in the current owned mapped
+            // slot; its prior GPU consumer finished before begin_dynamic.
+            unsafe {
+                mapped.as_ptr().add(first + index).write(vertex(index));
+            }
+        }
         Some(first)
     }
 
@@ -1303,7 +1311,7 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp) else {
+        let Some(frames) = model.posed_frames(entity) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -1329,17 +1337,30 @@ impl GlBackend {
         let matrix = multiply(projection, &model_matrix(entity));
         inputs = inputs.for_entity(entity);
         self.bind_vao(self.model_vao);
-        let [current, previous] = frames
-            .offsets()
-            .map(|offset| (mesh.base_vertex as usize + offset) * size_of::<Vertex>());
-        // SAFETY: registration bounds both frame spans and their indices;
-        // load_static bounds the complete byte allocation. These are GPU
-        // offsets into that owned buffer, with the model VAO/context current.
-        unsafe {
-            (self.gl.bind_buffer)(ARRAY_BUFFER, self.static_buffers[0]);
-            vertex_layout(&self.gl, current, Some(previous));
+        if frames.resolved_vertices() {
+            let Some(first) = self.upload_with(frames.len(), |index| frames.vertex(index)) else {
+                stats.rejected = stats.rejected.saturating_add(1);
+                return;
+            };
+            // SAFETY: upload_with reserves and initializes the complete frame;
+            // its relative indices are the same validated static index table.
+            unsafe {
+                (self.gl.bind_buffer)(ARRAY_BUFFER, self.dynamic.buffer);
+                vertex_layout(&self.gl, first * size_of::<Vertex>(), None);
+            }
+            self.frame_weights([0.0, 1.0]);
+        } else {
+            let [current, previous] = frames
+                .offsets()
+                .map(|offset| (mesh.base_vertex as usize + offset) * size_of::<Vertex>());
+            // SAFETY: registration bounds both frame spans and their indices;
+            // load_static bounds the complete owned static byte allocation.
+            unsafe {
+                (self.gl.bind_buffer)(ARRAY_BUFFER, self.static_buffers[0]);
+                vertex_layout(&self.gl, current, Some(previous));
+            }
+            self.frame_weights(frames.weights());
         }
-        self.frame_weights(frames.weights());
         self.set_depth_hack(entity.depth_hack);
         for stage in material.stages.iter() {
             if !self.stage(*stage, material.settings, inputs, &matrix, true, false) {

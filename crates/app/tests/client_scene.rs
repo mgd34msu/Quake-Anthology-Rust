@@ -159,6 +159,137 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
 }
 
 #[test]
+fn classic_frame_origin_motion_reaches_alias_pose_without_affecting_rerelease() {
+    let (_fixture, assets, models, profile) = catalog(RuleSetId::Quake2);
+    let client = ClientId(7);
+    let mut configs = configs();
+    configs
+        .set(
+            ConfigLayout::QUAKE2.resources[0].get(50).unwrap(),
+            b"models/test/tris.md2",
+        )
+        .unwrap();
+    let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
+    assert_eq!(bindings.bind_all(&configs, &models, profile, None), 0);
+    let player = PlayerState::default();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let protocol = if source == RuleSetId::Quake2 {
+            Protocol::Quake2_34
+        } else {
+            Protocol::Quake2Repro1038
+        };
+        let projection = EntityProjection::load(protocol);
+        let player_projection = PlayerProjection::load(protocol, &[]);
+        let mut record = EntityRecord {
+            position: Vec3([16., 0., 0.]),
+            appearance: EntityAppearance {
+                source,
+                frame: 1,
+                old_origin: Vec3([26., 4., -8.]),
+                models: [Some(reference(client)), None, None, None],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        record.appearance.native.render_flags = 64;
+        let mut classic_words = [0; states::Q2_ENTITY_WORDS];
+        let mut rerelease_words = [0; states::Q2_RERELEASE_ENTITY_WORDS];
+        assert!(projection.reduce(
+            &record,
+            if source == RuleSetId::Quake2 {
+                &mut classic_words[..]
+            } else {
+                &mut rerelease_words[..]
+            },
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal)
+        ));
+        let classic_rows = [Entity {
+            number: 12,
+            words: classic_words,
+        }];
+        let rerelease_rows = [Entity {
+            number: 12,
+            words: rerelease_words,
+        }];
+        let classic_player = [0; states::Q2_PLAYER_WORDS];
+        let rerelease_player = [0; states::Q2_REPRO_PLAYER_WORDS];
+        let current = if source == RuleSetId::Quake2 {
+            ReceivedFrame::Quake2(Frame {
+                sequence: 1,
+                time: ThinkTime::Milliseconds(100),
+                command: 0,
+                flags: 0,
+                qw_peers: 0,
+                areas: &[],
+                player: &classic_player,
+                entities: &classic_rows,
+            })
+        } else {
+            ReceivedFrame::Quake2Repro(Frame {
+                sequence: 1,
+                time: ThinkTime::Milliseconds(100),
+                command: 0,
+                flags: 0,
+                qw_peers: 0,
+                areas: &[],
+                player: &rerelease_player,
+                entities: &rerelease_rows,
+            })
+        };
+        let input = ClientSceneInput {
+            client,
+            current: Some(current),
+            previous: None,
+            projection: &projection,
+            appearance: qa_gameplay::rules::appearance::policy(source),
+            player_projection: &player_projection,
+            bindings: &bindings,
+            models: &models,
+            static_entities: &[],
+            player: &player,
+            weapon_view_angles: player.view_angles,
+            alias_roll: AliasRoll::default(),
+            interpolation: Interpolation {
+                fraction: 0.25,
+                ..Default::default()
+            },
+            gun_animation: None,
+            gun_previous: None,
+            view_entity: None,
+        };
+        let mut frame = frontend.begin_frame([0; 4]).unwrap();
+        let counts = input.append(&mut frame, &assets, &Refdef::default(), true);
+        assert_eq!(
+            (counts.models, counts.rejected, counts.unsupported),
+            (1, 0, 0)
+        );
+        let packet = frame.finish();
+        let entity = packet.entity(0);
+        assert_eq!(entity.origin, record.position);
+        assert_eq!((entity.frame, entity.old_frame), (1, 1));
+        let qa_render::SceneModel::Mesh(model) = entity.model else {
+            panic!("alias model")
+        };
+        let posed = assets
+            .model(model)
+            .unwrap()
+            .posed_frames(entity)
+            .unwrap()
+            .vertex(0);
+        if source == RuleSetId::Quake2 {
+            assert_eq!(entity.previous_origin, Some(record.appearance.old_origin));
+            assert_eq!(posed.position, Vec3([3.5, 11., 15.]));
+        } else {
+            assert!(entity.previous_origin.is_none());
+            assert_eq!(posed.position, Vec3([-4., 8., 21.]));
+        }
+        assert!(frontend.recycle(packet).is_ok());
+    }
+}
+
+#[test]
 fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() {
     use qa_app::client_resources::ClientResources;
 
