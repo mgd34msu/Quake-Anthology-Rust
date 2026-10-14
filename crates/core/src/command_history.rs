@@ -7,7 +7,30 @@ pub const DEFAULT_CAPACITY: usize = 4096;
 pub enum HistoryError {
     Capacity,
     Future,
+    Expired,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Acknowledgement {
+    Number(u64),
+    ServerTime(i32),
+}
+
+pub struct PendingCommands<'a> {
+    history: &'a CommandHistory,
+    remaining: usize,
+}
+impl<'a> Iterator for PendingCommands<'a> {
+    type Item = &'a UserCmd;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.remaining = self.remaining.checked_sub(1)?;
+        self.history.get(self.remaining)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+impl ExactSizeIterator for PendingCommands<'_> {}
 
 pub struct CommandHistory {
     commands: Box<[UserCmd]>,
@@ -78,6 +101,29 @@ impl CommandHistory {
             return Err(HistoryError::Future);
         }
         Ok(usize::try_from(age).ok().and_then(|age| self.get(age)))
+    }
+    /// Protocols with command-time acknowledgement resolve it in this same
+    /// history. Native signed comparisons remain at the millisecond boundary.
+    pub fn number_at_time(&self, time: i32) -> Option<u64> {
+        for age in 0..self.written {
+            if self.get(age)?.server_time_ms <= time {
+                return Some(self.number.wrapping_sub(age as u64));
+            }
+        }
+        (self.written < self.capacity()).then_some(self.number.wrapping_sub(self.written as u64))
+    }
+    pub fn pending_after(&self, number: u64) -> Result<PendingCommands<'_>, HistoryError> {
+        let count = self.number.wrapping_sub(number);
+        if count > i64::MAX as u64 {
+            return Err(HistoryError::Future);
+        }
+        if count > self.written as u64 {
+            return Err(HistoryError::Expired);
+        }
+        Ok(PendingCommands {
+            history: self,
+            remaining: count as usize,
+        })
     }
 
     /// Capacity changes happen at a load/connection boundary. Retain the

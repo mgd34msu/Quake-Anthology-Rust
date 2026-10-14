@@ -189,7 +189,9 @@ impl Commands {
                             .send_state()
                             .sequence
                             .wrapping_sub(1 + u32::from(self.packet_dup));
-                        let sent = channel.q3_move_command_number(sequence).unwrap_or(0);
+                        let sent = channel
+                            .submitted_command(sequence)
+                            .map_or(0, |command| command.number);
                         history
                             .number()
                             .wrapping_sub(sent)

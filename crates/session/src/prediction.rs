@@ -1,5 +1,5 @@
-//! Current-command prediction. Network command acknowledgement and correction
-//! history belong to THE-821; this stores no journal or replay mechanism.
+//! Prediction replays the connection's common history after native acknowledgement.
+use qa_core::command_history::{Acknowledgement, CommandHistory};
 use qa_core::primitives::{PlayerState, UserCmd};
 use qa_movement::{MovementResult, TraceServices};
 use qa_world::collision::TraceError;
@@ -7,20 +7,85 @@ use qa_world::collision::TraceError;
 #[derive(Default)]
 pub struct Prediction {
     pub player: PlayerState,
+    baseline: PlayerState,
+    baseline_valid: bool,
+    acknowledged: Option<Acknowledgement>,
+    packet_acknowledged: Option<u64>,
+    history_exhausted: bool,
+    pub history_resyncs: u64,
 }
 impl Prediction {
+    pub fn new(player: PlayerState) -> Self {
+        Self {
+            player,
+            ..Self::default()
+        }
+    }
     /// Copy hot movement fields only; inventory and weapon readiness stay owned by
     /// the authoritative client. Applying a snapshot never clones an arena.
     pub fn apply_snapshot(&mut self, source: &PlayerState) {
-        self.player.body = source.body;
-        self.player.movement_rules = source.movement_rules;
-        self.player.trace_rules = source.trace_rules;
-        self.player.movement = source.movement;
-        self.player.native = source.native;
-        self.player.prediction = source.prediction;
-        self.player.view_angles = source.view_angles;
-        self.player.view_offset = source.view_offset;
-        self.player.ideal_pitch = source.ideal_pitch;
+        copy_motion(source, &mut self.player);
+        self.remember_snapshot(None);
+    }
+    pub fn observe_command_progress(&mut self, number: Option<u64>) {
+        self.packet_acknowledged = number;
+    }
+    pub fn packet_acknowledged(&self) -> Option<Acknowledgement> {
+        self.packet_acknowledged.map(Acknowledgement::Number)
+    }
+    pub fn clear_history(&mut self) {
+        self.baseline_valid = false;
+        self.acknowledged = None;
+        self.packet_acknowledged = None;
+        self.history_exhausted = false;
+    }
+    pub fn remember_snapshot(&mut self, acknowledged: Option<Acknowledgement>) {
+        copy_motion(&self.player, &mut self.baseline);
+        self.baseline_valid = true;
+        self.acknowledged = acknowledged;
+        self.history_exhausted = false;
+    }
+    pub fn replay(
+        &mut self,
+        history: &CommandHistory,
+        trace: &mut dyn TraceServices,
+    ) -> Result<usize, TraceError> {
+        let Some(latest) = history.get(0) else {
+            return Ok(0);
+        };
+        if self.history_exhausted {
+            if self.player.prediction.angles {
+                qa_movement::predict_view_angles(*latest, &mut self.player);
+            }
+            return Ok(0);
+        }
+        if !self.baseline_valid || !self.player.prediction.position || self.acknowledged.is_none() {
+            self.advance(*latest, trace)?;
+            return Ok(1);
+        }
+        copy_motion(&self.baseline, &mut self.player);
+        let number = match self.acknowledged {
+            Some(Acknowledgement::Number(number)) => Some(number),
+            Some(Acknowledgement::ServerTime(time)) => history.number_at_time(time),
+            None => None,
+        };
+        let pending = number.and_then(|number| history.pending_after(number).ok());
+        let Some(pending) = pending else {
+            self.history_resyncs = self.history_resyncs.saturating_add(1);
+            self.acknowledged = None;
+            self.history_exhausted = true;
+            if self.player.prediction.angles {
+                qa_movement::predict_view_angles(*latest, &mut self.player);
+            }
+            return Ok(0);
+        };
+        self.acknowledged = number.map(Acknowledgement::Number);
+        let mut commands = 0;
+        for command in pending {
+            self.advance(*command, trace)?;
+            commands += 1;
+        }
+        Ok(commands)
     }
     pub fn advance(
         &mut self,
@@ -45,4 +110,17 @@ impl Prediction {
             qa_movement::no_boundary,
         )
     }
+}
+
+fn copy_motion(source: &PlayerState, target: &mut PlayerState) {
+    target.body = source.body;
+    target.movement_rules = source.movement_rules;
+    target.trace_rules = source.trace_rules;
+    target.movement = source.movement;
+    target.native = source.native;
+    target.prediction = source.prediction;
+    target.view_angles = source.view_angles;
+    target.view_offset = source.view_offset;
+    target.ideal_pitch = source.ideal_pitch;
+    target.native_clock = source.native_clock;
 }

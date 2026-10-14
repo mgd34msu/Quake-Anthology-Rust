@@ -241,6 +241,12 @@ fn native_player_values_reach_client_and_hud_through_the_queued_snapshot() {
             source.time = ms;
             assert_eq!(host.frame(&mut source, true).drains, 2);
         }
+        if protocol != Protocol::Quake3_68 {
+            assert_eq!(
+                host.runtime.prediction[0].packet_acknowledged(),
+                Some(qa_core::command_history::Acknowledgement::Number(2))
+            );
+        }
         let player = &host.runtime.prediction[0].player;
         assert_eq!((player.health, player.armor), (71, 29));
         assert_eq!(

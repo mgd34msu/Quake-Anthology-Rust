@@ -974,6 +974,7 @@ impl FrameHost {
                         && server.clients[id.0 as usize].output == Some(binding.output)
                     {
                         match incoming {
+                            Incoming::CommandProgress(number) => self.runtime.prediction[seat.index()].observe_command_progress(number),
                             Incoming::PlayerValue { index, value } => {
                                 let protocol = self.runtime.snapshots[id.0 as usize]
                                     .as_ref()
@@ -1038,6 +1039,7 @@ impl FrameHost {
                                 }
                             }
                             Incoming::Gamestate(gamestate) => {
+                                self.runtime.prediction[seat.index()].clear_history();
                                 if let Some(resources) =
                                     self.runtime.client_resources[id.0 as usize].as_mut()
                                 {
@@ -1060,14 +1062,22 @@ impl FrameHost {
                                 if let Some(binding) =
                                     self.runtime.snapshots[id.0 as usize].as_mut()
                                 {
-                                    binding.apply(
+                                    let prediction = &mut self.runtime.prediction[seat.index()];
+                                    if binding.apply(
                                         incoming,
-                                        &mut self.runtime.prediction[seat.index()].player,
+                                        &mut prediction.player,
                                         &self.runtime.native_numbers[id.0 as usize],
                                         &self.runtime.catalog.hud,
                                         &self.runtime.catalog.registry,
                                         time,
-                                    );
+                                    ) {
+                                        let acknowledged = if binding.protocol == qa_network::commands::packet::Protocol::Quake3_68 {
+                                            Some(qa_core::command_history::Acknowledgement::ServerTime(prediction.player.movement.command_time_ms))
+                                        } else {
+                                            prediction.packet_acknowledged()
+                                        };
+                                        prediction.remember_snapshot(acknowledged);
+                                    }
                                 }
                             }
                         }
@@ -1306,7 +1316,17 @@ impl FrameHost {
                         prediction.player.movement_rules,
                         base,
                     );
-                    let result = prediction.advance(commands[seat], &mut trace);
+                    let result = if let Some(history) = self
+                        .runtime
+                        .network
+                        .get(*id, qa_core::loopback::Endpoint::Client)
+                        .and_then(|connection| connection.commands.as_ref())
+                        .and_then(|commands| commands.history())
+                    {
+                        prediction.replay(history, &mut trace)
+                    } else {
+                        prediction.advance(commands[seat], &mut trace).map(|_| 1)
+                    };
                     prediction.player.movement.tuning = base;
                     if let Err(error) = result {
                         let _ = self.runtime.server.events.console_formatted(format_args!(

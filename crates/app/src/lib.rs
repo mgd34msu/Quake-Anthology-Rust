@@ -298,12 +298,14 @@ impl Runtime {
             targets,
             geometry: qa_world::collision::CollisionStore::new(),
             collision: None,
-            prediction: std::array::from_fn(|_| qa_session::prediction::Prediction {
-                player: qa_core::primitives::PlayerState::with_capacity(
-                    item_slots,
-                    item_slots,
-                    value_slots,
-                ),
+            prediction: std::array::from_fn(|_| {
+                qa_session::prediction::Prediction::new(
+                    qa_core::primitives::PlayerState::with_capacity(
+                        item_slots,
+                        item_slots,
+                        value_slots,
+                    ),
+                )
             }),
             snapshots: std::iter::repeat_with(|| None).take(max_clients).collect(),
             loopback,
@@ -333,6 +335,7 @@ impl Runtime {
             self.output_duplicates.reset_client(id);
             self.network.unbind(id);
             self.input.reset_usercmd_value(seat);
+            self.prediction[seat.index()].clear_history();
             self.loopback.clear_client(id);
             let client = &mut self.server.clients[id.0 as usize];
             client.client_rules = policy.client;

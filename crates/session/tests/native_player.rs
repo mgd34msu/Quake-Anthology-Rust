@@ -75,9 +75,7 @@ fn prediction_copies_metadata_and_effective_hot_inputs_without_copying_inventory
     source.movement.tuning.gravity_multiplier = 0.0;
     source.movement.tuning.gravity = Some(MovementMagnitude::native(1200.0, 0.0));
     source.inventory.item_counts[0] = 99;
-    let mut prediction = Prediction {
-        player: PlayerState::with_capacity(2, 1, 1),
-    };
+    let mut prediction = Prediction::new(PlayerState::with_capacity(2, 1, 1));
     prediction.player.inventory.item_counts[0] = 3;
     let inventory = prediction.player.inventory.item_counts.as_ptr();
     prediction.apply_snapshot(&source);

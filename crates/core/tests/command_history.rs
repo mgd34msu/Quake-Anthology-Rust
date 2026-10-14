@@ -108,3 +108,44 @@ fn resizing_preserves_numbers_and_the_newest_records_without_restarting() {
     assert!(history.resize(0).is_err());
     assert_eq!(history.get(0).unwrap().server_time_ms, 111);
 }
+
+#[test]
+fn pending_commands_are_chronological_bounded_and_counter_wrap_safe() {
+    let mut history = CommandHistory::load(128, 0).unwrap();
+    for number in 1..=129 {
+        history.append(command(number));
+    }
+    assert_eq!(history.pending_after(64).unwrap().len(), 65);
+    assert_eq!(
+        history
+            .pending_after(64)
+            .unwrap()
+            .map(|command| command.server_time_ms)
+            .collect::<Vec<_>>(),
+        (65..=129).collect::<Vec<_>>()
+    );
+    assert_eq!(history.pending_after(0).err(), Some(HistoryError::Expired));
+    assert_eq!(history.pending_after(130).err(), Some(HistoryError::Future));
+    assert_eq!(history.number_at_time(100), Some(100));
+    assert_eq!(history.number_at_time(0), None);
+    let mut history = CommandHistory::load(3, u64::MAX - 1).unwrap();
+    history.append(command(1));
+    history.append(command(2));
+    assert_eq!(
+        history
+            .pending_after(u64::MAX - 1)
+            .unwrap()
+            .map(|command| command.server_time_ms)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+}
+
+#[test]
+fn command_time_before_start_resolves_to_the_starting_number() {
+    let mut history = CommandHistory::load(128, 700).unwrap();
+    history.append(command(701));
+    assert_eq!(history.number_at_time(700), Some(700));
+    assert_eq!(history.number_at_time(701), Some(701));
+    assert_eq!(history.pending_after(700).unwrap().len(), 1);
+}

@@ -822,6 +822,7 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
                         }
                         prints += 1;
                     }
+                    Incoming::CommandProgress(_) => {}
                     _ => unreachable!(),
                 }
             },
@@ -1240,6 +1241,7 @@ fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() 
                         frames.push(frame.sequence);
                     }
                     Incoming::Print(print) => prints.push(print.text.to_vec()),
+                    Incoming::CommandProgress(_) => {}
                     _ => panic!("QW native frame/print"),
                 }
             },
@@ -1602,6 +1604,7 @@ fn qw_connected_playerinfo_retains_native_slot_commands_and_imports_common_playe
                         seen += 1;
                     }
                     Incoming::Print(print) => assert_eq!(print.text, b"playerinfo"),
+                    Incoming::CommandProgress(_) => {}
                     _ => panic!("QW playerinfo/print stream"),
                 }
             },
@@ -1769,6 +1772,9 @@ fn qw_playerinfo_rejects_bad_numbers_and_does_not_commit_truncated_commands() ->
             &mut connections,
             &payload[..length],
             |_, _, incoming| {
+                if matches!(incoming, Incoming::CommandProgress(_)) {
+                    return;
+                }
                 let Incoming::PlayerInfo(info) = incoming else {
                     panic!("player record")
                 };

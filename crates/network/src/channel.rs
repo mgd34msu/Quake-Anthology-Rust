@@ -203,14 +203,11 @@ impl Channel {
         };
         Some(ring.client_number())
     }
-    pub fn q3_move_command_number(&self, sequence: u32) -> Option<u64> {
+    pub fn submitted_command(&self, sequence: u32) -> Option<MoveCommand> {
         if self.endpoint != Endpoint::Client {
             return None;
         }
-        let crate::snapshots::Storage::Quake3(ring) = self.snapshots.as_ref()? else {
-            return None;
-        };
-        Some(ring.move_command_number(sequence))
+        self.snapshots.as_ref()?.submitted_command(sequence)
     }
     pub fn q3_client_snapshot(
         &self,

@@ -650,9 +650,9 @@ impl SnapshotBinding {
         hud: &qa_ui::hud::HudBindings,
         registry: &qa_gameplay::registry::Registry,
         time: qa_core::sys_events::EventTime,
-    ) {
+    ) -> bool {
         let Some(client) = self.presentation.as_mut() else {
-            return;
+            return false;
         };
         let (words, snapshot): (Option<&[u32]>, Option<ReceivedFrame<'_>>) = match incoming {
             Incoming::Snapshot(frame) => match (self.protocol, frame) {
@@ -679,7 +679,7 @@ impl SnapshotBinding {
             });
             if !hud.native_packet_fits(self.protocol.rule_set(), self.player_stats, player, clock) {
                 self.rejected += 1;
-                return;
+                return false;
             }
             if let Some(frame) = snapshot
                 && client.sequence != Some(frame.sequence())
@@ -720,10 +720,12 @@ impl SnapshotBinding {
                 registry.project_player_weapon(player);
                 player.native_clock = clock;
                 self.applied += 1;
+                return true;
             } else {
                 self.rejected += 1;
             }
         }
+        false
     }
 }
 

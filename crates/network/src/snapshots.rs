@@ -62,11 +62,13 @@ pub struct Entity<const N: usize> {
 /// Submission metadata for native ping and outgoing command redundancy.
 #[derive(Clone, Copy)]
 struct MoveObservation {
+    sequence: Option<u32>,
     time: qa_core::sys_events::EventTime,
     command: crate::channel::MoveCommand,
 }
 impl MoveObservation {
     const ZERO: Self = Self {
+        sequence: None,
         time: qa_core::sys_events::EventTime(0),
         command: crate::channel::MoveCommand {
             number: 0,
@@ -159,6 +161,22 @@ pub struct Ring<const P: usize, const E: usize> {
 }
 
 impl<const P: usize, const E: usize> Ring<P, E> {
+    pub(crate) fn record_move(
+        &mut self,
+        sequence: u32,
+        time: qa_core::sys_events::EventTime,
+        command: crate::channel::MoveCommand,
+    ) {
+        self.slots[slot(sequence)].sent_move = MoveObservation {
+            sequence: Some(sequence),
+            time,
+            command,
+        };
+    }
+    pub(crate) fn submitted_command(&self, sequence: u32) -> Option<crate::channel::MoveCommand> {
+        let sent = self.slots[slot(sequence)].sent_move;
+        (sent.sequence == Some(sequence)).then_some(sent.command)
+    }
     pub fn load(
         capacity: usize,
         native_numbers: usize,
@@ -444,17 +462,6 @@ impl Q3Ring {
                 frame,
                 ping: retained.ping,
             }))
-    }
-    pub(crate) fn record_move(
-        &mut self,
-        sequence: u32,
-        time: qa_core::sys_events::EventTime,
-        command: crate::channel::MoveCommand,
-    ) {
-        self.slots[slot(sequence)].sent_move = MoveObservation { time, command };
-    }
-    pub(crate) fn move_command_number(&self, sequence: u32) -> u64 {
-        self.slots[slot(sequence)].sent_move.command.number
     }
     pub(crate) fn observe_ping(
         &mut self,
@@ -774,6 +781,29 @@ impl Storage {
             Self::Quake2(_) => packet::Protocol::Quake2_34,
             Self::Quake2Repro { .. } => packet::Protocol::Quake2Repro1038,
             Self::Quake3(_) => packet::Protocol::Quake3_68,
+        }
+    }
+    pub(crate) fn record_move(
+        &mut self,
+        sequence: u32,
+        time: qa_core::sys_events::EventTime,
+        command: crate::channel::MoveCommand,
+    ) {
+        match self {
+            Self::NetQuake(storage) => storage.ring.record_move(sequence, time, command),
+            Self::QuakeWorld { ring, .. } => ring.record_move(sequence, time, command),
+            Self::Quake2(ring) => ring.record_move(sequence, time, command),
+            Self::Quake2Repro { ring, .. } => ring.record_move(sequence, time, command),
+            Self::Quake3(ring) => ring.record_move(sequence, time, command),
+        }
+    }
+    pub(crate) fn submitted_command(&self, sequence: u32) -> Option<crate::channel::MoveCommand> {
+        match self {
+            Self::NetQuake(storage) => storage.ring.submitted_command(sequence),
+            Self::QuakeWorld { ring, .. } => ring.submitted_command(sequence),
+            Self::Quake2(ring) => ring.submitted_command(sequence),
+            Self::Quake2Repro { ring, .. } => ring.submitted_command(sequence),
+            Self::Quake3(ring) => ring.submitted_command(sequence),
         }
     }
     pub(crate) fn frame(&self, sequence: u32) -> Option<ReceivedFrame<'_>> {

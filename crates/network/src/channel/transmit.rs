@@ -689,7 +689,7 @@ impl Channel {
                 }
             }
         }
-        if self.policy.command_ack && self.endpoint == Endpoint::Client {
+        if !self.policy.datagram && self.endpoint == Endpoint::Client {
             if pending.unreliable == Unreliable::Included {
                 tx.move_flight = Some(MoveSubmission {
                     time,
@@ -698,7 +698,7 @@ impl Channel {
             }
             if !tx.fragment_pending
                 && let Some(observation) = tx.move_flight.take()
-                && let Some(crate::snapshots::Storage::Quake3(ring)) = &mut self.snapshots
+                && let Some(ring) = &mut self.snapshots
             {
                 ring.record_move(request_sequence, observation.time, observation.command);
                 tx.last_command = observation.command;

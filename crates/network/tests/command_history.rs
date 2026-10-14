@@ -183,14 +183,24 @@ fn rejected_and_partial_flights_do_not_publish_new_command_numbers() {
         )
         .unwrap()
         .unwrap();
-    assert_eq!(channel.q3_move_command_number(sequence), Some(0));
+    assert_eq!(
+        channel
+            .submitted_command(sequence)
+            .map(|command| command.number),
+        None
+    );
     assert!(
         channel
             .submit_with(EventTime(1), |_| false)
             .unwrap()
             .is_none()
     );
-    assert_eq!(channel.q3_move_command_number(sequence), Some(0));
+    assert_eq!(
+        channel
+            .submitted_command(sequence)
+            .map(|command| command.number),
+        None
+    );
     let mut fragments = 0;
     loop {
         channel.submitted(EventTime(2)).unwrap();
@@ -198,11 +208,21 @@ fn rejected_and_partial_flights_do_not_publish_new_command_numbers() {
         if !channel.pending_fragments() {
             break;
         }
-        assert_eq!(channel.q3_move_command_number(sequence), Some(0));
+        assert_eq!(
+            channel
+                .submitted_command(sequence)
+                .map(|command| command.number),
+            None
+        );
         channel.prepare_output(EventTime(2)).unwrap().unwrap();
     }
     assert!(fragments > 1);
-    assert_eq!(channel.q3_move_command_number(sequence), Some(1));
+    assert_eq!(
+        channel
+            .submitted_command(sequence)
+            .map(|command| command.number),
+        Some(1)
+    );
     codec.record(command(2)).unwrap();
     codec.set_packet_dup(0);
     q3_check(
@@ -286,5 +306,51 @@ fn native_receive_recovers_lost_moves_from_the_retained_commands() {
                 .unwrap();
         }
         assert_eq!(moves, [1., 2., 3., 4.], "{protocol:?}");
+    }
+}
+
+#[test]
+fn submitted_command_metadata_is_shared_and_old_packet_aliases_expire() {
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let mut channel = Channel::load(
+            protocol.channel(),
+            Endpoint::Client,
+            packet::Q3_MESSAGE_BYTES,
+            8,
+        )
+        .unwrap();
+        channel.configure_snapshots(protocol).unwrap();
+        let mut codec = Commands::load(protocol, packet::Q3_MESSAGE_BYTES);
+        codec.configure_history(4096).unwrap();
+        codec.set_packet_dup(0);
+        let first = channel.send_state().sequence;
+        for number in 1..=34 {
+            codec.record(command(number)).unwrap();
+            let mut bytes = [0; packet::Q3_MESSAGE_BYTES];
+            let length = codec
+                .encode(&command(number), weapon, &channel, &mut bytes)
+                .unwrap();
+            let sequence = channel.send_state().sequence;
+            submit(&mut channel, &bytes[..length], number as u64);
+            let metadata = channel.submitted_command(sequence);
+            if protocol == Protocol::NetQuake15 {
+                assert_eq!(metadata, None);
+            } else {
+                assert_eq!(
+                    metadata,
+                    Some(MoveCommand {
+                        number: number as u64,
+                        server_time_ms: number * 16
+                    })
+                );
+            }
+        }
+        assert_eq!(channel.submitted_command(first), None, "{protocol:?}");
     }
 }
