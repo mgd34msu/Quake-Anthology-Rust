@@ -86,10 +86,11 @@ fn load_retail(product: &str, name: &str, rules: RuleSetId) {
         assert_eq!(negative_tagged_axial, 0);
     }
     let mut geometry = CollisionStore::new();
+    let mut assets = Assets::load().unwrap();
     let loaded = load_input(
         qa_app::map::read(&vfs, name).expect("map input"),
         &vfs,
-        &mut Assets::load().unwrap(),
+        &mut assets,
         &mut geometry,
         rules,
     );
@@ -111,6 +112,32 @@ fn load_retail(product: &str, name: &str, rules: RuleSetId) {
         );
     }
     assert_eq!(loaded.collision_brushes, map.brushes.len());
+    if map.light_grid().len() != 0 {
+        let grid = assets
+            .world(loaded.render.world)
+            .unwrap()
+            .light_grid()
+            .expect("retail grid reaches the registered world");
+        let point = loaded
+            .spawns
+            .first()
+            .map_or(map.models[0].origin, |spawn| spawn.position);
+        let sample = grid.sample(point, 0.6, 1.);
+        assert!(
+            sample
+                .ambient
+                .iter()
+                .chain(sample.directed.iter())
+                .all(|value| value.is_finite())
+        );
+        assert!(sample.direction.is_finite());
+        println!(
+            "{name}: {} grid samples, ambient {:?}, directed {:?}",
+            map.light_grid().len(),
+            sample.ambient,
+            sample.directed
+        );
+    }
     println!(
         "{name}: {} planes, {positive} positive/{negative} negative unit normals, {negative_tagged_axial} negative axial tags, {} brushes admitted",
         map.planes.len(),

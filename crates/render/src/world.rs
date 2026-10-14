@@ -73,8 +73,12 @@ pub struct World {
     pub(crate) visibility: std::sync::Arc<VisibilityWorld>,
     pub(crate) mesh: ModelId,
     pub(crate) presentations: Span,
+    pub(crate) light_grid: Option<crate::lighting::LightGrid>,
 }
 impl World {
+    pub fn light_grid(&self) -> Option<&crate::lighting::LightGrid> {
+        self.light_grid.as_ref()
+    }
     pub fn geometry(&self) -> &geometry::WorldGeometry {
         &self.geometry
     }

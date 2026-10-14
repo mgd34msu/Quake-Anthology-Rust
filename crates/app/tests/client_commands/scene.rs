@@ -792,6 +792,23 @@ pub(super) fn inline_entities(native: bool) {
     let world = model_support::world(&mut assets, 10.0);
     let presentation = qa_render::world::WorldPresentationId(0);
     let bounds = assets.world(world).unwrap().geometry().models[1].bounds;
+    let grid = qa_render::lighting::LightGrid::load(
+        qa_core::primitives::Bounds {
+            mins: Vec3::default(),
+            maxs: Vec3([1.; 3]),
+        },
+        Vec3([1.; 3]),
+        [qa_formats::bsp::LightGridPoint {
+            ambient: [10, 20, 30],
+            directed: [0; 3],
+            longitude: 0,
+            latitude: 0,
+        }; 8]
+            .into_iter(),
+        0,
+    )
+    .unwrap();
+    assets.set_light_grid(world, Some(grid)).unwrap();
     let meshes = assets.models().len();
     let mut builder =
         ModelCatalogBuilder::new(assets, [profile], [world], Default::default()).unwrap();
@@ -859,6 +876,24 @@ pub(super) fn inline_entities(native: bool) {
         entity.axes.map(|axis| axis.0),
         [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
     );
+    assert!(owner.recycle(packet).is_ok());
+    assert_eq!(probe(&mut host, 0, 11, 0), 0); // Enable world lighting in the next refdef.
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(probe(&mut host, 0, 13, 0), 0);
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    let owner = host.runtime.scene.as_mut().unwrap();
+    let packet = owner.finish_frame().unwrap();
+    let Command::View(view) = packet.commands()[1] else {
+        panic!("grid view")
+    };
+    assert_eq!(
+        packet.entities(view.scene.entities)[0]
+            .lighting
+            .unwrap()
+            .ambient,
+        [38., 44., 50.]
+    );
+    assert_eq!(packet.rejected, 0);
     assert!(owner.recycle(packet).is_ok());
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }

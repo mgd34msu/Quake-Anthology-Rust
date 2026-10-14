@@ -64,6 +64,11 @@ impl FrameHost {
             let [Some(core), Some(ring), Some(length)] = rails else {
                 return Err("missing rail renderer cvars".into());
             };
+            let lighting = ["r_ambientScale", "r_directedScale"]
+                .map(|name| self.console.cvars.bind(name, context));
+            let [Some(ambient), Some(directed)] = lighting else {
+                return Err("missing entity lighting cvars".into());
+            };
             row.scene_role.configure(
                 profile,
                 viewport,
@@ -71,6 +76,7 @@ impl FrameHost {
                 world,
                 presentation,
                 [core, ring, length],
+                [ambient, directed],
             );
         }
         Ok(())

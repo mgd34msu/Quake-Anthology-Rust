@@ -420,7 +420,28 @@ pub struct Map<'a> {
     /// Face-indexed BSPX records. None retains the ordinary face lighting.
     pub decoupled_lightmaps: Vec<Option<DecoupledLightmap>>,
 }
+#[derive(Clone, Copy, Debug)]
+pub struct LightGridPoint {
+    pub ambient: [u8; 3],
+    pub directed: [u8; 3],
+    pub longitude: u8,
+    pub latitude: u8,
+}
 impl<'a> Map<'a> {
+    /// Bsp::parse checks the native eight-byte lump stride before this decoder.
+    pub fn light_grid(&self) -> impl ExactSizeIterator<Item = LightGridPoint> + '_ {
+        self.bsp
+            .bytes(Lump::LightGrid)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|point| LightGridPoint {
+                ambient: [point[0], point[1], point[2]],
+                directed: [point[3], point[4], point[5]],
+                longitude: point[6],
+                latitude: point[7],
+            })
+    }
     pub fn parse(bytes: &'a [u8]) -> Result<Self, FormatError> {
         let bsp = Bsp::parse(bytes)?;
         let mut result = decode::map(bsp)?;

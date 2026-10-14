@@ -6,6 +6,57 @@ use qa_render::{
 };
 
 #[test]
+fn grid_interpolation_renormalizes_wall_holes_and_keeps_source_row_aliases() {
+    use qa_core::primitives::Bounds;
+    use qa_formats::bsp::LightGridPoint;
+    use qa_render::lighting::LightGrid;
+    let bounds = Bounds {
+        mins: Vec3::default(),
+        maxs: Vec3([1.; 3]),
+    };
+    let points = std::array::from_fn::<_, 8, _>(|index| LightGridPoint {
+        ambient: [10 * (index as u8 + 1), 20, 30],
+        directed: [8, 16, 24],
+        longitude: 0,
+        latitude: 0,
+    });
+    let grid = LightGrid::load(bounds, Vec3([1.; 3]), points.into_iter(), 0).unwrap();
+    let light = grid.sample(Vec3([0.25, 0.5, 0.75]), 1., 1.);
+    assert_eq!(light.ambient, [52.5, 20., 30.]);
+    assert_eq!(light.directed, [8., 16., 24.]);
+    assert_eq!(light.direction, Vec3([0., 0., 1.]));
+    // The upper X corner of row zero aliases the next in-allocation row.
+    assert_eq!(
+        grid.sample(Vec3([1.5, 0., 0.]), 1., 1.).ambient,
+        [25., 20., 30.]
+    );
+    let mut holes = [LightGridPoint {
+        ambient: [64, 32, 16],
+        directed: [8; 3],
+        longitude: 0,
+        latitude: 0,
+    }; 8];
+    holes[0].ambient = [0; 3];
+    let grid = LightGrid::load(bounds, Vec3([1.; 3]), holes.into_iter(), 0).unwrap();
+    assert_eq!(
+        grid.sample(Vec3([0.5, 0., 0.]), 1., 1.).ambient,
+        [64., 32., 16.]
+    );
+    let points = [LightGridPoint {
+        ambient: [100, 50, 25],
+        directed: [20, 10, 5],
+        longitude: 0,
+        latitude: 0,
+    }; 8];
+    let grid = LightGrid::load(bounds, Vec3([1.; 3]), points.into_iter(), 2).unwrap();
+    let light = grid.sample(Vec3::default(), 2., 0.5);
+    assert_eq!(light.ambient, [510., 254., 126.]);
+    assert_eq!(light.directed, [40., 20., 10.]);
+    assert!(LightGrid::load(bounds, Vec3([0., 1., 1.]), points.into_iter(), 0).is_err());
+    assert!(LightGrid::load(bounds, Vec3([1.; 3]), points[..7].iter().copied(), 0).is_err());
+}
+
+#[test]
 fn native_unlit_sample_keeps_minimum_add_clamp_and_model_local_direction() {
     let sun = math::normalized(Vec3([0.45, 0.3, 0.9]));
     for identity in [0.0, 0.25, 0.5, 1.0] {

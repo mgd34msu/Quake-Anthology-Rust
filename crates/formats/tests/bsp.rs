@@ -1,6 +1,30 @@
 use qa_core::primitives::{Axis, Vec3};
 use qa_formats::{FormatError, bsp::Map};
 
+#[test]
+fn light_grid_lump_decodes_native_color_and_angle_bytes() {
+    let mut bytes = fixture(46);
+    let offset = bytes.len() as i32;
+    let at = 8 + 15 * 8;
+    put(&mut bytes, at, offset);
+    put(&mut bytes, at + 4, 16);
+    bytes.extend_from_slice(&[
+        10, 20, 30, 40, 50, 60, 70, 80, 255, 128, 64, 32, 16, 8, 254, 253,
+    ]);
+    let map = Map::parse(&bytes).unwrap();
+    let points = map.light_grid().collect::<Vec<_>>();
+    assert_eq!(points.len(), 2);
+    assert_eq!(points[0].ambient, [10, 20, 30]);
+    assert_eq!(points[0].directed, [40, 50, 60]);
+    assert_eq!((points[0].longitude, points[0].latitude), (70, 80));
+    assert_eq!((points[1].longitude, points[1].latitude), (254, 253));
+    put(&mut bytes, at + 4, 15);
+    assert!(matches!(
+        Map::parse(&bytes),
+        Err(FormatError::InvalidRecordSize)
+    ));
+}
+
 fn append(lumps: &[Vec<u8>], magic: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0; magic.len() + lumps.len() * 8];
     bytes[..magic.len()].copy_from_slice(magic);

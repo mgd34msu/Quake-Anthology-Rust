@@ -779,12 +779,24 @@ impl Assets {
             visibility: visibility.into(),
             mesh,
             presentations: Span { first, count },
+            light_grid: None,
         });
         self.presentations.extend(registrations);
         Ok(id)
     }
     pub fn world(&self, id: WorldId) -> Option<&World> {
         self.worlds.get(id.0 as usize)
+    }
+    pub fn set_light_grid(
+        &mut self,
+        id: WorldId,
+        grid: Option<crate::lighting::LightGrid>,
+    ) -> Result<(), &'static str> {
+        self.worlds
+            .get_mut(id.0 as usize)
+            .ok_or("world light-grid handle")?
+            .light_grid = grid;
+        Ok(())
     }
     pub fn world_presentation(&self, id: WorldPresentationId) -> Option<&WorldPresentation> {
         self.presentations.get(id.0 as usize)

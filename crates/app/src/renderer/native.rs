@@ -20,6 +20,7 @@ struct Target {
     world: Option<(WorldId, WorldPresentationId)>,
     presentation: qa_render::material::world_load::PresentationDefaults,
     rails: [qa_console::cvars::View; 3],
+    lighting: [qa_console::cvars::View; 2],
 }
 impl Target {
     fn world_presentation<'a>(
@@ -68,6 +69,7 @@ impl SceneRole {
         world: Option<(WorldId, WorldPresentationId)>,
         presentation: qa_render::material::world_load::PresentationDefaults,
         rails: [qa_console::cvars::View; 3],
+        lighting: [qa_console::cvars::View; 2],
     ) {
         self.target = Some(Target {
             profile,
@@ -76,6 +78,7 @@ impl SceneRole {
             world,
             presentation,
             rails,
+            lighting,
         });
     }
 }
@@ -85,6 +88,7 @@ pub(crate) struct SceneBorrow<'a> {
     models: Option<&'a ModelCatalog>,
     role: &'a mut SceneRole,
     rails: (i32, i32, f32),
+    lighting: [f32; 2],
 }
 impl<'a> SceneBorrow<'a> {
     pub(crate) fn new(
@@ -101,11 +105,17 @@ impl<'a> SceneBorrow<'a> {
                 cvars.numeric(target.rails[2]).unwrap_or(0.),
             )
         });
+        let lighting = role.target.as_ref().map_or([1.; 2], |target| {
+            target
+                .lighting
+                .map(|view| cvars.numeric(view).unwrap_or(0.))
+        });
         let mut borrow = Self {
             composer,
             models,
             role,
             rails,
+            lighting,
         };
         if let Some(composer) = borrow.composer.as_deref_mut()
             && composer.publisher != Some(module)
@@ -325,6 +335,7 @@ impl SceneService for SceneBorrow<'_> {
             .is_some_and(|frame| frame.draw_2d(draw))
     }
     fn view(&mut self, mut view: SceneView) -> Result<bool, CallError> {
+        let selected_world = self.selected_world();
         let target = self.role.target.as_ref().ok_or(CallError::Geometry)?;
         let composer = self.composer.as_deref_mut().ok_or(CallError::Geometry)?;
         let local = view.refdef.viewport;
@@ -338,13 +349,23 @@ impl SceneService for SceneBorrow<'_> {
             .validate(u32::MAX, u32::MAX)
             .ok_or(CallError::Geometry)?;
         let frame = composer.frame.as_mut().ok_or(CallError::Geometry)?;
-        if !view.world {
-            let sample = qa_render::lighting::unlit_sample(
-                view.refdef.identity_light,
-                composer.sun_direction,
-            );
-            frame.light_entities(view.refdef.identity_light, |_| sample);
-        }
+        let grid = view
+            .world
+            .then_some(selected_world)
+            .flatten()
+            .and_then(|world| composer.assets.world(world))
+            .and_then(|world| world.light_grid());
+        let unlit =
+            qa_render::lighting::unlit_sample(view.refdef.identity_light, composer.sun_direction);
+        frame.light_entities(view.refdef.identity_light, |entity| {
+            grid.map_or(unlit, |grid| {
+                grid.sample(
+                    entity.lighting_origin.unwrap_or(entity.origin),
+                    self.lighting[0],
+                    self.lighting[1],
+                )
+            })
+        });
         if view.world && !view.refdef.hyperspace {
             let (world_id, presentation) = target.world.ok_or(CallError::Geometry)?;
             if self.role.selected_world != Some(world_id) {

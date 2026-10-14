@@ -365,6 +365,15 @@ pub fn load_world(
     let world = assets
         .register_world(geometry, visibility, &variant_slices)
         .map_err(WorldMaterialError::Boundary)?;
+    match crate::lighting::LightGrid::load_map(
+        map,
+        (options.map_overbright - options.renderer_overbright) as i8,
+    ) {
+        Ok(grid) => assets
+            .set_light_grid(world, grid)
+            .map_err(WorldMaterialError::Boundary)?,
+        Err(error) => diagnostics.push(error.to_owned()),
+    }
     let first = assets
         .world(world)
         .ok_or(WorldMaterialError::Boundary("missing registered world"))?
