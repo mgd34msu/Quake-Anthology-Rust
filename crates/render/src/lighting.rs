@@ -5,6 +5,10 @@ use crate::{
 };
 use qa_core::{math, primitives::Vec3};
 
+pub fn default_sun_direction() -> Vec3 {
+    math::normalized(Vec3([0.45, 0.3, 0.9]))
+}
+
 pub struct PointLighting {
     eligible: qa_core::bits::BitSet,
     indexed_styles: bool,

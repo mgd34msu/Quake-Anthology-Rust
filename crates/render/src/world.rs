@@ -75,8 +75,12 @@ pub struct World {
     pub(crate) presentations: Span,
     pub(crate) light_grid: Option<crate::lighting::LightGrid>,
     pub(crate) point_lighting: Option<crate::lighting::PointLighting>,
+    pub(crate) sun_direction: qa_core::primitives::Vec3,
 }
 impl World {
+    pub fn sun_direction(&self) -> qa_core::primitives::Vec3 {
+        self.sun_direction
+    }
     pub fn light_grid(&self) -> Option<&crate::lighting::LightGrid> {
         self.light_grid.as_ref()
     }

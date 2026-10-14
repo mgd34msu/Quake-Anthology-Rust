@@ -781,12 +781,23 @@ impl Assets {
             presentations: Span { first, count },
             light_grid: None,
             point_lighting: None,
+            sun_direction: crate::lighting::default_sun_direction(),
         });
         self.presentations.extend(registrations);
         Ok(id)
     }
     pub fn world(&self, id: WorldId) -> Option<&World> {
         self.worlds.get(id.0 as usize)
+    }
+    pub fn set_world_sun(&mut self, id: WorldId, direction: Vec3) -> Result<(), &'static str> {
+        if !direction.is_finite() {
+            return Err("invalid world sun direction");
+        }
+        self.worlds
+            .get_mut(id.0 as usize)
+            .ok_or("world sun handle")?
+            .sun_direction = direction;
+        Ok(())
     }
     pub fn set_light_grid(
         &mut self,

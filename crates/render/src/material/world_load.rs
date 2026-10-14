@@ -327,6 +327,7 @@ pub fn load_world(
     }
     let mut variants = Vec::with_capacity(distinct.len());
     let mut defaults = Vec::with_capacity(distinct.len());
+    let mut sun = None;
     for &profile in &distinct {
         let presentation = presentation_defaults(profile, &options);
         let conversion = if matches!(geometry_source, RuleSetId::Quake) {
@@ -344,7 +345,7 @@ pub fn load_world(
             &presentation.lightstyles,
             conversion,
         )?;
-        variants.push(compile_presentation(
+        let (bindings, registered_sun) = compile_presentation(
             vfs,
             map,
             assets,
@@ -358,13 +359,20 @@ pub fn load_world(
             &lightmaps,
             conversion,
             &mut diagnostics,
-        )?);
+        )?;
+        variants.push(bindings);
+        sun = registered_sun.or(sun);
         defaults.push(presentation);
     }
     let variant_slices: Vec<_> = variants.iter().map(Vec::as_slice).collect();
     let world = assets
         .register_world(geometry, visibility, &variant_slices)
         .map_err(WorldMaterialError::Boundary)?;
+    if let Some(sun) = sun {
+        assets
+            .set_world_sun(world, sun)
+            .map_err(WorldMaterialError::Boundary)?;
+    }
     if !matches!(geometry_source, RuleSetId::Quake3) {
         let lighting = crate::lighting::PointLighting::load(
             matches!(geometry_source, RuleSetId::Quake),
@@ -467,7 +475,7 @@ fn compile_presentation(
     lightmaps: &[Option<ImageId>],
     lightmap_conversion: LightmapConversion,
     diagnostics: &mut Vec<String>,
-) -> Result<Vec<SurfaceMaterial>, WorldMaterialError> {
+) -> Result<(Vec<SurfaceMaterial>, Option<qa_core::primitives::Vec3>), WorldMaterialError> {
     let geometry_source = map.bsp.format.rule_set();
     let presentation_rules = profile.rules;
     let mut images = Images::new(
@@ -508,6 +516,7 @@ fn compile_presentation(
         }
     }
     let mut bindings = Vec::with_capacity(geometry.surfaces.len());
+    let mut sun = None;
     for (surface, &kind) in geometry.surfaces.iter().zip(legacy_kinds) {
         let (warp, sky) = kind;
         if surface.no_draw {
@@ -617,6 +626,9 @@ fn compile_presentation(
             .then(|| canonical_path(&format!("textures/{name}")));
         let definition = catalog.find_canonical(legacy_shader_name.as_deref().unwrap_or(&name));
         let material = if let Some(definition) = definition.filter(|d| d.valid) {
+            if let Some(parameters) = definition.sun {
+                sun = Some(parameters.direction());
+            }
             compile_definition(definition, &mut images)?
         } else {
             if definition.is_some() {
@@ -665,7 +677,7 @@ fn compile_presentation(
             conflict.requested
         ));
     }
-    Ok(bindings)
+    Ok((bindings, sun))
 }
 
 struct LightmapLayout {

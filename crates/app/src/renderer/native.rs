@@ -362,9 +362,9 @@ impl SceneService for SceneBorrow<'_> {
         super::light_view_entities(
             frame,
             &composer.assets,
-            if view.world { selected_world } else { None },
+            selected_world,
             &view.refdef,
-            composer.sun_direction,
+            view.world,
             self.lighting,
             point_view,
             modulate,

@@ -8,6 +8,25 @@ fn parse(text: &[u8]) -> ShaderCatalog {
 }
 
 #[test]
+fn sun_angles_keep_native_division_and_double_trig_products() {
+    for (azimuth, elevation, expected) in [
+        (0., 0., [1., 0., 0.]),
+        (45., 60., [0.35355335, 0.35355335, 0.86602545]),
+        (-45., -60., [0.35355335, -0.35355335, -0.86602545]),
+    ] {
+        let sun = SunParms {
+            color: [1.; 3],
+            intensity: 200.,
+            azimuth_degrees: azimuth,
+            elevation_degrees: elevation,
+        };
+        for (actual, expected) in sun.direction().0.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 0.0000001);
+        }
+    }
+}
+
+#[test]
 fn native_masked_lightmap_state_and_load_names() {
     let catalog = parse(
         br#"

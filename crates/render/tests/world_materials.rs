@@ -356,6 +356,59 @@ fn mount(root: &std::path::Path) -> Result<Vfs, String> {
 }
 
 #[test]
+fn registered_suns_follow_used_material_order_and_remain_owned_by_each_world() -> Result<(), String>
+{
+    let root = resources("world-suns")?;
+    let bytes = map_bytes(1);
+    let map = legacy_map(&bytes, 1)?;
+    let mut assets = Assets::load().unwrap();
+    let mut worlds = Vec::new();
+    for (shader, expected) in [
+        (
+            "unused {\n q3map_sun 1 1 1 200 90 0\n { map $whiteimage }\n }",
+            qa_render::lighting::default_sun_direction(),
+        ),
+        (
+            "textures/wall {\n q3map_sun 1 1 1 200 90 60\n { map $whiteimage }\n }\n textures/other {\n q3map_sun 1 1 1 200 0 0\n { map $whiteimage }\n }",
+            Vec3([1., 0., 0.]),
+        ),
+        (
+            "textures/wall {\n q3map_sun 1 1 1 200 90 0\n { map $whiteimage }\n }",
+            Vec3([
+                (f64::from(std::f32::consts::FRAC_PI_2).cos()) as f32,
+                1.,
+                0.,
+            ]),
+        ),
+    ] {
+        std::fs::write(root.join("scripts/test.shader"), shader).unwrap();
+        let loaded = load_native_world(
+            &mount(&root)?,
+            &map,
+            &mut assets,
+            RuleSetId::Quake,
+            WorldLoadOptions::default(),
+        )
+        .map_err(|error| format!("sun world: {error:?}"))?;
+        assert_eq!(
+            assets.world(loaded.world).unwrap().sun_direction(),
+            expected
+        );
+        worlds.push((loaded.world, expected));
+        for &(world, expected) in &worlds {
+            assert_eq!(assets.world(world).unwrap().sun_direction(), expected);
+        }
+    }
+    assert!(
+        assets
+            .set_world_sun(worlds[0].0, Vec3([f32::NAN, 0., 1.]))
+            .is_err()
+    );
+    std::fs::remove_dir_all(root).unwrap();
+    Ok(())
+}
+
+#[test]
 fn authored_stages_replace_only_matching_legacy_faces_and_keep_their_lightmaps()
 -> Result<(), String> {
     let root = resources("authored")?;
@@ -838,6 +891,11 @@ fn one_geometry_presents_explicit_palette_variants_in_both_seat_orders() -> Resu
 fn foreign_presentation_keeps_q3_geometry_coordinates_and_source_overbright() -> Result<(), String>
 {
     let root = resources("q3-source")?;
+    std::fs::write(
+        root.join("scripts/test.shader"),
+        "textures/modern {\n q3map_sun 1 1 1 200 0 0\n { map textures/modern }\n }",
+    )
+    .unwrap();
     let vfs = mount(&root)?;
     let bytes = map_bytes(3);
     let mut map = legacy_map(&bytes, 3)?;
@@ -876,6 +934,7 @@ fn foreign_presentation_keeps_q3_geometry_coordinates_and_source_overbright() ->
         let loaded = load_native_world(&vfs, &map, &mut assets, rules, WorldLoadOptions::default())
             .map_err(|e| format!("material: {e:?}"))?;
         let world = assets.world(loaded.world).unwrap();
+        assert_eq!(world.sun_direction(), Vec3([1., 0., 0.]));
         assert_eq!(
             world.geometry().surfaces[0].texture_coordinates,
             TextureCoordinates::Normalized

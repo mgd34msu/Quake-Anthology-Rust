@@ -246,12 +246,16 @@ pub(crate) fn light_view_entities(
     assets: &Assets,
     world: Option<qa_render::world::WorldId>,
     view: &Refdef,
-    sun: qa_core::primitives::Vec3,
+    use_world_lighting: bool,
     scales: [f32; 2],
     mut point_view: Option<&mut WorldView>,
     modulate: f32,
 ) {
     let world = world.and_then(|world| assets.world(world));
+    let sun = world.map_or_else(qa_render::lighting::default_sun_direction, |world| {
+        world.sun_direction()
+    });
+    let world = world.filter(|_| use_world_lighting);
     let grid = world.and_then(|world| world.light_grid());
     let unlit = qa_render::lighting::unlit_sample(view.identity_light, sun);
     frame.light_entities(view.identity_light, |entity| {
@@ -304,7 +308,6 @@ pub struct SceneComposer {
     native_axes: [Option<[qa_core::primitives::Vec3; 3]>; SeatId::COUNT],
     kind: Kind,
     beam: qa_render::MaterialId,
-    sun_direction: qa_core::primitives::Vec3,
 }
 
 impl SceneComposer {
@@ -357,9 +360,6 @@ impl SceneComposer {
                 native_axes: [None; SeatId::COUNT],
                 kind: Kind::Cpu,
                 beam,
-                sun_direction: qa_core::math::normalized(qa_core::primitives::Vec3([
-                    0.45, 0.3, 0.9,
-                ])),
             },
             limits,
         ))
@@ -680,7 +680,7 @@ impl Renderer {
                     &composition.assets,
                     Some(client.world),
                     &refdef,
-                    composition.sun_direction,
+                    true,
                     client.lighting_scales,
                     Some(&mut scene.views[seat]),
                     scene

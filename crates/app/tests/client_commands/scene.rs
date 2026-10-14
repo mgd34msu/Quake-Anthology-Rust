@@ -810,6 +810,7 @@ pub(super) fn inline_entities(native: bool) {
     )
     .unwrap();
     assets.set_light_grid(world, Some(grid)).unwrap();
+    assets.set_world_sun(world, Vec3([0., 1., 0.])).unwrap();
     let meshes = assets.models().len();
     let mut builder =
         ModelCatalogBuilder::new(assets, [profile], [world], Default::default()).unwrap();
@@ -873,6 +874,11 @@ pub(super) fn inline_entities(native: bool) {
         }
     );
     assert_eq!(entity.origin.0, [8., 0., 0.]);
+    assert_eq!(
+        entity.lighting.unwrap().direction,
+        Vec3([0., 1., 0.]),
+        "a no-world native view retains the selected world's sun instead of its grid"
+    );
     assert_eq!(
         entity.axes.map(|axis| axis.0),
         [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]

@@ -93,6 +93,19 @@ pub struct SunParms {
     pub azimuth_degrees: f32,
     pub elevation_degrees: f32,
 }
+impl SunParms {
+    pub fn direction(self) -> qa_core::primitives::Vec3 {
+        // ParseShader divides the float degrees before multiplying by M_PI,
+        // then multiplies the double trig results before narrowing to float.
+        let azimuth = f64::from(self.azimuth_degrees / 180. * std::f32::consts::PI);
+        let elevation = f64::from(self.elevation_degrees / 180. * std::f32::consts::PI);
+        qa_core::primitives::Vec3([
+            (azimuth.cos() * elevation.cos()) as f32,
+            (azimuth.sin() * elevation.cos()) as f32,
+            elevation.sin() as f32,
+        ])
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShaderStage {
     pub map: Option<TextureMap>,
