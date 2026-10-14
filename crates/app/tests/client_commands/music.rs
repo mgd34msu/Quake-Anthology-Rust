@@ -159,6 +159,14 @@ pub(super) fn wire_music_reaches_shared_paint() {
                 source.pcm,
                 [1000, -1000, 2000, -2000, 1000, -1000, 2000, -2000]
             );
+            source.time = EventTime::from_milliseconds(250);
+            let n = qa_network::outputs::configstring(protocol, row, b"12-theme.ogg", &mut bytes)
+                .unwrap();
+            send(&mut host, &bytes[..n]);
+            let frame = host.frame(&mut source, true);
+            assert_eq!(frame.output.music, 1);
+            assert_eq!(frame.output.unhandled_music, 0);
+            assert_eq!(source.pcm, std::array::from_fn(|i| mono.samples[i / 2]));
         }
         source.time = EventTime::from_milliseconds(300);
         let n = qa_network::outputs::cd_track(

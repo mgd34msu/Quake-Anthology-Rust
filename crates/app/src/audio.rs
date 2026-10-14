@@ -593,9 +593,9 @@ pub fn music(
         if intro.is_empty() {
             return Err(CommandError::Usage);
         }
-        let intro = music_path(&runtime.vfs, intro)?;
+        let intro = music_path(&runtime.vfs, intro.as_bytes())?;
         let loop_track = loop_track
-            .map(|name| music_path(&runtime.vfs, name))
+            .map(|name| music_path(&runtime.vfs, name.as_bytes()))
             .transpose()?;
         runtime
             .server
@@ -622,19 +622,16 @@ pub fn music(
 }
 fn music_path(
     vfs: &qa_content::vfs::Vfs,
-    name: &str,
+    name: &[u8],
 ) -> Result<qa_core::text::FixedText<8192>, CommandError> {
     let mut path = qa_core::text::FixedText::default();
     // Explicit mounted paths remain usable outside music/. Bare names gain
-    // that directory and WAV extension when they do not name an existing file.
-    if vfs.open(name.as_bytes()).is_none() && !name.bytes().any(|byte| matches!(byte, b'/' | b'\\'))
-    {
+    // that directory; the player resolves native extension preference.
+    if vfs.open(name).is_none() && !name.iter().any(|byte| matches!(byte, b'/' | b'\\')) {
         path.append_bytes(b"music/")
             .map_err(|_| CommandError::Usage)?;
     }
-    path.append_bytes(name.as_bytes())
-        .map_err(|_| CommandError::Usage)?;
-    qa_core::names::default_extension(&mut path, b".wav", true).map_err(|_| CommandError::Usage)?;
+    path.append_bytes(name).map_err(|_| CommandError::Usage)?;
     Ok(path)
 }
 
@@ -676,18 +673,16 @@ pub(crate) fn config_music(
     client: qa_core::primitives::ClientId,
     text: &[u8],
 ) {
+    let text = text.trim_ascii();
     let (number, consumed) = qa_core::text::integer_prefix(text);
-    if text.is_empty() || consumed != 0 {
+    if text.is_empty() || consumed == text.len() {
         cd_track(runtime, client, u32::try_from(number).unwrap_or(0));
         return;
     }
     let Some((owner, playback)) = client_music_owner(runtime, client) else {
         return;
     };
-    let Ok(name) = std::str::from_utf8(text) else {
-        return;
-    };
-    let Ok(path) = music_path(&runtime.vfs, name) else {
+    let Ok(path) = music_path(&runtime.vfs, text) else {
         return;
     };
     let _ = runtime

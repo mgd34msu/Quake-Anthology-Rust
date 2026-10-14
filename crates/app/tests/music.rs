@@ -73,12 +73,76 @@ impl Fixture {
             ("track02.ogg", STEREO),
             ("04.ogg", &b"broken"[..]),
             ("track04.ogg", MONO),
+            ("choice.ogg", MONO),
+            ("fallback.ogg", MONO),
+            ("fallback.wav", &b"broken"[..]),
+            ("12-theme.ogg", MONO),
         ] {
             qa_platform::files::write(self.root.join("music").join(name), bytes).unwrap();
         }
         let wave = qa_platform::files::read(self.root.join("music/intro.wav")).unwrap();
         qa_platform::files::write(self.root.join("music/track03.wav"), wave).unwrap();
+        let wave = qa_platform::files::read(self.root.join("music/intro.wav")).unwrap();
+        qa_platform::files::write(self.root.join("music/choice.wav"), wave).unwrap();
         self.vfs.mount_directory(&self.root, 2).unwrap();
+    }
+}
+
+#[test]
+fn named_track_extension_order_is_source_data_with_fallback_to_valid_prepared_audio() {
+    let mut fixture = Fixture::new();
+    fixture.numbered();
+    let mono = qa_formats::sound::vorbis(MONO).unwrap();
+    for rules in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        for name in [
+            &b"music/choice"[..],
+            &b"music/fallback"[..],
+            &b"music/12-theme.ogg"[..],
+        ] {
+            let mut music = Music::load(&fixture.vfs);
+            let mut mix = mixer();
+            let playback = qa_gameplay::rules::music_playback(rules);
+            let mut control = start(owner(1), false, false);
+            if let MusicControl::Start {
+                playback: actual, ..
+            } = &mut control
+            {
+                *actual = playback;
+            }
+            assert!(music.control(&fixture.vfs, &mut mix, control, Some(name), None));
+            music.update(&fixture.vfs, &mut mix, 1.);
+            let mut actual = [0; 8];
+            mix.paint(&mut actual);
+            let wave = rules == RuleSetId::Quake3 && name == b"music/choice";
+            if wave {
+                assert_eq!(actual, [625, -625, 1250, -1250, 0, 0, 0, 0]);
+            } else {
+                let mut reference = mixer();
+                let bytes: Vec<_> = mono.samples.iter().flat_map(|x| x.to_le_bytes()).collect();
+                reference
+                    .queue_raw(
+                        PcmFormat {
+                            rate: mono.rate,
+                            channels: mono.channels,
+                            width: PcmWidth::Short,
+                        },
+                        &bytes,
+                        if playback.smooth_volume { 0.625 } else { 1. },
+                        playback.signed_stereo_bytes,
+                    )
+                    .unwrap();
+                let mut expected = [0; 8];
+                reference.paint(&mut expected);
+                assert_eq!(actual, expected, "{rules:?}, {name:?}");
+            }
+            assert_eq!(music.counts.invalid, 0);
+        }
     }
 }
 impl Drop for Fixture {
@@ -113,6 +177,7 @@ fn start(owner: MusicOwner, preserve: bool, smooth: bool) -> MusicControl {
     MusicControl::Start {
         owner,
         playback: MusicPlayback {
+            wave_first: preserve,
             smooth_volume: smooth,
             preserve_queued: preserve,
             signed_stereo_bytes: true,
@@ -656,4 +721,49 @@ fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
     mix.paint(&mut output);
     assert_eq!(output, [1000, -1000, 2000, -2000, 0, 0]);
     assert!(!music.playing());
+}
+
+#[test]
+fn console_bare_music_names_reach_the_same_source_selected_resolver() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake3] {
+        let mut fixture = Fixture::new();
+        fixture.numbered();
+        let mut runtime = qa_app::Runtime::load(1, []).unwrap();
+        runtime.vfs = std::mem::take(&mut fixture.vfs);
+        let context = qa_console::views::Context {
+            source: rules,
+            ..Default::default()
+        };
+        let mut console = qa_console::commands::Console::new(context).unwrap();
+        console.register("music", qa_app::audio::music);
+        let mut music = Music::load(&runtime.vfs);
+        let mut mix = mixer();
+        let control = console_control(
+            &mut runtime,
+            &mut console,
+            &mut music,
+            &mut mix,
+            "music choice",
+            context,
+        )
+        .unwrap();
+        let MusicControl::Start { intro, .. } = control else {
+            panic!("start");
+        };
+        assert_eq!(
+            runtime.server.events.texts.get(intro),
+            None,
+            "ring paths retired after consumption"
+        );
+        music.update(&runtime.vfs, &mut mix, 1.);
+        let mut actual = [0; 8];
+        mix.paint(&mut actual);
+        if rules == RuleSetId::Quake3 {
+            assert_eq!(actual, [625, -625, 1250, -1250, 625, -625, 1250, -1250]);
+        } else {
+            let mono = qa_formats::sound::vorbis(MONO).unwrap();
+            assert_eq!(actual, std::array::from_fn(|i| mono.samples[i / 2]));
+        }
+        assert_eq!(music.counts.invalid, 0);
+    }
 }

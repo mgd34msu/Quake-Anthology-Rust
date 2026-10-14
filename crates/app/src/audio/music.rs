@@ -187,6 +187,7 @@ impl Music {
             loop_track: None,
             tracks: tracks.into_boxed_slice(),
             playback: MusicPlayback {
+                wave_first: false,
                 smooth_volume: false,
                 preserve_queued: false,
                 signed_stereo_bytes: false,
@@ -219,6 +220,33 @@ impl Music {
             }
         }
         None
+    }
+    fn named_file(&self, vfs: &Vfs, name: &[u8], wave_first: bool) -> Option<FileRef> {
+        // Explicit names keep their native meaning, including mounted files
+        // outside music/ and extensions unrelated to their PCM encoding.
+        if let Some(file) = vfs.open(name) {
+            return Some(file);
+        }
+        let extensions: [&[u8]; 2] = if wave_first {
+            [b".wav", b".ogg"]
+        } else {
+            [b".ogg", b".wav"]
+        };
+        let mut invalid = None;
+        for extension in extensions {
+            let mut path = qa_core::text::FixedText::<8192>::default();
+            path.append_bytes(name).ok()?;
+            qa_core::names::default_extension(&mut path, extension, true).ok()?;
+            if let Some(file) = vfs.open(path.as_bytes()) {
+                if self.track(file).is_some() {
+                    return Some(file);
+                }
+                invalid.get_or_insert(file);
+            }
+        }
+        // An existing malformed loop retains its old failure/queued-PCM
+        // semantics instead of becoming an absent loop.
+        invalid
     }
     fn start(
         &mut self,
@@ -309,11 +337,11 @@ impl Music {
                 owner, playback, ..
             } => {
                 let opened = intro
-                    .and_then(|name| vfs.open(name))
+                    .and_then(|name| self.named_file(vfs, name, playback.wave_first))
                     .and_then(|file| self.track(file));
                 let loop_track = loop_track
                     .filter(|name| !name.is_empty())
-                    .and_then(|name| vfs.open(name));
+                    .and_then(|name| self.named_file(vfs, name, playback.wave_first));
                 self.start(mixer, owner, playback, opened, loop_track)
             }
         }

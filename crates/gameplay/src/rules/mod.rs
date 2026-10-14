@@ -14,6 +14,7 @@ pub use sound::{
 pub fn music_playback(rules: RuleSetId) -> qa_core::primitives::MusicPlayback {
     let native_raw = rules == RuleSetId::Quake3;
     qa_core::primitives::MusicPlayback {
+        wave_first: native_raw,
         smooth_volume: native_raw,
         preserve_queued: native_raw,
         signed_stereo_bytes: native_raw,

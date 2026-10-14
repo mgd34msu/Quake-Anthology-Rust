@@ -237,6 +237,7 @@ pub struct MusicOwner {
 /// Transition and sample rules selected at the source boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MusicPlayback {
+    pub wave_first: bool,
     pub smooth_volume: bool,
     pub preserve_queued: bool,
     pub signed_stereo_bytes: bool,

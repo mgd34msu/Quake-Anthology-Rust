@@ -1121,6 +1121,7 @@ fn music_paths_retire_with_presentation_and_an_independent_text_lease() {
         )),
     };
     let playback = MusicPlayback {
+        wave_first: true,
         smooth_volume: true,
         preserve_queued: true,
         signed_stereo_bytes: true,
@@ -1162,6 +1163,7 @@ fn music_second_path_failure_rolls_back_first_path_and_counts_once() {
         client: None,
     };
     let playback = MusicPlayback {
+        wave_first: false,
         smooth_volume: false,
         preserve_queued: false,
         signed_stereo_bytes: false,
