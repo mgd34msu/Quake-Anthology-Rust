@@ -1,7 +1,8 @@
 //! Decode once at precache into the shared PCM representation.
 use crate::{FormatError, read::Reader};
 use qa_core::primitives::{Pcm, PcmChannels, PcmFormat, PcmWidth};
-use std::{io::Cursor, num::NonZeroU32};
+use std::num::NonZeroU32;
+pub mod ogg;
 
 const MAX_SAMPLES: usize = 256 * 1024 * 1024 / 2;
 
@@ -371,29 +372,88 @@ pub fn decode(bytes: &[u8], policy: WavPolicy) -> Result<Pcm, FormatError> {
     }
 }
 pub fn vorbis(bytes: &[u8]) -> Result<Pcm, FormatError> {
-    let mut reader = lewton::inside_ogg::OggStreamReader::new(Cursor::new(bytes))
-        .map_err(|_| FormatError::InvalidValue)?;
-    let channels = match reader.ident_hdr.audio_channels {
+    use lewton::{
+        audio::{PreviousWindowRight, read_audio_packet_generic},
+        header::read_header_ident,
+        samples::InterleavedSamples,
+    };
+    let plan = ogg::Plan::inspect(bytes.len() as u64, |at, out| {
+        ogg::slice_read(bytes, at, out)
+    })?;
+    let mut reader = ogg::Packets::load(plan)?;
+    let mut serial;
+    let mut ident;
+    loop {
+        let packet = reader.next_slice(bytes)?.ok_or(FormatError::Truncated)?;
+        if packet.data.starts_with(b"\x01vorbis") {
+            serial = packet.serial;
+            ident = read_header_ident(packet.data).map_err(|_| FormatError::InvalidValue)?;
+            break;
+        }
+    }
+    let mut setup = vorbis_setup(&mut reader, bytes, serial, &ident)?;
+    let channels = match ident.audio_channels {
         1 => PcmChannels::Mono,
         2 => PcmChannels::Stereo,
         _ => return Err(FormatError::Unsupported),
     };
-    let rate =
-        NonZeroU32::new(reader.ident_hdr.audio_sample_rate).ok_or(FormatError::InvalidValue)?;
+    let rate = NonZeroU32::new(ident.audio_sample_rate).ok_or(FormatError::InvalidValue)?;
     let mut samples = Vec::new();
-    while let Some(packet) = reader
-        .read_dec_packet_itl()
-        .map_err(|_| FormatError::InvalidValue)?
-    {
-        if reader.ident_hdr.audio_channels != channels as u8
-            || reader.ident_hdr.audio_sample_rate != rate.get()
-        {
-            return Err(FormatError::Unsupported);
+    let mut previous = PreviousWindowRight::new();
+    let mut granule: Option<u64> = None;
+    let mut ended = false;
+    while let Some(packet) = reader.next_slice(bytes)? {
+        if packet.serial != serial {
+            if !ended || !packet.first_in_stream || !packet.data.starts_with(b"\x01vorbis") {
+                continue;
+            }
+            serial = packet.serial;
+            ident = read_header_ident(packet.data).map_err(|_| FormatError::InvalidValue)?;
+            if ident.audio_channels != channels as u8 || ident.audio_sample_rate != rate.get() {
+                return Err(FormatError::Unsupported);
+            }
+            setup = vorbis_setup(&mut reader, bytes, serial, &ident)?;
+            previous = PreviousWindowRight::new();
+            loop {
+                let prime = reader.next_slice(bytes)?.ok_or(FormatError::Truncated)?;
+                if prime.serial != serial {
+                    continue;
+                }
+                let _: InterleavedSamples<i16> =
+                    read_audio_packet_generic(&ident, &setup, prime.data, &mut previous)
+                        .map_err(|_| FormatError::InvalidValue)?;
+                granule = prime.granule;
+                ended = prime.last_in_stream;
+                break;
+            }
+            continue;
         }
-        if packet.len() > MAX_SAMPLES - samples.len() || packet.len() % channels as usize != 0 {
+        let mut decoded: InterleavedSamples<i16> =
+            read_audio_packet_generic(&ident, &setup, packet.data, &mut previous)
+                .map_err(|_| FormatError::InvalidValue)?;
+        if packet.last_in_stream
+            && let (Some(before), Some(end)) = (granule, packet.granule)
+        {
+            let frames = usize::try_from(end.saturating_sub(before)).unwrap_or(usize::MAX);
+            let count = frames
+                .saturating_mul(channels as usize)
+                .min(decoded.samples.len());
+            decoded.samples.truncate(count);
+        }
+        if packet.last_in_page {
+            granule = packet.granule;
+        } else if let Some(before) = &mut granule {
+            *before = before
+                .checked_add((decoded.samples.len() / channels as usize) as u64)
+                .ok_or(FormatError::InvalidRange)?;
+        }
+        ended = packet.last_in_stream;
+        if decoded.samples.len() > MAX_SAMPLES - samples.len()
+            || decoded.samples.len() % channels as usize != 0
+        {
             return Err(FormatError::InvalidRange);
         }
-        samples.extend(packet);
+        samples.extend(decoded.samples);
     }
     Ok(Pcm {
         rate,
@@ -403,4 +463,31 @@ pub fn vorbis(bytes: &[u8]) -> Result<Pcm, FormatError> {
         loop_end: None,
         loop_invalid: false,
     })
+}
+fn vorbis_setup(
+    reader: &mut ogg::Packets,
+    bytes: &[u8],
+    serial: u32,
+    ident: &lewton::header::IdentHeader,
+) -> Result<lewton::header::SetupHeader, FormatError> {
+    for setup in [false, true] {
+        loop {
+            let packet = reader.next_slice(bytes)?.ok_or(FormatError::Truncated)?;
+            if packet.serial != serial {
+                continue;
+            }
+            if setup {
+                return lewton::header::read_header_setup(
+                    packet.data,
+                    ident.audio_channels,
+                    (ident.blocksize_0, ident.blocksize_1),
+                )
+                .map_err(|_| FormatError::InvalidValue);
+            }
+            lewton::header::read_header_comment(packet.data)
+                .map_err(|_| FormatError::InvalidValue)?;
+            break;
+        }
+    }
+    Err(FormatError::InvalidValue)
 }

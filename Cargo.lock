@@ -231,6 +231,7 @@ dependencies = [
  "flate2",
  "gif",
  "lewton",
+ "ogg",
  "png",
  "qa-core",
  "qa-platform",
