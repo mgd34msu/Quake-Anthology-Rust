@@ -936,6 +936,11 @@ fn model_bounds(files: &[ModelFile], handle: i32) -> Option<Bounds> {
         file => file.bounds(),
     }
 }
+fn model_has_tags(files: &[ModelFile], handle: i32) -> bool {
+    matches!(renderer_file(files, handle, None), Some(ModelFile::Ready {
+        tags: Some(TagLayout { tags_per_frame, .. }), ..
+    }) if *tags_per_frame != 0)
+}
 fn lerp_tag(
     names: &NameTable,
     files: &[ModelFile],
@@ -968,6 +973,9 @@ fn lerp_tag(
     Some(sample(start)?.interpolate(sample(end)?, fraction))
 }
 impl ModelLookup for ModelCatalogBuilder {
+    fn model_has_tags(&self, handle: i32) -> bool {
+        model_has_tags(&self.files, handle)
+    }
     fn loaded_world(&self, name: &[u8]) -> Option<u32> {
         loaded_world(&self.names, &self.files, name)
     }
@@ -1028,6 +1036,9 @@ impl ModelLoader for ModelCatalogBuilder {
     }
 }
 impl ModelLookup for ModelCatalog {
+    fn model_has_tags(&self, handle: i32) -> bool {
+        model_has_tags(&self.files, handle)
+    }
     fn loaded_world(&self, name: &[u8]) -> Option<u32> {
         loaded_world(&self.names, &self.files, name)
     }
@@ -1133,7 +1144,24 @@ impl ModelCatalog {
     /// boundaries. A profile mismatch never selects the first same-name entry.
     pub fn registration(&self, path: &str, profile: ModelProfile) -> Option<ModelRegistrationId> {
         let name = self.names.find_path(path)?;
-        let span = self.models[name.0 as usize];
+        self.registration_name(name, profile)
+    }
+    /// Native handles already identify the interned file. Resolve their exact
+    /// presentation registration without repeating filename conversion/lookup.
+    pub fn renderer_registration(
+        &self,
+        handle: i32,
+        profile: ModelProfile,
+    ) -> Option<ModelRegistrationId> {
+        renderer_file(&self.files, handle, Some(profile.source_rules))?;
+        self.registration_name(NameId(u32::try_from(handle).ok()?), profile)
+    }
+    fn registration_name(
+        &self,
+        name: NameId,
+        profile: ModelProfile,
+    ) -> Option<ModelRegistrationId> {
+        let span = *self.models.get(name.0 as usize)?;
         span.range()
             .find(|&index| {
                 let entry = &self.registrations[index];

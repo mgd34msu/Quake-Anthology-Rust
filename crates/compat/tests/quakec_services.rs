@@ -401,6 +401,9 @@ struct Models {
     fail: bool,
 }
 impl ModelLookup for Models {
+    fn model_has_tags(&self, _: i32) -> bool {
+        false
+    }
     fn loaded_world(&self, _: &[u8]) -> Option<u32> {
         None
     }

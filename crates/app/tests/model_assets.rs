@@ -63,6 +63,7 @@ fn native_model_handles_share_file_registration_and_bounds() {
         .unwrap();
     assert!(handle > 0);
     assert_eq!(builder.model_bounds(handle), Some(native_bounds));
+    assert!(!builder.model_has_tags(handle));
     fixture.remove("models/test.md2");
     fixture.remove("textures/body.tga");
     assert_eq!(
@@ -80,10 +81,21 @@ fn native_model_handles_share_file_registration_and_bounds() {
         None
     );
     assert_eq!(catalog.model_bounds(handle), Some(native_bounds));
+    assert!(!catalog.model_has_tags(handle));
     assert_eq!(catalog.model_bounds(0), None);
     assert_eq!(catalog.model_bounds(-1), None);
     assert_eq!(catalog.model_bounds(i32::MAX), None);
     assert!(catalog.registration("models/test.md2", profile).is_some());
+    assert_eq!(
+        catalog.renderer_registration(handle, profile),
+        catalog.registration("models/test.md2", profile)
+    );
+    assert!(catalog.renderer_registration(0, profile).is_none());
+    assert!(catalog.renderer_registration(-1, profile).is_none());
+    assert!(catalog.renderer_registration(i32::MAX, profile).is_none());
+    let mut other = profile;
+    other.source_rules = RuleSetId::Quake2;
+    assert!(catalog.renderer_registration(handle, other).is_none());
 }
 
 #[test]
@@ -231,6 +243,7 @@ fn model_tags_keep_exact_names_native_frame_clamps_and_frozen_poses() {
     let start = decoded.tags[0].orientation;
     let end = decoded.tags[1].orientation;
     let expected = start.interpolate(end, 0.25);
+    assert!(builder.model_has_tags(handle));
     assert_eq!(
         builder.lerp_tag(handle, 0, 1, 0.25, b"tag_weapon"),
         Some(expected)
@@ -238,6 +251,7 @@ fn model_tags_keep_exact_names_native_frame_clamps_and_frozen_poses() {
     fixture.remove("models/test.md3");
     let (_, catalog) = builder.finish();
     assert_eq!(catalog.capacity().tags, 2);
+    assert!(catalog.model_has_tags(handle));
     assert_eq!(
         catalog.lerp_tag(handle, 0, 1, 0.25, b"tag_weapon"),
         Some(expected)

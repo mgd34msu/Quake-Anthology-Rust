@@ -97,6 +97,7 @@ pub trait ModelLookup {
     fn shader_handle(&self, name: &[u8]) -> Option<i32>;
     fn model_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
     fn model_bounds(&self, handle: i32) -> Option<Bounds>;
+    fn model_has_tags(&self, handle: i32) -> bool;
     fn lerp_tag(
         &self,
         handle: i32,
@@ -993,6 +994,7 @@ pub struct EngineCallTable {
     pub register_model: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
     pub registered_model_bounds: fn(&EngineServices<'_>, i32) -> Option<Bounds>,
     pub lerp_tag: fn(&EngineServices<'_>, i32, i32, i32, f32, &[u8]) -> Option<Orientation>,
+    pub model_has_tags: fn(&EngineServices<'_>, i32) -> bool,
     pub registered_sound:
         fn(&EngineServices<'_>, i32) -> Result<Option<qa_core::primitives::SoundId>, CallError>,
     pub static_entity:
@@ -1236,6 +1238,10 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     register_sound: |s, sample, source| s.register_sound(sample, source),
     register_model: |s, name, source| s.register_model(name, source),
     registered_model_bounds: |s, handle| s.models()?.model_bounds(handle),
+    model_has_tags: |s, handle| {
+        s.models()
+            .is_some_and(|models| models.model_has_tags(handle))
+    },
     lerp_tag: |s, handle, start, end, fraction, name| {
         s.models()?.lerp_tag(handle, start, end, fraction, name)
     },

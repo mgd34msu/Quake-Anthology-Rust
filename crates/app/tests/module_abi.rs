@@ -1,4 +1,7 @@
 use qa_core::primitives::IndexSpan;
+#[path = "model_assets/support.rs"]
+#[allow(dead_code)]
+mod model_support;
 #[path = "support/service_program.rs"]
 mod service_program;
 #[path = "support/visibility_world.rs"]
@@ -76,6 +79,79 @@ fn cgame_world_and_model_registration_keep_distinct_native_ordinals() {
             Q3_CLIENT.invoke(36, &mut invocation, &mut unknown),
             Err(CallError::Memory)
         );
+    }
+}
+
+#[test]
+fn model_tag_calls_keep_ui_void_result_and_ignore_names_without_tag_storage() {
+    use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
+    use qa_compat::services::{ModelLoader, ModelLookup};
+    let fixture = model_support::Fixture::surfaces();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut builder = ModelCatalogBuilder::new(
+        qa_render::Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let handle = builder
+        .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
+        .unwrap();
+    let expected = builder.lerp_tag(handle, 0, 1, 0.25, b"tag_weapon").unwrap();
+    let (_, models) = builder.finish();
+    let models = std::sync::Arc::new(models);
+    for addresses in [
+        Addresses::Qvm { mask: 255 },
+        Addresses::Native {
+            pointer_bytes: 8,
+            abi: qa_platform::native::NativeAbi::SystemV,
+        },
+        Addresses::Native {
+            pointer_bytes: 8,
+            abi: qa_platform::native::NativeAbi::Microsoft,
+        },
+    ] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        runtime.models = Some(std::sync::Arc::clone(&models));
+        let mut console = Console::new(Context::default()).unwrap();
+        let mut storage =
+            ServiceStorage::load_native(&[(ModuleId(1), 0, RuleSetId::Quake3)], 0, &console.cvars)
+                .unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let mut memory = ModuleMemory::load(0, 256, &[0xff; 256]).unwrap();
+        memory.write(16, b"tag_weapon\0").unwrap();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+        let orientation = |memory: &ModuleMemory<'_>| qa_core::primitives::Orientation {
+            origin: memory.read_vec3(64).unwrap(),
+            axes: std::array::from_fn(|axis| memory.read_vec3(76 + axis as u64 * 12).unwrap()),
+        };
+        let mut invocation = Invocation {
+            services: &mut services,
+            memory: &mut memory,
+            native_cvars: None,
+            native_resources: None,
+            native_entities: None,
+            native_surfaces: None,
+            native_command: None,
+            native_configs: None,
+            native_pmove: None,
+            native_player: None,
+            context: context(),
+            platform_time: EventTime(0),
+            command: &[],
+            addresses,
+            arguments: &[64, handle as u64, 0, 1, 0.25f32.to_bits() as u64, 16],
+        };
+        assert_eq!(Q3_CLIENT.invoke(48, &mut invocation, &mut unknown), Ok(1));
+        assert_eq!(orientation(invocation.memory), expected);
+        assert_eq!(Q3_UI.invoke(29, &mut invocation, &mut unknown), Ok(0));
+        assert_eq!(orientation(invocation.memory), expected);
+        // No tags: original R_LerpTag never consumes name, frames or fraction.
+        invocation.arguments = &[64, 0, 0, 0, 0, 250];
+        assert_eq!(Q3_CLIENT.invoke(48, &mut invocation, &mut unknown), Ok(0));
+        assert_eq!(orientation(invocation.memory), Default::default());
     }
 }
 
