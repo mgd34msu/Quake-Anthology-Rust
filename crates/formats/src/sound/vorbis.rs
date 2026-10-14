@@ -2,12 +2,11 @@
 use super::ogg::{self, Packets, Plan};
 use crate::FormatError;
 use lewton::{
-    audio::{PreviousWindowRight, read_audio_packet_generic},
+    audio::PacketDecoder,
     header::{
         CommentHeader, IdentHeader, SetupHeader, read_header_comment, read_header_ident,
         read_header_setup,
     },
-    samples::InterleavedSamples,
 };
 use qa_core::primitives::{PcmChannels, PcmFormat, PcmWidth};
 use std::num::NonZeroU32;
@@ -20,16 +19,14 @@ struct Pending {
 }
 struct Link {
     serial: u32,
-    ident: IdentHeader,
     comment: CommentHeader,
-    setup: SetupHeader,
+    decoder: PacketDecoder,
 }
 
 struct VorbisState {
     active: usize,
     headers_left: u8,
     ended: bool,
-    previous: PreviousWindowRight,
     granule: Option<u64>,
 }
 impl VorbisState {
@@ -38,7 +35,6 @@ impl VorbisState {
             active,
             headers_left: 3,
             ended: false,
-            previous: PreviousWindowRight::new(),
             granule: Some(0),
         }
     }
@@ -49,13 +45,11 @@ pub struct Vorbis {
     links: Box<[Link]>,
     first: usize,
     state: VorbisState,
-    samples: Vec<i16>,
     length: u64,
     format: PcmFormat,
 }
 impl Vorbis {
-    /// Parses all chained setup headers at load. Packet DSP remains in the
-    /// existing decoder; this API does not yet promise allocation-free reads.
+    /// Parses chained headers and allocates packet/DSP storage at load.
     pub fn load(
         length: u64,
         mut read: impl FnMut(u64, &mut [u8]) -> Result<(), FormatError>,
@@ -96,9 +90,12 @@ impl Vorbis {
             .map(|link| {
                 Ok(Link {
                     serial: link.serial,
-                    ident: link.ident,
                     comment: link.comment.ok_or(FormatError::Truncated)?,
-                    setup: link.setup.ok_or(FormatError::Truncated)?,
+                    decoder: PacketDecoder::new(
+                        link.ident,
+                        link.setup.ok_or(FormatError::Truncated)?,
+                    )
+                    .map_err(|_| FormatError::InvalidValue)?,
                 })
             })
             .collect::<Result<Vec<_>, FormatError>>()?;
@@ -106,14 +103,13 @@ impl Vorbis {
         let first = links
             .binary_search_by_key(&first_serial, |link| link.serial)
             .map_err(|_| FormatError::InvalidValue)?;
-        let format = Self::pcm_format(&links[first].ident)?;
+        let format = Self::pcm_format(links[first].decoder.ident())?;
         packets.rewind();
         Ok(Self {
             packets,
             links: links.into_boxed_slice(),
             first,
             state: VorbisState::new(first),
-            samples: Vec::new(),
             length,
             format,
         })
@@ -144,7 +140,9 @@ impl Vorbis {
     pub fn rewind(&mut self) {
         self.packets.rewind();
         self.state = VorbisState::new(self.first);
-        self.samples.clear();
+        for link in &mut self.links {
+            link.decoder.reset();
+        }
     }
     /// Returns the next nonempty decoded packet, borrowed until another read
     /// or rewind. The callback reads only from the already selected VFS source.
@@ -163,7 +161,7 @@ impl Vorbis {
                 else {
                     continue;
                 };
-                if Self::pcm_format(&self.links[active].ident)? != self.format {
+                if Self::pcm_format(self.links[active].decoder.ident())? != self.format {
                     return Err(FormatError::Unsupported);
                 }
                 self.state = VorbisState::new(active);
@@ -172,38 +170,34 @@ impl Vorbis {
                 self.state.headers_left -= 1;
                 continue;
             }
-            let link = &self.links[self.state.active];
-            let mut decoded: InterleavedSamples<i16> = read_audio_packet_generic(
-                &link.ident,
-                &link.setup,
-                packet.data,
-                &mut self.state.previous,
-            )
-            .map_err(|_| FormatError::InvalidValue)?;
+            let link = &mut self.links[self.state.active];
+            let mut count = link
+                .decoder
+                .decode(packet.data)
+                .map_err(|_| FormatError::InvalidValue)?;
             if packet.last_in_stream
                 && let (Some(before), Some(end)) = (self.state.granule, packet.granule)
             {
                 let frames = usize::try_from(end.saturating_sub(before)).unwrap_or(usize::MAX);
-                decoded
-                    .samples
-                    .truncate(frames.saturating_mul(self.format.channels as usize));
+                count = count.min(frames.saturating_mul(self.format.channels as usize));
             }
-            if decoded.samples.len() % self.format.channels as usize != 0 {
+            if count % self.format.channels as usize != 0 {
                 return Err(FormatError::InvalidRange);
             }
             if packet.last_in_page {
                 self.state.granule = packet.granule;
             } else if let Some(before) = &mut self.state.granule {
                 *before = before
-                    .checked_add((decoded.samples.len() / self.format.channels as usize) as u64)
+                    .checked_add((count / self.format.channels as usize) as u64)
                     .ok_or(FormatError::InvalidRange)?;
             }
             self.state.ended = packet.last_in_stream;
-            if decoded.samples.is_empty() {
+            if count == 0 {
                 continue;
             }
-            self.samples = decoded.samples;
-            return Ok(Some(&self.samples));
+            return Ok(Some(
+                &self.links[self.state.active].decoder.samples()[..count],
+            ));
         }
         Ok(None)
     }

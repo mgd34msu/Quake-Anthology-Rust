@@ -1,5 +1,9 @@
 use std::io::Cursor;
 
+#[global_allocator]
+static ALLOCATOR: qa_platform::allocations::CountingAllocator =
+    qa_platform::allocations::CountingAllocator;
+
 use ogg::{PacketReader, PacketWriteEndInfo, PacketWriter};
 use qa_formats::{
     FormatError,
@@ -257,7 +261,8 @@ fn source_errors_and_insufficient_plan_are_bounded() {
 }
 
 fn reference_pcm(bytes: &[u8]) -> (u32, u8, Vec<i16>) {
-    let mut reader = lewton::inside_ogg::OggStreamReader::new(Cursor::new(bytes)).unwrap();
+    let mut reader =
+        lewton_reference::inside_ogg::OggStreamReader::new(Cursor::new(bytes)).unwrap();
     let format = (
         reader.ident_hdr.audio_sample_rate,
         reader.ident_hdr.audio_channels,
@@ -428,6 +433,34 @@ fn source_reader_reports_io_errors_and_can_restart_after_failure() {
         )))
         .is_err()
     );
+}
+
+#[test]
+fn loaded_vorbis_decodes_first_packets_and_rewinds_without_heap_growth() {
+    for bytes in [
+        MONO.to_vec(),
+        STEREO.to_vec(),
+        PAGES.to_vec(),
+        [change_serial(STEREO, 200), change_serial(STEREO, 100)].concat(),
+    ] {
+        let expected = sound::vorbis(&bytes).unwrap();
+        let mut decoder = sound::Vorbis::load(bytes.len() as u64, |at, out| {
+            framing::slice_read(&bytes, at, out)
+        })
+        .unwrap();
+        qa_platform::allocations::begin_frame();
+        for _ in 0..3 {
+            let mut at = 0;
+            while let Some(samples) = decoder.read_slice(&bytes).unwrap() {
+                assert_eq!(samples, &expected.samples[at..at + samples.len()]);
+                at += samples.len();
+            }
+            assert_eq!(at, expected.samples.len());
+            decoder.rewind();
+        }
+        let counts = qa_platform::allocations::end_frame();
+        assert_eq!(counts, qa_platform::allocations::Counts::default());
+    }
 }
 
 #[test]

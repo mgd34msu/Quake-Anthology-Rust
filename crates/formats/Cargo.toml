@@ -11,10 +11,10 @@ png = "0.18.1"
 zune-jpeg = "0.5.15"
 zune-core = "0.5.3"
 gif = "0.14.2"
-lewton = { version = "0.10.2", default-features = false }
+lewton = { path = "../../vendor/lewton" }
 qa-core = { path = "../core" }
 qa-platform = { path = "../platform" }
 
 [dev-dependencies]
-lewton = { version = "0.10.2", features = ["ogg"] }
+lewton-reference = { package = "lewton", version = "0.10.2", features = ["ogg"] }
 ogg = "0.8.0"
