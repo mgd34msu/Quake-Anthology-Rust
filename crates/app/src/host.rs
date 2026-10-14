@@ -203,6 +203,7 @@ pub struct FrameHost {
     maxfps: CvarHandle,
     fov: CvarHandle,
     lighting_scales: [CvarHandle; 2],
+    style_interpolation: CvarHandle,
     roll_angle: CvarHandle,
     roll_speed: CvarHandle,
     kick_angles: CvarHandle,
@@ -365,6 +366,10 @@ impl FrameHost {
             return Err("missing entity lighting scales".into());
         };
         let lighting_scales = [ambient, directed];
+        let style_interpolation = console
+            .cvars
+            .find("cl_lerp_lightstyles")
+            .ok_or("missing cl_lerp_lightstyles")?;
         let roll_angle = console
             .cvars
             .find("cl_rollangle")
@@ -431,6 +436,7 @@ impl FrameHost {
             maxfps,
             fov,
             lighting_scales,
+            style_interpolation,
             roll_angle,
             roll_speed,
             kick_angles,
@@ -859,6 +865,12 @@ impl FrameHost {
                 layout: resources.state.layout,
                 values: &self.runtime.catalog.hud.values,
                 localization: &self.runtime.localization,
+                client_lifetime: row.entity,
+                style_interpolation: self
+                    .console
+                    .cvars
+                    .native_integer(self.style_interpolation, resources.state.layout.rules)
+                    .unwrap_or(0),
                 rules: row.client_rules,
                 time: self.time,
                 style_time: if snapshot.protocol

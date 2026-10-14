@@ -54,6 +54,11 @@ fn view<'a>(
         time: EventTime::from_milliseconds(1000),
         style_time: ThinkTime::Milliseconds(100),
         server_frame: 0,
+        client_lifetime: qa_core::primitives::EntityId {
+            slot: 0,
+            generation: 0,
+        },
+        style_interpolation: 0,
         show_text: true,
     }
 }
@@ -194,10 +199,45 @@ fn received_lightstyles_update_view_scales_without_using_presentation_as_source(
     );
     view.style_time = ThinkTime::Seconds(0.1);
     let mut refdef = Refdef::default();
-    let stats = view.apply_lightstyles(&mut refdef);
+    let stats = view.apply_lightstyles(&mut refdef, &mut Default::default());
     assert_eq!(stats.styles, 64);
     assert_eq!(refdef.lightstyles[0].indexed_scale, 264);
     assert_eq!(refdef.lightstyles[0].rgb, [1.03125; 3]);
+}
+
+#[test]
+fn style_histories_are_client_owned_and_reset_on_lifetime_reuse() {
+    let values = ValueLayout::load(&[]).unwrap();
+    let hud = HudState::with_capacity(0, 0, 0, values.capacity());
+    let texts = TextStore::load(1, 1).unwrap();
+    let layout = ConfigLayout::QUAKE2_RERELEASE;
+    let mut configs = configs(layout);
+    configs.set(layout.style_index(0).unwrap(), b"am").unwrap();
+    let mut input = view(
+        &hud,
+        &texts,
+        &configs,
+        &values,
+        RuleSetId::Quake2Rerelease,
+        layout,
+    );
+    input.style_interpolation = 1;
+    let mut first = qa_app::renderer::hud::LightStyles::default();
+    let mut second = qa_app::renderer::hud::LightStyles::default();
+    let mut refdef = Refdef::default();
+    input.style_time = ThinkTime::Milliseconds(0);
+    input.apply_lightstyles(&mut refdef, &mut first);
+    input.style_time = ThinkTime::Milliseconds(100);
+    input.apply_lightstyles(&mut refdef, &mut first);
+    input.style_time = ThinkTime::Milliseconds(150);
+    let stats = input.apply_lightstyles(&mut refdef, &mut first);
+    assert_eq!(refdef.lightstyles[0].rgb, [0.5; 3]);
+    assert_eq!(stats.unsupported, 0);
+    input.apply_lightstyles(&mut refdef, &mut second);
+    assert_eq!(refdef.lightstyles[0].rgb, [1.; 3]);
+    input.client_lifetime.generation += 1;
+    input.apply_lightstyles(&mut refdef, &mut first);
+    assert_eq!(refdef.lightstyles[0].rgb, [1.; 3]);
 }
 
 fn picture_assets(rules: RuleSetId) -> (Assets, HudAssets, [[MaterialId; 11]; 2], MaterialId) {

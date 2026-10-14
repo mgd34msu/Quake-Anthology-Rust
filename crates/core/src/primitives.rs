@@ -32,6 +32,21 @@ impl IndexSpan {
 #[repr(transparent)]
 pub struct Vec3(pub [f32; 3]);
 
+/// Copied lightstyle values shared by gameplay providers and render commands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightStyle {
+    pub rgb: [f32; 3],
+    pub indexed_scale: u16,
+}
+impl Default for LightStyle {
+    fn default() -> Self {
+        Self {
+            rgb: [1.0; 3],
+            indexed_scale: 256,
+        }
+    }
+}
+
 impl Vec3 {
     pub const fn axis(index: usize, sign: f32) -> Self {
         Self([

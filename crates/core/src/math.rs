@@ -57,6 +57,11 @@ pub fn lerp(start: f32, end: f32, fraction: f32) -> f32 {
     lerp_array([start], [end], fraction)[0]
 }
 
+/// q2repro LERP2 uses two weighted products, not the delta form above.
+pub fn weighted_lerp(start: f32, end: f32, fraction: f32) -> f32 {
+    start * (1.0 - fraction) + end * fraction
+}
+
 /// Native VectorMA commits one scalar before reading the next. The boundary
 /// may refresh aliased inputs; multiplication and addition stay separate.
 pub fn vector_ma<S, E>(

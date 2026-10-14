@@ -1,5 +1,115 @@
 use qa_core::primitives::{RuleSetId, ThinkTime};
-use qa_gameplay::rules::presentation::{center_y, lightstyle, text_rules};
+use qa_gameplay::rules::presentation::{StyleAnimation, center_y, lightstyle, text_rules};
+
+#[test]
+fn native_style_transitions_keep_weighted_rounding_and_constant_targets() {
+    let rules = RuleSetId::Quake2Rerelease;
+    let mut animation = StyleAnimation::default();
+    let sample = |state: &mut StyleAnimation, pattern: &[u8], ms: i64| {
+        state
+            .sample(rules, pattern, ThinkTime::Milliseconds(ms), 1)
+            .unwrap()
+    };
+    assert_eq!(sample(&mut animation, b"am", 0).rgb, [0.; 3]);
+    assert_eq!(sample(&mut animation, b"am", 100).rgb, [0.; 3]);
+    assert_eq!(sample(&mut animation, b"am", 150).rgb, [0.5; 3]);
+    assert_eq!(sample(&mut animation, b"am", 200).rgb, [1.; 3]);
+    assert_eq!(sample(&mut animation, b"am", 250).rgb, [0.5; 3]);
+    let mut constant = StyleAnimation::default();
+    for ms in [0, 50, 100, 150, 500] {
+        assert_eq!(sample(&mut constant, b"aa", ms).rgb, [0.; 3]);
+    }
+    let mut rounding = StyleAnimation::default();
+    let from = 1.0f32 / 12.0;
+    let to = 25.0f32 / 12.0;
+    assert_eq!(sample(&mut rounding, b"bz", 0).rgb, [from; 3]);
+    sample(&mut rounding, b"bz", 100);
+    let fraction = 1.0 - 63.0f32 / 100.0;
+    let expected = from * (1.0 - fraction) + to * fraction;
+    assert_eq!(
+        sample(&mut rounding, b"bz", 137).rgb.map(f32::to_bits),
+        [expected.to_bits(); 3]
+    );
+}
+
+#[test]
+fn opt_in_quake_modes_preserve_large_jumps_and_wrapped_phase() {
+    let mut animation = StyleAnimation::default();
+    let at = ThinkTime::Seconds(0.05);
+    assert_eq!(
+        animation
+            .sample(RuleSetId::Quake, b"bc", at, 0)
+            .unwrap()
+            .indexed_scale,
+        22
+    );
+    assert_eq!(
+        animation
+            .sample(RuleSetId::Quake, b"bc", at, 1)
+            .unwrap()
+            .indexed_scale,
+        33
+    );
+    assert_eq!(
+        animation
+            .sample(RuleSetId::Quake, b"am", at, 1)
+            .unwrap()
+            .indexed_scale,
+        0
+    );
+    assert_eq!(
+        animation
+            .sample(RuleSetId::Quake, b"am", at, 2)
+            .unwrap()
+            .indexed_scale,
+        132
+    );
+    assert_eq!(
+        animation
+            .sample(RuleSetId::Quake, b"am", ThinkTime::Seconds(-0.05), 2)
+            .unwrap()
+            .indexed_scale,
+        132
+    );
+}
+
+#[test]
+fn style_mode_changes_and_clock_restarts_drop_old_interpolation() {
+    let mut animation = StyleAnimation::default();
+    let rules = RuleSetId::Quake2;
+    animation
+        .sample(rules, b"am", ThinkTime::Milliseconds(0), 1)
+        .unwrap();
+    animation
+        .sample(rules, b"am", ThinkTime::Milliseconds(100), 1)
+        .unwrap();
+    assert_eq!(
+        animation
+            .sample(rules, b"am", ThinkTime::Milliseconds(150), 0)
+            .unwrap()
+            .rgb,
+        [1.; 3]
+    );
+    assert_eq!(
+        animation
+            .sample(rules, b"am", ThinkTime::Milliseconds(150), 1)
+            .unwrap()
+            .rgb,
+        [1.; 3]
+    );
+    assert_eq!(
+        animation
+            .sample(rules, b"am", ThinkTime::Milliseconds(0), 1)
+            .unwrap()
+            .rgb,
+        [0.; 3]
+    );
+    assert!(
+        animation
+            .sample(RuleSetId::Quake3, b"am", ThinkTime::Milliseconds(0), 1)
+            .is_none()
+    );
+}
 
 #[test]
 fn lightstyle_native_clock_and_software_scales_keep_original_rounding() {
@@ -27,10 +137,6 @@ fn lightstyle_native_clock_and_software_scales_keep_original_rounding() {
         assert_eq!(
             sample.indexed_scale,
             ((value + value + value) * 128.0) as u16
-        );
-        assert_eq!(
-            sample.interpolation_unimplemented,
-            rules == RuleSetId::Quake2Rerelease
         );
         assert_eq!(
             lightstyle(rules, b"", ThinkTime::Milliseconds(0))

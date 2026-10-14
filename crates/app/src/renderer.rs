@@ -416,6 +416,7 @@ pub struct Renderer {
     draw_failed: bool,
     console: console::ConsoleAssets,
     hud: [Option<hud::HudAssets>; 5],
+    lightstyles: [hud::LightStyles; SeatId::COUNT],
 }
 impl Renderer {
     /// Assets are frozen while a backend and its packets reference them.
@@ -521,6 +522,7 @@ impl Renderer {
                 draw_failed: false,
                 console,
                 hud,
+                lightstyles: std::array::from_fn(|_| Default::default()),
             },
             scene,
         ))
@@ -642,7 +644,8 @@ impl Renderer {
                 };
                 let mut refdef = view_refdef(*client, viewport, self.kind);
                 if let Some(hud) = hud[seat] {
-                    self.sample.hud += hud.apply_lightstyles(&mut refdef);
+                    self.sample.hud +=
+                        hud.apply_lightstyles(&mut refdef, &mut self.lightstyles[seat]);
                 }
                 // Native snapshot areas use at most 255 bytes. This bounded stack
                 // scratch is shared by visibility and the copied scene command.

@@ -8,15 +8,13 @@ use qa_console::presentation::{Layout, Style};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     events::TextStore,
-    primitives::{HudState, RuleSetId, ThinkTime},
+    primitives::{EntityId, HudState, RuleSetId, ThinkTime},
     sys_events::EventTime,
     text::atoi_prefix,
 };
 use qa_formats::entities::{EntitySyntax, EntityTokens};
-use qa_gameplay::rules::presentation::{center_y, lightstyle, text_rules};
-use qa_render::{
-    Assets, CpuPresentation, Frame, LightStyle, Refdef, Viewport, surface_cache::IndexedLighting,
-};
+use qa_gameplay::rules::presentation::{StyleAnimation, center_y, text_rules};
+use qa_render::{Assets, CpuPresentation, Frame, Refdef, Viewport, surface_cache::IndexedLighting};
 
 const MAX_GLYPHS: usize = 2048;
 #[derive(Clone, Copy)]
@@ -31,12 +29,15 @@ pub struct HudView<'a> {
     pub time: EventTime,
     pub style_time: ThinkTime,
     pub server_frame: u32,
+    pub client_lifetime: EntityId,
+    pub style_interpolation: i32,
     pub show_text: bool,
 }
 impl HudView<'_> {
-    /// Source data keeps its native lightstyle arithmetic. CPU receives these
-    /// copied scales; updating GL atlas texels remains a separate consumer.
-    pub fn apply_lightstyles(self, refdef: &mut Refdef) -> HudStats {
+    /// Source data keeps its native arithmetic. The copied scales feed CPU
+    /// surface lighting and the GL atlas updater through the same refdef.
+    pub fn apply_lightstyles(self, refdef: &mut Refdef, state: &mut LightStyles) -> HudStats {
+        state.bind(self.client_lifetime, self.layout.rules);
         let mut stats = HudStats::default();
         for ordinal in 0..refdef.lightstyles.len() {
             let Some(index) = self.layout.style_index(ordinal) else {
@@ -46,13 +47,14 @@ impl HudView<'_> {
                 stats.rejected += 1;
                 continue;
             };
-            if let Some(sample) = lightstyle(self.layout.rules, config.text, self.style_time) {
-                refdef.lightstyles[ordinal] = LightStyle {
-                    rgb: sample.rgb,
-                    indexed_scale: sample.indexed_scale,
-                };
+            if let Some(sample) = state.entries[ordinal].sample(
+                self.layout.rules,
+                config.text,
+                self.style_time,
+                self.style_interpolation,
+            ) {
+                refdef.lightstyles[ordinal] = sample;
                 stats.styles += 1;
-                stats.unsupported += u32::from(sample.interpolation_unimplemented);
             }
         }
         stats
@@ -60,6 +62,26 @@ impl HudView<'_> {
     pub fn stat(self, index: usize) -> Option<i32> {
         let binding = self.values.native(self.layout.rules).stats.get(index)?;
         Some(self.hud.values.get(binding.id)?.as_integer())
+    }
+}
+pub struct LightStyles {
+    identity: Option<(EntityId, RuleSetId)>,
+    entries: [StyleAnimation; 256],
+}
+impl Default for LightStyles {
+    fn default() -> Self {
+        Self {
+            identity: None,
+            entries: [StyleAnimation::default(); 256],
+        }
+    }
+}
+impl LightStyles {
+    fn bind(&mut self, client: EntityId, rules: RuleSetId) {
+        if self.identity != Some((client, rules)) {
+            self.entries.fill(StyleAnimation::default());
+            self.identity = Some((client, rules));
+        }
     }
 }
 #[derive(Clone, Copy, Debug, Default)]

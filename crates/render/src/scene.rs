@@ -2,6 +2,7 @@
 use crate::assets::{Assets, MaterialId, ModelId, PaletteId, Vertex};
 use crate::surface_cache::IndexedLighting;
 use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
+pub use qa_core::primitives::LightStyle;
 use qa_core::primitives::{Orientation, Vec3};
 use std::cmp::Ordering as SortOrdering;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -47,21 +48,6 @@ impl PerspectiveStep {
         match self {
             Self::Eight => 8,
             Self::Sixteen => 16,
-        }
-    }
-}
-/// Both representations come from the lightstyle provider. They are copied
-/// into a view packet so module memory never reaches a backend.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LightStyle {
-    pub rgb: [f32; 3],
-    pub indexed_scale: u16,
-}
-impl Default for LightStyle {
-    fn default() -> Self {
-        Self {
-            rgb: [1.0; 3],
-            indexed_scale: 256,
         }
     }
 }
