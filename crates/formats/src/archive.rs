@@ -2,10 +2,7 @@
 //! Native contracts: Q1/Q2 pack headers and Q3 qcommon/unzip.c.
 use crate::FormatError;
 use qa_platform::files::ReadFile;
-use std::{
-    io::{self, Read},
-    sync::Arc,
-};
+use std::{io, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArchiveKind {
@@ -36,17 +33,52 @@ pub struct Archive {
 
 /// Caller-owned inflate state, allocated once at load and reset between files.
 pub struct ArchiveReader {
+    cursor: ArchiveCursor,
+    output: [u8; 8192],
+}
+struct ArchiveCursor {
+    member: Option<(Arc<ReadFile>, usize)>,
     decoder: flate2::Decompress,
     input: [u8; 8192],
-    output: [u8; 8192],
+    first: usize,
+    last: usize,
+    fetched: u64,
+    position: u64,
+    crc: crc32fast::Hasher,
+    done: bool,
 }
 impl Default for ArchiveReader {
     fn default() -> Self {
         Self {
-            decoder: flate2::Decompress::new(false),
-            input: [0; 8192],
+            cursor: ArchiveCursor {
+                member: None,
+                decoder: flate2::Decompress::new(false),
+                input: [0; 8192],
+                first: 0,
+                last: 0,
+                fetched: 0,
+                position: 0,
+                crc: crc32fast::Hasher::new(),
+                done: false,
+            },
             output: [0; 8192],
         }
+    }
+}
+impl ArchiveReader {
+    fn start(&mut self, archive: &Archive, entry: usize) {
+        self.cursor.member = Some((Arc::clone(&archive.file), entry));
+        self.cursor.decoder.reset(false);
+        self.cursor.first = 0;
+        self.cursor.last = 0;
+        self.cursor.fetched = 0;
+        self.cursor.position = 0;
+        self.cursor.crc = crc32fast::Hasher::new();
+        self.cursor.done = false;
+    }
+    /// Progress of this reader's current member, useful for source diagnostics.
+    pub fn stream_position(&self) -> u64 {
+        self.cursor.position
     }
 }
 
@@ -259,9 +291,7 @@ impl Archive {
         self.read_range_reusing(index, 0, out, reader)
     }
 
-    /// Module file handles can read part of a deflated member. The same decoder
-    /// traverses it into fixed discard storage and the requested destination;
-    /// no second reader, full-member allocation or unchecked ZIP CRC is needed.
+    /// Module range reads retain their full unread-tail CRC verification.
     pub fn read_range_reusing(
         &self,
         index: usize,
@@ -276,102 +306,156 @@ impl Archive {
             .ok_or(FormatError::InvalidRange)?;
         let count = destination
             .len()
-            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
-        let out = &mut destination[..count];
-        match entry.compression {
-            Compression::Stored => {
-                self.file
-                    .read_exact_at(entry.offset + offset, out)
-                    .map_err(FormatError::from_io)?;
-                if offset == 0
-                    && count as u64 == entry.length
-                    && entry.crc32.is_some_and(|crc| crc32fast::hash(out) != crc)
-                {
-                    return Err(FormatError::Checksum);
-                }
+            .min(remaining.try_into().unwrap_or(usize::MAX));
+        if entry.compression == Compression::Stored {
+            self.read_stored(entry, offset, &mut destination[..count])?;
+            if offset == 0
+                && count as u64 == entry.length
+                && entry
+                    .crc32
+                    .is_some_and(|crc| crc32fast::hash(&destination[..count]) != crc)
+            {
+                return Err(FormatError::Checksum);
             }
-            Compression::Deflate => {
-                let input = FileWindow {
-                    file: &self.file,
-                    at: entry.offset,
-                    remaining: entry.compressed_length,
-                };
-                let mut input = input;
-                reader.decoder.reset(false);
-                let mut first = 0;
-                let mut last = 0;
-                let mut crc = crc32fast::Hasher::new();
-                loop {
-                    if first == last {
-                        last = input
-                            .read(&mut reader.input)
-                            .map_err(FormatError::from_io)?;
-                        first = 0;
-                    }
-                    let before_in = reader.decoder.total_in();
-                    let before_out = reader.decoder.total_out();
-                    let end = offset + count as u64;
-                    let destination = if before_out < offset {
-                        let discard =
-                            (offset - before_out).min(reader.output.len() as u64) as usize;
-                        &mut reader.output[..discard]
-                    } else if before_out < end {
-                        &mut out[(before_out - offset) as usize..]
-                    } else {
-                        &mut reader.output[..]
-                    };
-                    let status = reader
-                        .decoder
-                        .decompress(
-                            &reader.input[first..last],
-                            destination,
-                            flate2::FlushDecompress::None,
-                        )
-                        .map_err(|_| FormatError::Compression)?;
-                    let consumed = reader.decoder.total_in() - before_in;
-                    let produced = reader.decoder.total_out() - before_out;
-                    crc.update(&destination[..produced as usize]);
-                    first += consumed as usize;
-                    if reader.decoder.total_out() > entry.length {
-                        return Err(FormatError::Compression);
-                    }
-                    if status == flate2::Status::StreamEnd {
-                        if reader.decoder.total_in() != entry.compressed_length
-                            || reader.decoder.total_out() != entry.length
-                        {
-                            return Err(FormatError::Compression);
-                        }
-                        if entry
-                            .crc32
-                            .is_some_and(|expected| crc.finalize() != expected)
-                        {
-                            return Err(FormatError::Checksum);
-                        }
-                        break;
-                    }
-                    if consumed == 0 && produced == 0 {
-                        return Err(FormatError::Compression);
-                    }
-                }
-            }
+            return Ok(count);
+        }
+        reader.start(self, index);
+        let count = self.read_stream_reusing(index, offset, destination, reader)?;
+        while !reader.cursor.done {
+            self.pump(entry, &mut reader.cursor, &mut reader.output)?;
         }
         Ok(count)
     }
-}
 
-struct FileWindow<'a> {
-    file: &'a ReadFile,
-    at: u64,
-    remaining: u64,
-}
-impl Read for FileWindow<'_> {
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        let count = out
+    /// Consecutive forward requests advance the existing decoder and CRC once.
+    /// A different member or backward seek resets it. CRC is checked at EOF;
+    /// callers requiring unread-tail validation use read_range_reusing instead.
+    pub fn read_stream_reusing(
+        &self,
+        index: usize,
+        offset: u64,
+        destination: &mut [u8],
+        reader: &mut ArchiveReader,
+    ) -> Result<usize, FormatError> {
+        let entry = self.entries.get(index).ok_or(FormatError::InvalidRange)?;
+        let remaining = entry
+            .length
+            .checked_sub(offset)
+            .ok_or(FormatError::InvalidRange)?;
+        if reader
+            .cursor
+            .member
+            .as_ref()
+            .is_none_or(|(file, member)| !Arc::ptr_eq(file, &self.file) || *member != index)
+            || offset < reader.cursor.position
+        {
+            reader.start(self, index);
+        }
+        while reader.cursor.position < offset {
+            let skip = (offset - reader.cursor.position).min(reader.output.len() as u64) as usize;
+            self.pump(entry, &mut reader.cursor, &mut reader.output[..skip])?;
+        }
+        let count = destination
             .len()
-            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
-        let read = self.file.read_at(self.at, &mut out[..count])?;
-        self.at += read as u64;
-        self.remaining -= read as u64;
-        Ok(read)
+            .min(remaining.try_into().unwrap_or(usize::MAX));
+        let mut filled = 0;
+        while filled < count {
+            filled += self.pump(entry, &mut reader.cursor, &mut destination[filled..count])?;
+        }
+        if reader.cursor.position == entry.length && !reader.cursor.done {
+            // An exact-size output may leave the terminal deflate marker unread.
+            self.pump(entry, &mut reader.cursor, &mut reader.output[..1])?;
+        }
+        Ok(count)
+    }
+
+    fn read_stored(
+        &self,
+        entry: &ArchiveEntry,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<(), FormatError> {
+        self.file
+            .read_exact_at(entry.offset + offset, out)
+            .map_err(FormatError::from_io)
+    }
+
+    fn pump(
+        &self,
+        entry: &ArchiveEntry,
+        cursor: &mut ArchiveCursor,
+        out: &mut [u8],
+    ) -> Result<usize, FormatError> {
+        if cursor.done || out.is_empty() {
+            return Ok(0);
+        }
+        let produced = if entry.compression == Compression::Stored {
+            let count = out.len().min(
+                (entry.length - cursor.position)
+                    .try_into()
+                    .unwrap_or(usize::MAX),
+            );
+            self.read_stored(entry, cursor.position, &mut out[..count])?;
+            cursor.position += count as u64;
+            cursor.done = cursor.position == entry.length;
+            count
+        } else {
+            loop {
+                if cursor.first == cursor.last && cursor.fetched < entry.compressed_length {
+                    let count = cursor
+                        .input
+                        .len()
+                        .min((entry.compressed_length - cursor.fetched) as usize);
+                    self.file
+                        .read_exact_at(entry.offset + cursor.fetched, &mut cursor.input[..count])
+                        .map_err(FormatError::from_io)?;
+                    cursor.first = 0;
+                    cursor.last = count;
+                    cursor.fetched += count as u64;
+                }
+                let before_in = cursor.decoder.total_in();
+                let before_out = cursor.decoder.total_out();
+                let status = cursor
+                    .decoder
+                    .decompress(
+                        &cursor.input[cursor.first..cursor.last],
+                        out,
+                        flate2::FlushDecompress::None,
+                    )
+                    .map_err(|_| FormatError::Compression)?;
+                let consumed = cursor.decoder.total_in() - before_in;
+                let produced = (cursor.decoder.total_out() - before_out) as usize;
+                cursor.first += consumed as usize;
+                cursor.position = cursor.decoder.total_out();
+                if cursor.position > entry.length {
+                    return Err(FormatError::Compression);
+                }
+                if status == flate2::Status::StreamEnd {
+                    if cursor.decoder.total_in() != entry.compressed_length
+                        || cursor.position != entry.length
+                    {
+                        return Err(FormatError::Compression);
+                    }
+                    cursor.done = true;
+                }
+                if produced != 0 || cursor.done {
+                    break produced;
+                }
+                if consumed == 0 {
+                    return Err(FormatError::Compression);
+                }
+            }
+        };
+        cursor.crc.update(&out[..produced]);
+        if cursor.done
+            && entry
+                .crc32
+                .is_some_and(|expected| cursor.crc.clone().finalize() != expected)
+        {
+            // A failed stream cannot subsequently turn into an accepted EOF.
+            cursor.member = None;
+            return Err(FormatError::Checksum);
+        }
+        Ok(produced)
     }
 }

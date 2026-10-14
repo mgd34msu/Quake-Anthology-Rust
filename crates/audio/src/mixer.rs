@@ -447,6 +447,7 @@ pub struct Mixer {
     pub counts: MixCounts,
     volume: f32,
     next_start: Option<u64>,
+    raw: crate::raw::Raw,
 }
 impl Mixer {
     pub fn load(bank: Arc<Bank>, voices: usize, listeners: usize) -> Self {
@@ -458,7 +459,32 @@ impl Mixer {
             counts: MixCounts::default(),
             volume: 1.0,
             next_start: None,
+            raw: crate::raw::Raw::load(),
         }
+    }
+    /// A streaming producer retains source bytes and its own decoder cursor.
+    /// Only complete blocks that fit the fixed raw paint storage are admitted.
+    pub fn queue_raw(
+        &mut self,
+        format: qa_core::primitives::PcmFormat,
+        bytes: &[u8],
+        volume: f32,
+        signed_stereo_bytes: bool,
+    ) -> Result<usize, crate::RawError> {
+        self.raw.queue(
+            self.counts.frames,
+            self.bank.rate,
+            format,
+            bytes,
+            volume,
+            signed_stereo_bytes,
+        )
+    }
+    pub fn raw_remaining(&self) -> usize {
+        self.raw.remaining(self.counts.frames)
+    }
+    pub fn clear_raw(&mut self) {
+        self.raw.clear(self.counts.frames);
     }
     pub fn listen(&mut self, listeners: &[Option<Listener>], volume: f32) {
         for index in 0..self.listeners.len() {
@@ -1068,8 +1094,10 @@ impl Mixer {
             }
             // Native integer loops multiply their grouped volume before the
             // sample product. Ordinary channels retain their existing order.
-            let mut integer =
-                std::array::from_fn::<_, 2, _>(|side| sum[side] * volume + native[side]);
+            let raw = self.raw.sample(time);
+            let mut integer = std::array::from_fn::<_, 2, _>(|side| {
+                i64::from(raw[side]) + sum[side] * volume + native[side]
+            });
             let mut floating = [0.0f32; 2];
             let mut has_float = false;
             for &index in &self.loop_order[..loops] {

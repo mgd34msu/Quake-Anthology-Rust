@@ -1,4 +1,5 @@
 //! Engine-owned values. Game formats and module ABIs convert at their boundaries.
+pub use crate::pcm::{PcmFormat, PcmWidth};
 
 /// Fixed guest mapping granule shared by native images and owned child memory.
 pub const NATIVE_PAGE_BYTES: usize = 4096;

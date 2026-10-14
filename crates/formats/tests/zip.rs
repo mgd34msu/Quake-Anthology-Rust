@@ -216,3 +216,97 @@ fn one_loaded_inflater_streams_large_members_and_resets_after_empty_and_bad_stre
         .unwrap();
     assert_eq!(&destination, b"after error");
 }
+
+#[test]
+fn streamed_members_advance_once_rewind_and_reset_between_files() {
+    let payload: Vec<_> = (0..40000).map(|i| ((i * 73) ^ (i >> 5)) as u8).collect();
+    for deflate in [false, true] {
+        let bytes = zip(&payload, deflate, false, b"");
+        let (fixture, archive) = Fixture::parse(&bytes);
+        let archive = archive.unwrap();
+        let mut reader = qa_formats::archive::ArchiveReader::default();
+        let mut out = [0; 4096];
+        assert_eq!(
+            archive
+                .read_stream_reusing(0, 0, &mut out, &mut reader)
+                .unwrap(),
+            out.len()
+        );
+        assert_eq!(&out, &payload[..out.len()]);
+        assert_eq!(reader.stream_position(), out.len() as u64);
+        // Already-consumed source bytes can change without being read again.
+        // A restarted whole-member decode would reject the altered prefix.
+        let mut changed = bytes;
+        changed[30 + b"maps/fixture.bsp".len()] ^= 1;
+        qa_platform::files::write(&fixture.0, &changed).unwrap();
+        let mut at = out.len();
+        while at < payload.len() {
+            let count = archive
+                .read_stream_reusing(0, at as u64, &mut out, &mut reader)
+                .unwrap();
+            assert_eq!(&out[..count], &payload[at..at + count]);
+            at += count;
+            assert_eq!(reader.stream_position(), at as u64);
+        }
+        assert_eq!(
+            archive
+                .read_stream_reusing(0, at as u64, &mut out, &mut reader)
+                .unwrap(),
+            0
+        );
+        assert!(
+            archive
+                .read_stream_reusing(0, 0, &mut [0; 40000], &mut reader)
+                .is_err()
+        );
+        let (_other, other) = Fixture::parse(&zip(&payload, deflate, false, b""));
+        let other = other.unwrap();
+        assert_eq!(
+            other
+                .read_stream_reusing(0, 1234, &mut out, &mut reader)
+                .unwrap(),
+            out.len()
+        );
+        assert_eq!(&out, &payload[1234..1234 + out.len()]);
+        assert_eq!(reader.stream_position(), 1234 + out.len() as u64);
+        assert_eq!(
+            other
+                .read_stream_reusing(0, 0, &mut out, &mut reader)
+                .unwrap(),
+            out.len()
+        );
+        assert_eq!(&out, &payload[..out.len()]);
+    }
+}
+
+#[test]
+fn streaming_checks_unread_tail_crc_when_reaching_eof() {
+    let payload = vec![123; 20000];
+    for deflate in [false, true] {
+        let mut bytes = zip(&payload, deflate, false, b"");
+        let at = bytes
+            .windows(4)
+            .position(|w| w == 0x02014b50u32.to_le_bytes())
+            .unwrap();
+        bytes[at + 16] ^= 1;
+        bytes[14] ^= 1;
+        let (_fixture, archive) = Fixture::parse(&bytes);
+        let archive = archive.unwrap();
+        let mut reader = qa_formats::archive::ArchiveReader::default();
+        assert_eq!(
+            archive
+                .read_stream_reusing(0, 0, &mut [0; 1024], &mut reader)
+                .unwrap(),
+            1024
+        );
+        assert_eq!(
+            archive.read_stream_reusing(0, 19000, &mut [0; 1024], &mut reader),
+            Err(FormatError::Checksum)
+        );
+        assert!(
+            archive
+                .read_stream_reusing(0, 20000, &mut [], &mut reader)
+                .is_err()
+        );
+    }
+}

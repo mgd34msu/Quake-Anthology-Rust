@@ -478,6 +478,22 @@ impl Vfs {
         self.read_loose(reference, offset, destination)
     }
 
+    /// Streamed consumers retain their own load-allocated archive cursor.
+    /// Loose files use the same owned file range path; packages verify CRC at EOF.
+    pub fn read_stream_reusing(
+        &self,
+        reference: FileRef,
+        offset: u64,
+        destination: &mut [u8],
+        reader: &mut qa_formats::archive::ArchiveReader,
+    ) -> Result<usize, VfsError> {
+        let entry = self.entry(reference)?;
+        if let EntrySource::Archive { archive, entry } = &entry.source {
+            return Ok(archive.read_stream_reusing(*entry, offset, destination, reader)?);
+        }
+        self.read_loose(reference, offset, destination)
+    }
+
     /// The product mount loader reuses loose archive handles already opened by
     /// mount_directory. This is a cold operation; it never reopens a package.
     pub fn source_file(&self, reference: FileRef) -> Option<Arc<ReadFile>> {

@@ -1,6 +1,6 @@
 //! Decode once at precache into the shared PCM representation.
 use crate::{FormatError, read::Reader};
-use qa_core::primitives::{Pcm, PcmChannels};
+use qa_core::primitives::{Pcm, PcmChannels, PcmWidth};
 use std::{io::Cursor, num::NonZeroU32};
 
 const MAX_SAMPLES: usize = 256 * 1024 * 1024 / 2;
@@ -243,14 +243,11 @@ impl<'a> Wav<'a> {
         })
     }
     pub fn decode(&self) -> Pcm {
+        let width = PcmWidth::from_bytes(self.width).unwrap_or(PcmWidth::ThreeBytes);
         let samples = self
             .data
             .chunks_exact(self.width as usize)
-            .map(|s| match self.width {
-                1 => (i16::from(s[0]) - 128) * 256,
-                2 => i16::from_le_bytes([s[0], s[1]]),
-                _ => i16::from_le_bytes([s[1], s[2]]),
-            })
+            .map(|s| width.sample(s, false))
             .collect();
         Pcm {
             rate: self.rate,

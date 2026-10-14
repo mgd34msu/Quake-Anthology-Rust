@@ -5,6 +5,8 @@ use std::num::NonZeroU32;
 mod doppler;
 mod mixer;
 pub use mixer::{Bank, Listener, MixCounts, Mixer};
+mod raw;
+pub use raw::{RAW_FRAMES, RawError};
 mod bindings;
 pub use bindings::{
     SoundBindingError, SoundBindings, native_sound_name, same_sound_codec, sound_path,
