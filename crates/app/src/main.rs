@@ -903,7 +903,7 @@ fn run() -> Result<(), String> {
         host.runtime.server.clients.len(),
         &effect_bindings,
     )?;
-    let mut renderer = Renderer::load(
+    let (mut renderer, scene) = Renderer::load(
         renderer_context,
         width as u32,
         height as u32,
@@ -914,10 +914,13 @@ fn run() -> Result<(), String> {
         hud_assets,
         effects,
     )?;
+    host.runtime.scene = Some(scene);
     if matches!(renderer_kind, Kind::Cpu) {
         host.console.cvars.set_latch_active(band_cvar, true);
     }
+    let mut scene = host.runtime.scene.take().ok_or("missing scene composer")?;
     renderer.frame(
+        &mut scene,
         &host.client_views(),
         &host.client_scene_inputs(),
         &host.client_hud_inputs(),
@@ -929,6 +932,7 @@ fn run() -> Result<(), String> {
             time: host.time,
         },
     );
+    host.runtime.scene = Some(scene);
     #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
     let _ = renderer.merge_worker_counts(qa_platform::allocations::Counts::default());
     renderer.present(&mut window);

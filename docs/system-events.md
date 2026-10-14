@@ -118,9 +118,10 @@ and direct socket types outside platform, including the imported aliases and
 examples exercised by its fixtures. Shared sound/effect/print/packet queue
 definitions belong to core. CI runs planted rejection and permitted-boundary
 fixtures. These source checks cover the listed patterns, not arbitrary Rust
-name resolution. There is no queue journal. The development SDL input player
-is a replay release blocker under THE-893; do not add recording or replay
-pending the owner's decision.
+name resolution. Command history, journaling, input recording and replay are
+required by the owner's 2026-10-13 correction, with configurable history above
+64 entries. The earlier pending-owner ban and replay-removal instruction are
+superseded. These features still need product integration.
 
 THE-884 implements the Com_Frame order in [AGENTS.md](../AGENTS.md):
 drain/commands, provider-rate server ticks, a second drain/commands, then the

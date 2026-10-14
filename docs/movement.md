@@ -48,7 +48,9 @@ There is one latest command slot per connected client, consumed once in the
 SERVER phase; bots submit once per world tick. Current-command prediction
 starts from authoritative movement state and advances one pending command.
 This is not latency correction. Network command acknowledgement and correction
-remain THE-821. There is no input journal, history player or replay mechanism.
+remain THE-821. Command history, journaling, input recording and replay are
+required by the owner's 2026-10-13 correction. The current-command-only path
+does not complete those features.
 
 ## Verification
 

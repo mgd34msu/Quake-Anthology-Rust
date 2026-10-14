@@ -15,8 +15,9 @@ until it can be copied into the one system-event arena.
 
 The host appends ConsoleLine to its existing fixed console buffer. Commands,
 cvars, vstr and exec therefore use the same path as local console input for
-all module families. No terminal reader, input recording or replay is added
-outside platform. The checker already rejects std::io::stdin and imported
+all module families. Terminal reading belongs to platform. Input recording,
+replay and journaling are required features on the shared services. The checker
+already rejects std::io::stdin and imported
 aliases outside platform, including examples.
 
 ```sh

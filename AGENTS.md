@@ -1,5 +1,18 @@
 # Quake-Rust instructions
 
+Owner direction, 2026-10-13: when functionality is uncertain, consult the
+quake-typescript implementation. Choose maximum useful functionality. Do not
+cut features merely because they might be unnecessary or take more tokens;
+the owner accepts that cost when the work adds value to the game. This applies
+to feature selection and implementation decisions, including optional features.
+
+Owner correction, 2026-10-13: command history, journaling, input recording and
+replay are required features. History must support configurable capacities
+significantly above 64 entries. Preserve native protocol fields and widths.
+Earlier bans, pending-owner restrictions and instructions to remove these
+features before release are superseded. Do not attribute supervisor directions
+or repository wording to the owner as a personal statement without evidence.
+
 Owner correction, 2026-10-11: do not use Linear or Slack, including reading
 them. This overrides the earlier reporting and monitoring instructions below.
 Keep the requested owner-compliance audit local and report directly to the owner.
@@ -239,7 +252,7 @@ code; use safe typed owned storage allocated at load. Other unsafe code needs
 an explicit safety invariant and focused memory-safety proof, and belongs only
 at OS/SDL boundaries or in paths whose measured gain justifies it.
 
-* A. THE-859/885/886: platform alone owns SDL, sockets, files, OS clocks and worker creation; one fixed core system-event ring carries timed input, console lines and packets, including fixed local loopback rings. No receive thread, journal, input recording or replay may be added pending the owner.
+* A. THE-859/885/886: platform alone owns SDL, sockets, files, OS clocks and worker creation; one fixed core system-event ring carries timed input, console lines and packets, including fixed local loopback rings. Command history, journaling, input recording and replay use the shared primitives and services. The earlier receive-thread prohibition was repository wording; its attribution as a direct owner instruction is unverified. Threading still follows platform ownership and the event-intake contract below.
 * B. THE-884: Com_Frame performs two nonblocking physical intake drains: before SERVER and before CLIENT, each followed by commands, matching qsrc Com_Frame/Com_EventLoop. SERVER providers advance at their own native rates on one timeline; CLIENT applies snapshots, predicts and presents. No other physical intake point is allowed, including frame-cap waits or final-ACK retirement. The 2026-10-08 16:12 owner ruling supersedes the earlier draining-wait requirement; queued events may still be consumed without polling OS sources. The cap waits on platform time before the first intake, using native integer-millisecond boundaries and a zero startup baseline. Q1 nextthink seconds, Q2 10 Hz, Q2 rerelease 40 Hz and Q3 sv_fps are independent of movement rules and usercmd duration.
 * C. THE-691/890: all modules produce sound, effect and print primitives into the one core output ring and text arena; the client drains it once into audio, particles and per-seat HUD/notify consumers. Load-sized arenas, fixed rings and hot SoA state mean zero Rust heap allocation per frame; instrumented qualification fails on any measured-frame allocation.
 * D. THE-860: one netchan owns sequence, ack, reliable bit, qport, fragments and fixed packet buffers; protocol tables select reliability, Huffman/XOR and one field-table delta encoder. Each client has a 32-slot snapshot ring and zero baseline, with its own NQ/QW/Q2/Q2RR/Q3 protocol over the same world; packet limit is 1400 bytes.
@@ -366,8 +379,8 @@ owned hot state. Modules, wire protocols and map geometry never choose physics.
 MovementState owns grounding, stance, timers and cached tuning independently
 of the module tail. Contact/surface metadata comes from the shared trace API.
 The app enables these callers when geometry is loaded; the R0 shell has none.
-No command history, input recording or replay is introduced. THE-821 supplies
-later network acknowledgement/correction. Native movement completion remains
+Command history, input recording, replay and journaling are required. THE-821
+supplies network acknowledgement/correction. Native movement completion remains
 THE-635/766/606/609 and the THE-839 retail-map and combined-mode gate.
 Use `tools/check_movement.py` for original Q2/Q3 function comparisons and the
 platform `movement` example for pinned allocation/timing checks. Analytic
@@ -431,9 +444,9 @@ SDL_VIDEO_DRIVER, SDL_AUDIO_DRIVER and SDL_AUDIO_DISK_OUTPUT_FILE. Future window
 state changes must call SDL_SyncWindow before reporting completion. The private
 PCM probe accepts only explicit disk/dummy sinks; it does not prove game audio.
 
-THE-893 is a release blocker: `crates/app/src/proof.rs` and platform's gated SDL
-input injector form an input player. Remove recording/replay before any public
-release. A development proof build must never qualify as a shipping candidate.
+THE-893's instruction to remove recording/replay before public release is
+superseded by the owner's 2026-10-13 correction. Recording and replay are
+required product features.
 
 ## Salvage
 
@@ -488,7 +501,9 @@ These are Mike's standing rules. They apply to every commit.
 ## Authorities
 
 1. Behaviour: the original id sources in the `qsrc` reference checkout (and the rerelease sources there).
-2. Features: quake-typescript (feature list only, never its structure).
+2. Features and uncertain functionality: the quake-typescript implementation.
+   Prefer its fullest useful capabilities; use the common Rust primitives
+   rather than copying its storage or architecture.
 3. Proven implementation: the C port the `quake-anthology` reference checkout (behaviour and fixes, not its per-game structure).
 
 ## Never
@@ -496,7 +511,6 @@ These are Mike's standing rules. They apply to every commit.
 * No TypeScript structure: no Rc<RefCell> entity pools, string-keyed ids/thinks/providers, NumericOps/fround emulation, SaveJson, mirror/seam/donor shims, async pumps.
 * No fatal checks during play: a failure affects only the client, command, bot or entity involved.
 * No game windows or audio on the owner's desktop or speakers during agent runs; stop only your own process ids.
-* Strip all keyboard/input recording and replay before any public release.
 # Working protocol
 
 ## Linear (source of truth)
@@ -548,8 +562,8 @@ These are Mike's standing rules. They apply to every commit.
 * Unit tests cover format readers, math and rule tables against qsrc values.
   Put tests in tests/ or a small trailing test module. Production files with
   more than 40% test-only content fail the build checker. Never assert message
-  wording. End-to-end proof goes through the normal input path in a binary,
-  with scripted input only in the development proof candidate.
+  wording. End-to-end proof goes through the normal input path in a binary.
+  Product recording and replay also require normal-build verification.
 * Do not create GitHub releases or version tags unless the owner explicitly asks.
 * Keep `AGENTS.md` in the repo root with these rules and the current milestone order, so they survive restarts and context compaction.
 * Small commits, one capability or fix each, with the qsrc reference in the message.

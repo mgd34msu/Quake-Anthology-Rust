@@ -38,6 +38,7 @@ pub trait FrameSource {
     fn elapsed(&self) -> Duration;
     fn render(
         &mut self,
+        _composition: Option<&mut crate::renderer::SceneComposer>,
         _views: &[Option<ClientView>; SeatId::COUNT],
         _scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         _huds: &[Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT],
@@ -149,13 +150,14 @@ impl FrameSource for LiveFrame<'_> {
     }
     fn render(
         &mut self,
+        composition: Option<&mut crate::renderer::SceneComposer>,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         huds: &[Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT],
         console: qa_console::presentation::ConsoleView<'_>,
     ) {
-        if let Some(renderer) = self.renderer.as_deref_mut() {
-            renderer.frame(views, scenes, huds, console);
+        if let (Some(renderer), Some(composition)) = (self.renderer.as_deref_mut(), composition) {
+            renderer.frame(composition, views, scenes, huds, console);
         }
     }
 }
@@ -453,6 +455,9 @@ impl FrameHost {
         let client = Stopwatch::start();
         self.advance_client_presentation();
         result.commands = self.client_frame();
+        if let Some(scene) = &mut self.runtime.scene {
+            scene.begin_frame();
+        }
         self.client_modules();
         self.publish_client_feedback();
         self.publish_client_loops();
@@ -467,7 +472,9 @@ impl FrameHost {
                 snapshot.submitted_view(qa_core::math::angle_vectors(view.angles).axes());
             }
         }
+        let mut composition = self.runtime.scene.take();
         source.render(
+            composition.as_mut(),
             &views,
             &self.client_scene_inputs(),
             &self.client_hud_inputs(),
@@ -479,6 +486,10 @@ impl FrameHost {
                 time: self.time,
             },
         );
+        if let Some(scene) = &mut composition {
+            scene.discard_frame();
+        }
+        self.runtime.scene = composition;
         source.present();
         result.total_ns = source.elapsed().as_nanos() as u64;
         result

@@ -257,45 +257,21 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
     }
     refdef
 }
-pub struct Renderer {
+/// The session owns one front end and its view scratch across module dispatch
+/// and built-in client composition.
+pub struct SceneComposer {
     frontend: FrontEnd,
     assets: Assets,
-    effects: qa_render::effects::Effects,
-    effect_clients: [Option<qa_render::effects::EffectClient>; SeatId::COUNT],
-    effect_time: qa_core::sys_events::EventTime,
-    effect_gravity: f32,
-    backend: Backend,
     scenes: Box<[Option<WorldScene>]>,
-    kind: Kind,
-    pub sample: Sample,
-    width: u32,
-    height: u32,
-    recorded_rendered_frames: u64,
-    draw_failed: bool,
-    console: console::ConsoleAssets,
-    hud: [Option<hud::HudAssets>; 5],
+    frame: Option<qa_render::scene::Frame>,
 }
-impl Renderer {
-    /// Assets are frozen while a backend and its packets reference them.
+
+impl SceneComposer {
     pub fn load(
-        context: Context,
-        width: u32,
-        height: u32,
+        mut limits: Limits,
         assets: Assets,
         worlds: Vec<LoadedWorld>,
-        bands: Option<RasterBands>,
-        console: console::ConsoleAssets,
-        hud: [Option<hud::HudAssets>; 5],
-        effects: qa_render::effects::Effects,
-    ) -> Result<Self, String> {
-        let kind = match &context {
-            Context::Cpu(_) => Kind::Cpu,
-            Context::Gl(_) => Kind::Gl,
-        };
-        let display = context.configuration().display;
-        if display.width != width || display.height != height {
-            return Err("renderer target changed during registration".into());
-        }
+    ) -> Result<(Self, Limits), String> {
         let mut scenes: Vec<Option<WorldScene>> =
             (0..assets.worlds().len()).map(|_| None).collect();
         let mut max_surfaces = 0usize;
@@ -319,16 +295,94 @@ impl Renderer {
         if scenes.iter().any(Option::is_none) {
             return Err("missing loaded world geometry".into());
         }
-        let mut limits = Limits::default();
-        limits.particles = effects
-            .capacity()
-            .checked_mul(SeatId::COUNT)
-            .ok_or("particle scene capacity")?;
         limits.surfaces = limits.surfaces.max(
             max_surfaces
                 .checked_mul(SeatId::COUNT)
                 .ok_or("scene surface capacity")?,
         );
+
+        let frontend = FrontEnd::load(limits)?;
+        Ok((
+            Self {
+                frontend,
+                assets,
+                scenes: scenes.into_boxed_slice(),
+                frame: None,
+            },
+            limits,
+        ))
+    }
+
+    pub fn frame_mut(&mut self) -> Option<&mut qa_render::scene::Frame> {
+        self.frame.as_mut()
+    }
+
+    pub fn finish_frame(&mut self) -> Option<qa_render::scene::CommandList> {
+        self.frame.take().map(qa_render::scene::Frame::finish)
+    }
+
+    pub fn recycle(
+        &mut self,
+        packet: qa_render::scene::CommandList,
+    ) -> Result<(), qa_render::scene::CommandList> {
+        self.frontend.recycle(packet)
+    }
+
+    pub fn begin_frame(&mut self) -> bool {
+        self.discard_frame();
+        self.frame = self.frontend.begin_frame([18, 26, 34, 255]);
+        self.frame.is_some()
+    }
+
+    /// A headless client phase still retires its owned list before reuse.
+    pub fn discard_frame(&mut self) {
+        if let Some(frame) = self.frame.take() {
+            let _ = self.frontend.recycle(frame.finish());
+        }
+    }
+}
+
+pub struct Renderer {
+    effects: qa_render::effects::Effects,
+    effect_clients: [Option<qa_render::effects::EffectClient>; SeatId::COUNT],
+    effect_time: qa_core::sys_events::EventTime,
+    effect_gravity: f32,
+    backend: Backend,
+    kind: Kind,
+    pub sample: Sample,
+    width: u32,
+    height: u32,
+    recorded_rendered_frames: u64,
+    draw_failed: bool,
+    console: console::ConsoleAssets,
+    hud: [Option<hud::HudAssets>; 5],
+}
+impl Renderer {
+    /// Assets are frozen while a backend and its packets reference them.
+    pub fn load(
+        context: Context,
+        width: u32,
+        height: u32,
+        assets: Assets,
+        worlds: Vec<LoadedWorld>,
+        bands: Option<RasterBands>,
+        console: console::ConsoleAssets,
+        hud: [Option<hud::HudAssets>; 5],
+        effects: qa_render::effects::Effects,
+    ) -> Result<(Self, SceneComposer), String> {
+        let kind = match &context {
+            Context::Cpu(_) => Kind::Cpu,
+            Context::Gl(_) => Kind::Gl,
+        };
+        let display = context.configuration().display;
+        if display.width != width || display.height != height {
+            return Err("renderer target changed during registration".into());
+        }
+        let mut limits = Limits::default();
+        limits.particles = effects
+            .capacity()
+            .checked_mul(SeatId::COUNT)
+            .ok_or("particle scene capacity")?;
         let hud_capacity = hud
             .iter()
             .flatten()
@@ -353,14 +407,14 @@ impl Renderer {
                     .ok_or("console vertex capacity")?,
             )
             .ok_or("console vertex capacity")?;
-        let frontend = FrontEnd::load(limits)?;
+        let (scene, limits) = SceneComposer::load(limits, assets, worlds)?;
         let backend = match context {
             Context::Cpu(_) => {
                 let physical_cores = qa_platform::physical_core_count();
                 let backend = CpuBackend::load_with_limits(
                     width,
                     height,
-                    &assets,
+                    &scene.assets,
                     CpuLimits {
                         scene: limits,
                         bands: bands.unwrap_or_else(|| RasterBands::at_most(physical_cores)),
@@ -380,7 +434,7 @@ impl Renderer {
                 Backend::Cpu { backend, dispatch }
             }
             Context::Gl(context) => Backend::Gl(unsafe {
-                GlBackend::load(context, &assets, width, height, limits.vertices)?
+                GlBackend::load(context, &scene.assets, width, height, limits.vertices)?
             }),
         };
         if let Backend::Gl(gl) = &backend {
@@ -391,24 +445,24 @@ impl Renderer {
                 serde_json::to_string(version).map_err(|e| format!("GL version report: {e}"))?
             ));
         }
-        Ok(Self {
-            frontend,
-            assets,
-            effects,
-            effect_clients: [None; SeatId::COUNT],
-            effect_time: qa_core::sys_events::EventTime::default(),
-            effect_gravity: 800.0,
-            backend,
-            scenes: scenes.into_boxed_slice(),
-            kind,
-            sample: Sample::default(),
-            width,
-            height,
-            recorded_rendered_frames: 0,
-            draw_failed: false,
-            console,
-            hud,
-        })
+        Ok((
+            Self {
+                effects,
+                effect_clients: [None; SeatId::COUNT],
+                effect_time: qa_core::sys_events::EventTime::default(),
+                effect_gravity: 800.0,
+                backend,
+                kind,
+                sample: Sample::default(),
+                width,
+                height,
+                recorded_rendered_frames: 0,
+                draw_failed: false,
+                console,
+                hud,
+            },
+            scene,
+        ))
     }
     pub fn effect(&mut self, event: qa_core::primitives::EffectEvent) -> bool {
         self.effects.accept(event)
@@ -480,6 +534,7 @@ impl Renderer {
     }
     pub fn frame(
         &mut self,
+        composition: &mut SceneComposer,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<ClientSceneInput<'_>>; SeatId::COUNT],
         hud: &[Option<hud::HudView<'_>>; SeatId::COUNT],
@@ -489,7 +544,10 @@ impl Renderer {
         self.draw_failed = false;
         self.effect_phase(qa_render::effects::Effects::begin_frame);
         let timer = Stopwatch::start();
-        let Some(mut frame) = self.frontend.begin_frame([18, 26, 34, 255]) else {
+        if composition.frame.is_none() {
+            composition.begin_frame();
+        }
+        let Some(mut frame) = composition.frame.take() else {
             self.sample.stats.rejected += 1;
             self.draw_failed = true;
             self.effect_phase(qa_render::effects::Effects::finish_frame);
@@ -504,7 +562,7 @@ impl Renderer {
             };
             let viewport = viewport(self.width, self.height, view_index, count);
             view_index += 1;
-            let Some(scene) = self
+            let Some(scene) = composition
                 .scenes
                 .get_mut(client.world.0 as usize)
                 .and_then(Option::as_mut)
@@ -512,7 +570,7 @@ impl Renderer {
                 rejected += 1;
                 continue;
             };
-            let Some(world) = self.assets.world(client.world) else {
+            let Some(world) = composition.assets.world(client.world) else {
                 rejected += 1;
                 continue;
             };
@@ -540,7 +598,7 @@ impl Renderer {
             if let Some(client_scene) = &scenes[seat] {
                 self.sample.client_scene += client_scene.append(
                     &mut frame,
-                    &self.assets,
+                    &composition.assets,
                     &refdef,
                     matches!(self.kind, Kind::Cpu),
                 );
@@ -549,12 +607,12 @@ impl Renderer {
                 self.effects
                     .append(&mut frame, effect_client.client, effect_client.lifetime);
             }
-            if !world_added || !frame.render_scene(refdef, hidden_areas, &self.assets) {
+            if !world_added || !frame.render_scene(refdef, hidden_areas, &composition.assets) {
                 rejected += 1;
             }
             if let Some(hud) = hud[seat] {
                 if let Some(assets) = self.hud[hud.rules as usize].as_mut() {
-                    self.sample.hud += assets.append(&mut frame, &self.assets, hud, refdef);
+                    self.sample.hud += assets.append(&mut frame, &composition.assets, hud, refdef);
                 } else if hud.show_text {
                     self.sample.hud.missing_font += 1;
                 }
@@ -562,7 +620,7 @@ impl Renderer {
         }
         self.sample.console = self.console.append(
             &mut frame,
-            &self.assets,
+            &composition.assets,
             console,
             self.width,
             self.height,
@@ -575,11 +633,11 @@ impl Renderer {
         let timer = Stopwatch::start();
         let result = match &mut self.backend {
             Backend::Cpu { backend, dispatch } => {
-                backend.render_with_dispatch(&packet, &self.assets, |jobs| {
+                backend.render_with_dispatch(&packet, &composition.assets, |jobs| {
                     dispatch.dispatch(jobs, run_cpu_job)
                 })
             }
-            Backend::Gl(gl) => Ok(gl.render(&packet, &self.assets)),
+            Backend::Gl(gl) => Ok(gl.render(&packet, &composition.assets)),
         };
         self.sample.backend_ns = timer.elapsed().as_nanos() as u64;
         match result {
@@ -593,7 +651,7 @@ impl Renderer {
             }
         }
         self.sample.stats.rejected += rejected;
-        if self.frontend.recycle(packet).is_err() {
+        if composition.recycle(packet).is_err() {
             self.sample.stats.rejected += 1;
         }
         self.effect_phase(qa_render::effects::Effects::finish_frame);
