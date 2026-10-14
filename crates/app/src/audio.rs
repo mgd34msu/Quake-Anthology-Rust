@@ -637,3 +637,61 @@ fn music_path(
     qa_core::names::default_extension(&mut path, b".wav", true).map_err(|_| CommandError::Usage)?;
     Ok(path)
 }
+
+fn client_music_owner(
+    runtime: &Runtime,
+    client: qa_core::primitives::ClientId,
+) -> Option<(
+    qa_core::primitives::MusicOwner,
+    qa_core::primitives::MusicPlayback,
+)> {
+    let row = runtime.server.clients.get(client.0 as usize)?;
+    let binding = runtime.snapshots.get(client.0 as usize)?.as_ref()?;
+    Some((
+        qa_core::primitives::MusicOwner {
+            module: None,
+            client: Some((client, row.entity)),
+        },
+        qa_gameplay::rules::music_playback(binding.protocol.rule_set()),
+    ))
+}
+
+pub(crate) fn cd_track(runtime: &mut Runtime, client: qa_core::primitives::ClientId, number: u32) {
+    if let Some((owner, playback)) = client_music_owner(runtime, client) {
+        let _ = runtime.server.events.push_to(
+            qa_core::events::OutputTarget::Presentation,
+            FrameEvent::Music(qa_core::primitives::MusicControl::Track {
+                owner,
+                playback,
+                number,
+                looping: true,
+            }),
+        );
+    }
+}
+
+/// Q2 classic uses atoi; rerelease also accepts authored soundtrack names.
+pub(crate) fn config_music(
+    runtime: &mut Runtime,
+    client: qa_core::primitives::ClientId,
+    text: &[u8],
+) {
+    let (number, consumed) = qa_core::text::integer_prefix(text);
+    if text.is_empty() || consumed != 0 {
+        cd_track(runtime, client, u32::try_from(number).unwrap_or(0));
+        return;
+    }
+    let Some((owner, playback)) = client_music_owner(runtime, client) else {
+        return;
+    };
+    let Ok(name) = std::str::from_utf8(text) else {
+        return;
+    };
+    let Ok(path) = music_path(&runtime.vfs, name) else {
+        return;
+    };
+    let _ = runtime
+        .server
+        .events
+        .music(owner, playback, path.as_bytes(), path.as_bytes());
+}

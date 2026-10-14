@@ -3,6 +3,7 @@
 mod model_support;
 #[path = "client_commands/music.rs"]
 mod music;
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "../../formats/tests/support/native_image.rs"]
 #[allow(dead_code)]
@@ -1306,6 +1307,7 @@ fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    music::wire_music_reaches_shared_paint();
     music::native_music_reaches_shared_paint(qvm, false);
     music::native_music_reaches_shared_paint(qvm, true);
     selected_commands_use_one_session_service(qvm);

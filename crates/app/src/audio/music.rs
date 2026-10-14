@@ -9,6 +9,7 @@ use qa_formats::{
     archive::ArchiveReader,
     sound::{Vorbis, WavInfo},
 };
+use std::fmt::Write;
 
 #[derive(Default, Debug)]
 pub struct MusicCounts {
@@ -207,6 +208,47 @@ impl Music {
         self.tracks[track].reset();
         Source::new(track)
     }
+    fn numbered_track(&self, vfs: &Vfs, number: u32) -> Option<usize> {
+        for extension in ["ogg", "wav"] {
+            for prefix in ["", "track"] {
+                let mut path = qa_core::text::FixedText::<40>::default();
+                write!(path, "music/{prefix}{number:02}.{extension}").ok()?;
+                if let Some(track) = vfs.open(path.as_bytes()).and_then(|file| self.track(file)) {
+                    return Some(track);
+                }
+            }
+        }
+        None
+    }
+    fn start(
+        &mut self,
+        mixer: &mut Mixer,
+        owner: MusicOwner,
+        playback: MusicPlayback,
+        intro: Option<usize>,
+        loop_track: Option<FileRef>,
+    ) -> bool {
+        // Replacement closes the prior source first. Native Q3 keeps
+        // already queued PCM even when the new source fails to open.
+        self.current = None;
+        self.reader.close_stream();
+        self.loop_track = None;
+        self.owner = Some(owner);
+        self.playback = playback;
+        self.paused = false;
+        mixer.pause_raw(false);
+        if !playback.preserve_queued {
+            mixer.clear_raw();
+        }
+        let Some(track) = intro else {
+            self.counts.invalid += 1;
+            return false;
+        };
+        self.loop_track = loop_track;
+        self.current = Some(self.begin(track));
+        self.counts.started += 1;
+        true
+    }
     pub fn playing(&self) -> bool {
         self.current.is_some()
     }
@@ -219,6 +261,31 @@ impl Music {
         loop_track: Option<&[u8]>,
     ) -> bool {
         match control {
+            MusicControl::Track {
+                owner,
+                playback,
+                number,
+                looping,
+            } => {
+                if number == 0 {
+                    self.stop(mixer);
+                    return true;
+                }
+                let intro = self.numbered_track(vfs, number);
+                let loop_track = intro
+                    .filter(|_| looping)
+                    .map(|track| self.tracks[track].file);
+                if self.owner == Some(owner)
+                    && self.playback == playback
+                    && self
+                        .current
+                        .is_some_and(|source| Some(source.track) == intro)
+                    && self.loop_track == loop_track
+                {
+                    return true;
+                }
+                self.start(mixer, owner, playback, intro, loop_track)
+            }
             MusicControl::Pause(paused) => {
                 if self.owner.is_some() {
                     self.paused = paused;
@@ -241,31 +308,13 @@ impl Music {
             MusicControl::Start {
                 owner, playback, ..
             } => {
-                // Replacement closes the prior source first. Native Q3 keeps
-                // already queued PCM even when the new source fails to open.
-                self.current = None;
-                self.reader.close_stream();
-                self.loop_track = None;
-                self.owner = Some(owner);
-                self.playback = playback;
-                self.paused = false;
-                mixer.pause_raw(false);
-                if !playback.preserve_queued {
-                    mixer.clear_raw();
-                }
                 let opened = intro
                     .and_then(|name| vfs.open(name))
                     .and_then(|file| self.track(file));
-                let Some(track) = opened else {
-                    self.counts.invalid += 1;
-                    return false;
-                };
-                self.loop_track = loop_track
+                let loop_track = loop_track
                     .filter(|name| !name.is_empty())
                     .and_then(|name| vfs.open(name));
-                self.current = Some(self.begin(track));
-                self.counts.started += 1;
-                true
+                self.start(mixer, owner, playback, opened, loop_track)
             }
         }
     }

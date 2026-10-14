@@ -5,6 +5,82 @@ use qa_network::{
 };
 
 #[test]
+fn cd_track_keeps_native_widths_and_projects_without_hiding_later_services() {
+    use outputs::{CdTrack, NativeService};
+    use qa_core::primitives::RuleSetId;
+    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        for track in [0, 2, 99, 255] {
+            let record = CdTrack {
+                track,
+                loop_track: Some(17),
+            };
+            let mut bytes = [0xcc; 16];
+            let length = outputs::cd_track(protocol, record, &mut bytes).unwrap();
+            let expected = if protocol == Protocol::NetQuake15 {
+                3
+            } else {
+                2
+            };
+            assert_eq!(length, expected);
+            assert_eq!(&bytes[..2], &[32, track]);
+            assert_eq!(bytes[length], 0xcc);
+            let (NativeService::CdTrack(decoded), used) =
+                outputs::read_native_service(protocol, &bytes[..length]).unwrap()
+            else {
+                panic!("CD track");
+            };
+            assert_eq!(used, length);
+            assert_eq!(decoded.track, track);
+            assert_eq!(decoded.loop_track, (expected == 3).then_some(17));
+            for prefix in 0..length {
+                assert!(outputs::read_cd_track(protocol, &bytes[..prefix]).is_err());
+                assert!(outputs::cd_track(protocol, record, &mut bytes[..prefix]).is_err());
+            }
+        }
+    }
+    for (source, payload) in [
+        (RuleSetId::Quake, &[32, 255, 17, 1][..]),
+        (RuleSetId::QuakeWorld, &[32, 255, 1][..]),
+    ] {
+        for protocol in [
+            Protocol::NetQuake15,
+            Protocol::QuakeWorld28,
+            Protocol::Quake2_34,
+            Protocol::Quake2Repro1038,
+        ] {
+            let mut bytes = [0xcc; 16];
+            let encoded = outputs::native(protocol, source, payload, &mut bytes, true, |cue, _| {
+                Ok(cue)
+            })
+            .unwrap();
+            assert_eq!(encoded.unsupported, 0);
+            if matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28) {
+                let (track, used) =
+                    outputs::read_cd_track(protocol, &bytes[..encoded.length]).unwrap();
+                assert_eq!(track.track, 255);
+                if protocol == Protocol::NetQuake15 {
+                    assert_eq!(
+                        track.loop_track,
+                        Some(if source == RuleSetId::Quake { 17 } else { 255 })
+                    );
+                }
+                assert_eq!(&bytes[used..encoded.length], &[1]);
+            } else {
+                let (row, used) =
+                    outputs::read_configstring(protocol, &bytes[..encoded.length]).unwrap();
+                assert_eq!(
+                    row.index as usize,
+                    protocol.config_layout().unwrap().cd_track.unwrap()
+                );
+                assert_eq!(row.text, b"255");
+                assert_eq!(&bytes[used..encoded.length], &[6]);
+            }
+            assert_eq!(bytes[encoded.length], 0xcc);
+        }
+    }
+}
+
+#[test]
 fn rerelease_center_levels_keep_svc_print_and_legacy_clients_get_centerprint() {
     for level in [4, 5] {
         let mut bytes = [0xcc; 64];

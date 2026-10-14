@@ -94,6 +94,7 @@ pub enum Incoming<'a> {
         value: i32,
     },
     SetAngles(qa_core::primitives::Vec3),
+    CdTrack(crate::outputs::CdTrack),
     Print(crate::outputs::Print<'a>),
     ConfigString(crate::outputs::ConfigString<'a>),
     StaticEntity(qa_core::primitives::EntityRecord),

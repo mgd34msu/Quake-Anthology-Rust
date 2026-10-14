@@ -67,6 +67,19 @@ impl Fixture {
         let archive = Arc::new(qa_formats::archive::Archive::parse(file).unwrap());
         self.vfs.mount_archive(&path, 10, archive).unwrap();
     }
+    pub fn numbered(&mut self) {
+        for (name, bytes) in [
+            ("02.ogg", MONO),
+            ("track02.ogg", STEREO),
+            ("04.ogg", &b"broken"[..]),
+            ("track04.ogg", MONO),
+        ] {
+            qa_platform::files::write(self.root.join("music").join(name), bytes).unwrap();
+        }
+        let wave = qa_platform::files::read(self.root.join("music/intro.wav")).unwrap();
+        qa_platform::files::write(self.root.join("music/track03.wav"), wave).unwrap();
+        self.vfs.mount_directory(&self.root, 2).unwrap();
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -107,6 +120,45 @@ fn start(owner: MusicOwner, preserve: bool, smooth: bool) -> MusicControl {
         intro: text,
         loop_track: text,
     }
+}
+
+#[test]
+fn numbered_tracks_use_prepared_vfs_priority_and_do_not_restart_on_repeated_requests() {
+    let mut fixture = Fixture::new();
+    fixture.numbered();
+    let expected = qa_formats::sound::vorbis(MONO).unwrap();
+    let mut music = Music::load(&fixture.vfs);
+    let mut mix = mixer();
+    let control = |number, looping| MusicControl::Track {
+        owner: owner(1),
+        playback: qa_gameplay::rules::music_playback(RuleSetId::Quake),
+        number,
+        looping,
+    };
+    assert!(music.control(&fixture.vfs, &mut mix, control(2, true), None, None));
+    music.update(&fixture.vfs, &mut mix, 1.);
+    let mut pcm = [0; 16];
+    mix.paint(&mut pcm);
+    assert_eq!(pcm, std::array::from_fn(|i| expected.samples[i / 2]));
+    let queued = mix.raw_remaining();
+    assert!(music.control(&fixture.vfs, &mut mix, control(2, true), None, None));
+    assert_eq!(mix.raw_remaining(), queued);
+    assert_eq!(music.counts.started, 1);
+    assert!(music.control(&fixture.vfs, &mut mix, control(0, true), None, None));
+    assert!(!music.playing());
+    mix.paint(&mut pcm);
+    assert_eq!(pcm, [0; 16]);
+    // A malformed first candidate is skipped in favor of the valid next file.
+    assert!(music.control(&fixture.vfs, &mut mix, control(4, false), None, None));
+    music.update(&fixture.vfs, &mut mix, 1.);
+    mix.paint(&mut pcm);
+    assert_eq!(pcm, std::array::from_fn(|i| expected.samples[i / 2]));
+    assert!(music.control(&fixture.vfs, &mut mix, control(3, false), None, None));
+    music.update(&fixture.vfs, &mut mix, 1.);
+    let mut wave = [0; 8];
+    mix.paint(&mut wave);
+    assert_eq!(wave, [1000, -1000, 2000, -2000, 0, 0, 0, 0]);
+    assert!(!music.playing());
 }
 
 #[test]

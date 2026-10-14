@@ -7,6 +7,7 @@ use qa_core::primitives::{PrintKind, RuleSetId};
 
 mod configstrings;
 mod cues;
+mod music;
 mod particles;
 mod player_values;
 mod static_entities;
@@ -16,6 +17,7 @@ pub use configstrings::{
 };
 use cues::project_cue;
 pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, sound, write_cue};
+pub use music::{CdTrack, cd_track, read_cd_track};
 pub use particles::{Particle, particle, read_particle};
 pub use player_values::{
     PLAYER_VALUE_SLOTS, player_value, read_player_value, read_set_angles, separate_player_values,
@@ -52,6 +54,7 @@ fn read_text<'a>(protocol: Protocol, reader: &mut Reader<'a>) -> Result<&'a [u8]
 /// One borrowed service stream uses the same scalar readers as CLIENT ingress.
 /// Unknown opcodes stop the stream: their payload length cannot be inferred.
 pub enum NativeService<'a> {
+    CdTrack(CdTrack),
     Cue(Cue),
     Particle(Particle),
     Print(Print<'a>),
@@ -62,6 +65,10 @@ pub fn read_native_service(
     bytes: &[u8],
 ) -> Result<(NativeService<'_>, usize), Error> {
     match (protocol, bytes.first().copied().ok_or(Error::Truncated)?) {
+        (Protocol::NetQuake15 | Protocol::QuakeWorld28, 32) => {
+            let (track, length) = read_cd_track(protocol, bytes)?;
+            Ok((NativeService::CdTrack(track), length))
+        }
         (Protocol::NetQuake15, 18) => {
             let (particle, length) = read_particle(protocol, bytes)?;
             Ok((NativeService::Particle(particle), length))
@@ -136,6 +143,7 @@ pub fn native(
         remaining = &remaining[consumed..];
         let target = &mut output[encoded.length..];
         let result = match service {
+            NativeService::CdTrack(track) => cd_track(protocol, track, target),
             NativeService::Cue(cue) => project(cue, offset)
                 .and_then(|cue| project_cue(protocol, cue))
                 .and_then(|cue| write_cue(protocol, cue, target)),

@@ -243,6 +243,12 @@ pub struct MusicPlayback {
 }
 #[derive(Clone, Copy, Debug)]
 pub enum MusicControl {
+    Track {
+        owner: MusicOwner,
+        playback: MusicPlayback,
+        number: u32,
+        looping: bool,
+    },
     Start {
         owner: MusicOwner,
         playback: MusicPlayback,

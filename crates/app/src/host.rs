@@ -1171,6 +1171,11 @@ impl FrameHost {
                                 );
                             }
                             Incoming::Cue { cue, current } => self.received_cue(id, cue, current),
+                            Incoming::CdTrack(track) => {
+                                // Native Q1/QW clients loop the primary track;
+                                // NetQuake's second byte remains a wire field.
+                                crate::audio::cd_track(&mut self.runtime, id, u32::from(track.track));
+                            }
                             Incoming::Particle(particle) => {
                                 if let Some(mut event) = self.runtime.snapshots[id.0 as usize]
                                     .as_ref()
@@ -1194,15 +1199,22 @@ impl FrameHost {
                                 }
                             }
                             Incoming::ConfigString(config) => {
+                                let mut music_changed = false;
                                 if let Some(resources) =
                                     self.runtime.client_resources[id.0 as usize].as_mut()
                                 {
-                                    resources.apply(
+                                    let music = resources.state.layout.cd_track == Some(config.index as usize)
+                                        && resources.state.configs.config(config.index as usize)
+                                            .is_some_and(|row| row.text != config.text);
+                                    music_changed = resources.apply(
                                         config.index as usize,
                                         config.text,
                                         self.runtime.models.as_deref(),
                                         self.runtime.sound_bank.as_deref(),
-                                    );
+                                    ) && music;
+                                }
+                                if music_changed {
+                                    crate::audio::config_music(&mut self.runtime, id, config.text);
                                 }
                             }
                             Incoming::Gamestate(gamestate) => {
