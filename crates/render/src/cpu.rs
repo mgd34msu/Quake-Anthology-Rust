@@ -33,6 +33,7 @@ pub enum PreparePoint {
 
 pub struct CpuBackend {
     frame: Framebuffer,
+    material_frame: Framebuffer,
     world: Option<world::WorldRaster>,
     evaluator: StageEvaluator,
     presentation: CpuPresentation,
@@ -49,6 +50,85 @@ struct Framebuffer {
     palettes: Box<[u32]>,
 }
 impl Framebuffer {
+    fn load(width: u32, height: u32) -> Result<Self, &'static str> {
+        let count = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or("CPU framebuffer dimensions overflow")?;
+        Ok(Self {
+            width,
+            height,
+            pixels: vec![0; count].into_boxed_slice(),
+            inverse_depth: vec![0.0; count].into_boxed_slice(),
+            depth_ranks: vec![0; count].into_boxed_slice(),
+            indices: vec![0; count].into_boxed_slice(),
+            palettes: vec![u32::MAX; count].into_boxed_slice(),
+        })
+    }
+    fn seed_from(&mut self, source: &Self) {
+        self.pixels.copy_from_slice(&source.pixels);
+        self.inverse_depth.copy_from_slice(&source.inverse_depth);
+        self.depth_ranks.copy_from_slice(&source.depth_ranks);
+        self.indices.copy_from_slice(&source.indices);
+        self.palettes.copy_from_slice(&source.palettes);
+    }
+    fn composite_material(
+        &mut self,
+        completed: &Self,
+        opacity: crate::scene::MaterialOpacity,
+        camera: &Camera,
+        assets: &Assets,
+    ) {
+        let width = self.width;
+        let mut buffers = self.buffers();
+        let Some(rows) = buffers.rows(width, camera.refdef.viewport) else {
+            return;
+        };
+        for y in rows {
+            for x in
+                camera.refdef.viewport.x..camera.refdef.viewport.x + camera.refdef.viewport.width
+            {
+                let index = buffers.offset(width, x, y);
+                let original = buffers.pixels[index];
+                let color = completed.pixels[index];
+                if color == original {
+                    continue;
+                }
+                if let crate::scene::CpuPresentation::Indexed { palette, .. } =
+                    camera.refdef.cpu_presentation
+                    && let Some(resource) = assets.palette(palette)
+                {
+                    let color_index = if completed.palettes[index] == palette.0 {
+                        completed.indices[index]
+                    } else {
+                        let [r, g, b, _] = color.to_le_bytes();
+                        resource.nearest_index([r, g, b], None)
+                    };
+                    let destination = if buffers.palettes[index] == palette.0 {
+                        buffers.indices[index]
+                    } else {
+                        let [r, g, b, _] = original.to_le_bytes();
+                        resource.nearest_index([r, g, b], None)
+                    };
+                    let color = indexed::composite_color(
+                        resource,
+                        color_index,
+                        Some(destination),
+                        opacity.value(),
+                        None,
+                        false,
+                    )
+                    .map(|(color, _)| color)
+                    .unwrap_or_else(|| {
+                        let [r, g, b, _] = opacity.composite(original, color).to_le_bytes();
+                        resource.nearest_index([r, g, b], None)
+                    });
+                    buffers.write_indexed(index, color, resource, palette.0, None);
+                } else {
+                    buffers.write_rgba(index, opacity.composite(original, color), None);
+                }
+            }
+        }
+    }
     fn buffers(&mut self) -> world::Buffers<'_> {
         world::Buffers {
             first_row: 0,
@@ -335,19 +415,9 @@ impl CpuBackend {
         if width == 0 || height == 0 || width > 8192 || height > 8192 {
             return Err("invalid CPU framebuffer dimensions");
         }
-        let count = (width as usize)
-            .checked_mul(height as usize)
-            .ok_or("CPU framebuffer dimensions overflow")?;
         Ok(Self {
-            frame: Framebuffer {
-                width,
-                height,
-                pixels: vec![0; count].into_boxed_slice(),
-                inverse_depth: vec![0.0; count].into_boxed_slice(),
-                depth_ranks: vec![0; count].into_boxed_slice(),
-                indices: vec![0; count].into_boxed_slice(),
-                palettes: vec![u32::MAX; count].into_boxed_slice(),
-            },
+            frame: Framebuffer::load(width, height)?,
+            material_frame: Framebuffer::load(width, height)?,
             world: None,
             evaluator: StageEvaluator::load(),
             presentation: CpuPresentation::Rgb,
@@ -398,9 +468,16 @@ impl CpuBackend {
     }
 
     pub fn raster_config(&self) -> RasterConfig {
-        self.world
+        let mut config = self
+            .world
             .as_ref()
-            .map_or(RasterConfig::default(), |world| world.config())
+            .map_or(RasterConfig::default(), |world| world.config());
+        config.material_capacity_bytes = std::mem::size_of_val(&*self.material_frame.pixels)
+            + std::mem::size_of_val(&*self.material_frame.inverse_depth)
+            + std::mem::size_of_val(&*self.material_frame.depth_ranks)
+            + std::mem::size_of_val(&*self.material_frame.indices)
+            + std::mem::size_of_val(&*self.material_frame.palettes);
+        config
     }
     pub fn band_stats(&self, output: &mut [WorldStats; MAX_BANDS]) -> usize {
         if let Some(world) = &self.world {
@@ -518,39 +595,41 @@ impl CpuBackend {
                     let draws = list.draws(view.scene.draws);
                     let mut draw_rank = 0;
                     while draw_rank < draws.len() {
-                        if let Some(world) = &mut self.world
-                            && let Some(end) = world.draw_run(
-                                &camera,
-                                draw_rank,
-                                assets,
-                                self.frame.buffers(),
-                                &mut stats,
-                                &mut dispatch,
-                            )?
-                        {
-                            draw_rank = end;
+                        let item = draws[draw_rank];
+                        let opacity = crate::scene::draw_entity(list, item)
+                            .and_then(|entity| entity.material_opacity);
+                        if opacity.is_some_and(|value| value.value() == 0.0) {
+                            draw_rank += 1;
                             continue;
                         }
-                        let item = draws[draw_rank];
-                        match item.kind {
-                            DrawKind::Entity => self.entity(
-                                &camera,
-                                list.entity(item.index),
-                                draw_rank as u32,
-                                assets,
-                                &mut stats,
-                            ),
-                            DrawKind::Poly => self.poly(
-                                &camera,
-                                list.poly(item.index),
-                                draw_rank as u32,
-                                list,
-                                assets,
-                                &mut stats,
-                            ),
-                            DrawKind::Surface => {}
+                        if opacity.is_some() {
+                            self.material_frame.seed_from(&self.frame);
+                            std::mem::swap(&mut self.frame, &mut self.material_frame);
                         }
-                        draw_rank += 1;
+                        let before = stats.rejected;
+                        let result = self.draw_item(
+                            &camera,
+                            list,
+                            view.scene.draws,
+                            assets,
+                            draw_rank,
+                            &mut stats,
+                            &mut dispatch,
+                        );
+                        if let Some(opacity) = opacity {
+                            // Every dispatcher loan has ended, including errors. Restore
+                            // scene ownership before propagating a failed dispatch.
+                            std::mem::swap(&mut self.frame, &mut self.material_frame);
+                            if result.is_ok() && stats.rejected == before {
+                                self.frame.composite_material(
+                                    &self.material_frame,
+                                    opacity,
+                                    &camera,
+                                    assets,
+                                );
+                            }
+                        }
+                        draw_rank = result?;
                     }
                     particles::draw(
                         &camera,
@@ -634,6 +713,47 @@ impl CpuBackend {
         clippy::chunks_exact_to_as_chunks,
         reason = "Retain packed native pixel or triangle traversal and its incomplete-tail behavior"
     )]
+    fn draw_item<E>(
+        &mut self,
+        camera: &Camera,
+        list: &CommandList,
+        draws: crate::scene::Span,
+        assets: &Assets,
+        rank: usize,
+        stats: &mut BackendStats,
+        dispatch: &mut impl for<'job> FnMut(&mut [CpuJob<'job>]) -> Result<(), E>,
+    ) -> Result<usize, E> {
+        if let Some(world) = &mut self.world
+            && let Some(end) = world.draw_run(
+                camera,
+                rank,
+                list,
+                assets,
+                self.frame.buffers(),
+                stats,
+                dispatch,
+            )?
+        {
+            return Ok(end);
+        }
+        let item = list.draws(draws)[rank];
+        match item.kind {
+            DrawKind::Entity => {
+                self.entity(camera, list.entity(item.index), rank as u32, assets, stats)
+            }
+            DrawKind::Poly => self.poly(
+                camera,
+                list.poly(item.index),
+                rank as u32,
+                list,
+                assets,
+                stats,
+            ),
+            DrawKind::Surface => {}
+        }
+        Ok(rank + 1)
+    }
+
     fn entity(
         &mut self,
         camera: &Camera,

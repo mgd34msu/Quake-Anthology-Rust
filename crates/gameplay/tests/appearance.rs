@@ -212,7 +212,7 @@ fn source_flags_do_not_inherit_another_games_render_flag_semantics() {
         !q3.viewer_model && !q3.weapon_model && !q3.fullbright && !q3.depth_hack && !q3.frame_lerp
     );
     assert_eq!(q3.unsupported, u64::from(appearance.native.render_flags));
-    assert!(q3.drawable);
+    assert!(q3.beam_radius.is_none());
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn native_beams_select_radius_and_motion_without_becoming_ordinary_models() {
     appearance.native.render_flags = 128;
     appearance.frame = 7;
     let q2 = policy(appearance.source).project(&appearance);
-    assert!(!q2.drawable && q2.unsupported == 0);
+    assert_eq!(q2.unsupported, 0);
     assert_eq!(q2.beam_radius, Some(3.0));
     assert!(!q2.beam_interpolate);
     appearance.source = RuleSetId::Quake2Rerelease;
@@ -282,7 +282,12 @@ fn native_beams_select_radius_and_motion_without_becoming_ordinary_models() {
     assert_eq!(rerelease.beam_radius, Some(3.5));
     assert!(rerelease.beam_interpolate);
     appearance.source = RuleSetId::Quake3;
-    assert!(policy(appearance.source).project(&appearance).drawable);
+    assert!(
+        policy(appearance.source)
+            .project(&appearance)
+            .beam_radius
+            .is_none()
+    );
     assert_ne!(
         policy(appearance.source).project(&appearance).unsupported,
         0
@@ -385,4 +390,23 @@ fn q2_native_discontinuities_reset_interpolation_without_cross_namespace_aliasin
         Vec3::default(),
         Vec3::default()
     ));
+}
+
+#[test]
+fn inline_opacity_uses_native_brush_rules_independently_of_alias_alpha() {
+    use qa_core::primitives::{EntityAppearance, RuleSetId};
+    let mut record = EntityAppearance::default();
+    record.native.render_flags = 32;
+    record.alpha = 0.5;
+    let classic = policy(RuleSetId::Quake2).project(&record);
+    assert_eq!(classic.inline_opacity, Some(0.25));
+    assert_eq!(classic.alpha, 0.7);
+    let rerelease = policy(RuleSetId::Quake2Rerelease).project(&record);
+    assert_eq!(rerelease.inline_opacity, Some(0.5));
+    assert_eq!(rerelease.alpha, 0.5);
+    record.native.render_flags = 0;
+    assert_eq!(
+        policy(RuleSetId::Quake2).project(&record).inline_opacity,
+        None
+    );
 }

@@ -345,7 +345,7 @@ impl DrawInputs {
     pub fn for_entity(self, entity: &crate::scene::SceneEntity) -> Self {
         self.entity_inputs(entity, true)
     }
-    fn entity_inputs(mut self, entity: &crate::scene::SceneEntity, local: bool) -> Self {
+    pub(crate) fn entity_inputs(mut self, entity: &crate::scene::SceneEntity, local: bool) -> Self {
         if local
             && matches!(
                 entity.model,

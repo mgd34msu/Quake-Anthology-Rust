@@ -639,9 +639,6 @@ impl ClientSceneInput<'_> {
             counts.rejected += u32::from(!added);
             return;
         }
-        if !capabilities.drawable {
-            return;
-        }
         let previous = pose.previous;
         for (slot, reference) in record.appearance.models.iter().enumerate() {
             let Some(reference) = *reference else {
@@ -675,6 +672,15 @@ impl ClientSceneInput<'_> {
                         binding,
                         presentation,
                     } => {
+                        entity.material_opacity = capabilities
+                            .inline_opacity
+                            .and_then(qa_render::scene::MaterialOpacity::new);
+                        // Native brush opacity covers the complete material;
+                        // it must not also attenuate an entity-alpha stage.
+                        if entity.material_opacity.is_some() {
+                            entity.alpha = None;
+                            entity.color[3] = 255;
+                        }
                         entity.model = SceneModel::World {
                             world: binding.world,
                             presentation,

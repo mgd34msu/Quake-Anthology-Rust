@@ -86,6 +86,8 @@ pub struct RasterConfig {
     pub span_group_capacity_bytes: usize,
     /// Owned view preparation arrays, including private chunks and one color table.
     pub preparation_capacity_bytes: usize,
+    /// Completed-material target planes, independent of band count and rovers.
+    pub material_capacity_bytes: usize,
     /// Small views avoid the extra worker wake/barrier before rasterization.
     pub prepare_minimum_primitives_per_job: usize,
 }
@@ -418,6 +420,7 @@ struct WorldPrepare {
     draws: Box<[PreparedDraw]>,
     reference_base: u32,
     draw_count: usize,
+    draw_base: u32,
     opaque_count: usize,
     policy: DepthPolicy,
     background: Option<super::sky::BackgroundDraw>,
@@ -966,6 +969,7 @@ impl WorldRaster {
             draws: vec![PreparedDraw::default(); draw_capacity].into_boxed_slice(),
             reference_base: 0,
             draw_count: 0,
+            draw_base: 0,
             opaque_count: 0,
             policy: DepthPolicy::PlaneDepth,
             background: None,
@@ -1014,6 +1018,7 @@ impl WorldRaster {
                 mip_layout_metadata_bytes: catalog.surfaces_cache.mip_metadata_bytes(),
                 span_group_capacity_bytes,
                 preparation_capacity_bytes,
+                material_capacity_bytes: 0,
                 prepare_minimum_primitives_per_job: 64,
             },
         })
@@ -1161,6 +1166,7 @@ impl WorldPrepare {
                 self.prepare_draw(camera, item, rank as u32, list, assets, evaluator, stats);
         }
         self.draw_count = list.draws(scene.draws).len();
+        self.draw_base = scene.draws.first;
         self.bins.rebuild(
             camera.refdef.viewport,
             self.policy,
@@ -1200,6 +1206,11 @@ impl WorldPrepare {
         crate::sky::for_each_sky_triangle(list, scene.draws, assets, |material, submission| {
             match submission {
                 crate::sky::SkySubmission::Begin(item) => {
+                    if crate::scene::draw_entity(list, item)
+                        .is_some_and(|entity| entity.material_opacity.is_some())
+                    {
+                        return false;
+                    }
                     if !self.catalog.sky_enabled(material) {
                         return false;
                     }
@@ -1276,7 +1287,13 @@ impl WorldPrepare {
         if !self.catalog.sky_enabled(id) || !camera.rgb() {
             return external;
         }
-        let Some(mut bounds) = self.skies.take_for_draw(id.0 as usize) else {
+        let entity = crate::scene::draw_entity(list, item);
+        let bounds = if entity.is_some_and(|entity| entity.material_opacity.is_some()) {
+            crate::sky::submission_bounds(list, item, assets, camera.refdef.origin)
+        } else {
+            self.skies.take_for_draw(id.0 as usize)
+        };
+        let Some(mut bounds) = bounds else {
             return PreparedDraw::Skip;
         };
         let Some(material) = assets.material(id) else {
@@ -1294,6 +1311,7 @@ impl WorldPrepare {
         };
         bounds = crate::sky::draw_bounds(bounds, rotation);
         let inputs = DrawInputs::for_view(&camera.refdef);
+        let inputs = entity.map_or(inputs, |entity| inputs.entity_inputs(entity, false));
         let old_primitive_count = self.geometry.primitive_count;
         let depth_override = params.far_depth.then_some(1.0 / camera.refdef.far);
         if let Some(images) = outer_box {
@@ -1565,7 +1583,8 @@ impl SurfacePrepare {
             if eye == Some(0.0) {
                 continue;
             }
-            let overlay = material.stages[0].blend.is_some()
+            let overlay = entity.is_some_and(|entity| entity.material_opacity.is_some())
+                || material.stages[0].blend.is_some()
                 || material.stages[0].alpha_test != AlphaFunc::None
                 || !material.stages[0].depth_write
                 || material.stages[0].depth_func != DepthFunc::Lequal
@@ -1581,6 +1600,9 @@ impl SurfacePrepare {
                 continue;
             }
             let before = self.primitive_count;
+            let before_stages = self.stage_count;
+            let before_coverage = self.coverage_count;
+            let before_rejected = stats.rejected;
             for boundary in loops {
                 if self.primitive_count == self.primitives.len() {
                     self.capacity_exhausted = true;
@@ -1730,6 +1752,14 @@ impl SurfacePrepare {
                     }
                 }
                 self.commit_primitive(primitive, count, stats);
+            }
+            if entity.is_some_and(|entity| entity.material_opacity.is_some())
+                && stats.rejected != before_rejected
+            {
+                self.primitive_count = before;
+                self.stage_count = before_stages;
+                self.coverage_count = before_coverage;
+                continue;
             }
             if self.primitive_count > before {
                 stats.surfaces = stats.surfaces.saturating_add(1);

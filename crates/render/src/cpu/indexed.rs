@@ -181,37 +181,56 @@ impl<'a> Raster<'a> {
         } else {
             self.palette.colormap()[shade + raw as usize]
         };
-        let (source_major, depth_write) = if !self.blend {
+        if !self.blend {
             return Some((color, self.depth_write));
-        } else if let Some([low, high]) = self.alpha_cutoffs {
-            if alpha > high {
-                return Some((color, true));
-            }
-            let source_major = alpha > low;
-            (source_major, source_major)
-        } else {
-            if alpha >= 1.0 {
-                return Some((color, self.depth_write));
-            }
-            if alpha <= 0.0 {
-                return None;
-            }
-            (alpha > 0.33, self.depth_write)
-        };
-        if destination_palette != self.palette_id.0 {
+        }
+        composite_color(
+            self.palette,
+            color,
+            (destination_palette == self.palette_id.0).then_some(destination),
+            alpha,
+            self.alpha_cutoffs,
+            self.depth_write,
+        )
+    }
+}
+
+/// One native palette blend operation for meshes and completed materials.
+/// A missing destination palette rejects only a blend that actually needs it.
+pub(super) fn composite_color(
+    palette: &PaletteLighting,
+    color: u8,
+    destination: Option<u8>,
+    alpha: f32,
+    cutoffs: Option<[f32; 2]>,
+    depth_write: bool,
+) -> Option<(u8, bool)> {
+    let (source_major, depth_write) = if let Some([low, high]) = cutoffs {
+        if alpha > high {
+            return Some((color, true));
+        }
+        let source_major = alpha > low;
+        (source_major, source_major)
+    } else {
+        if alpha >= 1.0 {
+            return Some((color, depth_write));
+        }
+        if alpha <= 0.0 {
             return None;
         }
-        let map = self.palette.translucency_map()?;
-        let [major, minor] = if source_major {
-            [color, destination]
-        } else {
-            [destination, color]
-        };
-        Some((
-            map[usize::from(major) * 256 + usize::from(minor)],
-            depth_write,
-        ))
-    }
+        (alpha > 0.33, depth_write)
+    };
+    let destination = destination?;
+    let map = palette.translucency_map()?;
+    let [major, minor] = if source_major {
+        [color, destination]
+    } else {
+        [destination, color]
+    };
+    Some((
+        map[usize::from(major) * 256 + usize::from(minor)],
+        depth_write,
+    ))
 }
 
 #[cfg(test)]

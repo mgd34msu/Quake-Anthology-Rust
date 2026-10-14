@@ -456,3 +456,382 @@ fn unsupported_world_instance_transform_drops_only_affected_submission() {
         assert!(cpu.frame.pixels.contains(&u32::MAX));
     }
 }
+
+fn opacity_fixture(extra: &[Stage]) -> (Assets, WorldId) {
+    use crate::shader::{BlendFactor, TexCoordGen};
+    let mut assets = Assets::load().unwrap();
+    let image = assets.register_image(1, 1, &[200, 200, 200, 255]).unwrap();
+    let light = assets.register_image(1, 1, &[128, 128, 128, 255]).unwrap();
+    let mut sequence = vec![
+        Stage {
+            texture: StageTexture::Image(image),
+            ..Stage::default()
+        },
+        Stage {
+            texture: StageTexture::Lightmap,
+            texgen: TexCoordGen::Lightmap,
+            depth_write: false,
+            depth_func: DepthFunc::Equal,
+            blend: Some(StageBlend {
+                source: BlendFactor::DestinationColor,
+                destination: BlendFactor::Zero,
+            }),
+            ..Stage::default()
+        },
+    ];
+    sequence.extend_from_slice(extra);
+    let material = stages(
+        &mut assets,
+        &sequence,
+        MaterialSettings {
+            cull: Cull::None,
+            ..Default::default()
+        },
+    );
+    let world = fixture_world(
+        &mut assets,
+        4.,
+        1.,
+        SurfaceMaterial {
+            material,
+            lightmap: light,
+            ..Default::default()
+        },
+        None,
+        GeometryPartition::SplitBsp,
+        inline_models,
+    );
+    (assets, world)
+}
+
+fn opacity_packet(assets: &Assets, entities: &[SceneEntity], view: Refdef) -> CommandList {
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([40, 40, 40, 255]).unwrap();
+    assert!(frame.add_entities(entities.iter().copied()));
+    assert!(frame.render_scene(view, &[], assets));
+    frame.finish()
+}
+
+#[test]
+fn completed_lightmap_material_opacity_preserves_scene_depth_and_cache_identity() {
+    use crate::scene::MaterialOpacity;
+    let (assets, world) = opacity_fixture(&[]);
+    let view = test_view();
+    let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    let mut baseline = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    baseline.render(&opacity_packet(&assets, &[], view), &assets);
+    let center = cpu.frame.width as usize * 9 + 13;
+    for (amount, expected) in [(0., 40), (0.25, 55), (0.5, 70), (1., 100)] {
+        let entity = SceneEntity {
+            material_opacity: MaterialOpacity::new(amount),
+            ..instance(&assets, world)
+        };
+        let stats = cpu.render(&opacity_packet(&assets, &[entity], view), &assets);
+        assert_eq!(stats.rejected, 0);
+        assert_eq!(&cpu.frame.pixels[center].to_le_bytes()[..3], &[expected; 3]);
+        assert_eq!(cpu.frame.inverse_depth, baseline.frame.inverse_depth);
+        assert_eq!(cpu.frame.depth_ranks, baseline.frame.depth_ranks);
+    }
+    assert!(cpu.world_stats().cache.hits > 0);
+    let entity = SceneEntity {
+        material_opacity: MaterialOpacity::new(0.25),
+        ..instance(&assets, world)
+    };
+    let mut serial = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    let packet = opacity_packet(&assets, &[entity], view);
+    serial.render(&packet, &assets);
+    for bands in [RasterBands::Two, RasterBands::Four, RasterBands::Eight] {
+        let mut parallel = CpuBackend::load_with_limits(
+            29,
+            19,
+            &assets,
+            CpuLimits {
+                bands,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        parallel.render(&packet, &assets);
+        assert_frame(&parallel, &serial);
+        assert_eq!(parallel.frame.depth_ranks, serial.frame.depth_ranks);
+    }
+}
+
+#[test]
+fn opacity_runs_destination_dependent_stages_against_original_scene_once() {
+    use crate::scene::MaterialOpacity;
+    use crate::shader::BlendFactor;
+    let (assets, world) = opacity_fixture(&[Stage {
+        texture: StageTexture::default(),
+        blend: Some(StageBlend {
+            source: BlendFactor::DestinationColor,
+            destination: BlendFactor::One,
+        }),
+        depth_write: false,
+        depth_func: DepthFunc::Equal,
+        ..Default::default()
+    }]);
+    let entity = SceneEntity {
+        material_opacity: MaterialOpacity::new(0.25),
+        ..instance(&assets, world)
+    };
+    let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    assert_eq!(
+        cpu.render(&opacity_packet(&assets, &[entity], test_view()), &assets)
+            .rejected,
+        0
+    );
+    let center = cpu.frame.width as usize * 9 + 13;
+    // Base 200 * light 128/255 -> 100, then source*destination + destination -> 200.
+    assert_eq!(&cpu.frame.pixels[center].to_le_bytes()[..3], &[80; 3]);
+}
+
+#[test]
+fn opacity_keeps_clipped_pixels_and_rejects_invalid_values() {
+    use crate::scene::MaterialOpacity;
+    use qa_core::primitives::Plane;
+    assert!(MaterialOpacity::new(f32::NAN).is_none());
+    assert!(MaterialOpacity::new(-0.1).is_none());
+    assert!(MaterialOpacity::new(1.1).is_none());
+    let (assets, world) = opacity_fixture(&[]);
+    let entity = SceneEntity {
+        material_opacity: MaterialOpacity::new(0.25),
+        ..instance(&assets, world)
+    };
+    let packet = opacity_packet(
+        &assets,
+        &[entity],
+        Refdef {
+            clip_plane: Some(Plane::oriented(Vec3([0., 1., 0.]), 0.)),
+            ..test_view()
+        },
+    );
+    let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(cpu.frame.pixels.iter().any(|&p| p.to_le_bytes()[0] == 55));
+    assert!(cpu.frame.pixels.iter().any(|&p| p.to_le_bytes()[0] == 40));
+    assert!(
+        cpu.frame
+            .pixels
+            .iter()
+            .all(|&p| matches!(p.to_le_bytes()[0], 40 | 55))
+    );
+}
+
+#[test]
+fn animated_opacity_is_outside_material_time_and_keeps_alpha_test_holes() {
+    use crate::scene::MaterialOpacity;
+    let (mut assets, world) = opacity_fixture(&[]);
+    let red = assets.register_image(1, 1, &[200, 0, 0, 255]).unwrap();
+    let blue = assets.register_image(1, 1, &[0, 0, 200, 255]).unwrap();
+    let hole = assets.register_image(1, 1, &[200, 200, 200, 0]).unwrap();
+    let mut images = [red; 8];
+    images[1] = blue;
+    let light = assets.register_image(1, 1, &[128, 128, 128, 255]).unwrap();
+    let material = stages(
+        &mut assets,
+        &[
+            Stage {
+                texture: StageTexture::Animation {
+                    images,
+                    count: 2,
+                    frequency: 1.,
+                },
+                alpha_test: AlphaFunc::AtLeastHalf,
+                ..Default::default()
+            },
+            Stage {
+                texture: StageTexture::Image(light),
+                blend: Some(StageBlend {
+                    source: crate::shader::BlendFactor::DestinationColor,
+                    destination: crate::shader::BlendFactor::Zero,
+                }),
+                depth_func: DepthFunc::Equal,
+                depth_write: false,
+                ..Default::default()
+            },
+        ],
+        MaterialSettings {
+            cull: Cull::None,
+            ..Default::default()
+        },
+    );
+    let hole_material = stages(
+        &mut assets,
+        &[
+            Stage {
+                texture: StageTexture::Image(hole),
+                alpha_test: AlphaFunc::AtLeastHalf,
+                ..Default::default()
+            },
+            Stage {
+                texture: StageTexture::Image(light),
+                blend: Some(StageBlend {
+                    source: crate::shader::BlendFactor::One,
+                    destination: crate::shader::BlendFactor::One,
+                }),
+                depth_func: DepthFunc::Equal,
+                depth_write: false,
+                ..Default::default()
+            },
+        ],
+        MaterialSettings {
+            cull: Cull::None,
+            ..Default::default()
+        },
+    );
+    let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    let center = 29 * 9 + 13;
+    let entity = SceneEntity {
+        material: Some(material),
+        material_opacity: MaterialOpacity::new(0.25),
+        ..instance(&assets, world)
+    };
+    for (time_ms, color) in [(0, [55, 30, 30]), (1000, [30, 30, 55])] {
+        assert_eq!(
+            cpu.render(
+                &opacity_packet(
+                    &assets,
+                    &[entity],
+                    Refdef {
+                        time_ms,
+                        ..test_view()
+                    }
+                ),
+                &assets
+            )
+            .rejected,
+            0
+        );
+        assert_eq!(&cpu.frame.pixels[center].to_le_bytes()[..3], &color);
+    }
+    let entity = SceneEntity {
+        material: Some(hole_material),
+        ..entity
+    };
+    assert_eq!(
+        cpu.render(&opacity_packet(&assets, &[entity], test_view()), &assets)
+            .rejected,
+        0
+    );
+    assert!(
+        cpu.frame
+            .pixels
+            .iter()
+            .all(|&p| p == u32::from_le_bytes([40, 40, 40, 255]))
+    );
+}
+
+#[test]
+fn material_transaction_restores_framebuffer_after_dispatch_error() {
+    use crate::scene::MaterialOpacity;
+    let (assets, world) = opacity_fixture(&[]);
+    let entity = SceneEntity {
+        material_opacity: MaterialOpacity::new(0.25),
+        ..instance(&assets, world)
+    };
+    let packet = opacity_packet(&assets, &[entity], test_view());
+    let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    let mut raster_passes = 0;
+    let result = cpu.render_with_dispatch(&packet, &assets, |jobs| {
+        if jobs.iter().any(|job| job.kind() == JobKind::Raster) {
+            raster_passes += 1;
+        }
+        for job in jobs {
+            run_cpu_job(job);
+        }
+        if raster_passes == 2 {
+            Err("fixture dispatch interruption")
+        } else {
+            Ok(())
+        }
+    });
+    assert_eq!(result, Err("fixture dispatch interruption"));
+    assert!(
+        cpu.frame
+            .pixels
+            .iter()
+            .all(|&p| p == u32::from_le_bytes([40, 40, 40, 255]))
+    );
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert_eq!(&cpu.frame.pixels[29 * 9 + 13].to_le_bytes()[..3], &[55; 3]);
+}
+
+#[test]
+fn indexed_completed_material_uses_the_authored_blend_table_without_depth_writes() {
+    use crate::scene::MaterialOpacity;
+    let mut assets = Assets::load().unwrap();
+    let rgb = (0..=255u8).flat_map(|value| [value; 3]).collect::<Vec<_>>();
+    let colormap = (0..64).flat_map(|_| 0..=255u8).collect::<Vec<_>>();
+    let table = (0..65536usize)
+        .map(|i| ((i / 256 * 7 + i % 256 * 3) % 256) as u8)
+        .collect::<Vec<_>>();
+    let palette = assets
+        .register_palette(
+            crate::surface_cache::PaletteLighting::load(&rgb, &colormap, Some(&table), 256)
+                .unwrap(),
+        )
+        .unwrap();
+    let mips: [Vec<u8>; 4] = std::array::from_fn(|mip| vec![200; (16 >> mip) * (16 >> mip)]);
+    let image = assets
+        .register_indexed_image(
+            IndexedTexture::load(16, 16, mips.each_ref().map(Vec::as_slice), false).unwrap(),
+            palette,
+        )
+        .unwrap();
+    let material = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(image),
+            ..Default::default()
+        }],
+        MaterialSettings {
+            cull: Cull::None,
+            ..Default::default()
+        },
+    );
+    let world = fixture_world(
+        &mut assets,
+        4.,
+        1.,
+        SurfaceMaterial {
+            material,
+            ..Default::default()
+        },
+        Some(137),
+        GeometryPartition::SplitBsp,
+        inline_models,
+    );
+    let view = Refdef {
+        cpu_presentation: CpuPresentation::Indexed {
+            palette,
+            lighting: IndexedLighting::Gray,
+            ambient: 0,
+            fullbright: true,
+        },
+        ..test_view()
+    };
+    let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    let mut baseline = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    baseline.render(&opacity_packet(&assets, &[], view), &assets);
+    for (amount, major, minor) in [(0.25, 40usize, 200usize), (0.5, 200, 40), (1., 200, 40)] {
+        let entity = SceneEntity {
+            material_opacity: MaterialOpacity::new(amount),
+            ..instance(&assets, world)
+        };
+        assert_eq!(
+            cpu.render(&opacity_packet(&assets, &[entity], view), &assets)
+                .rejected,
+            0
+        );
+        let expected = if amount == 1. {
+            200
+        } else {
+            table[major * 256 + minor]
+        };
+        assert_eq!(cpu.frame.indices[29 * 9 + 13], expected);
+        assert_eq!(cpu.frame.palettes[29 * 9 + 13], palette.0);
+        assert_eq!(cpu.frame.inverse_depth, baseline.frame.inverse_depth);
+        assert_eq!(cpu.frame.depth_ranks, baseline.frame.depth_ranks);
+    }
+}

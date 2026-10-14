@@ -284,6 +284,7 @@ impl WorldRaster {
         &mut self,
         camera: &Camera,
         rank: usize,
+        list: &super::CommandList,
         assets: &Assets,
         buffers: Buffers<'_>,
         stats: &mut crate::BackendStats,
@@ -292,12 +293,24 @@ impl WorldRaster {
         let mut end = rank;
         let mut raster = false;
         while end < self.prepare.draw_count {
+            let item = list.draws(crate::scene::Span {
+                first: self.prepare.draw_base,
+                count: self.prepare.draw_count as u32,
+            })[end];
+            let isolated = crate::scene::draw_entity(list, item)
+                .is_some_and(|entity| entity.material_opacity.is_some());
+            if isolated && end != rank {
+                break;
+            }
             match self.draw(end) {
                 PreparedDraw::External => break,
                 PreparedDraw::Skip => {}
                 PreparedDraw::Surface(_) | PreparedDraw::Sky { .. } => raster = true,
             }
             end += 1;
+            if isolated {
+                break;
+            }
         }
         if end == rank {
             return Ok(None);

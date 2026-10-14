@@ -20,11 +20,11 @@ pub struct AppearanceCapabilities {
     pub beam_interpolate: bool,
     pub state_old_frame: bool,
     pub alpha: f32,
+    pub inline_opacity: Option<f32>,
     pub scale: f32,
     /// Nonzero means residual native presentation is not implemented by this
     /// projection. The original bits remain in the shared appearance record.
     pub unsupported: u64,
-    pub drawable: bool,
 }
 
 /// Native animation capabilities, selected at the connection boundary.
@@ -42,6 +42,7 @@ struct NativeRules {
     depth: u32,
     fullbright: u32,
     translucent: u32,
+    inline_translucent_alpha: Option<f32>,
     frame_lerp: u32,
     alias_motion: bool,
     old_frame: u32,
@@ -75,6 +76,7 @@ const NEUTRAL: NativeRules = NativeRules {
     depth: 0,
     fullbright: 0,
     translucent: 0,
+    inline_translucent_alpha: None,
     frame_lerp: 0,
     alias_motion: false,
     old_frame: 0,
@@ -110,6 +112,7 @@ const Q2: NativeRules = NativeRules {
     fullbright: 8,
     depth: 16,
     translucent: 32,
+    inline_translucent_alpha: Some(0.25),
     frame_lerp: 64,
     alias_motion: true,
     beam: 128,
@@ -149,6 +152,7 @@ const RULES: [NativeRules; 5] = [
         beam_integer_half: false,
         beam_interpolate: true,
         explicit_alpha: true,
+        inline_translucent_alpha: None,
         zero_scale: true,
         player_interpolation_events: true,
         weapon_interpolation: WeaponInterpolation::Rate,
@@ -387,13 +391,19 @@ impl AppearancePolicy {
             beam_interpolate: rules.beam_interpolate,
             state_old_frame: flags & rules.old_frame != 0,
             alpha,
+            inline_opacity: if flags & rules.translucent != 0 {
+                Some(rules.inline_translucent_alpha.unwrap_or(alpha))
+            } else if !rules.native_alpha && alpha != 1.0 {
+                Some(alpha)
+            } else {
+                None
+            },
             scale: if rules.zero_scale && appearance.scale == 0.0 {
                 1.0
             } else {
                 appearance.scale
             },
             unsupported: appearance.native.effects | u64::from(flags & !supported),
-            drawable: flags & rules.beam == 0,
         }
     }
 }

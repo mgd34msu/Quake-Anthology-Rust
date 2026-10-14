@@ -255,6 +255,32 @@ impl SceneModel {
     }
 }
 
+/// Opacity applied once after the material's complete ordered stage sequence.
+/// Keeping it separate from shader alpha preserves destination-dependent stages.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialOpacity(f32);
+impl MaterialOpacity {
+    pub fn new(value: f32) -> Option<Self> {
+        (value.is_finite() && (0.0..=1.0).contains(&value)).then_some(Self(value))
+    }
+    pub fn value(self) -> f32 {
+        self.0
+    }
+    pub(crate) fn composite(self, original: u32, completed: u32) -> u32 {
+        if original == completed || self.0 == 0.0 {
+            return original;
+        }
+        if self.0 == 1.0 {
+            return completed;
+        }
+        crate::stage::pack_unit_rgba(qa_core::math::lerp_array(
+            crate::stage::unit_rgba(original.to_le_bytes()),
+            crate::stage::unit_rgba(completed.to_le_bytes()),
+            self.0,
+        ))
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SceneEntity {
     pub model: SceneModel,
@@ -265,6 +291,9 @@ pub struct SceneEntity {
     pub non_normalized_axes: bool,
     pub color: [u8; 4],
     pub alpha: Option<f32>,
+    /// A translucent material transaction retains submission order and scene
+    /// depth even at opacity one. None keeps the ordinary opaque/shader path.
+    pub material_opacity: Option<MaterialOpacity>,
     pub palette_color: Option<(PaletteId, u8)>,
     pub material: Option<MaterialId>,
     pub frame: u32,
@@ -317,6 +346,7 @@ impl Default for SceneEntity {
             non_normalized_axes: false,
             color: [255; 4],
             alpha: None,
+            material_opacity: None,
             palette_color: None,
             material: None,
             frame: 0,
@@ -1339,7 +1369,7 @@ impl Frame {
         self.command(Command::Draw2d(draw))
     }
 }
-fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<&SceneEntity> {
+pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<&SceneEntity> {
     match draw.kind {
         DrawKind::Entity => Some(list.entity(draw.index)),
         DrawKind::Surface => list
@@ -1375,6 +1405,14 @@ fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawK
         DrawKind::Surface => list.surface(draw.index).entity.unwrap_or(u32::MAX),
         DrawKind::Poly => list.poly(draw.index).entity.unwrap_or(u32::MAX),
     };
+    if draw_entity(list, draw).is_some_and(|entity| entity.material_opacity.is_some()) {
+        return Some(DrawKey {
+            sort: 6.0,
+            material: 0,
+            instance,
+            lightmap: draw.index,
+        });
+    }
     Some(DrawKey {
         sort: assets.material(material)?.settings.sort,
         material: material.0,

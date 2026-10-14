@@ -50,6 +50,25 @@ pub(crate) fn for_each_sky_triangle(
     }
 }
 
+/// A faded submission owns its sky bounds instead of contributing to the
+/// material's ordinary view-wide batch.
+pub(crate) fn submission_bounds(
+    list: &CommandList,
+    item: DrawItem,
+    assets: &Assets,
+    origin: Vec3,
+) -> Option<[FaceBounds; 6]> {
+    let mut clip = SkyClip::new();
+    let mut valid = true;
+    if !crate::scene::for_each_triangle(list, item, assets, |vertices| {
+        valid &= clip.add_polygon(&vertices.map(|vertex| vertex.position), origin);
+    }) || !valid
+    {
+        return None;
+    }
+    Some(*clip.bounds())
+}
+
 pub(crate) fn draw_bounds(
     mut bounds: [FaceBounds; 6],
     rotation: Option<Rotation>,
