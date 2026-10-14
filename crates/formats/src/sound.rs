@@ -400,7 +400,7 @@ pub fn vorbis(bytes: &[u8]) -> Result<Pcm, FormatError> {
     let rate = NonZeroU32::new(ident.audio_sample_rate).ok_or(FormatError::InvalidValue)?;
     let mut samples = Vec::new();
     let mut previous = PreviousWindowRight::new();
-    let mut granule: Option<u64> = None;
+    let mut granule = Some(0u64);
     let mut ended = false;
     while let Some(packet) = reader.next_slice(bytes)? {
         if packet.serial != serial {
@@ -414,18 +414,8 @@ pub fn vorbis(bytes: &[u8]) -> Result<Pcm, FormatError> {
             }
             setup = vorbis_setup(&mut reader, bytes, serial, &ident)?;
             previous = PreviousWindowRight::new();
-            loop {
-                let prime = reader.next_slice(bytes)?.ok_or(FormatError::Truncated)?;
-                if prime.serial != serial {
-                    continue;
-                }
-                let _: InterleavedSamples<i16> =
-                    read_audio_packet_generic(&ident, &setup, prime.data, &mut previous)
-                        .map_err(|_| FormatError::InvalidValue)?;
-                granule = prime.granule;
-                ended = prime.last_in_stream;
-                break;
-            }
+            granule = Some(0);
+            ended = false;
             continue;
         }
         let mut decoded: InterleavedSamples<i16> =

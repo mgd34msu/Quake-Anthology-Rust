@@ -278,6 +278,7 @@ fn reference_pcm(bytes: &[u8]) -> (u32, u8, Vec<i16>) {
 
 const MONO: &[u8] = include_bytes!("fixtures/sounds/mono.ogg");
 const STEREO: &[u8] = include_bytes!("fixtures/sounds/stereo.ogg");
+const PAGES: &[u8] = include_bytes!("fixtures/sounds/pages.ogg");
 
 fn change_serial(bytes: &[u8], serial: u32) -> Vec<u8> {
     let mut bytes = bytes.to_vec();
@@ -299,17 +300,22 @@ fn change_serial(bytes: &[u8], serial: u32) -> Vec<u8> {
 }
 
 #[test]
-fn whole_vorbis_pcm_matches_existing_decoder_for_mono_stereo_and_chains() {
-    for source in [MONO, STEREO] {
-        for bytes in [
-            source.to_vec(),
-            [change_serial(source, 7), change_serial(source, 8)].concat(),
-        ] {
-            let (rate, channels, samples) = reference_pcm(&bytes);
+fn vorbis_keeps_exact_dsp_samples_and_authored_lengths_in_short_multi_page_and_chained_streams() {
+    for (source, frames) in [(MONO, 2867), (STEREO, 9120), (PAGES, 60000)] {
+        let (rate, channels, mut expected) = reference_pcm(source);
+        assert!(expected.len() >= frames * channels as usize);
+        expected.truncate(frames * channels as usize);
+        for repeats in [1, 2] {
+            let bytes = if repeats == 1 {
+                source.to_vec()
+            } else {
+                [change_serial(source, 7), change_serial(source, 8)].concat()
+            };
             let actual = sound::vorbis(&bytes).unwrap();
             assert_eq!(actual.rate.get(), rate);
             assert_eq!(actual.channels as u8, channels);
-            assert_eq!(actual.samples, samples);
+            assert_eq!(actual.frames(), frames * repeats);
+            assert_eq!(actual.samples, expected.repeat(repeats));
             assert!(actual.samples.iter().any(|&sample| sample != 0));
             assert_eq!(read(&bytes), reference(&bytes));
         }
@@ -372,8 +378,22 @@ fn retail_pcm_matches_existing_decoder() {
     let bytes =
         std::fs::read(std::env::var("QA_TEST_OGG").expect("set QA_TEST_OGG to a retail Ogg track"))
             .unwrap();
-    let (rate, channels, samples) = reference_pcm(&bytes);
+    let (rate, channels, mut samples) = reference_pcm(&bytes);
+    let mut packets = PacketReader::new(Cursor::new(&bytes));
+    let mut ending = None;
+    while let Some(packet) = packets.read_packet().unwrap() {
+        if packet.last_in_stream() {
+            assert!(
+                ending.is_none(),
+                "retail comparison expects one logical stream"
+            );
+            ending = Some(packet.absgp_page() as usize);
+        }
+    }
+    let frames = ending.expect("retail track has an ending granule");
+    samples.truncate(frames * channels as usize);
     let actual = sound::vorbis(&bytes).unwrap();
+    assert_eq!(actual.frames(), frames);
     assert_eq!(actual.rate.get(), rate);
     assert_eq!(actual.channels as u8, channels);
     assert_eq!(actual.samples, samples);
