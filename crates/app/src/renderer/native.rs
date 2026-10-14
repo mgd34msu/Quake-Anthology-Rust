@@ -369,11 +369,12 @@ impl SceneService for SceneBorrow<'_> {
             point_view,
             modulate,
         );
-        if view.world && !view.refdef.hyperspace {
-            let (world_id, presentation) = target.world.ok_or(CallError::Geometry)?;
-            if self.role.selected_world != Some(world_id) {
-                return Err(CallError::Geometry);
-            }
+        let accepted = if view.world && !view.refdef.hyperspace {
+            let world_id = selected_world.ok_or(CallError::Geometry)?;
+            let presentation = target
+                .world_presentation(&composer.scenes, world_id)
+                .ok_or(CallError::Geometry)?
+                .id;
             let seat = target.seat.ok_or(CallError::Geometry)?;
             let world = composer.assets.world(world_id).ok_or(CallError::Geometry)?;
             let scratch = composer
@@ -387,8 +388,17 @@ impl SceneService for SceneBorrow<'_> {
             if !frame.add_world(world_id, presentation, surfaces) {
                 return Ok(false);
             }
-        }
-        let accepted = frame.render_scene(view.refdef, &view.hidden_areas, &composer.assets);
+            frame.render_world_scene(
+                world_id,
+                presentation,
+                view.refdef,
+                &view.hidden_areas,
+                &mut scratch.views[seat.index()],
+                &composer.assets,
+            )
+        } else {
+            frame.render_scene(view.refdef, &view.hidden_areas, &composer.assets)
+        };
         if accepted && let Some(seat) = target.seat {
             composer.native_axes[seat.index()] = Some(view.refdef.axes);
         }

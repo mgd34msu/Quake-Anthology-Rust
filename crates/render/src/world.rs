@@ -151,7 +151,7 @@ impl WorldView {
         self.count = 0;
         let primary = world
             .visibility
-            .point_in_leaf(refdef.origin)
+            .point_in_leaf(refdef.pvs_origin.unwrap_or(refdef.origin))
             .and_then(|leaf| world.visibility.leaf(leaf))
             .and_then(|leaf| leaf.selector);
         let base = frustum(refdef)?;

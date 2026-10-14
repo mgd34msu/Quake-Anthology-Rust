@@ -18,6 +18,28 @@ fn local_plane_retains_the_world_half_space_for_rotated_scaled_coordinates() {
 }
 
 #[test]
+fn plane_from_points_keeps_clockwise_normals_and_rejects_degenerate_triangles() {
+    let points = [
+        Vec3([1., -1., -1.]),
+        Vec3([1., 1., -1.]),
+        Vec3([1., 0., 1.]),
+    ];
+    let plane = Plane::from_points(points[0], points[1], points[2]).unwrap();
+    assert_eq!(plane.normal, Vec3([-1., 0., 0.]));
+    assert_eq!(plane.distance, -1.);
+    for point in points {
+        assert_eq!(plane.signed_distance(point), 0.);
+    }
+    assert_eq!(
+        Plane::from_points(points[0], points[2], points[1])
+            .unwrap()
+            .normal,
+        Vec3([1., 0., 0.])
+    );
+    assert!(Plane::from_points(points[0], points[0], points[1]).is_none());
+}
+
+#[test]
 fn plane_projection_and_axis_rotation_preserve_the_native_basis() {
     let direction = Vec3([0.0, 0.0, 1.0]);
     assert_eq!(

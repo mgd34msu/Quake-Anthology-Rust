@@ -308,11 +308,20 @@ pub fn world_variants(
     origin: f32,
     variants: &[&[SurfaceMaterial]],
 ) -> WorldId {
+    world_mutated(assets, origin, variants, |_| {})
+}
+
+pub fn world_mutated(
+    assets: &mut Assets,
+    origin: f32,
+    variants: &[&[SurfaceMaterial]],
+    mutate: impl FnOnce(&mut WorldGeometry),
+) -> WorldId {
     let bounds = Bounds {
         mins: Vec3([origin; 3]),
         maxs: Vec3([origin + 1.0; 3]),
     };
-    let geometry = WorldGeometry {
+    let mut geometry = WorldGeometry {
         partition: GeometryPartition::SplitBsp,
         world_has_lightdata: false,
         vertices: vec![],
@@ -334,6 +343,12 @@ pub fn world_variants(
         ],
         patch_stats: PatchStats::default(),
     };
+    mutate(&mut geometry);
+    let mut bounds = bounds;
+    for surface in &geometry.surfaces {
+        bounds.add_bounds(surface.bounds);
+    }
+    let count = geometry.surfaces.len() as u32;
     let visibility = VisibilityWorld::load(
         vec![],
         vec![],
@@ -342,10 +357,10 @@ pub fn world_variants(
             area: None,
             solid: false,
             bounds,
-            surfaces: IndexSpan::default(),
+            surfaces: IndexSpan { first: 0, count },
         }],
-        vec![],
-        0,
+        (0..count).collect(),
+        count as usize,
         -1,
         PvsRows::all_visible(0),
     )

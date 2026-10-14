@@ -1504,7 +1504,6 @@ impl SurfacePrepare {
             }
             if material.stages.is_empty()
                 || material.settings.fog.is_some()
-                || material.settings.portal
                 || material.settings.polygon_offset
             {
                 self.reject(stats);
@@ -1648,7 +1647,13 @@ impl SurfacePrepare {
                     continue;
                 }
                 let area = crate::affine::cull_area(count, |index| self.screen[index].xy);
-                if super::culled(material.settings.cull, area) {
+                if super::culled(
+                    material
+                        .settings
+                        .cull
+                        .for_view(camera.refdef.reflected_view),
+                    area,
+                ) {
                     continue;
                 }
                 if let Some(source) = native {
@@ -1812,7 +1817,7 @@ impl SurfacePrepare {
             return;
         }
         let area = crate::affine::cull_area(count, |index| self.screen[index].xy);
-        if super::culled(cull, area) {
+        if super::culled(cull.for_view(camera.refdef.reflected_view), area) {
             return;
         }
         for (stage, prepared) in sky_stages[..stages].iter().copied().enumerate() {
@@ -1926,7 +1931,13 @@ impl SurfacePrepare {
                 continue;
             }
             let area = crate::affine::cull_area(count, |index| self.screen[index].xy);
-            if super::culled(material.settings.cull, area) {
+            if super::culled(
+                material
+                    .settings
+                    .cull
+                    .for_view(camera.refdef.reflected_view),
+                area,
+            ) {
                 continue;
             }
             if matches!(source, super::sky::Source::BackgroundCube { .. }) {

@@ -790,7 +790,85 @@ pub(super) fn inline_entities(native: bool) {
     .unwrap();
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     let mut assets = qa_render::Assets::load().unwrap();
-    let world = model_support::world(&mut assets, 10.0);
+    let portal_material = assets
+        .register_material(
+            "native portal",
+            &[qa_render::assets::Stage {
+                alpha_gen: qa_render::shader::AlphaGen::Const(0.),
+                blend: Some(qa_render::shader::StageBlend::ALPHA),
+                depth_write: false,
+                ..Default::default()
+            }],
+            qa_render::assets::MaterialSettings {
+                sort: 1.,
+                portal: true,
+                cull: qa_render::shader::Cull::None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let world = model_support::world_mutated(
+        &mut assets,
+        10.,
+        &[&[qa_render::world::SurfaceMaterial {
+            material: portal_material,
+            ..Default::default()
+        }]],
+        |geometry| {
+            use qa_render::world::geometry::*;
+            let bounds = qa_core::primitives::Bounds {
+                mins: Vec3([8., -8., -8.]),
+                maxs: Vec3([8., 8., 8.]),
+            };
+            geometry.vertices = [[8., -8., -8.], [8., 8., -8.], [8., 0., 8.]]
+                .map(|position| WorldVertex {
+                    vertex: qa_render::Vertex {
+                        position: Vec3(position),
+                        normal: Vec3([-1., 0., 0.]),
+                        ..Default::default()
+                    },
+                })
+                .into();
+            geometry.indices = vec![0, 1, 2];
+            geometry.boundaries = vec![qa_core::primitives::IndexSpan { first: 0, count: 3 }];
+            geometry.surfaces = vec![WorldSurface {
+                source_id: 0,
+                kind: GeometryKind::Triangles,
+                vertices: qa_core::primitives::IndexSpan { first: 0, count: 3 },
+                indices: qa_core::primitives::IndexSpan { first: 0, count: 3 },
+                boundaries: qa_core::primitives::IndexSpan { first: 0, count: 1 },
+                plane: Some(qa_core::primitives::Plane::oriented(
+                    Vec3([-1., 0., 0.]),
+                    -8.,
+                )),
+                bounds,
+                texture_coordinates: TextureCoordinates::Normalized,
+                texture_projection: [[0.; 4]; 2],
+                texture_minima: [0; 2],
+                texture_extents: [0; 2],
+                lightmap_projection: None,
+                lightmap_grid: [0; 2],
+                styles: [255; 4],
+                light_source: LightSource::None,
+                light_encoding: LightEncoding::Rgb,
+                light_samples: Default::default(),
+                source_texture: None,
+                source_texture_info: None,
+                source_shader: None,
+                source_flags: 0,
+                source_contents: 0,
+                no_draw: false,
+                source_fog: -1,
+                source_brush_side: -1,
+                source_lightmap: -1,
+                lightmap_rect: [0; 4],
+                lightmap_origin: Vec3::default(),
+                lightmap_vectors: [Vec3::default(); 3],
+                patch: None,
+            }];
+            geometry.models[0].surfaces = qa_core::primitives::IndexSpan { first: 0, count: 1 };
+        },
+    );
     let presentation = qa_render::world::WorldPresentationId(0);
     let bounds = assets.world(world).unwrap().geometry().models[1].bounds;
     let grid = qa_render::lighting::LightGrid::load(
@@ -899,6 +977,29 @@ pub(super) fn inline_entities(native: bool) {
             .unwrap()
             .ambient,
         [38., 44., 50.]
+    );
+    assert_eq!(packet.rejected, 0);
+    assert!(owner.recycle(packet).is_ok());
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(probe(&mut host, 0, 15, 7), 0);
+    assert_eq!(probe(&mut host, 0, 13, 0), 0);
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    let owner = host.runtime.scene.as_mut().unwrap();
+    let packet = owner.finish_frame().unwrap();
+    let [
+        Command::Clear(_),
+        Command::View(child),
+        Command::View(parent),
+    ] = packet.commands()
+    else {
+        panic!("native portal views")
+    };
+    assert!(child.refdef.portal && child.refdef.clip_plane.is_some());
+    assert!(!parent.refdef.portal);
+    assert_eq!(parent.refdef.time_ms, child.refdef.time_ms);
+    assert_eq!(
+        packet.entities(parent.scene.entities)[0].model,
+        packet.entities(child.scene.entities)[0].model
     );
     assert_eq!(packet.rejected, 0);
     assert!(owner.recycle(packet).is_ok());

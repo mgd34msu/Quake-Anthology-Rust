@@ -110,6 +110,7 @@ pub struct Refdef {
     /// World-space retained half-space for a portal child. Native module
     /// refdefs acquire it at the shared scene boundary, not their ABI.
     pub clip_plane: Option<qa_core::primitives::Plane>,
+    pub pvs_origin: Option<Vec3>,
     /// Native shader text rows retain byte values after their first NUL.
     pub text: [[u8; 32]; 8],
     /// Cached presentation identity light (Q3 native overbright response).
@@ -158,6 +159,7 @@ impl Refdef {
             || (self.blend_phase == BlendPhase::FinalPalette
                 && self.blend_viewport.is_some_and(|v| !v.fits(width, height)))
             || !self.origin.is_finite()
+            || self.pvs_origin.is_some_and(|origin| !origin.is_finite())
             || !self.axes.iter().all(|axis| axis.is_finite())
             || !self
                 .fov
@@ -197,6 +199,7 @@ impl Default for Refdef {
             portal: false,
             reflected_view: false,
             clip_plane: None,
+            pvs_origin: None,
             text: [[0; 32]; 8],
             identity_light: 1.0,
             blend: [0.0; 4],
@@ -450,6 +453,87 @@ pub struct SceneRanges {
     pub surfaces: Span,
     pub draws: Span,
 }
+impl SceneRanges {
+    fn through(self, end: Self) -> Self {
+        let span = |begin: Span, end: Span| Span {
+            first: begin.first,
+            count: end.first - begin.first,
+        };
+        Self {
+            entities: span(self.entities, end.entities),
+            polys: span(self.polys, end.polys),
+            lights: span(self.lights, end.lights),
+            particles: span(self.particles, end.particles),
+            surfaces: span(self.surfaces, end.surfaces),
+            draws: span(self.draws, end.draws),
+        }
+    }
+}
+
+/// Source triangles in world coordinates, before view-specific deformation.
+/// Sky clipping and portal visibility share this one numeric traversal.
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Consume complete native triangle triples"
+)]
+pub(crate) fn for_each_triangle(
+    list: &CommandList,
+    item: DrawItem,
+    assets: &Assets,
+    mut visit: impl FnMut([Vertex; 3]),
+) -> bool {
+    let transform = |mut vertex: Vertex, entity: Option<&SceneEntity>| {
+        if let Some(entity) = entity {
+            vertex.position =
+                qa_core::math::transform_point(entity.origin, entity.axes, vertex.position);
+            vertex.normal =
+                qa_core::math::transform_point(Vec3::default(), entity.axes, vertex.normal);
+        }
+        vertex
+    };
+    match item.kind {
+        DrawKind::Surface => {
+            let reference = list.surface(item.index);
+            let Some(world) = assets.world(reference.world) else {
+                return false;
+            };
+            let geometry = world.geometry();
+            let Some(surface) = geometry.surfaces.get(reference.surface as usize) else {
+                return false;
+            };
+            let entity = reference.entity.map(|index| list.entity(index));
+            for triangle in geometry.indices[surface.indices.range()].chunks_exact(3) {
+                visit(
+                    [triangle[0], triangle[1], triangle[2]]
+                        .map(|index| transform(geometry.vertices[index as usize].vertex, entity)),
+                );
+            }
+        }
+        DrawKind::Entity => {
+            let entity = list.entity(item.index);
+            let Some(model) = entity.model.mesh().and_then(|id| assets.model(id)) else {
+                return false;
+            };
+            let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp)
+            else {
+                return false;
+            };
+            for triangle in model.indices.chunks_exact(3) {
+                visit(
+                    [triangle[0], triangle[1], triangle[2]]
+                        .map(|index| transform(frames.vertex(index as usize), Some(entity))),
+                );
+            }
+        }
+        DrawKind::Poly => {
+            let vertices = list.vertices(list.poly(item.index).vertices);
+            for triangle in crate::affine::fan(vertices.len()) {
+                visit(triangle.map(|index| vertices[index]));
+            }
+        }
+    }
+    true
+}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SurfaceRef {
     pub world: WorldId,
@@ -670,6 +754,14 @@ pub struct Frame {
     list: CommandList,
     first: SceneRanges,
 }
+#[derive(Clone, Copy)]
+struct SceneCheckpoint {
+    first: SceneRanges,
+    end: SceneRanges,
+    vertices: usize,
+    commands: usize,
+    areas: usize,
+}
 impl FrontEnd {
     pub fn load(mut limits: Limits) -> Result<Self, &'static str> {
         limits.draws = limits
@@ -731,6 +823,161 @@ impl FrontEnd {
     }
 }
 impl Frame {
+    fn checkpoint(&self) -> SceneCheckpoint {
+        SceneCheckpoint {
+            first: self.first,
+            end: self.current(),
+            vertices: self.list.vertex_count,
+            commands: self.list.command_count,
+            areas: self.list.area_count,
+        }
+    }
+    fn restore(&mut self, checkpoint: SceneCheckpoint) {
+        self.first = checkpoint.first;
+        self.list.entity_count = checkpoint.end.entities.first as usize;
+        self.list.poly_count = checkpoint.end.polys.first as usize;
+        self.list.light_count = checkpoint.end.lights.first as usize;
+        self.list.particle_count = checkpoint.end.particles.first as usize;
+        self.list.surface_count = checkpoint.end.surfaces.first as usize;
+        self.list.draw_count = checkpoint.end.draws.first as usize;
+        self.list.vertex_count = checkpoint.vertices;
+        self.list.command_count = checkpoint.commands;
+        self.list.area_count = checkpoint.areas;
+    }
+    fn copy_scene(&mut self, source: SceneRanges, skip_world: Option<WorldId>) -> bool {
+        if source.entities.count as usize > self.list.entities.len() - self.list.entity_count
+            || source.polys.count as usize > self.list.polys.len() - self.list.poly_count
+            || source.lights.count as usize > self.list.lights.len() - self.list.light_count
+            || source.particles.count as usize
+                > self.list.particles.len() - self.list.particle_count
+            || source.surfaces.count as usize > self.list.surfaces.len() - self.list.surface_count
+            || source.draws.count as usize > self.list.draws.len() - self.list.draw_count
+        {
+            return self.reject_submission();
+        }
+        self.clear_scene();
+        let entity_delta = self.list.entity_count as u32 - source.entities.first;
+        self.list
+            .entities
+            .copy_within(source.entities.range(), self.list.entity_count);
+        self.list.entity_count += source.entities.count as usize;
+        self.list
+            .lights
+            .copy_within(source.lights.range(), self.list.light_count);
+        self.list.light_count += source.lights.count as usize;
+        self.list
+            .particles
+            .copy_within(source.particles.range(), self.list.particle_count);
+        self.list.particle_count += source.particles.count as usize;
+        for index in source.draws.range() {
+            let mut draw = self.list.draws[index];
+            match draw.kind {
+                DrawKind::Entity => draw.index += entity_delta,
+                DrawKind::Poly => {
+                    let mut poly = self.list.polys[draw.index as usize];
+                    poly.entity = poly.entity.map(|index| index + entity_delta);
+                    draw.index = self.list.poly_count as u32;
+                    self.list.polys[self.list.poly_count] = poly;
+                    self.list.poly_count += 1;
+                }
+                DrawKind::Surface => {
+                    let mut surface = self.list.surfaces[draw.index as usize];
+                    if skip_world == Some(surface.world) && surface.entity.is_none() {
+                        continue;
+                    }
+                    surface.entity = surface.entity.map(|index| index + entity_delta);
+                    draw.index = self.list.surface_count as u32;
+                    self.list.surfaces[self.list.surface_count] = surface;
+                    self.list.surface_count += 1;
+                }
+            }
+            self.list.draws[self.list.draw_count] = draw;
+            self.list.draw_count += 1;
+        }
+        true
+    }
+    fn generated_fits(&self, refdef: Refdef) -> bool {
+        let generated = self.list.entities
+            [self.first.entities.first as usize..self.list.entity_count]
+            .iter()
+            .filter(|entity| entity.visibility.visible(refdef.portal))
+            .filter_map(|entity| crate::entities::prepare(entity, refdef))
+            .try_fold(0usize, |total, geometry| {
+                total.checked_add(geometry.triangle_count())
+            });
+        generated.is_some_and(|count| {
+            count <= self.list.polys.len() - self.list.poly_count
+                && count <= self.list.draws.len() - self.list.draw_count
+                && count <= (self.list.vertices.len() - self.list.vertex_count) / 3
+        })
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_world_scene(
+        &mut self,
+        world: WorldId,
+        presentation: WorldPresentationId,
+        refdef: Refdef,
+        hidden_areas: &[u8],
+        scratch: &mut crate::world::WorldView,
+        assets: &Assets,
+    ) -> bool {
+        let checkpoint = self.checkpoint();
+        let source = checkpoint.first.through(checkpoint.end);
+        let has_portal = !refdef.portal
+            && !refdef.hyperspace
+            && self
+                .list
+                .entities(source.entities)
+                .iter()
+                .any(|entity| matches!(entity.model, SceneModel::Portal { .. }));
+        if has_portal {
+            let first = self.list.draw_count;
+            if source.draws.count as usize <= self.list.draws.len() - first {
+                let mut count = 0;
+                for index in source.draws.range() {
+                    let mut draw = self.list.draws[index];
+                    if let Some(key) = draw_key(&self.list, assets, draw) {
+                        draw.key = key;
+                        self.list.draws[first + count] = draw;
+                        count += 1;
+                    }
+                }
+                native_draw_sort(&mut self.list.draws[first..first + count]);
+                let sorted = SceneRanges {
+                    draws: Span {
+                        first: first as u32,
+                        count: count as u32,
+                    },
+                    ..source
+                };
+                if let Some(child) = crate::portal::first_child(&self.list, sorted, assets, refdef)
+                {
+                    let rejected = self.list.rejected;
+                    let retained = self.copy_scene(source, Some(world))
+                        && assets.world(world).is_some_and(|loaded| {
+                            scratch
+                                .query(loaded, child, None, hidden_areas)
+                                .is_ok_and(|surfaces| self.add_world(world, presentation, surfaces))
+                        })
+                        && self.render_scene(child, hidden_areas, assets)
+                        && self.copy_scene(source, None)
+                        && self.generated_fits(refdef)
+                        && self.list.command_count < self.list.commands.len()
+                        && hidden_areas.len() <= self.list.area_bytes.len() - self.list.area_count;
+                    if !retained {
+                        self.restore(checkpoint);
+                        if self.list.rejected == rejected {
+                            self.reject_submission();
+                        }
+                    }
+                }
+            } else {
+                self.reject_submission();
+            }
+        }
+        self.render_scene(refdef, hidden_areas, assets)
+    }
+
     pub fn reject_submission(&mut self) -> bool {
         self.list.rejected += 1;
         false
@@ -1077,32 +1324,7 @@ impl Frame {
             }
         }
         let current = self.current();
-        let scene = SceneRanges {
-            entities: Span {
-                count: current.entities.first - self.first.entities.first,
-                ..self.first.entities
-            },
-            polys: Span {
-                count: current.polys.first - self.first.polys.first,
-                ..self.first.polys
-            },
-            lights: Span {
-                count: current.lights.first - self.first.lights.first,
-                ..self.first.lights
-            },
-            particles: Span {
-                count: current.particles.first - self.first.particles.first,
-                ..self.first.particles
-            },
-            surfaces: Span {
-                count: current.surfaces.first - self.first.surfaces.first,
-                ..self.first.surfaces
-            },
-            draws: Span {
-                count: current.draws.first - self.first.draws.first,
-                ..self.first.draws
-            },
-        };
+        let scene = self.first.through(current);
         let hidden = Span {
             first: self.list.area_count as u32,
             count: hidden_areas.len() as u32,

@@ -75,6 +75,19 @@ pub enum Cull {
     Back,
     None,
 }
+impl Cull {
+    pub fn for_view(self, reflected: bool) -> Self {
+        if reflected {
+            match self {
+                Self::Front => Self::Back,
+                Self::Back => Self::Front,
+                Self::None => Self::None,
+            }
+        } else {
+            self
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkyParms {
     pub outer_box: Option<String>,

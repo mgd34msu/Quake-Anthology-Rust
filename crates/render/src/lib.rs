@@ -10,6 +10,7 @@ pub mod lighting;
 pub mod lightmap;
 pub mod material;
 pub mod particles;
+pub mod portal;
 pub mod scene;
 pub mod shader;
 pub mod sky;

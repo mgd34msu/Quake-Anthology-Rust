@@ -133,6 +133,12 @@ pub const fn child_from_leaf(leaf: u32) -> i32 {
 }
 
 impl Plane {
+    pub fn from_points(a: Vec3, b: Vec3, c: Vec3) -> Option<Self> {
+        let mut normal = crate::math::cross(c - a, b - a);
+        let length = crate::math::normalize(&mut normal);
+        (length > 0. && length.is_finite()).then(|| Self::oriented(normal, a.dot(normal)))
+    }
+
     /// Express a world plane in coordinates whose basis columns are `axes`.
     pub fn to_local(self, origin: Vec3, axes: [Vec3; 3]) -> Self {
         Self::oriented(

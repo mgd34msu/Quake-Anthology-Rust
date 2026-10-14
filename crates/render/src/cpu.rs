@@ -755,7 +755,6 @@ impl CpuBackend {
     fn mesh_supported(&self, material: &Material) -> bool {
         material.settings.sky.is_none()
             && material.settings.fog.is_none()
-            && !material.settings.portal
             && !material.settings.polygon_offset
     }
 
@@ -815,7 +814,13 @@ impl CpuBackend {
         let mut area = crate::affine::cross2(vertices[0].xy, vertices[1].xy, vertices[2].xy);
         // Q3 CT_FRONT_SIDED culls GL_FRONT with GL_CCW. The retained winding
         // therefore has positive area in this top-left-origin framebuffer.
-        if culled(pass.material.settings.cull, area) {
+        if culled(
+            pass.material
+                .settings
+                .cull
+                .for_view(camera.refdef.reflected_view),
+            area,
+        ) {
             return;
         }
         if area < 0.0 {

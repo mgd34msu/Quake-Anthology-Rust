@@ -5,7 +5,7 @@
 //! DrawSkyPolygon/ClipSkyPolygon/MakeSkyVec; quake-iii-arena/code/renderer/
 //! tr_sky.c R_InitSkyTexCoords/MakeSkyVec/ClipSkyPolygon.
 use crate::assets::{Assets, CubeSkyParams, ImageId, MaterialId, Stage, StageTexture, Vertex};
-use crate::scene::{CommandList, DrawItem, DrawKind, Span};
+use crate::scene::{CommandList, DrawItem, Span};
 use qa_core::{math, primitives::Vec3};
 
 pub(crate) enum SkySubmission {
@@ -39,58 +39,13 @@ pub(crate) fn for_each_sky_triangle(
         if !visit(material, SkySubmission::Begin(item)) {
             continue;
         }
-        match item.kind {
-            DrawKind::Surface => {
-                let reference = list.surface(item.index);
-                let Some(world) = assets.world(reference.world) else {
-                    continue;
-                };
-                let Some(surface) = world.geometry().surfaces.get(reference.surface as usize)
-                else {
-                    visit(material, SkySubmission::MissingSurface);
-                    continue;
-                };
-                let entity = reference.entity.map(|index| list.entity(index));
-                for triangle in world.geometry().indices[surface.indices.range()].chunks_exact(3) {
-                    let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
-                        let position = world.geometry().vertices[index as usize].vertex.position;
-                        entity.map_or(position, |entity| {
-                            math::transform_point(entity.origin, entity.axes, position)
-                        })
-                    });
-                    visit(material, SkySubmission::Triangle(points));
-                }
-            }
-            DrawKind::Entity => {
-                let entity = list.entity(item.index);
-                let Some(model) = entity.model.mesh().and_then(|model| assets.model(model)) else {
-                    continue;
-                };
-                let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp)
-                else {
-                    visit(material, SkySubmission::MissingSurface);
-                    continue;
-                };
-                for triangle in model.indices.chunks_exact(3) {
-                    let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
-                        math::transform_point(
-                            entity.origin,
-                            entity.axes,
-                            frames.vertex(index as usize).position,
-                        )
-                    });
-                    visit(material, SkySubmission::Triangle(points));
-                }
-            }
-            DrawKind::Poly => {
-                let vertices = list.vertices(list.poly(item.index).vertices);
-                for triangle in crate::affine::fan(vertices.len()) {
-                    visit(
-                        material,
-                        SkySubmission::Triangle(triangle.map(|index| vertices[index].position)),
-                    );
-                }
-            }
+        if !crate::scene::for_each_triangle(list, item, assets, |vertices| {
+            visit(
+                material,
+                SkySubmission::Triangle(vertices.map(|vertex| vertex.position)),
+            );
+        }) {
+            visit(material, SkySubmission::MissingSurface);
         }
     }
 }

@@ -1676,7 +1676,11 @@ impl GlBackend {
             self.state.depth_func = Some(stage.depth_func);
         }
         self.blend_state(blend);
-        let cull = if depth { settings.cull } else { Cull::None };
+        let cull = if depth {
+            settings.cull.for_view(prepared.inputs.reflected_view)
+        } else {
+            Cull::None
+        };
         if self.state.cull != Some(cull) {
             unsafe {
                 if cull != Cull::None {

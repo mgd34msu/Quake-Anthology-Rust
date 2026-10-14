@@ -292,6 +292,176 @@ fn presentation(assets: &Assets, world: WorldId) -> qa_render::WorldPresentation
 }
 
 #[test]
+fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_view() {
+    use qa_render::scene::{Light, SceneModel, Viewport};
+    let mut assets = Assets::load().unwrap();
+    let portal_material = assets
+        .register_material(
+            "portal",
+            &[Stage {
+                alpha_gen: AlphaGen::Const(0.),
+                blend: Some(StageBlend::ALPHA),
+                depth_write: false,
+                ..Default::default()
+            }],
+            MaterialSettings {
+                sort: 1.,
+                portal: true,
+                cull: qa_render::shader::Cull::None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let red = assets.register_image(1, 1, &[200, 40, 20, 255]).unwrap();
+    let red = assets
+        .register_material(
+            "portal target",
+            &[Stage {
+                texture: qa_render::assets::StageTexture::Image(red),
+                ..Default::default()
+            }],
+            MaterialSettings {
+                cull: qa_render::shader::Cull::None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let world = world(
+        &mut assets,
+        &[SurfaceMaterial {
+            material: portal_material,
+            ..Default::default()
+        }],
+    );
+    let presentation = presentation(&assets, world);
+    let view = Refdef {
+        viewport: Viewport {
+            width: 8,
+            height: 8,
+            ..Default::default()
+        },
+        near: 0.25,
+        far: 64.,
+        fov: [90.; 2],
+        ..Default::default()
+    };
+    let mut scratch = qa_render::world::WorldView::load(assets.world(world).unwrap());
+    let mut cpu = qa_render::cpu::CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    for (limits, expected_views) in [
+        (Limits::default(), 2),
+        (
+            Limits {
+                entities: 2,
+                ..Default::default()
+            },
+            1,
+        ),
+        (
+            Limits {
+                commands: 2,
+                ..Default::default()
+            },
+            1,
+        ),
+        (
+            Limits {
+                vertices: 10,
+                ..Default::default()
+            },
+            1,
+        ),
+    ] {
+        let mut front = FrontEnd::load(limits).unwrap();
+        let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
+        assert!(frame.add_entity(SceneEntity {
+            origin: Vec3([1., 0., 0.]),
+            model: SceneModel::Portal {
+                camera: Vec3([1., 0., 0.]),
+                rotation: 0
+            },
+            ..Default::default()
+        }));
+        assert!(frame.add_entity(SceneEntity {
+            origin: Vec3([0.5, 100., 0.]),
+            model: SceneModel::Sprite {
+                radius: 0.1,
+                rotation: 0.
+            },
+            material: Some(red),
+            ..Default::default()
+        }));
+        assert!(frame.add_light(Light {
+            radius: 1.,
+            ..Default::default()
+        }));
+        assert!(
+            frame.add_poly(
+                red,
+                &[
+                    Vec3([-1., -3., -3.]),
+                    Vec3([-1., 3., -3.]),
+                    Vec3([-1., 3., 3.]),
+                    Vec3([-1., -3., 3.]),
+                ]
+                .map(|position| Vertex {
+                    position,
+                    ..Default::default()
+                })
+            )
+        );
+        assert!(frame.add_world(
+            world,
+            presentation,
+            &[VisibleSurface {
+                surface: 0,
+                depth_key: 1
+            }]
+        ));
+        assert!(frame.render_world_scene(world, presentation, view, &[], &mut scratch, &assets));
+        let packet = frame.finish();
+        let views: Vec<_> = packet
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                Command::View(view) => Some(view),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(views.len(), expected_views);
+        assert!(!views.last().unwrap().refdef.portal);
+        for view in &views {
+            assert_eq!(view.scene.entities.count, 2);
+            assert_eq!(view.scene.lights.count, 1);
+            assert_eq!(
+                packet.entities(view.scene.entities)[0].origin,
+                Vec3([1., 0., 0.])
+            );
+        }
+        let stats = cpu.render(&packet, &assets);
+        assert_eq!(stats.views, expected_views as u32);
+        assert_eq!(stats.rejected as u64, packet.rejected);
+        if expected_views == 2 {
+            assert!(views[0].refdef.portal && views[0].refdef.reflected_view);
+            assert!(
+                cpu.pixels()
+                    .iter()
+                    .all(|&pixel| pixel == u32::from_le_bytes([200, 40, 20, 255])),
+                "portal pixels {:?}, stats {stats:?}",
+                cpu.pixels()
+            );
+            assert_eq!(packet.rejected, 0);
+        } else {
+            assert!(packet.rejected > 0);
+            assert!(
+                cpu.pixels()
+                    .iter()
+                    .all(|&pixel| pixel == u32::from_le_bytes([0, 0, 0, 255]))
+            );
+        }
+    }
+}
+
+#[test]
 fn presentation_variants_select_sort_materials_for_world_and_inline_and_reject_wrong_world() {
     let mut assets = Assets::load().unwrap();
     let low = material(&mut assets, "variant-low", 1.0);

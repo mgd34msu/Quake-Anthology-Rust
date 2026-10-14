@@ -325,6 +325,7 @@ pub struct DrawInputs {
     /// entity's diffuse lighting sample (tr_shade_calc.c:1038).
     pub specular_origin: Vec3,
     pub clip_plane: Option<qa_core::primitives::Plane>,
+    pub reflected_view: bool,
 }
 impl DrawInputs {
     pub fn for_view(refdef: &crate::scene::Refdef) -> Self {
@@ -333,6 +334,7 @@ impl DrawInputs {
             view_origin: refdef.origin,
             identity_light: refdef.identity_light,
             clip_plane: refdef.clip_plane,
+            reflected_view: refdef.reflected_view,
             ..Self::default()
         }
     }
@@ -382,6 +384,7 @@ impl Default for DrawInputs {
             lighting: None,
             specular_origin: Vec3([-960.0, 1980.0, 96.0]),
             clip_plane: None,
+            reflected_view: false,
         }
     }
 }

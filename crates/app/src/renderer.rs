@@ -689,7 +689,16 @@ impl Renderer {
                         .find(|entry| entry.id == client.world_presentation)
                         .map_or(1., |entry| entry.profile.q2_modulate),
                 );
-                if !world_added || !frame.render_scene(refdef, hidden_areas, &composition.assets) {
+                if !world_added
+                    || !frame.render_world_scene(
+                        client.world,
+                        client.world_presentation,
+                        refdef,
+                        hidden_areas,
+                        &mut scene.views[seat],
+                        &composition.assets,
+                    )
+                {
                     rejected += 1;
                 }
                 if let Some(hud) = hud[seat] {

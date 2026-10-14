@@ -62,6 +62,24 @@ fn stage_inputs_transform_only_model_clip_planes_and_clear_them_for_2d() {
 }
 
 #[test]
+fn reflected_views_use_one_shared_culling_policy_for_all_backends() {
+    use qa_render::{Refdef, shader::Cull};
+    let input = DrawInputs::for_view(&Refdef {
+        reflected_view: true,
+        ..Default::default()
+    });
+    assert!(input.reflected_view);
+    for (ordinary, reflected) in [
+        (Cull::Front, Cull::Back),
+        (Cull::Back, Cull::Front),
+        (Cull::None, Cull::None),
+    ] {
+        assert_eq!(ordinary.for_view(false), ordinary);
+        assert_eq!(ordinary.for_view(input.reflected_view), reflected);
+    }
+}
+
+#[test]
 fn native_identity_does_not_apply_entity_tint_and_vertex_colors_quantize_first() {
     let evaluator = StageEvaluator::load();
     let inputs = DrawInputs {
