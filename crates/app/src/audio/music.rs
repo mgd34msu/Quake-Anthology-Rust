@@ -1,8 +1,14 @@
 //! One presentation-owned soundtrack streams into the existing raw paint lane.
 use qa_audio::Mixer;
 use qa_content::vfs::{FileRef, Vfs};
-use qa_core::primitives::{MusicControl, MusicOwner, MusicPlayback, SoundAction, SoundEvent};
-use qa_formats::{FormatError, archive::ArchiveReader, sound::WavInfo};
+use qa_core::primitives::{
+    MusicControl, MusicOwner, MusicPlayback, PcmFormat, SoundAction, SoundEvent,
+};
+use qa_formats::{
+    FormatError,
+    archive::ArchiveReader,
+    sound::{Vorbis, WavInfo},
+};
 
 #[derive(Default, Debug)]
 pub struct MusicCounts {
@@ -13,24 +19,125 @@ pub struct MusicCounts {
     pub source_bytes: u64,
     pub queued_frames: u64,
 }
-#[derive(Clone, Copy)]
-struct Source {
-    file: FileRef,
-    info: WavInfo,
-    position: usize,
+enum Decoder {
+    Wave(WavInfo),
+    Vorbis(Vorbis),
 }
-impl Source {
-    fn open(vfs: &Vfs, file: FileRef, reader: &mut ArchiveReader) -> Result<Self, FormatError> {
+struct Track {
+    file: FileRef,
+    length: u64,
+    decoder: Decoder,
+}
+impl Track {
+    fn load(vfs: &Vfs, file: FileRef, reader: &mut ArchiveReader) -> Result<Self, FormatError> {
         let length = vfs.length(file).map_err(|_| FormatError::InvalidRange)?;
-        let info = WavInfo::read_source(length, |at, out| read(vfs, file, at, out, reader))?;
-        if info.frames == 0 {
-            return Err(FormatError::InvalidRange);
-        }
+        let mut magic = [0; 4];
+        read(vfs, file, 0, &mut magic, reader)?;
+        let decoder = match &magic {
+            b"RIFF" => {
+                let info =
+                    WavInfo::read_source(length, |at, out| read(vfs, file, at, out, reader))?;
+                if info.frames == 0 {
+                    return Err(FormatError::InvalidRange);
+                }
+                Decoder::Wave(info)
+            }
+            b"OggS" => {
+                let mut vorbis = Vorbis::load(length, |at, out| read(vfs, file, at, out, reader))?;
+                if vorbis
+                    .read_packet(|at, out| read(vfs, file, at, out, reader))?
+                    .is_none()
+                {
+                    return Err(FormatError::InvalidRange);
+                }
+                vorbis.rewind();
+                Decoder::Vorbis(vorbis)
+            }
+            _ => return Err(FormatError::Unsupported),
+        };
         Ok(Self {
             file,
-            info,
-            position: 0,
+            length,
+            decoder,
         })
+    }
+    fn format(&self) -> PcmFormat {
+        match &self.decoder {
+            Decoder::Wave(info) => info.format(),
+            Decoder::Vorbis(reader) => reader.format(),
+        }
+    }
+    fn reset(&mut self) {
+        if let Decoder::Vorbis(reader) = &mut self.decoder {
+            reader.rewind();
+        }
+    }
+    fn fill(
+        &mut self,
+        vfs: &Vfs,
+        source: &mut Source,
+        frames: usize,
+        bytes: &mut [u8],
+        archive: &mut ArchiveReader,
+    ) -> Result<(usize, bool), FormatError> {
+        match &mut self.decoder {
+            Decoder::Wave(info) => {
+                let frames = frames.min(info.frames - source.position);
+                let size = info.format().frame_bytes();
+                let length = frames * size;
+                let offset = info.data_offset + source.position * size;
+                read(vfs, self.file, offset as u64, &mut bytes[..length], archive)?;
+                let ended = source.position + frames == info.frames;
+                if ended {
+                    read(vfs, self.file, self.length, &mut [], archive)?;
+                }
+                Ok((frames, ended))
+            }
+            Decoder::Vorbis(reader) => {
+                let channels = reader.format().channels as usize;
+                let mut written = 0;
+                while written < frames * channels {
+                    if source.packet_at == reader.samples().len() {
+                        if reader
+                            .read_packet(|at, out| read(vfs, self.file, at, out, archive))?
+                            .is_none()
+                        {
+                            read(vfs, self.file, self.length, &mut [], archive)?;
+                            return Ok((written / channels, true));
+                        }
+                        source.packet_at = 0;
+                    }
+                    let remaining = &reader.samples()[source.packet_at..];
+                    let count = remaining.len().min(frames * channels - written);
+                    for (sample, output) in remaining[..count]
+                        .iter()
+                        .zip(bytes[written * 2..(written + count) * 2].chunks_exact_mut(2))
+                    {
+                        output.copy_from_slice(&sample.to_le_bytes());
+                    }
+                    source.packet_at += count;
+                    written += count;
+                }
+                Ok((written / channels, false))
+            }
+        }
+    }
+}
+#[derive(Clone, Copy)]
+struct Source {
+    track: usize,
+    position: usize,
+    packet_at: usize,
+    ended: bool,
+}
+impl Source {
+    fn new(track: usize) -> Self {
+        Self {
+            track,
+            position: 0,
+            packet_at: 0,
+            ended: false,
+        }
     }
 }
 fn read(
@@ -52,6 +159,7 @@ pub struct Music {
     owner: Option<MusicOwner>,
     current: Option<Source>,
     loop_track: Option<FileRef>,
+    tracks: Box<[Track]>,
     playback: MusicPlayback,
     volume: f32,
     paused: bool,
@@ -59,12 +167,24 @@ pub struct Music {
     bytes: Box<[u8]>,
     pub counts: MusicCounts,
 }
-impl Default for Music {
-    fn default() -> Self {
+impl Music {
+    /// File names remain in the VFS. Only compiled source state is retained,
+    /// keyed by its existing FileRef, independently of effect registration.
+    pub fn load(vfs: &Vfs) -> Self {
+        let mut reader = ArchiveReader::default();
+        let mut tracks = Vec::new();
+        for (file, _) in vfs.files() {
+            if let Ok(track) = Track::load(vfs, file, &mut reader) {
+                tracks.push(track);
+            }
+        }
+        tracks.sort_unstable_by_key(|track| track.file);
+        reader.close_stream();
         Self {
             owner: None,
             current: None,
             loop_track: None,
+            tracks: tracks.into_boxed_slice(),
             playback: MusicPlayback {
                 smooth_volume: false,
                 preserve_queued: false,
@@ -72,13 +192,21 @@ impl Default for Music {
             },
             volume: 0.5,
             paused: false,
-            reader: ArchiveReader::default(),
+            reader,
             bytes: vec![0; 30000].into_boxed_slice(),
             counts: MusicCounts::default(),
         }
     }
-}
-impl Music {
+    fn track(&self, file: FileRef) -> Option<usize> {
+        self.tracks
+            .binary_search_by_key(&file, |track| track.file)
+            .ok()
+    }
+    fn begin(&mut self, track: usize) -> Source {
+        self.reader.close_stream();
+        self.tracks[track].reset();
+        Source::new(track)
+    }
     pub fn playing(&self) -> bool {
         self.current.is_some()
     }
@@ -127,15 +255,15 @@ impl Music {
                 }
                 let opened = intro
                     .and_then(|name| vfs.open(name))
-                    .and_then(|file| Source::open(vfs, file, &mut self.reader).ok());
-                let Some(source) = opened else {
+                    .and_then(|file| self.track(file));
+                let Some(track) = opened else {
                     self.counts.invalid += 1;
                     return false;
                 };
                 self.loop_track = loop_track
                     .filter(|name| !name.is_empty())
                     .and_then(|name| vfs.open(name));
-                self.current = Some(source);
+                self.current = Some(self.begin(track));
                 self.counts.started += 1;
                 true
             }
@@ -199,58 +327,47 @@ impl Music {
             let Some(mut source) = self.current else {
                 return;
             };
-            if source.position == source.info.frames {
-                // Validate the archive's unread WAV tail before committing EOF.
-                let checked = vfs.length(source.file).is_ok_and(|length| {
-                    read(vfs, source.file, length, &mut [], &mut self.reader).is_ok()
-                });
-                if !checked {
-                    self.counts.invalid += 1;
-                    self.stop(mixer);
-                    return;
-                }
+            if source.ended {
                 let Some(next) = self.loop_track else {
                     self.current = None;
                     self.reader.close_stream();
                     return;
                 };
-                self.current = if next == source.file {
-                    source.position = 0;
-                    Some(source)
-                } else {
-                    Source::open(vfs, next, &mut self.reader).ok()
-                };
-                if self.current.is_none() {
+                let Some(track) = self.track(next) else {
+                    self.current = None;
+                    self.reader.close_stream();
                     self.counts.invalid += 1;
                     return;
-                }
+                };
+                self.current = Some(self.begin(track));
                 self.counts.loops += 1;
                 continue;
             }
-            let format = source.info.format();
+            let format = self.tracks[source.track].format();
             let wanted = (mixer.raw_remaining() as u64 * u64::from(format.rate.get())
                 / u64::from(mixer.bank.rate.get())) as usize;
-            let frames = wanted
-                .min(source.info.frames - source.position)
-                .min(self.bytes.len() / format.frame_bytes());
+            let frames = wanted.min(self.bytes.len() / format.frame_bytes());
             if frames == 0 {
                 return;
             }
-            let length = frames * format.frame_bytes();
-            let offset = source.info.data_offset + source.position * format.frame_bytes();
-            if read(
+            let filled = self.tracks[source.track].fill(
                 vfs,
-                source.file,
-                offset as u64,
-                &mut self.bytes[..length],
+                &mut source,
+                frames,
+                &mut self.bytes,
                 &mut self.reader,
-            )
-            .is_err()
-            {
+            );
+            let Ok((frames, ended)) = filled else {
                 self.counts.invalid += 1;
                 self.stop(mixer);
                 return;
+            };
+            source.ended = ended;
+            if frames == 0 {
+                self.current = Some(source);
+                continue;
             }
+            let length = frames * format.frame_bytes();
             match mixer.queue_raw(
                 format,
                 &self.bytes[..length],

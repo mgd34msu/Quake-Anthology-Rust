@@ -56,8 +56,11 @@ impl qa_app::host::FrameSource for Source {
         assert!(self.mixer.paint(&mut self.pcm));
     }
 }
-pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program) {
+pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program, compressed: bool) {
     let mut fixture = fixture::Fixture::new();
+    if compressed {
+        fixture.archive();
+    }
     let (mut host, clients) = host(program, 1);
     host.runtime.vfs = std::mem::take(&mut fixture.vfs);
     let volume = host
@@ -68,7 +71,7 @@ pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program) {
     host.console.cvars.force_write(volume, "1").unwrap();
     let mut source = Source {
         mixer: fixture::mixer(),
-        music: qa_app::audio::music::Music::default(),
+        music: qa_app::audio::music::Music::load(&host.runtime.vfs),
         owner: None,
         time: EventTime::from_milliseconds(100),
         updates: 0,
@@ -86,10 +89,32 @@ pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program) {
         })
     );
     assert_eq!(source.updates, 1);
-    assert_eq!(
-        source.pcm,
-        [625, -625, 1250, -1250, 1875, -1875, 2500, -2500]
-    );
+    if compressed {
+        let pcm = qa_formats::sound::vorbis(include_bytes!(
+            "../../../formats/tests/fixtures/sounds/mono.ogg"
+        ))
+        .unwrap();
+        let mut reference = fixture::mixer();
+        let format = qa_core::primitives::PcmFormat {
+            rate: pcm.rate,
+            channels: pcm.channels,
+            width: PcmWidth::Short,
+        };
+        let bytes: Vec<_> = pcm
+            .samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        reference.queue_raw(format, &bytes, 0.625, false).unwrap();
+        let mut expected = [0; 8];
+        reference.paint(&mut expected);
+        assert_eq!(source.pcm, expected);
+    } else {
+        assert_eq!(
+            source.pcm,
+            [625, -625, 1250, -1250, 1875, -1875, 2500, -2500]
+        );
+    }
     assert_eq!(source.music.counts.invalid, 0);
     assert_eq!(probe(&mut host, 0, 16, 0), 0);
     source.time.0 += 100_000_000;
@@ -107,5 +132,7 @@ pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program) {
     assert_eq!(result.output.music, 1);
     assert_eq!(source.pcm, [0; 8]);
     assert_eq!(source.music.counts.stopped, 2);
-    println!("native background controls reached ring, shared source stream and mixer");
+    println!(
+        "native background controls reached ring, shared source stream and mixer: vorbis={compressed}"
+    );
 }

@@ -76,12 +76,12 @@ pub struct Output {
     pub blocked: u64,
 }
 impl Output {
-    pub fn open(bank: Arc<Bank>) -> Result<Self, String> {
+    pub fn open(bank: Arc<Bank>, vfs: &qa_content::vfs::Vfs) -> Result<Self, String> {
         let rate = bank.rate;
         let stream = qa_platform::AudioStream::open(rate, 2)?;
         Ok(Self {
             mixer: Mixer::load(bank, 128, qa_core::sys_events::SeatId::COUNT),
-            music: music::Music::default(),
+            music: music::Music::load(vfs),
             stream,
             pcm: vec![0; 2048].into_boxed_slice(),
             pending: false,

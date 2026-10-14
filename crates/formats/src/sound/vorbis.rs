@@ -45,6 +45,7 @@ pub struct Vorbis {
     links: Box<[Link]>,
     first: usize,
     state: VorbisState,
+    pcm_count: usize,
     length: u64,
     format: PcmFormat,
 }
@@ -110,6 +111,7 @@ impl Vorbis {
             links: links.into_boxed_slice(),
             first,
             state: VorbisState::new(first),
+            pcm_count: 0,
             length,
             format,
         })
@@ -137,9 +139,14 @@ impl Vorbis {
     pub fn source_position(&self) -> u64 {
         self.packets.position()
     }
+    /// The most recently returned packet, including its authored end trim.
+    pub fn samples(&self) -> &[i16] {
+        &self.links[self.state.active].decoder.samples()[..self.pcm_count]
+    }
     pub fn rewind(&mut self) {
         self.packets.rewind();
         self.state = VorbisState::new(self.first);
+        self.pcm_count = 0;
         for link in &mut self.links {
             link.decoder.reset();
         }
@@ -150,6 +157,7 @@ impl Vorbis {
         &mut self,
         mut read: impl FnMut(u64, &mut [u8]) -> Result<(), FormatError>,
     ) -> Result<Option<&[i16]>, FormatError> {
+        self.pcm_count = 0;
         while let Some(packet) = self.packets.next(self.length, &mut read)? {
             if packet.serial != self.links[self.state.active].serial {
                 if !self.state.ended || !packet.first_in_stream {
@@ -168,6 +176,7 @@ impl Vorbis {
             }
             if self.state.headers_left != 0 {
                 self.state.headers_left -= 1;
+                self.state.ended = packet.last_in_stream;
                 continue;
             }
             let link = &mut self.links[self.state.active];
@@ -195,9 +204,8 @@ impl Vorbis {
             if count == 0 {
                 continue;
             }
-            return Ok(Some(
-                &self.links[self.state.active].decoder.samples()[..count],
-            ));
+            self.pcm_count = count;
+            return Ok(Some(self.samples()));
         }
         Ok(None)
     }

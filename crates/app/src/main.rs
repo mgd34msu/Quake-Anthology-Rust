@@ -851,7 +851,7 @@ fn run() -> Result<(), String> {
     }
     host.set_model_catalog(std::sync::Arc::new(models), client_profiles);
     let bank = qa_app::audio::finish_registration(&mut host)?;
-    let mut audio = qa_app::audio::Output::open(bank)?;
+    let mut audio = qa_app::audio::Output::open(bank, &host.runtime.vfs)?;
     let (band_cvar, cpu_bands) = if matches!(renderer_kind, Kind::Cpu) {
         cpu_band_setting(&host.console.cvars, cpu_bands)?
     } else {

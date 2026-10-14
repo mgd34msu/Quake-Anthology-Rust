@@ -1306,7 +1306,8 @@ fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
-    music::native_music_reaches_shared_paint(qvm);
+    music::native_music_reaches_shared_paint(qvm, false);
+    music::native_music_reaches_shared_paint(qvm, true);
     selected_commands_use_one_session_service(qvm);
     retained_usercmds_reach_the_selected_module(qvm);
     native_scene_calls_use_the_session_frame(qvm);
@@ -1318,7 +1319,8 @@ fn main() {
     scene::entities(false, true);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        music::native_music_reaches_shared_paint(native);
+        music::native_music_reaches_shared_paint(native, false);
+        music::native_music_reaches_shared_paint(native, true);
         selected_commands_use_one_session_service(native);
         retained_usercmds_reach_the_selected_module(native);
         native_scene_calls_use_the_session_frame(native);

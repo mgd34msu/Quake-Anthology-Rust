@@ -11,6 +11,12 @@ use std::{
 };
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+#[global_allocator]
+static ALLOCATOR: qa_platform::allocations::CountingAllocator =
+    qa_platform::allocations::CountingAllocator;
+const MONO: &[u8] = include_bytes!("../../formats/tests/fixtures/sounds/mono.ogg");
+const STEREO: &[u8] = include_bytes!("../../formats/tests/fixtures/sounds/stereo.ogg");
+const PAGES: &[u8] = include_bytes!("../../formats/tests/fixtures/sounds/pages.ogg");
 pub struct Fixture {
     root: std::path::PathBuf,
     pub vfs: Vfs,
@@ -43,9 +49,23 @@ impl Fixture {
             bytes[4..8].copy_from_slice(&length.to_le_bytes());
             qa_platform::files::write(root.join("music").join(name), bytes).unwrap();
         }
+        for (name, bytes) in [
+            ("mono.ogg", MONO),
+            ("stereo.ogg", STEREO),
+            ("pages.ogg", PAGES),
+        ] {
+            qa_platform::files::write(root.join("music").join(name), bytes).unwrap();
+        }
         let mut vfs = Vfs::default();
         vfs.mount_directory(&root, 1).unwrap();
         Self { root, vfs }
+    }
+    pub fn archive(&mut self) {
+        let path = self.root.join("tracks.pk3");
+        qa_platform::files::write(&path, include_bytes!("fixtures/music/tracks.pk3")).unwrap();
+        let file = Arc::new(qa_platform::files::ReadFile::open(&path).unwrap());
+        let archive = Arc::new(qa_formats::archive::Archive::parse(file).unwrap());
+        self.vfs.mount_archive(&path, 10, archive).unwrap();
     }
 }
 impl Drop for Fixture {
@@ -94,7 +114,7 @@ fn dynamic_tracks_bypass_effect_registration_and_switch_intro_to_loop() {
     let fixture = Fixture::new();
     let mut mix = mixer();
     assert_eq!(mix.bank.find("music/intro.wav"), None);
-    let mut music = Music::default();
+    let mut music = Music::load(&fixture.vfs);
     assert!(music.control(
         &fixture.vfs,
         &mut mix,
@@ -129,7 +149,7 @@ fn dynamic_tracks_bypass_effect_registration_and_switch_intro_to_loop() {
 fn native_volume_updates_once_and_raw_queue_survives_failed_replacement() {
     let fixture = Fixture::new();
     let mut mix = mixer();
-    let mut music = Music::default();
+    let mut music = Music::load(&fixture.vfs);
     assert!(music.control(
         &fixture.vfs,
         &mut mix,
@@ -160,10 +180,252 @@ fn native_volume_updates_once_and_raw_queue_survives_failed_replacement() {
 }
 
 #[test]
+fn loose_vorbis_streams_exact_authored_samples_and_keeps_pause_position() {
+    let fixture = Fixture::new();
+    let expected = qa_formats::sound::vorbis(MONO).unwrap();
+    let mut mix = mixer();
+    let mut music = Music::load(&fixture.vfs);
+    assert!(music.control(
+        &fixture.vfs,
+        &mut mix,
+        start(owner(1), false, false),
+        Some(b"music/mono.ogg"),
+        None
+    ));
+    music.update(&fixture.vfs, &mut mix, 1.);
+    let mut pair = [0; 2];
+    mix.paint(&mut pair);
+    assert_eq!(pair, [expected.samples[0]; 2]);
+    music.control(
+        &fixture.vfs,
+        &mut mix,
+        MusicControl::Pause(true),
+        None,
+        None,
+    );
+    mix.paint(&mut pair);
+    assert_eq!(pair, [0; 2]);
+    music.control(
+        &fixture.vfs,
+        &mut mix,
+        MusicControl::Pause(false),
+        None,
+        None,
+    );
+    let mut actual = vec![0; expected.samples.len() * 2];
+    mix.paint(&mut actual);
+    let mut remaining: Vec<_> = expected.samples[1..]
+        .iter()
+        .flat_map(|&sample| [sample; 2])
+        .collect();
+    remaining.extend([0; 2]);
+    assert_eq!(actual, remaining);
+    assert!(!music.playing());
+    assert_eq!(music.counts.invalid, 0);
+}
+
+#[test]
+fn deflated_vorbis_with_arbitrary_name_uses_the_same_pcm_blocks_as_wave() {
+    let mut fixture = Fixture::new();
+    fixture.archive();
+    let expected = qa_formats::sound::vorbis(STEREO).unwrap();
+    let mut music = Music::load(&fixture.vfs);
+    let mut actual_mix = mixer();
+    let mut expected_mix = mixer();
+    assert!(music.control(
+        &fixture.vfs,
+        &mut actual_mix,
+        start(owner(1), false, false),
+        Some(b"scores/theme.data"),
+        None
+    ));
+    music.update(&fixture.vfs, &mut actual_mix, 1.);
+    let bytes: Vec<_> = expected
+        .samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect();
+    let format = PcmFormat {
+        rate: expected.rate,
+        channels: expected.channels,
+        width: PcmWidth::Short,
+    };
+    for block in bytes.chunks(30000) {
+        expected_mix.queue_raw(format, block, 1., false).unwrap();
+    }
+    let mut actual = [0; 12000];
+    let mut reference = [0; 12000];
+    actual_mix.paint(&mut actual);
+    expected_mix.paint(&mut reference);
+    assert_eq!(actual, reference);
+    assert!(!music.playing());
+    assert_eq!(music.counts.invalid, 0);
+}
+
+#[test]
+fn vorbis_intro_to_wave_loop_preserves_the_boundary_and_voice_bank() {
+    let fixture = Fixture::new();
+    let expected = qa_formats::sound::vorbis(MONO).unwrap();
+    let mut music = Music::load(&fixture.vfs);
+    let mut mix = mixer();
+    assert!(music.control(
+        &fixture.vfs,
+        &mut mix,
+        start(owner(1), false, false),
+        Some(b"music/mono.ogg"),
+        Some(b"music/repeat.wav")
+    ));
+    music.update(&fixture.vfs, &mut mix, 1.);
+    let mut actual = vec![0; expected.samples.len() * 2 + 8];
+    mix.paint(&mut actual);
+    let mut reference: Vec<_> = expected
+        .samples
+        .iter()
+        .flat_map(|&sample| [sample; 2])
+        .collect();
+    reference.extend([3000, -3000, 4000, -4000, 3000, -3000, 4000, -4000]);
+    assert_eq!(actual, reference);
+    assert_eq!(mix.bank.find("music/mono.ogg"), None);
+    assert_eq!(music.counts.invalid, 0);
+}
+
+#[test]
+fn multi_page_vorbis_keeps_partial_packets_across_presentation_refills() {
+    let fixture = Fixture::new();
+    let expected = qa_formats::sound::vorbis(PAGES).unwrap();
+    let mut mix = Mixer::load(Arc::new(Bank::load(expected.rate, vec![]).unwrap()), 4, 1);
+    let mut music = Music::load(&fixture.vfs);
+    assert!(music.control(
+        &fixture.vfs,
+        &mut mix,
+        start(owner(1), false, false),
+        Some(b"music/pages.ogg"),
+        None
+    ));
+    let mut buffer = [0; 8192];
+    let mut position = 0;
+    let mut iteration = 0;
+    while position < expected.frames() + 20 {
+        music.update(&fixture.vfs, &mut mix, 1.);
+        let frames = [127, 512, 2048, 4096, 333][iteration % 5];
+        let frames = frames.min(expected.frames() + 20 - position);
+        mix.paint(&mut buffer[..frames * 2]);
+        for frame in 0..frames {
+            let sample = expected.samples.get(position + frame).copied().unwrap_or(0);
+            assert_eq!(&buffer[frame * 2..frame * 2 + 2], &[sample; 2]);
+        }
+        position += frames;
+        iteration += 1;
+    }
+    assert!(iteration > 10);
+    assert!(!music.playing());
+    assert_eq!(music.counts.invalid, 0);
+}
+
+#[test]
+fn console_vorbis_path_reaches_the_mixer_through_the_shared_ring() {
+    let mut fixture = Fixture::new();
+    let mut runtime = qa_app::Runtime::load(1, []).unwrap();
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let context = qa_console::views::Context {
+        source: RuleSetId::Quake3,
+        ..Default::default()
+    };
+    let mut console = qa_console::commands::Console::new(context).unwrap();
+    console.register("music", qa_app::audio::music);
+    let mut mix = mixer();
+    let mut music = Music::load(&runtime.vfs);
+    console_control(
+        &mut runtime,
+        &mut console,
+        &mut music,
+        &mut mix,
+        "music once mono.ogg",
+        context,
+    );
+    music.update(&runtime.vfs, &mut mix, 1.);
+    let expected = qa_formats::sound::vorbis(MONO).unwrap();
+    let mut output = [0; 8];
+    mix.paint(&mut output);
+    let mut reference = mixer();
+    let bytes: Vec<_> = expected
+        .samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect();
+    reference
+        .queue_raw(
+            PcmFormat {
+                rate: expected.rate,
+                channels: expected.channels,
+                width: PcmWidth::Short,
+            },
+            &bytes,
+            0.625,
+            false,
+        )
+        .unwrap();
+    let mut reference_output = [0; 8];
+    reference.paint(&mut reference_output);
+    assert_eq!(output, reference_output);
+    assert_eq!(music.counts.invalid, 0);
+}
+
+#[test]
+fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth() {
+    let mut fixture = Fixture::new();
+    fixture.archive();
+    let mut music = Music::load(&fixture.vfs);
+    let mut mix = mixer();
+    let mut output = [0; 8192];
+    qa_platform::allocations::begin_frame();
+    assert!(music.control(
+        &fixture.vfs,
+        &mut mix,
+        start(owner(1), false, false),
+        Some(b"scores/theme.data"),
+        Some(b"music/repeat.wav")
+    ));
+    for _ in 0..20 {
+        music.update(&fixture.vfs, &mut mix, 1.);
+        mix.paint(&mut output);
+    }
+    music.control(
+        &fixture.vfs,
+        &mut mix,
+        MusicControl::Pause(true),
+        None,
+        None,
+    );
+    music.update(&fixture.vfs, &mut mix, 1.);
+    mix.paint(&mut output);
+    music.control(
+        &fixture.vfs,
+        &mut mix,
+        MusicControl::Pause(false),
+        None,
+        None,
+    );
+    music.update(&fixture.vfs, &mut mix, 1.);
+    mix.paint(&mut output);
+    music.control(
+        &fixture.vfs,
+        &mut mix,
+        MusicControl::Stop { only_active: false },
+        None,
+        None,
+    );
+    let counts = qa_platform::allocations::end_frame();
+    assert_eq!(counts, qa_platform::allocations::Counts::default());
+    assert_eq!(music.counts.invalid, 0);
+    assert!(music.counts.loops > 0);
+}
+
+#[test]
 fn retirement_does_not_stop_a_reused_client_or_a_new_module_owner() {
     let fixture = Fixture::new();
     let mut mix = mixer();
-    let mut music = Music::default();
+    let mut music = Music::load(&fixture.vfs);
     music.control(
         &fixture.vfs,
         &mut mix,
@@ -259,7 +521,7 @@ fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
     let mut console = qa_console::commands::Console::new(context).unwrap();
     console.register("music", qa_app::audio::music);
     let mut mix = mixer();
-    let mut music = Music::default();
+    let mut music = Music::load(&runtime.vfs);
     assert!(matches!(
         console_control(
             &mut runtime,

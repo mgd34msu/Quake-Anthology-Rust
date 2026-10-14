@@ -436,6 +436,52 @@ fn source_reader_reports_io_errors_and_can_restart_after_failure() {
 }
 
 #[test]
+fn source_packet_view_preserves_the_end_trim_and_clears_on_rewind_and_eof() {
+    let mut reader = sound::Vorbis::load(MONO.len() as u64, |at, out| {
+        framing::slice_read(MONO, at, out)
+    })
+    .unwrap();
+    assert!(reader.samples().is_empty());
+    let mut frames = 0;
+    while let Some(packet) = reader.read_slice(MONO).unwrap() {
+        let copy = packet.to_vec();
+        frames += copy.len();
+        assert_eq!(reader.samples(), copy);
+    }
+    assert_eq!(frames, 2867);
+    assert!(reader.samples().is_empty());
+    reader.rewind();
+    assert!(reader.samples().is_empty());
+    assert!(reader.read_slice(MONO).unwrap().is_some());
+}
+
+#[test]
+fn empty_vorbis_link_does_not_hide_the_next_authored_stream() {
+    let mut original = PacketReader::new(Cursor::new(MONO));
+    let mut empty = PacketWriter::new(Vec::new());
+    for index in 0..3 {
+        let packet = original.read_packet().unwrap().unwrap();
+        empty
+            .write_packet(
+                packet.data.into_boxed_slice(),
+                70,
+                if index == 2 {
+                    PacketWriteEndInfo::EndStream
+                } else {
+                    PacketWriteEndInfo::EndPage
+                },
+                0,
+            )
+            .unwrap();
+    }
+    let bytes = [empty.into_inner(), change_serial(MONO, 71)].concat();
+    assert_eq!(
+        sound::vorbis(&bytes).unwrap().samples,
+        sound::vorbis(MONO).unwrap().samples
+    );
+}
+
+#[test]
 fn loaded_vorbis_decodes_first_packets_and_rewinds_without_heap_growth() {
     for bytes in [
         MONO.to_vec(),
