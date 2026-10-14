@@ -780,6 +780,7 @@ impl Assets {
             mesh,
             presentations: Span { first, count },
             light_grid: None,
+            point_lighting: None,
         });
         self.presentations.extend(registrations);
         Ok(id)
@@ -796,6 +797,17 @@ impl Assets {
             .get_mut(id.0 as usize)
             .ok_or("world light-grid handle")?
             .light_grid = grid;
+        Ok(())
+    }
+    pub fn set_point_lighting(
+        &mut self,
+        id: WorldId,
+        lighting: crate::lighting::PointLighting,
+    ) -> Result<(), &'static str> {
+        self.worlds
+            .get_mut(id.0 as usize)
+            .ok_or("world point-light handle")?
+            .point_lighting = Some(lighting);
         Ok(())
     }
     pub fn world_presentation(&self, id: WorldPresentationId) -> Option<&WorldPresentation> {

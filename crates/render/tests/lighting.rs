@@ -6,6 +6,139 @@ use qa_render::{
 };
 
 #[test]
+fn legacy_point_samples_preserve_style_arithmetic_dark_hits_and_texture_truncation() {
+    use qa_core::primitives::{Bounds, IndexSpan, Plane};
+    use qa_render::{lighting::PointLighting, world::geometry::*};
+    use qa_world::visibility::{PvsRows, SurfaceRayScratch, VisLeaf, VisNode, VisibilityWorld};
+    let bounds = Bounds {
+        mins: Vec3([-32.; 3]),
+        maxs: Vec3([32.; 3]),
+    };
+    let plane = Plane::oriented(Vec3([0., 0., 1.]), 0.);
+    let visibility = VisibilityWorld::load(
+        vec![plane],
+        vec![VisNode {
+            plane: 0,
+            children: [-1, -1],
+            bounds,
+            surfaces: IndexSpan { first: 0, count: 1 },
+        }],
+        vec![VisLeaf {
+            selector: None,
+            area: None,
+            solid: false,
+            bounds,
+            surfaces: IndexSpan::default(),
+        }],
+        vec![],
+        1,
+        0,
+        PvsRows::all_visible(0),
+    )
+    .unwrap();
+    let mut scratch = SurfaceRayScratch::load(&visibility);
+    let surface = WorldSurface {
+        source_id: 0,
+        kind: GeometryKind::Polygon,
+        vertices: IndexSpan::default(),
+        indices: IndexSpan::default(),
+        boundaries: IndexSpan::default(),
+        plane: Some(plane),
+        bounds,
+        texture_coordinates: TextureCoordinates::Texels,
+        texture_projection: [[1., 0., 0., 0.], [0., 1., 0., 0.]],
+        texture_minima: [-16; 2],
+        texture_extents: [32; 2],
+        lightmap_projection: None,
+        lightmap_grid: [3; 2],
+        styles: [0, 1, 255, 255],
+        light_source: LightSource::Samples,
+        light_encoding: LightEncoding::Rgb,
+        light_samples: IndexSpan {
+            first: 0,
+            count: 18,
+        },
+        source_texture: None,
+        source_texture_info: None,
+        source_shader: None,
+        source_flags: 0,
+        source_contents: 0,
+        no_draw: false,
+        source_fog: -1,
+        source_brush_side: -1,
+        source_lightmap: -1,
+        lightmap_rect: [0; 4],
+        lightmap_origin: Vec3::default(),
+        lightmap_vectors: [Vec3::default(); 3],
+        patch: None,
+    };
+    let mut geometry = WorldGeometry {
+        partition: GeometryPartition::SplitBsp,
+        world_has_lightdata: true,
+        vertices: vec![],
+        indices: vec![],
+        boundaries: vec![],
+        surfaces: vec![surface],
+        light_samples: [[64, 32, 16]; 9]
+            .into_iter()
+            .chain([[8, 4, 2]; 9])
+            .collect(),
+        models: vec![],
+        patch_stats: PatchStats::default(),
+    };
+    let mut styles = [qa_render::LightStyle::default(); 256];
+    styles[0].indexed_scale = 128;
+    styles[0].rgb = [1., 0.5, 2.];
+    styles[1].rgb = [0.5, 1., 0.];
+    let indexed = PointLighting::load(true, [true].into_iter());
+    let rgb = PointLighting::load(false, [true].into_iter());
+    let point = Vec3([-16.9, -16., 8.]);
+    assert_eq!(
+        indexed
+            .sample(&geometry, &visibility, &mut scratch, point, &styles, 2.)
+            .unwrap()
+            .ambient,
+        [40., 20., 10.]
+    );
+    assert_eq!(
+        rgb.sample(&geometry, &visibility, &mut scratch, point, &styles, 2.)
+            .unwrap()
+            .ambient,
+        [136., 40., 64.]
+    );
+    assert_eq!(
+        indexed
+            .sample(
+                &geometry,
+                &visibility,
+                &mut scratch,
+                Vec3([17., 0., 8.]),
+                &styles,
+                1.
+            )
+            .unwrap()
+            .ambient,
+        [0.; 3]
+    );
+    geometry.surfaces[0].light_samples.count = 0;
+    assert_eq!(
+        indexed
+            .sample(&geometry, &visibility, &mut scratch, point, &styles, 1.)
+            .unwrap()
+            .ambient,
+        [0.; 3]
+    );
+    geometry.world_has_lightdata = false;
+    assert_eq!(
+        indexed
+            .sample(&geometry, &visibility, &mut scratch, point, &styles, 1.)
+            .unwrap()
+            .ambient,
+        [255.; 3]
+    );
+}
+
+#[test]
 fn grid_interpolation_renormalizes_wall_holes_and_keeps_source_row_aliases() {
     use qa_core::primitives::Bounds;
     use qa_formats::bsp::LightGridPoint;

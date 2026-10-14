@@ -5,6 +5,8 @@ use qa_core::stamps::StampSet;
 
 mod load;
 mod query;
+mod segment;
+pub use segment::SurfaceRayScratch;
 
 pub use qa_core::primitives::IndexSpan as SurfaceSpan;
 
@@ -192,6 +194,7 @@ pub struct VisibilityWorld {
     parent_heads: Box<[u32]>,
     parent_edges: Box<[ParentEdge]>,
     root: i32,
+    segment_capacity: usize,
     pvs: PvsRows,
 }
 

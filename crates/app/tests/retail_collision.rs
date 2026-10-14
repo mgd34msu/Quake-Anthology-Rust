@@ -137,6 +137,23 @@ fn load_retail(product: &str, name: &str, rules: RuleSetId) {
             sample.ambient,
             sample.directed
         );
+    } else {
+        let world = assets.world(loaded.render.world).unwrap();
+        let mut view = qa_render::world::WorldView::load(world);
+        let point = loaded
+            .spawns
+            .first()
+            .map_or(map.models[0].origin, |spawn| spawn.position);
+        let sample = view
+            .point_lighting(
+                world,
+                point,
+                &loaded.render.presentations[0].defaults.lightstyles,
+                loaded.render.presentations[0].profile.q2_modulate,
+            )
+            .expect("legacy light probe uses retained world samples");
+        assert!(sample.ambient.iter().all(|value| value.is_finite()));
+        println!("{name}: point-light sample {:?}", sample.ambient);
     }
     println!(
         "{name}: {} planes, {positive} positive/{negative} negative unit normals, {negative_tagged_axial} negative axial tags, {} brushes admitted",

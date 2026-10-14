@@ -5,6 +5,113 @@ use crate::{
 };
 use qa_core::{math, primitives::Vec3};
 
+pub struct PointLighting {
+    eligible: qa_core::bits::BitSet,
+    indexed_styles: bool,
+}
+impl PointLighting {
+    pub fn load(indexed_styles: bool, eligible: impl ExactSizeIterator<Item = bool>) -> Self {
+        let mut mask = qa_core::bits::BitSet::empty(eligible.len());
+        for (index, eligible) in eligible.enumerate() {
+            if eligible {
+                mask.insert(index);
+            }
+        }
+        Self {
+            eligible: mask,
+            indexed_styles,
+        }
+    }
+    pub fn sample(
+        &self,
+        geometry: &crate::world::geometry::WorldGeometry,
+        visibility: &qa_world::visibility::VisibilityWorld,
+        scratch: &mut qa_world::visibility::SurfaceRayScratch,
+        point: Vec3,
+        styles: &[crate::LightStyle; 256],
+        modulate: f32,
+    ) -> Option<EntityLighting> {
+        if !geometry.world_has_lightdata {
+            return Some(EntityLighting {
+                ambient: [255.; 3],
+                directed: [0.; 3],
+                direction: Vec3([0., 0., 1.]),
+            });
+        }
+        let end = Vec3([point.0[0], point.0[1], point.0[2] - 2048.]);
+        let color = visibility
+            .probe_segment(point, end, scratch, |index, _, hit| {
+                if !self.eligible.contains(index as usize) {
+                    return None;
+                }
+                let surface = geometry.surfaces.get(index as usize)?;
+                let coordinates = if let Some(sample) = surface.lightmap_sample(hit) {
+                    sample
+                } else {
+                    let texture = surface.texture_projection.map(|projection| {
+                        crate::world::geometry::project_texture(projection, hit) as i32
+                    });
+                    let delta = std::array::from_fn::<_, 2, _>(|axis| {
+                        i64::from(texture[axis]) - i64::from(surface.texture_minima[axis])
+                    });
+                    if delta.iter().enumerate().any(|(axis, &value)| {
+                        value < 0 || value > i64::from(surface.texture_extents[axis])
+                    }) {
+                        return None;
+                    }
+                    delta.map(|value| (value >> 4) as f32)
+                };
+                if coordinates.iter().enumerate().any(|(axis, &value)| {
+                    !value.is_finite()
+                        || value < 0.
+                        || value > surface.lightmap_grid[axis].saturating_sub(1) as f32
+                }) {
+                    return None;
+                }
+                if surface.light_samples.count == 0 {
+                    return Some(Vec3::default());
+                }
+                let stride = surface.lightmap_grid[0] as usize * surface.lightmap_grid[1] as usize;
+                let pixel = coordinates[1] as usize * surface.lightmap_grid[0] as usize
+                    + coordinates[0] as usize;
+                let samples = &geometry.light_samples[surface.light_samples.range()];
+                let mut integer = [0u32; 3];
+                let mut color = Vec3::default();
+                for (layer, &style) in surface
+                    .styles
+                    .iter()
+                    .take_while(|&&style| style != 255)
+                    .enumerate()
+                {
+                    let sample = samples.get(layer * stride + pixel)?;
+                    let style = styles[style as usize];
+                    if self.indexed_styles {
+                        for axis in 0..3 {
+                            integer[axis] +=
+                                u32::from(sample[axis]) * u32::from(style.indexed_scale);
+                        }
+                    } else {
+                        color = color
+                            + Vec3(std::array::from_fn(|axis| {
+                                f32::from(sample[axis]) * (modulate * style.rgb[axis])
+                            }));
+                    }
+                }
+                if self.indexed_styles {
+                    color = Vec3(integer.map(|value| (value >> 8) as f32));
+                }
+                Some(color)
+            })
+            .ok()?
+            .unwrap_or_default();
+        Some(EntityLighting {
+            ambient: color.0,
+            directed: [0.; 3],
+            direction: Vec3([0., 0., 1.]),
+        })
+    }
+}
+
 struct GridPoint {
     ambient: [u8; 3],
     directed: [u8; 3],
@@ -207,7 +314,7 @@ pub fn setup_entity(
     let mut ambient = Vec3(sample.ambient) + Vec3([minimum; 3]);
     let mut directed = Vec3(sample.directed);
     let mut direction = sample.direction * math::length(directed);
-    let origin = entity.lighting_origin.unwrap_or(entity.origin);
+    let origin = entity.light_origin();
     for light in lights {
         let mut relative = light.origin - origin;
         let distance = math::normalize(&mut relative).max(16.0);

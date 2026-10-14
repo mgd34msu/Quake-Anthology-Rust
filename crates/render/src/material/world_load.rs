@@ -365,6 +365,15 @@ pub fn load_world(
     let world = assets
         .register_world(geometry, visibility, &variant_slices)
         .map_err(WorldMaterialError::Boundary)?;
+    if !matches!(geometry_source, RuleSetId::Quake3) {
+        let lighting = crate::lighting::PointLighting::load(
+            matches!(geometry_source, RuleSetId::Quake),
+            legacy_kinds.iter().map(|&(warp, sky)| !warp && !sky),
+        );
+        assets
+            .set_point_lighting(world, lighting)
+            .map_err(WorldMaterialError::Boundary)?;
+    }
     match crate::lighting::LightGrid::load_map(
         map,
         (options.map_overbright - options.renderer_overbright) as i8,

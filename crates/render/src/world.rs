@@ -74,6 +74,7 @@ pub struct World {
     pub(crate) mesh: ModelId,
     pub(crate) presentations: Span,
     pub(crate) light_grid: Option<crate::lighting::LightGrid>,
+    pub(crate) point_lighting: Option<crate::lighting::PointLighting>,
 }
 impl World {
     pub fn light_grid(&self) -> Option<&crate::lighting::LightGrid> {
@@ -108,6 +109,7 @@ pub struct WorldView {
     visibility: ViewVisibility,
     surfaces: Box<[VisibleSurface]>,
     count: usize,
+    light_scratch: qa_world::visibility::SurfaceRayScratch,
 }
 impl WorldView {
     pub fn load(world: &World) -> Self {
@@ -116,7 +118,24 @@ impl WorldView {
             surfaces: vec![VisibleSurface::default(); world.visibility.surface_count()]
                 .into_boxed_slice(),
             count: 0,
+            light_scratch: qa_world::visibility::SurfaceRayScratch::load(&world.visibility),
         }
+    }
+    pub fn point_lighting(
+        &mut self,
+        world: &World,
+        point: qa_core::primitives::Vec3,
+        styles: &[crate::LightStyle; 256],
+        modulate: f32,
+    ) -> Option<crate::stage::EntityLighting> {
+        world.point_lighting.as_ref()?.sample(
+            &world.geometry,
+            &world.visibility,
+            &mut self.light_scratch,
+            point,
+            styles,
+            modulate,
+        )
     }
     pub fn query(
         &mut self,

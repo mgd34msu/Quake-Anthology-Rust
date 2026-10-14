@@ -298,6 +298,9 @@ impl EntityVisibility {
     }
 }
 impl SceneEntity {
+    pub fn light_origin(&self) -> Vec3 {
+        self.lighting_origin.unwrap_or(self.origin)
+    }
     pub fn material(&self, assets: &Assets) -> Option<MaterialId> {
         self.material
             .or_else(|| Some(assets.model(self.model.mesh()?)?.material))

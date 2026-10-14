@@ -87,12 +87,16 @@ impl VisibilityWorld {
                 return Err(VisibilityError::SurfaceReference(index));
             }
         }
-        qa_core::bsp::node_depths(nodes.len(), |index| nodes[index].children).map_err(|error| {
-            match error {
+        let depths = qa_core::bsp::node_depths(nodes.len(), |index| nodes[index].children)
+            .map_err(|error| match error {
                 qa_core::bsp::NodeError::Cycle => VisibilityError::Cycle,
                 qa_core::bsp::NodeError::Depth => VisibilityError::Size,
-            }
-        })?;
+            })?;
+        let depth = if root >= 0 { depths[root as usize] } else { 0 };
+        let segment_capacity = depth
+            .checked_mul(2)
+            .and_then(|size| size.checked_add(1))
+            .ok_or(VisibilityError::Size)?;
 
         // C port world.c:519: a validated BSP may share children; retain every parent.
         let mut parent_heads = vec![u32::MAX; nodes.len() + leaves.len()];
@@ -121,6 +125,7 @@ impl VisibilityWorld {
             parent_heads: parent_heads.into_boxed_slice(),
             parent_edges: parent_edges.into_boxed_slice(),
             root,
+            segment_capacity,
             pvs,
         })
     }

@@ -240,6 +240,7 @@ struct WorldScene {
     views: [WorldView; SeatId::COUNT],
     presentations: Box<[qa_render::material::world_load::LoadedWorldPresentation]>,
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn light_view_entities(
     frame: &mut qa_render::scene::Frame,
     assets: &Assets,
@@ -247,19 +248,22 @@ pub(crate) fn light_view_entities(
     view: &Refdef,
     sun: qa_core::primitives::Vec3,
     scales: [f32; 2],
+    mut point_view: Option<&mut WorldView>,
+    modulate: f32,
 ) {
-    let grid = world
-        .and_then(|world| assets.world(world))
-        .and_then(|world| world.light_grid());
+    let world = world.and_then(|world| assets.world(world));
+    let grid = world.and_then(|world| world.light_grid());
     let unlit = qa_render::lighting::unlit_sample(view.identity_light, sun);
     frame.light_entities(view.identity_light, |entity| {
-        grid.map_or(unlit, |grid| {
-            grid.sample(
-                entity.lighting_origin.unwrap_or(entity.origin),
-                scales[0],
-                scales[1],
-            )
-        })
+        if let Some(grid) = grid {
+            return grid.sample(entity.light_origin(), scales[0], scales[1]);
+        }
+        world
+            .zip(point_view.as_deref_mut())
+            .and_then(|(world, scratch)| {
+                scratch.point_lighting(world, entity.light_origin(), &view.lightstyles, modulate)
+            })
+            .unwrap_or(unlit)
     });
 }
 /// Each CLIENT supplies its selected presentation independently of the world.
@@ -678,6 +682,12 @@ impl Renderer {
                     &refdef,
                     composition.sun_direction,
                     client.lighting_scales,
+                    Some(&mut scene.views[seat]),
+                    scene
+                        .presentations
+                        .iter()
+                        .find(|entry| entry.id == client.world_presentation)
+                        .map_or(1., |entry| entry.profile.q2_modulate),
                 );
                 if !world_added || !frame.render_scene(refdef, hidden_areas, &composition.assets) {
                     rejected += 1;

@@ -349,6 +349,16 @@ impl SceneService for SceneBorrow<'_> {
             .validate(u32::MAX, u32::MAX)
             .ok_or(CallError::Geometry)?;
         let frame = composer.frame.as_mut().ok_or(CallError::Geometry)?;
+        let modulate = selected_world
+            .and_then(|world| target.world_presentation(&composer.scenes, world))
+            .map_or(1., |entry| entry.profile.q2_modulate);
+        let point_view = selected_world.zip(target.seat).and_then(|(world, seat)| {
+            composer
+                .scenes
+                .get_mut(world.0 as usize)?
+                .as_mut()
+                .map(|scene| &mut scene.views[seat.index()])
+        });
         super::light_view_entities(
             frame,
             &composer.assets,
@@ -356,6 +366,8 @@ impl SceneService for SceneBorrow<'_> {
             &view.refdef,
             composer.sun_direction,
             self.lighting,
+            point_view,
+            modulate,
         );
         if view.world && !view.refdef.hyperspace {
             let (world_id, presentation) = target.world.ok_or(CallError::Geometry)?;

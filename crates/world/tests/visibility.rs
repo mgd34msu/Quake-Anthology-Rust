@@ -66,6 +66,73 @@ fn span(first: u32, count: u32) -> SurfaceSpan {
     SurfaceSpan { first, count }
 }
 
+#[test]
+fn surface_probe_preserves_near_node_far_order_and_reuses_depth_sized_scratch() {
+    use qa_world::visibility::SurfaceRayScratch;
+    let planes = [0., 2., -2.]
+        .map(|distance| Plane::oriented(Vec3([0., 0., 1.]), distance))
+        .to_vec();
+    let nodes = [[1, 2], [-1, -1], [-1, -1]]
+        .into_iter()
+        .enumerate()
+        .map(|(index, children)| VisNode {
+            plane: index as u32,
+            children,
+            bounds: whole(),
+            surfaces: span(index as u32, 1),
+        })
+        .collect();
+    let leaf = VisLeaf {
+        selector: None,
+        area: None,
+        solid: false,
+        bounds: whole(),
+        surfaces: span(0, 0),
+    };
+    let world = VisibilityWorld::load(
+        planes,
+        nodes,
+        vec![leaf],
+        vec![],
+        3,
+        0,
+        PvsRows::all_visible(0),
+    )
+    .unwrap();
+    let mut scratch = SurfaceRayScratch::load(&world);
+    for stop in [None, Some(0), Some(1), Some(2)] {
+        let mut visited = Vec::new();
+        let result = world
+            .probe_segment(
+                Vec3([0., 0., 4.]),
+                Vec3([0., 0., -4.]),
+                &mut scratch,
+                |surface, plane, point| {
+                    visited.push((surface, point.0[2]));
+                    assert_eq!(plane.signed_distance(point), 0.);
+                    (Some(surface) == stop).then_some(surface)
+                },
+            )
+            .unwrap();
+        assert_eq!(result, stop);
+        let count = match stop {
+            Some(1) => 1,
+            Some(0) => 2,
+            _ => 3,
+        };
+        assert_eq!(visited, [(1, 2.), (0, 0.), (2, -2.)][..count]);
+    }
+    assert_eq!(
+        world.probe_segment(
+            Vec3([f32::NAN, 0., 0.]),
+            Vec3::default(),
+            &mut scratch,
+            |_, _, _| None::<()>
+        ),
+        Err(VisibilityQueryError::Origin)
+    );
+}
+
 fn leaf(selector: Option<u32>, first: u32, count: u32) -> VisLeaf {
     VisLeaf {
         selector,
