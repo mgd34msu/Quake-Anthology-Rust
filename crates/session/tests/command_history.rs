@@ -131,3 +131,22 @@ fn current_movement_tuning_survives_rewinding_the_authoritative_baseline() {
         assert_eq!(motion(&predicted), motion(&expected), "{rules:?}");
     }
 }
+
+#[test]
+fn time_ack_before_an_exactly_full_window_replays_every_retained_command() {
+    for rules in RuleSetId::ALL {
+        let mut history = CommandHistory::load(3, 0).unwrap();
+        let mut expected = Prediction::new(player(rules));
+        let mut predicted = Prediction::new(player(rules));
+        predicted.remember_snapshot(Some(Acknowledgement::ServerTime(0)));
+        for number in 1..=3 {
+            history.append(command(number));
+            expected.advance(command(number), &mut FreeSpace).unwrap();
+        }
+        assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 3);
+        assert_eq!(motion(&predicted), motion(&expected), "{rules:?}");
+        assert_eq!(predicted.history_resyncs, 0);
+        assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 3);
+        assert_eq!(motion(&predicted), motion(&expected));
+    }
+}

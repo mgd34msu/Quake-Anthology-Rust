@@ -149,3 +149,35 @@ fn command_time_before_start_resolves_to_the_starting_number() {
     assert_eq!(history.number_at_time(701), Some(701));
     assert_eq!(history.pending_after(700).unwrap().len(), 1);
 }
+
+#[test]
+fn exactly_full_history_replays_from_its_start_until_a_command_is_evicted() {
+    for capacity in [1, 3, 4096, 8193] {
+        let mut history = CommandHistory::load(capacity, 700).unwrap();
+        for time in 701..=700 + capacity as i32 {
+            history.append(command(time));
+        }
+        assert_eq!(history.number_at_time(700), Some(700));
+        assert_eq!(history.pending_after(700).unwrap().len(), capacity);
+        history.append(command(701 + capacity as i32));
+        assert_eq!(history.number_at_time(700), None);
+        history.resize(capacity + 1).unwrap();
+        assert_eq!(
+            history.number_at_time(700),
+            None,
+            "growing cannot recover evicted commands"
+        );
+        let start = history.number();
+        history.reset(start);
+        for time in 1..=capacity as i32 + 1 {
+            history.append(command(time));
+        }
+        assert_eq!(history.number_at_time(0), Some(start));
+        history.resize(capacity).unwrap();
+        assert_eq!(
+            history.number_at_time(0),
+            None,
+            "shrinking evicts the discarded prefix"
+        );
+    }
+}

@@ -37,6 +37,8 @@ pub struct CommandHistory {
     number: u64,
     head: usize,
     written: usize,
+    /// A full window still contains its entire epoch until the first overwrite.
+    lost_prefix: bool,
 }
 
 impl CommandHistory {
@@ -56,6 +58,7 @@ impl CommandHistory {
             number,
             head: (number % capacity as u64) as usize,
             written: 0,
+            lost_prefix: false,
         })
     }
 
@@ -73,6 +76,7 @@ impl CommandHistory {
     }
 
     pub fn append(&mut self, command: UserCmd) -> u64 {
+        self.lost_prefix |= self.written == self.commands.len();
         self.number = self.number.wrapping_add(1);
         self.head += 1;
         if self.head == self.commands.len() {
@@ -110,7 +114,7 @@ impl CommandHistory {
                 return Some(self.number.wrapping_sub(age as u64));
             }
         }
-        (self.written < self.capacity()).then_some(self.number.wrapping_sub(self.written as u64))
+        (!self.lost_prefix).then_some(self.number.wrapping_sub(self.written as u64))
     }
     pub fn pending_after(&self, number: u64) -> Result<PendingCommands<'_>, HistoryError> {
         let count = self.number.wrapping_sub(number);
@@ -138,6 +142,7 @@ impl CommandHistory {
             let command = self.get(age).ok_or(HistoryError::Capacity)?;
             next.append(*command);
         }
+        next.lost_prefix = self.lost_prefix || keep < self.written;
         *self = next;
         Ok(())
     }
@@ -148,5 +153,6 @@ impl CommandHistory {
         self.number = number;
         self.head = (number % self.commands.len() as u64) as usize;
         self.written = 0;
+        self.lost_prefix = false;
     }
 }
