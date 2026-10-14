@@ -113,3 +113,21 @@ fn absent_native_ack_and_new_lifetimes_keep_incremental_prediction() {
     predicted.clear_history();
     assert_eq!(predicted.packet_acknowledged(), None);
 }
+
+#[test]
+fn current_movement_tuning_survives_rewinding_the_authoritative_baseline() {
+    for rules in RuleSetId::ALL {
+        let mut history = CommandHistory::load(128, 0).unwrap();
+        history.append(command(1));
+        let mut predicted = Prediction::new(player(rules));
+        predicted.remember_snapshot(Some(Acknowledgement::Number(0)));
+        predicted.player.movement.tuning.speed_multiplier = 0.25;
+        let tuning = predicted.player.movement.tuning;
+        let mut expected = Prediction::new(player(rules));
+        expected.player.movement.tuning = tuning;
+        expected.advance(command(1), &mut FreeSpace).unwrap();
+        assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 1);
+        assert_eq!(predicted.player.movement.tuning, tuning);
+        assert_eq!(motion(&predicted), motion(&expected), "{rules:?}");
+    }
+}

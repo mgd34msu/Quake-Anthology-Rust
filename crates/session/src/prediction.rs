@@ -63,7 +63,9 @@ impl Prediction {
             self.advance(*latest, trace)?;
             return Ok(1);
         }
+        let tuning = self.player.movement.tuning;
         copy_motion(&self.baseline, &mut self.player);
+        self.player.movement.tuning = tuning;
         let number = match self.acknowledged {
             Some(Acknowledgement::Number(number)) => Some(number),
             Some(Acknowledgement::ServerTime(time)) => history.number_at_time(time),

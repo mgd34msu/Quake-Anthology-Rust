@@ -124,7 +124,7 @@ fn qvm_with_renderer(imports: &'static qa_compat::abi::CallTable, renderer: i32)
                     ]);
                 }
                 let ordinal = match (renderer, command) {
-                    (49, 12) => 36,
+                    (49, 12) => 37,
                     (49, _) => 47,
                     (_, 12) => 18,
                     _ => 56,
@@ -238,7 +238,7 @@ fn native_with_renderer(
                 11 => 39,
                 12 => {
                     if renderer == 49 {
-                        36
+                        37
                     } else {
                         18
                     }
