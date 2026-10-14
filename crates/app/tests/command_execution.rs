@@ -291,7 +291,7 @@ fn netquake_command_from_second_intake_uses_the_next_queued_server_frame_span() 
     let length = codec
         .encode(
             &command(52, [127.0, 0.0, 0.0]),
-            0,
+            |_| 0,
             &connection.channel,
             &mut payload,
         )

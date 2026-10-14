@@ -37,6 +37,14 @@ pub struct Prepared<'a> {
     pub unreliable: Unreliable,
 }
 
+/// Metadata for the newest command in an encoded native message. This never
+/// adds a field to the protocol and becomes visible only after submission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MoveCommand {
+    pub number: u64,
+    pub server_time_ms: i32,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SendState {
     pub sequence: u32,
@@ -78,7 +86,7 @@ struct Pending {
     commands: Option<u32>,
     snapshot_request: Option<Option<u32>>,
     snapshot: Option<SnapshotSubmission>,
-    command_time: Option<i32>,
+    command: Option<MoveCommand>,
     server_state: Option<NativeReceipt>,
 }
 #[derive(Clone, Copy)]
@@ -89,7 +97,7 @@ struct SnapshotSubmission {
 #[derive(Clone, Copy)]
 struct MoveSubmission {
     time: EventTime,
-    command_time: i32,
+    command: MoveCommand,
 }
 #[derive(Clone, Copy)]
 struct ServerStateFlight {
@@ -119,7 +127,7 @@ pub(super) struct Transmit {
     server_state_flight: Option<NativeReceipt>,
     snapshot_flight: Option<SnapshotSubmission>,
     move_flight: Option<MoveSubmission>,
-    last_command_time: i32,
+    last_command: MoveCommand,
     packet: [u8; PACKET_BYTES],
     pending: Option<Pending>,
     reply_allowed: bool,
@@ -181,7 +189,7 @@ impl Transmit {
             server_state_flight: None,
             snapshot_flight: None,
             move_flight: None,
-            last_command_time: 0,
+            last_command: MoveCommand::default(),
             packet: [0; PACKET_BYTES],
             pending: None,
             reply_allowed: !policy.reply_per_packet || endpoint == Endpoint::Client,
@@ -614,7 +622,7 @@ impl Channel {
                 .then_some(commands)
                 .flatten(),
             snapshot_request,
-            command_time: None,
+            command: None,
             server_state: None,
             snapshot: (disposition == Unreliable::Included)
                 .then_some(snapshot)
@@ -685,15 +693,15 @@ impl Channel {
             if pending.unreliable == Unreliable::Included {
                 tx.move_flight = Some(MoveSubmission {
                     time,
-                    command_time: pending.command_time.unwrap_or(tx.last_command_time),
+                    command: pending.command.unwrap_or(tx.last_command),
                 });
             }
             if !tx.fragment_pending
                 && let Some(observation) = tx.move_flight.take()
                 && let Some(crate::snapshots::Storage::Quake3(ring)) = &mut self.snapshots
             {
-                ring.record_move(request_sequence, observation.time, observation.command_time);
-                tx.last_command_time = observation.command_time;
+                ring.record_move(request_sequence, observation.time, observation.command);
+                tx.last_command = observation.command;
             }
         }
         tx.state.last_sent = time;
@@ -827,7 +835,7 @@ impl Channel {
         bytes: &[u8],
         time: EventTime,
         snapshot_request: Option<u32>,
-        command_time: Option<i32>,
+        command: Option<MoveCommand>,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         let queued = self.command_state().map(|state| state.queued);
         self.prepare_inner(Some(bytes), time, queued, Some(snapshot_request), None)
@@ -835,7 +843,7 @@ impl Channel {
         if let Some(pending) = &mut self.transmit.pending
             && pending.unreliable == Unreliable::Included
         {
-            pending.command_time = command_time;
+            pending.command = command;
         }
         Ok(self.pending_packet())
     }

@@ -8,7 +8,7 @@ fn request(client: &mut Channel, server: &mut Channel, codec: &mut Commands) -> 
     let mut body = [0; 1400];
     let writer = Commands::load(Protocol::QuakeWorld28, 8192);
     let length = writer
-        .encode(&UserCmd::default(), 0, client, &mut body)
+        .encode(&UserCmd::default(), |_| 0, client, &mut body)
         .unwrap();
     let packet = client
         .prepare_move(&body[..length], EventTime(0), None, None)

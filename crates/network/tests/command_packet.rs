@@ -42,7 +42,7 @@ fn q3_connection_preserves_every_projected_weapon_byte_without_casting_common_id
             ..Default::default()
         };
         let length = outgoing
-            .encode(&command, number, &client, &mut bytes)
+            .encode(&command, |_| number, &client, &mut bytes)
             .unwrap();
         let length = incoming.stage(&bytes[..length]).unwrap();
         let mut received = None;

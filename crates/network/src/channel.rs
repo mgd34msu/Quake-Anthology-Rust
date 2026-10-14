@@ -10,7 +10,7 @@ use qa_core::{
 pub mod commands;
 mod transmit;
 pub use crate::snapshots::Q3ClientSnapshot;
-pub use transmit::{Prepared, SendState, TransmitError, Unreliable};
+pub use transmit::{MoveCommand, Prepared, SendState, TransmitError, Unreliable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
@@ -202,6 +202,15 @@ impl Channel {
             return None;
         };
         Some(ring.client_number())
+    }
+    pub fn q3_move_command_number(&self, sequence: u32) -> Option<u64> {
+        if self.endpoint != Endpoint::Client {
+            return None;
+        }
+        let crate::snapshots::Storage::Quake3(ring) = self.snapshots.as_ref()? else {
+            return None;
+        };
+        Some(ring.move_command_number(sequence))
     }
     pub fn q3_client_snapshot(
         &self,

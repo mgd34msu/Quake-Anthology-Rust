@@ -574,7 +574,7 @@ fn connected_heap() -> Result<(), String> {
                     duration_ms: 20,
                     ..Default::default()
                 },
-                0,
+                |_| 0,
                 &client.channel,
                 &mut movement,
             )?;
@@ -700,7 +700,7 @@ fn connected_qw_heap() -> Result<(), String> {
                 movement: [300., 0., 0.],
                 ..Default::default()
             };
-            let length = codec.encode(&command, 0, &client.channel, &mut payload)?;
+            let length = codec.encode(&command, |_| 0, &client.channel, &mut payload)?;
             let base = codec.snapshot_request(&client.channel);
             let packet = client
                 .channel
@@ -1014,7 +1014,7 @@ fn connected_nq_heap() -> Result<(), String> {
             let commands = client.commands.as_ref().ok_or(Error::Context)?;
             let mut move_bytes = [0; 1400];
             let length =
-                commands.encode(&Default::default(), 0, &client.channel, &mut move_bytes)?;
+                commands.encode(&Default::default(), |_| 0, &client.channel, &mut move_bytes)?;
             if move_bytes[1..5] != seconds.to_bits().to_le_bytes() || length != 16 {
                 return Err(Error::Context);
             }

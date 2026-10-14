@@ -59,16 +59,19 @@ pub struct Entity<const N: usize> {
     pub words: [u32; N],
 }
 
-/// Submission metadata for native ping; contains no input or replay state.
+/// Submission metadata for native ping and outgoing command redundancy.
 #[derive(Clone, Copy)]
 struct MoveObservation {
     time: qa_core::sys_events::EventTime,
-    command_time: i32,
+    command: crate::channel::MoveCommand,
 }
 impl MoveObservation {
     const ZERO: Self = Self {
         time: qa_core::sys_events::EventTime(0),
-        command_time: 0,
+        command: crate::channel::MoveCommand {
+            number: 0,
+            server_time_ms: 0,
+        },
     };
 }
 
@@ -446,9 +449,12 @@ impl Q3Ring {
         &mut self,
         sequence: u32,
         time: qa_core::sys_events::EventTime,
-        command_time: i32,
+        command: crate::channel::MoveCommand,
     ) {
-        self.slots[slot(sequence)].sent_move = MoveObservation { time, command_time };
+        self.slots[slot(sequence)].sent_move = MoveObservation { time, command };
+    }
+    pub(crate) fn move_command_number(&self, sequence: u32) -> u64 {
+        self.slots[slot(sequence)].sent_move.command.number
     }
     pub(crate) fn observe_ping(
         &mut self,
@@ -465,7 +471,7 @@ impl Q3Ring {
         for offset in 0..SLOTS as u32 {
             let observation =
                 self.slots[slot(outgoing_sequence.wrapping_sub(1 + offset))].sent_move;
-            if command_time >= observation.command_time {
+            if command_time >= observation.command.server_time_ms {
                 // Both operands narrow at the original signed millisecond boundary.
                 ping = (queued_at.milliseconds() as i32)
                     .wrapping_sub(observation.time.milliseconds() as i32);

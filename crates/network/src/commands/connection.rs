@@ -13,7 +13,7 @@ use crate::{
 use qa_core::{
     command_history::{CommandHistory, HistoryError},
     events::OutputConsumerId,
-    primitives::{SnapshotObservation, UserCmd},
+    primitives::{SnapshotObservation, UserCmd, WeaponId},
 };
 use std::ops::ControlFlow;
 
@@ -25,6 +25,7 @@ pub struct Commands {
     previous_command: Option<NativeBackup>,
     qw_players: Option<crate::projection::PlayerProjection>,
     history: Option<CommandHistory>,
+    packet_dup: u8,
 }
 
 /// SERVER loss recovery retains its last decoded command.
@@ -79,6 +80,7 @@ impl Commands {
             scratch: vec![0; maximum_message].into_boxed_slice(),
             previous_time: 0,
             history: None,
+            packet_dup: 1,
             qw_players: (protocol == Protocol::QuakeWorld28)
                 .then(|| crate::projection::PlayerProjection::load(protocol, &[])),
             delta_request: None,
@@ -102,6 +104,9 @@ impl Commands {
 
     pub fn history(&self) -> Option<&CommandHistory> {
         self.history.as_ref()
+    }
+    pub fn set_packet_dup(&mut self, value: i32) {
+        self.packet_dup = value.clamp(0, 5) as u8;
     }
     pub fn record(&mut self, command: UserCmd) -> Result<u64, HistoryError> {
         Ok(self
@@ -135,15 +140,18 @@ impl Commands {
         };
         request.filter(|&base| channel.snapshot(base).is_some())
     }
-    /// The registry supplies `native_weapon`; common IDs never enter the wire.
+    /// The registry projects each retained weapon independently; common IDs
+    /// never enter the wire. Command production precedes this encoding step.
     pub fn encode(
         &self,
         command: &UserCmd,
-        native_weapon: u8,
+        mut weapon_number: impl FnMut(Option<WeaponId>) -> u8,
         channel: &Channel,
         out: &mut [u8],
     ) -> Result<usize, packet::Error> {
         let request = self.snapshot_request(channel);
+        let older = |age| self.history.as_ref().and_then(|history| history.get(age));
+        let backups = || [older(2), older(1), Some(command)];
         let movement = match self.protocol {
             Protocol::NetQuake15 => Move::NetQuake {
                 timestamp: channel
@@ -153,32 +161,54 @@ impl Commands {
             },
             Protocol::QuakeWorld28 => Move::QuakeWorld {
                 loss: 0,
-                commands: [ZERO_QW, ZERO_QW, to_qw_usercmd(command)],
+                commands: backups().map(|command| command.map_or(ZERO_QW, to_qw_usercmd)),
                 delta_request: request.map(|base| base as u8),
             },
             Protocol::Quake2_34 => Move::Quake2 {
                 last_frame: request.map_or(-1, |sequence| sequence as i32),
-                commands: [ZERO_Q2, ZERO_Q2, to_q2_usercmd(command)],
+                commands: backups().map(|command| command.map_or(ZERO_Q2, to_q2_usercmd)),
             },
             Protocol::Quake2Repro1038 => Move::Quake2Repro {
                 last_frame: request.map_or(-1, |sequence| sequence as i32),
-                commands: [
-                    ZERO_Q2_RR,
-                    ZERO_Q2_RR,
-                    to_q2_rr_usercmd(
-                        command,
-                        channel
-                            .current_snapshot()
-                            .map_or(0, |frame| frame.sequence()),
-                    ),
-                ],
+                commands: {
+                    let frame = channel
+                        .current_snapshot()
+                        .map_or(0, |frame| frame.sequence());
+                    backups().map(|command| {
+                        command.map_or(ZERO_Q2_RR, |command| to_q2_rr_usercmd(command, frame))
+                    })
+                },
             },
             Protocol::Quake3_68 => {
                 let mut commands = [ZERO_Q3; packet::Q3_COMMANDS];
-                commands[0] = to_q3_usercmd(command, native_weapon);
+                let count = self
+                    .history
+                    .as_ref()
+                    .map_or(1, |history| {
+                        let sequence = channel
+                            .send_state()
+                            .sequence
+                            .wrapping_sub(1 + u32::from(self.packet_dup));
+                        let sent = channel.q3_move_command_number(sequence).unwrap_or(0);
+                        history
+                            .number()
+                            .wrapping_sub(sent)
+                            .min(history.len() as u64)
+                            .min(packet::Q3_COMMANDS as u64) as usize
+                    })
+                    .max(1);
+                for (index, native) in commands[..count].iter_mut().enumerate() {
+                    let age = count - index - 1;
+                    let retained = if age == 0 {
+                        command
+                    } else {
+                        older(age).ok_or(packet::Error::Context)?
+                    };
+                    *native = to_q3_usercmd(retained, weapon_number(retained.weapon));
+                }
                 Move::Quake3 {
                     commands,
-                    count: 1,
+                    count: count as u8,
                     delta: request.is_some(),
                 }
             }

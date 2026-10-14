@@ -104,7 +104,7 @@ impl RemoteReceiver {
                     duration_ms: 16,
                     ..Default::default()
                 },
-                0,
+                |_| 0,
                 &connection.channel,
                 &mut bytes,
             )

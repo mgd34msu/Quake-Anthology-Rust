@@ -138,10 +138,18 @@ fn prepare_move(client: &mut Channel, command_time: i32, prepared_at: EventTime)
     };
     let codec = Commands::load(Protocol::Quake3_68, MESSAGE_BYTES);
     let mut bytes = vec![0; MESSAGE_BYTES];
-    let length = codec.encode(&command, 0, client, &mut bytes).unwrap();
+    let length = codec.encode(&command, |_| 0, client, &mut bytes).unwrap();
     assert_eq!(
         client
-            .prepare_move(&bytes[..length], prepared_at, None, Some(command_time))
+            .prepare_move(
+                &bytes[..length],
+                prepared_at,
+                None,
+                Some(qa_network::channel::MoveCommand {
+                    number: 0,
+                    server_time_ms: command_time
+                })
+            )
             .unwrap()
             .unwrap()
             .unreliable,
@@ -520,7 +528,10 @@ fn fragmented_move_retains_first_submission_time_until_final_admission() {
                 b"deferred",
                 EventTime::from_milliseconds(90),
                 None,
-                Some(900)
+                Some(qa_network::channel::MoveCommand {
+                    number: 0,
+                    server_time_ms: 900
+                })
             )
             .unwrap()
             .unwrap()

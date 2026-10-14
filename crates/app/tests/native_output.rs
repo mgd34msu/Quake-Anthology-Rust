@@ -448,7 +448,7 @@ fn queue_move(host: &mut FrameHost, peer: &mut Channel, protocol: Protocol, time
     };
     let mut bytes = [0; 1400];
     let length = Commands::load(protocol, 8192)
-        .encode(&command, 0, peer, &mut bytes)
+        .encode(&command, |_| 0, peer, &mut bytes)
         .unwrap();
     let packet = peer
         .prepare_move(&bytes[..length], time, None, None)

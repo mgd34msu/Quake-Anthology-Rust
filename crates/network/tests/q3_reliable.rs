@@ -77,7 +77,7 @@ fn move_message(client: &mut Channel, server: &mut Channel, codec: &mut Commands
     let maximum = client.native_payload_capacity().unwrap();
     let mut bytes = vec![0; maximum];
     let encoder = Commands::load(Protocol::Quake3_68, maximum);
-    let n = encoder.encode(&command, 0, client, &mut bytes).unwrap();
+    let n = encoder.encode(&command, |_| 0, client, &mut bytes).unwrap();
     let data = client
         .prepare_move(&bytes[..n], EventTime(time as u64), None, None)
         .unwrap()
@@ -396,7 +396,7 @@ fn client_encoded_windows_retain_rejected_fragments_and_refund_only_native_acks(
         let mut codec = Commands::load(Protocol::Quake3_68, maximum);
         let mut encoded = vec![0; maximum];
         let length = encoder
-            .encode(&movement(16), 7, &client, &mut encoded)
+            .encode(&movement(16), |_| 7, &client, &mut encoded)
             .unwrap();
         assert!(length > 1400 && length <= maximum);
         client
@@ -503,7 +503,7 @@ fn newer_client_command_cannot_inherit_an_older_fragment_flights_submission() {
     let mut codec = Commands::load(Protocol::Quake3_68, maximum);
     let mut encoded = vec![0; maximum];
     let length = encoder
-        .encode(&movement(16), 7, &client, &mut encoded)
+        .encode(&movement(16), |_| 7, &client, &mut encoded)
         .unwrap();
     let first = client
         .prepare_move(&encoded[..length], EventTime(1), None, None)
@@ -522,7 +522,7 @@ fn newer_client_command_cannot_inherit_an_older_fragment_flights_submission() {
     assert_eq!(client.command_state().unwrap().submitted, 0);
     client.queue_reliable(b).unwrap();
     let next = encoder
-        .encode(&movement(32), 9, &client, &mut encoded)
+        .encode(&movement(32), |_| 9, &client, &mut encoded)
         .unwrap();
     while client.pending_fragments() {
         // Even this direct caller supplies a newer body and watermark. The
@@ -559,7 +559,7 @@ fn newer_client_command_cannot_inherit_an_older_fragment_flights_submission() {
 
     // Only a fresh native message can submit B, after A's real ACK.
     let length = encoder
-        .encode(&movement(32), 9, &client, &mut encoded)
+        .encode(&movement(32), |_| 9, &client, &mut encoded)
         .unwrap();
     let packet_bytes = client
         .prepare_move(&encoded[..length], EventTime(3), None, None)

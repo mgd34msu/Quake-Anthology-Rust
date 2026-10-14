@@ -144,7 +144,7 @@ impl FrameSource for Source {
                 duration_ms: 16,
                 ..UserCmd::default()
             };
-            let Ok(n) = self.commands[slot].encode(&command, 0, &self.peers[slot], &mut bytes)
+            let Ok(n) = self.commands[slot].encode(&command, |_| 0, &self.peers[slot], &mut bytes)
             else {
                 self.bad = true;
                 return false;

@@ -398,7 +398,7 @@ fn deliver_client_move(
         server_time_ms: time,
         ..Default::default()
     };
-    let n = client_commands.encode(&command, 0, client, &mut bytes)?;
+    let n = client_commands.encode(&command, |_| 0, client, &mut bytes)?;
     let staged = server_commands.stage(&bytes[..n])?;
     let ack = qa_network::commands::packet::acknowledgements(&bytes[..n])?;
     let key = server.command_key(Some(ack))?;
@@ -704,7 +704,7 @@ fn q2_request(
         ..Default::default()
     };
     let mut bytes = [0; 1400];
-    let n = codec.encode(&command, 0, &client.channel, &mut bytes)?;
+    let n = codec.encode(&command, |_| 0, &client.channel, &mut bytes)?;
     let staged = receiver.stage(&bytes[..n])?;
     let movement = qa_network::commands::packet::read(
         Protocol::Quake2_34,
@@ -1077,7 +1077,7 @@ fn qw_move(
         ..Default::default()
     };
     let mut payload = [0; 1400];
-    let length = codec.encode(&command, 0, &client.channel, &mut payload)?;
+    let length = codec.encode(&command, |_| 0, &client.channel, &mut payload)?;
     let request = codec.snapshot_request(&client.channel);
     let packet = if let Some(pending) = client.channel.pending_packet() {
         pending
@@ -1262,7 +1262,7 @@ fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() 
         ..Default::default()
     };
     let mut payload = [0; 1400];
-    let n = codec.encode(&command, 0, &client.channel, &mut payload)?;
+    let n = codec.encode(&command, |_| 0, &client.channel, &mut payload)?;
     let request = codec.snapshot_request(&client.channel);
     assert_eq!(request, Some(4));
     client
@@ -2322,7 +2322,7 @@ fn nq_move_timestamp_uses_admitted_current_native_time_without_selecting_duratio
                 duration_ns: 16_000_123,
                 ..Default::default()
             },
-            0,
+            |_| 0,
             &client.channel,
             &mut bytes,
         )?;

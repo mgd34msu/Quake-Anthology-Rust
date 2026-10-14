@@ -203,6 +203,7 @@ pub struct FrameHost {
     notify_time: CvarHandle,
     center_time: CvarHandle,
     pub(crate) team_chats_only: CvarHandle,
+    packet_dup: CvarHandle,
     volume: CvarHandle,
     particle_gravity: CvarHandle,
     mouse_enabled: CvarHandle,
@@ -311,6 +312,10 @@ impl FrameHost {
             .cvars
             .find("cg_teamChatsOnly")
             .ok_or("missing cg_teamChatsOnly")?;
+        let packet_dup = console
+            .cvars
+            .find("cl_packetdup")
+            .ok_or("missing cl_packetdup")?;
         let timeline = Timeline::load(world_rate, providers.iter().map(|p| (p.module, p.rate)))
             .map_err(|e| format!("provider clocks: {e:?}"))?;
         providers.sort_unstable_by_key(|p| p.module.0);
@@ -352,6 +357,7 @@ impl FrameHost {
             notify_time,
             center_time,
             team_chats_only,
+            packet_dup,
             volume,
             particle_gravity,
             mouse_enabled,
@@ -1272,6 +1278,14 @@ impl FrameHost {
         }
         for (seat, id) in self.local_clients.iter().enumerate() {
             if let Some(id) = id {
+                if let Some(commands) = self
+                    .runtime
+                    .network
+                    .get_mut(*id, qa_core::loopback::Endpoint::Client)
+                    .and_then(|connection| connection.commands.as_mut())
+                {
+                    commands.set_packet_dup(self.console.cvars.integer(self.packet_dup));
+                }
                 self.runtime
                     .send_local_command(*id, &commands[seat], self.time);
                 if let Some(world) = &mut self.runtime.collision {

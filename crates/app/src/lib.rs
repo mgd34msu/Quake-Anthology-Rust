@@ -582,9 +582,9 @@ impl Runtime {
         };
         // CLIENT numbers advance on command production, including a command
         // retained while its preceding native packet flight is still pending.
-        if commands.record(*command).is_err() {
+        let Ok(number) = commands.record(*command) else {
             return false;
-        }
+        };
         // Retained fragments belong to their original encoded message. Drain
         // that flight without attaching the current command's watermark.
         if connection.channel.pending_packet().is_some() || connection.channel.pending_fragments() {
@@ -612,8 +612,13 @@ impl Runtime {
         let Some(bytes) = self.output_native_bytes.get_mut(..maximum) else {
             return false;
         };
-        let native_weapon = self.catalog.registry.command_weapon_number(command.weapon);
-        let Ok(length) = commands.encode(command, native_weapon, &connection.channel, bytes) else {
+        let registry = &self.catalog.registry;
+        let Ok(length) = commands.encode(
+            command,
+            |weapon| registry.command_weapon_number(weapon),
+            &connection.channel,
+            bytes,
+        ) else {
             return false;
         };
         let snapshot_request = commands.snapshot_request(&connection.channel);
@@ -627,7 +632,10 @@ impl Runtime {
                         &bytes[..length],
                         time,
                         snapshot_request,
-                        Some(command.server_time_ms),
+                        Some(qa_network::channel::MoveCommand {
+                            number,
+                            server_time_ms: command.server_time_ms,
+                        }),
                     )
                     .is_ok_and(|packet| packet.is_some())
             },

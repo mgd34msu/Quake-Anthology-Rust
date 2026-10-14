@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server_time_ms: 16,
                 ..UserCmd::default()
             },
-            0,
+            |_| 0,
             &client,
             &mut bytes,
         )?;
