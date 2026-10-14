@@ -778,6 +778,29 @@ impl Frame {
     pub fn clear_scene(&mut self) {
         self.first = self.current();
     }
+    /// Resolve only this view's models, once. Explicit sampler results remain
+    /// authoritative; all outputs stay in the existing entity arena.
+    pub fn light_entities(
+        &mut self,
+        identity_light: f32,
+        mut sample: impl FnMut(&SceneEntity) -> crate::stage::EntityLighting,
+    ) {
+        let entities =
+            &mut self.list.entities[self.first.entities.first as usize..self.list.entity_count];
+        let lights = &self.list.lights[self.first.lights.first as usize..self.list.light_count];
+        for entity in entities {
+            if entity.lighting.is_none()
+                && matches!(entity.model, SceneModel::Mesh(_) | SceneModel::World { .. })
+            {
+                entity.lighting = Some(crate::lighting::setup_entity(
+                    entity,
+                    sample(entity),
+                    identity_light,
+                    lights,
+                ));
+            }
+        }
+    }
     pub fn add_entity(&mut self, entity: SceneEntity) -> bool {
         self.add_entities(std::iter::once(entity))
     }

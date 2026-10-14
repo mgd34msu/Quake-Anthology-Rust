@@ -700,6 +700,10 @@ pub(super) fn entities(native: bool, ui: bool) {
         assert_eq!(entity.color, [201, 150, 90, 255]);
         assert_eq!(entity.shader_time, 1.25);
         assert_eq!(entity.shader_texcoord, [0.125, 0.5]);
+        assert!(
+            entity.lighting.is_some(),
+            "native no-world model lighting reaches the shared stage inputs"
+        );
     }
     assert!(owner.recycle(packet).is_ok());
     assert_eq!(probe(&mut host, 0, 16, 0), skin);

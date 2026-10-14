@@ -338,6 +338,13 @@ impl SceneService for SceneBorrow<'_> {
             .validate(u32::MAX, u32::MAX)
             .ok_or(CallError::Geometry)?;
         let frame = composer.frame.as_mut().ok_or(CallError::Geometry)?;
+        if !view.world {
+            let sample = qa_render::lighting::unlit_sample(
+                view.refdef.identity_light,
+                composer.sun_direction,
+            );
+            frame.light_entities(view.refdef.identity_light, |_| sample);
+        }
         if view.world && !view.refdef.hyperspace {
             let (world_id, presentation) = target.world.ok_or(CallError::Geometry)?;
             if self.role.selected_world != Some(world_id) {

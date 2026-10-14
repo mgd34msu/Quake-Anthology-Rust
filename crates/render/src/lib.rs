@@ -6,6 +6,7 @@ pub mod edges;
 pub mod effects;
 pub mod entities;
 pub mod gl;
+pub mod lighting;
 pub mod lightmap;
 pub mod material;
 pub mod particles;

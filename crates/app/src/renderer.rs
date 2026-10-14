@@ -278,6 +278,7 @@ pub struct SceneComposer {
     native_axes: [Option<[qa_core::primitives::Vec3; 3]>; SeatId::COUNT],
     kind: Kind,
     beam: qa_render::MaterialId,
+    sun_direction: qa_core::primitives::Vec3,
 }
 
 impl SceneComposer {
@@ -330,6 +331,9 @@ impl SceneComposer {
                 native_axes: [None; SeatId::COUNT],
                 kind: Kind::Cpu,
                 beam,
+                sun_direction: qa_core::math::normalized(qa_core::primitives::Vec3([
+                    0.45, 0.3, 0.9,
+                ])),
             },
             limits,
         ))
