@@ -411,9 +411,10 @@ impl Draw2d {
             }
             let uv_start = self.texcoords[axis];
             let uv_end = self.texcoords[axis + 2];
-            self.texcoords[axis] = uv_start + ((low - start) / (end - start)) * (uv_end - uv_start);
+            self.texcoords[axis] =
+                qa_core::math::lerp(uv_start, uv_end, (low - start) / (end - start));
             self.texcoords[axis + 2] =
-                uv_start + ((high - start) / (end - start)) * (uv_end - uv_start);
+                qa_core::math::lerp(uv_start, uv_end, (high - start) / (end - start));
             self.rect[axis] = low;
             self.rect[axis + 2] = high - low;
         }

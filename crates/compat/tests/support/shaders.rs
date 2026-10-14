@@ -9,7 +9,7 @@ impl qa_compat::services::ModelLookup for ShaderLoader {
     fn model_has_tags(&self, _: i32) -> bool {
         false
     }
-    fn loaded_world(&self, _: &[u8]) -> Option<u32> {
+    fn loaded_world(&self, _: &[u8]) -> Option<qa_compat::services::LoadedWorldBinding> {
         None
     }
     fn lerp_tag(

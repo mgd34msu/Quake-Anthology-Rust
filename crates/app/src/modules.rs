@@ -262,6 +262,7 @@ struct Module {
     produces_client_audio: bool,
     produces_client_view: bool,
     scene_role: crate::renderer::native::SceneRole,
+    collision_role: qa_compat::services::ClientCollision,
 }
 impl Module {
     fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
@@ -688,6 +689,7 @@ impl FrameHost {
                 produces_client_audio,
                 produces_client_view,
                 scene_role: Default::default(),
+                collision_role: Default::default(),
                 clock,
                 physics,
                 duration,
@@ -752,6 +754,9 @@ impl FrameHost {
             row.client_connection,
             row.time(self.time),
         );
+        if let Some(row) = self.module_row_mut(module) {
+            row.collision_role.reset();
+        }
         self.runtime.server.retire_module_entities(module, time);
         if let Some(modules) = &mut self.modules {
             let _ = modules
@@ -1559,6 +1564,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
             .map(|(client, lifetime)| qa_render::effects::EffectClient { client, lifetime }),
     );
     services.scene = Some(&mut scene);
+    services.client_collision = Some(&mut row.collision_role);
     // A live connection can lack this protocol's configstring/command view.
     // Each executed import checks its own service; independent CLIENT audio
     // and scene calls still use their load-bound publisher and common state.

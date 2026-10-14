@@ -4,6 +4,8 @@ mod model_support;
 #[path = "client_commands/music.rs"]
 mod music;
 
+#[path = "client_commands/collision.rs"]
+mod collision;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "../../formats/tests/support/native_image.rs"]
 #[allow(dead_code)]
@@ -1320,6 +1322,7 @@ fn main() {
     scene::inline_entities(false);
     scene::entities(false, false);
     scene::entities(false, true);
+    collision::selection(false);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         music::native_music_reaches_shared_paint(native, false);
@@ -1332,6 +1335,7 @@ fn main() {
         scene::inline_entities(true);
         scene::entities(true, false);
         scene::entities(true, true);
+        collision::selection(true);
     }
     bcs_rescans_and_failed_cs_preserve_rows();
     selected_systeminfo_updates_only_the_native_server_id();

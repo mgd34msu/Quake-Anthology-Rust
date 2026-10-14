@@ -348,6 +348,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
         .bind_loaded_world(
             "maps/probe.bsp",
             world,
+            None,
             Bounds {
                 mins: Vec3([-1.; 3]),
                 maxs: Vec3([1.; 3]),
@@ -914,7 +915,7 @@ pub(super) fn inline_entities(native: bool) {
     let mut builder =
         ModelCatalogBuilder::new(assets, [profile], [world], Default::default()).unwrap();
     builder
-        .bind_loaded_world("maps/probe.bsp", world, bounds)
+        .bind_loaded_world("maps/probe.bsp", world, None, bounds)
         .unwrap();
     host.runtime.model_loader = Some(builder);
     // No scene world is inferred just because geometry exists in the catalog.

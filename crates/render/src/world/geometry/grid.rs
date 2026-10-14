@@ -228,8 +228,11 @@ fn interpolate(a: WorldVertex, b: WorldVertex, fraction: f32) -> WorldVertex {
     out.vertex.lightmap_coord =
         qa_core::math::lerp_array(a.vertex.lightmap_coord, b.vertex.lightmap_coord, fraction);
     out.vertex.color = std::array::from_fn(|i| {
-        (f32::from(a.vertex.color[i])
-            + fraction * (f32::from(b.vertex.color[i]) - f32::from(a.vertex.color[i])))
+        qa_core::math::lerp(
+            f32::from(a.vertex.color[i]),
+            f32::from(b.vertex.color[i]),
+            fraction,
+        )
         .round() as u8
     });
     out

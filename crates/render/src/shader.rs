@@ -108,10 +108,10 @@ pub struct SunParms {
 }
 impl SunParms {
     pub fn direction(self) -> qa_core::primitives::Vec3 {
-        // ParseShader divides the float degrees before multiplying by M_PI,
-        // then multiplies the double trig results before narrowing to float.
-        let azimuth = f64::from(self.azimuth_degrees / 180. * std::f32::consts::PI);
-        let elevation = f64::from(self.elevation_degrees / 180. * std::f32::consts::PI);
+        // ParseShader divides in float, multiplies by double M_PI, stores float
+        // radians, then multiplies double trig results before the final store.
+        let [azimuth, elevation] = [self.azimuth_degrees, self.elevation_degrees]
+            .map(|degrees| f64::from((f64::from(degrees / 180.) * std::f64::consts::PI) as f32));
         qa_core::primitives::Vec3([
             (azimuth.cos() * elevation.cos()) as f32,
             (azimuth.sin() * elevation.cos()) as f32,

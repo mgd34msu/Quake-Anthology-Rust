@@ -77,6 +77,7 @@ fn with_services(run: impl FnOnce(&mut EngineServices<'_>, CallContext, u32)) {
         cvars: &mut cvars,
         commands: &mut commands,
         client_connection: None,
+        client_collision: None,
         renderer: None,
         scene: None,
         client_audio: None,

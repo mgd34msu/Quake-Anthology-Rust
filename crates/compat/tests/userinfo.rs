@@ -87,6 +87,7 @@ impl Fixture {
             cvars: &mut self.cvars,
             commands: &mut self.commands,
             client_connection: None,
+            client_collision: None,
             renderer: None,
             scene: None,
             client_audio: None,

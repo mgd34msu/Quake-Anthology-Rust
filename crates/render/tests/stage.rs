@@ -30,6 +30,24 @@ fn wave(function: WaveFunction) -> Waveform {
 }
 
 #[test]
+fn noise_retains_original_four_axis_weighted_interpolation_bits() {
+    // The original tr_noise.c R_NoiseGet4f generated these bits with the same
+    // injected tables (cc -O2 -ffp-contract=off), independent of Rust helpers.
+    let evaluator = StageEvaluator::with_noise(
+        std::array::from_fn(|i| (((i * 73) % 257) as i32 - 128) as f32 / 128.0),
+        std::array::from_fn(|i| ((i * 97 + 31) & 255) as u8),
+    );
+    for (point, expected) in [
+        ([0.125, 0.375, 0.625, 0.875], 0xbe86_b3c0),
+        ([-0.25, 13.137, -7.25, 0.33333334], 0x3df4_4ccd),
+        ([255.9, -256.125, 17.03125, 2.7182817], 0xbe9f_f91a),
+        ([0.1, 0.2, 0.3, 0.4], 0xbe4e_0d1d),
+    ] {
+        assert_eq!(evaluator.noise(point).to_bits(), expected, "{point:?}");
+    }
+}
+
+#[test]
 fn stage_inputs_transform_only_model_clip_planes_and_clear_them_for_2d() {
     use qa_core::primitives::Plane;
     use qa_render::{Refdef, SceneEntity, SceneModel};

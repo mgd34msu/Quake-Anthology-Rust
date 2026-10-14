@@ -1,6 +1,6 @@
 //! Cold model registration. Native config ordinals resolve through filenames;
 //! inline ordinals retain their explicit world and existing surface ranges.
-use qa_compat::services::{CallError, ModelLoader, ModelLookup};
+use qa_compat::services::{CallError, LoadedWorldBinding, ModelLoader, ModelLookup};
 use qa_content::vfs::Vfs;
 use qa_core::names::{NameTable, canonical_path};
 use qa_core::primitives::{Bounds, IndexSpan, NameId, Orientation, RuleSetId};
@@ -286,6 +286,7 @@ enum ModelFile {
     LoadedWorld {
         binding: InlineBinding,
         bounds: Bounds,
+        collision: Option<qa_core::primitives::GeometryId>,
     },
     Failed(FileError),
 }
@@ -516,6 +517,7 @@ impl ModelCatalogBuilder {
         &mut self,
         path: &str,
         world: WorldId,
+        collision: Option<qa_core::primitives::GeometryId>,
         native_bounds: Bounds,
     ) -> Result<(), String> {
         if path.is_empty() || path.starts_with('*') {
@@ -535,13 +537,20 @@ impl ModelCatalogBuilder {
                 Some(ModelFile::LoadedWorld {
                     binding: existing,
                     bounds,
-                }) if *existing == binding && *bounds == native_bounds => Ok(()),
+                    collision: existing_collision,
+                }) if *existing == binding
+                    && *bounds == native_bounds
+                    && *existing_collision == collision =>
+                {
+                    Ok(())
+                }
                 _ => Err("loaded world filename conflict".to_owned()),
             };
         }
         self.files[name.0 as usize] = ModelFile::LoadedWorld {
             binding,
             bounds: native_bounds,
+            collision,
         };
         Ok(())
     }
@@ -938,7 +947,11 @@ impl ModelCatalogBuilder {
         let key = format!("\0engine:inline/{}/{}", world.0, index);
         let handle = self.admit_name(key.as_bytes())?;
         let native = i32::try_from(handle.0).map_err(|_| CallError::Capacity)?;
-        self.files[handle.0 as usize] = ModelFile::LoadedWorld { binding, bounds };
+        self.files[handle.0 as usize] = ModelFile::LoadedWorld {
+            binding,
+            bounds,
+            collision: None,
+        };
         self.inline[slot].handle = Some(handle);
         Ok(native)
     }
@@ -1129,11 +1142,17 @@ fn skin_handle(
         0
     })
 }
-fn loaded_world(names: &NameTable, files: &[ModelFile], name: &[u8]) -> Option<u32> {
-    let ModelFile::LoadedWorld { binding, .. } = file_lookup(names, files, name)? else {
+fn loaded_world(names: &NameTable, files: &[ModelFile], name: &[u8]) -> Option<LoadedWorldBinding> {
+    let ModelFile::LoadedWorld {
+        binding, collision, ..
+    } = file_lookup(names, files, name)?
+    else {
         return None;
     };
-    Some(binding.world.0)
+    Some(LoadedWorldBinding {
+        render: binding.world,
+        collision: *collision,
+    })
 }
 fn shader_definition(
     catalog: &Result<ShaderCatalog, String>,
@@ -1303,7 +1322,7 @@ impl ModelLookup for ModelCatalogBuilder {
     fn model_has_tags(&self, handle: i32) -> bool {
         model_has_tags(&self.files, handle)
     }
-    fn loaded_world(&self, name: &[u8]) -> Option<u32> {
+    fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding> {
         loaded_world(&self.names, &self.files, name)
     }
     fn lerp_tag(
@@ -1383,7 +1402,7 @@ impl ModelLookup for ModelCatalog {
     fn model_has_tags(&self, handle: i32) -> bool {
         model_has_tags(&self.files, handle)
     }
-    fn loaded_world(&self, name: &[u8]) -> Option<u32> {
+    fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding> {
         loaded_world(&self.names, &self.files, name)
     }
     fn lerp_tag(

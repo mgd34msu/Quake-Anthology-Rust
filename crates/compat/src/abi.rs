@@ -498,6 +498,9 @@ const fn client() -> CallTable {
     t.entries[11] = scalar!(file_read);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command_append);
+    t.entries[18] = scalar!(client_collision_load);
+    t.entries[19] = scalar!(client_collision_count);
+    t.entries[20] = scalar!(client_collision_inline);
     t.entries[28] = scalar!(client_sound::play);
     t.entries[29] = scalar!(client_sound::local::<false>);
     t.entries[30] = client_audio!(client_sound::clear);
@@ -1989,6 +1992,18 @@ fn renderer_load_world(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError>
     let name = c.memory.cstring(c.required_pointer(0)?)?;
     (ENGINE_CALLS.render_world)(c.services, name)?;
     Ok(0)
+}
+fn client_collision_load(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let name = c.memory.cstring(c.required_pointer(0)?)?;
+    (ENGINE_CALLS.client_collision_load)(c.services, name)?;
+    Ok(0)
+}
+fn client_collision_count(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    (ENGINE_CALLS.client_collision_count)(c.services).map(u64::from)
+}
+fn client_collision_inline(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    (ENGINE_CALLS.client_collision_inline)(c.services, c.arg(0)? as u32 as i32)
+        .map(|index| index as u32 as u64)
 }
 fn renderer_clear_scene(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.clear_scene)(c.services);

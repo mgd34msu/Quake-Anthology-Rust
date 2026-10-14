@@ -553,7 +553,8 @@ fn load_modern(
                 if !no_draw {
                     push_grid_triangles(out, vertices.first, width as u32, height as u32)?;
                 }
-                let origin = (source.lightmap_vectors[0] + source.lightmap_vectors[1]) * 0.5;
+                let origin =
+                    qa_core::math::midpoint(source.lightmap_vectors[0], source.lightmap_vectors[1]);
                 let radius = length(source.lightmap_vectors[0] - origin);
                 if !radius.is_finite() {
                     return Err(GeometryError::NonFinite("patch LOD", id));

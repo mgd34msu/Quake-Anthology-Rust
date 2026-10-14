@@ -210,6 +210,7 @@ impl Runtime {
             cvars,
             commands,
             client_connection: None,
+            client_collision: None,
             renderer: self.renderer_configuration.as_deref(),
             scene: None,
             client_audio,

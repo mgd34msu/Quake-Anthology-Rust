@@ -7,7 +7,7 @@ fn put(bytes: &mut [u8], at: usize, value: i32) {
     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-fn empty_map_bytes(version: u32) -> Vec<u8> {
+pub(crate) fn empty_map_bytes(version: u32) -> Vec<u8> {
     let q2 = version == 38;
     let early = version == 44;
     let mut lumps = vec![
@@ -86,7 +86,7 @@ fn add_box(map: &mut Map<'_>, center: f32) {
     });
 }
 
-fn two_models(map: &mut Map<'_>) {
+pub(crate) fn two_models(map: &mut Map<'_>) {
     add_box(map, 0.0);
     add_box(map, 100.0);
     map.leaf_brushes = vec![0, 1];

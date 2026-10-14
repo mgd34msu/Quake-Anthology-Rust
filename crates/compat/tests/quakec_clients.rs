@@ -298,6 +298,7 @@ fn with_native_client(
         cvars: &mut cvars,
         commands: &mut commands,
         client_connection: None,
+        client_collision: None,
         renderer: None,
         scene: None,
         client_audio: None,

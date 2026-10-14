@@ -9,10 +9,17 @@ fn parse(text: &[u8]) -> ShaderCatalog {
 
 #[test]
 fn sun_angles_keep_native_division_and_double_trig_products() {
+    // Captured from tr_shader.c:1460-1468 with its float stores, double M_PI
+    // and double trig products (cc -O2 -ffp-contract=off, no fast-math).
     for (azimuth, elevation, expected) in [
-        (0., 0., [1., 0., 0.]),
-        (45., 60., [0.35355335, 0.35355335, 0.86602545]),
-        (-45., -60., [0.35355335, -0.35355335, -0.86602545]),
+        (0., 0., [0x3f80_0000, 0, 0]),
+        (1., 0., [0x3f7f_f605, 0x3c8e_f859, 0]),
+        (10., 0., [0x3f7c_1c5c, 0x3e31_d0d4, 0]),
+        (45., 60., [0x3eb5_04f2, 0x3eb5_04f3, 0x3f5d_b3d8]),
+        (-45., -60., [0x3eb5_04f2, 0xbeb5_04f3, 0xbf5d_b3d8]),
+        (225., 17., [0xbf2d_1c13, 0xbf2d_1c11, 0x3e95_b1bf]),
+        (0.1, -0.1, [0x3f7f_ffcd, 0x3ae4_c36a, 0xbae4_c380]),
+        (359., 89., [0x3c8e_f2fa, 0xb99f_b07d, 0x3f7f_f605]),
     ] {
         let sun = SunParms {
             color: [1.; 3],
@@ -20,9 +27,11 @@ fn sun_angles_keep_native_division_and_double_trig_products() {
             azimuth_degrees: azimuth,
             elevation_degrees: elevation,
         };
-        for (actual, expected) in sun.direction().0.into_iter().zip(expected) {
-            assert!((actual - expected).abs() < 0.0000001);
-        }
+        assert_eq!(
+            sun.direction().0.map(f32::to_bits),
+            expected,
+            "native sun angles ({azimuth}, {elevation})"
+        );
     }
 }
 

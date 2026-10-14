@@ -7,7 +7,7 @@ use crate::shader::{
     WaveFunction, Waveform,
 };
 use qa_core::{
-    math::{inverse_transform_point, length, normalized_fast},
+    math::{inverse_transform_point, length, normalized_fast, weighted_lerp},
     primitives::Vec3,
     sys_events::EventTime,
 };
@@ -1004,7 +1004,7 @@ impl StageEvaluator {
             for z in 0..2 {
                 let mut rows = [0.0; 2];
                 for y in 0..2 {
-                    rows[y] = lerp(
+                    rows[y] = weighted_lerp(
                         self.noise_value(
                             cell[0],
                             cell[1] + y as i32,
@@ -1020,11 +1020,11 @@ impl StageEvaluator {
                         frac[0],
                     );
                 }
-                depth[z] = lerp(rows[0], rows[1], frac[1]);
+                depth[z] = weighted_lerp(rows[0], rows[1], frac[1]);
             }
-            value[t] = lerp(depth[0], depth[1], frac[2]);
+            value[t] = weighted_lerp(depth[0], depth[1], frac[2]);
         }
-        lerp(value[0], value[1], frac[3])
+        weighted_lerp(value[0], value[1], frac[3])
     }
     fn noise_value(&self, x: i32, y: i32, z: i32, t: i32) -> f32 {
         let perm = |i: i32| self.tables[NOISE_PERM + (i & 255) as usize] as i32;
@@ -1065,10 +1065,6 @@ fn byte(value: f32) -> u8 {
 fn constant_byte(value: f32) -> u8 {
     (255.0 * value) as i32 as u8
 }
-fn lerp(a: f32, b: f32, weight: f32) -> f32 {
-    a * (1.0 - weight) + b * weight
-}
-
 pub fn alpha_pass(function: AlphaFunc, alpha: f32) -> bool {
     match function {
         AlphaFunc::None => true,

@@ -5,7 +5,7 @@ use qa_app::{
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
     primitives::ModuleId,
-    sys_events::{EventKind, EventTime, SysEvent, SysEventQueue},
+    sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
 use qa_session::{clients::Connection, timing::TickRate};
 use std::time::Duration;
@@ -15,6 +15,7 @@ struct Source {
     requests: Vec<bool>,
     polls: usize,
     disable_on_first: bool,
+    second_intake_mice: bool,
 }
 impl FrameSource for Source {
     fn begin_frame(&mut self) -> Duration {
@@ -32,6 +33,29 @@ impl FrameSource for Source {
                     kind: EventKind::ConsoleLine("in_mouse 0"),
                 })
                 .unwrap();
+        }
+        if self.second_intake_mice && self.polls == 2 {
+            let captured = self.requests.last().copied().unwrap();
+            queue
+                .push(SysEvent {
+                    time: EventTime::from_milliseconds(20),
+                    kind: EventKind::MouseCapture(captured),
+                })
+                .unwrap();
+            if captured {
+                for device in [DeviceId::Mouse(17), DeviceId::Mouse(28)] {
+                    queue
+                        .push(SysEvent {
+                            time: EventTime::from_milliseconds(20),
+                            kind: EventKind::Mouse {
+                                device,
+                                dx: 20,
+                                dy: 0,
+                            },
+                        })
+                        .unwrap();
+                }
+            }
         }
         queue
             .push(SysEvent {
@@ -130,4 +154,46 @@ fn window_console_releases_capture_at_the_existing_second_intake() {
         host.console.editor.seat(),
         Some(qa_core::sys_events::SeatId::FIRST)
     );
+}
+
+#[test]
+fn one_seat_console_keeps_another_seats_assigned_mouse_captured_and_aiming() {
+    let mut host = host();
+    connect(&mut host);
+    let peer = host
+        .runtime
+        .server
+        .connect(Connection::Local, ModuleId(2), None)
+        .unwrap();
+    host.local_clients[1] = Some(peer);
+    host.local_worlds[1] = host.local_worlds[0];
+    assert!(
+        host.runtime
+            .input
+            .assign(DeviceId::Mouse(17), SeatId::FIRST)
+    );
+    assert!(
+        host.runtime
+            .input
+            .assign(DeviceId::Mouse(28), SeatId::new(1).unwrap())
+    );
+    host.console
+        .append_line("toggleconsole", Context::default())
+        .unwrap();
+    let mut source = Source {
+        second_intake_mice: true,
+        ..Source::default()
+    };
+    let result = host.frame(&mut source, true);
+    assert_eq!(source.requests, [true, true]);
+    assert_eq!(source.polls, 2);
+    assert_eq!(host.console.editor.seat(), Some(SeatId::FIRST));
+    assert_eq!(result.commands[0].view_angles, Default::default());
+    assert_ne!(result.commands[1].view_angles, Default::default());
+    // Once the remaining gameplay seat disconnects, the console owner's mouse
+    // alone does not keep the window in relative mode.
+    assert!(host.runtime.disconnect_client(peer));
+    source.requests.clear();
+    host.frame(&mut source, true);
+    assert_eq!(source.requests, [false, false]);
 }

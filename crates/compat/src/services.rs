@@ -90,13 +90,33 @@ impl From<qa_session::clients::ClientInfoError> for CallError {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoadedWorldBinding {
+    pub render: qa_render::world::WorldId,
+    pub collision: Option<GeometryId>,
+}
+
+/// A CLIENT module selects collision independently of its renderer and SERVER.
+#[derive(Default)]
+pub struct ClientCollision {
+    selected: Option<GeometryId>,
+}
+impl ClientCollision {
+    pub fn geometry(&self) -> Option<GeometryId> {
+        self.selected
+    }
+    pub fn reset(&mut self) {
+        self.selected = None;
+    }
+}
+
 /// The cold and frozen model catalog share the same native metadata owner.
 pub trait ModelLookup {
     fn inline_handle(&self, world: qa_render::world::WorldId, index: u32) -> Option<i32> {
         let _ = (world, index);
         None
     }
-    fn loaded_world(&self, name: &[u8]) -> Option<u32>;
+    fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding>;
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
     fn shader_handle(&self, name: &[u8]) -> Option<i32>;
     fn skin_handle(&self, name: &[u8]) -> Option<i32> {
@@ -896,6 +916,7 @@ pub struct EngineServices<'a> {
     pub cvars: &'a mut Cvars,
     pub commands: &'a mut CommandBuffer,
     pub client_connection: Option<&'a mut dyn ClientConnection>,
+    pub client_collision: Option<&'a mut ClientCollision>,
     pub client_audio: Option<&'a mut dyn ClientAudio>,
     pub renderer: Option<&'a qa_core::presentation::RendererConfiguration>,
     pub scene: Option<&'a mut dyn crate::renderer::SceneService>,
@@ -969,6 +990,9 @@ pub enum ClipTarget {
     },
 }
 pub struct EngineCallTable {
+    pub client_collision_load: fn(&mut EngineServices<'_>, &[u8]) -> Result<(), CallError>,
+    pub client_collision_count: fn(&EngineServices<'_>) -> Result<u32, CallError>,
+    pub client_collision_inline: fn(&EngineServices<'_>, i32) -> Result<i32, CallError>,
     pub render_world: fn(&mut EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
     pub clear_scene: fn(&mut EngineServices<'_>),
     pub add_light: fn(&mut EngineServices<'_>, qa_render::scene::Light) -> bool,
@@ -1125,6 +1149,9 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    client_collision_load: |s, name| s.client_collision_load(name),
+    client_collision_count: |s| s.client_collision_count(),
+    client_collision_inline: |s, index| s.client_collision_inline(index),
     render_world: |s, name| {
         let world = s
             .model_loader
@@ -1135,8 +1162,8 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         s.scene
             .as_deref_mut()
             .ok_or(CallError::Geometry)?
-            .select_world(qa_render::world::WorldId(world))?;
-        Ok(world)
+            .select_world(world.render)?;
+        Ok(world.render.0)
     },
     clear_scene: |s| {
         if let Some(scene) = s.scene.as_deref_mut() {
@@ -1414,6 +1441,43 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
 };
 
 impl EngineServices<'_> {
+    fn client_collision_load(&mut self, name: &[u8]) -> Result<(), CallError> {
+        let geometry = self
+            .models()
+            .and_then(|models| models.loaded_world(name))
+            .and_then(|world| world.collision)
+            .ok_or(CallError::Geometry)?;
+        let count = self
+            .geometry
+            .model_count(geometry)
+            .ok_or(CallError::Geometry)?;
+        // Stock cgame's native collision model namespace is MAX_SUBMODELS.
+        if count > 256 {
+            return Err(CallError::Capacity);
+        }
+        self.client_collision
+            .as_deref_mut()
+            .ok_or(CallError::Unsupported)?
+            .selected = Some(geometry);
+        Ok(())
+    }
+    fn client_collision_count(&self) -> Result<u32, CallError> {
+        let selection = self
+            .client_collision
+            .as_deref()
+            .ok_or(CallError::Unsupported)?;
+        selection.selected.map_or(Ok(0), |geometry| {
+            self.geometry
+                .model_count(geometry)
+                .ok_or(CallError::Geometry)
+        })
+    }
+    fn client_collision_inline(&self, index: i32) -> Result<i32, CallError> {
+        let count = self.client_collision_count()?;
+        (index >= 0 && (index as u32) < count)
+            .then_some(index)
+            .ok_or(CallError::Geometry)
+    }
     fn models(&self) -> Option<&dyn ModelLookup> {
         self.model_loader
             .as_deref()

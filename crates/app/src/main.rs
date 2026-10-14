@@ -699,7 +699,7 @@ fn run() -> Result<(), String> {
             .model_loader
             .as_mut()
             .ok_or("missing model loader")?
-            .bind_loaded_world(path, world, bounds)?;
+            .bind_loaded_world(path, world, Some(collision.geometry), bounds)?;
     }
     let sound_rules = local_clients
         .iter()

@@ -1039,14 +1039,17 @@ impl FrameHost {
 
     fn mouse_capture_requested(&self) -> bool {
         !self.runtime.quit
-            && self.console.editor.seat().is_none()
             && self.console.cvars.integer(self.mouse_enabled) != 0
             && self
                 .local_worlds
                 .iter()
                 .zip(self.local_clients)
-                .any(|(world, client)| {
-                    world.is_some()
+                .enumerate()
+                .any(|(seat, (world, client))| {
+                    self.runtime.input.key_catchers(SeatId::ALL[seat])
+                        & qa_core::sys_events::key_catchers::CONSOLE
+                        == 0
+                        && world.is_some()
                         && client
                             .and_then(|id| self.runtime.server.clients.get(id.0 as usize))
                             .is_some_and(|row| {

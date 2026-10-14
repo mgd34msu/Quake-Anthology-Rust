@@ -354,6 +354,7 @@ fn with_collision_services(
         cvars: &mut cvars,
         commands: &mut commands,
         client_connection: None,
+        client_collision: None,
         renderer: None,
         scene: None,
         client_audio: None,
@@ -404,7 +405,7 @@ impl ModelLookup for Models {
     fn model_has_tags(&self, _: i32) -> bool {
         false
     }
-    fn loaded_world(&self, _: &[u8]) -> Option<u32> {
+    fn loaded_world(&self, _: &[u8]) -> Option<qa_compat::services::LoadedWorldBinding> {
         None
     }
     fn lerp_tag(

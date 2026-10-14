@@ -2329,13 +2329,30 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
     let mut builder =
         ModelCatalogBuilder::new(assets, [], [first, second], ModelLimits::default()).unwrap();
     builder
-        .bind_loaded_world("MAPS\\START.BSP", first, native_bounds)
+        .bind_loaded_world("MAPS\\START.BSP", first, Some(geometry), native_bounds)
         .unwrap();
     builder
-        .bind_loaded_world("maps/absent.bsp", second, native_bounds)
+        .bind_loaded_world("maps/absent.bsp", second, Some(geometry), native_bounds)
         .unwrap();
-    assert_eq!(builder.loaded_world(b"maps/start.bsp"), Some(first.0));
-    assert_eq!(builder.loaded_world(b"MAPS\\ABSENT.BSP"), Some(second.0));
+    assert!(
+        builder
+            .bind_loaded_world("maps/start.bsp", first, None, native_bounds)
+            .is_err()
+    );
+    assert_eq!(
+        builder.loaded_world(b"maps/start.bsp"),
+        Some(qa_compat::services::LoadedWorldBinding {
+            render: first,
+            collision: Some(geometry)
+        })
+    );
+    assert_eq!(
+        builder.loaded_world(b"MAPS\\ABSENT.BSP"),
+        Some(qa_compat::services::LoadedWorldBinding {
+            render: second,
+            collision: Some(geometry)
+        })
+    );
     assert_eq!(builder.loaded_world(b"maps/unbound.bsp"), None);
     for path in [b"maps/start.bsp".as_slice(), b"MAPS\\ABSENT.BSP"] {
         assert_eq!(
@@ -2369,8 +2386,20 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
         catalog.bounds(b"MAPS\\START.BSP", RuleSetId::QuakeWorld),
         Some(expected)
     );
-    assert_eq!(catalog.loaded_world(b"MAPS\\START.BSP"), Some(first.0));
-    assert_eq!(catalog.loaded_world(b"maps/absent.bsp"), Some(second.0));
+    assert_eq!(
+        catalog.loaded_world(b"MAPS\\START.BSP"),
+        Some(qa_compat::services::LoadedWorldBinding {
+            render: first,
+            collision: Some(geometry)
+        })
+    );
+    assert_eq!(
+        catalog.loaded_world(b"maps/absent.bsp"),
+        Some(qa_compat::services::LoadedWorldBinding {
+            render: second,
+            collision: Some(geometry)
+        })
+    );
     assert_eq!(catalog.loaded_world(b"maps/unbound.bsp"), None);
     assert_eq!(
         catalog.bounds(b"maps/absent.bsp", RuleSetId::Quake2),
@@ -2429,11 +2458,15 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
         },
     )
     .unwrap();
-    assert!(builder.bind_loaded_world("", first, bounds).is_err());
-    assert!(builder.bind_loaded_world("*1", first, bounds).is_err());
+    assert!(builder.bind_loaded_world("", first, None, bounds).is_err());
     assert!(
         builder
-            .bind_loaded_world("maps/start.bsp", WorldId(u32::MAX), bounds)
+            .bind_loaded_world("*1", first, None, bounds)
+            .is_err()
+    );
+    assert!(
+        builder
+            .bind_loaded_world("maps/start.bsp", WorldId(u32::MAX), None, bounds)
             .is_err()
     );
     assert!(
@@ -2441,6 +2474,7 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
             .bind_loaded_world(
                 "maps/start.bsp",
                 first,
+                None,
                 Bounds {
                     mins: Vec3([f32::NAN; 3]),
                     ..bounds
@@ -2449,14 +2483,14 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
             .is_err()
     );
     builder
-        .bind_loaded_world("maps/start.bsp", first, bounds)
+        .bind_loaded_world("maps/start.bsp", first, None, bounds)
         .unwrap();
     builder
-        .bind_loaded_world("MAPS\\START.BSP", first, bounds)
+        .bind_loaded_world("MAPS\\START.BSP", first, None, bounds)
         .unwrap();
     assert!(
         builder
-            .bind_loaded_world("maps/start.bsp", second, bounds)
+            .bind_loaded_world("maps/start.bsp", second, None, bounds)
             .is_err()
     );
     assert!(
@@ -2464,6 +2498,7 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
             .bind_loaded_world(
                 "maps/start.bsp",
                 first,
+                None,
                 Bounds {
                     maxs: Vec3([3.0; 3]),
                     ..bounds
@@ -2473,7 +2508,7 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
     );
     assert!(
         builder
-            .bind_loaded_world("maps/overflow.bsp", first, bounds)
+            .bind_loaded_world("maps/overflow.bsp", first, None, bounds)
             .is_err()
     );
     assert_eq!(
@@ -2512,7 +2547,7 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
         let mut builder = ModelCatalogBuilder::new(assets, [], [id], limits).unwrap();
         assert!(
             builder
-                .bind_loaded_world("maps/start.bsp", id, bounds)
+                .bind_loaded_world("maps/start.bsp", id, None, bounds)
                 .is_err()
         );
         assert_eq!(builder.bounds(b"maps/start.bsp", RuleSetId::Quake), None);
@@ -2525,7 +2560,7 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
     let mut builder = ModelCatalogBuilder::new(assets, [], [], ModelLimits::default()).unwrap();
     assert!(
         builder
-            .bind_loaded_world("maps/start.bsp", id, bounds)
+            .bind_loaded_world("maps/start.bsp", id, None, bounds)
             .is_err()
     );
     assert_eq!(builder.bounds(b"maps/start.bsp", RuleSetId::Quake), None);
@@ -2552,11 +2587,11 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
     };
     assert!(
         builder
-            .bind_loaded_world("MODELS\\TEST\\TRIS.MD2", id, native_bounds)
+            .bind_loaded_world("MODELS\\TEST\\TRIS.MD2", id, None, native_bounds)
             .is_err()
     );
     builder
-        .bind_loaded_world("maps/start.bsp", id, native_bounds)
+        .bind_loaded_world("maps/start.bsp", id, None, native_bounds)
         .unwrap();
     fixture.remove("models/test/tris.md2");
     builder

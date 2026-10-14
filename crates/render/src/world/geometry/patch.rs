@@ -152,7 +152,7 @@ pub(super) fn subdivide(
 
 fn lerp(a: WorldVertex, b: WorldVertex) -> WorldVertex {
     let mut out = a;
-    out.vertex.position = (a.vertex.position + b.vertex.position) * 0.5;
+    out.vertex.position = qa_core::math::midpoint(a.vertex.position, b.vertex.position);
     out.vertex.texcoord =
         std::array::from_fn(|i| 0.5 * (a.vertex.texcoord[i] + b.vertex.texcoord[i]));
     out.vertex.lightmap_coord =
