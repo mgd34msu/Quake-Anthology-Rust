@@ -11,7 +11,7 @@
     "conversions": 238,
     "operands": 43,
     "maps": 67,
-    "issues": 1394
+    "issues": 1393
   },
   "policy_issues": [
     {
@@ -468,13 +468,6 @@
       "field": "flags_Q3",
       "reason": "conditional/owner flag alternatives; bits are only the mentioned union",
       "bits": 4
-    },
-    {
-      "row": 156,
-      "name": "sv_maxclients",
-      "field": "default_Q2R",
-      "reason": "conditional, owner-dependent or symbolic default",
-      "bits": 2
     },
     {
       "row": 157,
