@@ -1,6 +1,6 @@
 use qa_core::primitives::{
-    EntityAppearance, LoopGain, LoopLifetime, LoopOrigin, LoopPhase, LoopPlayback,
-    NativeAppearanceTail, RuleSetId, SoundChannels, SoundPlayback, SpatialPolicy,
+    EntityAppearance, LoopDoppler, LoopGain, LoopLifetime, LoopOrigin, LoopPhase, LoopPlayback,
+    NativeAppearanceTail, RuleSetId, SoundChannels, SoundPlayback, SpatialPolicy, Vec3,
 };
 
 const Q1: SpatialPolicy = SpatialPolicy {
@@ -104,6 +104,7 @@ pub struct LoopRules {
     event_base: Option<u32>,
     stop_event: Option<(u32, u32, u32)>,
     no_stereo_mask: u32,
+    doppler_factor: Option<f32>,
     spatial: fn(f32, SpatialPolicy) -> SpatialPolicy,
 }
 impl LoopRules {
@@ -117,6 +118,29 @@ impl LoopRules {
         };
         playback.latched = true;
         playback
+    }
+    /// Native frame loops use squared distances and the pre-update listener
+    /// entity position. Real loops never change their sample rate.
+    pub fn doppler(
+        self,
+        playback: LoopPlayback,
+        listener: Vec3,
+        origin: Vec3,
+        velocity: Vec3,
+    ) -> Option<LoopDoppler> {
+        let factor = self.doppler_factor?;
+        if playback.lifetime != LoopLifetime::Temporary || velocity.dot(velocity) <= 0. {
+            return None;
+        }
+        let before = listener - origin;
+        let after = listener - (origin + velocity);
+        let scale = after.dot(after) / (before.dot(before) * factor);
+        // Match the TypeScript defined behavior for nonfinite native ratios.
+        // Q3 resets the rate before reading oldDopplerScale, leaving it at one.
+        (scale.is_finite() && scale > 1.).then_some(LoopDoppler {
+            scale,
+            previous_scale: 1.,
+        })
     }
     /// Standalone native events fire once while the accepted entity remains.
     pub fn event_once(self, native: &NativeAppearanceTail) -> bool {
@@ -204,6 +228,7 @@ const LOOP_RULES: [Option<LoopRules>; 5] = [
         event_base: None,
         stop_event: None,
         no_stereo_mask: 0,
+        doppler_factor: None,
         spatial: keep_spatial,
     }),
     Some(LoopRules {
@@ -212,6 +237,7 @@ const LOOP_RULES: [Option<LoopRules>; 5] = [
         event_base: None,
         stop_event: None,
         no_stereo_mask: 4,
+        doppler_factor: None,
         spatial: loop_attenuation,
     }),
     Some(LoopRules {
@@ -220,6 +246,7 @@ const LOOP_RULES: [Option<LoopRules>; 5] = [
         event_base: Some(13),
         stop_event: Some((!0x300, 75, 0x10)),
         no_stereo_mask: 0,
+        doppler_factor: Some(100.),
         spatial: keep_spatial,
     }),
 ];

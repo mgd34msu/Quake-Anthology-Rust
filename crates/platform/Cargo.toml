@@ -13,6 +13,7 @@ native-helper = []
 qa-core = { path = "../core" }
 
 [dev-dependencies]
+qa-audio = { path = "../audio" }
 qa-gameplay = { path = "../gameplay" }
 qa-compat = { path = "../compat" }
 qa-input = { path = "../input" }

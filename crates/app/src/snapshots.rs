@@ -735,12 +735,13 @@ impl qa_compat::services::ClientAudio for SnapshotBinding {
         events: &mut qa_core::events::EventRing,
         event: qa_core::primitives::SoundEvent,
         native_entity: Option<i32>,
+        doppler_enabled: bool,
     ) -> Result<(), qa_compat::services::CallError> {
         self.presentation
             .as_mut()
             .and_then(|row| row.loops.as_mut())
             .ok_or(qa_compat::services::CallError::Entity)?
-            .native_publish(self.client, events, event, native_entity)
+            .native_publish(self.client, events, event, native_entity, doppler_enabled)
     }
     fn respatialize(
         &mut self,

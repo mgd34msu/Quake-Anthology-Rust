@@ -103,13 +103,12 @@ pub(super) fn add_loop<const PERSISTENT: bool>(
     };
     let native_entity = entity(c, 0)?;
     let origin = c.vector(1, false)?;
-    // The current common kernel has no Doppler state. Preserve checked argument
-    // access without claiming velocity-dependent sample parity.
-    let _velocity = c.vector(2, false)?;
+    let velocity = c.vector(2, false)?;
     let mut event = event(c, SoundAction::StartLoop);
     event.sound = sound;
     event.source_ordinal = Some(ordinal);
     event.position = origin;
+    event.velocity = velocity;
     event.positioned = false;
     event.looping = Some(
         qa_gameplay::rules::loop_rules(RuleSetId::Quake3)

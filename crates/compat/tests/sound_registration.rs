@@ -999,6 +999,7 @@ impl ClientAudio for AudioBoundary {
         events: &mut EventRing,
         mut event: SoundEvent,
         native_entity: Option<i32>,
+        _doppler_enabled: bool,
     ) -> Result<(), CallError> {
         if event.listener_owner != Some(self.producer) {
             return Err(CallError::Entity);
@@ -1035,7 +1036,7 @@ impl ClientAudio for AudioBoundary {
             }),
             ..SoundEvent::default()
         };
-        self.publish(events, event, Some(native_entity as i32))?;
+        self.publish(events, event, Some(native_entity as i32), false)?;
         self.listener = native_entity as i32;
         Ok(())
     }
@@ -1170,6 +1171,7 @@ fn native_client_sound_controls_use_one_ring_and_exact_widths_in_all_address_mod
         assert_eq!(temporary.action, SoundAction::StartLoop);
         assert_eq!(temporary.looping.unwrap().lifetime, LoopLifetime::Temporary);
         assert!(temporary.looping.unwrap().latched);
+        assert_eq!(temporary.velocity, Vec3([1., 2., 3.]));
         let position = take_sound(&mut fixture);
         assert_eq!(position.action, SoundAction::UpdateEmitterPosition);
         let spatialize = take_sound(&mut fixture);
@@ -1182,6 +1184,7 @@ fn native_client_sound_controls_use_one_ring_and_exact_widths_in_all_address_mod
         let real = take_sound(&mut fixture);
         assert_eq!(real.looping.unwrap().lifetime, LoopLifetime::Persistent);
         assert!(real.looping.unwrap().latched);
+        assert_eq!(real.velocity, Vec3([1., 2., 3.]));
         assert_eq!(take_sound(&mut fixture).action, SoundAction::StopLoop);
         assert_eq!(
             take_sound(&mut fixture).action,

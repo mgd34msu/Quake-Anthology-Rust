@@ -2,6 +2,7 @@
 use qa_core::primitives::Pcm;
 use std::num::NonZeroU32;
 
+mod doppler;
 mod mixer;
 pub use mixer::{Bank, Listener, MixCounts, Mixer};
 mod bindings;

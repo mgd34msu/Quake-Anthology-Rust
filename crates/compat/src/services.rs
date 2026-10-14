@@ -196,6 +196,7 @@ pub trait ClientAudio {
         events: &mut qa_core::events::EventRing,
         event: SoundEvent,
         native_entity: Option<i32>,
+        doppler_enabled: bool,
     ) -> Result<(), CallError>;
     fn respatialize(
         &mut self,
@@ -299,6 +300,7 @@ pub struct ServiceStorage {
     reader: qa_formats::archive::ArchiveReader,
     no_areas: CvarHandle,
     max_clients: CvarHandle,
+    doppler: CvarHandle,
     movement: qa_console::movement::MovementHandles,
     qw_phs: CvarHandle,
 }
@@ -446,6 +448,7 @@ impl ServiceStorage {
             reader: qa_formats::archive::ArchiveReader::default(),
             no_areas: cvars.find("cm_noAreas").ok_or(CallError::Cvar)?,
             max_clients: cvars.find("sv_maxclients").ok_or(CallError::Cvar)?,
+            doppler: cvars.find("s_doppler").ok_or(CallError::Cvar)?,
             movement: qa_console::movement::MovementHandles::bind(cvars)
                 .map_err(|_| CallError::Cvar)?,
             qw_phs: cvars.find("sv_phs").ok_or(CallError::Cvar)?,
@@ -1254,10 +1257,11 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     set_usercmd_value: |s, seat, weapon, scale| s.input.set_usercmd_value(seat, weapon, scale),
     sound: |s, delivery, e| s.sound(delivery, e),
     client_sound: |s, event, entity| {
+        let doppler = s.cvars.integer_in(s.storage.doppler, RuleSetId::Quake3) != 0;
         s.client_audio
             .as_deref_mut()
             .ok_or(CallError::Entity)?
-            .publish(&mut s.server.events, event, entity)
+            .publish(&mut s.server.events, event, entity, doppler)
     },
     client_listener: |s, producer, time, entity, origin, right| {
         s.client_audio

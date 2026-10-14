@@ -27,6 +27,7 @@ struct Source {
     mixer: Mixer,
     time: EventTime,
     last_sound: Option<SoundEvent>,
+    last_loop: Option<SoundEvent>,
     pcm: [i16; 8],
 }
 impl FrameSource for Source {
@@ -54,6 +55,9 @@ impl FrameSource for Source {
     }
     fn sound(&mut self, event: SoundEvent) -> bool {
         self.last_sound = Some(event);
+        if event.action == SoundAction::StartLoop {
+            self.last_loop = Some(event);
+        }
         self.mixer.sound(event)
     }
     fn mix_audio(
@@ -106,6 +110,8 @@ fn request(
         (64, [1.0, 0.0, 0.0]),
         (76, [0.0, 1.0, 0.0]),
         (88, [0.0, 0.0, 1.0]),
+        (112, [1.0, 0.0, 0.0]),
+        (128, [99.0, 0.0, 0.0]),
     ] {
         for (axis, value) in vector.into_iter().enumerate() {
             let at = offset + axis * 4;
@@ -206,6 +212,7 @@ fn fixture(
             mixer: Mixer::load(bank, 16, SeatId::COUNT),
             time: EventTime::from_milliseconds(100),
             last_sound: None,
+            last_loop: None,
             pcm: [0; 8],
         },
         handle,
@@ -393,5 +400,64 @@ fn cgame_loops_latch_clear_and_release_through_the_shared_host() {
         }
         assert_eq!(source.pcm, [0; 8]);
         assert!(source.mixer.counts.stopped >= 2);
+    }
+}
+
+#[test]
+fn native_loop_velocity_reaches_the_ring_and_mixer_on_foreign_connections() {
+    use qa_network::commands::packet::Protocol;
+    for protocol in [
+        Protocol::Quake3_68,
+        Protocol::Quake2_34,
+        Protocol::NetQuake15,
+    ] {
+        let (mut host, mut source, handle) = fixture(Some(protocol));
+        frame(&mut host, &mut source);
+        call(&mut host, 31, &[1, 112, 128, handle as u64]);
+        listener(&mut host);
+        frame(&mut host, &mut source);
+        let event = source.last_loop.unwrap();
+        assert_eq!(event.velocity, Vec3([99., 0., 0.]));
+        assert_eq!(
+            event.doppler,
+            Some(LoopDoppler {
+                scale: 100.,
+                previous_scale: 1.
+            })
+        );
+        assert_eq!(event.client, host.local_clients[0]);
+        assert!(event.client_lifetime.is_some());
+        let partial = (((1820 * 63 * 255) / 256) >> 8) as i16;
+        assert_eq!(
+            source.pcm,
+            [
+                expected(63),
+                expected(63),
+                expected(63),
+                expected(63),
+                partial,
+                partial,
+                0,
+                0
+            ]
+        );
+        let doppler = host
+            .console
+            .cvars
+            .bind("s_doppler", Context::default())
+            .unwrap();
+        host.console.cvars.force_write(doppler, "0").unwrap();
+        call(&mut host, 31, &[1, 112, 128, handle as u64]);
+        listener(&mut host);
+        frame(&mut host, &mut source);
+        assert_eq!(source.last_loop.unwrap().doppler, None);
+        assert_eq!(source.pcm, [expected(63); 8]);
+        host.console.cvars.force_write(doppler, "1").unwrap();
+        call(&mut host, 80, &[1, 112, 128, handle as u64]);
+        listener(&mut host);
+        frame(&mut host, &mut source);
+        assert_eq!(source.last_loop.unwrap().velocity, Vec3([99., 0., 0.]));
+        assert_eq!(source.last_loop.unwrap().doppler, None);
+        assert_eq!(source.pcm, [expected(45); 8]);
     }
 }

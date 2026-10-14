@@ -560,6 +560,7 @@ impl LoopPublication {
         events: &mut EventRing,
         mut event: SoundEvent,
         native_entity: Option<i32>,
+        doppler_enabled: bool,
     ) -> Result<(), CallError> {
         let (lifetime, owner) = self.native_scope(event.listener_owner)?;
         if event.client.is_some_and(|recipient| recipient != client)
@@ -619,7 +620,7 @@ impl LoopPublication {
         if matches!(
             event.action,
             SoundAction::StartLoop | SoundAction::UpdateEmitterPosition
-        ) && !event.position.is_finite()
+        ) && (!event.position.is_finite() || !event.velocity.is_finite())
         {
             return Err(CallError::Geometry);
         }
@@ -628,6 +629,24 @@ impl LoopPublication {
             event.looping = Some(self.native_rules.map_or(supplied, |rules| {
                 rules.native(supplied.lifetime == LoopLifetime::Persistent)
             }));
+        }
+        if event.action == SoundAction::StartLoop {
+            let playback = event.looping.ok_or(CallError::Unsupported)?;
+            event.doppler = if doppler_enabled {
+                self.native_rules.and_then(|rules| {
+                    rules.doppler(
+                        playback,
+                        self.rows
+                            .get(self.listener as usize)
+                            .and_then(|row| row.origin)
+                            .unwrap_or_default(),
+                        event.position,
+                        event.velocity,
+                    )
+                })
+            } else {
+                None
+            };
         }
         let sequence = Self::retained_push(events, owner, event).ok_or_else(|| {
             self.reset_needed = true;
@@ -702,6 +721,7 @@ impl LoopPublication {
                 ..SoundEvent::default()
             },
             None,
+            false,
         )?;
         self.listener = native_entity;
         Ok(())

@@ -3,8 +3,9 @@ use qa_core::{
     math,
     names::NameTable,
     primitives::{
-        ClientId, EntityId, LoopGain, LoopLifetime, LoopOrigin, LoopPhase, LoopPlayback, ModuleId,
-        Pcm, ResourceNamespace, SoundAction, SoundBus, SoundEmitter, SoundEvent, SoundId, Vec3,
+        ClientId, EntityId, LoopDoppler, LoopGain, LoopLifetime, LoopOrigin, LoopPhase,
+        LoopPlayback, ModuleId, Pcm, ResourceNamespace, SoundAction, SoundBus, SoundEmitter,
+        SoundEvent, SoundId, Vec3,
     },
     stamps::StampSet,
 };
@@ -13,6 +14,7 @@ use std::{num::NonZeroU32, sync::Arc};
 pub struct Bank {
     names: NameTable,
     samples: Box<[Option<Pcm>]>,
+    doppler: Box<[Option<crate::doppler::Prepared>]>,
     attempts: StampSet,
     handles: crate::SoundBindings,
     pub rate: NonZeroU32,
@@ -58,6 +60,7 @@ impl Bank {
         let mut bank = Self {
             names,
             samples: std::iter::repeat_with(|| None).take(capacity).collect(),
+            doppler: std::iter::repeat_with(|| None).take(capacity).collect(),
             attempts: StampSet::new(capacity),
             handles: crate::SoundBindings::load_reserved(capacity, capacity, true),
             rate,
@@ -182,6 +185,7 @@ impl Bank {
         if pcm.frames() == 0 {
             return Err("empty sound".into());
         }
+        self.doppler[sound.0 as usize] = Some(crate::doppler::Prepared::load(&pcm));
         *sample = Some(pcm);
         Ok(())
     }
@@ -257,6 +261,7 @@ struct LoopMix {
     sound: SoundId,
     source_ordinal: Option<u32>,
     playback: LoopPlayback,
+    doppler: Option<LoopDoppler>,
     gain: Gain,
 }
 struct Voice {
@@ -268,6 +273,7 @@ struct Voice {
     order: u64,
     loop_registered: bool,
     loop_mix: Option<LoopMix>,
+    doppler_cursor: crate::doppler::Cursor,
     paint_scale: Option<i64>,
 }
 impl Voice {
@@ -284,6 +290,7 @@ impl Voice {
                 sound: mix.sound,
                 source_ordinal: mix.source_ordinal,
                 looping: Some(mix.playback),
+                doppler: mix.doppler,
                 ..self.event
             })
         } else {
@@ -398,7 +405,7 @@ fn loop_group(
             LoopGain::Integer { volume_scale, .. } => volume_scale,
             LoopGain::Float(_) => 0,
         };
-        let separate = if playback.phase == LoopPhase::Painted {
+        let separate = if playback.phase == LoopPhase::Painted && event.doppler.is_none() {
             0
         } else {
             index + 1
@@ -605,6 +612,14 @@ impl Mixer {
             || !event.time_offset.is_finite()
             || event.time_offset < 0.0
             || !event.position.is_finite()
+            || !event.velocity.is_finite()
+            || event.doppler.is_some_and(|rate| {
+                event.looping.is_none()
+                    || !rate.scale.is_finite()
+                    || rate.scale <= 1.
+                    || !rate.previous_scale.is_finite()
+                    || rate.previous_scale <= 0.
+            })
             || event.playback.is_some_and(|playback| {
                 event.looping.is_some()
                     || event.action != SoundAction::Play
@@ -698,6 +713,7 @@ impl Mixer {
             order: self.counts.started,
             loop_registered: true,
             loop_mix: None,
+            doppler_cursor: crate::doppler::Cursor::default(),
             paint_scale: None,
         });
         if let Some(begin) = begin {
@@ -776,6 +792,7 @@ impl Mixer {
                             sound: voice.event.sound,
                             source_ordinal: voice.event.source_ordinal,
                             playback,
+                            doppler: voice.event.doppler,
                             gain: gains(voice.event, &listener),
                         });
                     } else {
@@ -957,6 +974,7 @@ impl Mixer {
         }
         for voice in self.voices.iter_mut().flatten() {
             voice.loop_leader = false;
+            voice.doppler_cursor.reset();
             voice.paint_scale = voice
                 .event
                 .playback
@@ -1075,18 +1093,35 @@ impl Mixer {
                 };
                 let channels = sample.channels as usize;
                 let offset = sample_frame * channels;
+                let doppler = event.doppler.and_then(|rate| {
+                    self.bank.doppler[event.sound.0 as usize]
+                        .as_ref()
+                        .map(|prepared| {
+                            voice
+                                .doppler_cursor
+                                .sample(sample, prepared, sample_frame, rate)
+                        })
+                });
                 match voice.gain {
                     Gain::Integer(gain) => {
                         for (side, total) in integer.iter_mut().enumerate() {
-                            let value = sample.samples[offset + side.min(channels - 1)];
-                            *total += (i64::from(value) * gain[side]) >> 8;
+                            *total += if let Some(sample) = &doppler {
+                                sample.integer(side, gain[side])
+                            } else {
+                                let value = sample.samples[offset + side.min(channels - 1)];
+                                (i64::from(value) * gain[side]) >> 8
+                            };
                         }
                     }
                     Gain::Float(gain) => {
                         has_float = true;
                         for (side, total) in floating.iter_mut().enumerate() {
-                            let value = sample.samples[offset + side.min(channels - 1)];
-                            *total += f32::from(value) * gain[side];
+                            *total += if let Some(sample) = &doppler {
+                                sample.floating(side, gain[side])
+                            } else {
+                                let value = sample.samples[offset + side.min(channels - 1)];
+                                f32::from(value) * gain[side]
+                            };
                         }
                     }
                 }

@@ -1583,6 +1583,14 @@ pub struct LoopPlayback {
     pub cue_extent: bool,
 }
 
+/// Captured rate for one looping emission. Source rules compute it once;
+/// the mixer retains the audible value at its ordinary listener boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopDoppler {
+    pub scale: f32,
+    pub previous_scale: f32,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SoundEvent {
     pub sound: SoundId,
@@ -1600,6 +1608,8 @@ pub struct SoundEvent {
     /// Captured queued event time, never a module-clock or raw-clock sample.
     pub queued_at: crate::sys_events::EventTime,
     pub position: Vec3,
+    pub velocity: Vec3,
+    pub doppler: Option<LoopDoppler>,
     pub volume: f32,
     pub attenuation: f32,
     pub action: SoundAction,

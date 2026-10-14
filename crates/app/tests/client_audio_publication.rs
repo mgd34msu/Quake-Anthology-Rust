@@ -168,7 +168,7 @@ fn publish(
     host.runtime.snapshots[id.0 as usize]
         .as_mut()
         .unwrap()
-        .publish(&mut host.runtime.server.events, event, entity)
+        .publish(&mut host.runtime.server.events, event, entity, true)
 }
 fn event(module: ModuleId, action: SoundAction) -> SoundEvent {
     SoundEvent {
