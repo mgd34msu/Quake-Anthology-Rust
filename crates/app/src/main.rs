@@ -893,9 +893,12 @@ fn run() -> Result<(), String> {
                 qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
             )?
         };
-        hud_assets[rules as usize] = Some(qa_app::renderer::hud::HudAssets::from_font(
+        hud_assets[rules as usize] = Some(qa_app::renderer::hud::HudAssets::load(
+            &host.runtime.vfs,
+            &mut assets,
             rules,
             font,
+            qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
             width as u32,
         )?);
     }

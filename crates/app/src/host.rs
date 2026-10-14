@@ -867,6 +867,12 @@ impl FrameHost {
                 } else {
                     snapshot.interpolation()?.time
                 },
+                server_frame: self
+                    .runtime
+                    .network
+                    .get(client, qa_core::loopback::Endpoint::Client)
+                    .and_then(|connection| connection.channel.current_snapshot())
+                    .map_or(0, |snapshot| snapshot.sequence()),
                 show_text: self.console.editor.seat().is_none(),
             })
         })

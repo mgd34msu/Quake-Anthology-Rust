@@ -1,4 +1,5 @@
 //! CLIENT-owned display leases and configstrings feed the shared 2D scene.
+mod pictures;
 use super::{
     console::FontAssets,
     text::{BitmapFont, TextStats},
@@ -28,6 +29,7 @@ pub struct HudView<'a> {
     pub rules: RuleSetId,
     pub time: EventTime,
     pub style_time: ThinkTime,
+    pub server_frame: u32,
     pub show_text: bool,
 }
 impl HudView<'_> {
@@ -62,6 +64,8 @@ impl HudView<'_> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HudStats {
     pub glyphs: u32,
+    pub pictures: u32,
+    pub missing_picture: u32,
     pub styles: u32,
     pub missing_font: u32,
     pub non_native_font: u32,
@@ -72,6 +76,8 @@ pub struct HudStats {
 impl std::ops::AddAssign for HudStats {
     fn add_assign(&mut self, rhs: Self) {
         self.glyphs += rhs.glyphs;
+        self.pictures += rhs.pictures;
+        self.missing_picture += rhs.missing_picture;
         self.styles += rhs.styles;
         self.missing_font += rhs.missing_font;
         self.non_native_font += rhs.non_native_font;
@@ -90,6 +96,7 @@ pub struct HudAssets {
     rules: RuleSetId,
     font: FontAssets,
     notify: Layout,
+    pictures: pictures::Pictures,
 }
 impl HudAssets {
     pub fn from_font(rules: RuleSetId, font: FontAssets, width: u32) -> Result<Self, String> {
@@ -108,7 +115,28 @@ impl HudAssets {
             rules,
             font,
             notify,
+            pictures: Default::default(),
         })
+    }
+    pub fn load(
+        vfs: &qa_content::vfs::Vfs,
+        assets: &mut Assets,
+        rules: RuleSetId,
+        font: FontAssets,
+        settings: qa_render::material::resources::ImageSettings,
+        width: u32,
+    ) -> Result<Self, String> {
+        let mut hud = Self::from_font(rules, font, width)?;
+        hud.pictures = pictures::Pictures::load(vfs, assets, rules, font, settings)?;
+        Ok(hud)
+    }
+    pub fn register_picture(
+        &mut self,
+        assets: &mut Assets,
+        path: &str,
+        material: qa_render::MaterialId,
+    ) -> Result<(), String> {
+        self.pictures.register(assets, path, material)
     }
     pub fn command_capacity(&self) -> usize {
         MAX_GLYPHS + 1
@@ -230,6 +258,8 @@ impl HudAssets {
             {
                 append_layout(
                     font,
+                    &self.pictures,
+                    assets,
                     frame,
                     text.text,
                     view,
@@ -249,6 +279,8 @@ impl HudAssets {
                 if let Some(text) = view.texts.get(lease.id()) {
                     append_layout(
                         font,
+                        &self.pictures,
+                        assets,
                         frame,
                         text,
                         view,
@@ -291,6 +323,8 @@ fn append_bytes(
 }
 fn append_layout(
     font: BitmapFont,
+    pictures: &pictures::Pictures,
+    assets: &Assets,
     frame: &mut Frame,
     text: &[u8],
     view: HudView<'_>,
@@ -377,17 +411,96 @@ fn append_layout(
                     }
                 }
                 b"endif" => (),
-                // Consume known unsupported operands, retaining native token alignment.
-                b"pic" | b"picn" => {
-                    next()?;
-                    stats.unsupported += 1;
+                b"pic" => {
+                    let ordinal = usize::try_from(atoi_prefix(next()?)).map_err(|_| ())?;
+                    let image = u32::try_from(view.stat(ordinal).ok_or(())?).map_err(|_| ())?;
+                    let images = view.layout.resources[2];
+                    if image >= images.count {
+                        return Err(());
+                    }
+                    let name = view
+                        .configs
+                        .config((images.first + image) as usize)
+                        .ok_or(())?
+                        .text;
+                    pictures.picture(
+                        assets,
+                        std::str::from_utf8(name).map_err(|_| ())?,
+                        frame,
+                        (viewport.x as i32).saturating_add(x),
+                        (viewport.y as i32).saturating_add(y),
+                        viewport,
+                        remaining,
+                        stats,
+                    );
+                }
+                b"picn" => {
+                    pictures.picture(
+                        assets,
+                        std::str::from_utf8(next()?).map_err(|_| ())?,
+                        frame,
+                        (viewport.x as i32).saturating_add(x),
+                        (viewport.y as i32).saturating_add(y),
+                        viewport,
+                        remaining,
+                        stats,
+                    );
                 }
                 b"num" => {
-                    next()?;
-                    next()?;
-                    stats.unsupported += 1;
+                    let width = atoi_prefix(next()?);
+                    let ordinal = usize::try_from(atoi_prefix(next()?)).map_err(|_| ())?;
+                    pictures.number(
+                        frame,
+                        (viewport.x as i32).saturating_add(x),
+                        (viewport.y as i32).saturating_add(y),
+                        width,
+                        view.stat(ordinal).ok_or(())?,
+                        false,
+                        viewport,
+                        remaining,
+                        stats,
+                    );
                 }
-                b"hnum" | b"anum" | b"rnum" => stats.unsupported += 1,
+                b"hnum" | b"anum" | b"rnum" => {
+                    let (index, flag) = match command {
+                        b"hnum" => (1, 1),
+                        b"anum" => (3, 4),
+                        _ => (5, 2),
+                    };
+                    let value = view.stat(index).ok_or(())?;
+                    let policy =
+                        qa_gameplay::rules::presentation::hud_number_rules(view.layout.rules);
+                    if (index == 3 && value < 0) || (index == 5 && value < policy.minimum_armor) {
+                        return Ok(());
+                    }
+                    let flash = policy.flash(view.server_frame, view.time.milliseconds());
+                    let warning = if index == 1 { 25 } else { 5 };
+                    let alternate =
+                        (index == 1 && value <= 0) || (index != 5 && value <= warning && flash);
+                    if view.stat(15).ok_or(())? & flag != 0 {
+                        pictures.picture(
+                            assets,
+                            "field_3",
+                            frame,
+                            (viewport.x as i32).saturating_add(x),
+                            (viewport.y as i32).saturating_add(y),
+                            viewport,
+                            remaining,
+                            stats,
+                        );
+                    }
+                    pictures.number(
+                        frame,
+                        (viewport.x as i32).saturating_add(x),
+                        (viewport.y as i32).saturating_add(y),
+                        3,
+                        value,
+                        alternate,
+                        viewport,
+                        remaining,
+                        stats,
+                    );
+                }
                 b"client" => {
                     for _ in 0..6 {
                         next()?;

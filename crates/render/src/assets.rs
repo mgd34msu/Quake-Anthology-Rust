@@ -451,6 +451,9 @@ impl Assets {
     pub fn name(&self, id: NameId) -> Option<&str> {
         std::str::from_utf8(self.names.get(id)?).ok()
     }
+    pub fn find_name(&self, path: &str) -> Option<NameId> {
+        self.names.find_path(path)
+    }
     pub fn register_image(
         &mut self,
         width: u32,

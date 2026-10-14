@@ -149,6 +149,33 @@ const TEXT: [TextRules; 5] = [
 pub fn text_rules(rules: RuleSetId) -> TextRules {
     TEXT[rules as usize]
 }
+
+#[derive(Clone, Copy)]
+pub struct HudNumberRules {
+    pub client_clock: bool,
+    pub minimum_armor: i32,
+}
+pub fn hud_number_rules(source: RuleSetId) -> HudNumberRules {
+    match source {
+        RuleSetId::Quake2Rerelease => HudNumberRules {
+            client_clock: true,
+            minimum_armor: 0,
+        },
+        _ => HudNumberRules {
+            client_clock: false,
+            minimum_armor: 1,
+        },
+    }
+}
+impl HudNumberRules {
+    pub fn flash(self, server_frame: u32, time_ms: u64) -> bool {
+        if self.client_clock {
+            time_ms % 1000 < 500
+        } else {
+            (server_frame >> 2) & 1 != 0
+        }
+    }
+}
 pub fn center_y(height: u32, lines: usize) -> i32 {
     if lines <= 4 {
         (f64::from(height) * 0.35) as i32

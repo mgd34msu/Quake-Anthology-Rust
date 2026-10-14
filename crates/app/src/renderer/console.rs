@@ -413,14 +413,14 @@ fn register_font(
         .map_err(|error| format!("{error:?}"))?;
     bitmap_material(images, "pics/conchars.pcx", image, sampler, None).map_err(str::to_owned)
 }
-fn bitmap_sampler() -> Sampler {
+pub(crate) fn bitmap_sampler() -> Sampler {
     Sampler {
         wrap: Wrap::Clamp,
         filter: Filter::Nearest,
         mipmaps: false,
     }
 }
-fn bitmap_material(
+pub(crate) fn bitmap_material(
     images: &mut Images<'_>,
     name: &str,
     image: qa_render::ImageId,
