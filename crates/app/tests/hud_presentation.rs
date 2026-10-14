@@ -11,6 +11,8 @@ use qa_core::{
 };
 use qa_render::{Assets, Command, FrontEnd, Limits, MaterialId, Refdef, Viewport};
 use qa_ui::values::ValueLayout;
+static LOCALIZATION: std::sync::LazyLock<qa_content::localization::Catalog> =
+    std::sync::LazyLock::new(Default::default);
 #[path = "model_assets/support.rs"]
 #[allow(dead_code)]
 mod image_support;
@@ -46,6 +48,7 @@ fn view<'a>(
         texts,
         configs,
         values,
+        localization: &LOCALIZATION,
         rules,
         layout,
         time: EventTime::from_milliseconds(1000),
@@ -382,10 +385,7 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
         &mut render,
         RuleSetId::Quake2,
         FontAssets {
-            font: Some(BitmapFont {
-                material: MaterialId(0),
-                height: 8,
-            }),
+            font: None,
             palette: Some(palette),
             native: true,
         },
@@ -449,4 +449,58 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
         assert!(front.recycle(packet).is_ok());
     }
     assert_ne!(handles[0], handles[1]);
+}
+
+#[test]
+fn localized_layout_text_uses_the_shared_catalog_and_native_alignment() {
+    let rules = RuleSetId::Quake2Rerelease;
+    let localization =
+        qa_content::localization::Catalog::load(b"pickup = \"Ammo: {0}\"\nweapon = \"Blaster\"\n")
+            .unwrap();
+    let values = ValueLayout::load(&[]).unwrap();
+    let mut hud = HudState::with_capacity(0, 0, 0, values.capacity());
+    assert!(values.native(rules).stats[2].import(&mut hud.values, 100));
+    let layout = ConfigLayout::for_rules(rules);
+    let mut configs = configs(layout);
+    configs.set(100, b"$weapon").unwrap();
+    configs.set(layout.statusbar().unwrap(),b"xl 100 yt 0 loc_string 1 \"$pickup\" \"$weapon\" xl 200 yt 16 loc_stat_rstring 2 xl 0 yt 32 loc_cstring2 0 \"$weapon\"").unwrap();
+    let texts = TextStore::load(1, 1).unwrap();
+    let render = Assets::load().unwrap();
+    let mut assets = assets(rules, 320);
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    let mut input = view(&hud, &texts, &configs, &values, rules, layout);
+    input.localization = &localization;
+    let stats = assets.append(
+        &mut frame,
+        &render,
+        input,
+        Refdef {
+            viewport: Viewport {
+                width: 320,
+                height: 200,
+                ..Viewport::default()
+            },
+            ..Refdef::default()
+        },
+    );
+    assert_eq!(stats.glyphs, 26);
+    assert_eq!(stats.unsupported, 0);
+    assert_eq!(stats.rejected, 0);
+    let packet = frame.finish();
+    let draws: Vec<_> = packet
+        .commands()
+        .iter()
+        .filter_map(|c| {
+            if let Command::Draw2d(d) = c {
+                Some(d)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(draws[0].rect, [100., 0., 8., 8.]);
+    assert_eq!(draws[12].rect, [144., 16., 8., 8.]);
+    assert_eq!(draws[19].rect, [132., 32., 8., 8.]);
+    assert_eq!(draws[19].texcoords[1], 0.75);
 }

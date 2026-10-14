@@ -18,6 +18,36 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn retail_kpf_package_uses_the_same_archive_reader_and_localization_catalog() {
+    let Some(root) = std::env::var_os("QA_Q2_RERELEASE_KPF_ROOT") else {
+        return;
+    };
+    let mut vfs = Vfs::default();
+    let mounts = vfs.mount_product(std::path::Path::new(&root), 0).unwrap();
+    assert!(mounts.len() > 1);
+    let file = vfs.open(b"localization/loc_english.txt").unwrap();
+    let origin = vfs.origin(file).unwrap();
+    assert!(origin.path.ends_with("Q2Game.kpf"));
+    assert_eq!(origin.kind, MountKind::Pk3);
+    let mut reader = qa_formats::archive::ArchiveReader::default();
+    let bytes = vfs
+        .read_to_vec(file, 8 * 1024 * 1024, &mut reader)
+        .unwrap();
+    let catalog = qa_content::localization::Catalog::load(&bytes).unwrap();
+    let mut text = qa_formats::localization::LocText::default();
+    catalog
+        .format(
+            b"$g_entered_game",
+            1,
+            |_| Ok::<_, ()>(Some(b"Player".as_slice())),
+            &mut text,
+        )
+        .unwrap();
+    assert_eq!(text.as_bytes(), b"Player entered the game\n");
+    assert!(vfs.open(b"fonts/qconfont.kfont").is_some());
+}
+
+#[test]
 fn normalized_paths_reject_traversal_and_native_absolute_paths() {
     assert_eq!(normalize(b"Maps\\E1M1.BSP").unwrap(), b"maps/e1m1.bsp");
     assert_eq!(

@@ -19,6 +19,36 @@ use qa_render::{
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {
+    let Some(root) = std::env::var_os("QA_Q2_RERELEASE_ROOT") else {
+        return;
+    };
+    let mut vfs = Vfs::default();
+    vfs.mount_product(std::path::Path::new(&root), 0).unwrap();
+    assert!(vfs.open(b"pics/conchars.png").is_some());
+    assert!(vfs.open(b"pics/conchars.pcx").is_none());
+    let mut assets = Assets::load().unwrap();
+    let font = qa_app::renderer::console::FontAssets::load(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake2Rerelease,
+        None,
+        ImageSettings::native(RuleSetId::Quake2Rerelease),
+    )
+    .unwrap();
+    assert!(font.native);
+    let material = assets.material(font.font.unwrap().material).unwrap();
+    assert_eq!(material.stages[0].blend, Some(StageBlend::ALPHA));
+    let qa_render::assets::StageTexture::Image(id) = material.stages[0].texture else {
+        panic!()
+    };
+    let image = assets.image(id).unwrap();
+    assert_eq!([image.width, image.height], [128, 128]);
+    assert!(image.indexed.is_some());
+    assert!(font.palette.is_some());
+}
 struct Fixture(std::path::PathBuf);
 impl Fixture {
     fn new() -> Self {

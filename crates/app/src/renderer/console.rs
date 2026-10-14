@@ -181,7 +181,7 @@ impl ConsoleAssets {
             self.rules.name(),
             self.font.is_some(),
             self.background.is_some(),
-            self.font.is_some() && self.rules != RuleSetId::Quake2Rerelease,
+            self.font.is_some(),
             qa_console::presentation::SCROLLBACK_RECORDS,
         ));
     }
@@ -195,7 +195,7 @@ impl ConsoleAssets {
                 height: self.glyph_height,
             }),
             palette: self.palette,
-            native: self.rules != RuleSetId::Quake2Rerelease,
+            native: self.font.is_some(),
         }
     }
     pub fn append(
@@ -359,7 +359,7 @@ impl FontAssets {
                 height: qa_gameplay::rules::presentation::text_rules(rules).glyph_height,
             }),
             palette,
-            native: rules != RuleSetId::Quake2Rerelease,
+            native: font.is_some(),
         })
     }
 }
@@ -397,6 +397,29 @@ fn register_font(
             .map_err(|error| format!("{error:?}"))?;
         return bitmap_material(images, "console/conchars", image.id, image.sampler, None)
             .map_err(str::to_owned);
+    }
+    if rules == RuleSetId::Quake2Rerelease && vfs.open(b"pics/conchars.png").is_some() {
+        let image = images
+            .raster(
+                "pics/conchars.png",
+                ImageUse {
+                    sampler: bitmap_sampler(),
+                    ..ImageUse::pic()
+                },
+                Some(qa_render::material::resources::IndexedTarget {
+                    palette,
+                    transparent_index: Some(255),
+                }),
+            )
+            .map_err(|error| format!("{error:?}"))?;
+        return bitmap_material(
+            images,
+            "pics/conchars.png",
+            image.id,
+            image.sampler,
+            Some(StageBlend::ALPHA),
+        )
+        .map_err(str::to_owned);
     }
     let sampler = bitmap_sampler();
     let image = images

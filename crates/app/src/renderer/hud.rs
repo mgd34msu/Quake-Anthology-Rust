@@ -26,6 +26,7 @@ pub struct HudView<'a> {
     pub configs: &'a ConfigStrings,
     pub layout: ConfigLayout,
     pub values: &'a qa_ui::values::ValueLayout,
+    pub localization: &'a qa_content::localization::Catalog,
     pub rules: RuleSetId,
     pub time: EventTime,
     pub style_time: ThinkTime,
@@ -153,10 +154,8 @@ impl HudAssets {
             stats.rejected += 1;
             return stats;
         }
-        let Some(font) = self.font.font else {
-            stats.missing_font += 1;
-            return stats;
-        };
+        let font = self.font.font;
+        stats.missing_font += u32::from(font.is_none());
         stats.non_native_font += u32::from(!self.font.native);
         frame.clear_scene();
         let ui = Refdef {
@@ -191,60 +190,64 @@ impl HudAssets {
             .iter()
             .filter(|line| line.as_ref().is_some_and(|line| line.until <= now))
             .count() as u32;
-        if self
-            .notify
-            .prepare_text_chunks(
-                chunks,
-                (viewport.width / 8).saturating_sub(2).max(2) as usize,
-            )
-            .is_err()
-        {
-            stats.rejected += 1;
-        } else {
-            for (row, (_, cells)) in self.notify.lines().enumerate() {
-                let size = cells.len().min(remaining);
-                stats.text(font.cells(
-                    frame,
-                    &cells[..size],
-                    i64::from(viewport.x) + 8,
-                    i64::from(viewport.y) + row as i64 * i64::from(font.height),
-                    viewport,
-                ));
-                stats.rejected += u32::from(size != cells.len());
-                remaining -= size;
+        if let Some(font) = font {
+            if self
+                .notify
+                .prepare_text_chunks(
+                    chunks,
+                    (viewport.width / 8).saturating_sub(2).max(2) as usize,
+                )
+                .is_err()
+            {
+                stats.rejected += 1;
+            } else {
+                for (row, (_, cells)) in self.notify.lines().enumerate() {
+                    let size = cells.len().min(remaining);
+                    stats.text(font.cells(
+                        frame,
+                        &cells[..size],
+                        i64::from(viewport.x) + 8,
+                        i64::from(viewport.y) + row as i64 * i64::from(font.height),
+                        viewport,
+                    ));
+                    stats.rejected += u32::from(size != cells.len());
+                    remaining -= size;
+                }
+            }
+            let policy = text_rules(view.rules);
+            if let Some(line) = &view.hud.centerprint
+                && view.show_text
+            {
+                if line.until <= now {
+                    stats.expired += 1;
+                } else if !policy.center {
+                    stats.unsupported += 1;
+                } else if let Some(text) = view.texts.get(line.text.id()) {
+                    let lines = 1 + text.iter().filter(|&&byte| byte == b'\n').count();
+                    let mut y = viewport.y as i32 + center_y(viewport.height, lines);
+                    for line in text.split(|&byte| byte == b'\n') {
+                        let line = &line[..line.len().min(40)];
+                        let x =
+                            viewport.x as i32 + (viewport.width as i32 - line.len() as i32 * 8) / 2;
+                        append_bytes(
+                            Some(font),
+                            frame,
+                            line,
+                            0,
+                            x,
+                            y,
+                            viewport,
+                            &mut remaining,
+                            &mut stats,
+                        );
+                        y += 8;
+                    }
+                } else {
+                    stats.rejected += 1;
+                }
             }
         }
         let policy = text_rules(view.rules);
-        if let Some(line) = &view.hud.centerprint
-            && view.show_text
-        {
-            if line.until <= now {
-                stats.expired += 1;
-            } else if !policy.center {
-                stats.unsupported += 1;
-            } else if let Some(text) = view.texts.get(line.text.id()) {
-                let lines = 1 + text.iter().filter(|&&byte| byte == b'\n').count();
-                let mut y = viewport.y as i32 + center_y(viewport.height, lines);
-                for line in text.split(|&byte| byte == b'\n') {
-                    let line = &line[..line.len().min(40)];
-                    let x = viewport.x as i32 + (viewport.width as i32 - line.len() as i32 * 8) / 2;
-                    append_bytes(
-                        font,
-                        frame,
-                        line,
-                        0,
-                        x,
-                        y,
-                        viewport,
-                        &mut remaining,
-                        &mut stats,
-                    );
-                    y += 8;
-                }
-            } else {
-                stats.rejected += 1;
-            }
-        }
         if policy.layouts
             && matches!(
                 view.layout.rules,
@@ -299,7 +302,7 @@ impl HudAssets {
     }
 }
 fn append_bytes(
-    font: BitmapFont,
+    font: Option<BitmapFont>,
     frame: &mut Frame,
     text: &[u8],
     xor: u8,
@@ -309,6 +312,9 @@ fn append_bytes(
     remaining: &mut usize,
     stats: &mut HudStats,
 ) {
+    let Some(font) = font else {
+        return;
+    };
     let count = text.len().min(*remaining);
     stats.text(font.bytes(
         frame,
@@ -322,7 +328,7 @@ fn append_bytes(
     *remaining -= count;
 }
 fn append_layout(
-    font: BitmapFont,
+    font: Option<BitmapFont>,
     pictures: &pictures::Pictures,
     assets: &Assets,
     frame: &mut Frame,
@@ -355,54 +361,65 @@ fn append_layout(
                 b"yv" => {
                     y = (viewport.height as i32 / 2 - 120).saturating_add(atoi_prefix(next()?))
                 }
-                b"string" | b"string2" => append_bytes(
-                    font,
-                    frame,
-                    next()?,
-                    if command == b"string2" { 128 } else { 0 },
-                    (viewport.x as i32).saturating_add(x),
-                    (viewport.y as i32).saturating_add(y),
-                    viewport,
-                    remaining,
-                    stats,
-                ),
-                b"cstring" | b"cstring2" => {
+                b"string" | b"string2" | b"cstring" | b"cstring2" => {
                     let text = next()?;
-                    let xor = if command == b"cstring2" { 128 } else { 0 };
-                    for (row, line) in text.split(|&byte| byte == b'\n').enumerate() {
-                        let x = (viewport.x as i32)
-                            .saturating_add(x)
-                            .saturating_add(160 - line.len() as i32 * 4);
-                        append_bytes(
-                            font,
-                            frame,
-                            line,
-                            xor,
-                            x,
-                            (viewport.y as i32)
-                                .saturating_add(y)
-                                .saturating_add(row as i32 * 8),
-                            viewport,
-                            remaining,
-                            stats,
-                        );
-                    }
-                }
-                b"stat_string" => {
-                    let ordinal = usize::try_from(atoi_prefix(next()?)).map_err(|_| ())?;
-                    let index = usize::try_from(view.stat(ordinal).ok_or(())?).map_err(|_| ())?;
-                    let text = view.configs.config(index).ok_or(())?.text;
-                    append_bytes(
+                    append_layout_text(
                         font,
                         frame,
                         text,
-                        0,
-                        (viewport.x as i32).saturating_add(x),
-                        (viewport.y as i32).saturating_add(y),
+                        &[],
+                        command,
+                        view,
+                        x,
+                        y,
                         viewport,
                         remaining,
                         stats,
-                    );
+                    )?;
+                }
+                b"stat_string" | b"loc_stat_string" | b"loc_stat_rstring" | b"loc_stat_cstring"
+                | b"loc_stat_cstring2" => {
+                    let ordinal = usize::try_from(atoi_prefix(next()?)).map_err(|_| ())?;
+                    let index = usize::try_from(view.stat(ordinal).ok_or(())?).map_err(|_| ())?;
+                    let text = view.configs.config(index).ok_or(())?.text;
+                    append_layout_text(
+                        font,
+                        frame,
+                        text,
+                        &[],
+                        command,
+                        view,
+                        x,
+                        y,
+                        viewport,
+                        remaining,
+                        stats,
+                    )?;
+                }
+                b"loc_string" | b"loc_string2" | b"loc_rstring" | b"loc_rstring2"
+                | b"loc_cstring" | b"loc_cstring2" => {
+                    let count = usize::try_from(atoi_prefix(next()?)).map_err(|_| ())?;
+                    if count > 7 {
+                        return Err(());
+                    }
+                    let base = next()?;
+                    let mut arguments = [b"".as_slice(); 7];
+                    for argument in &mut arguments[..count] {
+                        *argument = next()?;
+                    }
+                    append_layout_text(
+                        font,
+                        frame,
+                        base,
+                        &arguments[..count],
+                        command,
+                        view,
+                        x,
+                        y,
+                        viewport,
+                        remaining,
+                        stats,
+                    )?;
                 }
                 b"if" => {
                     let ordinal = usize::try_from(atoi_prefix(next()?)).map_err(|_| ())?;
@@ -525,4 +542,82 @@ fn append_layout(
             break;
         }
     }
+}
+
+fn append_layout_text(
+    font: Option<BitmapFont>,
+    frame: &mut Frame,
+    text: &[u8],
+    arguments: &[&[u8]],
+    command: &[u8],
+    view: HudView<'_>,
+    x: i32,
+    y: i32,
+    viewport: Viewport,
+    remaining: &mut usize,
+    stats: &mut HudStats,
+) -> Result<(), ()> {
+    let mut localized = qa_formats::localization::LocText::default();
+    let text = if command.starts_with(b"loc_") {
+        view.localization.format(
+            text,
+            arguments.len(),
+            |index| Ok::<_, ()>(arguments.get(index).copied()),
+            &mut localized,
+        )?;
+        localized.as_bytes()
+    } else {
+        text
+    };
+    let centered = matches!(
+        command,
+        b"cstring"
+            | b"cstring2"
+            | b"loc_cstring"
+            | b"loc_cstring2"
+            | b"loc_stat_cstring"
+            | b"loc_stat_cstring2"
+    );
+    let right = matches!(
+        command,
+        b"loc_rstring" | b"loc_rstring2" | b"loc_stat_rstring"
+    );
+    let alternate = command.ends_with(b"2");
+    if !centered {
+        let x = if right {
+            x.saturating_sub((text.len() as i32).saturating_mul(8))
+        } else {
+            x
+        };
+        append_bytes(
+            font,
+            frame,
+            text,
+            if alternate { 128 } else { 0 },
+            (viewport.x as i32).saturating_add(x),
+            (viewport.y as i32).saturating_add(y),
+            viewport,
+            remaining,
+            stats,
+        );
+        return Ok(());
+    }
+    for (row, line) in text.split(|&b| b == b'\n').enumerate() {
+        let width = (line.len() as i32).saturating_mul(8);
+        let x = x.saturating_add(160 - width / 2);
+        append_bytes(
+            font,
+            frame,
+            line,
+            if alternate { 128 } else { 0 },
+            (viewport.x as i32).saturating_add(x),
+            (viewport.y as i32)
+                .saturating_add(y)
+                .saturating_add(row as i32 * 8),
+            viewport,
+            remaining,
+            stats,
+        );
+    }
+    Ok(())
 }

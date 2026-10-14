@@ -160,7 +160,9 @@ impl Vfs {
                 .filter(|(_, entry)| {
                     entry.mount == root.0 as usize
                         && !entry.name.contains(&b'/')
-                        && (entry.name.ends_with(b".pak") || entry.name.ends_with(b".pk3"))
+                        && [b".pak".as_slice(), b".pk3", b".pkz", b".kpf", b".zip"]
+                            .iter()
+                            .any(|extension| entry.name.ends_with(extension))
                 })
                 .map(|(entry, value)| {
                     (

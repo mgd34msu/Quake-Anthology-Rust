@@ -858,6 +858,7 @@ impl FrameHost {
                 configs: &resources.state.configs,
                 layout: resources.state.layout,
                 values: &self.runtime.catalog.hud.values,
+                localization: &self.runtime.localization,
                 rules: row.client_rules,
                 time: self.time,
                 style_time: if snapshot.protocol
