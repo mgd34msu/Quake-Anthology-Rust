@@ -166,7 +166,11 @@ fn shared_intersections_preserve_shader_before_clip_attribute_bits() {
                 .iter()
                 .map(|&source| {
                     let vertex = evaluated_vertex(source, deforms, Some(stage), &evaluator);
-                    camera.vertex(vertex, vertex.position)
+                    camera.vertex(
+                        vertex,
+                        vertex.position,
+                        crate::stage::unit_rgba(vertex.color),
+                    )
                 })
                 .collect();
             let mut output = [ClipVertex::default(); 10];
@@ -221,7 +225,11 @@ fn old_clip(
     let mut input = Vec::with_capacity(capacity);
     for &source in sources {
         let vertex = evaluated_vertex(source, deforms, stage, evaluator);
-        let vertex = camera.vertex(vertex, vertex.position);
+        let vertex = camera.vertex(
+            vertex,
+            vertex.position,
+            crate::stage::unit_rgba(vertex.color),
+        );
         if !vertex.finite() {
             return None;
         }
@@ -431,7 +439,11 @@ fn active_planes_ignore_later_overflow_after_earlier_removal() {
         [1.0, 0.0, f32::MAX],
         [0.0, 1.0, f32::MAX],
     ]);
-    let clip = camera.vertex(sources[0], sources[0].position);
+    let clip = camera.vertex(
+        sources[0],
+        sources[0].position,
+        crate::stage::unit_rgba(sources[0].color),
+    );
     assert!(clip.finite());
     assert!(!camera.distance(clip, 2).is_finite());
     let mut graph = ClipGraph::load(16).unwrap();
@@ -460,12 +472,20 @@ fn active_planes_keep_finite_polygon_after_removing_one_later_overflow_source() 
         [-1.0, -1.0, 4.0],
         [-1.0, 1.0, 4.0],
     ]);
-    let removed = camera.vertex(sources[0], sources[0].position);
+    let removed = camera.vertex(
+        sources[0],
+        sources[0].position,
+        crate::stage::unit_rgba(sources[0].color),
+    );
     assert!(removed.finite());
     assert!(camera.distance(removed, 1) < 0.0);
     assert!(!camera.distance(removed, 2).is_finite());
     for &source in &sources[1..] {
-        let vertex = camera.vertex(source, source.position);
+        let vertex = camera.vertex(
+            source,
+            source.position,
+            crate::stage::unit_rgba(source.color),
+        );
         assert!(vertex.finite());
         assert!((0..6).all(|plane| camera.distance(vertex, plane).is_finite()));
     }

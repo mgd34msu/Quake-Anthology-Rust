@@ -573,13 +573,7 @@ impl<'a> Images<'a> {
                     .assets
                     .palette(remap.target)
                     .ok_or(ResourceError::Asset("missing presentation image palette"))?;
-                let indices = std::array::from_fn(|index| {
-                    if transparent == Some(index as u8) {
-                        index as u8
-                    } else {
-                        palette_index(target, source.color(index as u8).to_le_bytes(), transparent)
-                    }
-                });
+                let indices = source.translation_to(target, transparent);
                 remap.maps.push((transparent, indices));
                 remap.maps.len() - 1
             }

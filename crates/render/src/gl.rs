@@ -241,6 +241,7 @@ void main() {
         value.a=floor(clamp((incidence*incidence)*(incidence*incidence),0.0,1.0)*255.0);
     }
     color=value/255.0;
+    if(u_alpha_value.w!=0.0) color.a=u_alpha_value.z;
     if(u_texgen==0) texcoord=a_texcoord*u_texture_scale.xy;
     if(u_texgen==1) texcoord=a_lightmap;
     if(u_texgen==2) {
@@ -1802,7 +1803,13 @@ impl GlBackend {
             (self.gl.uniform_color)(
                 self.uniforms.alpha_value,
                 1,
-                [prepared.uniform_alpha as f32, portal, 0.0, 0.0].as_ptr(),
+                [
+                    prepared.uniform_alpha as f32,
+                    portal,
+                    prepared.float_alpha.unwrap_or(0.0),
+                    u8::from(prepared.float_alpha.is_some()) as f32,
+                ]
+                .as_ptr(),
             );
             (self.gl.uniform_color)(
                 self.uniforms.view_origin,

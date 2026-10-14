@@ -61,7 +61,8 @@ impl AliasLight {
 pub(super) struct Raster<'a> {
     pub palette: &'a PaletteLighting,
     pub palette_id: PaletteId,
-    mip: &'a IndexedMip,
+    mip: Option<&'a IndexedMip>,
+    flat_color: Option<u8>,
     transparent_index: Option<u8>,
     wrap: Wrap,
     lighting: IndexedLighting,
@@ -91,10 +92,18 @@ impl<'a> Raster<'a> {
             return Ok(None);
         };
         let palette_resource = assets.palette(palette).ok_or("missing mesh palette")?;
-        let texture = image
-            .indexed
-            .as_ref()
-            .ok_or("mesh image has no native indices")?;
+        let flat_color = if let Some((color_palette, color)) = stage.inputs.palette_color {
+            if color_palette != palette {
+                return Err("flat color palette mismatch");
+            }
+            Some(color)
+        } else {
+            None
+        };
+        let texture = image.indexed.as_ref();
+        if flat_color.is_none() && texture.is_none() {
+            return Err("mesh image has no native indices");
+        }
         let blend = match stage.stage.blend {
             None => false,
             Some(StageBlend::ALPHA)
@@ -121,8 +130,11 @@ impl<'a> Raster<'a> {
         Ok(Some(Self {
             palette: palette_resource,
             palette_id: palette,
-            mip: texture.mip(0).ok_or("missing native mesh mip")?,
-            transparent_index: texture.transparent_index(),
+            mip: texture
+                .map(|texture| texture.mip(0).ok_or("missing native mesh mip"))
+                .transpose()?,
+            flat_color,
+            transparent_index: texture.and_then(|texture| texture.transparent_index()),
             wrap: image.native_sampler.unwrap_or(stage.stage.sampler).wrap,
             lighting: policy,
             alias_light,
@@ -152,14 +164,23 @@ impl<'a> Raster<'a> {
         destination: u8,
         destination_palette: u32,
     ) -> Option<(u8, bool)> {
-        let x = super::texel(coordinates[0], self.mip.width, self.wrap);
-        let y = super::texel(coordinates[1], self.mip.height, self.wrap);
-        let raw = self.mip.indices()[y * self.mip.width as usize + x];
+        let raw = if let Some(color) = self.flat_color {
+            color
+        } else {
+            let mip = self.mip?;
+            let x = super::texel(coordinates[0], mip.width, self.wrap);
+            let y = super::texel(coordinates[1], mip.height, self.wrap);
+            mip.indices()[y * mip.width as usize + x]
+        };
         if self.transparent_index == Some(raw) {
             return None;
         }
         let shade = (light as i32).clamp(0, 63 * 256 + 255) as usize & 0xff00;
-        let color = self.palette.colormap()[shade + raw as usize];
+        let color = if self.flat_color.is_some() {
+            raw
+        } else {
+            self.palette.colormap()[shade + raw as usize]
+        };
         let (source_major, depth_write) = if !self.blend {
             return Some((color, self.depth_write));
         } else if let Some([low, high]) = self.alpha_cutoffs {

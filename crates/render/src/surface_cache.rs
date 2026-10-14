@@ -61,6 +61,35 @@ impl PaletteLighting {
     pub fn color(&self, index: u8) -> u32 {
         self.colors[index as usize]
     }
+    pub fn translation_to(&self, target: &Self, transparent: Option<u8>) -> [u8; 256] {
+        std::array::from_fn(|index| {
+            if self.id == target.id || transparent == Some(index as u8) {
+                index as u8
+            } else {
+                let color = self.color(index as u8).to_le_bytes();
+                target.nearest_index([color[0], color[1], color[2]], transparent)
+            }
+        })
+    }
+    /// Cold fallback for cross-game translucency when the presentation has no
+    /// authored blend table. Preserve an existing native table byte for byte.
+    pub fn ensure_translucency(&mut self) {
+        if self.translucency.is_some() {
+            return;
+        }
+        let mut map = vec![0; ALPHAMAP_BYTES];
+        for major in 0..256 {
+            let a = self.colors[major].to_le_bytes();
+            for minor in 0..256 {
+                let b = self.colors[minor].to_le_bytes();
+                let rgb = std::array::from_fn(|axis| {
+                    ((u16::from(a[axis]) * 2 + u16::from(b[axis])) / 3) as u8
+                });
+                map[major * 256 + minor] = self.nearest_index(rgb, None);
+            }
+        }
+        self.translucency = Some(map.into_boxed_slice());
+    }
 
     /// Cold conversion for truecolor assets with no native indexed resource.
     /// Equal distances retain the first palette entry; an opaque pixel never

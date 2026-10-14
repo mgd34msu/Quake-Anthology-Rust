@@ -308,6 +308,7 @@ pub struct SceneComposer {
     native_axes: [Option<[qa_core::primitives::Vec3; 3]>; SeatId::COUNT],
     kind: Kind,
     beam: qa_render::MaterialId,
+    beam_alpha: qa_render::MaterialId,
 }
 
 impl SceneComposer {
@@ -347,8 +348,19 @@ impl SceneComposer {
         );
 
         let frontend = FrontEnd::load(limits)?;
-        let beam =
-            qa_render::entities::register_beam_material(&mut assets).map_err(str::to_owned)?;
+        let beam = qa_render::entities::register_beam_material(
+            &mut assets,
+            qa_render::shader::StageBlend {
+                source: qa_render::shader::BlendFactor::One,
+                destination: qa_render::shader::BlendFactor::One,
+            },
+        )
+        .map_err(str::to_owned)?;
+        let beam_alpha = qa_render::entities::register_beam_material(
+            &mut assets,
+            qa_render::shader::StageBlend::ALPHA,
+        )
+        .map_err(str::to_owned)?;
         Ok((
             Self {
                 frontend,
@@ -360,6 +372,7 @@ impl SceneComposer {
                 native_axes: [None; SeatId::COUNT],
                 kind: Kind::Cpu,
                 beam,
+                beam_alpha,
             },
             limits,
         ))
@@ -667,11 +680,16 @@ impl Renderer {
                 let world_added =
                     frame.add_world(client.world, client.world_presentation, surfaces);
                 if let Some(client_scene) = &scenes[seat] {
+                    let mut random = || self.effects.random_word();
                     self.sample.client_scene += client_scene.append(
                         frame,
                         &composition.assets,
                         &refdef,
                         matches!(self.kind, Kind::Cpu),
+                        Some(crate::client_scene::BeamInput {
+                            material: composition.beam_alpha,
+                            random: &mut random,
+                        }),
                     );
                 }
                 if let Some(effect_client) = self.effect_clients[seat] {

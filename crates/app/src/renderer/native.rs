@@ -265,7 +265,9 @@ impl SceneService for SceneBorrow<'_> {
                 rotation: submitted.rotation,
             },
             EntityKind::Beam => SceneModel::Beam {
-                end: submitted.old_origin,
+                end: submitted.old_origin - pose.origin,
+                radius: 4.0,
+                world_space: true,
             },
             EntityKind::RailCore => SceneModel::RailCore {
                 end: submitted.old_origin,
@@ -285,6 +287,12 @@ impl SceneService for SceneBorrow<'_> {
             },
             EntityKind::PolyMarker => SceneModel::PolyMarker,
         };
+        if submitted.kind == EntityKind::Beam {
+            // R_RotateForEntity uses world orientation for RT_BEAM; its
+            // surface routine intentionally leaves the origin addition out.
+            pose.origin = qa_core::primitives::Vec3::default();
+            pose.color = [255, 0, 0, 255];
+        }
         pose.frame = submitted.frame as u32;
         pose.old_frame = submitted.old_frame as u32;
         frame.add_entity(pose)

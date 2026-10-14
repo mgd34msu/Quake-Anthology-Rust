@@ -313,6 +313,8 @@ impl Default for EntityLighting {
 pub struct DrawInputs {
     pub time_ms: i64,
     pub entity_color: [u8; 4],
+    pub entity_alpha: Option<f32>,
+    pub palette_color: Option<(crate::PaletteId, u8)>,
     pub entity_texcoord: [f32; 2],
     pub entity_shader_time: f32,
     /// Camera and lighting vectors are in this draw's model-local coordinates.
@@ -340,17 +342,24 @@ impl DrawInputs {
     }
     /// Keep one model-local input conversion for meshes and linked world
     /// surfaces. A face's lightmap and texture scale remain its own binding.
-    pub fn for_entity(mut self, entity: &crate::scene::SceneEntity) -> Self {
-        if matches!(
-            entity.model,
-            crate::scene::SceneModel::Mesh(_) | crate::scene::SceneModel::World { .. }
-        ) {
+    pub fn for_entity(self, entity: &crate::scene::SceneEntity) -> Self {
+        self.entity_inputs(entity, true)
+    }
+    fn entity_inputs(mut self, entity: &crate::scene::SceneEntity, local: bool) -> Self {
+        if local
+            && matches!(
+                entity.model,
+                crate::scene::SceneModel::Mesh(_) | crate::scene::SceneModel::World { .. }
+            )
+        {
             self.view_origin = entity_view_origin(self.view_origin, entity);
             self.clip_plane = self
                 .clip_plane
                 .map(|plane| plane.to_local(entity.origin, entity.axes));
         }
         self.entity_color = entity.color;
+        self.entity_alpha = entity.alpha;
+        self.palette_color = entity.palette_color;
         self.entity_texcoord = entity.shader_texcoord;
         self.entity_shader_time = entity.shader_time;
         self.lighting = entity.lighting;
@@ -358,7 +367,7 @@ impl DrawInputs {
     }
     pub fn for_poly(self, poly: &crate::scene::Poly, list: &crate::scene::CommandList) -> Self {
         poly.entity
-            .map_or(self, |index| self.for_entity(list.entity(index)))
+            .map_or(self, |index| self.entity_inputs(list.entity(index), false))
     }
     pub fn time_seconds(&self) -> f32 {
         crate::scene::milliseconds_to_seconds(self.time_ms)
@@ -375,6 +384,8 @@ impl Default for DrawInputs {
         Self {
             time_ms: 0,
             entity_color: [255; 4],
+            entity_alpha: None,
+            palette_color: None,
             entity_texcoord: [0.0; 2],
             entity_shader_time: 0.0,
             view_origin: Vec3::default(),
@@ -398,8 +409,18 @@ pub struct PreparedStage {
     /// quantization. Vertex generators replace these channels before clipping.
     pub uniform_color: [u8; 4],
     pub uniform_alpha: u8,
+    pub float_alpha: Option<f32>,
     pub tcmods: [TexCoordOp; 4],
     pub tiled: Option<PreparedTiled>,
+}
+impl PreparedStage {
+    pub(crate) fn unit_color(&self, color: [u8; 4]) -> [f32; 4] {
+        let mut color = unit_rgba(color);
+        if let Some(alpha) = self.float_alpha {
+            color[3] = alpha;
+        }
+        color
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedTiled {
@@ -657,6 +678,14 @@ impl StageEvaluator {
             AlphaGen::Wave(wave) => byte(self.wave(wave, time)?),
             _ => 255,
         };
+        let float_alpha = inputs
+            .entity_alpha
+            .filter(|alpha| alpha.is_finite())
+            .and_then(|alpha| match stage.alpha_gen {
+                AlphaGen::Entity => Some(alpha.clamp(0.0, 1.0)),
+                AlphaGen::OneMinusEntity => Some((1.0 - alpha).clamp(0.0, 1.0)),
+                _ => None,
+            });
         Ok(PreparedStage {
             stage: *stage,
             inputs,
@@ -664,6 +693,7 @@ impl StageEvaluator {
             shader_time: time,
             uniform_color,
             uniform_alpha,
+            float_alpha,
             tcmods,
             tiled: settings
                 .software_tiled

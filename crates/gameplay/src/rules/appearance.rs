@@ -16,6 +16,8 @@ pub struct AppearanceCapabilities {
     /// Classic Q2 applies transmitted origin motion inside alias blending.
     /// Rerelease bit 6 instead suppresses origin interpolation completely.
     pub alias_motion: bool,
+    pub beam_radius: Option<f32>,
+    pub beam_interpolate: bool,
     pub state_old_frame: bool,
     pub alpha: f32,
     pub scale: f32,
@@ -44,6 +46,8 @@ struct NativeRules {
     alias_motion: bool,
     old_frame: u32,
     beam: u32,
+    beam_integer_half: bool,
+    beam_interpolate: bool,
     bfg: u64,
     plasma: u64,
     sphere: u64,
@@ -75,6 +79,8 @@ const NEUTRAL: NativeRules = NativeRules {
     alias_motion: false,
     old_frame: 0,
     beam: 0,
+    beam_integer_half: false,
+    beam_interpolate: false,
     bfg: 0,
     plasma: 0,
     sphere: 0,
@@ -107,6 +113,7 @@ const Q2: NativeRules = NativeRules {
     frame_lerp: 64,
     alias_motion: true,
     beam: 128,
+    beam_integer_half: true,
     bfg: 1 << 7,
     plasma: 1 << 24,
     sphere: 1 << 28,
@@ -139,6 +146,8 @@ const RULES: [NativeRules; 5] = [
     NativeRules {
         old_frame: 1 << 22,
         alias_motion: false,
+        beam_integer_half: false,
+        beam_interpolate: true,
         explicit_alpha: true,
         zero_scale: true,
         player_interpolation_events: true,
@@ -355,6 +364,7 @@ impl AppearancePolicy {
             | rules.translucent
             | rules.frame_lerp
             | rules.old_frame;
+        let supported = supported | rules.beam;
         let alpha = if rules.native_alpha && !(rules.explicit_alpha && appearance.alpha != 0.0) {
             native_alpha(flags, appearance.native.effects, rules)
         } else {
@@ -367,6 +377,14 @@ impl AppearancePolicy {
             fullbright: flags & rules.fullbright != 0,
             frame_lerp: flags & rules.frame_lerp != 0,
             alias_motion: flags & rules.frame_lerp != 0 && rules.alias_motion,
+            beam_radius: (flags & rules.beam != 0).then(|| {
+                if rules.beam_integer_half {
+                    (appearance.frame / 2) as f32
+                } else {
+                    appearance.frame as f32 * 0.5
+                }
+            }),
+            beam_interpolate: rules.beam_interpolate,
             state_old_frame: flags & rules.old_frame != 0,
             alpha,
             scale: if rules.zero_scale && appearance.scale == 0.0 {

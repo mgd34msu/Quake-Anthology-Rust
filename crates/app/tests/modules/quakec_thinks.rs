@@ -872,7 +872,13 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
         let mut frontend = qa_render::FrontEnd::load(Default::default()).unwrap();
         let mut frame = frontend.begin_frame([0; 4]).unwrap();
         let input = host.client_scene_inputs()[0].take().unwrap();
-        let counts = input.append(&mut frame, &assets, &qa_render::Refdef::default(), false);
+        let counts = input.append(
+            &mut frame,
+            &assets,
+            &qa_render::Refdef::default(),
+            false,
+            None,
+        );
         assert_eq!(counts.models, 1);
         assert_eq!(counts.missing_models, 0);
         assert_eq!(frame.finish().entity(0).origin, retained.position);

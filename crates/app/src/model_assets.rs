@@ -314,6 +314,28 @@ struct ProfileImages {
     model_policy: ModelPolicy,
     // Temporarily taken only while Images borrows the separately owned Assets.
     state: Option<Result<ImagesState, String>>,
+    colors: Option<PaletteColors>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ModelColorId(u32);
+pub struct PaletteColors {
+    pub source: PaletteId,
+    pub target: PaletteId,
+    pub indices: [u8; 256],
+}
+impl PaletteColors {
+    fn load(profile: ModelProfile, assets: &Assets) -> Option<Self> {
+        let source = profile.source_palette?;
+        let target = profile.palette.unwrap_or(source);
+        let original = assets.palette(source)?;
+        let destination = assets.palette(target)?;
+        let indices = original.translation_to(destination, None);
+        Some(Self {
+            source,
+            target,
+            indices,
+        })
+    }
 }
 #[derive(Clone, Copy)]
 struct ModelPolicy {
@@ -371,6 +393,7 @@ pub struct ModelCatalog {
     inline: Box<[RegisteredInline]>,
     capacity: ModelCapacity,
     pub diagnostics: Box<[ModelDiagnostic]>,
+    colors: Box<[(ModelProfile, PaletteColors)]>,
 }
 
 /// Owns cold Assets until every native precache and configured presentation
@@ -400,7 +423,7 @@ pub struct ModelCatalogBuilder {
 }
 impl ModelCatalogBuilder {
     pub fn new(
-        assets: Assets,
+        mut assets: Assets,
         profiles: impl IntoIterator<Item = ModelProfile>,
         worlds: impl IntoIterator<Item = WorldId>,
         limits: ModelLimits,
@@ -415,6 +438,19 @@ impl ModelCatalogBuilder {
             if unique.len() == limits.models {
                 return Err("model registration capacity".to_owned());
             }
+            if let Some((source, target)) = profile
+                .source_palette
+                .zip(profile.palette)
+                .filter(|(source, target)| source != target)
+                && matches!(
+                    profile.source_rules,
+                    RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+                )
+                && assets.palette(source).is_some()
+                && assets.palette(target).is_some()
+            {
+                assets.ensure_palette_translucency(target)?;
+            }
             let state = ImagesState::new(
                 profile.source_rules,
                 profile.rules,
@@ -426,6 +462,7 @@ impl ModelCatalogBuilder {
                 profile,
                 model_policy: profile.model_policy(),
                 state: Some(state),
+                colors: PaletteColors::load(profile, &assets),
             });
         }
         let (worlds, inline) = inline_bindings(&assets, worlds, limits)?;
@@ -1026,6 +1063,11 @@ impl ModelCatalogBuilder {
             inline: self.inline,
             capacity: self.capacity,
             diagnostics: self.diagnostics.into_boxed_slice(),
+            colors: self
+                .profiles
+                .into_iter()
+                .filter_map(|entry| entry.colors.map(|colors| (entry.profile, colors)))
+                .collect(),
         };
         (self.assets, catalog)
     }
@@ -1362,6 +1404,17 @@ impl ModelLookup for ModelCatalog {
     }
 }
 impl ModelCatalog {
+    pub fn color_binding(&self, profile: ModelProfile) -> Option<ModelColorId> {
+        self.colors
+            .iter()
+            .position(|(key, _)| *key == profile)
+            .map(|index| ModelColorId(index as u32))
+    }
+    pub fn colors(&self, binding: ModelColorId) -> Option<&PaletteColors> {
+        self.colors
+            .get(binding.0 as usize)
+            .map(|(_, colors)| colors)
+    }
     pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<MaterialId> {
         let index = usize::try_from(handle.checked_sub(1)?).ok()?;
         self.shaders
@@ -1727,7 +1780,7 @@ fn register_sprites(
                 &[Stage {
                     texture: StageTexture::Image(image),
                     rgb_gen: RgbGen::ExactVertex,
-                    alpha_gen: AlphaGen::Vertex,
+                    alpha_gen: AlphaGen::Entity,
                     alpha_test: if material_policy.translucent {
                         AlphaFunc::None
                     } else {

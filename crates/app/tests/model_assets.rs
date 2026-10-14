@@ -25,6 +25,37 @@ fn native_profile(rules: RuleSetId, palette: PaletteId) -> ModelProfile {
 }
 
 #[test]
+fn foreign_presentation_colors_bind_and_generate_missing_blends_at_load() {
+    let fixture = support::Fixture::models();
+    let mut assets = Assets::load().unwrap();
+    let source = support::palette(&mut assets);
+    let target = support::shifted_palette(&mut assets, 100);
+    let mut foreign = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake2, Some(source));
+    foreign.rules = RuleSetId::Quake;
+    foreign.palette = Some(target);
+    foreign.image_settings = qa_render::material::resources::ImageSettings::native(foreign.rules);
+    assert!(assets.palette(target).unwrap().translucency_map().is_none());
+    let (assets, catalog) = load(&fixture, assets, &[foreign], ModelLimits::default()).unwrap();
+    fixture.remove("models/test/tris.md2");
+    let binding = catalog.color_binding(foreign.profile()).unwrap();
+    let colors = catalog.colors(binding).unwrap();
+    assert_eq!((colors.source, colors.target), (source, target));
+    assert_eq!(colors.indices[33], 189);
+    let palette = assets.palette(target).unwrap();
+    let table = palette.translucency_map().unwrap();
+    for (major, minor) in [(0u8, 0u8), (33, 44), (77, 22), (200, 255)] {
+        let a = palette.color(major).to_le_bytes();
+        let b = palette.color(minor).to_le_bytes();
+        let rgb =
+            std::array::from_fn(|axis| ((u16::from(a[axis]) * 2 + u16::from(b[axis])) / 3) as u8);
+        assert_eq!(
+            table[usize::from(major) * 256 + usize::from(minor)],
+            palette.nearest_index(rgb, None)
+        );
+    }
+}
+
+#[test]
 fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
     use qa_render::{Command, FrontEnd, Limits, Refdef, SceneEntity, Viewport};
     let fixture = support::Fixture::new(&[
@@ -75,6 +106,7 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
             ..Default::default()
         }));
         let refdef = Refdef {
+            clip_plane: Some(qa_core::primitives::Plane::oriented(Vec3([1., 0., 0.]), 4.)),
             viewport: Viewport {
                 width: 32,
                 height: 32,
@@ -97,6 +129,9 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
             .unwrap();
         assert_eq!(view.scene.polys.count, 2);
         let poly = packet.poly(view.scene.polys.first);
+        let inputs = qa_render::stage::DrawInputs::for_view(&refdef).for_poly(poly, &packet);
+        assert_eq!(inputs.view_origin, refdef.origin);
+        assert_eq!(inputs.clip_plane, refdef.clip_plane);
         assert_eq!(
             packet.vertices(poly.vertices)[0].position,
             Vec3([16., -expected[0], expected[2]])
@@ -751,7 +786,13 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
             })
             .unwrap();
             let mut frame = front.begin_frame([0; 4]).unwrap();
-            let counts = input.append(&mut frame, &assets, &qa_render::Refdef::default(), software);
+            let counts = input.append(
+                &mut frame,
+                &assets,
+                &qa_render::Refdef::default(),
+                software,
+                None,
+            );
             assert_eq!(counts.entities, 1);
             assert_eq!(counts.models, limit as u32);
             assert_eq!(counts.rejected, (4 - limit) as u32);
@@ -2529,7 +2570,13 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
             gun_previous: None,
             view_entity: None,
         };
-        let counts = input.append(&mut frame, &assets, &qa_render::Refdef::default(), false);
+        let counts = input.append(
+            &mut frame,
+            &assets,
+            &qa_render::Refdef::default(),
+            false,
+            None,
+        );
         assert_eq!(
             (counts.models, counts.missing_models, counts.rejected),
             (1, 0, 0)
@@ -2576,7 +2623,13 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
     };
     assert_eq!(
         input
-            .append(&mut frame, &assets, &qa_render::Refdef::default(), false)
+            .append(
+                &mut frame,
+                &assets,
+                &qa_render::Refdef::default(),
+                false,
+                None
+            )
             .missing_models,
         1
     );

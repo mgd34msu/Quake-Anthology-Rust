@@ -307,6 +307,9 @@ impl Effects {
     pub fn capacity(&self) -> usize {
         self.particles.next.len()
     }
+    pub fn random_word(&mut self) -> u32 {
+        self.random.next_u32()
+    }
     pub fn len(&self) -> usize {
         self.particles.count
     }

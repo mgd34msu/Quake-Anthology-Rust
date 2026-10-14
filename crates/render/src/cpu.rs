@@ -72,12 +72,12 @@ struct ClipVertex {
 }
 
 impl ClipVertex {
-    fn from_vertex(vertex: Vertex, camera: Vec3) -> Self {
+    fn from_vertex(vertex: Vertex, camera: Vec3, color: [f32; 4]) -> Self {
         Self {
             camera,
             texcoord: vertex.texcoord,
             lightmap_coord: vertex.lightmap_coord,
-            color: crate::stage::unit_rgba(vertex.color),
+            color,
             indexed_light: 0.0,
         }
     }
@@ -265,8 +265,8 @@ impl Camera {
         }
     }
 
-    fn vertex(&self, vertex: Vertex, world_position: Vec3) -> ClipVertex {
-        ClipVertex::from_vertex(vertex, self.to_view(world_position))
+    fn vertex(&self, vertex: Vertex, world_position: Vec3, color: [f32; 4]) -> ClipVertex {
+        ClipVertex::from_vertex(vertex, self.to_view(world_position), color)
     }
 
     fn rgb(&self) -> bool {
@@ -741,7 +741,11 @@ impl CpuBackend {
                 let triangle = indices.map(|i| {
                     let vertex =
                         world::evaluated_vertex(vertex(i), deforms, Some(stage), &self.evaluator);
-                    let mut clipped = camera.vertex(vertex, to_world(vertex.position));
+                    let mut clipped = camera.vertex(
+                        vertex,
+                        to_world(vertex.position),
+                        stage.unit_color(vertex.color),
+                    );
                     if let Some(indexed) = indexed {
                         clipped.indexed_light = indexed.light(lighting_normal(i), vertex.color);
                     }
@@ -1071,7 +1075,7 @@ impl CpuBackend {
                         let source = sampler(
                             texels,
                             evaluated.texcoord,
-                            crate::stage::unit_rgba(evaluated.color),
+                            prepared.unit_color(evaluated.color),
                         );
                         if alpha_pass(stage.alpha_test, source[3]) {
                             let blend = stage.blend.or(Some(StageBlend::ALPHA));

@@ -7,26 +7,29 @@ use qa_core::{math, primitives::Vec3};
 
 pub fn register_beam_material(
     assets: &mut crate::Assets,
+    blend: crate::shader::StageBlend,
 ) -> Result<crate::MaterialId, &'static str> {
     use crate::{
         assets::{ImageId, MaterialSettings, Stage, StageTexture},
-        shader::{AlphaGen, BlendFactor, Cull, RgbGen, StageBlend},
+        shader::{AlphaGen, Cull, RgbGen},
     };
     assets.register_material(
         "engine/beam",
         &[Stage {
             texture: StageTexture::Image(ImageId(0)),
             rgb_gen: RgbGen::ExactVertex,
-            alpha_gen: AlphaGen::Vertex,
-            blend: Some(StageBlend {
-                source: BlendFactor::One,
-                destination: BlendFactor::One,
-            }),
+            alpha_gen: AlphaGen::Entity,
+            blend: Some(blend),
             depth_write: false,
             ..Stage::default()
         }],
         MaterialSettings {
             cull: Cull::None,
+            sort: if blend == crate::shader::StageBlend::ALPHA {
+                6.0
+            } else {
+                3.0
+            },
             ..Default::default()
         },
     )
@@ -36,7 +39,8 @@ pub enum Prepared {
     Quad([Vertex; 4]),
     Beam {
         points: [Vec3; 6],
-        direction: Vec3,
+        ends: [Vec3; 6],
+        color: [u8; 4],
     },
     Core {
         start: Vec3,
@@ -68,16 +72,20 @@ impl Prepared {
     pub fn triangles(self, mut emit: impl FnMut([Vertex; 3])) {
         match self {
             Self::Quad(vertices) => quad(vertices, [[0, 1, 3], [3, 1, 2]], &mut emit),
-            Self::Beam { points, direction } => {
+            Self::Beam {
+                points,
+                ends,
+                color,
+            } => {
                 for index in 0..6 {
                     let a = points[index];
                     let b = points[(index + 1) % 6];
                     quad(
                         [
-                            vertex(a, [0.; 2], [255, 0, 0, 255]),
-                            vertex(a + direction, [0.; 2], [255, 0, 0, 255]),
-                            vertex(b, [0.; 2], [255, 0, 0, 255]),
-                            vertex(b + direction, [0.; 2], [255, 0, 0, 255]),
+                            vertex(a, [0.; 2], color),
+                            vertex(ends[index], [0.; 2], color),
+                            vertex(b, [0.; 2], color),
+                            vertex(ends[(index + 1) % 6], [0.; 2], color),
                         ],
                         [[0, 1, 2], [2, 1, 3]],
                         &mut emit,
@@ -217,19 +225,41 @@ pub fn prepare(entity: &SceneEntity, view: Refdef, assets: &crate::Assets) -> Op
             };
             sprite_quad(entity, view, left, up, [1., -1., 1., -1.])
         }
-        SceneModel::Beam { end } => {
+        SceneModel::Beam {
+            end,
+            radius,
+            world_space,
+        } => {
+            if !radius.is_finite() || radius <= 0.0 {
+                return Some(Prepared::Empty);
+            }
             let direction = end - entity.origin;
             let mut normalized = direction;
             if math::normalize(&mut normalized) == 0. {
                 return Some(Prepared::Empty);
             }
-            let perpendicular = math::perpendicular_vector(normalized) * 4.;
-            // The source's origin addition is commented out; retain local-zero placement.
+            let perpendicular = math::perpendicular_vector(normalized) * radius;
+            let points = std::array::from_fn(|index| {
+                math::rotate_about_axis(normalized, perpendicular, (index * 60) as f32)
+            });
+            let starts = points.map(|point| {
+                if world_space {
+                    point + entity.origin
+                } else {
+                    math::transform_point(entity.origin, entity.axes, point)
+                }
+            });
+            let ends = std::array::from_fn(|index| {
+                if world_space {
+                    starts[index] + direction
+                } else {
+                    math::transform_point(entity.origin, entity.axes, points[index] + direction)
+                }
+            });
             Prepared::Beam {
-                points: std::array::from_fn(|index| {
-                    math::rotate_about_axis(normalized, perpendicular, (index * 60) as f32)
-                }),
-                direction,
+                points: starts,
+                ends,
+                color: entity.color,
             }
         }
         SceneModel::RailCore { end, .. } | SceneModel::Lightning { end } => {

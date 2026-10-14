@@ -70,6 +70,7 @@ pub struct ClientModelBindings {
     profile: Option<ModelProfile>,
     world: Option<(WorldId, WorldPresentationId)>,
     registrations: Box<[Option<ClientModel>]>,
+    colors: Option<crate::model_assets::ModelColorId>,
 }
 impl ClientModelBindings {
     pub fn load(client: ClientId, layout: ConfigLayout) -> Self {
@@ -80,6 +81,7 @@ impl ClientModelBindings {
             profile: None,
             world: None,
             registrations: vec![None; range.count as usize].into_boxed_slice(),
+            colors: None,
         }
     }
 
@@ -88,6 +90,7 @@ impl ClientModelBindings {
         self.profile = None;
         self.world = None;
         self.registrations.fill(None);
+        self.colors = None;
     }
 
     pub(crate) fn client(&self) -> ClientId {
@@ -152,6 +155,7 @@ impl ClientModelBindings {
     ) -> u32 {
         self.reset();
         self.profile = Some(profile);
+        self.colors = models.color_binding(profile);
         self.world = world;
         self.refresh_all(configs, models)
     }
@@ -288,7 +292,9 @@ impl ClientEntities<'_> {
                 )
             });
         let fraction = self.interpolation.fraction;
-        let origin = if capabilities.frame_lerp {
+        let origin = if capabilities.frame_lerp
+            || (capabilities.beam_radius.is_some() && !capabilities.beam_interpolate)
+        {
             record.position
         } else {
             previous.map_or(record.position, |old| {
@@ -454,10 +460,16 @@ pub struct ClientSceneInput<'a> {
     pub view_entity: Option<u32>,
 }
 
+pub struct BeamInput<'a> {
+    pub material: qa_render::MaterialId,
+    pub random: &'a mut dyn FnMut() -> u32,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SceneCounts {
     pub entities: u32,
     pub models: u32,
+    pub beams: u32,
     pub missing_models: u32,
     pub unsupported: u32,
     pub rejected: u32,
@@ -466,6 +478,7 @@ impl std::ops::AddAssign for SceneCounts {
     fn add_assign(&mut self, rhs: Self) {
         self.entities += rhs.entities;
         self.models += rhs.models;
+        self.beams += rhs.beams;
         self.missing_models += rhs.missing_models;
         self.unsupported += rhs.unsupported;
         self.rejected += rhs.rejected;
@@ -508,6 +521,7 @@ impl ClientSceneInput<'_> {
         assets: &Assets,
         refdef: &Refdef,
         software: bool,
+        mut beam: Option<BeamInput<'_>>,
     ) -> SceneCounts {
         let mut counts = SceneCounts::default();
         let fraction = self.interpolation.fraction;
@@ -525,6 +539,7 @@ impl ClientSceneInput<'_> {
                 assets,
                 software,
                 &mut counts,
+                beam.as_mut(),
             );
         });
         for &record in self.static_entities {
@@ -543,6 +558,7 @@ impl ClientSceneInput<'_> {
                 assets,
                 software,
                 &mut counts,
+                beam.as_mut(),
             );
         }
         self.append_weapon(frame, assets, refdef, software, &mut counts);
@@ -562,14 +578,68 @@ impl ClientSceneInput<'_> {
         assets: &Assets,
         software: bool,
         counts: &mut SceneCounts,
+        beam: Option<&mut BeamInput<'_>>,
     ) {
         let record = pose.record;
         let capabilities = pose.capabilities;
         counts.unsupported += u32::from(capabilities.unsupported != 0);
-        if !capabilities.drawable
-            || number.is_some_and(|number| self.view_entity == Some(number))
+        if number.is_some_and(|number| self.view_entity == Some(number))
             || capabilities.viewer_model
         {
+            return;
+        }
+        if let Some(radius) = capabilities.beam_radius {
+            let Some(presentation) = beam else {
+                counts.unsupported += 1;
+                return;
+            };
+            let Some(colors) = self
+                .bindings
+                .colors
+                .and_then(|binding| self.models.colors(binding))
+            else {
+                counts.missing_models += 1;
+                return;
+            };
+            let shift = ((presentation.random)() & 3) * 8;
+            let index = ((record.appearance.skin as u32 >> shift) & 255) as u8;
+            let Some(palette) = assets.palette(colors.source) else {
+                counts.missing_models += 1;
+                return;
+            };
+            let color = palette.color(index).to_le_bytes();
+            let end = if capabilities.beam_interpolate && !capabilities.frame_lerp {
+                pose.previous.map_or(record.appearance.old_origin, |old| {
+                    old.appearance
+                        .old_origin
+                        .lerp(record.appearance.old_origin, fraction)
+                })
+            } else {
+                record.appearance.old_origin
+            };
+            let added = frame.add_entity(SceneEntity {
+                model: SceneModel::Beam {
+                    end,
+                    radius,
+                    world_space: true,
+                },
+                origin: pose.origin,
+                alpha: Some(capabilities.alpha),
+                palette_color: Some((colors.target, colors.indices[index as usize])),
+                color: [
+                    color[0],
+                    color[1],
+                    color[2],
+                    (capabilities.alpha * 255.0) as u8,
+                ],
+                material: Some(presentation.material),
+                ..Default::default()
+            });
+            counts.beams += u32::from(added);
+            counts.rejected += u32::from(!added);
+            return;
+        }
+        if !capabilities.drawable {
             return;
         }
         let previous = pose.previous;
@@ -596,6 +666,7 @@ impl ClientSceneInput<'_> {
                     origin: pose.origin,
                     non_normalized_axes: capabilities.scale != 1.0,
                     color: [255, 255, 255, (capabilities.alpha * 255.0) as u8],
+                    alpha: Some(capabilities.alpha),
                     depth_hack: capabilities.depth_hack,
                     ..SceneEntity::default()
                 };

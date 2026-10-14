@@ -759,6 +759,18 @@ pub(super) fn entities(native: bool, ui: bool) {
         };
         assert_eq!(view.scene.entities.count, 1);
         assert_eq!(view.scene.polys.count, triangles);
+        if kind == 3 {
+            assert_eq!(packet.entity(0).origin, Vec3::default());
+            assert_eq!(packet.entity(0).color, [255, 0, 0, 255]);
+            assert_eq!(
+                packet.entity(0).model,
+                qa_render::SceneModel::Beam {
+                    end: Vec3([-8., 0., 0.]),
+                    radius: 4.,
+                    world_space: true,
+                }
+            );
+        }
         assert_eq!(packet.rejected, 0);
         assert!(owner.recycle(packet).is_ok());
     }

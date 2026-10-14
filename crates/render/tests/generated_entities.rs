@@ -5,6 +5,186 @@ use qa_render::{
 };
 
 #[test]
+fn shared_beams_apply_world_or_entity_pose_and_keep_supplied_color() {
+    let assets = Assets::load().unwrap();
+    for world_space in [false, true] {
+        let mut front = FrontEnd::load(Limits::default()).unwrap();
+        let mut frame = front.begin_frame([0; 4]).unwrap();
+        let axes = [Vec3([0., 1., 0.]), Vec3([-1., 0., 0.]), Vec3([0., 0., 1.])];
+        let origin = Vec3([16., 20., 24.]);
+        let color = [11, 22, 33, 77];
+        assert!(frame.add_entity(SceneEntity {
+            model: SceneModel::Beam {
+                end: origin + Vec3([16., 0., 0.]),
+                radius: 2.,
+                world_space
+            },
+            origin,
+            axes,
+            color,
+            material: Some(MaterialId(0)),
+            ..Default::default()
+        }));
+        assert!(frame.render_scene(Refdef::default(), &[], &assets));
+        let packet = frame.finish();
+        let Command::View(view) = packet.commands()[1] else {
+            panic!("beam view")
+        };
+        assert_eq!(view.scene.polys.count, 12);
+        let points = packet
+            .polys(view.scene.polys)
+            .iter()
+            .flat_map(|poly| packet.vertices(poly.vertices));
+        for vertex in points {
+            assert_eq!(vertex.color, color);
+            let local = if world_space {
+                vertex.position - origin
+            } else {
+                qa_core::math::inverse_transform_point(origin, axes, vertex.position)
+            };
+            assert!(local.0[0] == 0. || local.0[0] == 16.);
+            assert!((local.0[1] * local.0[1] + local.0[2] * local.0[2] - 4.).abs() < 0.00002);
+        }
+    }
+}
+
+#[test]
+fn native_float_entity_alpha_reaches_cpu_pixels_without_byte_narrowing() {
+    let mut assets = Assets::load().unwrap();
+    let material = qa_render::entities::register_beam_material(
+        &mut assets,
+        qa_render::shader::StageBlend::ALPHA,
+    )
+    .unwrap();
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
+    assert!(frame.add_entity(SceneEntity {
+        model: SceneModel::Sprite {
+            radius: 8.,
+            rotation: 0.
+        },
+        origin: Vec3([16., 0., 0.]),
+        color: [255, 0, 0, 76],
+        alpha: Some(0.3),
+        material: Some(material),
+        ..Default::default()
+    }));
+    assert!(frame.render_scene(
+        Refdef {
+            viewport: qa_render::Viewport {
+                width: 64,
+                height: 64,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        &[],
+        &assets
+    ));
+    let packet = frame.finish();
+    let mut cpu = qa_render::cpu::CpuBackend::load(64, 64).unwrap();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    let pixel = cpu.pixels()[20 * 64 + 22].to_le_bytes();
+    assert_eq!(pixel[..3], [77, 0, 0]);
+}
+
+#[test]
+fn indexed_beams_use_flat_palette_indices_and_the_native_translucency_table() {
+    use qa_render::{
+        assets::{MaterialSettings, Stage},
+        shader::{AlphaGen, RgbGen},
+        surface_cache::{IndexedLighting, PaletteLighting},
+    };
+    let mut assets = Assets::load().unwrap();
+    let rgb: Vec<_> = (0..=255u8).flat_map(|value| [value; 3]).collect();
+    let shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
+    let palette = assets
+        .register_palette(
+            PaletteLighting::load(&rgb, &shades, Some(&vec![77; 65536]), 256).unwrap(),
+        )
+        .unwrap();
+    let mut authored = PaletteLighting::load(&rgb, &shades, Some(&vec![77; 65536]), 256).unwrap();
+    authored.ensure_translucency();
+    assert!(
+        authored
+            .translucency_map()
+            .unwrap()
+            .iter()
+            .all(|&index| index == 77)
+    );
+    let material = qa_render::entities::register_beam_material(
+        &mut assets,
+        qa_render::shader::StageBlend::ALPHA,
+    )
+    .unwrap();
+    let backdrop = assets
+        .register_material(
+            "beam/background",
+            &[Stage {
+                rgb_gen: RgbGen::ExactVertex,
+                alpha_gen: AlphaGen::Entity,
+                ..Default::default()
+            }],
+            MaterialSettings {
+                cull: qa_render::assets::Cull::None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
+    assert!(frame.add_entity(SceneEntity {
+        model: SceneModel::Sprite {
+            radius: 40.,
+            rotation: 0.
+        },
+        origin: Vec3([40., 0., 0.]),
+        palette_color: Some((palette, 0)),
+        material: Some(backdrop),
+        ..Default::default()
+    }));
+    assert!(frame.add_entity(SceneEntity {
+        model: SceneModel::Beam {
+            end: Vec3([30., 0., 0.]),
+            radius: 3.,
+            world_space: true
+        },
+        origin: Vec3([16., 0., 0.]),
+        color: [33, 33, 33, 76],
+        alpha: Some(0.3),
+        palette_color: Some((palette, 33)),
+        material: Some(material),
+        ..Default::default()
+    }));
+    assert!(frame.render_scene(
+        Refdef {
+            viewport: qa_render::Viewport {
+                width: 64,
+                height: 64,
+                ..Default::default()
+            },
+            cpu_presentation: qa_render::CpuPresentation::Indexed {
+                palette,
+                lighting: IndexedLighting::BrightestRgb,
+                ambient: 0,
+                fullbright: false
+            },
+            ..Default::default()
+        },
+        &[],
+        &assets
+    ));
+    let packet = frame.finish();
+    let mut cpu = qa_render::cpu::CpuBackend::load(64, 64).unwrap();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .any(|&pixel| pixel == u32::from_le_bytes([77, 77, 77, 255]))
+    );
+}
+
+#[test]
 fn generated_geometry_uses_one_packet_and_keeps_entity_inputs() {
     let assets = Assets::load().unwrap();
     for (model, count) in [
@@ -18,6 +198,8 @@ fn generated_geometry_uses_one_packet_and_keeps_entity_inputs() {
         (
             SceneModel::Beam {
                 end: Vec3([12., 0., 0.]),
+                radius: 4.0,
+                world_space: false,
             },
             12,
         ),

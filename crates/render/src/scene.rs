@@ -212,6 +212,9 @@ pub enum SceneModel {
     },
     Beam {
         end: Vec3,
+        radius: f32,
+        /// World beams ignore entity axes; local beams use the entity pose.
+        world_space: bool,
     },
     RailCore {
         end: Vec3,
@@ -261,6 +264,8 @@ pub struct SceneEntity {
     pub axes: [Vec3; 3],
     pub non_normalized_axes: bool,
     pub color: [u8; 4],
+    pub alpha: Option<f32>,
+    pub palette_color: Option<(PaletteId, u8)>,
     pub material: Option<MaterialId>,
     pub frame: u32,
     pub old_frame: u32,
@@ -311,6 +316,8 @@ impl Default for SceneEntity {
             axes: Orientation::default().axes,
             non_normalized_axes: false,
             color: [255; 4],
+            alpha: None,
+            palette_color: None,
             material: None,
             frame: 0,
             old_frame: 0,

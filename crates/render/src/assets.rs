@@ -586,6 +586,13 @@ impl Assets {
     pub fn palette(&self, id: PaletteId) -> Option<&PaletteLighting> {
         self.palettes.get(id.0 as usize)
     }
+    pub fn ensure_palette_translucency(&mut self, id: PaletteId) -> Result<(), &'static str> {
+        self.palettes
+            .get_mut(id.0 as usize)
+            .ok_or("unknown translucency palette")?
+            .ensure_translucency();
+        Ok(())
+    }
     pub fn register_indexed_image(
         &mut self,
         texture: IndexedTexture,

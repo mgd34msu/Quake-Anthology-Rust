@@ -98,7 +98,14 @@ impl ClipGraph {
             };
             self.originals[index] = original;
             let vertex = evaluated_vertex(original, [DeformOp::None; 3], base, evaluator);
-            let clip = camera.vertex(vertex, vertex.position);
+            let clip = camera.vertex(
+                vertex,
+                vertex.position,
+                base.map_or_else(
+                    || crate::stage::unit_rgba(vertex.color),
+                    |stage| stage.unit_color(vertex.color),
+                ),
+            );
             if !clip.finite() {
                 return None;
             }
@@ -214,7 +221,11 @@ impl ClipGraph {
                         Some(stage),
                         evaluator,
                     );
-                    ClipVertex::from_vertex(vertex, self.nodes[index].base.camera)
+                    ClipVertex::from_vertex(
+                        vertex,
+                        self.nodes[index].base.camera,
+                        stage.unit_color(vertex.color),
+                    )
                 }
                 ClipOperation::Intersection {
                     left,

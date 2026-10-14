@@ -135,7 +135,7 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
         };
         let mut frame = frontend.begin_frame([0; 4]).unwrap();
         let refdef = Refdef::default();
-        let counts = input.append(&mut frame, &assets, &refdef, true);
+        let counts = input.append(&mut frame, &assets, &refdef, true, None);
         assert_eq!(
             (counts.models, counts.rejected, counts.missing_models),
             (1, 0, 0)
@@ -260,7 +260,7 @@ fn classic_frame_origin_motion_reaches_alias_pose_without_affecting_rerelease() 
             view_entity: None,
         };
         let mut frame = frontend.begin_frame([0; 4]).unwrap();
-        let counts = input.append(&mut frame, &assets, &Refdef::default(), true);
+        let counts = input.append(&mut frame, &assets, &Refdef::default(), true, None);
         assert_eq!(
             (counts.models, counts.rejected, counts.unsupported),
             (1, 0, 0)
@@ -285,6 +285,188 @@ fn classic_frame_origin_motion_reaches_alias_pose_without_affecting_rerelease() 
             assert!(entity.previous_origin.is_none());
             assert_eq!(posed.position, Vec3([-4., 8., 21.]));
         }
+        assert!(frontend.recycle(packet).is_ok());
+    }
+}
+
+#[test]
+fn received_native_beams_keep_palette_width_endpoints_and_float_alpha_without_a_model() {
+    use qa_app::client_scene::BeamInput;
+    use qa_render::{Command, SceneModel, shader::StageBlend};
+    let (_fixture, mut assets, models, profile) = catalog(RuleSetId::Quake2);
+    let material =
+        qa_render::entities::register_beam_material(&mut assets, StageBlend::ALPHA).unwrap();
+    let client = ClientId(7);
+    let configs = configs();
+    let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
+    assert_eq!(bindings.bind_all(&configs, &models, profile, None), 0);
+    let palette = profile.source_palette.unwrap();
+    let color = assets.palette(palette).unwrap().color(33).to_le_bytes();
+    let player = PlayerState::default();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let protocol = if source == RuleSetId::Quake2 {
+            Protocol::Quake2_34
+        } else {
+            Protocol::Quake2Repro1038
+        };
+        let projection = EntityProjection::load(protocol);
+        let player_projection = PlayerProjection::load(protocol, &[]);
+        let mut current = EntityRecord {
+            position: Vec3([32., 0., 0.]),
+            appearance: EntityAppearance {
+                source,
+                frame: 7,
+                skin: 0x2c21160b,
+                alpha: 0.,
+                old_origin: Vec3([64., 0., 0.]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        current.appearance.native.render_flags = 128;
+        let old = EntityRecord {
+            position: Vec3([16., 4., 0.]),
+            appearance: EntityAppearance {
+                old_origin: Vec3([48., 4., 0.]),
+                ..current.appearance
+            },
+            ..current
+        };
+        let mut classic = [[0; states::Q2_ENTITY_WORDS]; 2];
+        let mut rerelease = [[0; states::Q2_RERELEASE_ENTITY_WORDS]; 2];
+        for (index, record) in [old, current].iter().enumerate() {
+            assert!(projection.reduce(
+                record,
+                if source == RuleSetId::Quake2 {
+                    &mut classic[index][..]
+                } else {
+                    &mut rerelease[index][..]
+                },
+                |model| Some(model.ordinal),
+                |sound| Some(sound.ordinal)
+            ));
+        }
+        let classic_rows = classic.map(|words| [Entity { number: 12, words }]);
+        let rerelease_rows = rerelease.map(|words| [Entity { number: 12, words }]);
+        let classic_player = [0; states::Q2_PLAYER_WORDS];
+        let rerelease_player = [0; states::Q2_REPRO_PLAYER_WORDS];
+        let frame = |index: usize| {
+            if source == RuleSetId::Quake2 {
+                ReceivedFrame::Quake2(Frame {
+                    sequence: index as u32 + 1,
+                    time: ThinkTime::Milliseconds(100 + index as i64 * 100),
+                    command: 0,
+                    flags: 0,
+                    qw_peers: 0,
+                    areas: &[],
+                    player: &classic_player,
+                    entities: &classic_rows[index],
+                })
+            } else {
+                ReceivedFrame::Quake2Repro(Frame {
+                    sequence: index as u32 + 1,
+                    time: ThinkTime::Milliseconds(100 + index as i64 * 100),
+                    command: 0,
+                    flags: 0,
+                    qw_peers: 0,
+                    areas: &[],
+                    player: &rerelease_player,
+                    entities: &rerelease_rows[index],
+                })
+            }
+        };
+        let input = ClientSceneInput {
+            client,
+            current: Some(frame(1)),
+            previous: Some(frame(0)),
+            projection: &projection,
+            appearance: qa_gameplay::rules::appearance::policy(source),
+            player_projection: &player_projection,
+            bindings: &bindings,
+            models: &models,
+            static_entities: &[],
+            player: &player,
+            weapon_view_angles: player.view_angles,
+            alias_roll: AliasRoll::default(),
+            interpolation: Interpolation {
+                fraction: 0.5,
+                ..Default::default()
+            },
+            gun_animation: None,
+            gun_previous: None,
+            view_entity: None,
+        };
+        let mut random_calls = 0;
+        let mut random = || {
+            random_calls += 1;
+            2
+        };
+        let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
+        let refdef = Refdef::default();
+        let counts = input.append(
+            &mut frame,
+            &assets,
+            &refdef,
+            true,
+            Some(BeamInput {
+                material,
+                random: &mut random,
+            }),
+        );
+        assert_eq!(
+            (
+                counts.beams,
+                counts.models,
+                counts.missing_models,
+                counts.unsupported,
+                counts.rejected
+            ),
+            (1, 0, 0, 0, 0)
+        );
+        assert!(frame.render_scene(refdef, &[], &assets));
+        let packet = frame.finish();
+        let entity = packet.entity(0);
+        let (origin, end, radius) = if source == RuleSetId::Quake2 {
+            (current.position, current.appearance.old_origin, 3.)
+        } else {
+            (Vec3([24., 2., 0.]), Vec3([56., 2., 0.]), 3.5)
+        };
+        assert_eq!(entity.origin, origin);
+        assert_eq!(
+            entity.model,
+            SceneModel::Beam {
+                end,
+                radius,
+                world_space: true
+            }
+        );
+        assert_eq!(entity.color[..3], color[..3]);
+        assert_eq!(entity.alpha, Some(0.3));
+        assert_eq!(entity.palette_color, Some((palette, 33)));
+        let view = packet
+            .commands()
+            .iter()
+            .find_map(|cmd| {
+                if let Command::View(view) = cmd {
+                    Some(view)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(view.scene.polys.count, 12);
+        let poly = packet.poly(view.scene.polys.first);
+        let inputs = qa_render::stage::DrawInputs::for_view(&refdef).for_poly(poly, &packet);
+        let prepared = qa_render::stage::StageEvaluator::load()
+            .prepare(
+                &assets.material(material).unwrap().stages[0],
+                assets.material(material).unwrap().settings,
+                inputs,
+            )
+            .unwrap();
+        assert_eq!(prepared.float_alpha, Some(0.3));
+        assert_eq!(random_calls, 1);
         assert!(frontend.recycle(packet).is_ok());
     }
 }
@@ -364,7 +546,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
     };
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
-    let counts = input.append(&mut frame, &assets, &Refdef::default(), true);
+    let counts = input.append(&mut frame, &assets, &Refdef::default(), true, None);
     assert_eq!(counts.entities, 1);
     assert_eq!(counts.models, 1);
     assert_eq!(
@@ -415,7 +597,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
         ..input
     };
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
-    let counts = changed.append(&mut frame, &assets, &Refdef::default(), true);
+    let counts = changed.append(&mut frame, &assets, &Refdef::default(), true, None);
     assert_eq!(counts.entities, 2);
     assert_eq!(counts.models, 1);
     let scene = frame.finish();
@@ -520,7 +702,7 @@ fn static_entity_admission_and_scene_capacity_reject_without_growing() {
     })
     .unwrap();
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
-    let counts = input.append(&mut frame, &assets, &Refdef::default(), true);
+    let counts = input.append(&mut frame, &assets, &Refdef::default(), true, None);
     assert_eq!(counts.entities, 2);
     assert_eq!(counts.models, 1);
     assert_eq!(counts.rejected, 1);
@@ -778,7 +960,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         time_ms: 250_000,
         ..Default::default()
     };
-    let counts = input.append(&mut frame, &assets, &refdef, true);
+    let counts = input.append(&mut frame, &assets, &refdef, true, None);
     let mut mask = [0; 8];
     assert_eq!(input.hidden_areas(&mut mask), (&[!0b0101u8][..], false));
     assert_eq!(counts.entities, 1);
@@ -847,7 +1029,9 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
     };
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
     assert_eq!(
-        reset_gun.append(&mut frame, &assets, &refdef, true).models,
+        reset_gun
+            .append(&mut frame, &assets, &refdef, true, None)
+            .models,
         2
     );
     let packet = frame.finish();
@@ -999,7 +1183,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
         for software in [true, false] {
             let mut frontend = FrontEnd::load(Limits::default()).unwrap();
             let mut frame = frontend.begin_frame([0; 4]).unwrap();
-            let counts = input.append(&mut frame, &assets, &Refdef::default(), software);
+            let counts = input.append(&mut frame, &assets, &Refdef::default(), software, None);
             assert_eq!(counts.models, 2);
             let scene = frame.finish();
             let (peer_angles, packet_angles) = match (presentation, software) {
@@ -1301,7 +1485,12 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
     };
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
-    assert_eq!(input.append(&mut frame, &assets, &refdef, true).models, 1);
+    assert_eq!(
+        input
+            .append(&mut frame, &assets, &refdef, true, None)
+            .models,
+        1
+    );
     let scene = frame.finish();
     let gun = scene.entity(0);
     assert_eq!(gun.origin, Vec3([102.0, 203.0, 304.0]));
@@ -1338,7 +1527,9 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
     };
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
     assert_eq!(
-        repeated.append(&mut frame, &assets, &refdef, true).models,
+        repeated
+            .append(&mut frame, &assets, &refdef, true, None)
+            .models,
         1
     );
     let scene = frame.finish();
@@ -1364,7 +1555,9 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
     };
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
     assert_eq!(
-        teleported.append(&mut frame, &assets, &refdef, true).models,
+        teleported
+            .append(&mut frame, &assets, &refdef, true, None)
+            .models,
         1
     );
     let scene = frame.finish();
@@ -1387,7 +1580,12 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         ..input
     };
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
-    assert_eq!(event.append(&mut frame, &assets, &refdef, true).models, 1);
+    assert_eq!(
+        event
+            .append(&mut frame, &assets, &refdef, true, None)
+            .models,
+        1
+    );
     let scene = frame.finish();
     assert_eq!(scene.entity(0).origin, Vec3([104.0, 206.0, 308.0]));
     assert_eq!(scene.entity(0).back_lerp, 0.0);
@@ -1401,7 +1599,10 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         ..input
     };
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
-    assert_eq!(gap.append(&mut frame, &assets, &refdef, true).models, 1);
+    assert_eq!(
+        gap.append(&mut frame, &assets, &refdef, true, None).models,
+        1
+    );
     let scene = frame.finish();
     assert_eq!(scene.entity(0).origin, Vec3([104.0, 206.0, 308.0]));
     assert_eq!(scene.entity(0).back_lerp, 0.0);

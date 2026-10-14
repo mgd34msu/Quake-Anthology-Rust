@@ -266,14 +266,21 @@ fn legacy_translucency_defaults_keep_the_original_effect_override_order() {
 }
 
 #[test]
-fn unsupported_beams_do_not_turn_into_ordinary_models() {
+fn native_beams_select_radius_and_motion_without_becoming_ordinary_models() {
     let mut appearance = EntityAppearance {
         source: RuleSetId::Quake2,
         ..Default::default()
     };
     appearance.native.render_flags = 128;
+    appearance.frame = 7;
     let q2 = policy(appearance.source).project(&appearance);
-    assert!(!q2.drawable && q2.unsupported != 0);
+    assert!(!q2.drawable && q2.unsupported == 0);
+    assert_eq!(q2.beam_radius, Some(3.0));
+    assert!(!q2.beam_interpolate);
+    appearance.source = RuleSetId::Quake2Rerelease;
+    let rerelease = policy(appearance.source).project(&appearance);
+    assert_eq!(rerelease.beam_radius, Some(3.5));
+    assert!(rerelease.beam_interpolate);
     appearance.source = RuleSetId::Quake3;
     assert!(policy(appearance.source).project(&appearance).drawable);
     assert_ne!(
