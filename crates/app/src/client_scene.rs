@@ -590,6 +590,7 @@ impl ClientSceneInput<'_> {
                 ModelMaterialPolicy {
                     translucent: capabilities.alpha != 1.0,
                     fullbright: capabilities.fullbright,
+                    custom_skin: 0,
                 },
             ) else {
                 counts.missing_models += 1;

@@ -40,6 +40,7 @@ impl Fixture {
     pub fn with_surfaces(model: Vec<u8>) -> Self {
         Self::new(&[
             ("models/test.md3", model),
+            ("models/test.skin", b"tag_weapon,\nBODY,textures/alternate\nbody,textures/glow\nglow,textures/body\n".to_vec()),
             ("textures/body.tga", tga(2, 2, &[[90, 20, 10, 255]; 4])),
             ("textures/alternate.tga", tga(2, 2, &[[10, 90, 20, 255]; 4])),
             ("textures/glow.tga", tga(2, 2, &[[20, 10, 90, 255]; 4])),

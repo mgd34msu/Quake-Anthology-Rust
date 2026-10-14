@@ -106,24 +106,29 @@ pub struct ModelBinding {
 pub struct ModelMaterialPolicy {
     pub translucent: bool,
     pub fullbright: bool,
+    pub custom_skin: i32,
 }
 impl ModelMaterialPolicy {
     const ALL: [Self; 4] = [
         Self {
             translucent: false,
             fullbright: false,
+            custom_skin: 0,
         },
         Self {
             translucent: false,
             fullbright: true,
+            custom_skin: 0,
         },
         Self {
             translucent: true,
             fullbright: false,
+            custom_skin: 0,
         },
         Self {
             translucent: true,
             fullbright: true,
+            custom_skin: 0,
         },
     ];
     fn index(self) -> usize {
@@ -136,6 +141,7 @@ struct ModelMaterials {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SurfaceMaterials {
+    name: NameId,
     skins: IndexSpan,
     wrap_skins: bool,
 }
@@ -147,6 +153,7 @@ pub struct ModelBindings<'a> {
     materials: &'a [ModelMaterials],
     skin: u32,
     policy: ModelMaterialPolicy,
+    custom: Option<&'a [SkinMapping]>,
 }
 impl Iterator for ModelBindings<'_> {
     type Item = ModelBinding;
@@ -160,7 +167,15 @@ impl Iterator for ModelBindings<'_> {
         } else {
             0
         };
-        Some(self.materials[(surface.skins.first + skin) as usize].variants[self.policy.index()])
+        let mut binding =
+            self.materials[(surface.skins.first + skin) as usize].variants[self.policy.index()];
+        if let Some(custom) = self.custom {
+            binding.material = custom
+                .binary_search_by_key(&surface.name.0, |entry| entry.surface.0)
+                .ok()
+                .map_or(MaterialId(0), |index| custom[index].material);
+        }
+        Some(binding)
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.surfaces.len(), Some(self.surfaces.len()))
@@ -212,7 +227,19 @@ struct ShaderProfileBinding {
     profile: ModelProfile,
     material: Option<MaterialId>,
 }
-
+struct RegisteredSkin {
+    ready: bool,
+    profiles: Vec<SkinProfile>,
+}
+struct SkinProfile {
+    profile: ModelProfile,
+    mappings: Box<[SkinMapping]>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SkinMapping {
+    surface: NameId,
+    material: MaterialId,
+}
 /// File-native metadata survives unsupported renderer features. It is not the
 /// bounds of an interpolated mesh or a selected presentation profile.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -286,6 +313,31 @@ impl ModelProfile {
         }
     }
 }
+impl ProfileImages {
+    fn compile(
+        &mut self,
+        vfs: &Vfs,
+        assets: &mut Assets,
+        definition: Result<&ShaderDef, String>,
+    ) -> Result<MaterialId, String> {
+        let Some(state) = self.state.take() else {
+            return Err("shader image state already borrowed".to_owned());
+        };
+        match state {
+            Ok(state) => {
+                let mut images = Images::from_state(vfs, assets, state);
+                let result =
+                    definition.and_then(|definition| compile_shader(definition, &mut images));
+                self.state = Some(Ok(images.into_state()));
+                result
+            }
+            Err(error) => {
+                self.state = Some(Err(error.clone()));
+                Err(error)
+            }
+        }
+    }
+}
 
 pub struct ModelCatalog {
     names: NameTable,
@@ -294,6 +346,8 @@ pub struct ModelCatalog {
     shader_indices: Box<[Option<u32>]>,
     shaders: Box<[RegisteredShader]>,
     shader_bindings: Box<[ShaderProfileBinding]>,
+    skin_indices: Box<[Option<u32>]>,
+    skins: Box<[RegisteredSkin]>,
     registrations: Box<[RegisteredProfile]>,
     bindings: Box<[ModelMaterials]>,
     surfaces: Box<[SurfaceMaterials]>,
@@ -315,6 +369,8 @@ pub struct ModelCatalogBuilder {
     shader_indices: Vec<Option<u32>>,
     shaders: Vec<RegisteredShader>,
     shader_bindings: Vec<ShaderProfileBinding>,
+    skin_indices: Vec<Option<u32>>,
+    skins: Vec<RegisteredSkin>,
     shader_catalog: Option<Result<ShaderCatalog, String>>,
     profiles: Vec<ProfileImages>,
     registrations: Vec<RegisteredProfile>,
@@ -372,6 +428,8 @@ impl ModelCatalogBuilder {
             shader_indices: vec![None],
             shaders: Vec::new(),
             shader_bindings: Vec::new(),
+            skin_indices: vec![None],
+            skins: Vec::new(),
             shader_catalog: None,
             profiles: unique,
             registrations: Vec::new(),
@@ -393,6 +451,7 @@ impl ModelCatalogBuilder {
             self.files.push(ModelFile::Empty);
             self.models.push(IndexSpan::default());
             self.shader_indices.push(None);
+            self.skin_indices.push(None);
             self.capacity.names = self.names.len();
             self.capacity.name_bytes += bytes.len();
         }
@@ -533,6 +592,33 @@ impl ModelCatalogBuilder {
             },
             Err(error) => ModelFile::Failed(error.clone()),
         };
+        let surface_names = parsed
+            .as_ref()
+            .ok()
+            .map(|model| {
+                model
+                    .meshes
+                    .iter()
+                    .map(|mesh| {
+                        let raw = mesh.name;
+                        let raw = if model.format == ModelFormat::Md3
+                            && raw.len() > 2
+                            && raw[raw.len() - 2] == b'_'
+                        {
+                            &raw[..raw.len() - 2]
+                        } else {
+                            raw
+                        };
+                        let name = self
+                            .admit_name(raw)
+                            .map_err(|_| FileError::capacity("model surface names"))?;
+                        self.names
+                            .folded(name)
+                            .ok_or_else(|| FileError::capacity("model surface names"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
         let mut meshes = vec![None; parsed.as_ref().map_or(0, |model| model.meshes.len())];
         if parsed
             .as_ref()
@@ -584,8 +670,11 @@ impl ModelCatalogBuilder {
                 Ok(surfaces) => {
                     let first = self.surfaces.len() as u32;
                     let count = surfaces.len() as u32;
-                    for skins in surfaces {
+                    for (index, skins) in surfaces.into_iter().enumerate() {
                         self.surfaces.push(SurfaceMaterials {
+                            name: surface_names
+                                .as_ref()
+                                .ok_or_else(|| FileError::capacity("model surface names"))?[index],
                             skins: IndexSpan {
                                 first: self.bindings.len() as u32,
                                 count: skins.len() as u32,
@@ -721,22 +810,11 @@ impl ModelCatalogBuilder {
             .iter_mut()
             .filter(|entry| entry.profile.source_rules == source)
         {
-            let result = match images.state.take() {
-                Some(Ok(state)) => {
-                    let mut temporary = Images::from_state(vfs, &mut self.assets, state);
-                    let result = definition
-                        .as_ref()
-                        .map_err(Clone::clone)
-                        .and_then(|definition| compile_shader(definition, &mut temporary));
-                    images.state = Some(Ok(temporary.into_state()));
-                    result
-                }
-                Some(Err(error)) => {
-                    images.state = Some(Err(error.clone()));
-                    Err(error)
-                }
-                None => Err("shader image state already borrowed".to_owned()),
-            };
+            let result = images.compile(
+                vfs,
+                &mut self.assets,
+                definition.as_ref().map_err(Clone::clone),
+            );
             let material = match result {
                 Ok(material) => {
                     ready = true;
@@ -764,6 +842,126 @@ impl ModelCatalogBuilder {
         }
     }
 
+    fn admit_skin(&mut self, vfs: &Vfs, raw: &[u8], source: RuleSetId) -> Result<i32, CallError> {
+        if raw.is_empty() {
+            return Ok(0);
+        }
+        if raw.len() >= 64 {
+            return Err(CallError::Text);
+        }
+        let path = canonical_path(std::str::from_utf8(raw).map_err(|_| CallError::Text)?);
+        if let Some(handle) = skin_handle(
+            &self.names,
+            &self.skin_indices,
+            &self.skins,
+            path.as_bytes(),
+        ) {
+            return Ok(handle);
+        }
+        if self.skins.len() >= self.limits.models || self.skins.len() >= i32::MAX as usize {
+            return Err(CallError::Capacity);
+        }
+        let name = self.admit_name(path.as_bytes())?;
+        let group = self.names.folded(name).ok_or(CallError::Aborted)?;
+        let index = self.skins.len() as u32;
+        self.skin_indices[group.0 as usize] = Some(index);
+        self.skins.push(RegisteredSkin {
+            ready: false,
+            profiles: Vec::new(),
+        });
+        let profile_count = self
+            .profiles
+            .iter()
+            .filter(|entry| entry.profile.source_rules == source)
+            .count();
+        let maximum_rows =
+            self.limits.skins.saturating_sub(self.capacity.skins) / profile_count.max(1);
+        let skin_file = raw.ends_with(b".skin");
+        let bytes = if skin_file {
+            vfs.read_file(path.as_bytes(), self.limits.file_bytes, &mut self.reader)
+                .map_err(|_| CallError::File)?
+        } else {
+            Vec::new()
+        };
+        let rows = if skin_file {
+            let mut rows = Vec::new();
+            for mapping in qa_formats::model::skin::SkinMappings::new(&bytes) {
+                if rows.len() == maximum_rows {
+                    return Err(CallError::Capacity);
+                }
+                rows.push(mapping.map_err(|_| CallError::Text)?);
+            }
+            rows
+        } else {
+            vec![qa_formats::model::skin::SkinMapping {
+                surface: b"",
+                shader: raw,
+            }]
+        };
+        if rows.is_empty() {
+            return Err(CallError::File);
+        }
+        self.capacity.skins = rows
+            .len()
+            .checked_mul(profile_count)
+            .and_then(|count| self.capacity.skins.checked_add(count))
+            .filter(|&count| count <= self.limits.skins)
+            .ok_or(CallError::Capacity)?;
+        self.shader_catalog(vfs);
+        let mut mappings = Vec::with_capacity(rows.len());
+        for row in rows {
+            let surface = self.admit_name(row.surface)?;
+            let surface = self.names.folded(surface).ok_or(CallError::Aborted)?;
+            let definition = shader_definition(
+                self.shader_catalog.as_ref().ok_or(CallError::Aborted)?,
+                row.shader,
+                true,
+                true,
+            );
+            mappings.push((surface, definition));
+        }
+        let mut profiles = Vec::with_capacity(profile_count);
+        for images in self
+            .profiles
+            .iter_mut()
+            .filter(|entry| entry.profile.source_rules == source)
+        {
+            let mut compiled = Vec::with_capacity(mappings.len());
+            for (surface, definition) in &mappings {
+                let material = match images.compile(
+                    vfs,
+                    &mut self.assets,
+                    definition.as_ref().map_err(Clone::clone),
+                ) {
+                    Ok(material) => material,
+                    Err(error) => {
+                        self.diagnostics.push(ModelDiagnostic {
+                            name,
+                            profile: images.profile,
+                            error,
+                        });
+                        MaterialId(0)
+                    }
+                };
+                compiled.push(SkinMapping {
+                    surface: *surface,
+                    material,
+                });
+            }
+            compiled.sort_by_key(|entry| entry.surface.0);
+            compiled.dedup_by_key(|entry| entry.surface.0);
+            profiles.push(SkinProfile {
+                profile: images.profile,
+                mappings: compiled.into_boxed_slice(),
+            });
+        }
+        self.skins[index as usize] = RegisteredSkin {
+            ready: true,
+            profiles,
+        };
+        Ok(index as i32 + 1)
+    }
+
     pub fn finish(self) -> (Assets, ModelCatalog) {
         let catalog = ModelCatalog {
             names: self.names,
@@ -772,6 +970,8 @@ impl ModelCatalogBuilder {
             shader_indices: self.shader_indices.into_boxed_slice(),
             shaders: self.shaders.into_boxed_slice(),
             shader_bindings: self.shader_bindings.into_boxed_slice(),
+            skin_indices: self.skin_indices.into_boxed_slice(),
+            skins: self.skins.into_boxed_slice(),
             registrations: self.registrations.into_boxed_slice(),
             bindings: self.bindings.into_boxed_slice(),
             surfaces: self.surfaces.into_boxed_slice(),
@@ -804,6 +1004,24 @@ fn shader_handle(
     let index = indices.get(group.0 as usize).copied().flatten()?;
     let entry = shaders.get(index as usize)?;
     Some(if entry.ready { index as i32 + 1 } else { 0 })
+}
+fn skin_handle(
+    names: &NameTable,
+    indices: &[Option<u32>],
+    skins: &[RegisteredSkin],
+    raw: &[u8],
+) -> Option<i32> {
+    if raw.is_empty() {
+        return Some(0);
+    }
+    let group = names.find_path_bytes(raw)?;
+    let group = names.folded(group)?;
+    let index = indices.get(group.0 as usize).copied().flatten()?;
+    Some(if skins.get(index as usize)?.ready {
+        index as i32 + 1
+    } else {
+        0
+    })
 }
 fn loaded_world(names: &NameTable, files: &[ModelFile], name: &[u8]) -> Option<u32> {
     let ModelFile::LoadedWorld { binding, .. } = file_lookup(names, files, name)? else {
@@ -1001,6 +1219,9 @@ impl ModelLookup for ModelCatalogBuilder {
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
         file_lookup(&self.names, &self.files, path)?.bounds()
     }
+    fn skin_handle(&self, name: &[u8]) -> Option<i32> {
+        skin_handle(&self.names, &self.skin_indices, &self.skins, name)
+    }
     fn shader_handle(&self, name: &[u8]) -> Option<i32> {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
     }
@@ -1024,6 +1245,14 @@ impl ModelLoader for ModelCatalogBuilder {
         }
         self.ensure_file(vfs, &canonical_path(path))
             .map_err(|error| error.kind)
+    }
+    fn register_skin(
+        &mut self,
+        vfs: &Vfs,
+        name: &[u8],
+        source: RuleSetId,
+    ) -> Result<i32, CallError> {
+        self.admit_skin(vfs, name, source)
     }
     fn register_shader(
         &mut self,
@@ -1063,6 +1292,9 @@ impl ModelLookup for ModelCatalog {
     }
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
         file_lookup(&self.names, &self.files, path)?.bounds()
+    }
+    fn skin_handle(&self, name: &[u8]) -> Option<i32> {
+        skin_handle(&self.names, &self.skin_indices, &self.skins, name)
     }
     fn shader_handle(&self, name: &[u8]) -> Option<i32> {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
@@ -1185,6 +1417,19 @@ impl ModelCatalog {
             materials: &self.bindings,
             skin,
             policy,
+            custom: policy
+                .custom_skin
+                .checked_sub(1)
+                .and_then(|value| usize::try_from(value).ok())
+                .and_then(|index| self.skins.get(index))
+                .map(|skin| {
+                    skin.profiles
+                        .iter()
+                        .find(|skin| {
+                            skin.profile == self.registrations[registration.0 as usize].profile
+                        })
+                        .map_or(&[][..], |profile| profile.mappings.as_ref())
+                }),
         })
     }
     pub fn resolve_inline(&self, world: WorldId, index: u32) -> Option<InlineBinding> {

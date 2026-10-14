@@ -5,6 +5,7 @@ mod md3;
 mod md5;
 mod normals;
 mod read;
+pub mod skin;
 
 use crate::FormatError;
 pub use qa_core::primitives::IndexSpan;

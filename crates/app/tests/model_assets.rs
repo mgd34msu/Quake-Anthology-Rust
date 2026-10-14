@@ -39,6 +39,159 @@ fn shader_profile(presentation: RuleSetId) -> ModelProfile {
 }
 
 #[test]
+fn native_skins_resolve_once_for_each_profile_and_preserve_first_mapping() {
+    for skin_first in [false, true] {
+        let fixture = support::Fixture::surfaces();
+        let profiles = [
+            shader_profile(RuleSetId::Quake3),
+            shader_profile(RuleSetId::Quake2),
+        ];
+        let mut builder =
+            ModelCatalogBuilder::new(Assets::load().unwrap(), profiles, [], Default::default())
+                .unwrap();
+        let before = skin_first.then(|| {
+            builder
+                .register_skin(&fixture.vfs, b"models/test.skin", RuleSetId::Quake3)
+                .unwrap()
+        });
+        let model = builder
+            .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
+            .unwrap();
+        let skin = before.unwrap_or_else(|| {
+            builder
+                .register_skin(&fixture.vfs, b"models/test.skin", RuleSetId::Quake3)
+                .unwrap()
+        });
+        assert!(skin > 0);
+        fixture.remove("models/test.skin");
+        assert_eq!(
+            builder.register_skin(&fixture.vfs, b"MODELS\\TEST.SKIN", RuleSetId::Quake3),
+            Ok(skin)
+        );
+        let (assets, catalog) = builder.finish();
+        assert_eq!(catalog.skin_handle(b"models/test.skin"), Some(skin));
+        let mut profile_materials = Vec::new();
+        for profile in profiles {
+            let registration = catalog.renderer_registration(model, profile).unwrap();
+            let base = catalog
+                .bindings(registration, 0, Default::default())
+                .unwrap()
+                .collect::<Vec<_>>();
+            let skinned = catalog
+                .bindings(
+                    registration,
+                    0,
+                    ModelMaterialPolicy {
+                        custom_skin: skin,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .collect::<Vec<_>>();
+            assert_eq!(skinned.len(), 2);
+            assert_eq!(
+                skinned
+                    .iter()
+                    .map(|binding| binding.model)
+                    .collect::<Vec<_>>(),
+                base.iter().map(|binding| binding.model).collect::<Vec<_>>()
+            );
+            // BODY_1 resolves to the first body mapping, not the later duplicate.
+            let sample = |material| {
+                let StageTexture::Image(image) =
+                    assets.material(material).unwrap().stages[0].texture
+                else {
+                    panic!("skin image")
+                };
+                let pixels = &assets.image(image).unwrap().rgba;
+                [pixels[0], pixels[1], pixels[2]]
+            };
+            let first = sample(skinned[0].material);
+            assert!(first[1] > first[0] && first[1] > first[2]);
+            let second = sample(skinned[1].material);
+            assert!(second[0] > second[1] && second[0] > second[2]);
+            profile_materials.push(skinned[0].material);
+            for invalid in [i32::MIN, -1, 0, i32::MAX] {
+                assert_eq!(
+                    catalog
+                        .bindings(
+                            registration,
+                            0,
+                            ModelMaterialPolicy {
+                                custom_skin: invalid,
+                                ..Default::default()
+                            }
+                        )
+                        .unwrap()
+                        .collect::<Vec<_>>(),
+                    base
+                );
+            }
+        }
+        assert_ne!(profile_materials[0], profile_materials[1]);
+    }
+}
+
+#[test]
+fn failed_skin_slots_stay_failed_and_unmatched_surfaces_use_the_default_shader() {
+    let fixture = support::Fixture::new(&[
+        ("models/test.md3", support::md3_surfaces()),
+        (
+            "models/unmatched.skin",
+            b"different,textures/missing\n".to_vec(),
+        ),
+        ("models/empty.skin", b"tag_weapon,\n".to_vec()),
+        (
+            "textures/body.tga",
+            support::tga(2, 2, &[[90, 20, 10, 255]; 4]),
+        ),
+        (
+            "textures/alternate.tga",
+            support::tga(2, 2, &[[10, 90, 20, 255]; 4]),
+        ),
+        (
+            "textures/glow.tga",
+            support::tga(2, 2, &[[20, 10, 90, 255]; 4]),
+        ),
+    ]);
+    let profile = shader_profile(RuleSetId::Quake3);
+    let mut builder =
+        ModelCatalogBuilder::new(Assets::load().unwrap(), [profile], [], Default::default())
+            .unwrap();
+    assert_eq!(
+        builder.register_skin(&fixture.vfs, b"models/empty.skin", RuleSetId::Quake3),
+        Err(qa_compat::services::CallError::File)
+    );
+    assert_eq!(
+        builder.register_skin(&fixture.vfs, b"MODELS/EMPTY.SKIN", RuleSetId::Quake3),
+        Ok(0)
+    );
+    let skin = builder
+        .register_skin(&fixture.vfs, b"models/unmatched.skin", RuleSetId::Quake3)
+        .unwrap();
+    let model = builder
+        .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
+        .unwrap();
+    let (_, catalog) = builder.finish();
+    let registration = catalog.renderer_registration(model, profile).unwrap();
+    for custom_skin in [skin, 1] {
+        assert!(
+            catalog
+                .bindings(
+                    registration,
+                    0,
+                    ModelMaterialPolicy {
+                        custom_skin,
+                        ..Default::default()
+                    }
+                )
+                .unwrap()
+                .all(|binding| binding.material == qa_render::MaterialId(0))
+        );
+    }
+}
+
+#[test]
 fn native_model_handles_share_file_registration_and_bounds() {
     let bytes = support::md2_skin(b"textures/body.tga");
     let parsed = qa_formats::model::Model::parse(&bytes).unwrap();
@@ -1314,6 +1467,7 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
                 let policy = ModelMaterialPolicy {
                     translucent,
                     fullbright,
+                    custom_skin: 0,
                 };
                 let binding = catalog
                     .bindings(registration, 0, policy)

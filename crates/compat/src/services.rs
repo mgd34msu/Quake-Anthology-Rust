@@ -95,6 +95,10 @@ pub trait ModelLookup {
     fn loaded_world(&self, name: &[u8]) -> Option<u32>;
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
     fn shader_handle(&self, name: &[u8]) -> Option<i32>;
+    fn skin_handle(&self, name: &[u8]) -> Option<i32> {
+        let _ = name;
+        None
+    }
     fn model_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
     fn model_bounds(&self, handle: i32) -> Option<Bounds>;
     fn model_has_tags(&self, handle: i32) -> bool;
@@ -108,6 +112,15 @@ pub trait ModelLookup {
     ) -> Option<Orientation>;
 }
 pub trait ModelLoader: ModelLookup {
+    fn register_skin(
+        &mut self,
+        vfs: &Vfs,
+        name: &[u8],
+        source: RuleSetId,
+    ) -> Result<i32, CallError> {
+        let _ = (vfs, name, source);
+        Err(CallError::Unsupported)
+    }
     fn precache(&mut self, vfs: &Vfs, path: &[u8], source: RuleSetId) -> Result<Bounds, CallError>;
     fn register_shader(
         &mut self,
@@ -125,6 +138,13 @@ pub trait ModelLoader: ModelLookup {
         self.precache(vfs, name, source)?;
         self.model_handle(name, source).ok_or(CallError::File)
     }
+}
+
+#[derive(Clone, Copy)]
+pub enum RendererRegistration {
+    Model,
+    Skin,
+    Shader { mipmaps: bool },
 }
 
 /// Sound registration extends the one bank only during cold module loading.
@@ -992,7 +1012,12 @@ pub struct EngineCallTable {
     ) -> Result<(), CallError>,
     pub local_sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<(), CallError>,
     pub register_sound: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
-    pub register_model: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
+    pub register_renderer: fn(
+        &mut EngineServices<'_>,
+        &[u8],
+        RuleSetId,
+        RendererRegistration,
+    ) -> Result<i32, CallError>,
     pub registered_model_bounds: fn(&EngineServices<'_>, i32) -> Option<Bounds>,
     pub lerp_tag: fn(&EngineServices<'_>, i32, i32, i32, f32, &[u8]) -> Option<Orientation>,
     pub model_has_tags: fn(&EngineServices<'_>, i32) -> bool,
@@ -1048,8 +1073,6 @@ pub struct EngineCallTable {
         fn(&mut EngineServices<'_>, ModuleId, IndexSpan, &[u8]) -> Result<Option<u32>, CallError>,
     pub model_precache: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<Bounds, CallError>,
     pub model_bounds: fn(&EngineServices<'_>, &[u8], RuleSetId) -> Result<Bounds, CallError>,
-    pub register_shader:
-        fn(&mut EngineServices<'_>, &[u8], RuleSetId, bool) -> Result<i32, CallError>,
     pub file_open: FileOpenCall,
     pub entity_token: EntityTokenCall,
     pub file_length: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
@@ -1242,7 +1265,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .map_err(|_| CallError::Capacity)
     },
     register_sound: |s, sample, source| s.register_sound(sample, source),
-    register_model: |s, name, source| s.register_model(name, source),
+    register_renderer: |s, name, source, kind| s.register_renderer(name, source, kind),
     registered_model_bounds: |s, handle| s.models()?.model_bounds(handle),
     model_has_tags: |s, handle| {
         s.models()
@@ -1313,7 +1336,6 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .or_else(|| s.model_lookup.and_then(|models| models.bounds(path, rules)))
             .ok_or(CallError::Geometry)
     },
-    register_shader: |s, name, source, mipmaps| s.register_shader(name, source, mipmaps),
     file_open: |s, m, p| s.file_open(m, p),
     entity_token: |s, m| s.storage.entity_token(m),
     file_length: |s, p| s.file_length(p),
@@ -1518,26 +1540,11 @@ impl EngineServices<'_> {
             Err(error) => Err(error),
         }
     }
-    pub fn register_model(&mut self, name: &[u8], source: RuleSetId) -> Result<i32, CallError> {
-        if name.is_empty() {
-            return Ok(0);
-        }
-        let result = if name.len() >= 64 {
-            Err(CallError::Text)
-        } else if let Some(loader) = self.model_loader.as_deref_mut() {
-            loader.register_model(self.vfs, name, source)
-        } else {
-            self.model_lookup
-                .and_then(|lookup| lookup.model_handle(name, source))
-                .ok_or(CallError::File)
-        };
-        self.registration_result("model", result)
-    }
-    pub fn register_shader(
+    pub fn register_renderer(
         &mut self,
         name: &[u8],
         source: RuleSetId,
-        mipmaps: bool,
+        kind: RendererRegistration,
     ) -> Result<i32, CallError> {
         if name.is_empty() {
             return Ok(0);
@@ -1545,13 +1552,30 @@ impl EngineServices<'_> {
         let result = if name.len() >= 64 {
             Err(CallError::Text)
         } else if let Some(loader) = self.model_loader.as_deref_mut() {
-            loader.register_shader(self.vfs, name, source, mipmaps)
+            match kind {
+                RendererRegistration::Model => loader.register_model(self.vfs, name, source),
+                RendererRegistration::Skin => loader.register_skin(self.vfs, name, source),
+                RendererRegistration::Shader { mipmaps } => {
+                    loader.register_shader(self.vfs, name, source, mipmaps)
+                }
+            }
         } else {
             self.model_lookup
-                .and_then(|lookup| lookup.shader_handle(name))
+                .and_then(|lookup| match kind {
+                    RendererRegistration::Model => lookup.model_handle(name, source),
+                    RendererRegistration::Skin => lookup.skin_handle(name),
+                    RendererRegistration::Shader { .. } => lookup.shader_handle(name),
+                })
                 .ok_or(CallError::File)
         };
-        self.registration_result("shader", result)
+        self.registration_result(
+            match kind {
+                RendererRegistration::Model => "model",
+                RendererRegistration::Skin => "skin",
+                RendererRegistration::Shader { .. } => "shader",
+            },
+            result,
+        )
     }
     pub fn effect(
         &mut self,

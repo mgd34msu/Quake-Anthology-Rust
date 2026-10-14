@@ -118,18 +118,30 @@ fn register_sound(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.register_sound)(c.services, sample, c.context.native_rules)
         .map(|handle| handle as u32 as u64)
 }
-fn register_shader<const MIPMAPS: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let name = c.memory.cstring(c.required_pointer(0)?)?;
-    (ENGINE_CALLS.register_shader)(c.services, name, c.context.native_rules, MIPMAPS)
-        .map(|handle| handle as u32 as u64)
-}
-fn register_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    if c.null_pointer(0)? {
+fn register_renderer(
+    c: &mut Invocation<'_, '_, '_>,
+    kind: crate::services::RendererRegistration,
+    nullable: bool,
+) -> Result<u64, CallError> {
+    if nullable && c.null_pointer(0)? {
         return Ok(0);
     }
     let name = c.memory.cstring(c.required_pointer(0)?)?;
-    (ENGINE_CALLS.register_model)(c.services, name, c.context.native_rules)
+    (ENGINE_CALLS.register_renderer)(c.services, name, c.context.native_rules, kind)
         .map(|handle| handle as u32 as u64)
+}
+fn register_shader<const MIPMAPS: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    register_renderer(
+        c,
+        crate::services::RendererRegistration::Shader { mipmaps: MIPMAPS },
+        false,
+    )
+}
+fn register_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    register_renderer(c, crate::services::RendererRegistration::Model, true)
+}
+fn register_skin(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    register_renderer(c, crate::services::RendererRegistration::Skin, true)
 }
 fn renderer_model_bounds(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let handle = c.arg(0)? as u32 as i32;
@@ -495,6 +507,7 @@ const fn client() -> CallTable {
     t.entries[34] = scalar!(register_sound);
     t.entries[36] = scalar!(renderer_load_world);
     t.entries[37] = scalar!(register_model);
+    t.entries[38] = scalar!(register_skin);
     t.entries[40] = scalar!(renderer_clear_scene);
     t.entries[41] = scalar!(renderer_entity);
     t.entries[42] = scalar!(renderer_add_polys::<false>);
@@ -546,6 +559,7 @@ const fn ui() -> CallTable {
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
     t.entries[18] = scalar!(register_model);
+    t.entries[19] = scalar!(register_skin);
     t.entries[20] = scalar!(register_shader::<false>);
     t.entries[21] = scalar!(renderer_clear_scene);
     t.entries[22] = scalar!(renderer_entity);

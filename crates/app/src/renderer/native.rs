@@ -144,13 +144,12 @@ impl SceneService for SceneBorrow<'_> {
         if !pose.origin.is_finite() {
             return frame.reject_submission();
         }
-        let material = (submitted.custom_shader != 0)
-            .then(|| models.shader_binding(submitted.custom_shader, target.profile))
-            .flatten();
+        let material = (submitted.custom_shader != 0).then(|| {
+            models
+                .shader_binding(submitted.custom_shader, target.profile)
+                .unwrap_or(qa_render::MaterialId(0))
+        });
         if submitted.kind == EntityKind::Model {
-            if submitted.custom_skin != 0 {
-                return frame.reject_submission();
-            }
             let Some(registration) = models.renderer_registration(submitted.model, target.profile)
             else {
                 return frame.reject_submission();
@@ -158,7 +157,10 @@ impl SceneService for SceneBorrow<'_> {
             let Some(bindings) = models.bindings(
                 registration,
                 u32::try_from(submitted.skin).unwrap_or(0),
-                Default::default(),
+                crate::model_assets::ModelMaterialPolicy {
+                    custom_skin: submitted.custom_skin,
+                    ..Default::default()
+                },
             ) else {
                 return frame.reject_submission();
             };

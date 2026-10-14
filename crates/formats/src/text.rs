@@ -7,6 +7,7 @@ pub(crate) struct Tokens<'a> {
     block_comments: bool,
     limit: usize,
     quoted_escapes: bool,
+    comma: bool,
 }
 impl<'a> Tokens<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
@@ -17,6 +18,7 @@ impl<'a> Tokens<'a> {
             block_comments: true,
             limit: usize::MAX,
             quoted_escapes: false,
+            comma: false,
         }
     }
     pub fn entity(
@@ -32,15 +34,27 @@ impl<'a> Tokens<'a> {
             block_comments,
             limit,
             quoted_escapes: false,
+            comma: false,
         }
     }
     pub fn quoted_escapes(mut self) -> Self {
         self.quoted_escapes = true;
         self
     }
+    pub fn comma(bytes: &'a [u8]) -> Self {
+        Self {
+            comma: true,
+            limit: 1024,
+            punctuation: b",",
+            ..Self::new(bytes)
+        }
+    }
+    fn whitespace(&self, byte: u8) -> bool {
+        byte <= 32 || (self.comma && byte >= 128)
+    }
     pub fn next(&mut self) -> Result<Option<&'a [u8]>, FormatError> {
         loop {
-            while self.bytes.get(self.at).is_some_and(|&b| b <= 32) {
+            while self.bytes.get(self.at).is_some_and(|&b| self.whitespace(b)) {
                 self.at += 1;
             }
             let rest = &self.bytes[self.at..];
@@ -78,16 +92,19 @@ impl<'a> Tokens<'a> {
             self.at += length + 1;
             return Ok(Some(result));
         }
-        if !self.punctuation.contains(&first) {
+        if self.comma || !self.punctuation.contains(&first) {
             while self
                 .bytes
                 .get(self.at)
-                .is_some_and(|&b| b > 32 && !self.punctuation.contains(&b))
+                .is_some_and(|&b| !self.whitespace(b) && !self.punctuation.contains(&b))
             {
                 self.at += 1;
             }
         }
         if self.at - start >= self.limit {
+            if self.comma {
+                return Ok(Some(b""));
+            }
             return Err(FormatError::InvalidRange);
         }
         Ok(Some(&self.bytes[start..self.at]))
