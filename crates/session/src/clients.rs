@@ -2,7 +2,7 @@ use qa_core::events::{EventRing, OutputConsumerId, OutputTarget};
 use qa_core::primitives::{
     Bounds, ClientId, CollisionOwner, CollisionShape, CommandExecution, CommandIntent, EntityId,
     GeometryId, HudState, ModuleId, NativeEntity, PlayerState, RuleSetId, SnapshotObservation,
-    UserCmd, Vec3,
+    ThinkTime, UserCmd, Vec3,
 };
 use qa_core::sys_events::EventTime;
 use qa_core::text::{FixedText, InfoError, InfoRules, InfoUpdate};
@@ -114,6 +114,32 @@ pub enum ServerError {
 }
 
 impl Server {
+    /// All nonclient lifetime endings retire the same spatial/observer state.
+    pub fn free_entity(&mut self, entity: EntityId, time: ThinkTime) -> bool {
+        if !self.entities.release(entity, time) {
+            return false;
+        }
+        self.area.unlink(entity);
+        self.navigation.unregister(entity);
+        true
+    }
+
+    /// A stopped module's never-free rows no longer have a live owner. Reserved
+    /// session/client slots remain borrowed; callers retire connections first.
+    pub fn retire_module_entities(&mut self, module: ModuleId, time: ThinkTime) -> usize {
+        let mut cursor = self.entities.reserved_slots();
+        let mut retired = 0;
+        while let Some(entity) = self.entities.next_active(cursor) {
+            cursor = entity.slot as usize + 1;
+            if self.entities.columns.owner[entity.slot as usize] != module {
+                continue;
+            }
+            self.entities.set_never_free(entity, false);
+            retired += usize::from(self.free_entity(entity, time));
+        }
+        retired
+    }
+
     /// Sizes are load-time slot counts. Item zero is unused; numeric value zero
     /// is valid. The app's catalog supplies the common numeric schema capacity.
     pub fn load(

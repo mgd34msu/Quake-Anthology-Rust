@@ -26,6 +26,81 @@ fn key(host: &mut FrameHost, control: u16, down: bool, repeat: bool, ms: u64) {
     );
 }
 
+fn input_host() -> FrameHost {
+    FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        Runtime::load(64, std::iter::empty()).unwrap(),
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap()
+}
+
+fn forward(host: &mut FrameHost, ms: u64) -> f32 {
+    let handles = qa_console::input_settings::InputHandles::load(&host.console.cvars).unwrap();
+    let policy = handles.policy(&host.console.cvars, qa_core::primitives::RuleSetId::Quake2);
+    host.runtime
+        .input
+        .build_frame_with_policy(EventTime::from_milliseconds(ms), &[policy; SeatId::COUNT])[0]
+        .movement[0]
+}
+
+#[test]
+fn rejected_release_closes_executed_press_at_its_original_time() {
+    let mut host = input_host();
+    push(&mut host, EventKind::Time, 0);
+    key(&mut host, 26, true, false, 10);
+    host.drain(&mut Default::default());
+    host.console.execute_frame(&mut host.runtime);
+    assert_eq!(forward(&mut host, 20), 100.0);
+    host.console
+        .append(
+            &" ".repeat(qa_console::command_buffer::CAPACITY - 1),
+            Context::default(),
+        )
+        .unwrap();
+    key(&mut host, 26, false, false, 30);
+    host.drain(&mut Default::default());
+    host.console.execute_frame(&mut host.runtime);
+    assert_eq!(host.runtime.server.events.rejected_publications(), 1);
+    assert_eq!(forward(&mut host, 40), 100.0);
+    assert_eq!(forward(&mut host, 60), 0.0);
+}
+
+#[test]
+fn rejected_release_cancels_press_still_queued_in_the_same_drain() {
+    let mut host = input_host();
+    push(&mut host, EventKind::Time, 0);
+    // Leave room for this exact press, but not its release in the same drain.
+    let press_bytes = "+forward 26 10\n".len();
+    host.console
+        .append(
+            &" ".repeat(qa_console::command_buffer::CAPACITY - press_bytes - 1),
+            Context::default(),
+        )
+        .unwrap();
+    key(&mut host, 26, true, false, 10);
+    key(&mut host, 26, false, false, 20);
+    host.drain(&mut Default::default());
+    host.console.execute_frame(&mut host.runtime);
+    assert_eq!(host.runtime.server.events.rejected_publications(), 1);
+    assert_eq!(forward(&mut host, 40), 0.0);
+    assert_eq!(forward(&mut host, 60), 0.0);
+}
+
+#[test]
+fn admitted_quick_tap_keeps_the_native_elapsed_interval() {
+    let mut host = input_host();
+    push(&mut host, EventKind::Time, 0);
+    key(&mut host, 26, true, false, 10);
+    key(&mut host, 26, false, false, 20);
+    host.drain(&mut Default::default());
+    host.console.execute_frame(&mut host.runtime);
+    assert_eq!(forward(&mut host, 40), 50.0);
+    assert_eq!(forward(&mut host, 60), 0.0);
+    assert_eq!(host.runtime.server.events.rejected_publications(), 0);
+}
+
 #[test]
 fn queued_window_text_reaches_the_one_console_and_repeat_edits_do_not_move() {
     let mut host = FrameHost::load(

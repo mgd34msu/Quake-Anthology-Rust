@@ -86,8 +86,10 @@ fn heap_input() -> Result<(), Box<dyn std::error::Error>> {
             _: EventTime,
             _: Option<qa_core::sys_events::KeySource>,
             _: &str,
-        ) {
+        ) -> bool {
+            true
         }
+        fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
     }
     let mut input = Input::load();
     input.seed(EventTime(0));

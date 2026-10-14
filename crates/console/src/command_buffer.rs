@@ -2,6 +2,7 @@ use crate::{
     command_text::TextError,
     views::{Context, RuleSetId},
 };
+use qa_core::sys_events::KeySource;
 use qa_core::text::FixedText;
 
 pub const CAPACITY: usize = 65536;
@@ -109,6 +110,29 @@ impl CommandBuffer {
     }
     pub fn is_empty(&self) -> bool {
         self.bytes == 0
+    }
+    /// Remove pending descendants of a rejected physical binding acquisition.
+    /// Other command origins retain their byte order and complete Context.
+    pub fn discard_source(&mut self, source: KeySource) {
+        let mut read = 0;
+        let mut write = 0;
+        let mut kept = 0;
+        for index in 0..self.spans.len() {
+            let span = self.spans[index];
+            if span.context.key_source != Some(source) {
+                let length = span.end - read;
+                self.text.copy_within(read..span.end, write);
+                write += length;
+                self.spans[kept] = Span {
+                    end: write,
+                    context: span.context,
+                };
+                kept += 1;
+            }
+            read = span.end;
+        }
+        self.spans.truncate(kept);
+        self.bytes = write;
     }
     pub fn clear(&mut self) {
         self.spans.clear();

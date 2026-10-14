@@ -302,6 +302,10 @@ impl EntityTable {
         self.generations.len()
     }
 
+    pub fn reserved_slots(&self) -> usize {
+        self.reserved
+    }
+
     pub fn len(&self) -> usize {
         self.live_count
     }

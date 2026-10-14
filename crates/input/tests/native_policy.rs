@@ -18,8 +18,10 @@ impl Target for Sink {
         _: EventTime,
         _: Option<qa_core::sys_events::KeySource>,
         _: &str,
-    ) {
+    ) -> bool {
+        true
     }
+    fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
 }
 fn held(input: &mut Input, action: Action, down: bool, ms: u64) {
     input.button(

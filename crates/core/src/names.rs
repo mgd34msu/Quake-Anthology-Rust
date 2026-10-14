@@ -228,18 +228,49 @@ impl NameTable {
     pub fn folded(&self, id: NameId) -> Option<NameId> {
         ((id.0 as usize) < self.len).then(|| self.folded_ids[id.0 as usize])
     }
+    fn check_capacity(
+        &self,
+        additional_names: usize,
+        additional_bytes: usize,
+    ) -> Result<usize, NamesError> {
+        self.len
+            .checked_add(additional_names)
+            .filter(|&count| count <= self.entries.len())
+            .ok_or(NamesError::Capacity)?;
+        self.used
+            .checked_add(additional_bytes)
+            .filter(|&count| count <= self.bytes.len())
+            .ok_or(NamesError::Capacity)
+    }
+    /// Check a cold batch against this table's remaining reservation without
+    /// mutating it or allocating. Exact repeats consume no additional rows.
+    /// Intern the checked batch before admitting unrelated names.
+    pub fn check_intern_all<'a>(
+        &self,
+        names: impl Iterator<Item = &'a [u8]> + Clone,
+    ) -> Result<(), NamesError> {
+        let mut additional_names = 0usize;
+        let mut additional_bytes = 0usize;
+        for (index, name) in names.clone().enumerate() {
+            if self.find(name).is_some() || names.clone().take(index).any(|earlier| earlier == name)
+            {
+                continue;
+            }
+            additional_names = additional_names
+                .checked_add(1)
+                .ok_or(NamesError::Capacity)?;
+            additional_bytes = additional_bytes
+                .checked_add(name.len())
+                .ok_or(NamesError::Capacity)?;
+        }
+        self.check_capacity(additional_names, additional_bytes)
+            .map(|_| ())
+    }
     pub fn intern(&mut self, name: &[u8]) -> Result<NameId, NamesError> {
         if let Some(id) = self.find(name) {
             return Ok(id);
         }
-        let end = self
-            .used
-            .checked_add(name.len())
-            .filter(|&n| n <= self.bytes.len())
-            .ok_or(NamesError::Capacity)?;
-        if self.len == self.entries.len() {
-            return Err(NamesError::Capacity);
-        }
+        let end = self.check_capacity(1, name.len())?;
         let at = self.exact_entries[..self.len]
             .binary_search_by(|id| {
                 let (offset, len) = self.entries[id.0 as usize];

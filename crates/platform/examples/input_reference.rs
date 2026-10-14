@@ -13,8 +13,10 @@ impl Target for Sink {
         _: EventTime,
         _: Option<qa_core::sys_events::KeySource>,
         _: &str,
-    ) {
+    ) -> bool {
+        true
     }
+    fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("key names path")?;

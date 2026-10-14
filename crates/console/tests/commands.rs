@@ -110,6 +110,72 @@ fn complete_input_line_capacity_rejection_keeps_existing_text_and_origin() {
     assert_eq!(line.as_str(), existing);
     assert!(buffer.is_empty());
 }
+
+#[test]
+fn cancelling_source_compacts_only_its_spans_and_recovers_capacity() {
+    use qa_core::sys_events::{DeviceId, EventTime, KeySource, SeatId};
+    let source = KeySource {
+        device: DeviceId::Keyboard(17),
+        control: 26,
+    };
+    let other = KeySource {
+        device: DeviceId::Keyboard(28),
+        control: 26,
+    };
+    let first = Context {
+        key_source: Some(source),
+        event_time: Some(EventTime(10)),
+        ..Context::default()
+    };
+    let retained = Context {
+        key_source: Some(other),
+        seat: SeatId::ALL[1],
+        event_time: Some(EventTime(20)),
+        ..Context::default()
+    };
+    let ordinary = context(RuleSetId::Quake);
+    let mut buffer = CommandBuffer::new();
+    buffer.append_line("drop first", first).unwrap();
+    buffer.append("keep one;keep two\n", retained).unwrap();
+    buffer
+        .append_line(
+            "drop last",
+            Context {
+                event_time: Some(EventTime(30)),
+                ..first
+            },
+        )
+        .unwrap();
+    buffer.insert("drop inserted", first).unwrap();
+    buffer.append_line("keep ordinary", ordinary).unwrap();
+    buffer.discard_source(source);
+    let mut line = FixedText::<65536>::default();
+    for (expected, origin) in [
+        ("keep one", retained),
+        ("keep two", retained),
+        ("keep ordinary", ordinary),
+    ] {
+        let (actual, result) = buffer.next_line(&mut line).unwrap();
+        result.unwrap();
+        assert_eq!(actual, origin);
+        assert_eq!(line.as_str(), expected);
+    }
+    assert!(buffer.is_empty());
+    buffer
+        .append(
+            &"x".repeat(qa_console::command_buffer::CAPACITY - 1),
+            ordinary,
+        )
+        .unwrap();
+    buffer.discard_source(source);
+    let (origin, result) = buffer.next_line(&mut line).unwrap();
+    result.unwrap();
+    assert_eq!(origin, ordinary);
+    assert_eq!(
+        line.as_str().len(),
+        qa_console::command_buffer::CAPACITY - 1
+    );
+}
 fn expanded(
     text: &str,
     values: impl FnMut(&str) -> Option<qa_console::conversion::Text<'static>>,

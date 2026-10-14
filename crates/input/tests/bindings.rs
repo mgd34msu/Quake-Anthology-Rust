@@ -13,9 +13,11 @@ impl Target for Sink {
         _: EventTime,
         _: Option<qa_core::sys_events::KeySource>,
         text: &str,
-    ) {
+    ) -> bool {
         self.0.push((seat, text.to_owned()));
+        true
     }
+    fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
 }
 #[test]
 fn config_names_hex_and_modifier_sides_share_one_control_table() {

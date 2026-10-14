@@ -134,8 +134,10 @@ impl Target for ColdTarget {
         _: EventTime,
         _: Option<qa_core::sys_events::KeySource>,
         _: &str,
-    ) {
+    ) -> bool {
+        true
     }
+    fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
 }
 fn seat(
     console: &mut Console<Runtime>,

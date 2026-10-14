@@ -1772,11 +1772,9 @@ impl EngineServices<'_> {
         Ok(())
     }
     pub fn free(&mut self, context: CallContext, entity: EntityId) -> Result<(), CallError> {
-        if !self.server.entities.release(entity, context.clock) {
+        if !self.server.free_entity(entity, context.clock) {
             return Err(CallError::Entity);
         }
-        self.server.area.unlink(entity);
-        self.server.navigation.unregister(entity);
         Ok(())
     }
     pub fn cvar_register(

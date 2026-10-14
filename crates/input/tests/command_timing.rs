@@ -14,8 +14,10 @@ impl Target for Sink {
         _: EventTime,
         _: Option<qa_core::sys_events::KeySource>,
         _: &str,
-    ) {
+    ) -> bool {
+        true
     }
+    fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
 }
 #[test]
 fn command_duration_keeps_submillisecond_precision_and_saturates_the_native_width() {

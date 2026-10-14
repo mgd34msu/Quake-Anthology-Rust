@@ -155,6 +155,58 @@ fn fixed_registration_storage_rejects_without_corrupting_prior_names() {
 }
 
 #[test]
+fn batch_preflight_uses_remaining_storage_and_rejects_without_mutation() {
+    let mut names = NameTable::load_reserved([b"cached".as_slice()], 4, 9).unwrap();
+    let cached = names.find(b"cached").unwrap();
+    let spent = names.intern(b"spent").unwrap();
+    let before = names.len();
+    assert_eq!(
+        names.check_intern_all([b"ab".as_slice(), b"abc", b"ab"].into_iter()),
+        Err(NamesError::Capacity)
+    );
+    assert_eq!(names.len(), before);
+    assert_eq!(names.find(b"ab"), None);
+    assert_eq!(names.find(b"abc"), None);
+    assert_eq!(names.get(cached), Some(b"cached".as_slice()));
+    assert_eq!(names.get(spent), Some(b"spent".as_slice()));
+    let batch = [b"ab".as_slice(), b"AB", b"ab", b"cached", b""];
+    assert_eq!(names.check_intern_all(batch.into_iter()), Ok(()));
+    assert_eq!(names.len(), before);
+    for name in batch {
+        names.intern(name).unwrap();
+    }
+    let lower = names.find(b"ab").unwrap();
+    let upper = names.find(b"AB").unwrap();
+    assert_ne!(lower, upper);
+    assert_eq!(names.folded(upper), Some(lower));
+    assert_eq!(names.intern(b"x"), Err(NamesError::Capacity));
+    assert_eq!(names.check_intern_all(batch.into_iter()), Ok(()));
+}
+
+#[test]
+fn batch_preflight_counts_exact_names_against_the_row_limit() {
+    let mut names = NameTable::load_reserved([], 2, 128).unwrap();
+    assert_eq!(
+        names.check_intern_all([b"a".as_slice(), b"A", b"a", b"b"].into_iter()),
+        Err(NamesError::Capacity)
+    );
+    assert_eq!(names.len(), 1);
+    assert_eq!(names.find_folded(b"a"), None);
+    let batch = [b"a".as_slice(), b"A", b"a"];
+    assert_eq!(names.check_intern_all(batch.into_iter()), Ok(()));
+    for name in batch {
+        names.intern(name).unwrap();
+    }
+    assert_eq!(names.len(), names.capacity());
+    assert_eq!(names.check_intern_all(batch.into_iter()), Ok(()));
+    assert_eq!(
+        names.check_intern_all([b"b".as_slice()].into_iter()),
+        Err(NamesError::Capacity)
+    );
+    assert!(names.find(b"b").is_none());
+}
+
+#[test]
 fn path_keys_share_one_conversion_without_changing_exact_name_rules() {
     let mut names = NameTable::load_reserved([], 4, 128).unwrap();
     let id = names.intern_path("Textures\\WALL.Ä.TGA").unwrap();

@@ -55,7 +55,16 @@ pub trait Target {
         false
     }
     fn character(&mut self, seat: SeatId, value: char);
-    fn command(&mut self, seat: SeatId, time: EventTime, source: Option<KeySource>, text: &str);
+    /// True only when the sole command sink admits the complete line.
+    fn command(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        source: Option<KeySource>,
+        text: &str,
+    ) -> bool;
+    /// Cancel pending commands inherited from this physical source.
+    fn cancel_commands(&mut self, source: KeySource);
 }
 #[derive(Clone, Copy, Default)]
 struct Button {
@@ -619,19 +628,33 @@ impl Input {
             );
         }
     }
-    fn remove(&mut self, id: DeviceId, time: EventTime) {
+    fn release_sources(&mut self, time: EventTime, matches: impl Fn(KeySource) -> bool) {
         for seat in &mut self.seats {
             for button in &mut seat.actions {
                 let sources = button.held;
                 for source in sources
                     .into_iter()
                     .flatten()
-                    .filter(|source| source.device == id)
+                    .filter(|source| matches(*source))
                 {
                     button.set(source, false, time);
                 }
             }
         }
+    }
+    /// Bounded command rejection cancels this source, never its other holders.
+    pub fn cancel_source(&mut self, source: KeySource, time: EventTime) {
+        self.release_sources(time, |held| held == source);
+        if let Some(index) = self.device_index(source.device)
+            && let Some(acquired) = self.devices[index]
+                .acquired
+                .get_mut(usize::from(source.control))
+        {
+            *acquired = false;
+        }
+    }
+    fn remove(&mut self, id: DeviceId, time: EventTime) {
+        self.release_sources(time, |source| source.device == id);
         if let Some(index) = self.device_index(id) {
             self.devices[index] = Device::default();
         }
@@ -823,8 +846,11 @@ impl Input {
             for part in &binding.parts[..binding.count] {
                 button_seen |= part.button;
                 let text = &binding.text.as_str()[part.start as usize..part.end as usize];
-                if part.button {
-                    let mut command = FixedText::<1088>::default();
+                if !part.button && !down && !button_seen {
+                    continue;
+                }
+                let mut command = FixedText::<1088>::default();
+                let text = if part.button {
                     if down {
                         let _ = command.write_str(text);
                     } else {
@@ -836,25 +862,18 @@ impl Input {
                         device_index * CONTROLS + control as usize,
                         time.milliseconds()
                     );
-                    target.command(
-                        seat,
-                        time,
-                        Some(KeySource {
-                            device: id,
-                            control,
-                        }),
-                        command.as_str(),
-                    );
-                } else if down || button_seen {
-                    target.command(
-                        seat,
-                        time,
-                        Some(KeySource {
-                            device: id,
-                            control,
-                        }),
-                        text,
-                    );
+                    command.as_str()
+                } else {
+                    text
+                };
+                let source = KeySource {
+                    device: id,
+                    control,
+                };
+                if !target.command(seat, time, Some(source), text) {
+                    target.cancel_commands(source);
+                    self.cancel_source(source, time);
+                    return;
                 }
             }
         }

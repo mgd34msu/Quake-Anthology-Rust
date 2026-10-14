@@ -50,6 +50,92 @@ fn integrate(seconds: f64) -> MoveOptions {
 }
 
 #[test]
+fn complete_and_native_control_share_raw_and_capped_velocity_and_scalar_order() {
+    for (axes, expected) in [
+        ([1.0, -1.0, 0.0], Vec3([1.0, 1.0, 0.0])),
+        ([300.0, -400.0, 0.0], Vec3([192.0, 256.0, 0.0])),
+    ] {
+        let mut complete = player(RuleSetId::Quake);
+        let mut native = player(RuleSetId::Quake);
+        let cmd = UserCmd {
+            duration_ms: 16,
+            duration_ns: 16_000_000,
+            movement: axes,
+            ..Default::default()
+        };
+        let mut complete_writes = Vec::new();
+        let complete_result = pmove(
+            cmd,
+            &mut complete,
+            &mut NoTrace,
+            MoveOptions::default(),
+            |_: &mut PlayerState, field| {
+                complete_writes.push(field);
+                Ok::<_, TraceError>(())
+            },
+        )
+        .unwrap();
+        let mut native_writes = Vec::new();
+        let native_result = pmove(
+            cmd,
+            &mut native,
+            &mut NoTrace,
+            control(Vec3::default(), 7.0),
+            |_: &mut PlayerState, field| {
+                native_writes.push(field);
+                Ok::<_, TraceError>(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            complete.body.velocity.0.map(f32::to_bits),
+            expected.0.map(f32::to_bits)
+        );
+        assert_eq!(
+            native.body.velocity.0.map(f32::to_bits),
+            expected.0.map(f32::to_bits)
+        );
+        assert_eq!(
+            complete_writes,
+            [
+                MotionWrite::Velocity(0),
+                MotionWrite::Velocity(1),
+                MotionWrite::Velocity(2),
+                MotionWrite::Origin(0),
+                MotionWrite::Origin(1),
+                MotionWrite::Origin(2)
+            ]
+        );
+        assert_eq!(
+            native_writes,
+            [
+                MotionWrite::Velocity(0),
+                MotionWrite::Velocity(1),
+                MotionWrite::Velocity(2)
+            ]
+        );
+        assert_eq!(complete_result.steps, 1);
+        assert_eq!(native_result.steps, 0);
+        let native_view = native.view_angles;
+        pmove(
+            cmd,
+            &mut native,
+            &mut NoTrace,
+            integrate(0.016),
+            no_boundary,
+        )
+        .unwrap();
+        assert_eq!(
+            complete.body.position.0.map(f32::to_bits),
+            native.body.position.0.map(f32::to_bits)
+        );
+        assert_eq!(native.view_angles, native_view);
+        assert_eq!(native.movement.remaining_ms, 123);
+        assert_eq!(native.trace_rules, RuleSetId::Quake2);
+    }
+}
+
+#[test]
 fn native_control_keeps_raw_under_cap_wish_and_separate_integration() {
     let mut state = player(RuleSetId::Quake);
     state.movement.ducked = true;

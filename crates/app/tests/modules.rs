@@ -352,8 +352,23 @@ fn stopping_unobserved_server_module_preserves_independent_client_and_provider()
     let before = &host.runtime.server.clients[client.0 as usize];
     let lifetime = before.entity;
     let consumer = before.output.unwrap();
+    let owned = linked_owned_entity(&mut host, ModuleId(1));
+    let independent = linked_owned_entity(&mut host, ModuleId(2));
+    assert!(host.runtime.server.entities.set_never_free(owned, true));
+    assert!(
+        !host
+            .runtime
+            .server
+            .free_entity(owned, ThinkTime::Milliseconds(0))
+    );
     let calls = host.module_counts(ModuleId(2)).unwrap().calls;
     assert!(host.shutdown_module(ModuleId(1)));
+    assert!(host.runtime.server.entities.resolve(owned).is_none());
+    assert!(host.runtime.server.area.bounds(owned).is_none());
+    assert!(!host.runtime.server.navigation.contains(owned));
+    assert!(host.runtime.server.entities.resolve(independent).is_some());
+    assert!(host.runtime.server.area.bounds(independent).is_some());
+    assert!(host.runtime.server.navigation.contains(independent));
     let after = &host.runtime.server.clients[client.0 as usize];
     assert_eq!(after.connection, Some(Connection::Remote));
     assert_eq!(after.entity, lifetime);
@@ -389,6 +404,26 @@ fn stopping_unobserved_server_module_preserves_independent_client_and_provider()
             .connection
             .is_none()
     );
+}
+
+fn linked_owned_entity(host: &mut FrameHost, module: ModuleId) -> EntityId {
+    let server = &mut host.runtime.server;
+    let entity = server
+        .entities
+        .allocate(ThinkTime::Milliseconds(0), module, AllocationPolicy::q3(0))
+        .unwrap()
+        .id;
+    server.entities.columns.mins[entity.slot as usize] = Vec3([-1.; 3]);
+    server.entities.columns.maxs[entity.slot as usize] = Vec3([1.; 3]);
+    assert!(server.area.link(
+        &server.entities,
+        entity,
+        qa_world::area::LinkFlags::SOLID,
+        LinkOrder::Head,
+        qa_world::area::LinkIntent::Explicit,
+    ));
+    assert!(server.navigation.register(entity));
+    entity
 }
 
 #[test]
@@ -433,12 +468,16 @@ fn lifecycle_is_once_only_uses_native_exports_and_keeps_two_physical_intakes() {
 fn failed_initialization_is_not_retried_or_advanced_as_a_running_module() {
     use qa_app::modules::State;
     let mut host = lifecycle_host(1);
+    let entity = linked_owned_entity(&mut host, ModuleId(1));
     let mut source = Source {
         time: EventTime(0),
         polls: 0,
     };
     host.frame(&mut source, true);
     assert_eq!(host.module_state(ModuleId(1)), Some(State::Failed));
+    assert!(host.runtime.server.entities.resolve(entity).is_none());
+    assert!(host.runtime.server.area.bounds(entity).is_none());
+    assert!(!host.runtime.server.navigation.contains(entity));
     source.time = EventTime(150_000_000);
     let result = host.frame(&mut source, true);
     assert!(result.server_ticks >= 3);

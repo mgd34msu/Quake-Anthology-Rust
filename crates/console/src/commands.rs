@@ -6,7 +6,7 @@ use crate::{
     text::MAX_TEXT,
     views::{Context, RuleSetId},
 };
-use qa_core::sys_events::{EventTime, SeatId, key_catchers};
+use qa_core::sys_events::{EventTime, KeySource, SeatId, key_catchers};
 use qa_core::text::FixedText;
 use qa_core::{
     names::{NamesError, compare_folded},
@@ -178,6 +178,19 @@ impl<H: Host> Console<H> {
     pub fn append_line(&mut self, text: &str, context: Context) -> Result<(), TextError> {
         self.buffer.append_line(text, context)
     }
+    pub fn discard_source(&mut self, source: KeySource) {
+        self.buffer.discard_source(source);
+    }
+    fn reject_expansion(&mut self, error: TextError, context: Context, host: &mut H) {
+        if error == TextError::TooLong
+            && let Some(source) = context.key_source
+        {
+            self.discard_source(source);
+            let time = context.event_time.unwrap_or_else(|| host.input_time());
+            host.input().cancel_source(source, time);
+            host.reject_input(1);
+        }
+    }
     /// The window editor submits through the same buffer as stdin, binds and
     /// module commands. Failed admission keeps the editable line intact.
     pub fn edit_key(
@@ -249,6 +262,7 @@ impl<H: Host> Console<H> {
             };
             executed += 1;
             if let Err(error) = result {
+                self.reject_expansion(error, context, host);
                 host.print(format_args!("Command rejected: {error:?}\n"));
                 continue;
             }
@@ -271,6 +285,7 @@ impl<H: Host> Console<H> {
                     Ok(())
                 };
                 if let Err(error) = expanded {
+                    self.reject_expansion(error, context, host);
                     host.print(format_args!("Command rejected: {error:?}\n"));
                     continue;
                 }
@@ -282,6 +297,7 @@ impl<H: Host> Console<H> {
             ) {
                 Ok(args) => args,
                 Err(error) => {
+                    self.reject_expansion(error, context, host);
                     host.print(format_args!("Command rejected: {error:?}\n"));
                     continue;
                 }
@@ -322,9 +338,11 @@ impl<H: Host> Console<H> {
                         host.print(format_args!("Alias expansion limit\n"));
                         continue;
                     }
-                    self.buffer
-                        .insert(alias.text.as_str(), context)
-                        .map_err(Into::into)
+                    let result = self.buffer.insert(alias.text.as_str(), context);
+                    if let Err(error) = result {
+                        self.reject_expansion(error, context, host);
+                    }
+                    result.map_err(Into::into)
                 } else {
                     host.print(format_args!("Unknown command \"{name}\"\n"));
                     Ok(())
@@ -577,12 +595,15 @@ impl<H: Host> Console<H> {
             .map_err(CommandError::Script)?;
         let text = std::str::from_utf8(&self.script[..length])
             .map_err(|_| CommandError::Script(ScriptError::Encoding))?;
-        self.buffer.insert(text, context)?;
+        if let Err(error) = self.buffer.insert(text, context) {
+            self.reject_expansion(error, context, host);
+            return Err(error.into());
+        }
         Ok(())
     }
     fn vstr(
         &mut self,
-        _: &mut H,
+        host: &mut H,
         args: &Arguments<'_>,
         context: Context,
     ) -> Result<(), CommandError> {
@@ -603,7 +624,10 @@ impl<H: Host> Console<H> {
         self.joined
             .write_str("\n")
             .map_err(|_| TextError::TooLong)?;
-        self.buffer.insert(self.joined.as_str(), context)?;
+        if let Err(error) = self.buffer.insert(self.joined.as_str(), context) {
+            self.reject_expansion(error, context, host);
+            return Err(error.into());
+        }
         Ok(())
     }
     fn set(
@@ -721,7 +745,7 @@ impl Target for BindOutput<'_> {
         time: EventTime,
         key_source: Option<qa_core::sys_events::KeySource>,
         text: &str,
-    ) {
+    ) -> bool {
         let result = self.buffer.append_line(
             text,
             Context {
@@ -735,6 +759,10 @@ impl Target for BindOutput<'_> {
             self.rejected.get_or_insert(error);
             self.rejected_count += 1;
         }
+        result.is_ok()
+    }
+    fn cancel_commands(&mut self, source: KeySource) {
+        self.buffer.discard_source(source);
     }
 }
 

@@ -20,8 +20,10 @@ impl Target for Sink {
         _: EventTime,
         _: Option<qa_core::sys_events::KeySource>,
         _: &str,
-    ) {
+    ) -> bool {
+        true
     }
+    fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
 }
 fn key(input: &mut Input, sink: &mut Sink, ms: u64, code: u16, down: bool, repeat: bool) {
     device_key(input, sink, DeviceId::Keyboard(0), ms, code, down, repeat);
@@ -64,8 +66,10 @@ fn physical_holds_survive_consumption_repeats_and_duplicate_releases() {
             _: EventTime,
             _: Option<qa_core::sys_events::KeySource>,
             _: &str,
-        ) {
+        ) -> bool {
+            true
         }
+        fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
     }
     let mut input = Input::load();
     input.seed(EventTime(0));

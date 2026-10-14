@@ -1628,7 +1628,7 @@ impl Target for ConsoleInput<'_> {
         time: EventTime,
         source: Option<qa_core::sys_events::KeySource>,
         text: &str,
-    ) {
+    ) -> bool {
         let context = qa_console::views::Context {
             seat,
             event_time: Some(time),
@@ -1640,7 +1640,13 @@ impl Target for ConsoleInput<'_> {
             let _ = self
                 .events
                 .console_formatted(format_args!("Input command: {error:?}\n"));
+            false
+        } else {
+            true
         }
+    }
+    fn cancel_commands(&mut self, source: qa_core::sys_events::KeySource) {
+        self.console.discard_source(source);
     }
 }
 

@@ -1782,6 +1782,115 @@ fn load_limits_reject_at_registration() {
 }
 
 #[test]
+fn surface_name_capacity_failure_keeps_registration_transactional() {
+    use qa_compat::services::CallError;
+
+    let failed_path = "broken.md3";
+    let healthy_path = "good.md3";
+    let mut failed = support::md3_surfaces();
+    failed[80..84].copy_from_slice(&0i32.to_le_bytes());
+    let first = i32::from_le_bytes(failed[100..104].try_into().unwrap()) as usize;
+    let second =
+        first + i32::from_le_bytes(failed[first + 104..first + 108].try_into().unwrap()) as usize;
+    failed[second + 4..second + 68].fill(0);
+    let long_name = b"surface_name_exceeding_the_entire_remaining_budget";
+    failed[second + 4..second + 4 + long_name.len()].copy_from_slice(long_name);
+    let parsed = qa_formats::model::Model::parse(&failed).unwrap();
+    assert_eq!(parsed.meshes.len(), 2);
+    assert_eq!(parsed.tags_per_frame, 0);
+    assert_eq!(parsed.meshes[1].name, long_name);
+    let mut healthy = support::md3();
+    healthy[80..84].copy_from_slice(&0i32.to_le_bytes());
+    let fixture = support::Fixture::new(&[
+        (failed_path, failed),
+        (healthy_path, healthy),
+        (
+            "textures/body.tga",
+            support::tga(2, 2, &[[90, 20, 10, 255]; 4]),
+        ),
+    ]);
+    let profiles = [
+        shader_profile(RuleSetId::Quake3),
+        shader_profile(RuleSetId::Quake2),
+    ];
+    let assets = Assets::load().unwrap();
+    let before = assets.models().len();
+    // The first surface fits, but the second does not. A failed batch must
+    // leave those first-surface bytes available to the later healthy model.
+    let mut builder = ModelCatalogBuilder::new(
+        assets,
+        profiles,
+        [],
+        ModelLimits {
+            name_bytes: failed_path.len() + healthy_path.len() + b"body".len(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let request = ModelRequest::native(failed_path, RuleSetId::Quake3, None);
+    assert!(
+        builder
+            .register_request(&fixture.vfs, request)
+            .unwrap_err()
+            .contains("model surface names")
+    );
+    fixture.remove(failed_path);
+    assert_eq!(
+        builder.precache(&fixture.vfs, failed_path.as_bytes(), RuleSetId::Quake3),
+        Err(CallError::Capacity)
+    );
+    assert_eq!(
+        builder.register_model(&fixture.vfs, failed_path.as_bytes(), RuleSetId::Quake3),
+        Err(CallError::Capacity)
+    );
+    for profile in profiles {
+        let optional = ModelRequest {
+            source_rules: profile.source_rules,
+            rules: profile.rules,
+            image_settings: profile.image_settings,
+            required: false,
+            ..request
+        };
+        assert!(
+            builder
+                .register_request(&fixture.vfs, optional)
+                .unwrap_err()
+                .contains("model surface names")
+        );
+    }
+    builder
+        .register_request(
+            &fixture.vfs,
+            ModelRequest::native(healthy_path, RuleSetId::Quake3, None),
+        )
+        .unwrap();
+    let handle = builder
+        .register_model(&fixture.vfs, healthy_path.as_bytes(), RuleSetId::Quake3)
+        .unwrap();
+    fixture.remove(healthy_path);
+    let (assets, catalog) = builder.finish();
+    assert_eq!(assets.models().len(), before + 1);
+    assert_eq!(catalog.capacity().registrations, profiles.len());
+    assert_eq!(catalog.capacity().names, 4);
+    assert!(catalog.metadata(failed_path.as_bytes()).is_none());
+    for profile in profiles {
+        assert!(catalog.registration(failed_path, profile).is_none());
+        let registration = catalog.registration(healthy_path, profile).unwrap();
+        assert_eq!(
+            catalog.renderer_registration(handle, profile),
+            Some(registration)
+        );
+        assert_eq!(
+            catalog
+                .bindings(registration, 0, Default::default())
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[test]
 fn synchronous_precaches_share_one_file_mesh_and_profile_image_cache_across_calls() {
     let path = "models/test/shared.pcx";
     let fixture = support::Fixture::new(&[

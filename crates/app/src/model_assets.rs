@@ -562,6 +562,11 @@ impl ModelCatalogBuilder {
         if matches!(self.files[name.0 as usize], ModelFile::LoadedWorld { .. }) {
             return Ok(());
         }
+        if self.models[name.0 as usize].count == 0
+            && let Err(error) = admission
+        {
+            return Err(error.message);
+        }
         let profile = request.profile();
         let registration = self.models[name.0 as usize]
             .range()
@@ -606,7 +611,6 @@ impl ModelCatalogBuilder {
             first: self.registrations.len() as u32,
             count: (next - self.registrations.len()) as u32,
         };
-        self.models[name.0 as usize] = span;
         let bytes = vfs
             .read_file(path.as_bytes(), self.limits.file_bytes, &mut self.reader)
             .map_err(|error| FileError {
@@ -632,51 +636,25 @@ impl ModelCatalogBuilder {
                     _ => model.bounds,
                 },
             });
+        let first_tag = self.tags.len();
         let tags = parsed
             .as_ref()
             .map_err(|error| error.message.clone())
             .and_then(|model| self.admit_tags(model));
-        self.files[name.0 as usize] = match &metadata {
-            Ok(metadata) => ModelFile::Ready {
-                metadata: *metadata,
-                renderer_sources: 0,
-                tags: tags.as_ref().ok().copied().flatten(),
-            },
-            Err(error) => ModelFile::Failed(error.clone()),
-        };
         let surface_names = parsed
             .as_ref()
             .ok()
-            .map(|model| {
-                if model.format == ModelFormat::Sp2 {
-                    return Ok(vec![
-                        self.admit_name(b"sprite")
-                            .map_err(|_| FileError::capacity("model surface names"))?,
-                    ]);
-                }
-                model
-                    .meshes
-                    .iter()
-                    .map(|mesh| {
-                        let raw = mesh.name;
-                        let raw = if model.format == ModelFormat::Md3
-                            && raw.len() > 2
-                            && raw[raw.len() - 2] == b'_'
-                        {
-                            &raw[..raw.len() - 2]
-                        } else {
-                            raw
-                        };
-                        let name = self
-                            .admit_name(raw)
-                            .map_err(|_| FileError::capacity("model surface names"))?;
-                        self.names
-                            .folded(name)
-                            .ok_or_else(|| FileError::capacity("model surface names"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?;
+            .map(|model| self.admit_surface_names(model))
+            .transpose();
+        let surface_names = match surface_names {
+            Ok(names) => names,
+            Err(error) => {
+                self.tags.truncate(first_tag);
+                self.capacity.tags = first_tag;
+                self.files[name.0 as usize] = ModelFile::Failed(error.clone());
+                return Err(error);
+            }
+        };
         let mut meshes = vec![None; parsed.as_ref().map_or(0, |model| model.meshes.len())];
         if parsed
             .as_ref()
@@ -684,6 +662,7 @@ impl ModelCatalogBuilder {
         {
             self.shader_catalog(vfs);
         }
+        let mut renderer_sources = 0;
         for images in &mut self.profiles {
             let registration = Registration {
                 path: path.to_owned(),
@@ -746,12 +725,7 @@ impl ModelCatalogBuilder {
                         });
                         self.bindings.extend(skins);
                     }
-                    if let ModelFile::Ready {
-                        renderer_sources, ..
-                    } = &mut self.files[name.0 as usize]
-                    {
-                        *renderer_sources |= 1 << images.profile.source_rules as u8;
-                    }
+                    renderer_sources |= 1 << images.profile.source_rules as u8;
                     (Some(IndexSpan { first, count }), None)
                 }
                 Err(error) => {
@@ -769,9 +743,53 @@ impl ModelCatalogBuilder {
                 error,
             });
         }
+        self.models[name.0 as usize] = span;
+        self.files[name.0 as usize] = match &metadata {
+            Ok(metadata) => ModelFile::Ready {
+                metadata: *metadata,
+                renderer_sources,
+                tags: tags.as_ref().ok().copied().flatten(),
+            },
+            Err(error) => ModelFile::Failed(error.clone()),
+        };
         self.capacity.registrations = self.registrations.len();
         self.capacity.bindings = self.bindings.len() * ModelMaterialPolicy::ALL.len();
         metadata.map(|metadata| metadata.bounds)
+    }
+
+    fn admit_surface_names(&mut self, model: &Model<'_>) -> Result<Vec<NameId>, FileError> {
+        let raw: Vec<_> = if model.format == ModelFormat::Sp2 {
+            vec![b"sprite".as_slice()]
+        } else {
+            model
+                .meshes
+                .iter()
+                .map(|mesh| {
+                    let raw = mesh.name;
+                    if model.format == ModelFormat::Md3
+                        && raw.len() > 2
+                        && raw[raw.len() - 2] == b'_'
+                    {
+                        &raw[..raw.len() - 2]
+                    } else {
+                        raw
+                    }
+                })
+                .collect()
+        };
+        self.names
+            .check_intern_all(raw.iter().copied())
+            .map_err(|_| FileError::capacity("model surface names"))?;
+        raw.into_iter()
+            .map(|raw| {
+                let name = self
+                    .admit_name(raw)
+                    .map_err(|_| FileError::capacity("model surface names"))?;
+                self.names
+                    .folded(name)
+                    .ok_or_else(|| FileError::capacity("model surface names"))
+            })
+            .collect()
     }
 
     fn shader_catalog(&mut self, vfs: &Vfs) -> &Result<ShaderCatalog, String> {

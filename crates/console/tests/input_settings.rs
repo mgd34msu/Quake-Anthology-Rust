@@ -103,7 +103,10 @@ fn nonfinite_effective_settings_fall_back_to_cached_catalog_defaults() {
 struct Sink;
 impl Target for Sink {
     fn character(&mut self, _: SeatId, _: char) {}
-    fn command(&mut self, _: SeatId, _: EventTime, _: Option<KeySource>, _: &str) {}
+    fn command(&mut self, _: SeatId, _: EventTime, _: Option<KeySource>, _: &str) -> bool {
+        true
+    }
+    fn cancel_commands(&mut self, _: KeySource) {}
 }
 fn mouse_command(policy: InputPolicy, mlook: bool) -> qa_core::primitives::UserCmd {
     let mut input = Input::load();

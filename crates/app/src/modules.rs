@@ -742,15 +742,17 @@ impl FrameHost {
         }
         Ok(())
     }
-    fn release_module_presentation(&mut self, module: ModuleId) {
+    fn retire_module_state(&mut self, module: ModuleId) {
         let Some(row) = self.module_row(module) else {
             return;
         };
-        let (audio, view, connection) = (
+        let (audio, view, connection, time) = (
             row.produces_client_audio,
             row.produces_client_view,
             row.client_connection,
+            row.time(self.time),
         );
+        self.runtime.server.retire_module_entities(module, time);
         if let Some(modules) = &mut self.modules {
             let _ = modules
                 .storage
@@ -1102,7 +1104,7 @@ impl FrameHost {
             self.disconnect_module_recipients(module);
         }
         if shutdown || result.is_err() {
-            self.release_module_presentation(module);
+            self.retire_module_state(module);
         }
     }
     fn check_module_api(
@@ -1266,7 +1268,7 @@ impl FrameHost {
             && self.module_state(module) == Some(State::Failed)
         {
             self.disconnect_module_recipients(module);
-            self.release_module_presentation(module);
+            self.retire_module_state(module);
         }
         result
     }

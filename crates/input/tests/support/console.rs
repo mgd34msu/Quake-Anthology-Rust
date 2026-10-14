@@ -72,7 +72,7 @@ impl Router {
         time: EventTime,
         key_source: Option<KeySource>,
         text: &str,
-    ) {
+    ) -> bool {
         self.console
             .append_line(
                 text,
@@ -83,7 +83,7 @@ impl Router {
                     ..Context::default()
                 },
             )
-            .unwrap();
+            .is_ok()
     }
     pub fn execute(&mut self, input: &mut Input) {
         std::mem::swap(input, &mut self.host.input);
@@ -203,8 +203,18 @@ impl<T: qa_input::Target> qa_input::Target for Routing<'_, T> {
     fn character(&mut self, seat: SeatId, value: char) {
         self.observer.character(seat, value);
     }
-    fn command(&mut self, seat: SeatId, time: EventTime, source: Option<KeySource>, text: &str) {
-        self.router.command(seat, time, source, text);
-        self.observer.command(seat, time, source, text);
+    fn command(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        source: Option<KeySource>,
+        text: &str,
+    ) -> bool {
+        self.router.command(seat, time, source, text)
+            && self.observer.command(seat, time, source, text)
+    }
+    fn cancel_commands(&mut self, source: KeySource) {
+        self.router.console.discard_source(source);
+        self.observer.cancel_commands(source);
     }
 }

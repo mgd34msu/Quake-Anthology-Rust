@@ -5174,11 +5174,31 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
         assert!(host.module_counts(ModuleId(1)).unwrap().calls > 0);
         let active_before = host.runtime.server.entities.active().count();
+        let owned_before: Vec<_> = host
+            .runtime
+            .server
+            .entities
+            .active()
+            .filter(|entity| {
+                entity.slot as usize >= host.runtime.server.entities.reserved_slots()
+                    && host.runtime.server.entities.columns.owner[entity.slot as usize]
+                        == ModuleId(1)
+            })
+            .collect();
+        assert!(!owned_before.is_empty());
         source.time = EventTime(200_000_000);
         host.frame(&mut source, true);
         assert_eq!(host.module_state(ModuleId(1)), Some(State::Failed));
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 1);
-        assert_eq!(host.runtime.server.entities.active().count(), active_before);
+        assert_eq!(
+            host.runtime.server.entities.active().count(),
+            active_before - owned_before.len()
+        );
+        for entity in owned_before {
+            assert!(host.runtime.server.entities.resolve(entity).is_none());
+            assert!(host.runtime.server.area.bounds(entity).is_none());
+            assert!(!host.runtime.server.navigation.contains(entity));
+        }
     }
 }
 

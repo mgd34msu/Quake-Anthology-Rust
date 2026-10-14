@@ -86,6 +86,35 @@ fn command(ms: u16, movement: [f32; 3], angles: Vec3) -> UserCmd {
 }
 
 #[test]
+fn netquake_complete_noclip_copies_exact_raw_under_cap_diagonal() {
+    let mut state = player(RuleSetId::Quake, MovementMode::Noclip);
+    let previous = state.body.position;
+    let mut world = World::new(state.trace_rules);
+    let result = pmove(
+        command(16, [1.0, -1.0, 0.0], Vec3::default()),
+        &mut state,
+        &mut world,
+        Default::default(),
+        qa_movement::no_boundary,
+    )
+    .unwrap();
+    // SV_AirMove normalizes wishdir, but copies the distinct wishvel. Rebuilding
+    // this diagonal from direction * length would lose the exact ones.
+    assert_eq!(
+        state.body.velocity.0.map(f32::to_bits),
+        [1.0f32.to_bits(), 1.0f32.to_bits(), 0.0f32.to_bits()]
+    );
+    assert_eq!(
+        state.body.position.0.map(f32::to_bits),
+        [previous.0[0] + 0.016, previous.0[1] + 0.016, previous.0[2]].map(f32::to_bits)
+    );
+    assert_eq!(result.steps, 1);
+    assert_eq!(world.traces, 0);
+    assert_eq!(world.contents.get(), 0);
+    assert_eq!(state.trace_rules, RuleSetId::Quake2);
+}
+
+#[test]
 fn q3_spectator_clips_while_noclip_uses_direct_motion_and_foreign_trace_rules() {
     for mode in [MovementMode::Spectator, MovementMode::Noclip] {
         let mut state = player(RuleSetId::Quake3, mode);

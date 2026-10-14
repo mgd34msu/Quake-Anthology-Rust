@@ -352,6 +352,15 @@ struct Wish {
     length: f32,
     maximum: f32,
 }
+impl Wish {
+    fn immediate_velocity(self) -> Vec3 {
+        if self.length > self.maximum {
+            self.raw * (self.maximum / self.length)
+        } else {
+            self.raw
+        }
+    }
+}
 pub(crate) struct Step<'a> {
     pub player: &'a mut PlayerState,
     pub world: &'a mut dyn TraceServices,
@@ -1381,17 +1390,15 @@ impl Step<'_> {
         if !matches!(policy.acceleration, FreeAcceleration::Immediate) {
             self.friction(FrictionContext::Free(policy.friction))?;
         }
-        let Wish {
-            direction, speed, ..
-        } = self.wish(false, Some(policy))?;
+        let wish = self.wish(false, Some(policy))?;
         let accelerated = match policy.acceleration {
             FreeAcceleration::Immediate => {
-                self.player.body.velocity = direction * speed;
+                self.player.body.velocity = wish.immediate_velocity();
                 true
             }
             FreeAcceleration::Normal | FreeAcceleration::Flight => self.accelerate(
-                direction,
-                speed,
+                wish.direction,
+                wish.speed,
                 if matches!(policy.acceleration, FreeAcceleration::Flight) {
                     self.parameters.fly_accel
                 } else {
@@ -1617,11 +1624,7 @@ where
                         options,
                     };
                     let wish = step.wish(false, Some(policy))?;
-                    let velocity = if wish.length > wish.maximum {
-                        wish.raw * (wish.maximum / wish.length)
-                    } else {
-                        wish.raw
-                    };
+                    let velocity = wish.immediate_velocity();
                     copy_body(step.player, None, velocity, None, boundary)?;
                 }
                 Ok(result)
