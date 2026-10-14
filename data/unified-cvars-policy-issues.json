@@ -1,17 +1,17 @@
 {
   "counts": {
-    "rows": 1261,
+    "rows": 1262,
     "owner_rows": 1260,
-    "engine_rows": 1,
+    "engine_rows": 2,
     "owner_cells": 26460,
     "aliases": 237,
-    "bindings": 1531,
-    "defaults": 6372,
-    "flag_clauses": 2332,
-    "conversions": 237,
+    "bindings": 1532,
+    "defaults": 6377,
+    "flag_clauses": 2337,
+    "conversions": 238,
     "operands": 43,
     "maps": 67,
-    "issues": 1393
+    "issues": 1394
   },
   "policy_issues": [
     {
@@ -9740,6 +9740,13 @@
     {
       "row": 1260,
       "name": "r_cpuBands",
+      "field": "type/range_units",
+      "reason": "single-name inferred hints; not runtime validators",
+      "bits": 1
+    },
+    {
+      "row": 1261,
+      "name": "cl_commandHistory",
       "field": "type/range_units",
       "reason": "single-name inferred hints; not runtime validators",
       "bits": 1

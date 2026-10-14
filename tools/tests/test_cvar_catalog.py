@@ -101,7 +101,7 @@ class CvarCatalog(unittest.TestCase):
     def test_full_cell_oracle_reports_owner_and_extension_counts_separately(self):
         report = compare_cells(encoded_rows(self.owner + self.engine), self.owner, self.engine)
         self.assertEqual((report['rows'], report['cells']), (1260, 26460))
-        self.assertEqual((report['engine_rows'], report['engine_cells']), (1, 21))
+        self.assertEqual((report['engine_rows'], report['engine_cells']), (2, 42))
 
     def test_full_cell_oracle_rejects_owner_extension_and_trailing_changes(self):
         rows = self.owner + self.engine

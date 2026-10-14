@@ -141,6 +141,8 @@ pub trait SoundRegistrar {
 /// Accepted CLIENT snapshots and current command argv borrow the same
 /// connection for one synchronous module call, without reading SERVER state.
 pub trait ClientConnection {
+    fn command_number(&self, server: &Server) -> Result<u64, CallError>;
+    fn usercmd(&mut self, number: i32, server: &Server) -> Result<Option<UserCmd>, CallError>;
     fn select(&mut self, number: i32, server: &mut Server) -> Result<bool, CallError>;
     fn arguments(&self) -> qa_console::command_text::Arguments<'_>;
     fn disconnected(&self) -> bool;
@@ -922,6 +924,8 @@ pub struct EngineCallTable {
         -> Result<&'a qa_core::presentation::RendererConfiguration, CallError>,
     pub snapshot_number: fn(&EngineServices<'_>) -> Result<(u32, ThinkTime), CallError>,
     pub snapshot: ClientSnapshotCall,
+    pub client_command_number: fn(&EngineServices<'_>) -> Result<u64, CallError>,
+    pub client_usercmd: fn(&mut EngineServices<'_>, i32) -> Result<Option<UserCmd>, CallError>,
     pub pmove: fn(
         &mut EngineServices<'_>,
         ClientId,
@@ -1070,6 +1074,18 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .as_deref_mut()
             .ok_or(CallError::Entity)?
             .snapshot(number, s.server)
+    },
+    client_command_number: |s| {
+        s.client_connection
+            .as_deref()
+            .ok_or(CallError::Entity)?
+            .command_number(s.server)
+    },
+    client_usercmd: |s, number| {
+        s.client_connection
+            .as_deref_mut()
+            .ok_or(CallError::Entity)?
+            .usercmd(number, s.server)
     },
     pmove: |services, id, native, options| services.pmove(id, native, options),
     in_visibility: |s, first, second, policy, check_portals| {

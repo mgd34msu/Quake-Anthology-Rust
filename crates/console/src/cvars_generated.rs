@@ -2,7 +2,7 @@
 use crate::catalog::*;
 
 pub const OWNER_DEFINITION_COUNT: usize = 1260;
-pub const ENGINE_DEFINITION_COUNT: usize = 1;
+pub const ENGINE_DEFINITION_COUNT: usize = 2;
 
 pub static DEFINITIONS: &[Definition] = &[
     Definition {
@@ -71720,6 +71720,65 @@ pub static DEFINITIONS: &[Definition] = &[
         family_count: 1,
         stored: true,
     },
+    Definition {
+        name: "cl_commandHistory",
+        aliases: "none",
+        range_hint: "command slots, 64 or more; applies at session/connection load",
+        owner: "client",
+        conversion: "identity. Shared command history capacity; native protocol fields and widths remain unchanged.",
+        sources: "engine-extension: THE-3169; direct owner correction 2026-10-13 requires configurable history above 64; 4096 is the Anthology default, not an owner-specified limit",
+        raw_flags: "Q1 cl_commandHistory:CVAR_ARCHIVE|CVAR_LATCH || QW cl_commandHistory:CVAR_ARCHIVE|CVAR_LATCH || Q2 cl_commandHistory:CVAR_ARCHIVE|CVAR_LATCH || Q2R cl_commandHistory:CVAR_ARCHIVE|CVAR_LATCH || Q3 cl_commandHistory:CVAR_ARCHIVE|CVAR_LATCH",
+        audit_status: [
+            "Engine extension beyond the TypeScript 64-command history",
+            "NOT APPLICABLE: Quake-Rust engine-extension",
+            "GENERATED ENGINE EXTENSION: shared configurable command history",
+        ],
+        defaults: [
+            SourceDefinition {
+                raw_default: "Anthology default 4096",
+                raw_flags: "CVAR_ARCHIVE|CVAR_LATCH",
+                effect: "Load-sized per-connection history for prediction, command queries, packet recovery, recording and replay.",
+                defaults: 6372..6373,
+                flags: 2332..2333,
+            },
+            SourceDefinition {
+                raw_default: "Anthology default 4096",
+                raw_flags: "CVAR_ARCHIVE|CVAR_LATCH",
+                effect: "Load-sized per-connection history for prediction, command queries, packet recovery, recording and replay.",
+                defaults: 6373..6374,
+                flags: 2333..2334,
+            },
+            SourceDefinition {
+                raw_default: "Anthology default 4096",
+                raw_flags: "CVAR_ARCHIVE|CVAR_LATCH",
+                effect: "Load-sized per-connection history for prediction, command queries, packet recovery, recording and replay.",
+                defaults: 6374..6375,
+                flags: 2334..2335,
+            },
+            SourceDefinition {
+                raw_default: "Anthology default 4096",
+                raw_flags: "CVAR_ARCHIVE|CVAR_LATCH",
+                effect: "Load-sized per-connection history for prediction, command queries, packet recovery, recording and replay.",
+                defaults: 6375..6376,
+                flags: 2335..2336,
+            },
+            SourceDefinition {
+                raw_default: "Anthology default 4096",
+                raw_flags: "CVAR_ARCHIVE|CVAR_LATCH",
+                effect: "Load-sized per-connection history for prediction, command queries, packet recovery, recording and replay.",
+                defaults: 6376..6377,
+                flags: 2336..2337,
+            },
+        ],
+        issues: 1,
+        archive: true,
+        policies: 0,
+        rule_conversion: 237,
+        value_type: ValueType::Int,
+        home: None,
+        family_count: 1,
+        stored: true,
+    },
 ];
 pub static DEFAULTS: &[DefaultClause] = &[
     DefaultClause {
@@ -129070,6 +129129,51 @@ pub static DEFAULTS: &[DefaultClause] = &[
         kind: DefaultKind::Anthology,
         condition: Condition::Always,
     },
+    DefaultClause {
+        member: "cl_commandHistory",
+        value: "4096",
+        condition_text: "",
+        raw: "Anthology default 4096",
+        issues: 0,
+        kind: DefaultKind::Anthology,
+        condition: Condition::Always,
+    },
+    DefaultClause {
+        member: "cl_commandHistory",
+        value: "4096",
+        condition_text: "",
+        raw: "Anthology default 4096",
+        issues: 0,
+        kind: DefaultKind::Anthology,
+        condition: Condition::Always,
+    },
+    DefaultClause {
+        member: "cl_commandHistory",
+        value: "4096",
+        condition_text: "",
+        raw: "Anthology default 4096",
+        issues: 0,
+        kind: DefaultKind::Anthology,
+        condition: Condition::Always,
+    },
+    DefaultClause {
+        member: "cl_commandHistory",
+        value: "4096",
+        condition_text: "",
+        raw: "Anthology default 4096",
+        issues: 0,
+        kind: DefaultKind::Anthology,
+        condition: Condition::Always,
+    },
+    DefaultClause {
+        member: "cl_commandHistory",
+        value: "4096",
+        condition_text: "",
+        raw: "Anthology default 4096",
+        issues: 0,
+        kind: DefaultKind::Anthology,
+        condition: Condition::Always,
+    },
 ];
 pub static FLAGS: &[FlagClause] = &[
     FlagClause {
@@ -145396,6 +145500,41 @@ pub static FLAGS: &[FlagClause] = &[
         auxiliary: 0,
         issues: 0,
     },
+    FlagClause {
+        member: "cl_commandHistory",
+        raw: "CVAR_ARCHIVE|CVAR_LATCH",
+        bits: 33,
+        auxiliary: 0,
+        issues: 0,
+    },
+    FlagClause {
+        member: "cl_commandHistory",
+        raw: "CVAR_ARCHIVE|CVAR_LATCH",
+        bits: 33,
+        auxiliary: 0,
+        issues: 0,
+    },
+    FlagClause {
+        member: "cl_commandHistory",
+        raw: "CVAR_ARCHIVE|CVAR_LATCH",
+        bits: 33,
+        auxiliary: 0,
+        issues: 0,
+    },
+    FlagClause {
+        member: "cl_commandHistory",
+        raw: "CVAR_ARCHIVE|CVAR_LATCH",
+        bits: 33,
+        auxiliary: 0,
+        issues: 0,
+    },
+    FlagClause {
+        member: "cl_commandHistory",
+        raw: "CVAR_ARCHIVE|CVAR_LATCH",
+        bits: 33,
+        auxiliary: 0,
+        issues: 0,
+    },
 ];
 pub static BINDINGS: &[Binding] = &[
     Binding {
@@ -147511,6 +147650,15 @@ pub static BINDINGS: &[Binding] = &[
         scope: Scope::Any,
         canonical: true,
         native_sources: 8,
+        seat: 0,
+    },
+    Binding {
+        name: "cl_commandHistory",
+        row: 1261,
+        conversions: [237, 237, 237, 237, 237],
+        scope: Scope::Any,
+        canonical: true,
+        native_sources: 0,
         seat: 0,
     },
     Binding {
@@ -163129,6 +163277,20 @@ pub static CONVERSIONS: &[Conversion] = &[
         lower: 0.0,
         upper: 0.0,
         raw: "identity. Engine extension; latched selection applies when the CPU renderer is loaded.",
+        operands: 43..43,
+        maps: 67..67,
+        issues: 0,
+        kind: ConversionKind::Identity,
+        detail: false,
+        cgame_only: false,
+        operation: Operation::None,
+    },
+    Conversion {
+        scale: 1.0,
+        offset: 0.0,
+        lower: 0.0,
+        upper: 0.0,
+        raw: "identity. Shared command history capacity; native protocol fields and widths remain unchanged.",
         operands: 43..43,
         maps: 67..67,
         issues: 0,

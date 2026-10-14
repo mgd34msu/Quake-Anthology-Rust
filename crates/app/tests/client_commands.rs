@@ -25,14 +25,26 @@ fn qvm() -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..7 {
+    for command in 0..11 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, -1), (Leave, 64)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if command == 0 {
+        if command == 7 {
+            operations.extend([(Const, -55), (Call, 0)]);
+        } else if matches!(command, 8 | 10) {
+            operations.extend([(Local, 76), (Load4, 0), (Arg, 8)]);
+            if command == 8 {
+                operations.push((Const, 128));
+            } else {
+                operations.extend([(Local, 80), (Load4, 0)]);
+            }
+            operations.extend([(Arg, 12), (Const, -56), (Call, 0)]);
+        } else if command == 9 {
+            operations.extend([(Const, 128), (Local, 76), (Load4, 0), (Add, 0), (Load4, 0)]);
+        } else if command == 0 {
             operations.extend([(Local, 76), (Load4, 0), (Arg, 8), (Const, -54), (Call, 0)]);
         } else if matches!(command, 1 | 4) {
             if command == 4 {
@@ -99,7 +111,7 @@ fn native() -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..7)
+        &(0..11)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -114,44 +126,55 @@ fn native() -> Program {
     let pointer = vm.import_callback();
     let buffer = base + 0x1e00;
     let mut code = Vec::new();
-    for command in 0..7u8 {
+    for command in 0..11u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]); // cmp ecx,command; jne next
         let branch = code.len();
         code.extend([0; 4]);
         code.extend([0x48, 0x83, 0xec, 0x28]);
-        if matches!(command, 2 | 3 | 5 | 6) {
+        if command == 9 {
             code.extend([0x48, 0xb8]);
             code.extend(buffer.to_le_bytes());
-            code.extend([0x48, 0xc7, 0x00, 0, 0, 0, 0]);
-        }
-        let ordinal = match command {
-            0 => 53,
-            1 | 4 => 7,
-            2 | 6 => 8,
-            _ => 9,
-        };
-        if matches!(command, 2 | 6) {
-            code.extend([0x49, 0xb8]);
-            code.extend(buffer.to_le_bytes());
-            code.extend([0x41, 0xb9, 8, 0, 0, 0]);
-        } else if matches!(command, 3 | 5) {
-            code.extend([0x48, 0xba]);
-            code.extend(buffer.to_le_bytes());
-            code.extend([0x41, 0xb8, 8, 0, 0, 0]);
-        }
-        let mut call = |ordinal: u8| {
-            code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
-            code.extend(pointer.to_le_bytes());
-            code.extend([0xff, 0xd0]);
-        };
-        if command == 4 {
-            call(2);
-        }
-        call(ordinal);
-        if matches!(command, 2 | 3 | 5 | 6) {
-            code.extend([0x48, 0xb8]);
-            code.extend((buffer + u64::from(command >= 5) * 4).to_le_bytes());
-            code.extend([0x8b, 0x00]);
+            code.extend([0x8b, 0x04, 0x10]); // mov eax,[rax+rdx]
+        } else {
+            if matches!(command, 2 | 3 | 5 | 6) {
+                code.extend([0x48, 0xb8]);
+                code.extend(buffer.to_le_bytes());
+                code.extend([0x48, 0xc7, 0x00, 0, 0, 0, 0]);
+            }
+            let ordinal = match command {
+                0 => 53,
+                1 | 4 => 7,
+                2 | 6 => 8,
+                7 => 54,
+                8 | 10 => 55,
+                _ => 9,
+            };
+            if matches!(command, 2 | 6) {
+                code.extend([0x49, 0xb8]);
+                code.extend(buffer.to_le_bytes());
+                code.extend([0x41, 0xb9, 8, 0, 0, 0]);
+            } else if matches!(command, 3 | 5) {
+                code.extend([0x48, 0xba]);
+                code.extend(buffer.to_le_bytes());
+                code.extend([0x41, 0xb8, 8, 0, 0, 0]);
+            } else if command == 8 {
+                code.extend([0x49, 0xb8]);
+                code.extend(buffer.to_le_bytes());
+            }
+            let mut call = |ordinal: u8| {
+                code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
+                code.extend(pointer.to_le_bytes());
+                code.extend([0xff, 0xd0]);
+            };
+            if command == 4 {
+                call(2);
+            }
+            call(ordinal);
+            if matches!(command, 2 | 3 | 5 | 6) {
+                code.extend([0x48, 0xb8]);
+                code.extend((buffer + u64::from(command >= 5) * 4).to_le_bytes());
+                code.extend([0x8b, 0x00]);
+            }
         }
         code.extend([0x48, 0x83, 0xc4, 0x28, 0xc3]);
         let next = code.len();
@@ -225,7 +248,7 @@ fn request(
         rate: TickRate::FrameDriven,
         anchor,
         program,
-        entries: (0..7).collect(),
+        entries: (0..11).collect(),
         frame: Export {
             client: Some(client),
             ..Export::words(CallbackId(4), &[])
@@ -241,19 +264,27 @@ fn request(
     }
 }
 fn host(program: impl Fn() -> Program, clients: usize) -> (FrameHost, Vec<ClientId>) {
+    host_capacity(program, clients, qa_core::command_history::DEFAULT_CAPACITY)
+}
+fn host_capacity(
+    program: impl Fn() -> Program,
+    clients: usize,
+    capacity: usize,
+) -> (FrameHost, Vec<ClientId>) {
     let (mut runtime, ids) = runtime(clients);
     let requests = ids
         .iter()
         .enumerate()
         .map(|(seat, &client)| request(&mut runtime, ModuleId(seat as u16 + 1), client, program()))
         .collect();
-    let mut host = FrameHost::load_modules(
-        Console::new(Context::default()).unwrap(),
-        runtime,
-        TickRate::FrameDriven,
-        requests,
-    )
-    .unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let history = console
+        .cvars
+        .bind("cl_commandHistory", Context::default())
+        .unwrap();
+    console.cvars.write(history, &capacity.to_string()).unwrap();
+    let mut host =
+        FrameHost::load_modules(console, runtime, TickRate::FrameDriven, requests).unwrap();
     for (seat, &client) in ids.iter().enumerate() {
         host.local_clients[seat] = Some(client);
     }
@@ -285,13 +316,16 @@ fn wire(host: &mut FrameHost, client: ClientId, texts: &[&[u8]]) {
     host.drain(&mut FrameResult::default());
 }
 fn probe(host: &mut FrameHost, seat: usize, command: u32, value: u64) -> u32 {
+    probe_args(host, seat, command, &[value])
+}
+fn probe_args(host: &mut FrameHost, seat: usize, command: u32, values: &[u64]) -> u32 {
     let client = ClientId(seat as u32);
     let module = ModuleId(seat as u16 + 1);
     host.call_module_export(
         module,
         Export {
             client: Some(client),
-            ..Export::words(CallbackId(command), &[value])
+            ..Export::words(CallbackId(command), values)
         },
         ThinkTime::Milliseconds(1),
     )
@@ -304,6 +338,85 @@ fn probe(host: &mut FrameHost, seat: usize, command: u32, value: u64) -> u32 {
 }
 fn word(text: &[u8]) -> u32 {
     u32::from_le_bytes(text.try_into().unwrap())
+}
+fn retained_usercmds_reach_the_selected_module(program: impl Fn() -> Program) {
+    let capacity = 8193;
+    let (mut host, ids) = host_capacity(program, 2, capacity);
+    assert_eq!(host.runtime.network.history_capacity(), capacity);
+    assert_eq!(probe(&mut host, 0, 7, 0), 0);
+    // Native startup exposes zeroed commands without manufacturing recorded rows.
+    assert_eq!(probe(&mut host, 0, 8, (-1i32) as u32 as u64), 1);
+    for offset in (0..24).step_by(4) {
+        assert_eq!(probe(&mut host, 0, 9, offset), 0);
+    }
+    let count = capacity + 129;
+    for number in 1..=count {
+        host.runtime.send_local_command(
+            ids[0],
+            &UserCmd {
+                server_time_ms: number as i32,
+                view_angles: Vec3([90., 180., 270.]),
+                movement: [37., -19., 11.],
+                buttons: buttons::ATTACK,
+                ..UserCmd::default()
+            },
+            EventTime::from_milliseconds(number as u64),
+        );
+    }
+    // Back-pressure does not erase commands produced while a flight is pending.
+    assert_eq!(probe(&mut host, 0, 7, 0), count as u32);
+    assert_eq!(probe(&mut host, 1, 7, 0), 0);
+    for number in [count, count - 100, count - capacity + 1] {
+        assert_eq!(probe(&mut host, 0, 8, number as u64), 1);
+        for (offset, expected) in [
+            (0, number as u32),
+            (4, 16384),
+            (8, 32768),
+            (12, 49152),
+            (16, 1),
+            (20, u32::from_le_bytes([0, 37, (-19i8) as u8, 11])),
+        ] {
+            assert_eq!(probe(&mut host, 0, 9, offset), expected);
+        }
+    }
+    let previous = probe(&mut host, 0, 9, 0);
+    let expired = (count - capacity) as u64;
+    // An expired row returns false before dereferencing the caller's pointer.
+    assert_eq!(probe_args(&mut host, 0, 10, &[expired, u64::MAX]), 0);
+    assert_eq!(probe(&mut host, 0, 9, 0), previous);
+    host.runtime.send_local_command(
+        ids[1],
+        &UserCmd {
+            server_time_ms: 777,
+            ..UserCmd::default()
+        },
+        EventTime(1),
+    );
+    assert_eq!(probe(&mut host, 1, 7, 0), 1);
+    assert_eq!(probe(&mut host, 1, 8, 1), 1);
+    assert_eq!(probe(&mut host, 1, 9, 0), 777);
+    wire(&mut host, ids[0], &[b"map_restart"]);
+    assert_eq!(probe(&mut host, 0, 0, 1), 1);
+    assert_eq!(probe(&mut host, 0, 7, 0), count as u32);
+    assert_eq!(probe(&mut host, 0, 8, count as u64), 1);
+    for offset in (0..24).step_by(4) {
+        assert_eq!(probe(&mut host, 0, 9, offset), 0);
+    }
+    assert_eq!(probe(&mut host, 1, 9, 0), 777);
+    // Future requests reject only the connection that owns the module.
+    assert!(
+        host.call_module_export(
+            ModuleId(1),
+            Export {
+                client: Some(ids[0]),
+                ..Export::words(CallbackId(8), &[(count + 1) as u64])
+            },
+            ThinkTime::Milliseconds(1)
+        )
+        .is_err()
+    );
+    assert!(host.runtime.server.clients[0].connection.is_none());
+    assert!(host.runtime.server.clients[1].connection.is_some());
 }
 fn selected_commands_use_one_session_service(program: impl Fn() -> Program) {
     let (mut host, ids) = host(program, 2);
@@ -1071,8 +1184,12 @@ fn main() {
         std::process::exit(status);
     }
     selected_commands_use_one_session_service(qvm);
+    retained_usercmds_reach_the_selected_module(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    selected_commands_use_one_session_service(native);
+    {
+        selected_commands_use_one_session_service(native);
+        retained_usercmds_reach_the_selected_module(native);
+    }
     bcs_rescans_and_failed_cs_preserve_rows();
     selected_systeminfo_updates_only_the_native_server_id();
     map_restart_clears_selected_notify_and_preserves_pending_server_command();

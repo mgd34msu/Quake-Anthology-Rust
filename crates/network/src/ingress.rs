@@ -119,6 +119,7 @@ pub enum Incoming<'a> {
 
 pub struct Connections {
     clients: Box<[[Option<Connection>; 2]]>,
+    history_capacity: usize,
     pub packets: u64,
     pub bytes: u64,
     pub last_time: EventTime,
@@ -137,6 +138,7 @@ impl Connections {
     pub fn load(clients: usize) -> Self {
         Self {
             clients: (0..clients).map(|_| [None, None]).collect(),
+            history_capacity: qa_core::command_history::DEFAULT_CAPACITY,
             packets: 0,
             bytes: 0,
             last_time: EventTime::default(),
@@ -151,6 +153,28 @@ impl Connections {
             command_errors: 0,
             command_duplicates: 0,
         }
+    }
+
+    /// The common CLIENT histories are sized before frames/at connection load.
+    pub fn set_history_capacity(&mut self, capacity: usize) -> Result<(), BindError> {
+        if capacity == 0 {
+            return Err(BindError::Capacity);
+        }
+        for endpoints in &mut self.clients {
+            if let Some(connection) = &mut endpoints[Endpoint::Client.index()]
+                && let Some(commands) = &mut connection.commands
+            {
+                commands
+                    .configure_history(capacity)
+                    .map_err(|_| BindError::Capacity)?;
+            }
+        }
+        self.history_capacity = capacity;
+        Ok(())
+    }
+
+    pub fn history_capacity(&self) -> usize {
+        self.history_capacity
     }
     /// Handshake/load supplies the endpoint and negotiated Channel explicitly.
     /// Native address/qport keys are unique; an ACK cannot reach another client.
@@ -190,6 +214,13 @@ impl Connections {
                     crate::commands::packet::Error::Context => BindError::Route,
                     _ => BindError::Capacity,
                 })?;
+        }
+        if endpoint == Endpoint::Client
+            && let Some(commands) = &mut connection.commands
+        {
+            commands
+                .configure_history(self.history_capacity)
+                .map_err(|_| BindError::Capacity)?;
         }
         self.clients[slot][endpoint.index()] = Some(connection);
         Ok(())

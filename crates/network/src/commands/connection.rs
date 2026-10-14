@@ -11,6 +11,7 @@ use crate::{
     message::{Encoding, Reader},
 };
 use qa_core::{
+    command_history::{CommandHistory, HistoryError},
     events::OutputConsumerId,
     primitives::{SnapshotObservation, UserCmd},
 };
@@ -23,9 +24,10 @@ pub struct Commands {
     delta_request: Option<u32>,
     previous_command: Option<NativeBackup>,
     qw_players: Option<crate::projection::PlayerProjection>,
+    history: Option<CommandHistory>,
 }
 
-/// Native loss recovery retains one command, not an input history.
+/// SERVER loss recovery retains its last decoded command.
 #[derive(Clone, Copy)]
 enum NativeBackup {
     QuakeWorld(QwCmd, Option<SnapshotObservation>),
@@ -76,6 +78,7 @@ impl Commands {
             protocol,
             scratch: vec![0; maximum_message].into_boxed_slice(),
             previous_time: 0,
+            history: None,
             qw_players: (protocol == Protocol::QuakeWorld28)
                 .then(|| crate::projection::PlayerProjection::load(protocol, &[])),
             delta_request: None,
@@ -85,6 +88,31 @@ impl Commands {
                 Protocol::Quake2Repro1038 => Some(NativeBackup::Quake2Repro(ZERO_Q2_RR, None)),
                 _ => None,
             },
+        }
+    }
+
+    pub fn configure_history(&mut self, capacity: usize) -> Result<(), HistoryError> {
+        if let Some(history) = &mut self.history {
+            history.resize(capacity)
+        } else {
+            self.history = Some(CommandHistory::load(capacity, 0)?);
+            Ok(())
+        }
+    }
+
+    pub fn history(&self) -> Option<&CommandHistory> {
+        self.history.as_ref()
+    }
+    pub fn record(&mut self, command: UserCmd) -> Result<u64, HistoryError> {
+        Ok(self
+            .history
+            .as_mut()
+            .ok_or(HistoryError::Capacity)?
+            .append(command))
+    }
+    pub fn reset_history(&mut self, keep_number: bool) {
+        if let Some(history) = &mut self.history {
+            history.reset(if keep_number { history.number() } else { 0 });
         }
     }
     /// Native payload delta request. QW SERVER retains clc_delta's low byte;
@@ -107,8 +135,6 @@ impl Commands {
         };
         request.filter(|&base| channel.snapshot(base).is_some())
     }
-    /// Native packet redundancy is caller-supplied. The development host has
-    /// one current command and no input history, so its older entries are zero.
     /// The registry supplies `native_weapon`; common IDs never enter the wire.
     pub fn encode(
         &self,
@@ -472,6 +498,9 @@ impl Commands {
                     consume(Incoming::ReliableCommand { sequence, text });
                 }
                 crate::channel::commands::ServerOutput::Gamestate(gamestate) => {
+                    if let Some(history) = &mut self.history {
+                        history.reset(0);
+                    }
                     consume(Incoming::Gamestate(gamestate));
                 }
             })?;

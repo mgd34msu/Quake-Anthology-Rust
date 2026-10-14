@@ -500,6 +500,8 @@ const fn client() -> CallTable {
         }),
         quakec: None,
     });
+    t.entries[54] = scalar!(client_command_number);
+    t.entries[55] = scalar!(client_usercmd);
     t.entries[56] = scalar!(q3_set_usercmd_value);
     t.entries[57] = scalar!(register_shader::<false>);
     t.entries[71] = scalar!(snap_vector);
@@ -1957,6 +1959,23 @@ fn client_game_state(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(0)
 }
 
+fn client_command_number(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok((ENGINE_CALLS.client_command_number)(c.services)? as u32 as u64)
+}
+fn client_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let number = c.arg(0)? as u32 as i32;
+    let Some(command) = (ENGINE_CALLS.client_usercmd)(c.services, number)? else {
+        return Ok(0);
+    };
+    let target = c.required_pointer(1)?;
+    let weapon = c.services.registry.command_weapon_number(command.weapon);
+    c.memory.write_q3_usercmd(
+        target,
+        qa_network::commands::to_q3_usercmd(&command, weapon),
+    )?;
+    Ok(1)
+}
+
 fn client_snapshot_number(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let number = c.required_pointer(0)?;
     let time = c.required_pointer(1)?;
@@ -2522,20 +2541,7 @@ fn q3_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let weapon = c.services.registry.command_weapon_number(command.weapon);
     let native = qa_network::commands::to_q3_usercmd(&command, weapon);
     let target = c.pointer(1)?;
-    let output = c.memory.read_mut(target, 24)?;
-    for (bytes, word) in output[..20].chunks_exact_mut(4).zip([
-        native.server_time as u32,
-        native.angles[0] as u32,
-        native.angles[1] as u32,
-        native.angles[2] as u32,
-        native.buttons,
-    ]) {
-        bytes.copy_from_slice(&word.to_le_bytes());
-    }
-    output[20] = native.weapon;
-    for (byte, movement) in output[21..].iter_mut().zip(native.movement) {
-        *byte = movement as u8;
-    }
+    c.memory.write_q3_usercmd(target, native)?;
     Ok(0)
 }
 

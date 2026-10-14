@@ -235,6 +235,24 @@ impl FrameHost {
         world_rate: TickRate,
         mut providers: Vec<Provider>,
     ) -> Result<Self, String> {
+        let history_view = console
+            .cvars
+            .bind("cl_commandHistory", console.cvars.context())
+            .ok_or("missing cl_commandHistory")?;
+        let history = history_view.canonical();
+        console
+            .cvars
+            .apply_latch(history_view)
+            .map_err(|e| format!("command history setting: {e:?}"))?;
+        let capacity = console.cvars.integer(history);
+        if capacity < 64 {
+            return Err("cl_commandHistory requires at least 64 command slots".into());
+        }
+        runtime
+            .network
+            .set_history_capacity(capacity as usize)
+            .map_err(|e| format!("command history: {e:?}"))?;
+        console.cvars.set_latch_active(history, true);
         runtime.prepare_traces(std::iter::empty())?;
         let localization = console
             .cvars

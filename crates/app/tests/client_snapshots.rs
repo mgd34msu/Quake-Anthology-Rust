@@ -1162,6 +1162,24 @@ fn receive_gamestate_packets(host: &mut FrameHost, client: ClientId, packets: &[
 
 fn queued_gamestate_precedes_first_snapshot(factory: fn() -> (Program, u64)) {
     let (mut host, ids, output) = host(factory, 2);
+    for (seat, &client) in ids.iter().enumerate() {
+        let commands = host
+            .runtime
+            .network
+            .get_mut(client, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_mut()
+            .unwrap();
+        for number in 1..=seat + 3 {
+            commands
+                .record(UserCmd {
+                    server_time_ms: number as i32,
+                    ..UserCmd::default()
+                })
+                .unwrap();
+        }
+    }
     let packets = gamestate_packets(
         &mut host,
         ids[0],
@@ -1188,6 +1206,22 @@ fn queued_gamestate_precedes_first_snapshot(factory: fn() -> (Program, u64)) {
         b"",
     );
     receive_gamestate_packets(&mut host, ids[0], &packets);
+    for (seat, &client) in ids.iter().enumerate() {
+        let history = host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap();
+        assert_eq!(
+            (history.number(), history.len()),
+            if seat == 0 { (0, 0) } else { (4, 4) }
+        );
+    }
     let channel = &host
         .runtime
         .network

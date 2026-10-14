@@ -577,9 +577,14 @@ impl Runtime {
         else {
             return false;
         };
-        let Some(commands) = &connection.commands else {
+        let Some(commands) = &mut connection.commands else {
             return false;
         };
+        // CLIENT numbers advance on command production, including a command
+        // retained while its preceding native packet flight is still pending.
+        if commands.record(*command).is_err() {
+            return false;
+        }
         // Retained fragments belong to their original encoded message. Drain
         // that flight without attaching the current command's watermark.
         if connection.channel.pending_packet().is_some() || connection.channel.pending_fragments() {

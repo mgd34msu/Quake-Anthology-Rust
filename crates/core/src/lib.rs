@@ -3,6 +3,7 @@
 pub mod bits;
 pub mod bsp;
 pub mod checksum;
+pub mod command_history;
 pub mod configstrings;
 pub mod effects;
 pub mod events;

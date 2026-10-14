@@ -116,6 +116,7 @@ pub(crate) struct ClientConnectionView<'a> {
     client: ClientId,
     lifetime: EntityId,
     channel: &'a mut qa_network::channel::Channel,
+    commands: &'a mut qa_network::commands::connection::Commands,
     resources: &'a mut ClientResources,
     catalog: Option<&'a ModelCatalog>,
     bank: Option<&'a qa_audio::Bank>,
@@ -129,12 +130,12 @@ pub(crate) fn connection_view<'a>(
     catalog: Option<&'a ModelCatalog>,
     bank: Option<&'a qa_audio::Bank>,
 ) -> Option<ClientConnectionView<'a>> {
-    let channel = &mut network
-        .get_mut(client, qa_core::loopback::Endpoint::Client)?
-        .channel;
+    let connection = network.get_mut(client, qa_core::loopback::Endpoint::Client)?;
+    let channel = &mut connection.channel;
+    let commands = connection.commands.as_mut()?;
     let resources = resources.get_mut(client.0 as usize)?.as_mut()?;
     Some(ClientConnectionView::new(
-        client, lifetime, channel, resources, catalog, bank,
+        client, lifetime, channel, commands, resources, catalog, bank,
     ))
 }
 impl<'a> ClientConnectionView<'a> {
@@ -142,6 +143,7 @@ impl<'a> ClientConnectionView<'a> {
         client: ClientId,
         lifetime: EntityId,
         channel: &'a mut qa_network::channel::Channel,
+        commands: &'a mut qa_network::commands::connection::Commands,
         resources: &'a mut ClientResources,
         catalog: Option<&'a ModelCatalog>,
         bank: Option<&'a qa_audio::Bank>,
@@ -150,6 +152,7 @@ impl<'a> ClientConnectionView<'a> {
             client,
             lifetime,
             channel,
+            commands,
             resources,
             catalog,
             bank,
@@ -247,6 +250,36 @@ impl<'a> ClientConnectionView<'a> {
     }
 }
 impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
+    fn command_number(
+        &self,
+        server: &qa_session::clients::Server,
+    ) -> Result<u64, qa_compat::services::CallError> {
+        self.validate(server)?;
+        self.commands
+            .history()
+            .map(|history| history.number())
+            .ok_or(qa_compat::services::CallError::Unsupported)
+    }
+    fn usercmd(
+        &mut self,
+        number: i32,
+        server: &qa_session::clients::Server,
+    ) -> Result<Option<qa_core::primitives::UserCmd>, qa_compat::services::CallError> {
+        use qa_compat::services::CallError;
+        self.validate(server)?;
+        let history = self.commands.history().ok_or(CallError::Unsupported)?;
+        let age = (history.number() as i32).wrapping_sub(number);
+        if age < 0 {
+            return self.reject(CallError::Text);
+        }
+        let age = age as usize;
+        if age >= history.capacity() {
+            return Ok(None);
+        }
+        // Native startup/map_restart exposes zeroed slots in the retained
+        // window, even when no command has been produced for that slot.
+        Ok(Some(history.get(age).copied().unwrap_or_default()))
+    }
     fn disconnected(&self) -> bool {
         self.disconnected
     }
@@ -376,8 +409,7 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
                     server.clients[self.client.0 as usize]
                         .hud
                         .clear_notify(&mut server.events.texts);
-                    // Native CL_GetServerCommand clears CLIENT command history.
-                    // This host has none; authoritative SERVER input survives.
+                    self.commands.reset_history(true);
                 }
                 b"clientLevelShot" => {
                     // Screenshot generation has no shared CLIENT service yet.

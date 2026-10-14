@@ -189,6 +189,27 @@ impl<'a> ModuleMemory<'a> {
         }
         Ok(())
     }
+    pub fn write_q3_usercmd(
+        &mut self,
+        address: u64,
+        command: qa_network::commands::Q3Cmd,
+    ) -> Result<(), MemoryError> {
+        let output = self.read_mut(address, 24)?;
+        for (bytes, word) in output[..20].chunks_exact_mut(4).zip([
+            command.server_time as u32,
+            command.angles[0] as u32,
+            command.angles[1] as u32,
+            command.angles[2] as u32,
+            command.buttons,
+        ]) {
+            bytes.copy_from_slice(&word.to_le_bytes());
+        }
+        output[20] = command.weapon;
+        for (byte, movement) in output[21..].iter_mut().zip(command.movement) {
+            *byte = movement as u8;
+        }
+        Ok(())
+    }
     pub fn cstring(&self, address: u64) -> Result<&[u8], MemoryError> {
         let start = self.range(address, 0)?.start;
         let tail = &self.bytes.as_ref()[start..];
