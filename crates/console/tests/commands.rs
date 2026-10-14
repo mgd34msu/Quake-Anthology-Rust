@@ -194,6 +194,29 @@ fn engine_commands_keep_full_owned_capacity_while_native_argument_limits_stay_or
 }
 
 #[test]
+fn engine_macro_expansion_keeps_later_long_arguments_while_native_limits_stay_original() {
+    use qa_core::text::FixedText;
+    let argument = "x".repeat(512);
+    let line = format!("echo $value \"{argument}\"");
+    let mut native = FixedText::<8192>::default();
+    native.set(&line).unwrap();
+    let mut tokens = command_text::Tokens::default();
+    assert_eq!(
+        command_text::expand(&mut native, &mut tokens, |_| Some(
+            qa_console::conversion::Text::Borrowed("7")
+        )),
+        Err(command_text::TextError::TooLong)
+    );
+    let mut engine = FixedText::<8192>::default();
+    engine.set(&line).unwrap();
+    command_text::expand_engine(&mut engine, &mut tokens, |_| {
+        Some(qa_console::conversion::Text::Borrowed("7"))
+    })
+    .unwrap();
+    assert_eq!(engine.as_str(), format!("echo 7 \"{argument}\""));
+}
+
+#[test]
 fn q2_macros_repeat_outside_quotes_and_reject_only_the_bad_command() {
     let values = |name: &str| {
         Some(qa_console::conversion::Text::Borrowed(match name {

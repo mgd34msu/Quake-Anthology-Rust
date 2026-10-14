@@ -301,9 +301,9 @@ fn tokenize_limit<'a>(
 pub fn expand<'a>(
     text: &mut FixedText<MAX_TEXT>,
     tokens: &mut Tokens,
-    mut value: impl FnMut(&str) -> Option<Text<'a>>,
+    value: impl FnMut(&str) -> Option<Text<'a>>,
 ) -> Result<(), TextError> {
-    expand_bytes(text, tokens, |name| value(std::str::from_utf8(name).ok()?))
+    expand_text(text, tokens, 1024, true, value)
 }
 
 /// The Q2 macro parser preserves native bytes around UTF-8 registry values.
@@ -312,15 +312,24 @@ pub fn expand_bytes<'a>(
     tokens: &mut Tokens,
     value: impl FnMut(&[u8]) -> Option<Text<'a>>,
 ) -> Result<(), TextError> {
-    expand_limit(text, tokens, 1024, value)
+    expand_limit(text, tokens, 1024, true, value)
 }
 /// Engine-owned lines use their full buffer while guest macro limits stay native.
 pub fn expand_engine<'a>(
     text: &mut FixedText<MAX_TEXT>,
     tokens: &mut Tokens,
+    value: impl FnMut(&str) -> Option<Text<'a>>,
+) -> Result<(), TextError> {
+    expand_text(text, tokens, MAX_TEXT, false, value)
+}
+fn expand_text<'a>(
+    text: &mut FixedText<MAX_TEXT>,
+    tokens: &mut Tokens,
+    maximum: usize,
+    native_limits: bool,
     mut value: impl FnMut(&str) -> Option<Text<'a>>,
 ) -> Result<(), TextError> {
-    expand_limit(text, tokens, MAX_TEXT, |name| {
+    expand_limit(text, tokens, maximum, native_limits, |name| {
         value(std::str::from_utf8(name).ok()?)
     })
 }
@@ -328,6 +337,7 @@ fn expand_limit<'a>(
     text: &mut FixedText<MAX_TEXT>,
     tokens: &mut Tokens,
     maximum: usize,
+    native_limits: bool,
     mut value: impl FnMut(&[u8]) -> Option<Text<'a>>,
 ) -> Result<(), TextError> {
     let mut replacements = 0;
@@ -343,7 +353,18 @@ fn expand_limit<'a>(
                 quote = !quote;
             }
             if !quote && byte == b'$' {
-                let token = tokenize_bytes(&raw[at + 1..], RuleSetId::Quake2, tokens)?;
+                let token_limit = if native_limits {
+                    80
+                } else {
+                    tokens.spans.len()
+                };
+                let token = tokenize_limit(
+                    &raw[at + 1..],
+                    RuleSetId::Quake2,
+                    tokens,
+                    token_limit,
+                    native_limits,
+                )?;
                 if !token.is_empty() {
                     let name = token.get_bytes(0);
                     let start = name.as_ptr() as usize - raw.as_ptr() as usize;
