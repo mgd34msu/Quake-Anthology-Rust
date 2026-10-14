@@ -2,6 +2,21 @@ use qa_core::text::FixedText;
 use std::fmt::Write;
 
 #[test]
+fn inline_model_ordinals_keep_native_atoi_prefix_and_width() {
+    use qa_core::text::inline_model_index;
+    assert_eq!(inline_model_index(b"model.md3"), None);
+    for (name, index) in [
+        (b"*".as_slice(), 0),
+        (b"*0", 0),
+        (b"*12tail", 12),
+        (b"* 7", 7),
+        (b"*-1", u32::MAX),
+    ] {
+        assert_eq!(inline_model_index(name), Some(index));
+    }
+}
+
+#[test]
 fn byte_replacement_preserves_native_text_and_rejects_growth_atomically() {
     let mut text = FixedText::<8>::default();
     text.set_bytes(b"A\x80BC\xfe").unwrap();

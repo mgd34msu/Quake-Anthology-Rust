@@ -8,6 +8,12 @@ pub use numbers::{
     atof_prefix, atof_prefix_bytes, atoi_prefix, decimal_prefix_end, hex_digit, integer_prefix,
 };
 
+/// Native inline names use atoi's prefix and wrap to the model ordinal width.
+pub fn inline_model_index(name: &[u8]) -> Option<u32> {
+    name.strip_prefix(b"*")
+        .map(|suffix| atoi_prefix(suffix) as u32)
+}
+
 use std::fmt::{self, Write};
 
 /// First unquoted semicolon or requested native line separator.

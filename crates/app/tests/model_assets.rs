@@ -1961,6 +1961,40 @@ fn inline_model_ordinals_stay_in_their_world_namespace_without_copying_geometry(
 }
 
 #[test]
+fn native_inline_handles_share_the_metadata_table_and_keep_world_namespaces() {
+    let mut assets = Assets::load().unwrap();
+    let first = world(&mut assets, 0.0);
+    let second = world(&mut assets, 100.0);
+    let meshes = assets.models().len();
+    let first_bounds = assets.world(first).unwrap().geometry().models[1].bounds;
+    let second_bounds = assets.world(second).unwrap().geometry().models[1].bounds;
+    let mut builder =
+        ModelCatalogBuilder::new(assets, [], [first, second], Default::default()).unwrap();
+    let a = builder.register_inline(first, 1).unwrap();
+    let b = builder.register_inline(second, 1).unwrap();
+    assert_ne!(a, b);
+    assert_eq!(builder.register_inline(first, 1), Ok(a));
+    assert_eq!(builder.model_bounds(a), Some(first_bounds));
+    assert_eq!(builder.model_bounds(b), Some(second_bounds));
+    assert_eq!(
+        builder.register_inline(first, 2),
+        Err(qa_compat::services::CallError::File)
+    );
+    let (assets, catalog) = builder.finish();
+    assert_eq!(assets.models().len(), meshes);
+    assert_eq!(catalog.inline_handle(first, 1), Some(a));
+    assert_eq!(catalog.inline_handle(second, 1), Some(b));
+    assert_eq!(catalog.model_bounds(a), Some(first_bounds));
+    assert_eq!(catalog.renderer_inline(a), catalog.resolve_inline(first, 1));
+    assert_eq!(
+        catalog.renderer_inline(b),
+        catalog.resolve_inline(second, 1)
+    );
+    assert!(!catalog.model_has_tags(a));
+    assert_eq!(catalog.renderer_inline(i32::MAX), None);
+}
+
+#[test]
 fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
     let fixture = support::Fixture::new(&[
         ("maps/start.bsp", b"not a mesh or BSP".to_vec()),

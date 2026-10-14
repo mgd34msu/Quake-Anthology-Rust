@@ -16,6 +16,7 @@ pub trait SceneService {
     fn active(&self) -> bool;
     fn viewport(&self) -> Option<qa_render::Viewport>;
     fn select_world(&mut self, world: WorldId) -> Result<(), CallError>;
+    fn selected_world(&self) -> Option<WorldId>;
     fn clear(&mut self);
     fn light(&mut self, light: Light) -> bool;
     fn entity(&mut self, entity: EntitySubmission) -> bool;

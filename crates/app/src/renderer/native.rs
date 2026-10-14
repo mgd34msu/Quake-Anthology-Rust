@@ -21,6 +21,28 @@ struct Target {
     presentation: qa_render::material::world_load::PresentationDefaults,
     rails: [qa_console::cvars::View; 3],
 }
+impl Target {
+    fn world_presentation<'a>(
+        &self,
+        scenes: &'a [Option<super::WorldScene>],
+        world: WorldId,
+    ) -> Option<&'a qa_render::material::world_load::LoadedWorldPresentation> {
+        let scene = scenes.get(world.0 as usize)?.as_ref()?;
+        if let Some((selected, presentation)) = self.world
+            && selected == world
+        {
+            return scene
+                .presentations
+                .iter()
+                .find(|entry| entry.id == presentation);
+        }
+        scene.presentations.iter().find(|entry| {
+            entry.profile.rules == self.profile.rules
+                && entry.profile.indexed_palette == self.profile.palette
+                && entry.profile.image_settings == self.profile.image_settings
+        })
+    }
+}
 
 /// Mutable renderer state belongs to the module across registration and frames.
 pub(crate) struct SceneRole {
@@ -111,6 +133,14 @@ impl SceneService for SceneBorrow<'_> {
         self.role.selected_world = Some(world);
         Ok(())
     }
+    fn selected_world(&self) -> Option<WorldId> {
+        self.role.selected_world.or_else(|| {
+            self.role
+                .target
+                .as_ref()
+                .and_then(|target| target.world.map(|world| world.0))
+        })
+    }
     fn clear(&mut self) {
         if let Some(frame) = self
             .composer
@@ -150,6 +180,19 @@ impl SceneService for SceneBorrow<'_> {
                 .unwrap_or(qa_render::MaterialId(0))
         });
         if submitted.kind == EntityKind::Model {
+            if let Some(binding) = models.renderer_inline(submitted.model) {
+                let Some(presentation) = target.world_presentation(&composer.scenes, binding.world)
+                else {
+                    return frame.reject_submission();
+                };
+                pose.model = SceneModel::World {
+                    world: binding.world,
+                    presentation: presentation.id,
+                    surfaces: binding.surfaces,
+                };
+                pose.material = material;
+                return frame.add_entity(pose);
+            }
             let Some(registration) = models.renderer_registration(submitted.model, target.profile)
             else {
                 return frame.reject_submission();

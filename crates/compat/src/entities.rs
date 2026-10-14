@@ -1303,9 +1303,7 @@ impl EntityProjection {
         let name = memory.cstring(name)?;
         if let Some(contents) = layout.contents {
             let geometry = services.world.ok_or(CallError::Geometry)?.0;
-            let model =
-                qa_core::text::atoi_prefix(name.strip_prefix(b"*").ok_or(CallError::Geometry)?)
-                    as u32;
+            let model = qa_core::text::inline_model_index(name).ok_or(CallError::Geometry)?;
             let bounds = services
                 .geometry
                 .model_bounds(geometry, model)
@@ -1533,8 +1531,7 @@ pub(crate) fn inline_model(
     geometry: qa_core::primitives::GeometryId,
     name: &[u8],
 ) -> Result<(CollisionShape, Bounds), CallError> {
-    let suffix = name.strip_prefix(b"*").ok_or(CallError::Geometry)?;
-    let index = qa_core::text::atoi_prefix(suffix) as u32;
+    let index = qa_core::text::inline_model_index(name).ok_or(CallError::Geometry)?;
     if index == 0 {
         return Err(CallError::Geometry);
     }

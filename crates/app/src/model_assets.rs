@@ -188,6 +188,10 @@ pub struct InlineBinding {
     pub index: u32,
     pub surfaces: IndexSpan,
 }
+struct RegisteredInline {
+    binding: InlineBinding,
+    handle: Option<NameId>,
+}
 #[derive(Debug)]
 pub struct ModelDiagnostic {
     pub name: NameId,
@@ -353,7 +357,7 @@ pub struct ModelCatalog {
     surfaces: Box<[SurfaceMaterials]>,
     tags: Box<[TaggedOrientation]>,
     worlds: Box<[IndexSpan]>,
-    inline: Box<[InlineBinding]>,
+    inline: Box<[RegisteredInline]>,
     capacity: ModelCapacity,
     pub diagnostics: Box<[ModelDiagnostic]>,
 }
@@ -378,7 +382,7 @@ pub struct ModelCatalogBuilder {
     surfaces: Vec<SurfaceMaterials>,
     tags: Vec<TaggedOrientation>,
     worlds: Box<[IndexSpan]>,
-    inline: Box<[InlineBinding]>,
+    inline: Box<[RegisteredInline]>,
     capacity: ModelCapacity,
     limits: ModelLimits,
     diagnostics: Vec<ModelDiagnostic>,
@@ -842,6 +846,28 @@ impl ModelCatalogBuilder {
         }
     }
 
+    fn admit_inline(&mut self, world: WorldId, index: u32) -> Result<i32, CallError> {
+        let slot = inline_slot(&self.worlds, world, index).ok_or(CallError::File)?;
+        if let Some(handle) = self.inline[slot].handle {
+            return i32::try_from(handle.0).map_err(|_| CallError::Capacity);
+        }
+        let binding = self.inline[slot].binding;
+        let bounds = self
+            .assets
+            .world(world)
+            .and_then(|world| world.geometry().models.get(index as usize))
+            .ok_or(CallError::File)?
+            .bounds;
+        // A native cstring cannot name this private semantic key, so an
+        // ordinary file registration cannot overwrite the inline record.
+        let key = format!("\0engine:inline/{}/{}", world.0, index);
+        let handle = self.admit_name(key.as_bytes())?;
+        let native = i32::try_from(handle.0).map_err(|_| CallError::Capacity)?;
+        self.files[handle.0 as usize] = ModelFile::LoadedWorld { binding, bounds };
+        self.inline[slot].handle = Some(handle);
+        Ok(native)
+    }
+
     fn admit_skin(&mut self, vfs: &Vfs, raw: &[u8], source: RuleSetId) -> Result<i32, CallError> {
         if raw.is_empty() {
             return Ok(0);
@@ -1191,6 +1217,9 @@ fn lerp_tag(
     Some(sample(start)?.interpolate(sample(end)?, fraction))
 }
 impl ModelLookup for ModelCatalogBuilder {
+    fn inline_handle(&self, world: WorldId, index: u32) -> Option<i32> {
+        inline_handle(&self.worlds, &self.inline, world, index)
+    }
     fn model_has_tags(&self, handle: i32) -> bool {
         model_has_tags(&self.files, handle)
     }
@@ -1246,6 +1275,9 @@ impl ModelLoader for ModelCatalogBuilder {
         self.ensure_file(vfs, &canonical_path(path))
             .map_err(|error| error.kind)
     }
+    fn register_inline(&mut self, world: WorldId, index: u32) -> Result<i32, CallError> {
+        self.admit_inline(world, index)
+    }
     fn register_skin(
         &mut self,
         vfs: &Vfs,
@@ -1265,6 +1297,9 @@ impl ModelLoader for ModelCatalogBuilder {
     }
 }
 impl ModelLookup for ModelCatalog {
+    fn inline_handle(&self, world: WorldId, index: u32) -> Option<i32> {
+        inline_handle(&self.worlds, &self.inline, world, index)
+    }
     fn model_has_tags(&self, handle: i32) -> bool {
         model_has_tags(&self.files, handle)
     }
@@ -1432,6 +1467,13 @@ impl ModelCatalog {
                 }),
         })
     }
+    pub fn renderer_inline(&self, handle: i32) -> Option<InlineBinding> {
+        let ModelFile::LoadedWorld { binding, .. } = renderer_file(&self.files, handle, None)?
+        else {
+            return None;
+        };
+        Some(*binding)
+    }
     pub fn resolve_inline(&self, world: WorldId, index: u32) -> Option<InlineBinding> {
         inline_binding(&self.worlds, &self.inline, world, index)
     }
@@ -1440,24 +1482,31 @@ impl ModelCatalog {
     }
 }
 
+fn inline_slot(worlds: &[IndexSpan], world: WorldId, index: u32) -> Option<usize> {
+    worlds.get(world.0 as usize)?.get(index as usize)
+}
+fn inline_handle(
+    worlds: &[IndexSpan],
+    inline: &[RegisteredInline],
+    world: WorldId,
+    index: u32,
+) -> Option<i32> {
+    i32::try_from(inline.get(inline_slot(worlds, world, index)?)?.handle?.0).ok()
+}
 fn inline_binding(
     worlds: &[IndexSpan],
-    inline: &[InlineBinding],
+    inline: &[RegisteredInline],
     world: WorldId,
     index: u32,
 ) -> Option<InlineBinding> {
-    let span = *worlds.get(world.0 as usize)?;
-    if index >= span.count {
-        return None;
-    }
-    inline.get((span.first + index) as usize).copied()
+    Some(inline.get(inline_slot(worlds, world, index)?)?.binding)
 }
 
 fn inline_bindings(
     assets: &Assets,
     worlds: impl IntoIterator<Item = WorldId>,
     limits: ModelLimits,
-) -> Result<(Box<[IndexSpan]>, Box<[InlineBinding]>), String> {
+) -> Result<(Box<[IndexSpan]>, Box<[RegisteredInline]>), String> {
     let mut ranges = vec![IndexSpan::default(); assets.worlds().len()].into_boxed_slice();
     let mut inline = Vec::new();
     for id in worlds {
@@ -1478,10 +1527,13 @@ fn inline_bindings(
             .ok_or("inline model capacity")?;
         let first = inline.len() as u32;
         for (index, model) in geometry.models.iter().enumerate() {
-            inline.push(InlineBinding {
-                world: id,
-                index: index as u32,
-                surfaces: model.surfaces,
+            inline.push(RegisteredInline {
+                binding: InlineBinding {
+                    world: id,
+                    index: index as u32,
+                    surfaces: model.surfaces,
+                },
+                handle: None,
             });
         }
         *range = IndexSpan {

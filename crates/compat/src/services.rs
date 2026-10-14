@@ -92,6 +92,10 @@ impl From<qa_session::clients::ClientInfoError> for CallError {
 
 /// The cold and frozen model catalog share the same native metadata owner.
 pub trait ModelLookup {
+    fn inline_handle(&self, world: qa_render::world::WorldId, index: u32) -> Option<i32> {
+        let _ = (world, index);
+        None
+    }
     fn loaded_world(&self, name: &[u8]) -> Option<u32>;
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
     fn shader_handle(&self, name: &[u8]) -> Option<i32>;
@@ -112,6 +116,13 @@ pub trait ModelLookup {
     ) -> Option<Orientation>;
 }
 pub trait ModelLoader: ModelLookup {
+    fn register_inline(
+        &mut self,
+        world: qa_render::world::WorldId,
+        index: u32,
+    ) -> Result<i32, CallError> {
+        self.inline_handle(world, index).ok_or(CallError::File)
+    }
     fn register_skin(
         &mut self,
         vfs: &Vfs,
@@ -1551,6 +1562,24 @@ impl EngineServices<'_> {
         }
         let result = if name.len() >= 64 {
             Err(CallError::Text)
+        } else if matches!(kind, RendererRegistration::Model) && name.starts_with(b"*") {
+            let world = self
+                .scene
+                .as_deref()
+                .and_then(|scene| scene.selected_world())
+                .ok_or(CallError::File);
+            let index = qa_core::text::inline_model_index(name).ok_or(CallError::File);
+            world.and_then(|world| {
+                index.and_then(|index| {
+                    if let Some(loader) = self.model_loader.as_deref_mut() {
+                        loader.register_inline(world, index)
+                    } else {
+                        self.model_lookup
+                            .and_then(|lookup| lookup.inline_handle(world, index))
+                            .ok_or(CallError::File)
+                    }
+                })
+            })
         } else if let Some(loader) = self.model_loader.as_deref_mut() {
             match kind {
                 RendererRegistration::Model => loader.register_model(self.vfs, name, source),

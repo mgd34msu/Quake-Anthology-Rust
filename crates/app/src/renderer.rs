@@ -238,6 +238,7 @@ enum Backend {
 }
 struct WorldScene {
     views: [WorldView; SeatId::COUNT],
+    presentations: Box<[qa_render::material::world_load::LoadedWorldPresentation]>,
 }
 /// Each CLIENT supplies its selected presentation independently of the world.
 pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef {
@@ -303,6 +304,7 @@ impl SceneComposer {
             max_surfaces = max_surfaces.max(world.visibility().surface_count());
             scenes[index] = Some(WorldScene {
                 views: std::array::from_fn(|_| WorldView::load(world)),
+                presentations: loaded.presentations,
             });
         }
         if scenes.iter().any(Option::is_none) {

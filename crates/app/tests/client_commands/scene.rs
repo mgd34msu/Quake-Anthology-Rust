@@ -1,6 +1,6 @@
 use super::*;
 use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
-use qa_compat::services::ModelLoader;
+use qa_compat::services::{ModelLoader, ModelLookup};
 use qa_render::material::world_load::{
     LoadedWorld, LoadedWorldPresentation, WorldPresentationProfile,
 };
@@ -61,6 +61,7 @@ fn data() -> [u8; 1024] {
     }
     data[880..896].copy_from_slice(b"models/test.md3\0");
     data[900..917].copy_from_slice(b"models/test.skin\0");
+    data[920..923].copy_from_slice(b"*1\0");
     for (offset, value) in [
         (28, 1.0f32),
         (44, 1.),
@@ -108,17 +109,18 @@ fn qvm_scene(ui: bool) -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 96)];
     let mut branches = vec![];
-    for command in 0..19 {
+    for command in 0..20 {
         operations.extend([(Local, 104), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, 0), (Leave, 96)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if matches!(command, 12 | 13 | 16) {
+        if matches!(command, 12 | 13 | 16 | 19) {
             let (number, address) = match command {
                 12 => (37, 880),
                 16 => (38, 900),
+                19 => (37, 920),
                 _ => (41, 700),
             };
             operations.extend([
@@ -189,7 +191,7 @@ fn native_scene(ui: bool) -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..19)
+        &(0..20)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -204,15 +206,16 @@ fn native_scene(ui: bool) -> Program {
     let callback = vm.import_callback();
     let source = base + 0x2400;
     let mut code = vec![];
-    for command in 0..19usize {
+    for command in 0..20usize {
         code.extend([0x83, 0xf9, command as u8, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
         code.extend([0x48, 0x83, 0xec, 0x58]);
-        if matches!(command, 12 | 13 | 16) {
+        if matches!(command, 12 | 13 | 16 | 19) {
             let (number, address) = match command {
                 12 => (37, 880),
                 16 => (38, 900),
+                19 => (37, 920),
                 _ => (41, 700),
             };
             code.extend([0x48, 0xba]);
@@ -611,7 +614,7 @@ pub(super) fn entities(native: bool, ui: bool) {
     let (mut runtime, ids) = runtime(1);
     runtime.vfs = std::mem::take(&mut fixture.vfs);
     let mut request = request(&mut runtime, ModuleId(1), ids[0], program());
-    request.entries = (0..19).collect();
+    request.entries = (0..20).collect();
     if ui {
         request.frame.client = None;
     }
@@ -754,5 +757,104 @@ pub(super) fn entities(native: bool, ui: bool) {
         assert_eq!(packet.rejected, 0);
         assert!(owner.recycle(packet).is_ok());
     }
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+}
+
+pub(super) fn inline_entities(native: bool) {
+    let (mut runtime, ids) = runtime(1);
+    let program = if native {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            native_scene(false)
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            qvm_scene(false)
+        }
+    } else {
+        qvm_scene(false)
+    };
+    let mut request = request(&mut runtime, ModuleId(1), ids[0], program);
+    request.entries = (0..20).collect();
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![request],
+    )
+    .unwrap();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut assets = qa_render::Assets::load().unwrap();
+    let world = model_support::world(&mut assets, 10.0);
+    let presentation = qa_render::world::WorldPresentationId(0);
+    let bounds = assets.world(world).unwrap().geometry().models[1].bounds;
+    let meshes = assets.models().len();
+    let mut builder =
+        ModelCatalogBuilder::new(assets, [profile], [world], Default::default()).unwrap();
+    builder
+        .bind_loaded_world("maps/probe.bsp", world, bounds)
+        .unwrap();
+    host.runtime.model_loader = Some(builder);
+    // No scene world is inferred just because geometry exists in the catalog.
+    assert_eq!(probe(&mut host, 0, 19, 0), 0);
+    assert_eq!(probe(&mut host, 0, 6, 0), 0);
+    let model = probe(&mut host, 0, 19, 0);
+    assert!(model > 0);
+    let (assets, models) = host.runtime.model_loader.take().unwrap().finish();
+    assert_eq!(assets.models().len(), meshes);
+    assert_eq!(models.model_bounds(model as i32), Some(bounds));
+    let binding = models.resolve_inline(world, 1).unwrap();
+    host.runtime.models = Some(std::sync::Arc::new(models));
+    host.local_clients[0] = Some(ids[0]);
+    host.local_worlds[0] = Some((world, presentation));
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
+        320,
+        200,
+    )
+    .unwrap();
+    let loaded = LoadedWorld {
+        world,
+        presentations: vec![LoadedWorldPresentation {
+            id: presentation,
+            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            defaults: Default::default(),
+        }]
+        .into_boxed_slice(),
+        diagnostics: Box::default(),
+    };
+    host.runtime.scene = Some(
+        qa_app::renderer::SceneComposer::load(Default::default(), assets, vec![loaded])
+            .unwrap()
+            .0,
+    );
+    assert_eq!(probe(&mut host, 0, 19, 0), model);
+    assert_eq!(probe(&mut host, 0, 14, model as u64), 0);
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(probe(&mut host, 0, 13, 0), 0);
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    let owner = host.runtime.scene.as_mut().unwrap();
+    let packet = owner.finish_frame().unwrap();
+    let Command::View(view) = packet.commands()[1] else {
+        panic!("inline view")
+    };
+    assert_eq!(packet.rejected, 0);
+    assert_eq!(view.scene.entities.count, 1);
+    let entity = packet.entities(view.scene.entities)[0];
+    assert_eq!(
+        entity.model,
+        qa_render::scene::SceneModel::World {
+            world,
+            presentation,
+            surfaces: binding.surfaces
+        }
+    );
+    assert_eq!(entity.origin.0, [8., 0., 0.]);
+    assert_eq!(
+        entity.axes.map(|axis| axis.0),
+        [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
+    );
+    assert!(owner.recycle(packet).is_ok());
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }
