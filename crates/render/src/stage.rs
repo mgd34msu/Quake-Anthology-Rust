@@ -337,12 +337,21 @@ impl DrawInputs {
     /// Keep one model-local input conversion for meshes and linked world
     /// surfaces. A face's lightmap and texture scale remain its own binding.
     pub fn for_entity(mut self, entity: &crate::scene::SceneEntity) -> Self {
-        self.view_origin = entity_view_origin(self.view_origin, entity);
+        if matches!(
+            entity.model,
+            crate::scene::SceneModel::Mesh(_) | crate::scene::SceneModel::World { .. }
+        ) {
+            self.view_origin = entity_view_origin(self.view_origin, entity);
+        }
         self.entity_color = entity.color;
         self.entity_texcoord = entity.shader_texcoord;
         self.entity_shader_time = entity.shader_time;
         self.lighting = entity.lighting;
         self
+    }
+    pub fn for_poly(self, poly: &crate::scene::Poly, list: &crate::scene::CommandList) -> Self {
+        poly.entity
+            .map_or(self, |index| self.for_entity(list.entity(index)))
     }
     pub fn time_seconds(&self) -> f32 {
         crate::scene::milliseconds_to_seconds(self.time_ms)

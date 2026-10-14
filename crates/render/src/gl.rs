@@ -854,6 +854,7 @@ impl GlBackend {
                             ),
                             DrawKind::Poly => {
                                 let poly = list.poly(item.index);
+                                let inputs = inputs.for_poly(poly, list);
                                 let Some(material) = assets.material(poly.material) else {
                                     stats.rejected = stats.rejected.saturating_add(1);
                                     continue;

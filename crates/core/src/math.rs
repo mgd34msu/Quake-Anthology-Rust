@@ -165,6 +165,57 @@ pub fn reflect(normal: Vec3, direction: Vec3) -> Vec3 {
     (normal * (2.0 * normal.dot(direction))) - direction
 }
 
+/// Native ProjectPointOnPlane keeps both reciprocal multiplications even for
+/// a direction that has already been normalized.
+pub fn project_on_plane(point: Vec3, normal: Vec3) -> Vec3 {
+    let inverse = 1.0 / normal.dot(normal);
+    let distance = normal.dot(point) * inverse;
+    point - (normal * inverse) * distance
+}
+
+pub fn perpendicular_vector(direction: Vec3) -> Vec3 {
+    let mut axis = 0;
+    let mut minimum = 1.0;
+    for index in 0..3 {
+        if direction.0[index].abs() < minimum {
+            axis = index;
+            minimum = direction.0[index].abs();
+        }
+    }
+    let mut seed = Vec3::default();
+    seed.0[axis] = 1.0;
+    normalized(project_on_plane(seed, direction))
+}
+
+/// Axis-angle rotation in q_math's original two matrix-product order.
+pub fn rotate_about_axis(direction: Vec3, point: Vec3, degrees: f32) -> Vec3 {
+    let radial = perpendicular_vector(direction);
+    let vertical = cross(radial, direction);
+    let basis = std::array::from_fn(|i| Vec3([radial.0[i], vertical.0[i], direction.0[i]]));
+    let inverse = [radial, vertical, direction];
+    let radians = (f64::from(degrees) * std::f64::consts::PI / 180.0) as f32;
+    let cosine = f64::from(radians).cos() as f32;
+    let sine = f64::from(radians).sin() as f32;
+    let rotation = [
+        Vec3([cosine, sine, 0.]),
+        Vec3([-sine, cosine, 0.]),
+        Vec3([0., 0., 1.]),
+    ];
+    fn multiply(left: [Vec3; 3], right: [Vec3; 3]) -> [Vec3; 3] {
+        std::array::from_fn(|row| {
+            Vec3(std::array::from_fn(|column| {
+                left[row].dot(Vec3([
+                    right[0].0[column],
+                    right[1].0[column],
+                    right[2].0[column],
+                ]))
+            }))
+        })
+    }
+    let matrix = multiply(multiply(basis, rotation), inverse);
+    Vec3(matrix.map(|row| row.dot(point)))
+}
+
 /// Q3's wave and packed-normal table, including the duplicated cycle endpoint.
 pub fn sine_table() -> &'static [f32; 1024] {
     static TABLE: std::sync::OnceLock<[f32; 1024]> = std::sync::OnceLock::new();

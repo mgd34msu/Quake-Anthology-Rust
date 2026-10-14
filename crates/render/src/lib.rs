@@ -4,6 +4,7 @@ pub mod assets;
 pub mod cpu;
 pub mod edges;
 pub mod effects;
+pub mod entities;
 pub mod gl;
 pub mod lightmap;
 pub mod material;

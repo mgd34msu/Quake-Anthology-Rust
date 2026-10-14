@@ -600,7 +600,7 @@ impl CpuBackend {
             return;
         }
         let vertices = list.vertices(poly.vertices);
-        let inputs = DrawInputs::for_view(&camera.refdef);
+        let inputs = DrawInputs::for_view(&camera.refdef).for_poly(poly, list);
         self.mesh_stages(
             camera,
             material,

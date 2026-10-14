@@ -58,8 +58,20 @@ impl FrameHost {
                     Default::default(),
                 )
             };
-            row.scene_role
-                .configure(profile, viewport, seat, world, presentation);
+            let context = row.request.context.console;
+            let rails = ["r_railCoreWidth", "r_railWidth", "r_railSegmentLength"]
+                .map(|name| self.console.cvars.bind(name, context));
+            let [Some(core), Some(ring), Some(length)] = rails else {
+                return Err("missing rail renderer cvars".into());
+            };
+            row.scene_role.configure(
+                profile,
+                viewport,
+                seat,
+                world,
+                presentation,
+                [core, ring, length],
+            );
         }
         Ok(())
     }

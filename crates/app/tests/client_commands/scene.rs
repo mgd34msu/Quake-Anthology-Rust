@@ -1,5 +1,6 @@
 use super::*;
 use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
+use qa_compat::services::ModelLoader;
 use qa_render::material::world_load::{
     LoadedWorld, LoadedWorldPresentation, WorldPresentationProfile,
 };
@@ -58,11 +59,32 @@ fn data() -> [u8; 1024] {
     for row in 0..8 {
         data[368 + row * 32 + 1] = 0xe0 + row as u8;
     }
+    data[880..896].copy_from_slice(b"models/test.md3\0");
+    for (offset, value) in [
+        (28, 1.0f32),
+        (44, 1.),
+        (60, 1.),
+        (68, 8.),
+        (100, 0.25),
+        (120, 0.125),
+        (124, 0.5),
+        (128, 1.25),
+        (132, 2.),
+        (136, 45.),
+    ] {
+        data[700 + offset..704 + offset].copy_from_slice(&value.to_le_bytes());
+    }
+    data[780..784].copy_from_slice(&1i32.to_le_bytes());
+    data[812..816].copy_from_slice(&1i32.to_le_bytes());
+    data[816..820].copy_from_slice(&[201, 150, 90, 255]);
     data
 }
 
 fn pointer_argument(command: usize, index: usize) -> bool {
-    matches!((command, index), (0 | 1 | 3 | 6 | 8, 0) | (2 | 7 | 9, 2))
+    matches!(
+        (command, index),
+        (0 | 1 | 3 | 6 | 8 | 12 | 13, 0) | (2 | 7 | 9, 2)
+    )
 }
 fn ordinal(ui: bool, value: u8) -> u8 {
     if !ui {
@@ -75,6 +97,8 @@ fn ordinal(ui: bool, value: u8) -> u8 {
         44 => 25,
         46 => 27,
         40 => 21,
+        37 => 18,
+        41 => 22,
         other => other,
     }
 }
@@ -82,14 +106,30 @@ fn qvm_scene(ui: bool) -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 96)];
     let mut branches = vec![];
-    for command in 0..12 {
+    for command in 0..16 {
         operations.extend([(Local, 104), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, 0), (Leave, 96)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if command >= CALLS.len() {
+        if matches!(command, 12 | 13) {
+            let (number, address) = if command == 12 { (37, 880) } else { (41, 700) };
+            operations.extend([
+                (Const, address),
+                (Arg, 8),
+                (Const, -i32::from(ordinal(ui, number)) - 1),
+                (Call, 0),
+            ]);
+        } else if matches!(command, 14 | 15) {
+            operations.extend([
+                (Const, if command == 14 { 708 } else { 700 }),
+                (Local, 108),
+                (Load4, 0),
+                (Store4, 0),
+                (Const, 0),
+            ]);
+        } else if command >= CALLS.len() {
             for (at, word) in if command == 10 {
                 [(64, 900.0f32.to_bits()), (328, 777)]
             } else {
@@ -135,7 +175,7 @@ fn native_scene(ui: bool) -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..15)
+        &(0..16)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -150,12 +190,23 @@ fn native_scene(ui: bool) -> Program {
     let callback = vm.import_callback();
     let source = base + 0x2400;
     let mut code = vec![];
-    for command in 0..12usize {
+    for command in 0..16usize {
         code.extend([0x83, 0xf9, command as u8, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
         code.extend([0x48, 0x83, 0xec, 0x58]);
-        if command >= CALLS.len() {
+        if matches!(command, 12 | 13) {
+            let (number, address) = if command == 12 { (37, 880) } else { (41, 700) };
+            code.extend([0x48, 0xba]);
+            code.extend((source + address).to_le_bytes());
+            code.extend([0xb9, ordinal(ui, number), 0, 0, 0, 0x48, 0xb8]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0]);
+        } else if matches!(command, 14 | 15) {
+            code.extend([0x48, 0xb8]);
+            code.extend((source + if command == 14 { 708 } else { 700 }).to_le_bytes());
+            code.extend([0x89, 0x10, 0x31, 0xc0]);
+        } else if command >= CALLS.len() {
             for (at, word) in if command == 10 {
                 [(64, 900.0f32.to_bits()), (328, 777)]
             } else {
@@ -516,4 +567,110 @@ pub(super) fn ownership() {
     assert_eq!(source.renderer.sample.stats.rejected, 0);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+}
+
+pub(super) fn entities(native: bool, ui: bool) {
+    let mut fixture = model_support::Fixture::surfaces();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let program = || {
+        if native {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                return native_scene(ui);
+            }
+        }
+        qvm_scene(ui)
+    };
+    let (mut runtime, ids) = runtime(1);
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let mut request = request(&mut runtime, ModuleId(1), ids[0], program());
+    request.entries = (0..16).collect();
+    if ui {
+        request.frame.client = None;
+    }
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![request],
+    )
+    .unwrap();
+    host.local_clients[0] = Some(ids[0]);
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
+        320,
+        200,
+    )
+    .unwrap();
+    host.runtime.model_loader = Some(
+        ModelCatalogBuilder::new(
+            qa_render::Assets::load().unwrap(),
+            [profile],
+            [],
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let model = probe(&mut host, 0, 12, 0);
+    assert!(model > 0);
+    assert_eq!(probe(&mut host, 0, 14, model as u64), 0);
+    let shader = host
+        .runtime
+        .model_loader
+        .as_mut()
+        .unwrap()
+        .register_shader(&host.runtime.vfs, b"textures/glow", RuleSetId::Quake3, true)
+        .unwrap();
+    assert_eq!(shader, 1);
+    let (assets, models) = host.runtime.model_loader.take().unwrap().finish();
+    host.runtime.models = Some(std::sync::Arc::new(models));
+    host.runtime.scene = Some(
+        qa_app::renderer::SceneComposer::load(
+            qa_render::Limits {
+                entities: 2,
+                ..Default::default()
+            },
+            assets,
+            vec![],
+        )
+        .unwrap()
+        .0,
+    );
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(probe(&mut host, 0, 13, 0), 0);
+    assert_eq!(probe(&mut host, 0, 13, 0), 0); // A full two-surface model fails atomically.
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    let owner = host.runtime.scene.as_mut().unwrap();
+    let packet = owner.finish_frame().unwrap();
+    assert_eq!(packet.rejected, 1);
+    let Command::View(view) = packet.commands()[1] else {
+        panic!("model view")
+    };
+    assert_eq!(view.scene.entities.count, 2);
+    for entity in packet.entities(view.scene.entities) {
+        assert_eq!(entity.frame, 1);
+        assert_eq!(entity.old_frame, 0);
+        assert_eq!(entity.back_lerp, 0.25);
+        assert_eq!(entity.color, [201, 150, 90, 255]);
+        assert_eq!(entity.shader_time, 1.25);
+        assert_eq!(entity.shader_texcoord, [0.125, 0.5]);
+    }
+    assert!(owner.recycle(packet).is_ok());
+    for (kind, triangles) in [(1, 0), (2, 2), (3, 12), (4, 2), (5, 2), (6, 8), (7, 0)] {
+        assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+        assert_eq!(probe(&mut host, 0, 15, kind), 0);
+        assert_eq!(probe(&mut host, 0, 13, 0), 0);
+        assert_eq!(probe(&mut host, 0, 3, 0), 0);
+        let owner = host.runtime.scene.as_mut().unwrap();
+        let packet = owner.finish_frame().unwrap();
+        let Command::View(view) = packet.commands()[1] else {
+            panic!("generated view")
+        };
+        assert_eq!(view.scene.entities.count, 1);
+        assert_eq!(view.scene.polys.count, triangles);
+        assert_eq!(packet.rejected, 0);
+        assert!(owner.recycle(packet).is_ok());
+    }
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }

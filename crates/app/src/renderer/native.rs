@@ -2,7 +2,7 @@
 use super::SceneComposer;
 use crate::model_assets::{ModelCatalog, ModelProfile};
 use qa_compat::{
-    renderer::{SceneService, SceneView},
+    renderer::{EntityKind, EntitySubmission, SceneService, SceneView},
     services::CallError,
 };
 use qa_core::{primitives::ModuleId, sys_events::SeatId};
@@ -19,6 +19,7 @@ struct Target {
     seat: Option<SeatId>,
     world: Option<(WorldId, WorldPresentationId)>,
     presentation: qa_render::material::world_load::PresentationDefaults,
+    rails: [qa_console::cvars::View; 3],
 }
 
 /// Mutable renderer state belongs to the module across registration and frames.
@@ -44,6 +45,7 @@ impl SceneRole {
         seat: Option<SeatId>,
         world: Option<(WorldId, WorldPresentationId)>,
         presentation: qa_render::material::world_load::PresentationDefaults,
+        rails: [qa_console::cvars::View; 3],
     ) {
         self.target = Some(Target {
             profile,
@@ -51,6 +53,7 @@ impl SceneRole {
             seat,
             world,
             presentation,
+            rails,
         });
     }
 }
@@ -59,6 +62,7 @@ pub(crate) struct SceneBorrow<'a> {
     composer: Option<&'a mut SceneComposer>,
     models: Option<&'a ModelCatalog>,
     role: &'a mut SceneRole,
+    rails: (i32, i32, f32),
 }
 impl<'a> SceneBorrow<'a> {
     pub(crate) fn new(
@@ -66,11 +70,20 @@ impl<'a> SceneBorrow<'a> {
         models: Option<&'a ModelCatalog>,
         role: &'a mut SceneRole,
         module: ModuleId,
+        cvars: &qa_console::cvars::Cvars,
     ) -> Self {
+        let rails = role.target.as_ref().map_or((6, 16, 32.), |target| {
+            (
+                cvars.integer_view(target.rails[0]).unwrap_or(0),
+                cvars.integer_view(target.rails[1]).unwrap_or(0),
+                cvars.numeric(target.rails[2]).unwrap_or(0.),
+            )
+        });
         let mut borrow = Self {
             composer,
             models,
             role,
+            rails,
         };
         if let Some(composer) = borrow.composer.as_deref_mut()
             && composer.publisher != Some(module)
@@ -112,6 +125,113 @@ impl SceneService for SceneBorrow<'_> {
             .as_deref_mut()
             .and_then(|composer| composer.frame.as_mut())
             .is_some_and(|frame| frame.add_light(light))
+    }
+    fn entity(&mut self, submitted: EntitySubmission) -> bool {
+        use qa_render::scene::SceneModel;
+        let Some(composer) = self.composer.as_deref_mut() else {
+            return false;
+        };
+        let Some(frame) = composer.frame.as_mut() else {
+            return false;
+        };
+        let Some(target) = self.role.target.as_ref() else {
+            return frame.reject_submission();
+        };
+        let Some(models) = self.models else {
+            return frame.reject_submission();
+        };
+        let mut pose = submitted.pose;
+        if !pose.origin.is_finite() {
+            return frame.reject_submission();
+        }
+        let material = (submitted.custom_shader != 0)
+            .then(|| models.shader_binding(submitted.custom_shader, target.profile))
+            .flatten();
+        if submitted.kind == EntityKind::Model {
+            if submitted.custom_skin != 0 {
+                return frame.reject_submission();
+            }
+            let Some(registration) = models.renderer_registration(submitted.model, target.profile)
+            else {
+                return frame.reject_submission();
+            };
+            let Some(bindings) = models.bindings(
+                registration,
+                u32::try_from(submitted.skin).unwrap_or(0),
+                Default::default(),
+            ) else {
+                return frame.reject_submission();
+            };
+            let Some(first) = bindings
+                .clone()
+                .next()
+                .and_then(|binding| composer.assets.model(binding.model))
+            else {
+                return frame.reject_submission();
+            };
+            let count = first.frame_count();
+            if count == 0 {
+                return frame.reject_submission();
+            }
+            let current = if submitted.wrap_frames {
+                submitted.frame % count as i32
+            } else {
+                submitted.frame
+            };
+            let old = if submitted.wrap_frames {
+                submitted.old_frame % count as i32
+            } else {
+                submitted.old_frame
+            };
+            if current < 0 || old < 0 || current as u32 >= count || old as u32 >= count {
+                pose.frame = 0;
+                pose.old_frame = 0;
+            } else {
+                pose.frame = current as u32;
+                pose.old_frame = old as u32;
+            }
+            return frame.add_entities(bindings.map(|binding| {
+                let mut entity = pose;
+                entity.model = SceneModel::Mesh(binding.model);
+                entity.material = material.or(Some(binding.material));
+                entity
+            }));
+        }
+        pose.material = Some(if submitted.kind == EntityKind::Beam {
+            composer.beam
+        } else {
+            material.unwrap_or(qa_render::MaterialId(0))
+        });
+        pose.model = match submitted.kind {
+            EntityKind::Model => return false,
+            EntityKind::Sprite => SceneModel::Sprite {
+                radius: submitted.radius,
+                rotation: submitted.rotation,
+            },
+            EntityKind::Beam => SceneModel::Beam {
+                end: submitted.old_origin,
+            },
+            EntityKind::RailCore => SceneModel::RailCore {
+                end: submitted.old_origin,
+                width: self.rails.0,
+            },
+            EntityKind::RailRings => SceneModel::RailRings {
+                end: submitted.old_origin,
+                width: self.rails.1,
+                segment_length: self.rails.2,
+            },
+            EntityKind::Lightning => SceneModel::Lightning {
+                end: submitted.old_origin,
+            },
+            EntityKind::Portal => SceneModel::Portal {
+                camera: submitted.old_origin,
+                rotation: submitted.skin,
+            },
+            EntityKind::PolyMarker => SceneModel::PolyMarker,
+        };
+        pose.frame = submitted.frame as u32;
+        pose.old_frame = submitted.old_frame as u32;
+        frame.add_entity(pose)
     }
     fn poly(&mut self, shader: i32, count: usize, vertex: &mut dyn FnMut(usize) -> Vertex) -> bool {
         let Some(target) = self.role.target.as_ref() else {

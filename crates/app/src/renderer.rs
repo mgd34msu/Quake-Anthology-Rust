@@ -276,12 +276,13 @@ pub struct SceneComposer {
     native_owned: [bool; SeatId::COUNT],
     native_axes: [Option<[qa_core::primitives::Vec3; 3]>; SeatId::COUNT],
     kind: Kind,
+    beam: qa_render::MaterialId,
 }
 
 impl SceneComposer {
     pub fn load(
         mut limits: Limits,
-        assets: Assets,
+        mut assets: Assets,
         worlds: Vec<LoadedWorld>,
     ) -> Result<(Self, Limits), String> {
         let mut scenes: Vec<Option<WorldScene>> =
@@ -314,6 +315,8 @@ impl SceneComposer {
         );
 
         let frontend = FrontEnd::load(limits)?;
+        let beam =
+            qa_render::entities::register_beam_material(&mut assets).map_err(str::to_owned)?;
         Ok((
             Self {
                 frontend,
@@ -324,6 +327,7 @@ impl SceneComposer {
                 native_owned: [false; SeatId::COUNT],
                 native_axes: [None; SeatId::COUNT],
                 kind: Kind::Cpu,
+                beam,
             },
             limits,
         ))

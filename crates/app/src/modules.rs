@@ -1542,8 +1542,13 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         &mut row.scratch,
         client_connection,
     );
-    let mut scene =
-        crate::renderer::native::SceneBorrow::new(composer, models, &mut row.scene_role, module);
+    let mut scene = crate::renderer::native::SceneBorrow::new(
+        composer,
+        models,
+        &mut row.scene_role,
+        module,
+        services.cvars,
+    );
     services.scene = Some(&mut scene);
     // A live connection can lack this protocol's configstring/command view.
     // Each executed import checks its own service; independent CLIENT audio

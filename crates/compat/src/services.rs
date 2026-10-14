@@ -919,6 +919,7 @@ pub struct EngineCallTable {
     pub render_world: fn(&mut EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
     pub clear_scene: fn(&mut EngineServices<'_>),
     pub add_light: fn(&mut EngineServices<'_>, qa_render::scene::Light) -> bool,
+    pub add_entity: fn(&mut EngineServices<'_>, crate::renderer::EntitySubmission) -> bool,
     pub add_poly:
         fn(&mut EngineServices<'_>, i32, usize, &mut dyn FnMut(usize) -> qa_render::Vertex) -> bool,
     pub scene_color: fn(&mut EngineServices<'_>, Option<[f32; 4]>),
@@ -1082,6 +1083,11 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         s.scene
             .as_deref_mut()
             .is_some_and(|scene| scene.light(light))
+    },
+    add_entity: |s, entity| {
+        s.scene
+            .as_deref_mut()
+            .is_some_and(|scene| scene.entity(entity))
     },
     add_poly: |s, shader, count, vertex| {
         s.scene

@@ -1288,6 +1288,8 @@ fn main() {
     scene::submissions(false, false);
     scene::submissions(false, true);
     scene::ownership();
+    scene::entities(false, false);
+    scene::entities(false, true);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         selected_commands_use_one_session_service(native);
@@ -1295,6 +1297,8 @@ fn main() {
         native_scene_calls_use_the_session_frame(native);
         scene::submissions(true, false);
         scene::submissions(true, true);
+        scene::entities(true, false);
+        scene::entities(true, true);
     }
     bcs_rescans_and_failed_cs_preserve_rows();
     selected_systeminfo_updates_only_the_native_server_id();

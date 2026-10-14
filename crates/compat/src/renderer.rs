@@ -6,7 +6,7 @@ use qa_core::presentation::{
 use qa_core::primitives::Vec3;
 use qa_render::{
     Vertex,
-    scene::{Light, Refdef},
+    scene::{EntityVisibility, Light, Refdef, SceneEntity},
     world::WorldId,
 };
 
@@ -18,6 +18,7 @@ pub trait SceneService {
     fn select_world(&mut self, world: WorldId) -> Result<(), CallError>;
     fn clear(&mut self);
     fn light(&mut self, light: Light) -> bool;
+    fn entity(&mut self, entity: EntitySubmission) -> bool;
     fn poly(&mut self, shader: i32, count: usize, vertex: &mut dyn FnMut(usize) -> Vertex) -> bool;
     fn color(&mut self, color: Option<[f32; 4]>);
     fn picture(&mut self, shader: i32, rect: [f32; 4], texcoords: [f32; 4]) -> bool;
@@ -26,6 +27,99 @@ pub trait SceneService {
 
 pub const Q3_REFDEF_BYTES: usize = 368;
 pub const Q3_POLY_VERTEX_BYTES: usize = 24;
+pub const Q3_REF_ENTITY_BYTES: usize = 140;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityKind {
+    Model,
+    PolyMarker,
+    Sprite,
+    Beam,
+    RailCore,
+    RailRings,
+    Lightning,
+    Portal,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct EntitySubmission {
+    pub kind: EntityKind,
+    pub pose: SceneEntity,
+    pub model: i32,
+    pub skin: i32,
+    pub custom_skin: i32,
+    pub custom_shader: i32,
+    pub frame: i32,
+    pub old_frame: i32,
+    pub old_origin: Vec3,
+    pub radius: f32,
+    pub rotation: f32,
+    pub wrap_frames: bool,
+}
+struct Record<'a>(&'a [u8]);
+impl Record<'_> {
+    fn word(&self, at: usize) -> i32 {
+        i32::from_le_bytes([self.0[at], self.0[at + 1], self.0[at + 2], self.0[at + 3]])
+    }
+    fn scalar(&self, at: usize) -> f32 {
+        f32::from_bits(self.word(at) as u32)
+    }
+    fn vector(&self, at: usize) -> Vec3 {
+        Vec3(std::array::from_fn(|axis| self.scalar(at + axis * 4)))
+    }
+}
+pub fn read_q3_entity(bytes: &[u8]) -> Result<EntitySubmission, CallError> {
+    if bytes.len() != Q3_REF_ENTITY_BYTES {
+        return Err(CallError::Memory);
+    }
+    let r = Record(bytes);
+    let kind = match r.word(0) {
+        0 => EntityKind::Model,
+        1 => EntityKind::PolyMarker,
+        2 => EntityKind::Sprite,
+        3 => EntityKind::Beam,
+        4 => EntityKind::RailCore,
+        5 => EntityKind::RailRings,
+        6 => EntityKind::Lightning,
+        7 => EntityKind::Portal,
+        _ => return Err(CallError::Geometry),
+    };
+    let flags = r.word(4);
+    let visibility = match (flags & 4 != 0, flags & 2 != 0) {
+        (false, false) => EntityVisibility::Always,
+        (true, false) => EntityVisibility::Direct,
+        (false, true) => EntityVisibility::Portal,
+        (true, true) => EntityVisibility::Hidden,
+    };
+    Ok(EntitySubmission {
+        kind,
+        model: r.word(8),
+        frame: r.word(80),
+        old_frame: r.word(96),
+        old_origin: r.vector(84),
+        skin: r.word(104),
+        custom_skin: r.word(108),
+        custom_shader: r.word(112),
+        radius: r.scalar(132),
+        rotation: r.scalar(136),
+        wrap_frames: flags & 512 != 0,
+        pose: SceneEntity {
+            origin: r.vector(68),
+            axes: std::array::from_fn(|axis| r.vector(28 + axis * 12)),
+            non_normalized_axes: r.word(64) != 0,
+            color: [bytes[116], bytes[117], bytes[118], bytes[119]],
+            back_lerp: r.scalar(100),
+            depth_hack: flags & 8 != 0,
+            shader_texcoord: [r.scalar(120), r.scalar(124)],
+            shader_time: r.scalar(128),
+            lighting_origin: (flags & 128 != 0).then(|| r.vector(12)),
+            shadow_plane: (flags & 256 != 0).then(|| r.scalar(24)),
+            minimum_light: flags & 1 != 0,
+            casts_shadow: flags & 64 == 0,
+            visibility,
+            ..SceneEntity::default()
+        },
+    })
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct SceneView {
@@ -40,9 +134,10 @@ pub fn read_q3_view(bytes: &[u8]) -> Result<SceneView, CallError> {
     if bytes.len() != Q3_REFDEF_BYTES {
         return Err(CallError::Memory);
     }
-    let word = |at| i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    let scalar = |at| f32::from_bits(word(at) as u32);
-    let vector = |at| Vec3(std::array::from_fn(|axis| scalar(at + axis * 4)));
+    let r = Record(bytes);
+    let word = |at| r.word(at);
+    let scalar = |at| r.scalar(at);
+    let vector = |at| r.vector(at);
     let mut refdef = Refdef {
         viewport: qa_render::Viewport {
             x: u32::try_from(word(0)).map_err(|_| CallError::Geometry)?,
@@ -74,10 +169,10 @@ pub fn read_q3_view(bytes: &[u8]) -> Result<SceneView, CallError> {
 
 /// Only called on an already-checked 24-byte polyVert_t extent.
 pub fn q3_vertex(bytes: &[u8]) -> Vertex {
-    let scalar = |at| f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let r = Record(bytes);
     Vertex {
-        position: Vec3(std::array::from_fn(|axis| scalar(axis * 4))),
-        texcoord: [scalar(12), scalar(16)],
+        position: r.vector(0),
+        texcoord: [r.scalar(12), r.scalar(16)],
         color: [bytes[20], bytes[21], bytes[22], bytes[23]],
         ..Vertex::default()
     }

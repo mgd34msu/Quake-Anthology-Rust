@@ -1864,7 +1864,7 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }
 
-fn model_tags_use_shared_services(factory: fn() -> (Program, u64)) {
+fn model_tags_use_shared_services(factory: fn() -> (Program, u64), returns_result: bool) {
     use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
     let mut files = model_files::Fixture::surfaces();
     let bytes = model_files::md3_surfaces();
@@ -1916,7 +1916,7 @@ fn model_tags_use_shared_services(factory: fn() -> (Program, u64)) {
                         name
                     ]
                 ),
-                Ok(1)
+                Ok(u32::from(returns_result))
             );
             let expected = model.tags[(start as usize).min(1)]
                 .orientation
@@ -2055,8 +2055,8 @@ fn main() {
     renderer_configuration_uses_shared_services(qvm_ui_renderer);
     model_registration_uses_shared_services(qvm);
     model_registration_uses_shared_services(qvm_ui_renderer);
-    model_tags_use_shared_services(qvm);
-    model_tags_use_shared_services(qvm_ui_renderer);
+    model_tags_use_shared_services(qvm, true);
+    model_tags_use_shared_services(qvm_ui_renderer, false);
     queued_startup_keeps_registration_open(qvm);
     registration_wait_rejects_unreceived_state_instead_of_freezing_it();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -2065,8 +2065,8 @@ fn main() {
         renderer_configuration_uses_shared_services(native_ui_renderer);
         model_registration_uses_shared_services(native);
         model_registration_uses_shared_services(native_ui_renderer);
-        model_tags_use_shared_services(native);
-        model_tags_use_shared_services(native_ui_renderer);
+        model_tags_use_shared_services(native, true);
+        model_tags_use_shared_services(native_ui_renderer, false);
         queued_startup_keeps_registration_open(native);
     }
     accepted_connection_snapshot_bytes(qvm);

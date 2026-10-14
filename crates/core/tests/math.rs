@@ -4,6 +4,37 @@ use qa_core::{
 };
 
 #[test]
+fn plane_projection_and_axis_rotation_preserve_the_native_basis() {
+    let direction = Vec3([0.0, 0.0, 1.0]);
+    assert_eq!(
+        project_on_plane(Vec3([3.0, -4.0, 5.0]), direction),
+        Vec3([3.0, -4.0, 0.0])
+    );
+    assert_eq!(perpendicular_vector(direction), Vec3([1.0, 0.0, 0.0]));
+    let input = Vec3([3.0, 4.0, 5.0]);
+    for (degrees, expected) in [
+        (0.0, input),
+        (90.0, Vec3([-4.0, 3.0, 5.0])),
+        (180.0, Vec3([-3.0, -4.0, 5.0])),
+        (-90.0, Vec3([4.0, -3.0, 5.0])),
+    ] {
+        let rotated = rotate_about_axis(direction, input, degrees);
+        for (actual, expected) in rotated.0.into_iter().zip(expected.0) {
+            assert!((actual - expected).abs() < 0.000002);
+        }
+    }
+    for direction in [
+        Vec3([1.0, 0.0, 0.0]),
+        normalized(Vec3([1.0, 2.0, 3.0])),
+        normalized(Vec3([-4.0, 2.0, 7.0])),
+    ] {
+        let perpendicular = perpendicular_vector(direction);
+        assert!(perpendicular.dot(direction).abs() < 0.000001);
+        assert!((length(perpendicular) - 1.0).abs() < 0.000001);
+    }
+}
+
+#[test]
 fn native_sine_table_and_reflection_keep_original_float_operations() {
     for (index, &value) in sine_table().iter().enumerate() {
         let degrees = index as f32 * 360.0 / 1023.0;

@@ -496,6 +496,7 @@ const fn client() -> CallTable {
     t.entries[36] = scalar!(renderer_load_world);
     t.entries[37] = scalar!(register_model);
     t.entries[40] = scalar!(renderer_clear_scene);
+    t.entries[41] = scalar!(renderer_entity);
     t.entries[42] = scalar!(renderer_add_polys::<false>);
     t.entries[44] = scalar!(renderer_view);
     t.entries[45] = scalar!(renderer_color);
@@ -547,6 +548,7 @@ const fn ui() -> CallTable {
     t.entries[18] = scalar!(register_model);
     t.entries[20] = scalar!(register_shader::<false>);
     t.entries[21] = scalar!(renderer_clear_scene);
+    t.entries[22] = scalar!(renderer_entity);
     t.entries[23] = scalar!(renderer_add_polys::<false>);
     t.entries[25] = scalar!(renderer_view);
     t.entries[26] = scalar!(renderer_color);
@@ -1972,6 +1974,21 @@ fn renderer_load_world(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError>
 }
 fn renderer_clear_scene(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.clear_scene)(c.services);
+    Ok(0)
+}
+fn renderer_entity(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.services
+        .scene
+        .as_deref()
+        .is_none_or(|scene| !scene.active())
+    {
+        return Ok(0);
+    }
+    let entity = crate::renderer::read_q3_entity(
+        c.memory
+            .read(c.required_pointer(0)?, crate::renderer::Q3_REF_ENTITY_BYTES)?,
+    )?;
+    (ENGINE_CALLS.add_entity)(c.services, entity);
     Ok(0)
 }
 fn renderer_add_light<const ADDITIVE: bool>(

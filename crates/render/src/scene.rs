@@ -105,6 +105,8 @@ pub struct Refdef {
     pub far: f32,
     pub time_ms: i64,
     pub hyperspace: bool,
+    pub portal: bool,
+    pub reflected_view: bool,
     /// Native shader text rows retain byte values after their first NUL.
     pub text: [[u8; 32]; 8],
     /// Cached presentation identity light (Q3 native overbright response).
@@ -188,6 +190,8 @@ impl Default for Refdef {
             far: 65536.0,
             time_ms: 0,
             hyperspace: false,
+            portal: false,
+            reflected_view: false,
             text: [[0; 32]; 8],
             identity_light: 1.0,
             blend: [0.0; 4],
@@ -200,7 +204,7 @@ impl Default for Refdef {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SceneModel {
     Mesh(ModelId),
     World {
@@ -208,6 +212,30 @@ pub enum SceneModel {
         presentation: WorldPresentationId,
         surfaces: Span,
     },
+    Sprite {
+        radius: f32,
+        rotation: f32,
+    },
+    Beam {
+        end: Vec3,
+    },
+    RailCore {
+        end: Vec3,
+        width: i32,
+    },
+    RailRings {
+        end: Vec3,
+        width: i32,
+        segment_length: f32,
+    },
+    Lightning {
+        end: Vec3,
+    },
+    Portal {
+        camera: Vec3,
+        rotation: i32,
+    },
+    PolyMarker,
 }
 impl From<ModelId> for SceneModel {
     fn from(model: ModelId) -> Self {
@@ -218,7 +246,14 @@ impl SceneModel {
     pub fn mesh(self) -> Option<ModelId> {
         match self {
             Self::Mesh(model) => Some(model),
-            Self::World { .. } => None,
+            Self::World { .. }
+            | Self::Sprite { .. }
+            | Self::Beam { .. }
+            | Self::RailCore { .. }
+            | Self::RailRings { .. }
+            | Self::Lightning { .. }
+            | Self::Portal { .. }
+            | Self::PolyMarker => None,
         }
     }
 }
@@ -238,13 +273,34 @@ pub struct SceneEntity {
     pub shader_time: f32,
     pub shader_texcoord: [f32; 2],
     pub lighting: Option<crate::stage::EntityLighting>,
+    pub lighting_origin: Option<Vec3>,
+    pub minimum_light: bool,
+    pub shadow_plane: Option<f32>,
+    pub casts_shadow: bool,
+    pub visibility: EntityVisibility,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EntityVisibility {
+    #[default]
+    Always,
+    Direct,
+    Portal,
+    Hidden,
+}
+impl EntityVisibility {
+    pub fn visible(self, portal: bool) -> bool {
+        match self {
+            Self::Always => true,
+            Self::Direct => !portal,
+            Self::Portal => portal,
+            Self::Hidden => false,
+        }
+    }
 }
 impl SceneEntity {
     pub fn material(&self, assets: &Assets) -> Option<MaterialId> {
-        Some(
-            self.material
-                .unwrap_or(assets.model(self.model.mesh()?)?.material),
-        )
+        self.material
+            .or_else(|| Some(assets.model(self.model.mesh()?)?.material))
     }
 }
 impl Default for SceneEntity {
@@ -263,6 +319,11 @@ impl Default for SceneEntity {
             shader_time: 0.0,
             shader_texcoord: [0.0; 2],
             lighting: None,
+            lighting_origin: None,
+            minimum_light: false,
+            shadow_plane: None,
+            casts_shadow: false,
+            visibility: EntityVisibility::Always,
         }
     }
 }
@@ -277,6 +338,7 @@ pub struct Light {
 pub struct Poly {
     pub material: MaterialId,
     pub vertices: Span,
+    pub entity: Option<u32>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Draw2d {
@@ -661,6 +723,10 @@ impl FrontEnd {
     }
 }
 impl Frame {
+    pub fn reject_submission(&mut self) -> bool {
+        self.list.rejected += 1;
+        false
+    }
     /// Built-in seats are background content. Move their newly appended command
     /// range before module views/UI in this same packet; payload indices remain
     /// absolute and no second command list or replay queue is created.
@@ -713,12 +779,40 @@ impl Frame {
         self.first = self.current();
     }
     pub fn add_entity(&mut self, entity: SceneEntity) -> bool {
+        self.add_entities(std::iter::once(entity))
+    }
+    /// One submitted model may contain several surfaces. Admit that complete
+    /// group or restore all counts, without copying/growing packet storage.
+    pub fn add_entities(&mut self, entities: impl IntoIterator<Item = SceneEntity>) -> bool {
+        let before = (
+            self.list.entity_count,
+            self.list.surface_count,
+            self.list.draw_count,
+        );
+        for entity in entities {
+            if !self.add_entity_part(entity) {
+                (
+                    self.list.entity_count,
+                    self.list.surface_count,
+                    self.list.draw_count,
+                ) = before;
+                return false;
+            }
+        }
+        true
+    }
+    fn add_entity_part(&mut self, entity: SceneEntity) -> bool {
         if self.list.entity_count == self.list.entities.len() {
             self.list.rejected += 1;
             return false;
         }
         match entity.model {
-            SceneModel::Mesh(_) => {
+            SceneModel::Mesh(_)
+            | SceneModel::Sprite { .. }
+            | SceneModel::Beam { .. }
+            | SceneModel::RailCore { .. }
+            | SceneModel::RailRings { .. }
+            | SceneModel::Lightning { .. } => {
                 if self.list.draw_count == self.list.draws.len() {
                     self.list.rejected += 1;
                     return false;
@@ -745,6 +839,7 @@ impl Frame {
                     return false;
                 }
             }
+            SceneModel::Portal { .. } | SceneModel::PolyMarker => {}
         }
         self.list.entities[self.list.entity_count] = entity;
         self.list.entity_count += 1;
@@ -783,6 +878,7 @@ impl Frame {
                 first: first as u32,
                 count: count as u32,
             },
+            entity: None,
         };
         self.draw(DrawKind::Poly, self.list.poly_count as u32);
         self.list.poly_count += 1;
@@ -858,6 +954,62 @@ impl Frame {
             self.list.rejected += 1;
             return false;
         }
+        let end = self.list.draw_count;
+        let first_draw = self.first.draws.first as usize;
+        let mut valid = first_draw;
+        for index in first_draw..end {
+            let draw = self.list.draws[index];
+            if draw_entity(&self.list, draw)
+                .is_some_and(|entity| !entity.visibility.visible(refdef.portal))
+            {
+                continue;
+            }
+            if draw.kind == DrawKind::Entity
+                && let Some(geometry) =
+                    crate::entities::prepare(self.list.entity(draw.index), refdef)
+            {
+                let count = geometry.triangle_count();
+                if count > self.list.polys.len() - self.list.poly_count
+                    || count > self.list.draws.len() - self.list.draw_count
+                    || count > (self.list.vertices.len() - self.list.vertex_count) / 3
+                {
+                    self.list.rejected += 1;
+                    continue;
+                }
+                let entity = *self.list.entity(draw.index);
+                let Some(material) = entity.material(assets) else {
+                    self.list.rejected += 1;
+                    continue;
+                };
+                geometry.triangles(|vertices| {
+                    let poly = self.list.poly_count;
+                    let first = self.list.vertex_count;
+                    self.list.vertices[first..first + 3].copy_from_slice(&vertices);
+                    self.list.vertex_count += 3;
+                    self.list.polys[poly] = Poly {
+                        material,
+                        vertices: Span {
+                            first: first as u32,
+                            count: 3,
+                        },
+                        entity: Some(draw.index),
+                    };
+                    self.list.poly_count += 1;
+                    self.list.draws[self.list.draw_count] = DrawItem {
+                        kind: DrawKind::Poly,
+                        index: poly as u32,
+                        ..Default::default()
+                    };
+                    self.list.draw_count += 1;
+                });
+            } else {
+                self.list.draws[valid] = draw;
+                valid += 1;
+            }
+        }
+        let generated = self.list.draw_count - end;
+        self.list.draws.copy_within(end..end + generated, valid);
+        self.list.draw_count = valid + generated;
         // Frozen numeric handles are resolved at the scene boundary, once per
         // item. Invalid client submissions are omitted without affecting peers.
         let first_draw = self.first.draws.first as usize;
@@ -938,6 +1090,16 @@ impl Frame {
         self.command(Command::Draw2d(draw))
     }
 }
+fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<&SceneEntity> {
+    match draw.kind {
+        DrawKind::Entity => Some(list.entity(draw.index)),
+        DrawKind::Surface => list
+            .surface(draw.index)
+            .entity
+            .map(|index| list.entity(index)),
+        DrawKind::Poly => list.poly(draw.index).entity.map(|index| list.entity(index)),
+    }
+}
 pub(crate) fn item_material_lightmap(
     list: &CommandList,
     assets: &Assets,
@@ -962,7 +1124,7 @@ fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawK
     let instance = match draw.kind {
         DrawKind::Entity => draw.index,
         DrawKind::Surface => list.surface(draw.index).entity.unwrap_or(u32::MAX),
-        DrawKind::Poly => u32::MAX,
+        DrawKind::Poly => list.poly(draw.index).entity.unwrap_or(u32::MAX),
     };
     Some(DrawKey {
         sort: assets.material(material)?.settings.sort,
