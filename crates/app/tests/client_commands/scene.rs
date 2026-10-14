@@ -422,6 +422,14 @@ pub(super) fn submissions(native: bool, ui: bool) {
     assert_eq!(view.refdef.time_ms, -12345);
     assert_eq!(view.refdef.text[7][1], 0xe7);
     assert_eq!(view.scene.polys.count, 2);
+    let recipient = host.local_clients[0].map(|client| qa_render::effects::EffectClient {
+        client,
+        lifetime: host.runtime.server.clients[client.0 as usize].entity,
+    });
+    assert_eq!(
+        view.particle_client, None,
+        "no-world model previews omit world effects"
+    );
     assert_eq!(
         packet.vertices(packet.polys(view.scene.polys)[0].vertices)[0]
             .position
@@ -438,6 +446,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
         panic!("second native view")
     };
     assert_eq!(second.refdef.time_ms, 777);
+    assert_eq!(second.particle_client, if ui { None } else { recipient });
     assert_eq!(packet.hidden_areas(second.hidden_areas), &[0xa5; 32]);
     let Command::Draw2d(peer) = packet.commands()[4] else {
         panic!("peer picture")

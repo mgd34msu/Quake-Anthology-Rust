@@ -217,19 +217,17 @@ fn lifecycle_host_in(
     phase: Phase,
     api: Option<qa_app::modules::ApiCheck>,
 ) -> FrameHost {
+    lifecycle_host_for_modules(budget, phase, api, &[ModuleId(1)])
+}
+fn lifecycle_host_for_modules(
+    budget: u64,
+    phase: Phase,
+    api: Option<qa_app::modules::ApiCheck>,
+    modules: &[ModuleId],
+) -> FrameHost {
     use qa_app::modules::{Argument, Export};
     use qa_formats::program::qvm::Opcode::*;
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
-    let id = runtime
-        .server
-        .entities
-        .allocate(
-            ThinkTime::Milliseconds(0),
-            ModuleId(1),
-            AllocationPolicy::q3(0),
-        )
-        .unwrap()
-        .id;
     // Return 1000*command + arg1 + arg2 + arg3, observing vmMain's stack ABI.
     let mut operations = vec![
         (Enter, 64),
@@ -257,74 +255,140 @@ fn lifecycle_host_in(
     } else {
         (0, if phase == Phase::Client { 3 } else { 8 }, 1)
     };
-    let vm = service_program::program(&operations, &[0; 16]);
+    let requests = modules
+        .iter()
+        .map(|&module| {
+            let id = runtime
+                .server
+                .entities
+                .allocate(ThinkTime::Milliseconds(0), module, AllocationPolicy::q3(0))
+                .unwrap()
+                .id;
+            let vm = service_program::program(&operations, &[0; 16]);
+            ModuleRequest {
+                context: CallContext {
+                    native_rules: qa_core::primitives::RuleSetId::Quake3,
+                    trace_rules: qa_core::primitives::RuleSetId::Quake3,
+                    sound_policy: qa_gameplay::rules::sound_policy(
+                        qa_core::primitives::RuleSetId::Quake3,
+                    ),
+                    server_frame: 0,
+                    module,
+                    clock: ThinkTime::Milliseconds(0),
+                    console: Context::default(),
+                    allocation: AllocationPolicy::q3(0),
+                    link_order: LinkOrder::Head,
+                },
+                timing_rules: RuleSetId::Quake3,
+                phase,
+                api,
+                rate: TickRate::fixed(50).unwrap(),
+                anchor: id,
+                program: Program::Qvm {
+                    vm: Box::new(vm),
+                    imports: &Q3_SERVER,
+                },
+                entries: (0..=10).collect(),
+                frame: Export::clocked(CallbackId(frame)),
+                prepare: Vec::new(),
+                initialize: vec![Export {
+                    client: None,
+                    callback: CallbackId(initialize),
+                    arguments: [
+                        Argument::ClockMilliseconds,
+                        Argument::PlatformMilliseconds,
+                        Argument::Word(1),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                    ],
+                }],
+                shutdown: vec![Export {
+                    client: None,
+                    callback: CallbackId(shutdown),
+                    arguments: [
+                        Argument::Word(1),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                        Argument::Word(0),
+                    ],
+                }],
+                instruction_budget: budget,
+                configstrings: 0,
+                files: 0,
+                entity_source: None,
+            }
+        })
+        .collect();
     FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
         runtime,
         TickRate::FrameDriven,
-        vec![ModuleRequest {
-            context: CallContext {
-                native_rules: qa_core::primitives::RuleSetId::Quake3,
-                trace_rules: qa_core::primitives::RuleSetId::Quake3,
-                sound_policy: qa_gameplay::rules::sound_policy(
-                    qa_core::primitives::RuleSetId::Quake3,
-                ),
-                server_frame: 0,
-                module: ModuleId(1),
-                clock: ThinkTime::Milliseconds(0),
-                console: Context::default(),
-                allocation: AllocationPolicy::q3(0),
-                link_order: LinkOrder::Head,
-            },
-            timing_rules: RuleSetId::Quake3,
-            phase,
-            api,
-            rate: TickRate::fixed(50).unwrap(),
-            anchor: id,
-            program: Program::Qvm {
-                vm: Box::new(vm),
-                imports: &Q3_SERVER,
-            },
-            entries: (0..=10).collect(),
-            frame: Export::clocked(CallbackId(frame)),
-            prepare: Vec::new(),
-            initialize: vec![Export {
-                client: None,
-                callback: CallbackId(initialize),
-                arguments: [
-                    Argument::ClockMilliseconds,
-                    Argument::PlatformMilliseconds,
-                    Argument::Word(1),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                ],
-            }],
-            shutdown: vec![Export {
-                client: None,
-                callback: CallbackId(shutdown),
-                arguments: [
-                    Argument::Word(1),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                    Argument::Word(0),
-                ],
-            }],
-            instruction_budget: budget,
-            configstrings: 0,
-            files: 0,
-            entity_source: None,
-        }],
+        requests,
     )
     .unwrap()
+}
+
+#[test]
+fn stopping_unobserved_server_module_preserves_independent_client_and_provider() {
+    use qa_app::modules::State;
+    use qa_session::clients::Connection;
+    let mut host =
+        lifecycle_host_for_modules(100, Phase::Server, None, &[ModuleId(1), ModuleId(2)]);
+    host.initialize_modules(Phase::Server);
+    let client = host
+        .runtime
+        .server
+        .connect(Connection::Remote, ModuleId(2), None)
+        .unwrap();
+    let before = &host.runtime.server.clients[client.0 as usize];
+    let lifetime = before.entity;
+    let consumer = before.output.unwrap();
+    let calls = host.module_counts(ModuleId(2)).unwrap().calls;
+    assert!(host.shutdown_module(ModuleId(1)));
+    let after = &host.runtime.server.clients[client.0 as usize];
+    assert_eq!(after.connection, Some(Connection::Remote));
+    assert_eq!(after.entity, lifetime);
+    assert_eq!(after.output, Some(consumer));
+    assert!(after.audio_retirement.is_none());
+    assert!(host.runtime.server.entities.resolve(lifetime).is_some());
+    assert!(host.runtime.server.events.batch(consumer).is_some());
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Stopped));
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+    host.frame(
+        &mut Source {
+            time: EventTime(50_000_000),
+            polls: 0,
+        },
+        true,
+    );
+    host.frame(
+        &mut Source {
+            time: EventTime(100_000_000),
+            polls: 0,
+        },
+        true,
+    );
+    assert!(host.module_counts(ModuleId(2)).unwrap().calls > calls);
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize].connection,
+        Some(Connection::Remote)
+    );
+    // The owning module still retires its own clients.
+    assert!(host.shutdown_module(ModuleId(2)));
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .connection
+            .is_none()
+    );
 }
 
 #[test]

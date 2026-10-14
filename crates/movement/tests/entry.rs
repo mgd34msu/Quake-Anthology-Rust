@@ -5,6 +5,7 @@ fn player(rules: RuleSetId) -> PlayerState {
     let mut state = PlayerState {
         movement_rules: rules,
         trace_rules: rules,
+        health: 100,
         weapon_state: None,
         view_weapon: qa_core::primitives::ViewWeapon {
             frame: 17,

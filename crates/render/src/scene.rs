@@ -615,6 +615,7 @@ pub struct View {
     pub refdef: Refdef,
     pub scene: SceneRanges,
     pub hidden_areas: Span,
+    pub particle_client: Option<crate::effects::EffectClient>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 #[expect(
@@ -779,6 +780,7 @@ pub struct FrontEnd {
 pub struct Frame {
     list: CommandList,
     first: SceneRanges,
+    particle_client: Option<crate::effects::EffectClient>,
 }
 #[derive(Clone, Copy)]
 struct SceneCheckpoint {
@@ -831,6 +833,7 @@ impl FrontEnd {
         let mut frame = Frame {
             list,
             first: SceneRanges::default(),
+            particle_client: None,
         };
         frame.command(Command::Clear(clear));
         Some(frame)
@@ -1058,6 +1061,89 @@ impl Frame {
     }
     pub fn clear_scene(&mut self) {
         self.first = self.current();
+    }
+    /// Recipient metadata also follows any portal views emitted by this call.
+    pub fn for_client<T>(
+        &mut self,
+        client: Option<crate::effects::EffectClient>,
+        compose: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.particle_client;
+        self.particle_client = client;
+        let result = compose(self);
+        self.particle_client = previous;
+        result
+    }
+
+    /// Complete recorded client views after output receipt, before backend
+    /// submission. Particle simulation remains in the one effects store.
+    /// Call after native scene submissions and before composing built-in views.
+    pub fn append_client_effects(
+        &mut self,
+        effects: &mut crate::effects::Effects,
+        assets: &Assets,
+    ) {
+        let open = self.first.particles.first as usize;
+        let end = self.list.particle_count;
+        for index in 0..self.list.command_count {
+            let Command::View(mut view) = self.list.commands[index] else {
+                continue;
+            };
+            let Some(client) = view.particle_client.take() else {
+                continue;
+            };
+            self.list.commands[index] = Command::View(view);
+            let first = self.list.particle_count;
+            let existing = view.scene.particles;
+            if existing.count as usize > self.list.particles.len() - first {
+                self.reject_submission();
+                continue;
+            }
+            self.list.particles.copy_within(existing.range(), first);
+            self.list.particle_count += existing.count as usize;
+            let rejected = self.list.rejected;
+            effects.append(self, client.client, client.lifetime);
+            self.validate_particles(first, assets);
+            if self.list.rejected != rejected {
+                self.list.particle_count = first;
+            } else {
+                view.scene.particles = Span {
+                    first: first as u32,
+                    count: (self.list.particle_count - first) as u32,
+                };
+                self.list.commands[index] = Command::View(view);
+            }
+        }
+        // Keep an unsubmitted scene's particles at the tail. The in-place
+        // rotation only moves newly copied view payloads, whose ranges follow.
+        let pending = end - open;
+        if pending != 0 {
+            self.list.particles[open..self.list.particle_count].rotate_left(pending);
+            for command in &mut self.list.commands[..self.list.command_count] {
+                if let Command::View(view) = command
+                    && view.scene.particles.first as usize >= end
+                {
+                    view.scene.particles.first -= pending as u32;
+                }
+            }
+        }
+        self.first.particles.first = (self.list.particle_count - pending) as u32;
+    }
+
+    fn validate_particles(&mut self, first: usize, assets: &Assets) {
+        let mut valid = first;
+        for index in first..self.list.particle_count {
+            let particle = self.list.particles[index];
+            if assets.palette(particle.palette).is_some()
+                && assets.material(particle.material).is_some()
+            {
+                self.list.particles[valid] = particle;
+                valid += 1;
+            } else {
+                self.list.rejected += 1;
+            }
+        }
+        self.list.particle_count = valid;
     }
     /// Resolve only this view's models, once. Explicit sampler results remain
     /// authoritative; all outputs stay in the existing entity arena.
@@ -1330,20 +1416,7 @@ impl Frame {
         }
         self.list.draw_count = valid;
         native_draw_sort(&mut self.list.draws[first_draw..valid]);
-        let first_particle = self.first.particles.first as usize;
-        let mut valid_particles = first_particle;
-        for index in first_particle..self.list.particle_count {
-            let particle = self.list.particles[index];
-            if assets.palette(particle.palette).is_some()
-                && assets.material(particle.material).is_some()
-            {
-                self.list.particles[valid_particles] = particle;
-                valid_particles += 1;
-            } else {
-                self.list.rejected += 1;
-            }
-        }
-        self.list.particle_count = valid_particles;
+        self.validate_particles(self.first.particles.first as usize, assets);
         for (rank, draw) in self.list.draws[first_draw..valid].iter().enumerate() {
             if draw.kind == DrawKind::Surface {
                 self.list.surfaces[draw.index as usize].draw_rank = rank as u32;
@@ -1361,6 +1434,7 @@ impl Frame {
             refdef,
             scene,
             hidden_areas: hidden,
+            particle_client: self.particle_client,
         }));
         self.first = current;
         true

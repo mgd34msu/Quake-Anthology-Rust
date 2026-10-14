@@ -1553,6 +1553,8 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         &mut row.scene_role,
         module,
         services.cvars,
+        client_connection
+            .map(|(client, lifetime)| qa_render::effects::EffectClient { client, lifetime }),
     );
     services.scene = Some(&mut scene);
     // A live connection can lack this protocol's configstring/command view.

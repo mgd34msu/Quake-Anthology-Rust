@@ -111,7 +111,13 @@ pub(super) fn connect(
                 .clients
                 .get(id.0 as usize)
                 .filter(|c| c.connection == Some(qa_session::clients::Connection::Bot))
-                .map(|_| id.0)
+                .and_then(|client| {
+                    let entities = &host.runtime.server.entities;
+                    let slot = entities.resolve(client.entity)?;
+                    let native = entities.columns.native_entity[slot]
+                        .filter(|native| native.module == module)?;
+                    u32::try_from(native.slot).ok()?.checked_sub(1)
+                })
         })
         .ok_or("native client needs connection metadata")?;
     if native_client as usize >= info.clients {

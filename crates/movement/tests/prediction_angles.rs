@@ -18,6 +18,7 @@ fn player(rules: RuleSetId, mode: MovementMode) -> PlayerState {
     let mut player = PlayerState {
         movement_rules: rules,
         trace_rules: RuleSetId::QuakeWorld,
+        health: 100,
         prediction: PredictionPolicy {
             position: true,
             angles: false,
@@ -29,6 +30,132 @@ fn player(rules: RuleSetId, mode: MovementMode) -> PlayerState {
     player.movement.mode = mode;
     player.body.position = Vec3([0.13, 0.17, 64.13]);
     player
+}
+
+fn angle_offset_bits(offsets: AngleOffsets) -> [(u8, u32); 3] {
+    offsets.0.map(|offset| match offset {
+        AngleOffset::Degrees(value) => (0, value.to_bits()),
+        AngleOffset::Units(value) => (1, value as u32),
+    })
+}
+
+#[test]
+fn q3_nonpositive_health_locks_view_and_all_delta_words_in_movement_and_angle_only() {
+    // PM_UpdateViewAngles returns before writing either viewangles or deltas
+    // when the player is not a spectator and STAT_HEALTH is nonpositive.
+    for health in [0, -1, i32::MIN] {
+        for mode in [
+            MovementMode::Walk,
+            MovementMode::Fly,
+            MovementMode::Noclip,
+            MovementMode::Dead,
+            MovementMode::Gib,
+            MovementMode::Frozen,
+        ] {
+            for angle_only in [false, true] {
+                let mut state = player(RuleSetId::Quake3, mode);
+                state.health = health;
+                state.view_angles = Vec3([-0.0, 13.75, 97.25]);
+                state.movement.delta_angles = AngleOffsets([
+                    AngleOffset::Degrees(-0.0),
+                    AngleOffset::Units(i32::MAX - 1),
+                    AngleOffset::Units(i32::MIN + 1),
+                ]);
+                let view = state.view_angles.0.map(f32::to_bits);
+                let deltas = angle_offset_bits(state.movement.delta_angles);
+                let cmd = UserCmd {
+                    server_time_ms: 150,
+                    duration_ms: 150,
+                    view_angles: Vec3([90.0, 180.0, 270.0]),
+                    ..Default::default()
+                };
+                if angle_only {
+                    predict_view_angles(cmd, &mut state);
+                } else {
+                    pmove(
+                        cmd,
+                        &mut state,
+                        &mut support::FixtureWorld::default(),
+                        MoveOptions::default(),
+                        no_boundary,
+                    )
+                    .unwrap();
+                }
+                assert_eq!(
+                    state.view_angles.0.map(f32::to_bits),
+                    view,
+                    "{health} {mode:?} {angle_only}"
+                );
+                assert_eq!(
+                    angle_offset_bits(state.movement.delta_angles),
+                    deltas,
+                    "{health} {mode:?} {angle_only}"
+                );
+                assert_eq!(state.trace_rules, RuleSetId::QuakeWorld);
+            }
+        }
+    }
+}
+
+#[test]
+fn q3_alive_and_dead_spectator_views_keep_native_short_and_pitch_clamp() {
+    for (health, mode) in [
+        (100, MovementMode::Walk),
+        (1, MovementMode::Noclip),
+        (0, MovementMode::Spectator),
+        (-1, MovementMode::Spectator),
+    ] {
+        for angle_only in [false, true] {
+            let mut state = player(RuleSetId::Quake3, mode);
+            state.health = health;
+            state.movement.delta_angles = AngleOffsets::default();
+            let cmd = UserCmd {
+                server_time_ms: 16,
+                duration_ms: 16,
+                view_angles: Vec3([90.0, 180.0, 270.0]),
+                ..Default::default()
+            };
+            if angle_only {
+                predict_view_angles(cmd, &mut state);
+            } else {
+                pmove(
+                    cmd,
+                    &mut state,
+                    &mut support::FixtureWorld::default(),
+                    MoveOptions::default(),
+                    no_boundary,
+                )
+                .unwrap();
+            }
+            let expected = Vec3([16000.0 * (360.0 / 65536.0), -180.0, -90.0]);
+            assert_eq!(
+                state.view_angles.0.map(f32::to_bits),
+                expected.0.map(f32::to_bits),
+                "{health} {mode:?} {angle_only}"
+            );
+            assert_eq!(state.movement.delta_angles.0[0], AngleOffset::Units(-384));
+        }
+    }
+}
+
+#[test]
+fn nonpositive_health_does_not_inherit_q3_angle_lock_under_another_movement_role() {
+    for rules in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+    ] {
+        let mut state = player(rules, MovementMode::Dead);
+        state.health = 0;
+        state.movement.delta_angles = AngleOffsets::default();
+        let command = UserCmd {
+            view_angles: Vec3([12.5, 45.0, -90.0]),
+            ..Default::default()
+        };
+        predict_view_angles(command, &mut state);
+        assert_eq!(state.view_angles, command.view_angles);
+    }
 }
 
 #[test]

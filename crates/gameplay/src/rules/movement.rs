@@ -6,6 +6,7 @@ pub struct ViewAnglePolicy {
     pub short_angles: bool,
     pub signed_pitch_limit: bool,
     pub circular_pitch: bool,
+    pub lock_dead_non_spectator: bool,
 }
 #[derive(Clone, Copy)]
 pub struct ViewAnglePolicies {
@@ -16,6 +17,7 @@ const RAW_ANGLES: ViewAnglePolicy = ViewAnglePolicy {
     short_angles: false,
     signed_pitch_limit: false,
     circular_pitch: false,
+    lock_dead_non_spectator: false,
 };
 const CLASSIC_ANGLES: ViewAnglePolicy = ViewAnglePolicy {
     short_angles: true,
@@ -29,6 +31,7 @@ const RERELEASE_ANGLES: ViewAnglePolicy = ViewAnglePolicy {
 const ARENA_ANGLES: ViewAnglePolicy = ViewAnglePolicy {
     short_angles: true,
     signed_pitch_limit: true,
+    lock_dead_non_spectator: true,
     ..RAW_ANGLES
 };
 const VIEW_ANGLES: [ViewAnglePolicies; 5] = [

@@ -124,7 +124,7 @@ impl<T: Copy> PayloadQueue<T> {
 
     /// The mutable borrow prevents storage reuse while the payload is read.
     pub fn pop(&mut self) -> Option<(T, &[u8])> {
-        let slot = self.slots[self.head].take()?;
+        let slot = self.slots.get_mut(self.head)?.take()?;
         self.head = (self.head + 1) % self.slots.len();
         self.length -= 1;
         self.used -= slot.reserved;

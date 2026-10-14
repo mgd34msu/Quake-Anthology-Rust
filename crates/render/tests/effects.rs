@@ -357,6 +357,191 @@ fn repeated_views_copy_source_palette_and_do_not_advance_particle_state() {
 }
 
 #[test]
+fn recorded_native_views_receive_late_particles_once_with_recipient_isolation() {
+    let mut assets = Assets::load().unwrap();
+    let palette = assets
+        .register_palette(
+            PaletteLighting::load(&vec![17; 256 * 3], &vec![0; 64 * 256], None, 256).unwrap(),
+        )
+        .unwrap();
+    let material = register_point_material(&mut assets, "particles/native-late").unwrap();
+    let mut effects = Effects::load(
+        catalog(),
+        1,
+        3,
+        &[
+            None,
+            Some(binding(palette, material)),
+            Some(binding(palette, material)),
+        ],
+    )
+    .unwrap();
+    let owner = EffectClient {
+        client: CLIENT,
+        lifetime: LIFE,
+    };
+    effects.synchronize(&[Some(owner)]);
+    let other = EffectClient {
+        client: ClientId(2),
+        lifetime: LIFE,
+    };
+    let stale = EffectClient {
+        lifetime: EntityId {
+            generation: 2,
+            ..LIFE
+        },
+        ..owner
+    };
+    let original = qa_render::scene::SceneParticle {
+        palette,
+        material,
+        color: 99,
+        ..Default::default()
+    };
+    let mut front = FrontEnd::load(Limits {
+        particles: 6,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    assert!(frame.add_particle(original));
+    assert!(frame.for_client(Some(owner), |frame| frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets
+    )));
+    for recipient in [owner, other, stale] {
+        frame.clear_scene();
+        assert!(
+            frame.for_client(Some(recipient), |frame| frame.render_scene(
+                Refdef::default(),
+                &[],
+                &assets
+            ))
+        );
+    }
+    let pending = qa_render::scene::SceneParticle {
+        color: 88,
+        ..original
+    };
+    assert!(frame.add_particle(pending));
+    // Output arrives after the native module has recorded all its views.
+    assert!(effects.accept_with_random(event(2, 1), || 256));
+    assert!(effects.begin_frame(CLIENT, LIFE, EventTime(0), 800.0));
+    let before = state(&effects)[0];
+    frame.append_client_effects(&mut effects, &assets);
+    frame.append_client_effects(&mut effects, &assets);
+    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    // The existing built-in path shares simulation, without inheriting the
+    // payload ranges appended to the recorded native views.
+    frame.clear_scene();
+    assert_eq!(effects.append(&mut frame, CLIENT, LIFE), 1);
+    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    let packet = frame.finish();
+    let views: Vec<_> = packet
+        .commands()
+        .iter()
+        .filter_map(|command| {
+            if let Command::View(view) = command {
+                Some(*view)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        views
+            .iter()
+            .map(|view| view.scene.particles.count)
+            .collect::<Vec<_>>(),
+        [2, 1, 0, 0, 1, 1]
+    );
+    assert_eq!(packet.particles(views[0].scene.particles)[0], original);
+    let particle = packet.particles(views[1].scene.particles)[0];
+    assert_eq!(packet.particles(views[0].scene.particles)[1], particle);
+    assert_eq!(packet.particles(views[4].scene.particles), [pending]);
+    assert_eq!(packet.particles(views[5].scene.particles)[0], particle);
+    assert_eq!(particle.palette, palette);
+    let after = state(&effects)[0];
+    assert_eq!(bits(after.position), bits(before.position));
+    assert_eq!(bits(after.velocity), bits(before.velocity));
+    assert_eq!(after.ramp.to_bits(), before.ramp.to_bits());
+    assert_eq!(after.death.to_bits(), before.death.to_bits());
+    assert_eq!(packet.rejected, 0);
+    assert!(effects.finish_frame(CLIENT, LIFE, EventTime(0), 800.0));
+    assert!(!effects.finish_frame(CLIENT, LIFE, EventTime(0), 800.0));
+}
+
+#[test]
+fn late_particle_capacity_failure_keeps_native_payload_and_healthy_view() {
+    let mut assets = Assets::load().unwrap();
+    let palette = assets
+        .register_palette(
+            PaletteLighting::load(&vec![17; 256 * 3], &vec![0; 64 * 256], None, 256).unwrap(),
+        )
+        .unwrap();
+    let material = register_point_material(&mut assets, "particles/native-bounded").unwrap();
+    let mut effects = Effects::load(
+        catalog(),
+        1,
+        3,
+        &[
+            None,
+            Some(binding(palette, material)),
+            Some(binding(palette, material)),
+        ],
+    )
+    .unwrap();
+    let owner = EffectClient {
+        client: CLIENT,
+        lifetime: LIFE,
+    };
+    effects.synchronize(&[Some(owner)]);
+    let original = qa_render::scene::SceneParticle {
+        palette,
+        material,
+        color: 99,
+        ..Default::default()
+    };
+    let mut front = FrontEnd::load(Limits {
+        particles: 2,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    assert!(frame.add_particle(original));
+    assert!(frame.for_client(Some(owner), |frame| frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets
+    )));
+    frame.clear_scene();
+    assert!(frame.for_client(Some(owner), |frame| frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets
+    )));
+    assert!(effects.accept_with_random(event(2, 1), || 256));
+    frame.append_client_effects(&mut effects, &assets);
+    frame.append_client_effects(&mut effects, &assets);
+    let packet = frame.finish();
+    let Command::View(first) = packet.commands()[1] else {
+        panic!()
+    };
+    let Command::View(second) = packet.commands()[2] else {
+        panic!()
+    };
+    assert_eq!(packet.particles(first.scene.particles), [original]);
+    assert_eq!(second.scene.particles.count, 1);
+    assert_ne!(
+        packet.particles(second.scene.particles)[0].color,
+        original.color
+    );
+    assert_eq!(packet.rejected, 1);
+    assert_eq!(effects.stats.scene_rejected, 1);
+}
+
+#[test]
 fn malformed_empty_variants_and_missing_owners_fail_without_emission() {
     let good = *catalog().definition(EffectId(1)).unwrap();
     let invalid = Arc::new(EffectCatalog::new(

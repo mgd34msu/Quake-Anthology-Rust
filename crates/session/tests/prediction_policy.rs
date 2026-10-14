@@ -78,6 +78,7 @@ fn angles_only_prediction_uses_native_unclamped_command_delta_without_movement()
 fn foreign_no_position_permission_retains_q3_angle_rounding_and_pitch_delta_adjustment() {
     let mut prediction = Prediction::default();
     let player = &mut prediction.player;
+    player.health = 100;
     player.movement_rules = RuleSetId::Quake3;
     player.trace_rules = RuleSetId::Quake2;
     player.prediction = PredictionPolicy {
@@ -121,6 +122,7 @@ fn foreign_no_position_permission_retains_q3_angle_rounding_and_pitch_delta_adju
 fn disabled_angles_move_using_the_accepted_view_without_mutating_delta_pitch() {
     let mut prediction = Prediction::default();
     let player = &mut prediction.player;
+    player.health = 100;
     player.movement_rules = RuleSetId::Quake3;
     player.trace_rules = RuleSetId::Quake;
     player.movement.mode = MovementMode::Noclip;

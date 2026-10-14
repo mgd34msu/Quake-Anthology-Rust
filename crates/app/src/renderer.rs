@@ -633,6 +633,7 @@ impl Renderer {
         let count = views.iter().filter(|view| view.is_some()).count();
         let mut view_index = 0;
         let mut rejected = 0;
+        frame.append_client_effects(&mut self.effects, &composition.assets);
         frame.background(|frame| {
             for (seat, client) in views.iter().enumerate() {
                 let Some(client) = client else {

@@ -1,6 +1,24 @@
 use qa_core::sys_events::{EventKind, EventTime, QueueError, SysEvent, SysEventQueue};
 
 #[test]
+fn closed_default_queue_and_exhausted_loaded_queue_pop_none() {
+    let mut queue = SysEventQueue::default();
+    assert_eq!(queue.pop(), None);
+    assert_eq!(queue.pop(), None);
+    queue = SysEventQueue::load(2, 8).unwrap();
+    let event = SysEvent {
+        time: EventTime(42),
+        kind: EventKind::Time,
+    };
+    queue.push(event).unwrap();
+    assert_eq!(queue.pop(), Some(event));
+    assert_eq!(queue.pop(), None);
+    let mut drained = std::mem::take(&mut queue);
+    assert_eq!(queue.pop(), None);
+    assert_eq!(drained.pop(), None);
+}
+
+#[test]
 fn physical_id_removal_and_capture_transitions_use_the_same_fifo() {
     use qa_core::sys_events::DeviceId;
     let mut queue = SysEventQueue::load(4, 1).unwrap();

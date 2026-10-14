@@ -927,18 +927,15 @@ impl FrameHost {
             let id = ClientId(slot as u32);
             let affected = client.connection.is_some()
                 && (client.module == module
-                // Dynamic native deliveries do not retain an owning-module
-                // voice list after CLIENT receipt. SERVER stop is therefore a
-                // conservative connection reset, never a fabricated stop wire.
-                || (client.connection != Some(qa_session::clients::Connection::Bot)
-                    && self.module_row(module).is_some_and(|row| row.request.phase == super::Phase::Server))
-                || self.modules.as_ref().is_some_and(|modules| {
-                    modules.row(module).is_some_and(|row| {
-                        modules.signon[row.signon.range()].get(slot).is_some_and(|cursor| {
-                            cursor.has_publication_for(module, id, client.entity)
+                    || self.modules.as_ref().is_some_and(|modules| {
+                        modules.row(module).is_some_and(|row| {
+                            modules.signon[row.signon.range()]
+                                .get(slot)
+                                .is_some_and(|cursor| {
+                                    cursor.has_publication_for(module, id, client.entity)
+                                })
                         })
-                    })
-                }));
+                    }));
             if affected {
                 self.disconnect_client(id);
             }

@@ -2466,6 +2466,144 @@ fn qc_client_host(
     (Box::new(host), id, geometry, canonical, anchor)
 }
 
+fn qc_bot_namespace_host(native: NativeEntity) -> (Box<FrameHost>, ClientId, ClientId) {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let requests = [ModuleId(1), ModuleId(2)]
+        .into_iter()
+        .map(|module| {
+            request(
+                &mut runtime,
+                module,
+                RuleSetId::Quake,
+                qc_client_vm(),
+                (0..8).collect(),
+                7,
+                20,
+                &[],
+            )
+            .0
+        })
+        .collect();
+    let mut host = Box::new(load_clients(runtime, requests, 1));
+    let first = host
+        .runtime
+        .server
+        .connect(
+            qa_session::clients::Connection::Bot,
+            ModuleId(1),
+            Some(NativeEntity {
+                module: ModuleId(1),
+                slot: 1,
+            }),
+        )
+        .unwrap();
+    assert_eq!(first, ClientId(0));
+    assert_eq!(
+        host.connect_module_client(ModuleId(1), first, b"\\name\\first")
+            .unwrap(),
+        0,
+    );
+    let second = host
+        .runtime
+        .server
+        .connect(
+            qa_session::clients::Connection::Bot,
+            ModuleId(2),
+            Some(native),
+        )
+        .unwrap();
+    assert_eq!(second, ClientId(1));
+    assert!(host.runtime.snapshots[second.0 as usize].is_none());
+    assert_eq!(host.client_info(ModuleId(2)).unwrap().clients, 1);
+    (host, first, second)
+}
+
+#[test]
+fn quakec_bot_native_namespace_is_independent_of_common_client_id() {
+    let native = NativeEntity {
+        module: ModuleId(2),
+        slot: 1,
+    };
+    let (mut host, first, second) = qc_bot_namespace_host(native);
+    let first_entity = host.runtime.server.clients[first.0 as usize].entity;
+    let first_calls = host.module_counts(ModuleId(1)).unwrap().calls;
+    let canonical = host.runtime.server.clients[second.0 as usize].entity;
+    assert_eq!(
+        host.connect_module_client(ModuleId(2), second, b"\\name\\second")
+            .unwrap(),
+        0,
+    );
+    assert_eq!(
+        host.runtime.server.clients[second.0 as usize].entity,
+        canonical
+    );
+    assert_eq!(host.runtime.server.module_moves(second), Some(native));
+    assert_eq!(
+        host.runtime.server.clients[second.0 as usize].module_spawn_parms[0],
+        999.0f32.to_bits(),
+    );
+    assert_eq!(
+        host.runtime.server.clients[first.0 as usize].entity,
+        first_entity
+    );
+    assert_eq!(
+        host.runtime.server.module_moves(first),
+        Some(NativeEntity {
+            module: ModuleId(1),
+            slot: 1,
+        }),
+    );
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, first_calls);
+}
+
+#[test]
+fn quakec_bot_native_namespace_rejects_other_module_and_world_edict_without_rebinding() {
+    for native in [
+        NativeEntity {
+            module: ModuleId(1),
+            slot: 2,
+        },
+        NativeEntity {
+            module: ModuleId(2),
+            slot: 0,
+        },
+    ] {
+        let (mut host, first, second) = qc_bot_namespace_host(native);
+        let first_entity = host.runtime.server.clients[first.0 as usize].entity;
+        let canonical = host.runtime.server.clients[second.0 as usize].entity;
+        let calls =
+            [ModuleId(1), ModuleId(2)].map(|module| host.module_counts(module).unwrap().calls);
+        assert!(
+            host.connect_module_client(ModuleId(2), second, b"\\name\\invalid")
+                .is_err(),
+        );
+        assert_eq!(
+            host.runtime.server.clients[second.0 as usize].entity,
+            canonical
+        );
+        assert_eq!(
+            host.runtime.server.entities.columns.native_entity[canonical.slot as usize],
+            Some(native),
+        );
+        assert!(host.runtime.server.module_moves(second).is_none());
+        assert_eq!(
+            host.runtime.server.clients[first.0 as usize].entity,
+            first_entity
+        );
+        assert_eq!(
+            host.runtime.server.module_moves(first),
+            Some(NativeEntity {
+                module: ModuleId(1),
+                slot: 1,
+            }),
+        );
+        assert_eq!(
+            [ModuleId(1), ModuleId(2)].map(|module| host.module_counts(module).unwrap().calls),
+            calls,
+        );
+    }
+}
+
 #[test]
 fn qw_client_lifecycle_uses_canonical_slot_shared_movement_and_packet_postthink_once() {
     use qa_world::collision::WorldTrace;

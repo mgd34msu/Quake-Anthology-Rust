@@ -21,6 +21,7 @@ fn player(rules: RuleSetId) -> PlayerState {
     let mut player = PlayerState {
         movement_rules: rules,
         trace_rules: RuleSetId::Quake2,
+        health: 100,
         ..Default::default()
     };
     player.movement.mode = MovementMode::Noclip;

@@ -62,6 +62,7 @@ fn player(rules: RuleSetId, mode: MovementMode) -> PlayerState {
     let mut state = PlayerState {
         movement_rules: rules,
         trace_rules: RuleSetId::Quake2,
+        health: 100,
         weapon_state: None,
         view_weapon: qa_core::primitives::ViewWeapon {
             frame: 17,

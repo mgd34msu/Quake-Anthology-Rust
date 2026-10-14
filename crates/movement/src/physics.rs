@@ -103,6 +103,12 @@ where
 }
 
 fn update_view_angles(command: UserCmd, player: &mut PlayerState, policy: ViewAnglePolicy) {
+    if policy.lock_dead_non_spectator
+        && player.health <= 0
+        && player.movement.mode != MovementMode::Spectator
+    {
+        return;
+    }
     if policy.short_angles {
         for i in 0..3 {
             let command_angle =
