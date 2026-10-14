@@ -3,12 +3,38 @@
 use std::{
     ffi::OsString,
     fs::File,
-    io::{self, Read},
+    io::{self, BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
 
 pub struct ReadFile {
     file: File,
+}
+
+/// Streaming output owns its buffer at creation. Large writes go directly to
+/// the file without resizing the buffer; frame callers retain no OS handle.
+pub struct WriteFile {
+    file: BufWriter<File>,
+}
+impl WriteFile {
+    pub fn create_new(path: impl AsRef<Path>, buffer_bytes: usize) -> io::Result<Self> {
+        if buffer_bytes > 64 * 1024 * 1024 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        Ok(Self {
+            file: BufWriter::with_capacity(buffer_bytes, file),
+        })
+    }
+    pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.file.write_all(bytes)
+    }
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
 }
 impl ReadFile {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {

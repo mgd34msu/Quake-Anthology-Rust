@@ -65,12 +65,27 @@ fn run() -> Result<(), String> {
     let mut quakec_modules = Vec::new();
     let mut q2_modules = Vec::new();
     let mut q3_modules = Vec::new();
+    let mut journal: Option<qa_content::journal::Mode<std::path::PathBuf, std::path::PathBuf>> =
+        None;
     #[cfg(feature = "proof")]
     let mut script = None;
     let mut pump = EventPump::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--record-journal" | "--play-journal" => {
+                if journal.is_some() {
+                    return Err("select one journal operation".into());
+                }
+                let path = std::path::PathBuf::from(
+                    args.next().ok_or("journal option needs a file path")?,
+                );
+                journal = Some(if arg == "--record-journal" {
+                    qa_content::journal::Mode::Recording(path)
+                } else {
+                    qa_content::journal::Mode::Replay(path)
+                });
+            }
             "--q2-module" => {
                 q2_modules.push(qa_app::modules::Q2Spec::parse(
                     &args
@@ -579,6 +594,15 @@ fn run() -> Result<(), String> {
         .map(|request| request.context.native_rules)
         .collect();
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
+    match journal {
+        Some(qa_content::journal::Mode::Recording(path)) => host
+            .record_journal(&path)
+            .map_err(|error| format!("record journal: {error:?}"))?,
+        Some(qa_content::journal::Mode::Replay(path)) => host
+            .replay_journal(&path)
+            .map_err(|error| format!("play journal: {error:?}"))?,
+        None => {}
+    }
     for api in &q2_clients {
         host.register_q2_client_api(*api)?;
     }
@@ -1168,6 +1192,11 @@ fn run() -> Result<(), String> {
         frame += 1;
     }
     host.shutdown_modules();
+    host.flush_journal()
+        .map_err(|error| format!("flush journal: {error:?}"))?;
+    if let Some(error) = host.journal_error.as_ref() {
+        return Err(format!("event journal: {error:?}"));
+    }
     for index in 0..module_count {
         if let Some(counts) = host.module_counts(qa_core::primitives::ModuleId((index + 1) as u16))
         {

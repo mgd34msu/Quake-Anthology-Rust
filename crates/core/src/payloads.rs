@@ -63,6 +63,9 @@ impl<T: Copy> PayloadQueue<T> {
     pub fn capacity(&self) -> usize {
         self.slots.len()
     }
+    pub fn payload_capacity(&self) -> usize {
+        self.bytes.len()
+    }
 
     pub fn has_room(&self, reserve_slots: usize) -> bool {
         self.length < self.slots.len().saturating_sub(reserve_slots)

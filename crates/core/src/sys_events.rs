@@ -125,6 +125,25 @@ pub enum EventKind<'a> {
         bytes: &'a [u8],
     },
 }
+impl<'a> EventKind<'a> {
+    pub fn payload(self) -> &'a [u8] {
+        match self {
+            Self::Text { text, .. } | Self::ConsoleLine(text) => text.as_bytes(),
+            Self::Packet { bytes, .. } => bytes,
+            Self::Time
+            | Self::Key { .. }
+            | Self::Mouse { .. }
+            | Self::MouseButton { .. }
+            | Self::MouseWheel { .. }
+            | Self::ControllerAxis { .. }
+            | Self::ControllerButton { .. }
+            | Self::DeviceRemoved(_)
+            | Self::Focus(_)
+            | Self::MouseCapture(_)
+            | Self::Quit => &[],
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SysEvent<'a> {
@@ -143,6 +162,27 @@ enum StoredKind {
 struct EventHeader {
     time: EventTime,
     kind: StoredKind,
+}
+impl EventHeader {
+    fn event(self, payload: &[u8]) -> Option<SysEvent<'_>> {
+        let kind = match self.kind {
+            StoredKind::Plain(kind) => kind,
+            StoredKind::Console => EventKind::ConsoleLine(std::str::from_utf8(payload).ok()?),
+            StoredKind::Text { device } => EventKind::Text {
+                device,
+                text: std::str::from_utf8(payload).ok()?,
+            },
+            StoredKind::Packet { socket, from } => EventKind::Packet {
+                socket,
+                from,
+                bytes: payload,
+            },
+        };
+        Some(SysEvent {
+            time: self.time,
+            kind,
+        })
+    }
 }
 
 /// Payloads borrow the ring until the receiver finishes dispatching one event.
@@ -171,6 +211,9 @@ impl SysEventQueue {
     pub fn capacity(&self) -> usize {
         self.payloads.capacity()
     }
+    pub fn payload_capacity(&self) -> usize {
+        self.payloads.payload_capacity()
+    }
     pub fn has_ordinary_room(&self) -> bool {
         self.payloads.has_room(ORDINARY_RESERVED_SLOTS)
     }
@@ -192,111 +235,85 @@ impl SysEventQueue {
         } else {
             ORDINARY_RESERVED_SLOTS
         };
-        let (kind, payload) = match event.kind {
-            EventKind::ConsoleLine(text) => (StoredKind::Console, text.as_bytes()),
-            EventKind::Text { device, text } => (StoredKind::Text { device }, text.as_bytes()),
-            EventKind::Packet {
-                socket,
-                from,
-                bytes,
-            } => (StoredKind::Packet { socket, from }, bytes),
-            EventKind::Time => (StoredKind::Plain(EventKind::Time), &[][..]),
+        let kind = match event.kind {
+            EventKind::ConsoleLine(_) => StoredKind::Console,
+            EventKind::Text { device, .. } => StoredKind::Text { device },
+            EventKind::Packet { socket, from, .. } => StoredKind::Packet { socket, from },
+            EventKind::Time => StoredKind::Plain(EventKind::Time),
             EventKind::Key {
                 device,
                 code,
                 symbol,
                 down,
                 repeat,
-            } => (
-                StoredKind::Plain(EventKind::Key {
-                    device,
-                    code,
-                    symbol,
-                    down,
-                    repeat,
-                }),
-                &[][..],
-            ),
-            EventKind::Mouse { device, dx, dy } => (
-                StoredKind::Plain(EventKind::Mouse { device, dx, dy }),
-                &[][..],
-            ),
+            } => StoredKind::Plain(EventKind::Key {
+                device,
+                code,
+                symbol,
+                down,
+                repeat,
+            }),
+            EventKind::Mouse { device, dx, dy } => {
+                StoredKind::Plain(EventKind::Mouse { device, dx, dy })
+            }
             EventKind::MouseButton {
                 device,
                 button,
                 down,
-            } => (
-                StoredKind::Plain(EventKind::MouseButton {
-                    device,
-                    button,
-                    down,
-                }),
-                &[][..],
-            ),
-            EventKind::MouseWheel { device, x, y } => (
-                StoredKind::Plain(EventKind::MouseWheel { device, x, y }),
-                &[][..],
-            ),
+            } => StoredKind::Plain(EventKind::MouseButton {
+                device,
+                button,
+                down,
+            }),
+            EventKind::MouseWheel { device, x, y } => {
+                StoredKind::Plain(EventKind::MouseWheel { device, x, y })
+            }
             EventKind::ControllerAxis {
                 device,
                 axis,
                 value,
-            } => (
-                StoredKind::Plain(EventKind::ControllerAxis {
-                    device,
-                    axis,
-                    value,
-                }),
-                &[][..],
-            ),
+            } => StoredKind::Plain(EventKind::ControllerAxis {
+                device,
+                axis,
+                value,
+            }),
             EventKind::ControllerButton {
                 device,
                 button,
                 down,
-            } => (
-                StoredKind::Plain(EventKind::ControllerButton {
-                    device,
-                    button,
-                    down,
-                }),
-                &[][..],
-            ),
-            EventKind::DeviceRemoved(device) => {
-                (StoredKind::Plain(EventKind::DeviceRemoved(device)), &[][..])
-            }
-            EventKind::Focus(value) => (StoredKind::Plain(EventKind::Focus(value)), &[][..]),
-            EventKind::MouseCapture(value) => {
-                (StoredKind::Plain(EventKind::MouseCapture(value)), &[][..])
-            }
-            EventKind::Quit => (StoredKind::Plain(EventKind::Quit), &[][..]),
+            } => StoredKind::Plain(EventKind::ControllerButton {
+                device,
+                button,
+                down,
+            }),
+            EventKind::DeviceRemoved(device) => StoredKind::Plain(EventKind::DeviceRemoved(device)),
+            EventKind::Focus(value) => StoredKind::Plain(EventKind::Focus(value)),
+            EventKind::MouseCapture(value) => StoredKind::Plain(EventKind::MouseCapture(value)),
+            EventKind::Quit => StoredKind::Plain(EventKind::Quit),
         };
         self.payloads.push(
             EventHeader {
                 time: event.time,
                 kind,
             },
-            payload,
+            event.kind.payload(),
             reserved_time,
         )
     }
     pub fn pop(&mut self) -> Option<SysEvent<'_>> {
         let (slot, payload) = self.payloads.pop()?;
-        let kind = match slot.kind {
-            StoredKind::Plain(kind) => kind,
-            StoredKind::Console => EventKind::ConsoleLine(std::str::from_utf8(payload).ok()?),
-            StoredKind::Text { device } => EventKind::Text {
-                device,
-                text: std::str::from_utf8(payload).ok()?,
-            },
-            StoredKind::Packet { socket, from } => EventKind::Packet {
-                socket,
-                from,
-                bytes: payload,
-            },
-        };
-        Some(SysEvent {
-            time: slot.time,
-            kind,
-        })
+        slot.event(payload)
+    }
+    pub fn visit<E>(&self, mut visit: impl FnMut(SysEvent<'_>) -> Result<(), E>) -> Result<(), E> {
+        for index in 0..self.len() {
+            if let Some(event) = self
+                .payloads
+                .get(index)
+                .and_then(|(header, bytes)| header.event(bytes))
+            {
+                visit(event)?;
+            }
+        }
+        Ok(())
     }
 }

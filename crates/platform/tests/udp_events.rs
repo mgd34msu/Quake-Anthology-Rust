@@ -68,3 +68,23 @@ fn nonblocking_udp_produces_owned_ordered_events_and_drops_overruns() {
     ));
     assert_eq!(queue.pop().unwrap().kind, EventKind::Time);
 }
+
+#[test]
+fn disabled_socket_submission_accepts_simulated_output_without_sending_it() {
+    let mut pump = EventPump::new();
+    let (socket, _) = pump.bind_udp("127.0.0.1:0".parse().unwrap()).unwrap();
+    let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+    receiver.set_nonblocking(true).unwrap();
+    let to = receiver.local_addr().unwrap();
+    pump.set_socket_submission_enabled(false);
+    pump.send_udp(socket, to, b"simulation").unwrap();
+    let mut bytes = [0; 32];
+    assert_eq!(
+        receiver.recv_from(&mut bytes).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    pump.set_socket_submission_enabled(true);
+    pump.send_udp(socket, to, b"live").unwrap();
+    assert_eq!(receiver.recv_from(&mut bytes).unwrap().0, 4);
+    assert_eq!(&bytes[..4], b"live");
+}

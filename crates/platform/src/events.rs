@@ -17,6 +17,7 @@ pub struct EventPump {
     datagram: Box<[u8]>,
     dropped_packets: u64,
     socket_errors: u64,
+    socket_submission_enabled: bool,
     stdin: crate::stdin::ConsoleInput,
 }
 impl Default for EventPump {
@@ -33,6 +34,7 @@ impl EventPump {
             datagram: vec![0; 65536].into_boxed_slice(),
             dropped_packets: 0,
             socket_errors: 0,
+            socket_submission_enabled: true,
             stdin: crate::stdin::ConsoleInput::open(),
         }
     }
@@ -53,6 +55,9 @@ impl EventPump {
     }
     /// Submission never polls a receive source or the clock.
     pub fn send_udp(&self, socket: u16, to: SocketAddr, bytes: &[u8]) -> io::Result<()> {
+        if !self.socket_submission_enabled {
+            return Ok(());
+        }
         let socket = self
             .sockets
             .get(usize::from(socket))
@@ -63,6 +68,9 @@ impl EventPump {
         } else {
             Err(io::ErrorKind::WriteZero.into())
         }
+    }
+    pub fn set_socket_submission_enabled(&mut self, enabled: bool) {
+        self.socket_submission_enabled = enabled;
     }
     pub fn poll_events(&mut self, window: &mut Window, queue: &mut SysEventQueue) {
         window.poll(queue, &self.clock);

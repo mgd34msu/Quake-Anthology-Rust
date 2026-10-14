@@ -32,6 +32,7 @@ pub trait FrameSource {
     /// Starts measurement and samples platform time without collecting events.
     fn begin_frame(&mut self) -> Duration;
     fn poll_events(&mut self, queue: &mut SysEventQueue);
+    fn set_socket_submission_enabled(&mut self, _enabled: bool) {}
     /// Selection only; SDL applies it during an existing physical intake.
     fn request_mouse_capture(&mut self, _requested: bool) {}
     /// Waits on time only. Physical intake occurs in the two poll_events calls.
@@ -90,6 +91,9 @@ pub struct LiveFrame<'a> {
     pub audio: Option<&'a mut crate::audio::Output>,
 }
 impl FrameSource for LiveFrame<'_> {
+    fn set_socket_submission_enabled(&mut self, enabled: bool) {
+        self.pump.set_socket_submission_enabled(enabled);
+    }
     fn effect(&mut self, event: EffectEvent) -> bool {
         self.renderer
             .as_deref_mut()
@@ -183,6 +187,8 @@ pub struct FrameHost {
     pub console: Console<Runtime>,
     pub runtime: Runtime,
     pub queue: SysEventQueue,
+    pub journal: Option<qa_content::journal::Mode>,
+    pub journal_error: Option<qa_formats::FormatError>,
     pub time: EventTime,
     pub key_downs: u64,
     pub key_repeats: u64,
@@ -232,6 +238,71 @@ pub struct FrameResult {
 }
 
 impl FrameHost {
+    fn intake(&mut self, source: &mut impl FrameSource) {
+        // Keep the two physical intakes, including window state changes. During
+        // replay, only a real window quit interrupts the recorded input.
+        source.poll_events(&mut self.queue);
+        let result = match self.journal.as_mut() {
+            Some(qa_content::journal::Mode::Recording(recorder)) => {
+                // Journal physical events before Com_EventLoop generates local
+                // loopback traffic. Replay regenerates that traffic normally.
+                self.queue.visit(|event| recorder.append(event))
+            }
+            Some(qa_content::journal::Mode::Replay(replay)) => {
+                let mut quit = false;
+                while let Some(event) = self.queue.pop() {
+                    quit |= matches!(event.kind, EventKind::Quit);
+                }
+                if quit {
+                    let _ = self.queue.push(qa_core::sys_events::SysEvent {
+                        time: self.time,
+                        kind: EventKind::Quit,
+                    });
+                }
+                replay.enqueue_drain(&mut self.queue).map(|more| {
+                    if !more {
+                        let _ = self.queue.push(qa_core::sys_events::SysEvent {
+                            time: self.time,
+                            kind: EventKind::Quit,
+                        });
+                    }
+                })
+            }
+            None => Ok(()),
+        };
+        if let Err(error) = result {
+            qa_console::logger::console(format_args!("event journal: {error:?}\n"));
+            self.journal_error = Some(error);
+            self.runtime.quit = true;
+        }
+    }
+    pub fn record_journal(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(), qa_formats::FormatError> {
+        self.flush_journal()?;
+        self.journal = Some(qa_content::journal::Mode::Recording(
+            qa_content::journal::Recorder::create(path, 64 * 1024)?,
+        ));
+        Ok(())
+    }
+    pub fn replay_journal(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(), qa_formats::FormatError> {
+        self.flush_journal()?;
+        self.journal = Some(qa_content::journal::Mode::Replay(
+            qa_content::journal::Replay::open(path, self.queue.payload_capacity())?,
+        ));
+        Ok(())
+    }
+    pub fn flush_journal(&mut self) -> Result<(), qa_formats::FormatError> {
+        if let Some(qa_content::journal::Mode::Recording(recorder)) = self.journal.as_mut() {
+            recorder.flush()?;
+        }
+        Ok(())
+    }
+
     pub fn load(
         mut console: Console<Runtime>,
         mut runtime: Runtime,
@@ -348,6 +419,8 @@ impl FrameHost {
             console,
             runtime,
             queue: SysEventQueue::load(1024, 256 * 1024).map_err(|e| format!("{e:?}"))?,
+            journal: None,
+            journal_error: None,
             time: EventTime::default(),
             key_downs: 0,
             key_repeats: 0,
@@ -380,6 +453,10 @@ impl FrameHost {
     }
 
     pub fn frame(&mut self, source: &mut impl FrameSource, uncapped: bool) -> FrameResult {
+        source.set_socket_submission_enabled(!matches!(
+            self.journal,
+            Some(qa_content::journal::Mode::Replay(_))
+        ));
         let mut result = FrameResult::default();
         let mut now = source.begin_frame();
         // Native lastTime starts at zero and is reset if the clock goes back.
@@ -391,7 +468,10 @@ impl FrameHost {
         let fps = self.console.cvars.integer(self.maxfps);
         // Preserve Com_Frame's integer-millisecond cap, including uncapped
         // values <= 0 and its zero period above 1000 fps.
-        let period_ms = if uncapped || fps <= 0 {
+        let period_ms = if uncapped
+            || fps <= 0
+            || matches!(self.journal, Some(qa_content::journal::Mode::Replay(_)))
+        {
             0
         } else {
             (1000 / fps) as u64
@@ -404,7 +484,7 @@ impl FrameHost {
         // Owner ruling: both intake points physically poll SDL/stdin/UDP, and
         // neither the cap wait nor any other frame phase performs intake.
         source.request_mouse_capture(self.mouse_capture_requested());
-        source.poll_events(&mut self.queue);
+        self.intake(source);
         self.drain(&mut result);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
@@ -475,7 +555,7 @@ impl FrameHost {
         }
         // Immediate server->client packets take this path in the same frame.
         source.request_mouse_capture(self.mouse_capture_requested());
-        source.poll_events(&mut self.queue);
+        self.intake(source);
         self.drain(&mut result);
         self.previous = Some(server_time);
         self.console.execute_frame(&mut self.runtime);

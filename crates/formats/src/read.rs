@@ -1,6 +1,40 @@
 use crate::FormatError;
 use qa_core::primitives::Vec3;
 
+pub(crate) struct Writer<'a> {
+    bytes: &'a mut [u8],
+    at: usize,
+}
+impl<'a> Writer<'a> {
+    pub fn new(bytes: &'a mut [u8]) -> Self {
+        Self { bytes, at: 0 }
+    }
+    pub fn put(&mut self, bytes: &[u8]) -> Result<(), FormatError> {
+        let end = self
+            .at
+            .checked_add(bytes.len())
+            .ok_or(FormatError::InvalidRange)?;
+        self.bytes
+            .get_mut(self.at..end)
+            .ok_or(FormatError::Truncated)?
+            .copy_from_slice(bytes);
+        self.at = end;
+        Ok(())
+    }
+    pub fn u8(&mut self, value: u8) -> Result<(), FormatError> {
+        self.put(&[value])
+    }
+    pub fn u16(&mut self, value: u16) -> Result<(), FormatError> {
+        self.put(&value.to_le_bytes())
+    }
+    pub fn u32(&mut self, value: u32) -> Result<(), FormatError> {
+        self.put(&value.to_le_bytes())
+    }
+    pub fn u64(&mut self, value: u64) -> Result<(), FormatError> {
+        self.put(&value.to_le_bytes())
+    }
+}
+
 pub(crate) struct Reader<'a> {
     pub bytes: &'a [u8],
     pub at: usize,
