@@ -133,8 +133,10 @@ pub(crate) struct Sample {
     count: f32,
 }
 impl Sample {
-    pub(crate) fn integer(&self, side: usize, gain: i64) -> i64 {
-        ((self.totals[side] * gain as f32) / (256. * self.count)) as i32 as i64
+    pub(crate) fn add_integer(&self, prior: i64, side: usize, gain: i64) -> i64 {
+        let value = (self.totals[side] * gain as f32) / (256. * self.count);
+        // Native int += float converts the prior paint value before narrowing.
+        (prior as f32 + value) as i32 as i64
     }
     pub(crate) fn floating(&self, side: usize, gain: f32) -> f32 {
         (self.totals[side] * gain) / self.count

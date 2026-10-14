@@ -269,6 +269,7 @@ struct Voice {
     frame: usize,
     gain: Gain,
     loop_leader: bool,
+    loop_gain: Option<Gain>,
     begin: Option<u64>,
     order: u64,
     loop_registered: bool,
@@ -405,7 +406,7 @@ fn loop_group(
             LoopGain::Integer { volume_scale, .. } => volume_scale,
             LoopGain::Float(_) => 0,
         };
-        let separate = if playback.phase == LoopPhase::Painted && event.doppler.is_none() {
+        let separate = if playback.phase == LoopPhase::Painted {
             0
         } else {
             index + 1
@@ -709,6 +710,7 @@ impl Mixer {
                 Gain::zero(event)
             },
             loop_leader: false,
+            loop_gain: None,
             begin,
             order: self.counts.started,
             loop_registered: true,
@@ -974,6 +976,7 @@ impl Mixer {
         }
         for voice in self.voices.iter_mut().flatten() {
             voice.loop_leader = false;
+            voice.loop_gain = None;
             voice.doppler_cursor.reset();
             voice.paint_scale = voice
                 .event
@@ -1102,15 +1105,15 @@ impl Mixer {
                                 .sample(sample, prepared, sample_frame, rate)
                         })
                 });
-                match voice.gain {
+                match voice.loop_gain.unwrap_or(voice.gain) {
                     Gain::Integer(gain) => {
                         for (side, total) in integer.iter_mut().enumerate() {
-                            *total += if let Some(sample) = &doppler {
-                                sample.integer(side, gain[side])
+                            if let Some(sample) = &doppler {
+                                *total = sample.add_integer(*total, side, gain[side]);
                             } else {
                                 let value = sample.samples[offset + side.min(channels - 1)];
-                                (i64::from(value) * gain[side]) >> 8
-                            };
+                                *total += (i64::from(value) * gain[side]) >> 8;
+                            }
                         }
                     }
                     Gain::Float(gain) => {
@@ -1167,37 +1170,63 @@ impl Mixer {
                 .unwrap_or_default();
             (loop_group(event, index), loop_order(event), index)
         });
-        let mut leader: Option<usize> = None;
-        for &index in &self.loop_order[..count] {
-            let Some((event, gain)) = self.voices[index]
+        let mut first = 0;
+        while first < count {
+            let first_index = self.loop_order[first];
+            let first_event = self.voices[first_index]
                 .as_ref()
-                .and_then(|v| Some((v.paint_event()?, v.gain)))
-            else {
-                continue;
-            };
-            let grouped = leader.is_some_and(|first| {
-                let Some(first_voice) = self.voices[first].as_mut() else {
-                    return false;
+                .and_then(Voice::paint_event)
+                .unwrap_or_default();
+            let key = loop_group(first_event, first_index);
+            let mut end = first + 1;
+            while end < count {
+                let index = self.loop_order[end];
+                let event = self.voices[index]
+                    .as_ref()
+                    .and_then(Voice::paint_event)
+                    .unwrap_or_default();
+                if loop_group(event, index) != key {
+                    break;
+                }
+                end += 1;
+            }
+            // S_AddLoopSounds excludes a Doppler candidate, not a Doppler
+            // leader. Each leader may therefore fold the same later plain
+            // contribution; original per-voice gains must remain available.
+            for position in first..end {
+                let index = self.loop_order[position];
+                let Some(voice) = self.voices[index].as_ref() else {
+                    continue;
                 };
-                first_voice.paint_event().is_some_and(|first_event| {
-                    loop_group(first_event, first) == loop_group(event, index)
-                }) && first_voice.gain.add(gain)
-            });
-            if !grouped {
-                leader = Some(index);
-                if let Some(voice) = &mut self.voices[index] {
+                let Some(event) = voice.paint_event() else {
+                    continue;
+                };
+                if position != first && event.doppler.is_none() {
+                    continue;
+                }
+                let mut gain = voice.gain;
+                for &candidate in &self.loop_order[position + 1..end] {
+                    if let Some(voice) = self.voices[candidate].as_ref()
+                        && voice
+                            .paint_event()
+                            .is_some_and(|event| event.doppler.is_none())
+                    {
+                        gain.add(voice.gain);
+                    }
+                }
+                if let Some(playback) = event.looping {
+                    let scale = match playback.master {
+                        LoopGain::Integer { volume_scale, .. } => volume_scale,
+                        LoopGain::Float(_) => 0,
+                    };
+                    gain.prepare_loop(self.volume, scale);
+                }
+                if let Some(voice) = self.voices[index].as_mut() {
                     voice.loop_leader = true;
+                    voice.loop_gain = Some(gain);
                 }
             }
-        }
-        for voice in self.voices.iter_mut().flatten().filter(|v| v.loop_leader) {
-            if let Some(playback) = voice.paint_event().and_then(|event| event.looping) {
-                let scale = match playback.master {
-                    LoopGain::Integer { volume_scale, .. } => volume_scale,
-                    LoopGain::Float(_) => 0,
-                };
-                voice.gain.prepare_loop(self.volume, scale);
-            }
+            first = end;
         }
         // Paint group leaders in native entity order, not sound registration
         // order or the voice-slot allocation order (float addition observes it).

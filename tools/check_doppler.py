@@ -24,19 +24,31 @@ def main():
 #define SND_CHUNK_SIZE 1024
 #define idppc_altivec 0
 typedef struct sndBuffer_s { short sndChunk[SND_CHUNK_SIZE]; struct sndBuffer_s *next; } sndBuffer;
-typedef struct { sndBuffer *soundData; } sfx_t;
-typedef struct { int leftvol, rightvol, doppler; float dopplerScale, oldDopplerScale; } channel_t;
+typedef struct { sndBuffer *soundData; int lastTimeUsed; } sfx_t;
+typedef struct { int leftvol, rightvol, doppler, master_vol; float dopplerScale, oldDopplerScale; sfx_t *thesfx; } channel_t;
 typedef struct { int left, right; } portable_samplepair_t;
 static portable_samplepair_t paintbuffer[4096];
 static int snd_vol;
 '''
     source += function(original, "S_PaintChannelFrom16")
+    source += r"""
+#define MAX_GENTITIES 8
+#define MAX_CHANNELS 96
+typedef struct { int active,mergeFrame,kill,doppler; float origin[3],dopplerScale,oldDopplerScale; sfx_t *sfx; } loopSound_t;
+static loopSound_t loopSounds[MAX_GENTITIES];
+static channel_t loop_channels[MAX_GENTITIES];
+static int numLoopChannels;
+static int Com_Milliseconds(void) { return 0; }
+static void S_SpatializeOrigin(const float *origin,int master,int *left,int *right) { (void)origin; *left=*right=master/2; }
+"""
+    dma = (args.qsrc / "quake-iii-arena/code/client/snd_dma.c").read_text()
+    source += function(dma, "S_AddLoopSounds")
     source += r'''
 int main(void) {
-    uint32_t header[6];
+    uint32_t header[8];
     while (fread(header, sizeof(header), 1, stdin) == 1) {
-        unsigned length=header[0], start=header[1], count=header[2];
-        if (!length || length>65536 || count>4096) return 2;
+        unsigned length=header[0], start=header[1], count=header[2], voices=header[6], mask=header[7];
+        if (!length || length>65536 || count>4096 || !voices || voices>6) return 2;
         float scale, old, volume;
         memcpy(&scale,&header[3],4); memcpy(&old,&header[4],4); memcpy(&volume,&header[5],4);
         unsigned chunks=(length+1023)/1024;
@@ -45,16 +57,25 @@ int main(void) {
         if (!data || !pcm || fread(pcm,2,length,stdin)!=length) return 2;
         for(unsigned i=0;i<length;i++) data[i/1024].sndChunk[i%1024]=pcm[i];
         for(unsigned i=0;i<chunks;i++) data[i].next=&data[(i+1)%chunks];
-        sfx_t sound={data}; channel_t channel={63,63,1,scale,old};
+        sfx_t sound={data,0};
+        memset(loopSounds,0,sizeof(loopSounds));
+        for(unsigned voice=0;voice<voices;voice++) {
+            loopSound_t *loop=&loopSounds[voice+2];
+            loop->active=loop->kill=1; loop->doppler=(mask>>voice)&1;
+            loop->sfx=&sound; loop->dopplerScale=scale; loop->oldDopplerScale=old;
+        }
+        S_AddLoopSounds();
         snd_vol=(int)(volume*255.0f);
         memset(paintbuffer,0,sizeof(paintbuffer));
+        for(int channel=0;channel<numLoopChannels;channel++) {
         unsigned cursor=0;
         while(cursor<count) {
             unsigned offset=(start+cursor)%length;
             unsigned take=count-cursor;
             if(take>length-offset) take=length-offset;
-            S_PaintChannelFrom16(&channel,&sound,take,offset,cursor);
+            S_PaintChannelFrom16(&loop_channels[channel],&sound,take,offset,cursor);
             cursor+=take;
+        }
         }
         for(unsigned i=0;i<count;i++) {
             int values[2]={paintbuffer[i].left>>8,paintbuffer[i].right>>8};
@@ -84,9 +105,10 @@ int main(void) {
                 for previous in [0.5, 1.0, 1.25]:
                     for volume in [0.1, 0.5, 1.0]:
                         count = 72
-                        packet += struct.pack("<IIIfff", length, start, count, scale, previous, volume)
-                        packet += struct.pack(f"<{length}h", *samples)
-                        cases.append([length, start, count, scale, previous, volume])
+                        for voices, mask in [(1, 1), (2, 1), (2, 2), (3, 3), (4, 6)]:
+                            packet += struct.pack("<IIIfffII", length, start, count, scale, previous, volume, voices, mask)
+                            packet += struct.pack(f"<{length}h", *samples)
+                            cases.append([length, start, count, scale, previous, volume, voices, mask])
     native = subprocess.run([binary], input=packet, stdout=subprocess.PIPE, check=True).stdout
     rust = subprocess.run(["target/debug/examples/doppler"], input=packet, stdout=subprocess.PIPE, check=True).stdout
     (args.output / "inputs.bin").write_bytes(packet)
@@ -96,7 +118,7 @@ int main(void) {
         at = next((i for i, pair in enumerate(zip(native, rust)) if pair[0] != pair[1]), min(len(native), len(rust)))
         case = min(at // (72 * 4), len(cases) - 1)
         raise RuntimeError(f"PCM mismatch byte {at}, case {case}: {cases[case]}")
-    report = {"cases": len(cases), "stereo_frames": len(native) // 4, "matching_bytes": len(native), "result": "PASS", "scope": "native mono rates up to one chunk; zero-filled tail; wide/stereo extension covered by Rust fixtures"}
+    report = {"cases": len(cases), "stereo_frames": len(native) // 4, "matching_bytes": len(native), "result": "PASS", "scope": "native mono rates up to one chunk; original mixed-voice grouping and paint; zero-filled tail; wide/stereo extension covered by Rust fixtures"}
     (args.output / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
 

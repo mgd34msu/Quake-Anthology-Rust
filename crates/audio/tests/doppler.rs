@@ -94,20 +94,30 @@ fn native_rate_two_averages_samples_and_preserves_negative_narrowing() {
 }
 
 #[test]
-fn doppler_voices_stay_separate_from_same_pcm_plain_groups() {
-    let mut mixer = fixture(vec![1000, 3000, 5000, 7000], PcmChannels::Mono);
-    assert!(mixer.sound(emission(&mixer, 2, Some(2.))));
-    assert!(mixer.sound(emission(&mixer, 3, None)));
-    let mut pcm = [0; 8];
-    assert!(mixer.paint(&mut pcm));
-    let expected = [
-        paint_sample(3000., 63),
-        paint_sample(9000., 63),
-        paint_sample(5000., 63),
-        paint_sample(7000., 63),
-    ];
-    for (frame, expected) in pcm.as_chunks::<2>().0.iter().zip(expected) {
-        assert_eq!(frame, &[expected; 2]);
+fn native_doppler_grouping_observes_leader_and_candidate_order() {
+    for doppler_first in [true, false] {
+        let mut mixer = fixture(vec![1000, 3000, 5000, 7000], PcmChannels::Mono);
+        assert!(mixer.sound(emission(
+            &mixer,
+            if doppler_first { 2 } else { 3 },
+            Some(2.)
+        )));
+        assert!(mixer.sound(emission(&mixer, if doppler_first { 3 } else { 2 }, None)));
+        let mut pcm = [0; 8];
+        assert!(mixer.paint(&mut pcm));
+        let expected = if doppler_first {
+            [paint_sample(2000., 126), paint_sample(6000., 126), 0, 0]
+        } else {
+            [
+                paint_sample(3000., 63),
+                paint_sample(9000., 63),
+                paint_sample(5000., 63),
+                paint_sample(7000., 63),
+            ]
+        };
+        for (frame, expected) in pcm.as_chunks::<2>().0.iter().zip(expected) {
+            assert_eq!(frame, &[expected; 2]);
+        }
     }
 }
 
