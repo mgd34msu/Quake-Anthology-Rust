@@ -17,6 +17,8 @@ mod native;
 #[derive(Default)]
 pub struct OutputCounts {
     pub sounds: u64,
+    pub music: u64,
+    pub unhandled_music: u64,
     pub effects: u64,
     pub prints: u64,
     pub hud: u64,
@@ -126,6 +128,18 @@ pub fn dispatch(
             server.presentation,
             &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
                 let submitted = match record.event {
+                    FrameEvent::Music(control) => {
+                        counts.music += 1;
+                        let paths = match control {
+                            qa_core::primitives::MusicControl::Start {
+                                intro, loop_track, ..
+                            } => (texts.get(intro), texts.get(loop_track)),
+                            _ => (None, None),
+                        };
+                        counts.unhandled_music +=
+                            u64::from(!source.music(&runtime.vfs, control, paths.0, paths.1));
+                        true
+                    }
                     FrameEvent::Sound(event) => {
                         counts.sounds += 1;
                         let sent = source.sound(event);

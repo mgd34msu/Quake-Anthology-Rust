@@ -227,6 +227,32 @@ pub struct WeaponId(pub u32);
 pub struct CvarHandle(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SoundId(pub u32);
+/// Exact publication owner; a reused CLIENT slot is a different lifetime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MusicOwner {
+    pub module: ModuleId,
+    pub client: Option<(ClientId, EntityId)>,
+}
+/// Transition and sample rules selected at the source boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MusicPlayback {
+    pub smooth_volume: bool,
+    pub preserve_queued: bool,
+    pub signed_stereo_bytes: bool,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum MusicControl {
+    Start {
+        owner: MusicOwner,
+        playback: MusicPlayback,
+        intro: TextId,
+        loop_track: TextId,
+    },
+    Stop {
+        only_active: bool,
+    },
+    Retire(MusicOwner),
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModelId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

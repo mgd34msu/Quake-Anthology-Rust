@@ -1,6 +1,8 @@
 #[path = "model_assets/support.rs"]
 #[allow(dead_code)]
 mod model_support;
+#[path = "client_commands/music.rs"]
+mod music;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "../../formats/tests/support/native_image.rs"]
 #[allow(dead_code)]
@@ -30,14 +32,25 @@ fn qvm() -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..15 {
+    for command in 0..17 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, -1), (Leave, 64)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if command == 11 {
+        if command == 15 {
+            operations.extend([
+                (Const, 240),
+                (Arg, 8),
+                (Const, 272),
+                (Arg, 12),
+                (Const, -36),
+                (Call, 0),
+            ]);
+        } else if command == 16 {
+            operations.extend([(Const, -70), (Call, 0)]);
+        } else if command == 11 {
             operations.extend([(Const, -41), (Call, 0)]);
         } else if matches!(command, 12 | 13 | 14) {
             if command == 14 {
@@ -119,10 +132,12 @@ fn qvm() -> Program {
         }
         operations.push((Leave, 64));
     }
-    let mut data = [0; 256];
+    let mut data = [0; 320];
     for (axis, value) in [1.0f32, 2., 3.].into_iter().enumerate() {
         data[192 + axis * 4..196 + axis * 4].copy_from_slice(&value.to_bits().to_le_bytes());
     }
+    data[240..256].copy_from_slice(b"music/intro.wav\0");
+    data[272..289].copy_from_slice(b"music/repeat.wav\0");
     Program::Qvm {
         vm: Box::new(service_program::program(&operations, &data)),
         imports: &Q3_CLIENT,
@@ -144,7 +159,7 @@ fn native() -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..15)
+        &(0..17)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -159,7 +174,7 @@ fn native() -> Program {
     let pointer = vm.import_callback();
     let buffer = base + 0x1e00;
     let mut code = Vec::new();
-    for command in 0..15u8 {
+    for command in 0..17u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]); // cmp ecx,command; jne next
         let branch = code.len();
         code.extend([0; 4]);
@@ -181,11 +196,18 @@ fn native() -> Program {
                 7 => 54,
                 8 | 10 => 55,
                 11 => 40,
+                15 => 35,
+                16 => 69,
                 12 | 14 => 43,
                 13 => 85,
                 _ => 9,
             };
-            if matches!(command, 2 | 6) {
+            if command == 15 {
+                code.extend([0x48, 0xba]);
+                code.extend((base + 0x1d20).to_le_bytes());
+                code.extend([0x49, 0xb8]);
+                code.extend((base + 0x1d50).to_le_bytes());
+            } else if matches!(command, 2 | 6) {
                 code.extend([0x49, 0xb8]);
                 code.extend(buffer.to_le_bytes());
                 code.extend([0x41, 0xb9, 8, 0, 0, 0]);
@@ -243,6 +265,8 @@ fn native() -> Program {
         vm.process.memory_mut().unwrap()[0x1d00 + axis * 4..0x1d04 + axis * 4]
             .copy_from_slice(&value.to_bits().to_le_bytes());
     }
+    vm.process.memory_mut().unwrap()[0x1d20..0x1d30].copy_from_slice(b"music/intro.wav\0");
+    vm.process.memory_mut().unwrap()[0x1d50..0x1d61].copy_from_slice(b"music/repeat.wav\0");
     Program::Native {
         vm: Box::new(vm),
         imports: &Q3_CLIENT,
@@ -308,7 +332,7 @@ fn request(
         rate: TickRate::FrameDriven,
         anchor,
         program,
-        entries: (0..15).collect(),
+        entries: (0..17).collect(),
         frame: Export {
             client: Some(client),
             ..Export::words(CallbackId(4), &[])
@@ -1282,6 +1306,7 @@ fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    music::native_music_reaches_shared_paint(qvm);
     selected_commands_use_one_session_service(qvm);
     retained_usercmds_reach_the_selected_module(qvm);
     native_scene_calls_use_the_session_frame(qvm);
@@ -1293,6 +1318,7 @@ fn main() {
     scene::entities(false, true);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
+        music::native_music_reaches_shared_paint(native);
         selected_commands_use_one_session_service(native);
         retained_usercmds_reach_the_selected_module(native);
         native_scene_calls_use_the_session_frame(native);

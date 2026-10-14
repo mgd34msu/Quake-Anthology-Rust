@@ -57,6 +57,16 @@ pub trait FrameSource {
     fn sound(&mut self, _event: SoundEvent) -> bool {
         false
     }
+    fn music(
+        &mut self,
+        _vfs: &qa_content::vfs::Vfs,
+        _control: qa_core::primitives::MusicControl,
+        _intro: Option<&[u8]>,
+        _loop_track: Option<&[u8]>,
+    ) -> bool {
+        false
+    }
+    fn update_music(&mut self, _vfs: &qa_content::vfs::Vfs, _volume: f32) {}
     fn listeners(
         &mut self,
         _listeners: &[Option<qa_audio::Listener>; SeatId::COUNT],
@@ -110,9 +120,28 @@ impl FrameSource for LiveFrame<'_> {
         }
     }
     fn sound(&mut self, event: SoundEvent) -> bool {
-        self.audio
-            .as_deref_mut()
-            .is_some_and(|audio| audio.mixer.sound(event))
+        self.audio.as_deref_mut().is_some_and(|audio| {
+            audio.music.sound_control(&mut audio.mixer, event);
+            audio.mixer.sound(event)
+        })
+    }
+    fn music(
+        &mut self,
+        vfs: &qa_content::vfs::Vfs,
+        control: qa_core::primitives::MusicControl,
+        intro: Option<&[u8]>,
+        loop_track: Option<&[u8]>,
+    ) -> bool {
+        self.audio.as_deref_mut().is_some_and(|audio| {
+            audio
+                .music
+                .control(vfs, &mut audio.mixer, control, intro, loop_track)
+        })
+    }
+    fn update_music(&mut self, vfs: &qa_content::vfs::Vfs, volume: f32) {
+        if let Some(audio) = self.audio.as_deref_mut() {
+            audio.music.update(vfs, &mut audio.mixer, volume);
+        }
     }
     fn listeners(&mut self, listeners: &[Option<qa_audio::Listener>; SeatId::COUNT], volume: f32) {
         if let Some(audio) = self.audio.as_deref_mut() {
@@ -214,6 +243,7 @@ pub struct FrameHost {
     pub(crate) team_chats_only: CvarHandle,
     packet_dup: CvarHandle,
     volume: CvarHandle,
+    music_volume: CvarHandle,
     particle_gravity: CvarHandle,
     mouse_enabled: CvarHandle,
     previous: Option<EventTime>,
@@ -352,6 +382,10 @@ impl FrameHost {
         }
         console.register("play", crate::audio::play);
         let volume = console.cvars.find("s_volume").ok_or("missing s_volume")?;
+        let music_volume = console
+            .cvars
+            .find("s_musicvolume")
+            .ok_or("missing s_musicvolume")?;
         let particle_gravity = console.cvars.find("g_gravity").ok_or("missing g_gravity")?;
         let mouse_enabled = console.cvars.find("in_mouse").ok_or("missing in_mouse")?;
         let developer = console.cvars.find("developer").ok_or("missing developer")?;
@@ -447,6 +481,7 @@ impl FrameHost {
             team_chats_only,
             packet_dup,
             volume,
+            music_volume,
             particle_gravity,
             mouse_enabled,
             previous: None,
@@ -1035,6 +1070,10 @@ impl FrameHost {
                 self.console.cvars.value(self.volume),
             );
         }
+        source.update_music(
+            &self.runtime.vfs,
+            self.console.cvars.value(self.music_volume),
+        );
         source.mix_audio(&self.client_entities_inputs());
     }
 

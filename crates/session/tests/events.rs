@@ -12,7 +12,7 @@ impl EventConsumer for Consumer {
                 index
             }
             FrameEvent::Sound(s) => s.sound.0,
-            FrameEvent::StaticEntity(_) => 0,
+            FrameEvent::StaticEntity(_) | FrameEvent::Music(_) => 0,
             FrameEvent::Effect(e) => e.effect.0,
             FrameEvent::Native(_) | FrameEvent::GameState { .. } => {
                 u32::from(record.delivery.unwrap().module.0)

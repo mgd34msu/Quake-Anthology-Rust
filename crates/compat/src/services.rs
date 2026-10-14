@@ -174,6 +174,7 @@ pub trait SoundRegistrar {
 /// Accepted CLIENT snapshots and current command argv borrow the same
 /// connection for one synchronous module call, without reading SERVER state.
 pub trait ClientConnection {
+    fn identity(&self, server: &Server) -> Result<(ClientId, EntityId), CallError>;
     fn command_number(&self, server: &Server) -> Result<u64, CallError>;
     fn usercmd(&mut self, number: i32, server: &Server) -> Result<Option<UserCmd>, CallError>;
     fn select(&mut self, number: i32, server: &mut Server) -> Result<bool, CallError>;
@@ -249,6 +250,7 @@ struct ConfigRange {
     entity_text: Option<EntityText>,
     sounds: Option<IndexSpan>,
     sound_bindings: Option<qa_audio::SoundBindings>,
+    music_owner: Option<qa_core::primitives::MusicOwner>,
     signon: signon::SignonRegistry,
 }
 impl ConfigRange {
@@ -423,6 +425,7 @@ impl ServiceStorage {
                 written: 0,
                 revision: 0,
                 entity_text: None,
+                music_owner: None,
                 sounds: resources.map(|ranges| ranges[1]),
                 sound_bindings: resources
                     .map(|ranges| qa_audio::SoundBindings::load(ranges[1].count as usize)),
@@ -459,6 +462,25 @@ impl ServiceStorage {
     }
     fn range_mut(&mut self, module: ModuleId) -> Option<&mut ConfigRange> {
         self.ranges.iter_mut().find(|range| range.module == module)
+    }
+    pub fn retire_music(
+        &mut self,
+        module: ModuleId,
+        events: &mut qa_core::events::EventRing,
+    ) -> Result<(), CallError> {
+        let Some(row) = self.range_mut(module) else {
+            return Ok(());
+        };
+        if let Some(owner) = row.music_owner {
+            events
+                .push_to(
+                    qa_core::events::OutputTarget::Presentation,
+                    FrameEvent::Music(qa_core::primitives::MusicControl::Retire(owner)),
+                )
+                .map_err(|_| CallError::Capacity)?;
+            row.music_owner = None;
+        }
+        Ok(())
     }
     /// Freeze the native client boundary before the first module callback.
     /// Identical rebinding preserves a level's retained client records.
@@ -1025,6 +1047,14 @@ pub struct EngineCallTable {
         Vec3,
     ) -> Result<(), CallError>,
     pub local_sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<(), CallError>,
+    pub background: fn(
+        &mut EngineServices<'_>,
+        ModuleId,
+        qa_core::primitives::MusicPlayback,
+        &[u8],
+        &[u8],
+    ) -> Result<u64, CallError>,
+    pub stop_background: fn(&mut EngineServices<'_>) -> Result<u64, CallError>,
     pub register_sound: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
     pub register_renderer: fn(
         &mut EngineServices<'_>,
@@ -1278,6 +1308,33 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             )
             .map(|_| ())
             .map_err(|_| CallError::Capacity)
+    },
+    background: |s, module, playback, intro, loop_track| {
+        let client = s
+            .client_connection
+            .as_deref()
+            .map(|connection| connection.identity(s.server))
+            .transpose()?;
+        let row = s.storage.range_mut(module).ok_or(CallError::ConfigString)?;
+        let owner = qa_core::primitives::MusicOwner { module, client };
+        let sequence = s
+            .server
+            .events
+            .music(owner, playback, intro, loop_track)
+            .map_err(|_| CallError::Capacity)?;
+        row.music_owner = Some(owner);
+        Ok(sequence)
+    },
+    stop_background: |s| {
+        let sequence = s
+            .server
+            .events
+            .push_to(
+                qa_core::events::OutputTarget::Presentation,
+                FrameEvent::Music(qa_core::primitives::MusicControl::Stop { only_active: true }),
+            )
+            .map_err(|_| CallError::Capacity)?;
+        Ok(sequence)
     },
     register_sound: |s, sample, source| s.register_sound(sample, source),
     register_renderer: |s, name, source, kind| s.register_renderer(name, source, kind),

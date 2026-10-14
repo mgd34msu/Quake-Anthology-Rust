@@ -505,6 +505,8 @@ const fn client() -> CallTable {
     t.entries[32] = client_audio!(client_sound::position);
     t.entries[33] = client_audio!(client_sound::listener);
     t.entries[34] = scalar!(register_sound);
+    t.entries[35] = scalar!(client_sound::start_background);
+    t.entries[69] = scalar!(client_sound::stop_background);
     t.entries[36] = scalar!(renderer_load_world);
     t.entries[37] = scalar!(register_model);
     t.entries[38] = scalar!(register_skin);
@@ -571,6 +573,8 @@ const fn ui() -> CallTable {
     t.entries[29] = scalar!(renderer_lerp_tag::<false>);
     t.entries[31] = scalar!(register_sound);
     t.entries[32] = scalar!(client_sound::local::<true>);
+    t.entries[62] = scalar!(client_sound::stop_background);
+    t.entries[63] = scalar!(client_sound::start_background);
     t.entries[43] = scalar!(renderer_configuration);
     t.entries[86] = scalar!(file_seek);
     t.entries[50] = scalar!(q3_cvar_register);

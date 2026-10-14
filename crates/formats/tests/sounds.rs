@@ -177,3 +177,31 @@ fn wav_truncations_and_seeded_mutations_return_format_errors() {
         let _ = Wav::parse(&b, WavPolicy::Quake);
     }
 }
+
+#[test]
+fn streamed_wav_metadata_uses_the_shared_scanner_without_reading_pcm() {
+    for (width, channels) in [(8, 1), (8, 2), (16, 1), (16, 2), (24, 2)] {
+        let bytes = wav(width, channels);
+        let whole = Wav::parse(&bytes, WavPolicy::Quake3).unwrap();
+        let mut reads = Vec::new();
+        let stream = qa_formats::sound::WavInfo::read_source(bytes.len() as u64, |at, out| {
+            let at = at as usize;
+            reads.push(at..at + out.len());
+            out.copy_from_slice(
+                bytes
+                    .get(at..at + out.len())
+                    .ok_or(qa_formats::FormatError::Truncated)?,
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(stream.format(), whole.info.format());
+        assert_eq!(stream.frames, whole.frames);
+        assert_eq!(stream.data_offset, whole.data_offset);
+        assert_eq!(stream.data_length, whole.data.len());
+        assert!(reads.iter().all(|range| range.end <= stream.data_offset));
+    }
+    let mut bytes = wav(16, 2);
+    bytes[4..8].copy_from_slice(&5_u32.to_le_bytes());
+    assert!(Wav::parse(&bytes, WavPolicy::Standard).is_err());
+}

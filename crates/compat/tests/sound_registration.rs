@@ -1433,3 +1433,88 @@ fn client_playback_keeps_distinct_registration_ordinals_for_shared_pcm_aliases()
         assert!(fixture.registrar.calls.is_empty());
     }
 }
+
+#[test]
+fn background_track_ordinals_publish_leased_paths_in_all_address_modes() {
+    for addresses in modes() {
+        for (table, start, stop) in [(&Q3_CLIENT, 35, 69), (&Q3_UI, 63, 62)] {
+            let mut fixture = Fixture::new();
+            let base = base(addresses);
+            let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
+            memory.write(base + 16, b"music/intro\0").unwrap();
+            memory.write(base + 64, b"music/loop.wav\0").unwrap();
+            let first = base + 16;
+            let second = base + 64;
+            assert_eq!(
+                invoke_call(
+                    &mut fixture.engine(false),
+                    &mut memory,
+                    addresses,
+                    table,
+                    start,
+                    &[first, second]
+                ),
+                Ok(0)
+            );
+            let mut batch = fixture.server.events.batch(fixture.output).unwrap();
+            let record = fixture.server.events.next(&mut batch).unwrap();
+            let FrameEvent::Music(qa_core::primitives::MusicControl::Start {
+                owner,
+                playback,
+                intro,
+                loop_track,
+            }) = record.event
+            else {
+                panic!("music start");
+            };
+            assert_eq!(owner.module, context().module);
+            assert_eq!(owner.client, None);
+            assert_eq!(
+                playback,
+                qa_gameplay::rules::music_playback(RuleSetId::Quake3)
+            );
+            assert_eq!(
+                fixture.server.events.texts.get(intro),
+                Some(b"music/intro.wav".as_slice())
+            );
+            assert_eq!(
+                fixture.server.events.texts.get(loop_track),
+                Some(b"music/loop.wav".as_slice())
+            );
+            assert!(fixture.server.events.submit(
+                fixture.output,
+                record.sequence,
+                OutputSubmission::BestEffort
+            ));
+            assert_eq!(fixture.server.events.texts.get(intro), None);
+            assert_eq!(
+                invoke_call(
+                    &mut fixture.engine(false),
+                    &mut memory,
+                    addresses,
+                    table,
+                    start,
+                    &[0, second]
+                ),
+                Ok(0)
+            );
+            assert!(fixture.server.events.next(&mut batch).is_none());
+            assert_eq!(
+                invoke_call(
+                    &mut fixture.engine(false),
+                    &mut memory,
+                    addresses,
+                    table,
+                    stop,
+                    &[]
+                ),
+                Ok(0)
+            );
+            let mut batch = fixture.server.events.batch(fixture.output).unwrap();
+            assert!(matches!(
+                fixture.server.events.next(&mut batch).unwrap().event,
+                FrameEvent::Music(qa_core::primitives::MusicControl::Stop { only_active: true })
+            ));
+        }
+    }
+}

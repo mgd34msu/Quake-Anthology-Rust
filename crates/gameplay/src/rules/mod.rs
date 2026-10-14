@@ -11,6 +11,15 @@ pub use sound::{
     sound_policy,
 };
 
+pub fn music_playback(rules: RuleSetId) -> qa_core::primitives::MusicPlayback {
+    let native_raw = rules == RuleSetId::Quake3;
+    qa_core::primitives::MusicPlayback {
+        smooth_volume: native_raw,
+        preserve_queued: native_raw,
+        signed_stereo_bytes: native_raw,
+    }
+}
+
 use qa_core::primitives::{LinkOrder, RuleSetId};
 use std::num::NonZeroU32;
 

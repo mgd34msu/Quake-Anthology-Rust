@@ -16,6 +16,7 @@ pub const CONSOLE_DISPLAY_RECORDS: usize = 128;
 )]
 pub enum FrameEvent {
     Sound(SoundEvent),
+    Music(crate::primitives::MusicControl),
     StaticEntity(EntityRecord),
     Effect(EffectEvent),
     Print(PrintEvent),
@@ -410,6 +411,12 @@ impl EventRing {
                 PrintText::Native { wire, .. } => pages = wire.pages,
             },
             FrameEvent::ConfigString { text, .. } => pages[0] = Some(text),
+            FrameEvent::Music(crate::primitives::MusicControl::Start {
+                intro, loop_track, ..
+            }) => {
+                pages[0] = Some(intro);
+                pages[1] = Some(loop_track);
+            }
             FrameEvent::Native(payload) | FrameEvent::GameState { payload, .. } => {
                 pages = payload.pages;
             }
@@ -705,6 +712,46 @@ impl EventRing {
                 text,
             },
         )
+    }
+    /// Both track names belong to the same atomic output publication.
+    pub fn music(
+        &mut self,
+        owner: crate::primitives::MusicOwner,
+        playback: crate::primitives::MusicPlayback,
+        intro: &[u8],
+        loop_track: &[u8],
+    ) -> Result<u64, EventStorageError> {
+        if [intro, loop_track]
+            .iter()
+            .any(|text| text.len() > self.texts.width || text.contains(&0))
+        {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        }
+        self.make_room(1);
+        let checkpoint = self.texts.checkpoint();
+        let Some(first) = self.texts.insert(intro) else {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        };
+        let Some(second) = self.texts.insert(loop_track) else {
+            self.texts.rollback_new(first);
+            self.texts.restore_checkpoint(checkpoint);
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        };
+        let result = self.push_to(
+            OutputTarget::Presentation,
+            FrameEvent::Music(crate::primitives::MusicControl::Start {
+                owner,
+                playback,
+                intro: first.id(),
+                loop_track: second.id(),
+            }),
+        );
+        self.texts.release(first);
+        self.texts.release(second);
+        result
     }
     /// Native module strings are byte strings, including palette-font glyphs.
     pub fn print_bytes(

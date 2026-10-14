@@ -1104,3 +1104,80 @@ fn grouped_native_print_failure_has_no_visible_prefix_or_leaked_pages() {
         Err(EventStorageError::TextCapacity)
     );
 }
+
+#[test]
+fn music_paths_retire_with_presentation_and_an_independent_text_lease() {
+    let mut ring = EventRing::load(8, 4, 4, 64).unwrap();
+    let healthy = ring.bind(OutputTarget::Presentation).unwrap();
+    let remote = ring.bind(OutputTarget::Client(ClientId(2))).unwrap();
+    let owner = MusicOwner {
+        module: ModuleId(7),
+        client: Some((
+            ClientId(2),
+            EntityId {
+                slot: 9,
+                generation: 3,
+            },
+        )),
+    };
+    let playback = MusicPlayback {
+        smooth_volume: true,
+        preserve_queued: true,
+        signed_stereo_bytes: true,
+    };
+    let sequence = ring
+        .music(owner, playback, b"music/intro.wav", b"music/loop.wav")
+        .unwrap();
+    let mut batch = ring.batch(healthy).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::Music(MusicControl::Start {
+        owner: actual,
+        intro,
+        loop_track,
+        ..
+    }) = record.event
+    else {
+        panic!("music");
+    };
+    assert_eq!(actual, owner);
+    let retained = ring.texts.lease(intro).unwrap();
+    let mut remote_batch = ring.batch(remote).unwrap();
+    assert!(ring.next(&mut remote_batch).is_none());
+    assert!(ring.submit(healthy, sequence, OutputSubmission::BestEffort));
+    assert_eq!(ring.texts.get(intro), Some(b"music/intro.wav".as_slice()));
+    assert_eq!(ring.texts.get(loop_track), None);
+    ring.texts.release(retained);
+    assert_eq!(ring.texts.get(intro), None);
+    assert_eq!(ring.texts.get(loop_track), None);
+}
+
+#[test]
+fn music_second_path_failure_rolls_back_first_path_and_counts_once() {
+    let mut ring = EventRing::load(4, 2, 2, 64).unwrap();
+    let _consumer = ring.bind(OutputTarget::Presentation).unwrap();
+    let retained = ring.texts.insert(b"held display text").unwrap();
+    let before = ring.sequence_range();
+    let owner = MusicOwner {
+        module: ModuleId(1),
+        client: None,
+    };
+    let playback = MusicPlayback {
+        smooth_volume: false,
+        preserve_queued: false,
+        signed_stereo_bytes: false,
+    };
+    assert_eq!(
+        ring.music(owner, playback, b"intro", b"loop"),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.rejected_publications(), 1);
+    assert_eq!(ring.sequence_range(), before);
+    let new = ring.texts.insert(b"still free").unwrap();
+    assert_eq!(ring.texts.get(new.id()), Some(b"still free".as_slice()));
+    assert_eq!(
+        ring.texts.get(retained.id()),
+        Some(b"held display text".as_slice())
+    );
+    ring.texts.release(new);
+    ring.texts.release(retained);
+}

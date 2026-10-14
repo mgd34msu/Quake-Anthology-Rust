@@ -751,6 +751,11 @@ impl FrameHost {
             row.produces_client_view,
             row.client_connection,
         );
+        if let Some(modules) = &mut self.modules {
+            let _ = modules
+                .storage
+                .retire_music(module, &mut self.runtime.server.events);
+        }
         let Some((client, lifetime)) = connection else {
             return;
         };

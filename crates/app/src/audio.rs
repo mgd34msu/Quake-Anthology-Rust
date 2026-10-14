@@ -10,6 +10,7 @@ use qa_core::{
     primitives::{RuleSetId, SoundAction, SoundEvent, Vec3},
 };
 use std::{num::NonZeroU32, sync::Arc};
+pub mod music;
 
 /// Client cue recipes hold numeric bindings into the one PCM bank.
 pub(crate) struct MuzzleSounds {
@@ -66,6 +67,7 @@ pub fn respatialize(
 
 pub struct Output {
     pub mixer: Mixer,
+    pub music: music::Music,
     stream: qa_platform::AudioStream,
     pcm: Box<[i16]>,
     pending: bool,
@@ -79,6 +81,7 @@ impl Output {
         let stream = qa_platform::AudioStream::open(rate, 2)?;
         Ok(Self {
             mixer: Mixer::load(bank, 128, qa_core::sys_events::SeatId::COUNT),
+            music: music::Music::default(),
             stream,
             pcm: vec![0; 2048].into_boxed_slice(),
             pending: false,

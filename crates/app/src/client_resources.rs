@@ -250,6 +250,13 @@ impl<'a> ClientConnectionView<'a> {
     }
 }
 impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
+    fn identity(
+        &self,
+        server: &qa_session::clients::Server,
+    ) -> Result<(ClientId, EntityId), qa_compat::services::CallError> {
+        self.validate(server)?;
+        Ok((self.client, self.lifetime))
+    }
     fn command_number(
         &self,
         server: &qa_session::clients::Server,

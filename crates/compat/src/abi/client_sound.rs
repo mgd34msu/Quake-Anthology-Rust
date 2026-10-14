@@ -3,6 +3,60 @@ use super::Invocation;
 use crate::services::{CallError, ENGINE_CALLS};
 use qa_core::primitives::{RuleSetId, SoundAction, SoundBus, SoundEvent, SoundId};
 
+fn track_name(name: &[u8]) -> Result<qa_core::text::FixedText<64>, CallError> {
+    // Q3 reserves four bytes before Q_strncpyz, then COM_DefaultExtension.
+    let name = &name[..name.len().min(59)];
+    let mut path = qa_core::text::FixedText::default();
+    path.append_bytes(name).map_err(|_| CallError::Text)?;
+    let component = name.rsplit(|&byte| byte == b'/').next().unwrap_or_default();
+    if !component.contains(&b'.') {
+        path.append_bytes(b".wav").map_err(|_| CallError::Text)?;
+    }
+    Ok(path)
+}
+pub(super) fn start_background(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.null_pointer(0)? {
+        return Ok(0);
+    }
+    let intro_at = c.pointer(0)?;
+    let loop_at = if c.null_pointer(1)? {
+        None
+    } else {
+        Some(c.pointer(1)?)
+    };
+    let intro = c.memory.cstring(intro_at)?;
+    if intro.is_empty() {
+        return Ok(0);
+    }
+    let loop_track = if let Some(at) = loop_at {
+        c.memory.cstring(at)?
+    } else {
+        &[]
+    };
+    let intro_path = track_name(intro)?;
+    let loop_path = track_name(if loop_track.is_empty() {
+        intro
+    } else {
+        loop_track
+    })?;
+    match (ENGINE_CALLS.background)(
+        c.services,
+        c.context.module,
+        qa_gameplay::rules::music_playback(RuleSetId::Quake3),
+        intro_path.as_bytes(),
+        loop_path.as_bytes(),
+    ) {
+        Ok(_) | Err(CallError::Capacity) => Ok(0),
+        Err(error) => Err(error),
+    }
+}
+pub(super) fn stop_background(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    match (ENGINE_CALLS.stop_background)(c.services) {
+        Ok(_) | Err(CallError::Capacity) => Ok(0),
+        Err(error) => Err(error),
+    }
+}
+
 fn integer(c: &Invocation<'_, '_, '_>, index: usize) -> Result<i32, CallError> {
     Ok(c.arg(index)? as u32 as i32)
 }

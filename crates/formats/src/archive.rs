@@ -80,6 +80,9 @@ impl ArchiveReader {
     pub fn stream_position(&self) -> u64 {
         self.cursor.position
     }
+    pub fn close_stream(&mut self) {
+        self.cursor.member = None;
+    }
 }
 
 fn range(size: u64, start: u64, length: u64) -> Result<(), FormatError> {

@@ -1318,6 +1318,15 @@ fn run() -> Result<(), String> {
         audio.submissions,
         audio.blocked,
     );
+    println!(
+        "{{\"event\":\"music_output\",\"started\":{},\"stopped\":{},\"loops\":{},\"invalid\":{},\"source_bytes\":{},\"queued_frames\":{}}}",
+        audio.music.counts.started,
+        audio.music.counts.stopped,
+        audio.music.counts.loops,
+        audio.music.counts.invalid,
+        audio.music.counts.source_bytes,
+        audio.music.counts.queued_frames,
+    );
     Ok(())
 }
 
