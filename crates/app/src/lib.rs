@@ -209,6 +209,10 @@ impl Runtime {
             commands,
             client_connection: None,
             renderer: self.renderer_configuration.as_deref(),
+            scene: self
+                .scene
+                .as_mut()
+                .and_then(renderer::SceneComposer::frame_mut),
             client_audio,
             vfs: &self.vfs,
             localization: &self.localization,

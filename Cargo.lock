@@ -197,6 +197,7 @@ dependencies = [
  "qa-movement",
  "qa-network",
  "qa-platform",
+ "qa-render",
  "qa-session",
  "qa-world",
 ]

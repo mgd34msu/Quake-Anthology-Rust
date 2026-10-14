@@ -17,6 +17,7 @@ qa-network = { path = "../network" }
 qa-gameplay = { path = "../gameplay" }
 qa-movement = { path = "../movement" }
 qa-input = { path = "../input" }
+qa-render = { path = "../render" }
 
 [[test]]
 name = "q3_players"

@@ -355,6 +355,7 @@ fn with_collision_services(
         commands: &mut commands,
         client_connection: None,
         renderer: None,
+        scene: None,
         client_audio: None,
         vfs: &vfs,
         model_loader: model_loader
@@ -400,6 +401,9 @@ struct Models {
     fail: bool,
 }
 impl ModelLookup for Models {
+    fn loaded_world(&self, _: &[u8]) -> Option<u32> {
+        None
+    }
     fn lerp_tag(
         &self,
         _: i32,

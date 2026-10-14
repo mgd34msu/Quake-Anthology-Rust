@@ -486,7 +486,11 @@ const fn client() -> CallTable {
     t.entries[32] = client_audio!(client_sound::position);
     t.entries[33] = client_audio!(client_sound::listener);
     t.entries[34] = scalar!(register_sound);
-    t.entries[36] = scalar!(register_model);
+    t.entries[36] = scalar!(renderer_load_world);
+    t.entries[37] = scalar!(register_model);
+    t.entries[40] = scalar!(renderer_clear_scene);
+    t.entries[43] = scalar!(renderer_add_light::<false>);
+    t.entries[85] = scalar!(renderer_add_light::<true>);
     t.entries[47] = scalar!(renderer_model_bounds);
     t.entries[48] = scalar!(renderer_lerp_tag);
     t.entries[39] = scalar!(register_shader::<true>);
@@ -529,6 +533,8 @@ const fn ui() -> CallTable {
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
     t.entries[18] = scalar!(register_model);
+    t.entries[21] = scalar!(renderer_clear_scene);
+    t.entries[24] = scalar!(renderer_add_light::<false>);
     t.entries[29] = scalar!(renderer_lerp_tag);
     t.entries[31] = scalar!(register_sound);
     t.entries[32] = scalar!(client_sound::local::<true>);
@@ -1931,6 +1937,38 @@ fn renderer_configuration(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
         .memory
         .read_mut(target, crate::renderer::Q3_GL_CONFIG_BYTES)?;
     crate::renderer::write_q3(configuration, output)?;
+    Ok(0)
+}
+fn renderer_load_world(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let name = c.memory.cstring(c.required_pointer(0)?)?;
+    (ENGINE_CALLS.render_world)(c.services, name)?;
+    Ok(0)
+}
+fn renderer_clear_scene(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    (ENGINE_CALLS.clear_scene)(c.services);
+    Ok(0)
+}
+fn renderer_add_light<const ADDITIVE: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    if c.services.scene.is_none() {
+        return Ok(0);
+    }
+    let radius = float::<false>(c, 1)? as f32;
+    if radius <= 0.0 {
+        return Ok(0);
+    }
+    let light = qa_render::scene::Light {
+        origin: c.vector(0, false)?,
+        radius,
+        color: [
+            float::<false>(c, 2)? as f32,
+            float::<false>(c, 3)? as f32,
+            float::<false>(c, 4)? as f32,
+        ],
+        additive: ADDITIVE,
+    };
+    (ENGINE_CALLS.add_light)(c.services, light);
     Ok(0)
 }
 

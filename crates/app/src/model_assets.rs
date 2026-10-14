@@ -805,6 +805,12 @@ fn shader_handle(
     let entry = shaders.get(index as usize)?;
     Some(if entry.ready { index as i32 + 1 } else { 0 })
 }
+fn loaded_world(names: &NameTable, files: &[ModelFile], name: &[u8]) -> Option<u32> {
+    let ModelFile::LoadedWorld { binding, .. } = file_lookup(names, files, name)? else {
+        return None;
+    };
+    Some(binding.world.0)
+}
 fn shader_definition(
     catalog: &Result<ShaderCatalog, String>,
     raw: &[u8],
@@ -962,6 +968,9 @@ fn lerp_tag(
     Some(sample(start)?.interpolate(sample(end)?, fraction))
 }
 impl ModelLookup for ModelCatalogBuilder {
+    fn loaded_world(&self, name: &[u8]) -> Option<u32> {
+        loaded_world(&self.names, &self.files, name)
+    }
     fn lerp_tag(
         &self,
         handle: i32,
@@ -1019,6 +1028,9 @@ impl ModelLoader for ModelCatalogBuilder {
     }
 }
 impl ModelLookup for ModelCatalog {
+    fn loaded_world(&self, name: &[u8]) -> Option<u32> {
+        loaded_world(&self.names, &self.files, name)
+    }
     fn lerp_tag(
         &self,
         handle: i32,

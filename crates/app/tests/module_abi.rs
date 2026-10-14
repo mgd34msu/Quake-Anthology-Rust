@@ -33,6 +33,53 @@ fn context() -> CallContext {
 }
 
 #[test]
+fn cgame_world_and_model_registration_keep_distinct_native_ordinals() {
+    for addresses in [
+        Addresses::Qvm { mask: 127 },
+        Addresses::Native {
+            pointer_bytes: 8,
+            abi: qa_platform::native::NativeAbi::SystemV,
+        },
+        Addresses::Native {
+            pointer_bytes: 8,
+            abi: qa_platform::native::NativeAbi::Microsoft,
+        },
+    ] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let mut console = Console::new(Context::default()).unwrap();
+        let mut storage =
+            ServiceStorage::load_native(&[(ModuleId(1), 0, RuleSetId::Quake3)], 0, &console.cvars)
+                .unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let mut memory = ModuleMemory::load(0, 128, &[0; 128]).unwrap();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+        let mut invocation = Invocation {
+            services: &mut services,
+            memory: &mut memory,
+            native_cvars: None,
+            native_resources: None,
+            native_entities: None,
+            native_surfaces: None,
+            native_command: None,
+            native_configs: None,
+            native_pmove: None,
+            native_player: None,
+            context: context(),
+            platform_time: EventTime(0),
+            command: &[],
+            addresses,
+            arguments: &[0],
+        };
+        assert_eq!(Q3_CLIENT.invoke(37, &mut invocation, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_CLIENT.invoke(36, &mut invocation, &mut unknown),
+            Err(CallError::Memory)
+        );
+    }
+}
+
+#[test]
 fn q3_visibility_imports_use_compiled_pvs_and_native_portal_policy() {
     use qa_core::primitives::Vec3;
     use qa_world::visibility::PvsRows;

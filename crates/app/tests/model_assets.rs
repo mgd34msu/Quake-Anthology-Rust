@@ -1891,6 +1891,9 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
     builder
         .bind_loaded_world("maps/absent.bsp", second, native_bounds)
         .unwrap();
+    assert_eq!(builder.loaded_world(b"maps/start.bsp"), Some(first.0));
+    assert_eq!(builder.loaded_world(b"MAPS\\ABSENT.BSP"), Some(second.0));
+    assert_eq!(builder.loaded_world(b"maps/unbound.bsp"), None);
     for path in [b"maps/start.bsp".as_slice(), b"MAPS\\ABSENT.BSP"] {
         assert_eq!(
             builder
@@ -1923,6 +1926,9 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
         catalog.bounds(b"MAPS\\START.BSP", RuleSetId::QuakeWorld),
         Some(expected)
     );
+    assert_eq!(catalog.loaded_world(b"MAPS\\START.BSP"), Some(first.0));
+    assert_eq!(catalog.loaded_world(b"maps/absent.bsp"), Some(second.0));
+    assert_eq!(catalog.loaded_world(b"maps/unbound.bsp"), None);
     assert_eq!(
         catalog.bounds(b"maps/absent.bsp", RuleSetId::Quake2),
         Some(expected)

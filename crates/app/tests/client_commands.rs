@@ -25,14 +25,38 @@ fn qvm() -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..11 {
+    for command in 0..15 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, -1), (Leave, 64)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if command == 7 {
+        if command == 11 {
+            operations.extend([(Const, -41), (Call, 0)]);
+        } else if matches!(command, 12 | 13 | 14) {
+            if command == 14 {
+                operations.extend([(Local, 76), (Load4, 0)]);
+            } else {
+                operations.push((Const, 192));
+            }
+            operations.extend([
+                (Arg, 8),
+                (
+                    Const,
+                    if command == 14 {
+                        0
+                    } else {
+                        64.0f32.to_bits() as i32
+                    },
+                ),
+                (Arg, 12),
+            ]);
+            for (offset, value) in [(16, 1.0f32), (20, 0.5), (24, 0.25)] {
+                operations.extend([(Const, value.to_bits() as i32), (Arg, offset)]);
+            }
+            operations.extend([(Const, if command == 13 { -86 } else { -44 }), (Call, 0)]);
+        } else if command == 7 {
             operations.extend([(Const, -55), (Call, 0)]);
         } else if matches!(command, 8 | 10) {
             operations.extend([(Local, 76), (Load4, 0), (Arg, 8)]);
@@ -90,8 +114,12 @@ fn qvm() -> Program {
         }
         operations.push((Leave, 64));
     }
+    let mut data = [0; 256];
+    for (axis, value) in [1.0f32, 2., 3.].into_iter().enumerate() {
+        data[192 + axis * 4..196 + axis * 4].copy_from_slice(&value.to_bits().to_le_bytes());
+    }
     Program::Qvm {
-        vm: Box::new(service_program::program(&operations, &[0; 256])),
+        vm: Box::new(service_program::program(&operations, &data)),
         imports: &Q3_CLIENT,
     }
 }
@@ -111,7 +139,7 @@ fn native() -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..11)
+        &(0..15)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -126,11 +154,11 @@ fn native() -> Program {
     let pointer = vm.import_callback();
     let buffer = base + 0x1e00;
     let mut code = Vec::new();
-    for command in 0..11u8 {
+    for command in 0..15u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]); // cmp ecx,command; jne next
         let branch = code.len();
         code.extend([0; 4]);
-        code.extend([0x48, 0x83, 0xec, 0x28]);
+        code.extend([0x48, 0x83, 0xec, 0x38]);
         if command == 9 {
             code.extend([0x48, 0xb8]);
             code.extend(buffer.to_le_bytes());
@@ -147,6 +175,9 @@ fn native() -> Program {
                 2 | 6 => 8,
                 7 => 54,
                 8 | 10 => 55,
+                11 => 40,
+                12 | 14 => 43,
+                13 => 85,
                 _ => 9,
             };
             if matches!(command, 2 | 6) {
@@ -160,6 +191,26 @@ fn native() -> Program {
             } else if command == 8 {
                 code.extend([0x49, 0xb8]);
                 code.extend(buffer.to_le_bytes());
+            } else if matches!(command, 12 | 13 | 14) {
+                if command != 14 {
+                    code.extend([0x48, 0xba]);
+                    code.extend((base + 0x1d00).to_le_bytes());
+                }
+                code.extend([0x41, 0xb8]);
+                code.extend(
+                    if command == 14 {
+                        0u32
+                    } else {
+                        64.0f32.to_bits()
+                    }
+                    .to_le_bytes(),
+                );
+                code.extend([0x41, 0xb9]);
+                code.extend(1.0f32.to_bits().to_le_bytes());
+                for (offset, value) in [(0x20, 0.5f32), (0x28, 0.25f32)] {
+                    code.extend([0xc7, 0x44, 0x24, offset]);
+                    code.extend(value.to_bits().to_le_bytes());
+                }
             }
             let mut call = |ordinal: u8| {
                 code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
@@ -176,13 +227,17 @@ fn native() -> Program {
                 code.extend([0x8b, 0x00]);
             }
         }
-        code.extend([0x48, 0x83, 0xc4, 0x28, 0xc3]);
+        code.extend([0x48, 0x83, 0xc4, 0x38, 0xc3]);
         let next = code.len();
         code[branch..branch + 4].copy_from_slice(&((next - branch - 4) as i32).to_le_bytes());
     }
     code.extend([0x31, 0xc0, 0xc3]);
-    assert!(code.len() < 0x600);
+    assert!(code.len() < 0x500);
     vm.process.memory_mut().unwrap()[0x1800..0x1800 + code.len()].copy_from_slice(&code);
+    for (axis, value) in [1.0f32, 2., 3.].into_iter().enumerate() {
+        vm.process.memory_mut().unwrap()[0x1d00 + axis * 4..0x1d04 + axis * 4]
+            .copy_from_slice(&value.to_bits().to_le_bytes());
+    }
     Program::Native {
         vm: Box::new(vm),
         imports: &Q3_CLIENT,
@@ -248,7 +303,7 @@ fn request(
         rate: TickRate::FrameDriven,
         anchor,
         program,
-        entries: (0..11).collect(),
+        entries: (0..15).collect(),
         frame: Export {
             client: Some(client),
             ..Export::words(CallbackId(4), &[])
@@ -417,6 +472,45 @@ fn retained_usercmds_reach_the_selected_module(program: impl Fn() -> Program) {
     );
     assert!(host.runtime.server.clients[0].connection.is_none());
     assert!(host.runtime.server.clients[1].connection.is_some());
+}
+
+fn native_scene_calls_use_the_session_frame(program: impl Fn() -> Program) {
+    let (mut host, _) = host(program, 1);
+    assert_eq!(probe(&mut host, 0, 11, 0), 0);
+    assert_eq!(probe(&mut host, 0, 12, 0), 0);
+    let limits = qa_render::Limits {
+        lights: 2,
+        ..Default::default()
+    };
+    host.runtime.scene = Some(
+        qa_app::renderer::SceneComposer::load(limits, qa_render::Assets::load().unwrap(), vec![])
+            .unwrap()
+            .0,
+    );
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(probe(&mut host, 0, 12, 0), 0);
+    assert_eq!(probe(&mut host, 0, 11, 0), 0);
+    assert_eq!(probe(&mut host, 0, 13, 0), 0);
+    assert_eq!(probe(&mut host, 0, 12, 0), 0); // bounded drop, not a module trap
+    assert_eq!(probe(&mut host, 0, 14, u64::MAX), 0); // zero radius does not read origin
+    let scene = host.runtime.scene.as_mut().unwrap();
+    assert!(scene.frame_mut().unwrap().render_scene(
+        qa_render::Refdef::default(),
+        &[],
+        &qa_render::Assets::load().unwrap()
+    ));
+    let packet = scene.finish_frame().unwrap();
+    assert_eq!(packet.rejected, 1);
+    let qa_render::scene::Command::View(view) = packet.commands()[1] else {
+        panic!("native scene view")
+    };
+    assert_eq!(view.scene.lights, IndexSpan { first: 1, count: 1 });
+    let light = packet.lights(view.scene.lights)[0];
+    assert_eq!(light.origin, Vec3([1., 2., 3.]));
+    assert_eq!(light.radius, 64.);
+    assert_eq!(light.color, [1., 0.5, 0.25]);
+    assert!(light.additive);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }
 fn selected_commands_use_one_session_service(program: impl Fn() -> Program) {
     let (mut host, ids) = host(program, 2);
@@ -1185,10 +1279,12 @@ fn main() {
     }
     selected_commands_use_one_session_service(qvm);
     retained_usercmds_reach_the_selected_module(qvm);
+    native_scene_calls_use_the_session_frame(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         selected_commands_use_one_session_service(native);
         retained_usercmds_reach_the_selected_module(native);
+        native_scene_calls_use_the_session_frame(native);
     }
     bcs_rescans_and_failed_cs_preserve_rows();
     selected_systeminfo_updates_only_the_native_server_id();

@@ -92,6 +92,7 @@ impl From<qa_session::clients::ClientInfoError> for CallError {
 
 /// The cold and frozen model catalog share the same native metadata owner.
 pub trait ModelLookup {
+    fn loaded_world(&self, name: &[u8]) -> Option<u32>;
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
     fn shader_handle(&self, name: &[u8]) -> Option<i32>;
     fn model_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
@@ -843,6 +844,7 @@ pub struct EngineServices<'a> {
     pub client_connection: Option<&'a mut dyn ClientConnection>,
     pub client_audio: Option<&'a mut dyn ClientAudio>,
     pub renderer: Option<&'a qa_core::presentation::RendererConfiguration>,
+    pub scene: Option<&'a mut qa_render::scene::Frame>,
     pub vfs: &'a Vfs,
     pub model_loader: Option<&'a mut dyn ModelLoader>,
     pub model_lookup: Option<&'a dyn ModelLookup>,
@@ -913,6 +915,9 @@ pub enum ClipTarget {
     },
 }
 pub struct EngineCallTable {
+    pub render_world: fn(&EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
+    pub clear_scene: fn(&mut EngineServices<'_>),
+    pub add_light: fn(&mut EngineServices<'_>, qa_render::scene::Light) -> bool,
     pub userinfo: UserinfoCall,
     pub set_userinfo: fn(&mut EngineServices<'_>, NativeEntity, &[u8]) -> Result<(), CallError>,
     pub serverinfo: fn(&mut EngineServices<'_>, ModuleId, &mut [u8]) -> Result<usize, CallError>,
@@ -1047,6 +1052,23 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    render_world: |s, name| {
+        s.model_loader
+            .as_deref()
+            .and_then(|lookup| lookup.loaded_world(name))
+            .or_else(|| s.model_lookup.and_then(|lookup| lookup.loaded_world(name)))
+            .ok_or(CallError::Geometry)
+    },
+    clear_scene: |s| {
+        if let Some(frame) = s.scene.as_deref_mut() {
+            frame.clear_scene();
+        }
+    },
+    add_light: |s, light| {
+        s.scene
+            .as_deref_mut()
+            .is_some_and(|frame| frame.add_light(light))
+    },
     renderer: |s| s.renderer.ok_or(CallError::Geometry),
     userinfo: |s, native| s.storage.userinfo(s.server, native),
     set_userinfo: |s, native, text| s.storage.set_userinfo(s.server, native, text),

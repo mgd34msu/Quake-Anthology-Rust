@@ -299,6 +299,7 @@ fn with_native_client(
         commands: &mut commands,
         client_connection: None,
         renderer: None,
+        scene: None,
         client_audio: None,
         vfs: &vfs,
         model_loader: None,
