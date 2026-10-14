@@ -30,6 +30,38 @@ fn wave(function: WaveFunction) -> Waveform {
 }
 
 #[test]
+fn stage_inputs_transform_only_model_clip_planes_and_clear_them_for_2d() {
+    use qa_core::primitives::Plane;
+    use qa_render::{Refdef, SceneEntity, SceneModel};
+    let plane = Plane::oriented(Vec3([0., 1., 0.]), 3.);
+    let view = DrawInputs::for_view(&Refdef {
+        clip_plane: Some(plane),
+        ..Default::default()
+    });
+    let entity = SceneEntity {
+        origin: Vec3([1., 2., 3.]),
+        axes: [Vec3([0., 1., 0.]), Vec3([-1., 0., 0.]), Vec3([0., 0., 1.])],
+        ..Default::default()
+    };
+    assert_eq!(
+        view.for_entity(&entity).clip_plane.unwrap(),
+        Plane::oriented(Vec3([1., 0., 0.]), 1.)
+    );
+    assert_eq!(
+        view.for_entity(&SceneEntity {
+            model: SceneModel::Sprite {
+                radius: 1.,
+                rotation: 0.
+            },
+            ..entity
+        })
+        .clip_plane,
+        Some(plane)
+    );
+    assert!(DrawInputs::default().clip_plane.is_none());
+}
+
+#[test]
 fn native_identity_does_not_apply_entity_tint_and_vertex_colors_quantize_first() {
     let evaluator = StageEvaluator::load();
     let inputs = DrawInputs {

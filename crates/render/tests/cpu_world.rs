@@ -1744,6 +1744,39 @@ fn packet(
 }
 
 #[test]
+fn portal_plane_clips_the_cached_world_span_path() {
+    let mut assets = Assets::load().unwrap();
+    let palette = palette(&mut assets, false);
+    let image = texture(&mut assets, palette, 7, false);
+    let material = material(&mut assets, image, false);
+    let world = world(
+        &mut assets,
+        2.,
+        material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let packet = packet(
+        &mut frontend,
+        &[(world, 0)],
+        Refdef {
+            clip_plane: Some(Plane::oriented(Vec3([0., 1., 0.]), 0.)),
+            ..view(palette)
+        },
+        &assets,
+    );
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    for row in cpu.pixels().chunks_exact(8) {
+        assert_eq!(&row[..4], &[u32::from_le_bytes([7, 7, 7, 255]); 4]);
+        assert_eq!(&row[4..], &[u32::from_le_bytes([0, 0, 0, 255]); 4]);
+    }
+    assert!(cpu.world_stats().cache.fills > 0);
+    assert_eq!(cpu.world_stats().pixels, 32);
+}
+
+#[test]
 fn native_indexed_world_uses_cache_and_updates_style_generation() {
     let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets, true);

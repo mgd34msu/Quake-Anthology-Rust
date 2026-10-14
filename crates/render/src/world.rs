@@ -154,13 +154,22 @@ impl WorldView {
             .point_in_leaf(refdef.origin)
             .and_then(|leaf| world.visibility.leaf(leaf))
             .and_then(|leaf| leaf.selector);
+        let base = frustum(refdef)?;
+        let mut planes = [base[0]; 7];
+        planes[..6].copy_from_slice(&base);
+        let count = if let Some(plane) = refdef.clip_plane {
+            planes[6] = plane;
+            7
+        } else {
+            6
+        };
         self.visibility.query(
             &world.visibility,
             refdef.origin,
             primary,
             secondary,
             hidden_areas,
-            &frustum(refdef)?,
+            &planes[..count],
         )?;
         for (&surface, &depth_key) in self
             .visibility

@@ -150,6 +150,7 @@ struct Camera {
     tangent: [f32; 2],
     screen_scale: [f32; 2],
     screen_center: [f32; 2],
+    clip_plane: Option<qa_core::primitives::Plane>,
 }
 
 #[derive(Clone, Copy)]
@@ -194,6 +195,12 @@ impl Camera {
             viewport.y as f32 + viewport.height as f32 * 0.5 - 0.5,
         ];
         Some(Self {
+            clip_plane: refdef.clip_plane.map(|plane| {
+                plane.to_local(
+                    refdef.origin,
+                    [-refdef.axes[1], refdef.axes[2], refdef.axes[0]],
+                )
+            }),
             refdef,
             tangent,
             screen_scale,
@@ -239,6 +246,7 @@ impl Camera {
             tangent: self.tangent,
             screen_scale: self.screen_scale,
             screen_center: self.screen_center,
+            clip_plane: self.clip_plane,
         })
     }
     fn gradient(&self, axis: Vec3, factor: f32, form: GradientForm) -> world::Affine {
@@ -311,8 +319,14 @@ impl Camera {
             2 => x + z * self.tangent[0],
             3 => z * self.tangent[0] - x,
             4 => y + z * self.tangent[1],
-            _ => z * self.tangent[1] - y,
+            5 => z * self.tangent[1] - y,
+            _ => self
+                .clip_plane
+                .map_or(1., |plane| plane.signed_distance(vertex.camera)),
         }
+    }
+    fn clip_plane_count(&self) -> usize {
+        6 + usize::from(self.clip_plane.is_some())
     }
 }
 
@@ -759,7 +773,7 @@ impl CpuBackend {
         let mut vertices = [ClipVertex::default(); CLIP_VERTICES];
         vertices[..3].copy_from_slice(&triangle);
         let mut count = 3;
-        for plane in 0..6 {
+        for plane in 0..camera.clip_plane_count() {
             let mut output = [ClipVertex::default(); CLIP_VERTICES];
             let Some(next_count) = clip_plane(camera, &vertices[..count], &mut output, plane)
             else {

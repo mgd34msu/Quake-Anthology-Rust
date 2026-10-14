@@ -7,6 +7,76 @@ use qa_render::{
 };
 
 #[test]
+fn portal_plane_clips_polygons_and_rotated_models_to_the_same_half_screen() {
+    use qa_core::primitives::Plane;
+    let mut assets = Assets::load().unwrap();
+    let image = assets.register_image(1, 1, &[240, 120, 60, 255]).unwrap();
+    let material = assets
+        .register_material(
+            "clip plane",
+            &[Stage {
+                texture: StageTexture::Image(image),
+                ..Default::default()
+            }],
+            MaterialSettings {
+                cull: Cull::None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let vertices = [
+        Vec3([8., 8., 8.]),
+        Vec3([8., -8., 8.]),
+        Vec3([8., -8., -8.]),
+        Vec3([8., 8., -8.]),
+    ]
+    .map(|position| Vertex {
+        position,
+        ..Default::default()
+    });
+    let model = assets
+        .register_model(&vertices, &[0, 1, 2, 0, 2, 3], material)
+        .unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut cpu = CpuBackend::load(4, 4).unwrap();
+    let background = [1, 2, 3, 255];
+    for mesh in [false, true] {
+        let mut frame = frontend.begin_frame(background).unwrap();
+        if mesh {
+            assert!(frame.add_entity(SceneEntity {
+                model: SceneModel::Mesh(model),
+                origin: Vec3([16., 0., 0.]),
+                axes: [Vec3([-1., 0., 0.]), Vec3([0., -1., 0.]), Vec3([0., 0., 1.])],
+                ..Default::default()
+            }));
+        } else {
+            assert!(frame.add_poly(material, &vertices));
+        }
+        assert!(frame.render_scene(
+            Refdef {
+                viewport: Viewport {
+                    width: 4,
+                    height: 4,
+                    ..Default::default()
+                },
+                fov: [90.; 2],
+                clip_plane: Some(Plane::oriented(Vec3([0., 1., 0.]), 0.)),
+                ..Default::default()
+            },
+            &[],
+            &assets
+        ));
+        let packet = frame.finish();
+        assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+        for row in cpu.pixels().chunks_exact(4) {
+            assert_eq!(&row[..2], &[u32::from_le_bytes([240, 120, 60, 255]); 2]);
+            assert_eq!(&row[2..], &[u32::from_le_bytes(background); 2]);
+        }
+        assert!(frontend.recycle(packet).is_ok());
+    }
+}
+
+#[test]
 #[expect(
     clippy::chunks_exact_to_as_chunks,
     reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"

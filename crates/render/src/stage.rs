@@ -324,6 +324,7 @@ pub struct DrawInputs {
     /// Native Q3 specular alpha uses this fixed light independently of an
     /// entity's diffuse lighting sample (tr_shade_calc.c:1038).
     pub specular_origin: Vec3,
+    pub clip_plane: Option<qa_core::primitives::Plane>,
 }
 impl DrawInputs {
     pub fn for_view(refdef: &crate::scene::Refdef) -> Self {
@@ -331,6 +332,7 @@ impl DrawInputs {
             time_ms: refdef.time_ms,
             view_origin: refdef.origin,
             identity_light: refdef.identity_light,
+            clip_plane: refdef.clip_plane,
             ..Self::default()
         }
     }
@@ -342,6 +344,9 @@ impl DrawInputs {
             crate::scene::SceneModel::Mesh(_) | crate::scene::SceneModel::World { .. }
         ) {
             self.view_origin = entity_view_origin(self.view_origin, entity);
+            self.clip_plane = self
+                .clip_plane
+                .map(|plane| plane.to_local(entity.origin, entity.axes));
         }
         self.entity_color = entity.color;
         self.entity_texcoord = entity.shader_texcoord;
@@ -376,6 +381,7 @@ impl Default for DrawInputs {
             texture_scale: [1.0; 2],
             lighting: None,
             specular_origin: Vec3([-960.0, 1980.0, 96.0]),
+            clip_plane: None,
         }
     }
 }

@@ -655,7 +655,7 @@ impl WorldRaster {
                     raster_empty &= boundary_is_collinear(&geometry.vertices, indices);
                     let clipped = indices
                         .len()
-                        .checked_add(6)
+                        .checked_add(7)
                         .ok_or("world clip count overflow")?;
                     coverage = coverage
                         .checked_add(clipped)

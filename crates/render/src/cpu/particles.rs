@@ -45,6 +45,13 @@ impl PointProjection {
     }
 
     fn footprint(self, camera: &Camera, position: Vec3) -> Option<(u32, u32, u32, u32, i32, f32)> {
+        if camera
+            .refdef
+            .clip_plane
+            .is_some_and(|plane| plane.signed_distance(position) < 0.)
+        {
+            return None;
+        }
         let local = position - camera.refdef.origin;
         let depth = local.dot(self.forward);
         if !depth.is_finite() || depth < Z_CLIP {

@@ -129,6 +129,7 @@ const DEPTH_TEST: u32 = 0x0b71;
 const BLEND: u32 = 0x0be2;
 const CULL_FACE: u32 = 0x0b44;
 const SCISSOR_TEST: u32 = 0x0c11;
+const CLIP_DISTANCE0: u32 = 0x3000;
 const COLOR_BUFFER_BIT: u32 = 0x4000;
 const DEPTH_BUFFER_BIT: u32 = 0x0100;
 const TRIANGLES: u32 = 0x0004;
@@ -150,6 +151,7 @@ uniform vec4 u_frame_weights;
 uniform vec4 u_color;
 uniform vec4 u_alpha_value;
 uniform vec4 u_view_origin;
+uniform vec4 u_clip_plane;
 uniform vec4 u_texture_scale;
 uniform vec4 u_light_ambient;
 uniform vec4 u_light_directed;
@@ -220,6 +222,7 @@ void main() {
         }
     }
     gl_Position=u_mvp*vec4(position,1.0);
+    gl_ClipDistance[0]=dot(u_clip_plane,vec4(position,1.0));
     vec4 vertex_color=floor(a_color*255.0+0.5);
     vec4 value=u_color;
     if(u_rgb_gen==1) value=vertex_color;
@@ -307,6 +310,7 @@ struct Uniforms {
     texgen: i32,
     alpha_value: i32,
     view_origin: i32,
+    clip_plane: i32,
     texture_scale: i32,
     light_ambient: i32,
     light_directed: i32,
@@ -523,6 +527,9 @@ impl GlBackend {
             return Err("GL context render-target size changed during registration".into());
         }
         let program = unsafe { compile_program(&gl)? };
+        // This backend owns the context. Unclipped and 2D stages publish a
+        // positive constant distance, so the plane needs no frame-time toggle.
+        unsafe { (gl.enable)(CLIP_DISTANCE0) };
         let uniforms = unsafe {
             Uniforms {
                 mvp: (gl.uniform_location)(program, c"u_mvp".as_ptr()),
@@ -531,6 +538,7 @@ impl GlBackend {
                 texgen: (gl.uniform_location)(program, c"u_texgen".as_ptr()),
                 alpha_value: (gl.uniform_location)(program, c"u_alpha_value".as_ptr()),
                 view_origin: (gl.uniform_location)(program, c"u_view_origin".as_ptr()),
+                clip_plane: (gl.uniform_location)(program, c"u_clip_plane".as_ptr()),
                 texture_scale: (gl.uniform_location)(program, c"u_texture_scale".as_ptr()),
                 light_ambient: (gl.uniform_location)(program, c"u_light_ambient".as_ptr()),
                 light_directed: (gl.uniform_location)(program, c"u_light_directed".as_ptr()),
@@ -1776,6 +1784,15 @@ impl GlBackend {
                 1,
                 vec4(inputs.view_origin).as_ptr(),
             );
+            let clip = inputs.clip_plane.map_or([0., 0., 0., 1.], |plane| {
+                [
+                    plane.normal.0[0],
+                    plane.normal.0[1],
+                    plane.normal.0[2],
+                    -plane.distance,
+                ]
+            });
+            (self.gl.uniform_color)(self.uniforms.clip_plane, 1, clip.as_ptr());
             (self.gl.uniform_color)(
                 self.uniforms.texture_scale,
                 1,

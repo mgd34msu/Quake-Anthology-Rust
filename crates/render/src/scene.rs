@@ -107,6 +107,9 @@ pub struct Refdef {
     pub hyperspace: bool,
     pub portal: bool,
     pub reflected_view: bool,
+    /// World-space retained half-space for a portal child. Native module
+    /// refdefs acquire it at the shared scene boundary, not their ABI.
+    pub clip_plane: Option<qa_core::primitives::Plane>,
     /// Native shader text rows retain byte values after their first NUL.
     pub text: [[u8; 32]; 8],
     /// Cached presentation identity light (Q3 native overbright response).
@@ -168,6 +171,7 @@ impl Refdef {
             || !self.far.is_finite()
             || self.far <= self.near
             || !self.identity_light.is_finite()
+            || self.clip_plane.is_some_and(|plane| !plane.is_valid())
             || !(0.0..=1.0).contains(&self.identity_light)
         {
             return None;
@@ -192,6 +196,7 @@ impl Default for Refdef {
             hyperspace: false,
             portal: false,
             reflected_view: false,
+            clip_plane: None,
             text: [[0; 32]; 8],
             identity_light: 1.0,
             blend: [0.0; 4],

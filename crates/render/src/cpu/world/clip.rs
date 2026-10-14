@@ -51,7 +51,7 @@ impl ClipGraph {
     }
     pub fn load(max_vertices: usize) -> Result<Self, &'static str> {
         let nodes = max_vertices
-            .checked_mul(7)
+            .checked_mul(8)
             .ok_or("world clipping graph capacity")?;
         if max_vertices < 3 {
             return Err("world clipping graph vertex limit");
@@ -108,7 +108,7 @@ impl ClipGraph {
             };
             self.input[index] = index;
         }
-        for plane in 0..6 {
+        for plane in 0..camera.clip_plane_count() {
             if self.count < 3 {
                 self.count = 0;
                 return Some(0);

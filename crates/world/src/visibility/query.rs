@@ -34,7 +34,7 @@ impl ViewVisibility {
         if !origin.is_finite() {
             return Err(VisibilityQueryError::Origin);
         }
-        if frustum.len() > 6 || frustum.iter().any(|plane| !plane.is_valid()) {
+        if frustum.len() > 7 || frustum.iter().any(|plane| !plane.is_valid()) {
             return Err(VisibilityQueryError::Frustum);
         }
         if self.node_marks.len() != world.nodes.len()

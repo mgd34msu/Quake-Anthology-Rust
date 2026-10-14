@@ -4,6 +4,20 @@ use qa_core::{
 };
 
 #[test]
+fn local_plane_retains_the_world_half_space_for_rotated_scaled_coordinates() {
+    let plane = Plane::oriented(Vec3([1., -2., 3.]), 19.);
+    let origin = Vec3([4., 8., -2.]);
+    let axes = [Vec3([0., 2., 0.]), Vec3([-3., 0., 0.]), Vec3([0., 0., 4.])];
+    let local = plane.to_local(origin, axes);
+    for point in [Vec3::default(), Vec3([2., 3., -5.]), Vec3([-7., 1., 9.])] {
+        assert_eq!(
+            local.signed_distance(point),
+            plane.signed_distance(transform_point(origin, axes, point))
+        );
+    }
+}
+
+#[test]
 fn plane_projection_and_axis_rotation_preserve_the_native_basis() {
     let direction = Vec3([0.0, 0.0, 1.0]);
     assert_eq!(

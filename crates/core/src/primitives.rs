@@ -133,6 +133,14 @@ pub const fn child_from_leaf(leaf: u32) -> i32 {
 }
 
 impl Plane {
+    /// Express a world plane in coordinates whose basis columns are `axes`.
+    pub fn to_local(self, origin: Vec3, axes: [Vec3; 3]) -> Self {
+        Self::oriented(
+            Vec3(axes.map(|axis| self.normal.dot(axis))),
+            self.distance - self.normal.dot(origin),
+        )
+    }
+
     pub fn is_valid(self) -> bool {
         self.distance.is_finite() && self.normal.is_finite() && self.normal != Vec3::default()
     }
