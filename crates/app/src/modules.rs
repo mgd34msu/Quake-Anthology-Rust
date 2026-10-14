@@ -261,6 +261,7 @@ struct Module {
     consumes_server_commands: bool,
     produces_client_audio: bool,
     produces_client_view: bool,
+    scene_role: crate::renderer::native::SceneRole,
 }
 impl Module {
     fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
@@ -686,6 +687,7 @@ impl FrameHost {
                 consumes_server_commands,
                 produces_client_audio,
                 produces_client_view,
+                scene_role: Default::default(),
                 clock,
                 physics,
                 duration,
@@ -1159,33 +1161,38 @@ impl FrameHost {
             return;
         }
         let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
-        for index in 0..count {
-            let Some(row) = self.module_row(ModuleId(index as u16)) else {
-                continue;
-            };
-            if row.request.phase != Phase::Client {
-                continue;
+        // Display overlays follow every native client view, independently of
+        // request registration order. Built-in seats are placed behind these
+        // commands by the same scene packet's background composition.
+        for view_producer in [true, false] {
+            for index in 0..count {
+                let Some(row) = self.module_row(ModuleId(index as u16)) else {
+                    continue;
+                };
+                if row.request.phase != Phase::Client || row.produces_client_view != view_producer {
+                    continue;
+                }
+                let time = row
+                    .client_connection
+                    .filter(|_| row.produces_client_view)
+                    .and_then(|(id, lifetime)| {
+                        let client = self.runtime.server.clients.get(id.0 as usize)?;
+                        if client.connection.is_none()
+                            || client.entity != lifetime
+                            || self.runtime.server.entities.resolve(lifetime).is_none()
+                        {
+                            return None;
+                        }
+                        self.runtime
+                            .snapshots
+                            .get(id.0 as usize)?
+                            .as_ref()?
+                            .interpolation()
+                            .map(|sample| sample.time)
+                    })
+                    .unwrap_or_else(|| row.time(self.time));
+                invoke_frame(self, ModuleId(index as u16), time);
             }
-            let time = row
-                .client_connection
-                .filter(|_| row.produces_client_view)
-                .and_then(|(id, lifetime)| {
-                    let client = self.runtime.server.clients.get(id.0 as usize)?;
-                    if client.connection.is_none()
-                        || client.entity != lifetime
-                        || self.runtime.server.entities.resolve(lifetime).is_none()
-                    {
-                        return None;
-                    }
-                    self.runtime
-                        .snapshots
-                        .get(id.0 as usize)?
-                        .as_ref()?
-                        .interpolation()
-                        .map(|sample| sample.time)
-                })
-                .unwrap_or_else(|| row.time(self.time));
-            invoke_frame(self, ModuleId(index as u16), time);
         }
     }
     fn client_configurations(&mut self) {
@@ -1529,12 +1536,15 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
     {
         return false;
     }
-    let (mut services, mut client_view) = host.runtime.engine_service_parts(
+    let (mut services, mut client_view, composer, models) = host.runtime.engine_service_parts(
         &mut host.console,
         storage,
         &mut row.scratch,
         client_connection,
     );
+    let mut scene =
+        crate::renderer::native::SceneBorrow::new(composer, models, &mut row.scene_role, module);
+    services.scene = Some(&mut scene);
     // A live connection can lack this protocol's configstring/command view.
     // Each executed import checks its own service; independent CLIENT audio
     // and scene calls still use their load-bound publisher and common state.

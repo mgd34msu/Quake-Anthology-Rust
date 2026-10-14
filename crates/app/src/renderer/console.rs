@@ -224,7 +224,7 @@ impl ConsoleAssets {
                 width,
                 height,
             },
-            time_ms: view.time.milliseconds(),
+            time_ms: view.time.milliseconds() as i64,
             cpu_presentation: self.palette.map_or(CpuPresentation::Rgb, |palette| {
                 CpuPresentation::Indexed {
                     palette,

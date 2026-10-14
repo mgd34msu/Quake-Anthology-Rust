@@ -291,3 +291,65 @@ pub fn mdl() -> Vec<u8> {
     }
     bytes
 }
+
+use qa_core::primitives::{Bounds, IndexSpan, Vec3};
+use qa_render::world::{
+    SurfaceMaterial, WorldId,
+    geometry::{GeometryPartition, PatchStats, WorldGeometry, WorldModel},
+};
+use qa_world::visibility::{PvsRows, VisLeaf, VisibilityWorld};
+pub fn world(assets: &mut Assets, origin: f32) -> WorldId {
+    world_variants(assets, origin, &[&[]])
+}
+
+pub fn world_variants(
+    assets: &mut Assets,
+    origin: f32,
+    variants: &[&[SurfaceMaterial]],
+) -> WorldId {
+    let bounds = Bounds {
+        mins: Vec3([origin; 3]),
+        maxs: Vec3([origin + 1.0; 3]),
+    };
+    let geometry = WorldGeometry {
+        partition: GeometryPartition::SplitBsp,
+        world_has_lightdata: false,
+        vertices: vec![],
+        indices: vec![],
+        boundaries: vec![],
+        surfaces: vec![],
+        light_samples: vec![],
+        models: vec![
+            WorldModel {
+                bounds,
+                origin: Vec3([origin; 3]),
+                surfaces: IndexSpan::default(),
+            },
+            WorldModel {
+                bounds,
+                origin: Vec3([origin + 1.0; 3]),
+                surfaces: IndexSpan::default(),
+            },
+        ],
+        patch_stats: PatchStats::default(),
+    };
+    let visibility = VisibilityWorld::load(
+        vec![],
+        vec![],
+        vec![VisLeaf {
+            selector: None,
+            area: None,
+            solid: false,
+            bounds,
+            surfaces: IndexSpan::default(),
+        }],
+        vec![],
+        0,
+        -1,
+        PvsRows::all_visible(0),
+    )
+    .unwrap();
+    assets
+        .register_world(geometry, visibility, variants)
+        .unwrap()
+}

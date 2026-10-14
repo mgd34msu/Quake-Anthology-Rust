@@ -1,0 +1,519 @@
+use super::*;
+use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
+use qa_render::material::world_load::{
+    LoadedWorld, LoadedWorldPresentation, WorldPresentationProfile,
+};
+use qa_render::scene::Command;
+
+const CALLS: &[(u8, &[u32])] = &[
+    (39, &[16]),
+    (45, &[32]),
+    (87, &[1, 3, 64, 2]),
+    (44, &[256]),
+    (
+        46,
+        &[
+            (-10.0f32).to_bits(),
+            0,
+            100.0f32.to_bits(),
+            30.0f32.to_bits(),
+            0,
+            0,
+            1.0f32.to_bits(),
+            1.0f32.to_bits(),
+            1,
+        ],
+    ),
+    (40, &[]),
+    (36, &[224]),
+    (87, &[1, 3, 65528, 2]),
+    (45, &[0]),
+    (87, &[0, 3, u32::MAX, 2]),
+];
+
+fn data() -> [u8; 1024] {
+    let mut data = [0; 1024];
+    data[16..27].copy_from_slice(b"ui/pic.tga\0");
+    data[224..239].copy_from_slice(b"maps/probe.bsp\0");
+    for (index, value) in [0.5f32, 0.25, 1., 0.75].into_iter().enumerate() {
+        data[32 + index * 4..36 + index * 4].copy_from_slice(&value.to_le_bytes());
+    }
+    for index in 0..6 {
+        let first = 64 + index * 24;
+        for (axis, value) in [8.0, index as f32, (index % 3) as f32]
+            .into_iter()
+            .enumerate()
+        {
+            data[first + axis * 4..first + axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        data[first + 20..first + 24].copy_from_slice(&[index as u8, 20, 30, 255]);
+    }
+    for (at, value) in [(8, 160i32), (12, 200), (72, -12345), (76, 1)] {
+        data[256 + at..260 + at].copy_from_slice(&value.to_le_bytes());
+    }
+    for (at, value) in [(16, 95.0f32), (20, 75.), (36, 1.), (52, 1.), (68, 1.)] {
+        data[256 + at..260 + at].copy_from_slice(&value.to_le_bytes());
+    }
+    data[336..368].fill(0xa5);
+    for row in 0..8 {
+        data[368 + row * 32 + 1] = 0xe0 + row as u8;
+    }
+    data
+}
+
+fn pointer_argument(command: usize, index: usize) -> bool {
+    matches!((command, index), (0 | 1 | 3 | 6 | 8, 0) | (2 | 7 | 9, 2))
+}
+fn ordinal(ui: bool, value: u8) -> u8 {
+    if !ui {
+        return value;
+    }
+    match value {
+        39 => 20,
+        45 => 26,
+        87 => 23,
+        44 => 25,
+        46 => 27,
+        40 => 21,
+        other => other,
+    }
+}
+fn qvm_scene(ui: bool) -> Program {
+    use Opcode::*;
+    let mut operations = vec![(Enter, 96)];
+    let mut branches = vec![];
+    for command in 0..12 {
+        operations.extend([(Local, 104), (Load4, 0), (Const, command), (Eq, 0)]);
+        branches.push(operations.len() - 1);
+    }
+    operations.extend([(Const, 0), (Leave, 96)]);
+    for (command, branch) in branches.into_iter().enumerate() {
+        operations[branch].1 = operations.len() as i32;
+        if command >= CALLS.len() {
+            for (at, word) in if command == 10 {
+                [(64, 900.0f32.to_bits()), (328, 777)]
+            } else {
+                [(332, 0), (332, 0)]
+            } {
+                operations.extend([(Const, at), (Const, word as i32), (Store4, 0)]);
+            }
+            operations.push((Const, 0));
+        } else {
+            let (number, words) = CALLS[command];
+            let ordinal = ordinal(ui, number);
+            for (index, &word) in words.iter().enumerate() {
+                operations.extend([(Const, word as i32), (Arg, 8 + index as i32 * 4)]);
+            }
+            operations.extend([(Const, -i32::from(ordinal) - 1), (Call, 0)]);
+        }
+        operations.push((Leave, 96));
+    }
+    Program::Qvm {
+        vm: Box::new(service_program::program(&operations, &data())),
+        imports: if ui {
+            &qa_compat::abi::Q3_UI
+        } else {
+            &Q3_CLIENT
+        },
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn native_scene(ui: bool) -> Program {
+    use native_image::*;
+    use qa_compat::native::{NamedExport, Vm};
+    use qa_formats::program::native::{Image, LoadRole};
+    use qa_platform::native::NativeScalar;
+    let mut file = pe_export_fixture(64);
+    put(&mut file, 392 + 8, 8192, 4);
+    put(&mut file, 392 + 16, 8192, 4);
+    put(&mut file, 208, 12288, 4);
+    file.resize(8704, 0);
+    pe_rva(&mut file, 0x1140, 0x1800, 4);
+    pe_text(&mut file, 0x1800, &[0xc3]);
+    let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+    let base = image.base;
+    let mut vm = Vm::map_image(
+        image,
+        &(0..15)
+            .map(|command| NamedExport {
+                name: b"GetGameAPI",
+                command: Some(command),
+                parameters: &[NativeScalar::Word; 13],
+                result: NativeScalar::Word,
+            })
+            .collect::<Vec<_>>(),
+        &[],
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let callback = vm.import_callback();
+    let source = base + 0x2400;
+    let mut code = vec![];
+    for command in 0..12usize {
+        code.extend([0x83, 0xf9, command as u8, 0x0f, 0x85]);
+        let branch = code.len();
+        code.extend([0; 4]);
+        code.extend([0x48, 0x83, 0xec, 0x58]);
+        if command >= CALLS.len() {
+            for (at, word) in if command == 10 {
+                [(64, 900.0f32.to_bits()), (328, 777)]
+            } else {
+                [(332, 0), (332, 0)]
+            } {
+                code.extend([0x48, 0xb8]);
+                code.extend((source + at).to_le_bytes());
+                code.extend([0xc7, 0x00]);
+                code.extend(word.to_le_bytes());
+            }
+            code.extend([0x31, 0xc0]);
+        } else {
+            let (number, arguments) = CALLS[command];
+            let ordinal = ordinal(ui, number);
+            for (index, &argument) in arguments.iter().enumerate() {
+                let value = if pointer_argument(command, index) && argument != 0 {
+                    source + u64::from(argument)
+                } else {
+                    u64::from(argument)
+                };
+                if index < 3 {
+                    code.extend([[0x48, 0xba], [0x49, 0xb8], [0x49, 0xb9]][index]);
+                    code.extend(value.to_le_bytes());
+                } else {
+                    code.extend([0x48, 0xb8]);
+                    code.extend(value.to_le_bytes());
+                    code.extend([0x48, 0x89, 0x44, 0x24, (0x20 + (index - 3) * 8) as u8]);
+                }
+            }
+            code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0]);
+        }
+        code.extend([0x48, 0x83, 0xc4, 0x58, 0xc3]);
+        let end = code.len();
+        code[branch..branch + 4].copy_from_slice(&((end - branch - 4) as i32).to_le_bytes());
+    }
+    code.extend([0x31, 0xc0, 0xc3]);
+    assert!(code.len() < 0xc00);
+    vm.process.memory_mut().unwrap()[0x1800..0x1800 + code.len()].copy_from_slice(&code);
+    vm.process.memory_mut().unwrap()[0x2400..0x2800].copy_from_slice(&data());
+    Program::Native {
+        vm: Box::new(vm),
+        imports: if ui {
+            &qa_compat::abi::Q3_UI
+        } else {
+            &Q3_CLIENT
+        },
+    }
+}
+
+pub(super) fn submissions(native: bool, ui: bool) {
+    let mut fixture = model_support::Fixture::new(&[(
+        "ui/pic.tga",
+        model_support::tga(2, 2, &[[80, 30, 10, 255]; 4]),
+    )]);
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut assets = qa_render::Assets::load().unwrap();
+    let world = model_support::world(&mut assets, -1.);
+    let presentation = qa_render::world::WorldPresentationId(0);
+    let program = || {
+        if native {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                return native_scene(ui);
+            }
+        }
+        qvm_scene(ui)
+    };
+    let (mut host, _) = if ui {
+        let (mut runtime, ids) = runtime(2);
+        let requests = ids
+            .iter()
+            .enumerate()
+            .map(|(seat, &client)| {
+                let mut request =
+                    request(&mut runtime, ModuleId(seat as u16 + 1), client, program());
+                request.frame.client = None;
+                request
+            })
+            .collect();
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            requests,
+        )
+        .unwrap();
+        for (seat, &client) in ids.iter().enumerate() {
+            host.local_clients[seat] = Some(client);
+        }
+        (host, ids)
+    } else {
+        host(program, 2)
+    };
+    host.runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let mut peer_profile = profile;
+    peer_profile.rules = RuleSetId::Quake2;
+    peer_profile.image_settings =
+        qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2);
+    host.runtime.model_loader = Some(
+        ModelCatalogBuilder::new(assets, [profile, peer_profile], [world], Default::default())
+            .unwrap(),
+    );
+    host.runtime
+        .model_loader
+        .as_mut()
+        .unwrap()
+        .bind_loaded_world(
+            "maps/probe.bsp",
+            world,
+            Bounds {
+                mins: Vec3([-1.; 3]),
+                maxs: Vec3([1.; 3]),
+            },
+        )
+        .unwrap();
+    host.local_worlds.fill(Some((world, presentation)));
+    let mut seat_profiles = [[None, None, None, None, Some(profile)]; SeatId::COUNT];
+    seat_profiles[1][RuleSetId::Quake3 as usize] = Some(peer_profile);
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &seat_profiles,
+        320,
+        200,
+    )
+    .unwrap();
+    if !ui {
+        assert_eq!(probe(&mut host, 0, 6, 0), 0);
+    } // Cold selection, before any scene owner.
+    assert_eq!(probe(&mut host, 0, 0, 0), 1);
+    let (assets, models) = host.runtime.model_loader.take().unwrap().finish();
+    let material = models.shader_binding(1, profile).unwrap();
+    let peer_material = models.shader_binding(1, peer_profile).unwrap();
+    assert_ne!(material, peer_material);
+    host.runtime.models = Some(std::sync::Arc::new(models));
+    let loaded = LoadedWorld {
+        world,
+        presentations: vec![LoadedWorldPresentation {
+            id: presentation,
+            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            defaults: Default::default(),
+        }]
+        .into_boxed_slice(),
+        diagnostics: Box::default(),
+    };
+    host.runtime.scene = Some(
+        qa_app::renderer::SceneComposer::load(
+            qa_render::Limits {
+                polys: 2,
+                vertices: 6,
+                ..Default::default()
+            },
+            assets,
+            vec![loaded],
+        )
+        .unwrap()
+        .0,
+    );
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(probe(&mut host, 0, 1, 0), 0);
+    assert_eq!(probe(&mut host, 0, 2, 0), 0);
+    assert_eq!(probe(&mut host, 0, 2, 0), 0); // Both extra polygons rejected without a trap.
+    if ui {
+        assert_eq!(probe(&mut host, 0, 2, 0), 0);
+        assert_eq!(probe(&mut host, 0, 2, 0), 0);
+    }
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    assert_eq!(probe(&mut host, 0, 4, 0), 0);
+    assert_eq!(probe(&mut host, 0, 10, 0), 0); // Change guest source after publication.
+    assert_eq!(probe(&mut host, 0, 5, 0), 0); // Clear preserves 2D color and earlier view.
+    if !ui {
+        assert_eq!(probe(&mut host, 0, 11, 0), 0);
+    } // Render the selected world, no longer NOWORLDMODEL.
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    assert_eq!(probe(&mut host, 0, 9, 0), 0); // A zero shader does not dereference a bad pointer.
+    assert_eq!(probe(&mut host, 1, 4, 0), 0); // Other module retains white and separate target.
+    let packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
+    assert_eq!(packet.rejected, 2);
+    let Command::View(view) = packet.commands()[1] else {
+        panic!("native view")
+    };
+    assert_eq!(view.refdef.time_ms, -12345);
+    assert_eq!(view.refdef.text[7][1], 0xe7);
+    assert_eq!(view.scene.polys.count, 2);
+    assert_eq!(
+        packet.vertices(packet.polys(view.scene.polys)[0].vertices)[0]
+            .position
+            .0[0],
+        8.
+    );
+    let Command::Draw2d(picture) = packet.commands()[2] else {
+        panic!("native picture")
+    };
+    assert_eq!(picture.material, material);
+    assert_eq!(picture.rect, [0., 0., 90., 30.]);
+    assert_eq!(picture.color, [127, 63, 255, 191]);
+    let Command::View(second) = packet.commands()[3] else {
+        panic!("second native view")
+    };
+    assert_eq!(second.refdef.time_ms, 777);
+    assert_eq!(packet.hidden_areas(second.hidden_areas), &[0xa5; 32]);
+    let Command::Draw2d(peer) = packet.commands()[4] else {
+        panic!("peer picture")
+    };
+    assert_eq!(peer.rect, [if ui { 0. } else { 160. }, 0., 90., 30.]);
+    assert_eq!(peer.color, [255; 4]);
+    assert_eq!(peer.material, if ui { material } else { peer_material });
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+}
+
+pub(super) fn ownership() {
+    use qa_app::renderer::{Context as RenderContext, Renderer};
+    use qa_render::material::resources::ImageSettings;
+    let (mut runtime, ids) = runtime(2);
+    let requests = ids
+        .iter()
+        .enumerate()
+        .map(|(seat, &client)| {
+            let mut request = request(
+                &mut runtime,
+                ModuleId(seat as u16 + 1),
+                client,
+                qvm_scene(seat == 0),
+            );
+            request.frame.callback = CallbackId(3);
+            if seat == 0 {
+                request.frame.client = None;
+            }
+            request
+        })
+        .collect();
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    host.local_clients[..2].copy_from_slice(&ids.iter().copied().map(Some).collect::<Vec<_>>());
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut assets = qa_render::Assets::load().unwrap();
+    let world = model_support::world(&mut assets, -1.);
+    let presentation = qa_render::world::WorldPresentationId(0);
+    host.local_worlds[..2].fill(Some((world, presentation)));
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
+        320,
+        200,
+    )
+    .unwrap();
+    let console = qa_app::renderer::console::ConsoleAssets::load(
+        &host.runtime.vfs,
+        &mut assets,
+        RuleSetId::Quake3,
+        None,
+        ImageSettings::native(RuleSetId::Quake3),
+        320,
+        200,
+    )
+    .unwrap();
+    let effects = std::sync::Arc::clone(&host.runtime.catalog.registry.effects);
+    let bindings = vec![None; effects.len() + 1];
+    let effects = qa_render::effects::Effects::load(effects, 8, 2, &bindings).unwrap();
+    let configuration = std::sync::Arc::new(qa_core::presentation::RendererConfiguration {
+        display: qa_core::presentation::DisplayConfiguration {
+            width: 320,
+            height: 200,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let loaded = LoadedWorld {
+        world,
+        presentations: vec![LoadedWorldPresentation {
+            id: presentation,
+            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            defaults: Default::default(),
+        }]
+        .into_boxed_slice(),
+        diagnostics: Box::default(),
+    };
+    let (renderer, scene) = Renderer::load(
+        RenderContext::Cpu(configuration),
+        320,
+        200,
+        assets,
+        vec![loaded],
+        Some(qa_render::cpu::RasterBands::One),
+        console,
+        std::array::from_fn(|_| None),
+        effects,
+    )
+    .unwrap();
+    host.runtime.scene = Some(scene);
+    struct Source {
+        renderer: Renderer,
+        views: [Option<qa_app::host::ClientView>; SeatId::COUNT],
+    }
+    impl qa_app::host::FrameSource for Source {
+        fn begin_frame(&mut self) -> Duration {
+            Duration::from_millis(16)
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            queue
+                .push(SysEvent {
+                    time: EventTime::from_milliseconds(16),
+                    kind: EventKind::Time,
+                })
+                .unwrap();
+        }
+        fn wait_time(&mut self, _: Duration) -> Duration {
+            self.begin_frame()
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn present(&mut self) {}
+        fn render(
+            &mut self,
+            scene: Option<&mut qa_app::renderer::SceneComposer>,
+            _: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
+            _: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
+            _: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],
+            console: qa_console::presentation::ConsoleView<'_>,
+        ) {
+            self.renderer.frame(
+                scene.unwrap(),
+                &self.views,
+                &std::array::from_fn(|_| None),
+                &std::array::from_fn(|_| None),
+                console,
+            );
+        }
+    }
+    let view = qa_app::host::ClientView {
+        world,
+        world_presentation: presentation,
+        presentation: Default::default(),
+        origin: Vec3::default(),
+        angles: Vec3::default(),
+        fov_x: 90.,
+        time_ms: 16,
+    };
+    let mut source = Source {
+        renderer,
+        views: [Some(view), Some(view), None, None],
+    };
+    let result = host.frame(&mut source, true);
+    assert!(!host.runtime.quit);
+    assert_eq!(result.drains, 2);
+    assert_eq!(
+        source.renderer.sample.stats.views, 3,
+        "one native client view, one builtin peer, one unbound UI preview"
+    );
+    assert_eq!(source.renderer.sample.stats.rejected, 0);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+}

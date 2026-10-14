@@ -13,7 +13,7 @@ fn original_row(
     count: u32,
     y: u32,
     tile: SoftwareTiled,
-    time_ms: u64,
+    time_ms: i64,
     pixels: &[u8],
 ) -> Vec<u8> {
     let time = if tile.time_f32 {

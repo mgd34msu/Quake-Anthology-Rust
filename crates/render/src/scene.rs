@@ -103,7 +103,10 @@ pub struct Refdef {
     pub fov: [f32; 2],
     pub near: f32,
     pub far: f32,
-    pub time_ms: u64,
+    pub time_ms: i64,
+    pub hyperspace: bool,
+    /// Native shader text rows retain byte values after their first NUL.
+    pub text: [[u8; 32]; 8],
     /// Cached presentation identity light (Q3 native overbright response).
     pub identity_light: f32,
     pub blend: [f32; 4],
@@ -130,11 +133,15 @@ pub fn fov_from_x(fov_x: f32, width: u32, height: u32) -> [f32; 2] {
     [fov_x, fov_y]
 }
 
-pub(crate) fn milliseconds_to_seconds(time_ms: u64) -> f32 {
+pub(crate) fn milliseconds_to_seconds(time_ms: i64) -> f32 {
     time_ms as f32 * 0.001
 }
 
 impl Refdef {
+    pub fn hyperspace_color(&self) -> [u8; 4] {
+        let value = (self.time_ms & 255) as u8;
+        [value, value, value, 255]
+    }
     pub fn time_seconds(&self) -> f32 {
         milliseconds_to_seconds(self.time_ms)
     }
@@ -180,6 +187,8 @@ impl Default for Refdef {
             near: 4.0,
             far: 65536.0,
             time_ms: 0,
+            hyperspace: false,
+            text: [[0; 32]; 8],
             identity_light: 1.0,
             blend: [0.0; 4],
             blend_phase: BlendPhase::AfterView,
@@ -275,6 +284,42 @@ pub struct Draw2d {
     pub texcoords: [f32; 4],
     pub color: [u8; 4],
     pub material: MaterialId,
+}
+impl Draw2d {
+    /// Preserve UV interpolation while confining a module picture to its seat.
+    /// Negative dimensions retain their native texture reversal.
+    pub fn clipped(mut self, viewport: Viewport) -> Option<Self> {
+        if !self
+            .rect
+            .iter()
+            .chain(self.texcoords.iter())
+            .all(|value| value.is_finite())
+        {
+            return None;
+        }
+        for axis in 0..2 {
+            let start = self.rect[axis];
+            let end = start + self.rect[axis + 2];
+            let limit = if axis == 0 {
+                (viewport.x, viewport.width)
+            } else {
+                (viewport.y, viewport.height)
+            };
+            let low = start.min(end).max(limit.0 as f32);
+            let high = start.max(end).min((limit.0 + limit.1) as f32);
+            if low >= high || !end.is_finite() {
+                return None;
+            }
+            let uv_start = self.texcoords[axis];
+            let uv_end = self.texcoords[axis + 2];
+            self.texcoords[axis] = uv_start + ((low - start) / (end - start)) * (uv_end - uv_start);
+            self.texcoords[axis + 2] =
+                uv_start + ((high - start) / (end - start)) * (uv_end - uv_start);
+            self.rect[axis] = low;
+            self.rect[axis + 2] = high - low;
+        }
+        Some(self)
+    }
 }
 /// Backend appearance data, independent of the effect's source recipe.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -616,6 +661,17 @@ impl FrontEnd {
     }
 }
 impl Frame {
+    /// Built-in seats are background content. Move their newly appended command
+    /// range before module views/UI in this same packet; payload indices remain
+    /// absolute and no second command list or replay queue is created.
+    pub fn background(&mut self, compose: impl FnOnce(&mut Self)) {
+        let first = self.list.command_count;
+        compose(self);
+        let added = self.list.command_count - first;
+        if added != 0 {
+            self.list.commands[1..self.list.command_count].rotate_right(added);
+        }
+    }
     fn command(&mut self, command: Command) -> bool {
         if self.list.command_count == self.list.commands.len() {
             self.list.rejected += 1;
@@ -695,22 +751,37 @@ impl Frame {
         true
     }
     pub fn add_poly(&mut self, material: MaterialId, vertices: &[Vertex]) -> bool {
-        if vertices.len() < 3
+        self.add_poly_from(material, vertices.len(), &mut |index| vertices[index])
+    }
+    /// Copy directly into the packet after reserving all polygon storage. This
+    /// admits checked module vertices without a temporary allocation.
+    pub fn add_poly_from(
+        &mut self,
+        material: MaterialId,
+        count: usize,
+        vertex: &mut dyn FnMut(usize) -> Vertex,
+    ) -> bool {
+        if count < 3
             || self.list.poly_count == self.list.polys.len()
             || self.list.draw_count == self.list.draws.len()
-            || vertices.len() > self.list.vertices.len() - self.list.vertex_count
+            || count > self.list.vertices.len() - self.list.vertex_count
         {
             self.list.rejected += 1;
             return false;
         }
         let first = self.list.vertex_count;
-        self.list.vertices[first..first + vertices.len()].copy_from_slice(vertices);
-        self.list.vertex_count += vertices.len();
+        for (index, target) in self.list.vertices[first..first + count]
+            .iter_mut()
+            .enumerate()
+        {
+            *target = vertex(index);
+        }
+        self.list.vertex_count += count;
         self.list.polys[self.list.poly_count] = Poly {
             material,
             vertices: Span {
                 first: first as u32,
-                count: vertices.len() as u32,
+                count: count as u32,
             },
         };
         self.draw(DrawKind::Poly, self.list.poly_count as u32);

@@ -1747,57 +1747,7 @@ fn optional_image_constructor_failure_isolated_from_healthy_same_filename_profil
     }
 }
 
-fn world(assets: &mut Assets, origin: f32) -> WorldId {
-    world_variants(assets, origin, &[&[]])
-}
-
-fn world_variants(assets: &mut Assets, origin: f32, variants: &[&[SurfaceMaterial]]) -> WorldId {
-    let bounds = Bounds {
-        mins: Vec3([origin; 3]),
-        maxs: Vec3([origin + 1.0; 3]),
-    };
-    let geometry = WorldGeometry {
-        partition: GeometryPartition::SplitBsp,
-        world_has_lightdata: false,
-        vertices: vec![],
-        indices: vec![],
-        boundaries: vec![],
-        surfaces: vec![],
-        light_samples: vec![],
-        models: vec![
-            WorldModel {
-                bounds,
-                origin: Vec3([origin; 3]),
-                surfaces: IndexSpan::default(),
-            },
-            WorldModel {
-                bounds,
-                origin: Vec3([origin + 1.0; 3]),
-                surfaces: IndexSpan::default(),
-            },
-        ],
-        patch_stats: PatchStats::default(),
-    };
-    let visibility = VisibilityWorld::load(
-        vec![],
-        vec![],
-        vec![VisLeaf {
-            selector: None,
-            area: None,
-            solid: false,
-            bounds,
-            surfaces: IndexSpan::default(),
-        }],
-        vec![],
-        0,
-        -1,
-        PvsRows::all_visible(0),
-    )
-    .unwrap();
-    assets
-        .register_world(geometry, visibility, variants)
-        .unwrap()
-}
+use support::{world, world_variants};
 
 #[test]
 fn inline_model_ordinals_stay_in_their_world_namespace_without_copying_geometry() {

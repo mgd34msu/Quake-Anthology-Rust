@@ -3,6 +3,85 @@ use crate::services::CallError;
 use qa_core::presentation::{
     RENDERER_EXTENSIONS_BYTES, RENDERER_TEXT_BYTES, RendererConfiguration,
 };
+use qa_core::primitives::Vec3;
+use qa_render::{
+    Vertex,
+    scene::{Light, Refdef},
+    world::WorldId,
+};
+
+/// The caller owns its renderer role; each invocation borrows the session's
+/// one scene owner. Guest addresses never cross this interface.
+pub trait SceneService {
+    fn active(&self) -> bool;
+    fn viewport(&self) -> Option<qa_render::Viewport>;
+    fn select_world(&mut self, world: WorldId) -> Result<(), CallError>;
+    fn clear(&mut self);
+    fn light(&mut self, light: Light) -> bool;
+    fn poly(&mut self, shader: i32, count: usize, vertex: &mut dyn FnMut(usize) -> Vertex) -> bool;
+    fn color(&mut self, color: Option<[f32; 4]>);
+    fn picture(&mut self, shader: i32, rect: [f32; 4], texcoords: [f32; 4]) -> bool;
+    fn view(&mut self, view: SceneView) -> Result<bool, CallError>;
+}
+
+pub const Q3_REFDEF_BYTES: usize = 368;
+pub const Q3_POLY_VERTEX_BYTES: usize = 24;
+
+#[derive(Clone, Copy, Debug)]
+pub struct SceneView {
+    pub refdef: Refdef,
+    pub hidden_areas: [u8; 32],
+    pub world: bool,
+}
+
+/// Both module widths and QVM use the same pointer-free Q3 record. The
+/// complete source is checked before decoding; the result owns every byte.
+pub fn read_q3_view(bytes: &[u8]) -> Result<SceneView, CallError> {
+    if bytes.len() != Q3_REFDEF_BYTES {
+        return Err(CallError::Memory);
+    }
+    let word = |at| i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let scalar = |at| f32::from_bits(word(at) as u32);
+    let vector = |at| Vec3(std::array::from_fn(|axis| scalar(at + axis * 4)));
+    let mut refdef = Refdef {
+        viewport: qa_render::Viewport {
+            x: u32::try_from(word(0)).map_err(|_| CallError::Geometry)?,
+            y: u32::try_from(word(4)).map_err(|_| CallError::Geometry)?,
+            width: u32::try_from(word(8)).map_err(|_| CallError::Geometry)?,
+            height: u32::try_from(word(12)).map_err(|_| CallError::Geometry)?,
+        },
+        fov: [scalar(16), scalar(20)],
+        origin: vector(24),
+        axes: std::array::from_fn(|axis| vector(36 + axis * 12)),
+        time_ms: i64::from(word(72)),
+        hyperspace: word(76) & 4 != 0,
+        ..Refdef::default()
+    };
+    let mut hidden_areas = [0; 32];
+    hidden_areas.copy_from_slice(&bytes[80..112]);
+    for (target, source) in refdef.text.iter_mut().zip(bytes[112..].chunks_exact(32)) {
+        if !source.contains(&0) {
+            return Err(CallError::Text);
+        }
+        target.copy_from_slice(source);
+    }
+    Ok(SceneView {
+        refdef,
+        hidden_areas,
+        world: word(76) & 1 == 0,
+    })
+}
+
+/// Only called on an already-checked 24-byte polyVert_t extent.
+pub fn q3_vertex(bytes: &[u8]) -> Vertex {
+    let scalar = |at| f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    Vertex {
+        position: Vec3(std::array::from_fn(|axis| scalar(axis * 4))),
+        texcoord: [scalar(12), scalar(16)],
+        color: [bytes[20], bytes[21], bytes[22], bytes[23]],
+        ..Vertex::default()
+    }
+}
 
 pub const Q3_GL_CONFIG_BYTES: usize = 3 * RENDERER_TEXT_BYTES + RENDERER_EXTENSIONS_BYTES + 17 * 4;
 

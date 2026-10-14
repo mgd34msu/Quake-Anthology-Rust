@@ -479,8 +479,14 @@ impl FrameHost {
         let client = Stopwatch::start();
         self.advance_client_presentation();
         result.commands = self.client_frame();
+        let native_owners = std::array::from_fn(|seat| {
+            self.local_clients[seat]
+                .and_then(|id| self.runtime.snapshots.get(id.0 as usize)?.as_ref())
+                .is_some_and(|snapshot| snapshot.owns_client_view())
+        });
         if let Some(scene) = &mut self.runtime.scene {
             scene.begin_frame();
+            scene.native_owners(native_owners);
         }
         self.client_modules();
         self.publish_client_feedback();
@@ -493,7 +499,17 @@ impl FrameHost {
             if let (Some(view), Some(client)) = (view, self.local_clients[seat])
                 && let Some(snapshot) = self.runtime.snapshots[client.0 as usize].as_mut()
             {
-                snapshot.submitted_view(qa_core::math::angle_vectors(view.angles).axes());
+                let axes = if native_owners[seat] {
+                    self.runtime
+                        .scene
+                        .as_ref()
+                        .and_then(|scene| scene.submitted_axes(seat))
+                } else {
+                    Some(qa_core::math::angle_vectors(view.angles).axes())
+                };
+                if let Some(axes) = axes {
+                    snapshot.submitted_view(axes);
+                }
             }
         }
         let mut composition = self.runtime.scene.take();

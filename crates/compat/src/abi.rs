@@ -489,6 +489,11 @@ const fn client() -> CallTable {
     t.entries[36] = scalar!(renderer_load_world);
     t.entries[37] = scalar!(register_model);
     t.entries[40] = scalar!(renderer_clear_scene);
+    t.entries[42] = scalar!(renderer_add_polys::<false>);
+    t.entries[44] = scalar!(renderer_view);
+    t.entries[45] = scalar!(renderer_color);
+    t.entries[46] = scalar!(renderer_picture);
+    t.entries[87] = scalar!(renderer_add_polys::<true>);
     t.entries[43] = scalar!(renderer_add_light::<false>);
     t.entries[85] = scalar!(renderer_add_light::<true>);
     t.entries[47] = scalar!(renderer_model_bounds);
@@ -533,7 +538,12 @@ const fn ui() -> CallTable {
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
     t.entries[18] = scalar!(register_model);
+    t.entries[20] = scalar!(register_shader::<false>);
     t.entries[21] = scalar!(renderer_clear_scene);
+    t.entries[23] = scalar!(renderer_add_polys::<false>);
+    t.entries[25] = scalar!(renderer_view);
+    t.entries[26] = scalar!(renderer_color);
+    t.entries[27] = scalar!(renderer_picture);
     t.entries[24] = scalar!(renderer_add_light::<false>);
     t.entries[29] = scalar!(renderer_lerp_tag);
     t.entries[31] = scalar!(register_sound);
@@ -1932,11 +1942,20 @@ fn client_server_command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
 
 fn renderer_configuration(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.required_pointer(0)?;
-    let configuration = (ENGINE_CALLS.renderer)(c.services)?;
+    let mut configuration = (ENGINE_CALLS.renderer)(c.services)?.clone();
+    if let Some(viewport) = c
+        .services
+        .scene
+        .as_deref()
+        .and_then(|scene| scene.viewport())
+    {
+        configuration.display.width = viewport.width;
+        configuration.display.height = viewport.height;
+    }
     let output = c
         .memory
         .read_mut(target, crate::renderer::Q3_GL_CONFIG_BYTES)?;
-    crate::renderer::write_q3(configuration, output)?;
+    crate::renderer::write_q3(&configuration, output)?;
     Ok(0)
 }
 fn renderer_load_world(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -1951,7 +1970,11 @@ fn renderer_clear_scene(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError
 fn renderer_add_light<const ADDITIVE: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
-    if c.services.scene.is_none() {
+    if c.services
+        .scene
+        .as_deref()
+        .is_none_or(|scene| !scene.active())
+    {
         return Ok(0);
     }
     let radius = float::<false>(c, 1)? as f32;
@@ -1969,6 +1992,102 @@ fn renderer_add_light<const ADDITIVE: bool>(
         additive: ADDITIVE,
     };
     (ENGINE_CALLS.add_light)(c.services, light);
+    Ok(0)
+}
+
+fn renderer_add_polys<const MULTIPLE: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    if c.services
+        .scene
+        .as_deref()
+        .is_none_or(|scene| !scene.active())
+    {
+        return Ok(0);
+    }
+    let shader = c.arg(0)? as u32 as i32;
+    let count = c.arg(1)? as u32 as i32;
+    let polygons = if MULTIPLE { c.arg(3)? as u32 as i32 } else { 1 };
+    if shader == 0 || count <= 0 || polygons <= 0 {
+        return Ok(0);
+    }
+    let stride = (count as usize)
+        .checked_mul(crate::renderer::Q3_POLY_VERTEX_BYTES)
+        .ok_or(CallError::Memory)?;
+    let bytes = c.memory.read(
+        c.required_pointer(2)?,
+        stride
+            .checked_mul(polygons as usize)
+            .ok_or(CallError::Memory)?,
+    )?;
+    for polygon in bytes.chunks_exact(stride) {
+        (ENGINE_CALLS.add_poly)(c.services, shader, count as usize, &mut |index| {
+            let first = index * crate::renderer::Q3_POLY_VERTEX_BYTES;
+            crate::renderer::q3_vertex(
+                &polygon[first..first + crate::renderer::Q3_POLY_VERTEX_BYTES],
+            )
+        });
+    }
+    Ok(0)
+}
+fn renderer_view(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.services
+        .scene
+        .as_deref()
+        .is_none_or(|scene| !scene.active())
+    {
+        return Ok(0);
+    }
+    let view = crate::renderer::read_q3_view(
+        c.memory
+            .read(c.required_pointer(0)?, crate::renderer::Q3_REFDEF_BYTES)?,
+    )?;
+    (ENGINE_CALLS.scene_view)(c.services, view)?;
+    Ok(0)
+}
+fn renderer_color(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.services
+        .scene
+        .as_deref()
+        .is_none_or(|scene| !scene.active())
+    {
+        return Ok(0);
+    }
+    let color = if c.null_pointer(0)? {
+        None
+    } else {
+        let bytes = c.memory.read(c.required_pointer(0)?, 16)?;
+        Some(std::array::from_fn(|index| {
+            let first = index * 4;
+            f32::from_le_bytes([
+                bytes[first],
+                bytes[first + 1],
+                bytes[first + 2],
+                bytes[first + 3],
+            ])
+        }))
+    };
+    (ENGINE_CALLS.scene_color)(c.services, color);
+    Ok(0)
+}
+fn renderer_picture(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.services
+        .scene
+        .as_deref()
+        .is_none_or(|scene| !scene.active())
+    {
+        return Ok(0);
+    }
+    let mut values = [0.; 8];
+    for (index, value) in values.iter_mut().enumerate() {
+        *value = float::<false>(c, index)? as f32;
+    }
+    (ENGINE_CALLS.scene_picture)(
+        c.services,
+        c.arg(8)? as u32 as i32,
+        [values[0], values[1], values[2], values[3]],
+        [values[4], values[5], values[6], values[7]],
+    );
     Ok(0)
 }
 

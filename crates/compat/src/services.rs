@@ -844,7 +844,7 @@ pub struct EngineServices<'a> {
     pub client_connection: Option<&'a mut dyn ClientConnection>,
     pub client_audio: Option<&'a mut dyn ClientAudio>,
     pub renderer: Option<&'a qa_core::presentation::RendererConfiguration>,
-    pub scene: Option<&'a mut qa_render::scene::Frame>,
+    pub scene: Option<&'a mut dyn crate::renderer::SceneService>,
     pub vfs: &'a Vfs,
     pub model_loader: Option<&'a mut dyn ModelLoader>,
     pub model_lookup: Option<&'a dyn ModelLookup>,
@@ -915,9 +915,15 @@ pub enum ClipTarget {
     },
 }
 pub struct EngineCallTable {
-    pub render_world: fn(&EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
+    pub render_world: fn(&mut EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
     pub clear_scene: fn(&mut EngineServices<'_>),
     pub add_light: fn(&mut EngineServices<'_>, qa_render::scene::Light) -> bool,
+    pub add_poly:
+        fn(&mut EngineServices<'_>, i32, usize, &mut dyn FnMut(usize) -> qa_render::Vertex) -> bool,
+    pub scene_color: fn(&mut EngineServices<'_>, Option<[f32; 4]>),
+    pub scene_picture: fn(&mut EngineServices<'_>, i32, [f32; 4], [f32; 4]) -> bool,
+    pub scene_view:
+        fn(&mut EngineServices<'_>, crate::renderer::SceneView) -> Result<bool, CallError>,
     pub userinfo: UserinfoCall,
     pub set_userinfo: fn(&mut EngineServices<'_>, NativeEntity, &[u8]) -> Result<(), CallError>,
     pub serverinfo: fn(&mut EngineServices<'_>, ModuleId, &mut [u8]) -> Result<usize, CallError>,
@@ -1053,21 +1059,47 @@ pub struct EngineCallTable {
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     render_world: |s, name| {
-        s.model_loader
+        let world = s
+            .model_loader
             .as_deref()
             .and_then(|lookup| lookup.loaded_world(name))
             .or_else(|| s.model_lookup.and_then(|lookup| lookup.loaded_world(name)))
-            .ok_or(CallError::Geometry)
+            .ok_or(CallError::Geometry)?;
+        s.scene
+            .as_deref_mut()
+            .ok_or(CallError::Geometry)?
+            .select_world(qa_render::world::WorldId(world))?;
+        Ok(world)
     },
     clear_scene: |s| {
-        if let Some(frame) = s.scene.as_deref_mut() {
-            frame.clear_scene();
+        if let Some(scene) = s.scene.as_deref_mut() {
+            scene.clear();
         }
     },
     add_light: |s, light| {
         s.scene
             .as_deref_mut()
-            .is_some_and(|frame| frame.add_light(light))
+            .is_some_and(|scene| scene.light(light))
+    },
+    add_poly: |s, shader, count, vertex| {
+        s.scene
+            .as_deref_mut()
+            .is_some_and(|scene| scene.poly(shader, count, vertex))
+    },
+    scene_color: |s, color| {
+        if let Some(scene) = s.scene.as_deref_mut() {
+            scene.color(color);
+        }
+    },
+    scene_picture: |s, shader, rect, texcoords| {
+        s.scene
+            .as_deref_mut()
+            .is_some_and(|scene| scene.picture(shader, rect, texcoords))
+    },
+    scene_view: |s, view| {
+        s.scene
+            .as_deref_mut()
+            .map_or(Ok(false), |scene| scene.view(view))
     },
     renderer: |s| s.renderer.ok_or(CallError::Geometry),
     userinfo: |s, native| s.storage.userinfo(s.server, native),

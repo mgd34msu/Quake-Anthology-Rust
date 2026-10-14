@@ -9,6 +9,137 @@ use qa_render::world::{SurfaceMaterial, VisibleSurface, WorldId};
 use qa_render::{Assets, Command, FrontEnd, Limits, MaterialId, Refdef, SceneEntity, Vertex};
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
+#[test]
+fn background_commands_precede_native_views_and_ui_with_owned_ranges() {
+    let assets = Assets::load().unwrap();
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    assert!(frame.add_poly(
+        MaterialId(0),
+        &[Vertex {
+            color: [11; 4],
+            ..Default::default()
+        }; 3]
+    ));
+    assert!(frame.render_scene(
+        Refdef {
+            time_ms: -12,
+            ..Default::default()
+        },
+        &[],
+        &assets
+    ));
+    assert!(frame.draw_2d(qa_render::scene::Draw2d {
+        rect: [1., 2., 3., 4.],
+        ..Default::default()
+    }));
+    frame.background(|frame| {
+        frame.clear_scene();
+        assert!(frame.add_poly(
+            MaterialId(0),
+            &[Vertex {
+                color: [22; 4],
+                ..Default::default()
+            }; 3]
+        ));
+        assert!(frame.render_scene(
+            Refdef {
+                time_ms: 34,
+                ..Default::default()
+            },
+            &[],
+            &assets
+        ));
+    });
+    let packet = frame.finish();
+    let [
+        Command::Clear(_),
+        Command::View(background),
+        Command::View(native),
+        Command::Draw2d(ui),
+    ] = packet.commands()
+    else {
+        panic!("scene order")
+    };
+    assert_eq!(background.refdef.time_ms, 34);
+    assert_eq!(native.refdef.time_ms, -12);
+    assert_eq!(
+        packet.vertices(packet.polys(background.scene.polys)[0].vertices)[0].color,
+        [22; 4]
+    );
+    assert_eq!(
+        packet.vertices(packet.polys(native.scene.polys)[0].vertices)[0].color,
+        [11; 4]
+    );
+    assert_eq!(ui.rect, [1., 2., 3., 4.]);
+    assert!(front.recycle(packet).is_ok());
+}
+
+#[test]
+fn picture_clipping_keeps_texture_reversal_and_seat_bounds() {
+    let viewport = qa_render::Viewport {
+        x: 100,
+        y: 20,
+        width: 40,
+        height: 30,
+    };
+    let draw = qa_render::scene::Draw2d {
+        rect: [150., 15., -60., 40.],
+        texcoords: [0., 0., 1., 1.],
+        ..Default::default()
+    }
+    .clipped(viewport)
+    .unwrap();
+    assert_eq!(draw.rect, [100., 20., 40., 30.]);
+    assert_eq!(draw.texcoords, [5. / 6., 0.125, 1. / 6., 0.875]);
+    assert!(
+        qa_render::scene::Draw2d {
+            rect: [0., 0., 2., 2.],
+            ..Default::default()
+        }
+        .clipped(viewport)
+        .is_none()
+    );
+}
+
+#[test]
+fn hyperspace_clears_only_the_native_viewport_on_cpu() {
+    let assets = Assets::load().unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([1, 2, 3, 4]).unwrap();
+    let viewport = qa_render::Viewport {
+        x: 2,
+        y: 1,
+        width: 7,
+        height: 4,
+    };
+    assert!(frame.render_scene(
+        Refdef {
+            viewport,
+            time_ms: -17,
+            hyperspace: true,
+            ..Default::default()
+        },
+        &[],
+        &assets
+    ));
+    let packet = frame.finish();
+    let mut cpu = qa_render::cpu::CpuBackend::load(12, 6).unwrap();
+    let stats = cpu.render(&packet, &assets);
+    assert_eq!(stats.views, 1);
+    assert_eq!(stats.rejected, 0);
+    for y in 0..6 {
+        for x in 0..12 {
+            let expected = if (2..9).contains(&x) && (1..5).contains(&y) {
+                [239, 239, 239, 255]
+            } else {
+                [1, 2, 3, 4]
+            };
+            assert_eq!(cpu.pixels()[y * 12 + x], u32::from_le_bytes(expected));
+        }
+    }
+}
+
 fn material(assets: &mut Assets, name: &str, sort: f32) -> MaterialId {
     assets
         .register_material(

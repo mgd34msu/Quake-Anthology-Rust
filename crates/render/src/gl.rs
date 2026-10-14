@@ -815,6 +815,14 @@ impl GlBackend {
                     self.viewport(view.refdef.viewport, true);
                     self.depth_state(true, true);
                     unsafe { (self.gl.clear)(DEPTH_BUFFER_BIT) };
+                    if view.refdef.hyperspace {
+                        let color = crate::stage::unit_rgba(view.refdef.hyperspace_color());
+                        unsafe {
+                            (self.gl.clear_color)(color[0], color[1], color[2], color[3]);
+                            (self.gl.clear)(COLOR_BUFFER_BIT);
+                        }
+                        continue;
+                    }
                     let projection = view_projection(view.refdef, tangent);
                     inputs = DrawInputs::for_view(&view.refdef);
                     self.collect_skies(

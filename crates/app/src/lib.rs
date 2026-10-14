@@ -165,6 +165,8 @@ impl Runtime {
     ) -> (
         qa_compat::services::EngineServices<'a>,
         Option<client_resources::ClientConnectionView<'a>>,
+        Option<&'a mut renderer::SceneComposer>,
+        Option<&'a model_assets::ModelCatalog>,
     ) {
         let client_connection = client.and_then(|(client, lifetime)| {
             client_resources::connection_view(
@@ -209,10 +211,7 @@ impl Runtime {
             commands,
             client_connection: None,
             renderer: self.renderer_configuration.as_deref(),
-            scene: self
-                .scene
-                .as_mut()
-                .and_then(renderer::SceneComposer::frame_mut),
+            scene: None,
             client_audio,
             vfs: &self.vfs,
             localization: &self.localization,
@@ -235,7 +234,12 @@ impl Runtime {
             portals,
             scratch,
         };
-        (services, client_connection)
+        (
+            services,
+            client_connection,
+            self.scene.as_mut(),
+            self.models.as_deref(),
+        )
     }
 
     /// Common client capacity is chosen at load; native limits belong to each connection.

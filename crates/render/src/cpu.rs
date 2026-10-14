@@ -36,7 +36,7 @@ pub struct CpuBackend {
     world: Option<world::WorldRaster>,
     evaluator: StageEvaluator,
     presentation: CpuPresentation,
-    time_ms: u64,
+    time_ms: i64,
 }
 
 struct Framebuffer {
@@ -461,6 +461,22 @@ impl CpuBackend {
                     self.presentation = camera.refdef.cpu_presentation;
                     self.time_ms = camera.refdef.time_ms;
                     self.clear_depth(camera.refdef.viewport, camera.refdef.far);
+                    if camera.refdef.hyperspace {
+                        let color = u32::from_le_bytes(camera.refdef.hyperspace_color());
+                        let width = self.frame.width;
+                        let mut buffers = self.frame.buffers();
+                        if let Some(rows) = buffers.rows(width, camera.refdef.viewport) {
+                            for y in rows {
+                                for x in camera.refdef.viewport.x
+                                    ..camera.refdef.viewport.x + camera.refdef.viewport.width
+                                {
+                                    let index = buffers.offset(width, x, y);
+                                    buffers.write_rgba(index, color, None);
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(world) = &mut self.world {
                         observe(PreparePoint::Begin);
                         let prepared = world.prepare_view_dispatched(

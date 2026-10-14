@@ -311,7 +311,7 @@ impl Default for EntityLighting {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DrawInputs {
-    pub time_ms: u64,
+    pub time_ms: i64,
     pub entity_color: [u8; 4],
     pub entity_texcoord: [f32; 2],
     pub entity_shader_time: f32,
@@ -396,7 +396,11 @@ impl PreparedTiled {
             // storing r_newrefdef.time as float. GL/Q3 stage time differs.
             f64::from((inputs.time_ms as f64 * 0.001) as f32)
         } else {
-            EventTime::from_milliseconds(inputs.time_ms).seconds()
+            if let Ok(time) = u64::try_from(inputs.time_ms) {
+                EventTime::from_milliseconds(time).seconds()
+            } else {
+                qa_core::primitives::ThinkTime::Milliseconds(inputs.time_ms).seconds()
+            }
         };
         let phase = if tile.time_f32 {
             ((time as f32 * 20.0) as i32 & 127) as usize

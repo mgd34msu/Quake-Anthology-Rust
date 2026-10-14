@@ -1,6 +1,7 @@
 //! Client composition uses the same scene packets for either renderer.
 pub mod console;
 pub mod hud;
+pub(crate) mod native;
 pub mod text;
 use crate::{
     client_scene::{ClientSceneInput, SceneCounts},
@@ -247,15 +248,22 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
         origin: client.origin,
         axes: basis.axes(),
         fov,
-        time_ms: client.time_ms,
+        time_ms: client.time_ms as i64,
         ..Refdef::default()
     };
-    client.presentation.apply(&mut refdef);
+    apply_presentation(&mut refdef, &client.presentation, kind);
+    refdef
+}
+fn apply_presentation(
+    refdef: &mut Refdef,
+    presentation: &qa_render::material::world_load::PresentationDefaults,
+    kind: Kind,
+) {
+    presentation.apply(refdef);
     if matches!(kind, Kind::Gl) {
         refdef.blend_phase = BlendPhase::AfterView;
         refdef.palette_transform = None;
     }
-    refdef
 }
 /// The session owns one front end and its view scratch across module dispatch
 /// and built-in client composition.
@@ -264,6 +272,10 @@ pub struct SceneComposer {
     assets: Assets,
     scenes: Box<[Option<WorldScene>]>,
     frame: Option<qa_render::scene::Frame>,
+    publisher: Option<qa_core::primitives::ModuleId>,
+    native_owned: [bool; SeatId::COUNT],
+    native_axes: [Option<[qa_core::primitives::Vec3; 3]>; SeatId::COUNT],
+    kind: Kind,
 }
 
 impl SceneComposer {
@@ -308,6 +320,10 @@ impl SceneComposer {
                 assets,
                 scenes: scenes.into_boxed_slice(),
                 frame: None,
+                publisher: None,
+                native_owned: [false; SeatId::COUNT],
+                native_axes: [None; SeatId::COUNT],
+                kind: Kind::Cpu,
             },
             limits,
         ))
@@ -330,8 +346,16 @@ impl SceneComposer {
 
     pub fn begin_frame(&mut self) -> bool {
         self.discard_frame();
+        self.publisher = None;
+        self.native_axes.fill(None);
         self.frame = self.frontend.begin_frame([18, 26, 34, 255]);
         self.frame.is_some()
+    }
+    pub(crate) fn native_owners(&mut self, owners: [bool; SeatId::COUNT]) {
+        self.native_owned = owners;
+    }
+    pub(crate) fn submitted_axes(&self, seat: usize) -> Option<[qa_core::primitives::Vec3; 3]> {
+        self.native_axes[seat]
     }
 
     /// A headless client phase still retires its owned list before reuse.
@@ -407,7 +431,8 @@ impl Renderer {
                     .ok_or("console vertex capacity")?,
             )
             .ok_or("console vertex capacity")?;
-        let (scene, limits) = SceneComposer::load(limits, assets, worlds)?;
+        let (mut scene, limits) = SceneComposer::load(limits, assets, worlds)?;
+        scene.kind = kind;
         let backend = match context {
             Context::Cpu(_) => {
                 let physical_cores = qa_platform::physical_core_count();
@@ -556,68 +581,76 @@ impl Renderer {
         let count = views.iter().filter(|view| view.is_some()).count();
         let mut view_index = 0;
         let mut rejected = 0;
-        for (seat, client) in views.iter().enumerate() {
-            let Some(client) = client else {
-                continue;
-            };
-            let viewport = viewport(self.width, self.height, view_index, count);
-            view_index += 1;
-            let Some(scene) = composition
-                .scenes
-                .get_mut(client.world.0 as usize)
-                .and_then(Option::as_mut)
-            else {
-                rejected += 1;
-                continue;
-            };
-            let Some(world) = composition.assets.world(client.world) else {
-                rejected += 1;
-                continue;
-            };
-            let mut refdef = view_refdef(*client, viewport, self.kind);
-            if let Some(hud) = hud[seat] {
-                self.sample.hud += hud.apply_lightstyles(&mut refdef);
-            }
-            // Native snapshot areas use at most 255 bytes. This bounded stack
-            // scratch is shared by visibility and the copied scene command.
-            let mut area_mask = [0; 256];
-            let hidden_areas = if let Some(client_scene) = &scenes[seat] {
-                let (mask, truncated) = client_scene.hidden_areas(&mut area_mask);
-                self.sample.client_scene.unsupported += u32::from(truncated);
-                mask
-            } else {
-                &[]
-            };
-            let Ok(surfaces) = scene.views[seat].query(world, refdef, None, hidden_areas) else {
-                rejected += 1;
-                continue;
-            };
-            self.sample.visible_surfaces += surfaces.len() as u32;
-            frame.clear_scene();
-            let world_added = frame.add_world(client.world, client.world_presentation, surfaces);
-            if let Some(client_scene) = &scenes[seat] {
-                self.sample.client_scene += client_scene.append(
-                    &mut frame,
-                    &composition.assets,
-                    &refdef,
-                    matches!(self.kind, Kind::Cpu),
-                );
-            }
-            if let Some(effect_client) = self.effect_clients[seat] {
-                self.effects
-                    .append(&mut frame, effect_client.client, effect_client.lifetime);
-            }
-            if !world_added || !frame.render_scene(refdef, hidden_areas, &composition.assets) {
-                rejected += 1;
-            }
-            if let Some(hud) = hud[seat] {
-                if let Some(assets) = self.hud[hud.rules as usize].as_mut() {
-                    self.sample.hud += assets.append(&mut frame, &composition.assets, hud, refdef);
-                } else if hud.show_text {
-                    self.sample.hud.missing_font += 1;
+        frame.background(|frame| {
+            for (seat, client) in views.iter().enumerate() {
+                let Some(client) = client else {
+                    continue;
+                };
+                let viewport = viewport(self.width, self.height, view_index, count);
+                view_index += 1;
+                if composition.native_owned[seat] {
+                    rejected += u32::from(composition.native_axes[seat].is_none());
+                    continue;
+                }
+                let Some(scene) = composition
+                    .scenes
+                    .get_mut(client.world.0 as usize)
+                    .and_then(Option::as_mut)
+                else {
+                    rejected += 1;
+                    continue;
+                };
+                let Some(world) = composition.assets.world(client.world) else {
+                    rejected += 1;
+                    continue;
+                };
+                let mut refdef = view_refdef(*client, viewport, self.kind);
+                if let Some(hud) = hud[seat] {
+                    self.sample.hud += hud.apply_lightstyles(&mut refdef);
+                }
+                // Native snapshot areas use at most 255 bytes. This bounded stack
+                // scratch is shared by visibility and the copied scene command.
+                let mut area_mask = [0; 256];
+                let hidden_areas = if let Some(client_scene) = &scenes[seat] {
+                    let (mask, truncated) = client_scene.hidden_areas(&mut area_mask);
+                    self.sample.client_scene.unsupported += u32::from(truncated);
+                    mask
+                } else {
+                    &[]
+                };
+                let Ok(surfaces) = scene.views[seat].query(world, refdef, None, hidden_areas)
+                else {
+                    rejected += 1;
+                    continue;
+                };
+                self.sample.visible_surfaces += surfaces.len() as u32;
+                frame.clear_scene();
+                let world_added =
+                    frame.add_world(client.world, client.world_presentation, surfaces);
+                if let Some(client_scene) = &scenes[seat] {
+                    self.sample.client_scene += client_scene.append(
+                        frame,
+                        &composition.assets,
+                        &refdef,
+                        matches!(self.kind, Kind::Cpu),
+                    );
+                }
+                if let Some(effect_client) = self.effect_clients[seat] {
+                    self.effects
+                        .append(frame, effect_client.client, effect_client.lifetime);
+                }
+                if !world_added || !frame.render_scene(refdef, hidden_areas, &composition.assets) {
+                    rejected += 1;
+                }
+                if let Some(hud) = hud[seat] {
+                    if let Some(assets) = self.hud[hud.rules as usize].as_mut() {
+                        self.sample.hud += assets.append(frame, &composition.assets, hud, refdef);
+                    } else if hud.show_text {
+                        self.sample.hud.missing_font += 1;
+                    }
                 }
             }
-        }
+        });
         self.sample.console = self.console.append(
             &mut frame,
             &composition.assets,
@@ -673,7 +706,7 @@ impl Renderer {
     }
 }
 
-fn viewport(width: u32, height: u32, view: usize, count: usize) -> Viewport {
+pub(crate) fn viewport(width: u32, height: u32, view: usize, count: usize) -> Viewport {
     let columns = if count > 1 { 2 } else { 1 };
     let rows = if count > 2 { 2 } else { 1 };
     let x = view as u32 % columns;

@@ -794,6 +794,7 @@ fn run() -> Result<(), String> {
             }
         }
     }
+    host.configure_native_scenes(&profiles, &seat_model_profiles, width as u32, height as u32)?;
     if !host.runtime.quit {
         // CLIENT precaches borrow the same cold asset owner as SERVER and
         // configured profiles. Freeze it only after module registration ends.

@@ -7,6 +7,62 @@ use qa_core::{
 };
 
 impl FrameHost {
+    /// Module renderer provenance is independent of the SERVER publisher's
+    /// configstring profile. Bind it before CLIENT initialization freezes assets.
+    pub fn configure_native_scenes(
+        &mut self,
+        defaults: &[Option<crate::model_assets::ModelProfile>; 5],
+        seats: &[[Option<crate::model_assets::ModelProfile>; 5];
+             qa_core::sys_events::SeatId::COUNT],
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let Some(modules) = self.modules.as_mut() else {
+            return Ok(());
+        };
+        let count = self.local_clients.iter().flatten().count();
+        for row in modules
+            .rows
+            .iter_mut()
+            .flatten()
+            .filter(|row| row.request.phase == super::Phase::Client)
+        {
+            let source = row.request.context.native_rules as usize;
+            let seat = row.client_connection.and_then(|(client, _)| {
+                self.runtime
+                    .snapshots
+                    .get(client.0 as usize)?
+                    .as_ref()?
+                    .seat()
+            });
+            let profile = seat
+                .and_then(|seat| seats[seat.index()][source])
+                .or(defaults[source])
+                .ok_or("missing module renderer profile")?;
+            let (viewport, world, presentation) = if let Some(seat) = seat {
+                let view_index = self.local_clients[..seat.index()].iter().flatten().count();
+                (
+                    crate::renderer::viewport(width, height, view_index, count),
+                    self.local_worlds[seat.index()],
+                    self.local_presentations[seat.index()],
+                )
+            } else {
+                (
+                    qa_render::Viewport {
+                        x: 0,
+                        y: 0,
+                        width,
+                        height,
+                    },
+                    None,
+                    Default::default(),
+                )
+            };
+            row.scene_role
+                .configure(profile, viewport, seat, world, presentation);
+        }
+        Ok(())
+    }
     /// Native Q3 SERVER storage supplies its own gamestate. Encoding borrows
     /// the source rows; only the existing output ring retains the message.
     pub(crate) fn publish_module_game_states(&mut self) {
