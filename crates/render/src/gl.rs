@@ -20,6 +20,9 @@ use std::marker::PhantomData;
 use std::mem::{offset_of, size_of, size_of_val};
 use std::ptr::{self, NonNull};
 
+mod composite;
+use composite::MaterialTargets;
+
 type Sync = *mut c_void;
 
 macro_rules! procedures {
@@ -116,6 +119,19 @@ procedures! {
     delete_fence: "glDeleteSync"(Sync);
     read_pixels: "glReadPixels"(i32, i32, i32, i32, u32, u32, *mut c_void);
     read_buffer: "glReadBuffer"(u32);
+    draw_buffer: "glDrawBuffer"(u32);
+    gen_framebuffers: "glGenFramebuffers"(i32, *mut u32);
+    bind_framebuffer: "glBindFramebuffer"(u32, u32);
+    delete_framebuffers: "glDeleteFramebuffers"(i32, *const u32);
+    framebuffer_texture: "glFramebufferTexture2D"(u32, u32, u32, u32, i32);
+    check_framebuffer: "glCheckFramebufferStatus"(u32) -> u32;
+    framebuffer_parameter: "glGetFramebufferAttachmentParameteriv"(u32, u32, u32, *mut i32);
+    blit_framebuffer: "glBlitFramebuffer"(i32, i32, i32, i32, i32, i32, i32, i32, u32, u32);
+    gen_renderbuffers: "glGenRenderbuffers"(i32, *mut u32);
+    bind_renderbuffer: "glBindRenderbuffer"(u32, u32);
+    renderbuffer_storage: "glRenderbufferStorage"(u32, u32, i32, i32);
+    framebuffer_renderbuffer: "glFramebufferRenderbuffer"(u32, u32, u32, u32);
+    delete_renderbuffers: "glDeleteRenderbuffers"(i32, *const u32);
     pixel_store: "glPixelStorei"(u32, i32);
 }
 
@@ -479,6 +495,8 @@ pub struct GlBackend {
     width: u32,
     height: u32,
     program: u32,
+    material_targets: MaterialTargets,
+    scoped_sky: Option<Option<[FaceBounds; 6]>>,
     uniforms: Uniforms,
     static_vao: u32,
     model_vao: u32,
@@ -563,6 +581,8 @@ impl GlBackend {
             width,
             height,
             program,
+            material_targets: MaterialTargets::default(),
+            scoped_sky: None,
             uniforms,
             static_vao: 0,
             model_vao: 0,
@@ -583,6 +603,12 @@ impl GlBackend {
         };
         unsafe {
             backend.load_static(assets)?;
+            backend.material_targets.load(
+                &backend.gl,
+                width,
+                height,
+                &backend.configuration.display,
+            )?;
             let gl = &backend.gl;
             (gl.gen_buffers)(1, &mut backend.dynamic.buffer);
             (gl.bind_buffer)(ARRAY_BUFFER, backend.dynamic.buffer);
@@ -841,70 +867,63 @@ impl GlBackend {
                         inputs.view_origin,
                         &mut stats,
                     );
-                    for item in list.draws(view.scene.draws) {
-                        match item.kind {
-                            DrawKind::Surface => self.world_surface(
-                                *item,
-                                list,
-                                assets,
-                                &projection,
-                                inputs,
-                                &view.refdef.lightstyles,
-                                view.refdef.far,
-                                &mut stats,
-                            ),
-                            DrawKind::Entity => self.entity(
-                                list.entity(item.index),
-                                assets,
-                                &projection,
-                                inputs,
-                                view.refdef.far,
-                                &mut stats,
-                            ),
-                            DrawKind::Poly => {
-                                let poly = list.poly(item.index);
-                                let inputs = inputs.for_poly(poly, list);
-                                let Some(material) = assets.material(poly.material) else {
-                                    stats.rejected = stats.rejected.saturating_add(1);
-                                    continue;
-                                };
-                                if material.settings.fog.is_some() {
-                                    stats.rejected = stats.rejected.saturating_add(1);
-                                    continue;
-                                }
-                                if matches!(material.settings.sky, Some(Sky::Cube { .. })) {
-                                    self.draw_sky(
-                                        poly.material,
+                    for &item in list.draws(view.scene.draws) {
+                        let opacity = crate::scene::draw_entity(list, item)
+                            .and_then(|entity| entity.material_opacity);
+                        if opacity.is_some_and(|opacity| opacity.value() == 0.) {
+                            continue;
+                        }
+                        let before = stats.rejected;
+                        if opacity.is_some() {
+                            self.material_targets.begin(
+                                &self.gl,
+                                view.refdef.viewport,
+                                self.height,
+                            );
+                            self.scoped_sky = crate::sky::item_material(item, list, assets)
+                                .filter(|&id| {
+                                    assets.material(id).is_some_and(|material| {
+                                        matches!(material.settings.sky, Some(Sky::Cube { .. }))
+                                    })
+                                })
+                                .map(|_| {
+                                    crate::sky::submission_bounds(
+                                        list,
+                                        item,
                                         assets,
-                                        &projection,
-                                        inputs,
-                                        view.refdef.far,
-                                        &mut stats,
-                                    );
-                                    continue;
-                                }
-                                let vertices = list.vertices(poly.vertices);
-                                let Some(first) = self.upload(vertices) else {
-                                    stats.rejected = stats.rejected.saturating_add(1);
-                                    continue;
-                                };
-                                if !self.draw_dynamic(
-                                    assets,
-                                    poly.material,
-                                    first,
-                                    vertices.len(),
-                                    &projection,
-                                    inputs,
-                                    true,
-                                    false,
-                                ) {
-                                    stats.rejected = stats.rejected.saturating_add(1);
-                                    continue;
-                                }
-                                stats.triangles = stats
-                                    .triangles
-                                    .saturating_add(vertices.len().saturating_sub(2) as u32);
+                                        view.refdef.origin,
+                                    )
+                                });
+                        }
+                        self.draw_item(
+                            item,
+                            list,
+                            assets,
+                            &projection,
+                            inputs,
+                            &view.refdef,
+                            &mut stats,
+                        );
+                        self.scoped_sky = None;
+                        if let Some(opacity) = opacity {
+                            self.material_targets.finish(
+                                &self.gl,
+                                opacity,
+                                before == stats.rejected,
+                                self.static_vao,
+                            );
+                            // The composite program owns only color. Reestablish the
+                            // ordinary executor's context and invalidate touched caches.
+                            unsafe {
+                                (self.gl.use_program)(self.program);
+                                (self.gl.depth_range)(0., 1.);
                             }
+                            self.state = State {
+                                vao: u32::MAX,
+                                texture: u32::MAX,
+                                sampler: u32::MAX,
+                                ..State::default()
+                            };
                         }
                     }
                     for particle in list.particles(view.scene.particles) {
@@ -963,6 +982,79 @@ impl GlBackend {
         }
         self.end_dynamic();
         stats
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "One draw consumes validated view and copied scene inputs"
+    )]
+    fn draw_item(
+        &mut self,
+        item: DrawItem,
+        list: &CommandList,
+        assets: &Assets,
+        projection: &[f32; 16],
+        inputs: DrawInputs,
+        view: &Refdef,
+        stats: &mut BackendStats,
+    ) {
+        match item.kind {
+            DrawKind::Surface => self.world_surface(
+                item,
+                list,
+                assets,
+                projection,
+                inputs,
+                &view.lightstyles,
+                view.far,
+                stats,
+            ),
+            DrawKind::Entity => self.entity(
+                list.entity(item.index),
+                assets,
+                projection,
+                inputs,
+                view.far,
+                stats,
+            ),
+            DrawKind::Poly => {
+                let poly = list.poly(item.index);
+                let inputs = inputs.for_poly(poly, list);
+                let Some(material) = assets.material(poly.material) else {
+                    stats.rejected = stats.rejected.saturating_add(1);
+                    return;
+                };
+                if material.settings.fog.is_some() {
+                    stats.rejected = stats.rejected.saturating_add(1);
+                    return;
+                }
+                if matches!(material.settings.sky, Some(Sky::Cube { .. })) {
+                    self.draw_sky(poly.material, assets, projection, inputs, view.far, stats);
+                    return;
+                }
+                let vertices = list.vertices(poly.vertices);
+                let Some(first) = self.upload(vertices) else {
+                    stats.rejected = stats.rejected.saturating_add(1);
+                    return;
+                };
+                if !self.draw_dynamic(
+                    assets,
+                    poly.material,
+                    first,
+                    vertices.len(),
+                    projection,
+                    inputs,
+                    true,
+                    false,
+                ) {
+                    stats.rejected = stats.rejected.saturating_add(1);
+                    return;
+                }
+                stats.triangles = stats
+                    .triangles
+                    .saturating_add(vertices.len().saturating_sub(2) as u32);
+            }
+        }
     }
 
     fn begin_dynamic(&mut self) -> bool {
@@ -1077,7 +1169,12 @@ impl GlBackend {
         self.skies.begin_frame();
         crate::sky::for_each_sky_triangle(list, draws, assets, |material, submission| {
             match submission {
-                crate::sky::SkySubmission::Begin(_) => {
+                crate::sky::SkySubmission::Begin(item) => {
+                    if crate::scene::draw_entity(list, item)
+                        .is_some_and(|entity| entity.material_opacity.is_some())
+                    {
+                        return false;
+                    }
                     return self.sky_clip(material, assets, stats).is_some();
                 }
                 crate::sky::SkySubmission::Triangle(points) => {
@@ -1139,7 +1236,11 @@ impl GlBackend {
         else {
             return;
         };
-        let Some(mut bounds) = self.skies.take_for_draw(material_id.0 as usize) else {
+        let bounds = match self.scoped_sky.take() {
+            Some(bounds) => bounds,
+            None => self.skies.take_for_draw(material_id.0 as usize),
+        };
+        let Some(mut bounds) = bounds else {
             return;
         };
         if material.settings.fog.is_some() {
@@ -1505,6 +1606,9 @@ impl GlBackend {
             return;
         }
         if let Some(Sky::Cube { .. }) = material.settings.sky {
+            let inputs = surface.entity.map_or(inputs, |index| {
+                inputs.entity_inputs(list.entity(index), false)
+            });
             self.draw_sky(material_id, assets, projection, inputs, far, stats);
             stats.surfaces = stats.surfaces.saturating_add(1);
             return;
@@ -1988,6 +2092,7 @@ impl GlBackend {
 
 impl Drop for GlBackend {
     fn drop(&mut self) {
+        self.material_targets.delete(&self.gl);
         unsafe {
             for &fence in &self.dynamic.fences {
                 if !fence.is_null() {
@@ -2088,8 +2193,15 @@ unsafe fn context_string(gl: &Gl, name: u32) -> Result<String, String> {
 }
 
 unsafe fn compile_program(gl: &Gl) -> Result<u32, String> {
-    let vertex = unsafe { compile_shader(gl, 0x8b31, VERTEX_SHADER)? };
-    let fragment = match unsafe { compile_shader(gl, 0x8b30, FRAGMENT_SHADER) } {
+    unsafe { compile_program_sources(gl, VERTEX_SHADER, FRAGMENT_SHADER) }
+}
+unsafe fn compile_program_sources(
+    gl: &Gl,
+    vertex_source: &str,
+    fragment_source: &str,
+) -> Result<u32, String> {
+    let vertex = unsafe { compile_shader(gl, 0x8b31, vertex_source)? };
+    let fragment = match unsafe { compile_shader(gl, 0x8b30, fragment_source) } {
         Ok(shader) => shader,
         Err(error) => {
             unsafe { (gl.delete_shader)(vertex) };
