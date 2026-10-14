@@ -57,7 +57,7 @@ impl HudView<'_> {
         }
         stats
     }
-    fn stat(self, index: usize) -> Option<i32> {
+    pub fn stat(self, index: usize) -> Option<i32> {
         let binding = self.values.native(self.layout.rules).stats.get(index)?;
         Some(self.hud.values.get(binding.id)?.as_integer())
     }

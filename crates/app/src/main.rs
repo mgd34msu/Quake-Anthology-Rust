@@ -1076,6 +1076,29 @@ fn run() -> Result<(), String> {
                 result.commands[0].server_time_ms
             ),
         );
+        for (seat, input) in host.client_hud_inputs().into_iter().enumerate() {
+            let Some(input) = input else { continue };
+            qa_console::logger::dev_print(
+                &host.console.cvars,
+                host.developer,
+                1,
+                format_args!(
+                    "{{\"event\":\"hud_frame\",\"frame\":{frame},\"seat\":{seat},\"statusbar_bytes\":{},\"health\":{},\"frame_glyphs\":{},\"frame_pictures\":{},\"frame_missing_font\":{},\"frame_missing_picture\":{},\"frame_unsupported\":{},\"frame_rejected\":{}}}",
+                    input
+                        .layout
+                        .statusbar()
+                        .and_then(|index| input.configs.config(index))
+                        .map_or(0, |text| text.text.len()),
+                    input.stat(1).unwrap_or_default(),
+                    renderer.sample.hud.glyphs,
+                    renderer.sample.hud.pictures,
+                    renderer.sample.hud.missing_font,
+                    renderer.sample.hud.missing_picture,
+                    renderer.sample.hud.unsupported,
+                    renderer.sample.hud.rejected
+                ),
+            );
+        }
         for (index, id) in local_clients.iter().enumerate() {
             let Some(id) = *id else { continue };
             let authoritative = &host.runtime.server.clients[id.0 as usize].player;

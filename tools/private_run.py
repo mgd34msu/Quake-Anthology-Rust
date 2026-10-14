@@ -160,11 +160,14 @@ def audio_summary(path, cues):
                 rms=(sum(v * v for v in data) / max(1, len(data))) ** 0.5)
 
 
-def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None, stdin_bytes=None, stdin_tty=False, backend="x11", input_after_first_frame=False, audio_driver="disk", content_links=None):
+def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None, stdin_bytes=None, stdin_tty=False, backend="x11", input_after_first_frame=False, audio_driver="disk", content_links=None, startup_timeout=None, capture_after_input=False):
     if backend not in ("x11", "sway", "weston"):
         raise ValueError("unknown private backend")
     if audio_driver not in ("disk", "dummy"):
         raise ValueError("private audio must use disk or dummy")
+    startup_timeout = min(timeout, 10 if startup_timeout is None else startup_timeout)
+    if startup_timeout <= 0:
+        raise ValueError("private startup timeout must be positive")
     binary, profile, evidence = binary.resolve(strict=True), profile.resolve(strict=True), evidence.resolve()
     if evidence.exists():
         raise ValueError("use a fresh evidence directory")
@@ -203,7 +206,8 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
               "owner_profile_source": str(profile), "copied_owner_settings": sorted(originals),
               "copied_profile": str(copied_profile), "argv": arguments, "gameplay_reached": False,
               "linked_content": linked_content,
-              "debugger": False, "timing_qualified": False, "cpu_affinity": cores}
+              "debugger": False, "timing_qualified": False, "cpu_affinity": cores,
+              "startup_timeout": startup_timeout}
 
     def spawn(name, argv, env=None, pass_fds=(), stdin=None):
         log = (evidence / (name + ".log")).open("w")
@@ -284,7 +288,7 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
             game = spawn("runtime", argv, env, stdin=terminal_slave)
         else:
             game = spawn("runtime", argv, env, stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL)
-        deadline = time.monotonic() + min(10, timeout)
+        deadline = time.monotonic() + startup_timeout
         window = None
         ready = False
         while game.poll() is None and time.monotonic() < deadline:
@@ -318,6 +322,12 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         if client:
             subprocess.run(["import", "-window", hex(window), str(evidence / "window.png")], env=env, check=True, timeout=10)
             client.drive(window, actions or [])
+            if capture_after_input:
+                if game.poll() is not None:
+                    raise RuntimeError("candidate exited before requested post-input capture")
+                path = evidence / "window-after-input.png"
+                subprocess.run(["import", "-window", hex(window), str(path)], env=env, check=True, timeout=10)
+                result["post_input_screenshot"] = str(path)
         else:
             capture = ["grim", str(evidence / "window.png")] if backend == "sway" else ["weston-screenshooter"]
             if spawn("capture", capture, env).wait(timeout=10) != 0:
@@ -397,6 +407,8 @@ def main():
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--input", type=Path)
     parser.add_argument("--timeout", type=float, default=30)
+    parser.add_argument("--startup-timeout", type=float)
+    parser.add_argument("--capture-after-input", action="store_true")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=400)
     parser.add_argument("--cores")
@@ -405,7 +417,8 @@ def main():
     arguments = args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments
     result = run(args.binary, args.owner_profile, args.evidence, arguments,
                  json.loads(args.input.read_text()) if args.input else None,
-                 args.timeout, (args.width, args.height), cores=args.cores)
+                 args.timeout, (args.width, args.height), cores=args.cores,
+                 startup_timeout=args.startup_timeout, capture_after_input=args.capture_after_input)
     print(json.dumps({"evidence": str(args.evidence), "result": result["result"],
                       "gameplay_reached": result["gameplay_reached"], "remaining_owned_pids": result["remaining_owned_pids"]}))
     return 0 if result["result"] == "PASS" else 1
