@@ -212,6 +212,7 @@ impl SceneService for SceneBorrow<'_> {
                 u32::try_from(submitted.skin).unwrap_or(0),
                 crate::model_assets::ModelMaterialPolicy {
                     custom_skin: submitted.custom_skin,
+                    frame: u32::try_from(submitted.frame).unwrap_or(0),
                     ..Default::default()
                 },
             ) else {

@@ -55,6 +55,110 @@ fn reference(client: ClientId) -> ModelRef {
 }
 
 #[test]
+fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
+    let fixture = support::Fixture::new(&[
+        ("sprites/test.sp2", support::sp2()),
+        ("sprites/first.pcx", support::pcx(11)),
+        ("sprites/second.pcx", support::pcx(22)),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let request = ModelRequest::native("sprites/test.sp2", RuleSetId::Quake2, Some(palette));
+    let (assets, models) =
+        ModelCatalog::load(&fixture.vfs, assets, [request], [], ModelLimits::default()).unwrap();
+    let client = ClientId(0);
+    let mut configs = configs();
+    configs
+        .set(
+            ConfigLayout::QUAKE2.resources[0].get(50).unwrap(),
+            request.path.as_bytes(),
+        )
+        .unwrap();
+    let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
+    assert_eq!(
+        bindings.bind_all(&configs, &models, request.profile(), None),
+        0
+    );
+    let projection = EntityProjection::load(Protocol::Quake2_34);
+    let player_projection = PlayerProjection::load(Protocol::Quake2_34, &[]);
+    let player = PlayerState::default();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut materials = vec![];
+    for native_frame in [0, 1, 2] {
+        let mut appearance = EntityAppearance {
+            source: RuleSetId::Quake2,
+            frame: native_frame,
+            skin: 99,
+            ..Default::default()
+        };
+        appearance.models[0] = Some(reference(client));
+        let record = EntityRecord {
+            position: Vec3([16., 0., 0.]),
+            appearance,
+            ..Default::default()
+        };
+        let mut words = [0; states::Q2_ENTITY_WORDS];
+        assert!(projection.reduce(
+            &record,
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal)
+        ));
+        let rows = [Entity { number: 12, words }];
+        let native_player = [0; states::Q2_PLAYER_WORDS];
+        let input = ClientSceneInput {
+            client,
+            current: Some(ReceivedFrame::Quake2(Frame {
+                sequence: 1,
+                time: ThinkTime::Milliseconds(100),
+                command: 0,
+                flags: 0,
+                qw_peers: 0,
+                areas: &[],
+                player: &native_player,
+                entities: &rows,
+            })),
+            previous: None,
+            projection: &projection,
+            appearance: qa_gameplay::rules::appearance::policy(RuleSetId::Quake2),
+            player_projection: &player_projection,
+            bindings: &bindings,
+            models: &models,
+            static_entities: &[],
+            player: &player,
+            weapon_view_angles: player.view_angles,
+            alias_roll: AliasRoll::default(),
+            interpolation: Interpolation::default(),
+            gun_animation: None,
+            gun_previous: None,
+            view_entity: None,
+        };
+        let mut frame = frontend.begin_frame([0; 4]).unwrap();
+        let refdef = Refdef::default();
+        let counts = input.append(&mut frame, &assets, &refdef, true);
+        assert_eq!(
+            (counts.models, counts.rejected, counts.missing_models),
+            (1, 0, 0)
+        );
+        assert!(frame.render_scene(refdef, &[], &assets));
+        let packet = frame.finish();
+        let entity = packet.entity(0);
+        materials.push(entity.material.unwrap());
+        let qa_render::SceneModel::Mesh(model) = entity.model else {
+            panic!("sprite model")
+        };
+        assert_eq!(
+            assets.model(model).unwrap().sprite.unwrap().extents[0],
+            if native_frame == 1 { 4. } else { -2. }
+        );
+        assert_eq!(packet.rejected, 0);
+        assert!(frontend.recycle(packet).is_ok());
+    }
+    assert_ne!(materials[0], materials[1]);
+    assert_eq!(materials[0], materials[2]);
+}
+
+#[test]
 fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() {
     use qa_app::client_resources::ClientResources;
 

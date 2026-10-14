@@ -308,6 +308,12 @@ pub struct Model {
     pub material: MaterialId,
     pub vertices_per_frame: usize,
     frame_count: u32,
+    pub sprite: Option<SpriteGeometry>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpriteGeometry {
+    /// Authored left, right, top and bottom offsets from the entity origin.
+    pub extents: [f32; 4],
 }
 
 /// A resolved frame pair. Both backends validate the entity once, before
@@ -432,6 +438,7 @@ impl Assets {
                 material: MaterialId(0),
                 vertices_per_frame: 0,
                 frame_count: 1,
+                sprite: None,
             }],
             worlds: Vec::new(),
             presentations: Vec::new(),
@@ -673,6 +680,30 @@ impl Assets {
             material,
             vertices_per_frame,
             frame_count,
+            sprite: None,
+        });
+        Ok(id)
+    }
+    pub fn register_sprite(
+        &mut self,
+        geometry: SpriteGeometry,
+        material: MaterialId,
+    ) -> Result<ModelId, &'static str> {
+        if !geometry.extents.iter().all(|x| x.is_finite())
+            || geometry.extents[0] >= geometry.extents[1]
+            || geometry.extents[3] >= geometry.extents[2]
+            || self.material(material).is_none()
+        {
+            return Err("invalid sprite geometry");
+        }
+        let id = ModelId(u32::try_from(self.models.len()).map_err(|_| "model table full")?);
+        self.models.push(Model {
+            vertices: Box::new([]),
+            indices: Box::new([]),
+            material,
+            vertices_per_frame: 0,
+            frame_count: 1,
+            sprite: Some(geometry),
         });
         Ok(id)
     }

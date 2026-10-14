@@ -5,15 +5,11 @@ use qa_app::model_assets::{
     ModelCatalog, ModelCatalogBuilder, ModelLimits, ModelMaterialPolicy, ModelProfile, ModelRequest,
 };
 use qa_compat::services::{ModelLoader, ModelLookup};
-use qa_core::primitives::{Bounds, IndexSpan, RuleSetId, Vec3};
+use qa_core::primitives::{Bounds, RuleSetId, Vec3};
 use qa_render::assets::{SoftwareAlias, StageTexture};
 use qa_render::shader::{AlphaGen, RgbGen, StageBlend};
-use qa_render::world::{
-    SurfaceMaterial, WorldId, WorldPresentationId,
-    geometry::{GeometryPartition, PatchStats, WorldGeometry, WorldModel},
-};
+use qa_render::world::{WorldId, WorldPresentationId};
 use qa_render::{Assets, PaletteId};
-use qa_world::visibility::{PvsRows, VisLeaf, VisibilityWorld};
 
 fn load(
     fixture: &support::Fixture,
@@ -26,6 +22,150 @@ fn load(
 
 fn native_profile(rules: RuleSetId, palette: PaletteId) -> ModelProfile {
     ModelRequest::native("", rules, Some(palette)).profile()
+}
+
+#[test]
+fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
+    use qa_render::{Command, FrontEnd, Limits, Refdef, SceneEntity, Viewport};
+    let fixture = support::Fixture::new(&[
+        ("sprites/test.sp2", support::sp2()),
+        ("sprites/first.pcx", support::pcx(11)),
+        ("sprites/second.pcx", support::pcx(22)),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let request = ModelRequest::native("sprites/test.sp2", RuleSetId::Quake2, Some(palette));
+    let (assets, catalog) = load(&fixture, assets, &[request], ModelLimits::default()).unwrap();
+    assert!(catalog.diagnostics.is_empty());
+    assert_eq!(catalog.capacity().surfaces, 1);
+    assert_eq!(catalog.capacity().skins, 2);
+    fixture.remove("sprites/test.sp2");
+    fixture.remove("sprites/first.pcx");
+    fixture.remove("sprites/second.pcx");
+    let registration = catalog
+        .registration(request.path, request.profile())
+        .unwrap();
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut cpu = qa_render::cpu::CpuBackend::load(32, 32).unwrap();
+    for frame_number in [0, 1, 2] {
+        let binding = catalog
+            .bindings(
+                registration,
+                99,
+                ModelMaterialPolicy {
+                    frame: frame_number,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .next()
+            .unwrap();
+        let geometry = assets.model(binding.model).unwrap().sprite.unwrap();
+        let expected = if frame_number % 2 == 0 {
+            [-2., 6., 3., -1.]
+        } else {
+            [4., 16., 3., -3.]
+        };
+        assert_eq!(geometry.extents, expected);
+        let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
+        assert!(frame.add_entity(SceneEntity {
+            model: binding.model.into(),
+            material: Some(binding.material),
+            origin: Vec3([16., 0., 0.]),
+            ..Default::default()
+        }));
+        let refdef = Refdef {
+            viewport: Viewport {
+                width: 32,
+                height: 32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(frame.render_scene(refdef, &[], &assets));
+        let packet = frame.finish();
+        let view = packet
+            .commands()
+            .iter()
+            .find_map(|cmd| {
+                if let Command::View(view) = cmd {
+                    Some(view)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(view.scene.polys.count, 2);
+        let poly = packet.poly(view.scene.polys.first);
+        assert_eq!(
+            packet.vertices(poly.vertices)[0].position,
+            Vec3([16., -expected[0], expected[2]])
+        );
+        assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+        assert!(
+            cpu.pixels()
+                .iter()
+                .any(|&p| p != u32::from_le_bytes([0, 0, 0, 255]))
+        );
+        assert!(front.recycle(packet).is_ok());
+    }
+}
+
+#[test]
+fn retail_rerelease_sp2_uses_the_existing_archive_image_and_model_paths() {
+    let Some(root) = std::env::var_os("QA_Q2_RERELEASE_ROOT") else {
+        return;
+    };
+    let mut vfs = qa_content::vfs::Vfs::default();
+    vfs.mount_product(std::path::Path::new(&root), 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let native = ModelRequest::native(
+        "sprites/s_bfg1.sp2",
+        RuleSetId::Quake2Rerelease,
+        Some(palette),
+    );
+    let mut foreign = native;
+    foreign.rules = RuleSetId::Quake3;
+    foreign.palette = None;
+    foreign.image_settings = qa_render::material::resources::ImageSettings::native(foreign.rules);
+    let (assets, catalog) =
+        ModelCatalog::load(&vfs, assets, [native, foreign], [], ModelLimits::default()).unwrap();
+    assert!(catalog.diagnostics.is_empty());
+    for request in [native, foreign] {
+        let registration = catalog
+            .registration(request.path, request.profile())
+            .unwrap();
+        let mut frame_materials = vec![];
+        for frame in [0, 1, 2] {
+            let binding = catalog
+                .bindings(
+                    registration,
+                    0,
+                    ModelMaterialPolicy {
+                        frame,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .next()
+                .unwrap();
+            let model = assets.model(binding.model).unwrap();
+            assert!(model.sprite.is_some());
+            let material = assets.material(binding.material).unwrap();
+            assert_eq!(
+                material.stages[0].alpha_test,
+                qa_render::shader::AlphaFunc::AtLeastHalf
+            );
+            let StageTexture::Image(image) = material.stages[0].texture else {
+                panic!("sprite image")
+            };
+            assert!(assets.image(image).unwrap().width > 0);
+            frame_materials.push(binding.material);
+        }
+        assert_ne!(frame_materials[0], frame_materials[1]);
+        assert_eq!(frame_materials[0], frame_materials[2]);
+    }
 }
 
 fn shader_profile(presentation: RuleSetId) -> ModelProfile {
@@ -1468,6 +1608,7 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
                     translucent,
                     fullbright,
                     custom_skin: 0,
+                    frame: 0,
                 };
                 let binding = catalog
                     .bindings(registration, 0, policy)

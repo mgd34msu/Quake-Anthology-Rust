@@ -7,7 +7,7 @@ use qa_core::primitives::{Bounds, IndexSpan, NameId, Orientation, RuleSetId};
 use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Mesh, Model, ModelFormat};
 use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSource};
-use qa_render::assets::{MaterialSettings, SoftwareAlias, Stage, StageTexture};
+use qa_render::assets::{ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture};
 use qa_render::material::resources::{ImageSettings, ImageUse, Images, ImagesState, IndexedTarget};
 use qa_render::shader::{
     AlphaFunc, AlphaGen, Cull, DepthFunc, RgbGen, ShaderCatalog, ShaderDef, ShaderStage,
@@ -107,6 +107,7 @@ pub struct ModelMaterialPolicy {
     pub translucent: bool,
     pub fullbright: bool,
     pub custom_skin: i32,
+    pub frame: u32,
 }
 impl ModelMaterialPolicy {
     const ALL: [Self; 4] = [
@@ -114,21 +115,25 @@ impl ModelMaterialPolicy {
             translucent: false,
             fullbright: false,
             custom_skin: 0,
+            frame: 0,
         },
         Self {
             translucent: false,
             fullbright: true,
             custom_skin: 0,
+            frame: 0,
         },
         Self {
             translucent: true,
             fullbright: false,
             custom_skin: 0,
+            frame: 0,
         },
         Self {
             translucent: true,
             fullbright: true,
             custom_skin: 0,
+            frame: 0,
         },
     ];
     fn index(self) -> usize {
@@ -144,6 +149,7 @@ struct SurfaceMaterials {
     name: NameId,
     skins: IndexSpan,
     wrap_skins: bool,
+    frame_skins: bool,
 }
 
 /// Numeric, allocation-free iteration over every surface of one registration.
@@ -160,16 +166,21 @@ impl Iterator for ModelBindings<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         let (surface, remaining) = self.surfaces.split_first()?;
         self.surfaces = remaining;
-        let skin = if surface.wrap_skins {
-            self.skin % surface.skins.count
-        } else if self.skin < surface.skins.count {
+        let selected = if surface.frame_skins {
+            self.policy.frame
+        } else {
             self.skin
+        };
+        let skin = if surface.wrap_skins || surface.frame_skins {
+            selected % surface.skins.count
+        } else if selected < surface.skins.count {
+            selected
         } else {
             0
         };
         let mut binding =
             self.materials[(surface.skins.first + skin) as usize].variants[self.policy.index()];
-        if let Some(custom) = self.custom {
+        if let Some(custom) = self.custom.filter(|_| !surface.frame_skins) {
             binding.material = custom
                 .binary_search_by_key(&surface.name.0, |entry| entry.surface.0)
                 .ok()
@@ -600,6 +611,12 @@ impl ModelCatalogBuilder {
             .as_ref()
             .ok()
             .map(|model| {
+                if model.format == ModelFormat::Sp2 {
+                    return Ok(vec![
+                        self.admit_name(b"sprite")
+                            .map_err(|_| FileError::capacity("model surface names"))?,
+                    ]);
+                }
                 model
                     .meshes
                     .iter()
@@ -686,6 +703,9 @@ impl ModelCatalogBuilder {
                             wrap_skins: parsed
                                 .as_ref()
                                 .is_ok_and(|model| model.format == ModelFormat::Md3),
+                            frame_skins: parsed
+                                .as_ref()
+                                .is_ok_and(|model| model.format == ModelFormat::Sp2),
                         });
                         self.bindings.extend(skins);
                     }
@@ -1547,7 +1567,7 @@ fn inline_bindings(
 fn validate_model(model: &Model<'_>) -> Result<(), String> {
     if !matches!(
         model.format,
-        ModelFormat::Mdl | ModelFormat::Md2 | ModelFormat::Md3
+        ModelFormat::Mdl | ModelFormat::Md2 | ModelFormat::Md3 | ModelFormat::Sp2
     ) {
         return Err(format!(
             "model format not yet registered: {:?}",
@@ -1565,7 +1585,10 @@ fn validate_model(model: &Model<'_>) -> Result<(), String> {
     {
         return Err("grouped MDL frame/skin timing is not yet registered".to_owned());
     }
-    if model.format != ModelFormat::Md3 && model.skins.is_empty() {
+    if model.format != ModelFormat::Md3
+        && model.format != ModelFormat::Sp2
+        && model.skins.is_empty()
+    {
         return Err("model requires an explicit external skin".to_owned());
     }
     Ok(())
@@ -1581,6 +1604,9 @@ fn register(
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
 ) -> Result<Vec<Vec<ModelMaterials>>, String> {
+    if model.format == ModelFormat::Sp2 {
+        return register_sprites(model, images, registration, model_policy, capacity, limits);
+    }
     let next_surfaces = capacity
         .surfaces
         .checked_add(model.meshes.len())
@@ -1654,6 +1680,148 @@ fn register(
     Ok(surfaces)
 }
 
+fn register_sprites(
+    model: &Model<'_>,
+    images: &mut Images<'_>,
+    registration: &Registration,
+    policy: ModelPolicy,
+    capacity: &mut ModelCapacity,
+    limits: ModelLimits,
+) -> Result<Vec<Vec<ModelMaterials>>, String> {
+    let next_surfaces = capacity
+        .surfaces
+        .checked_add(1)
+        .filter(|&n| n <= limits.surfaces && n <= u32::MAX as usize)
+        .ok_or("model surface capacity")?;
+    let next_skins = capacity
+        .skins
+        .checked_add(model.sprites.len())
+        .filter(|&n| n <= limits.skins && n <= u32::MAX as usize)
+        .ok_or("model skin capacity")?;
+    let mut frames = Vec::with_capacity(model.sprites.len());
+    for (index, sprite) in model.sprites.iter().enumerate() {
+        if !matches!(sprite.image, Image::External(_)) {
+            return Err("SP2 frame requires an external image".to_owned());
+        }
+        let image = model_image(sprite.image, images, registration.profile, true, Some(255))?;
+        let mut variants = [MaterialId(0); 4];
+        for material_policy in ModelMaterialPolicy::ALL {
+            variants[material_policy.index()] = images.assets.register_material(
+                &format!(
+                    "{}#sprite{index}:{}",
+                    registration.path,
+                    material_policy.index()
+                ),
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    rgb_gen: RgbGen::ExactVertex,
+                    alpha_gen: AlphaGen::Vertex,
+                    alpha_test: if material_policy.translucent {
+                        AlphaFunc::None
+                    } else {
+                        AlphaFunc::AtLeastHalf
+                    },
+                    blend: material_policy.translucent.then_some(StageBlend::ALPHA),
+                    depth_write: !material_policy.translucent,
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    sort: if material_policy.translucent {
+                        6.0
+                    } else {
+                        3.0
+                    },
+                    ..MaterialSettings::default()
+                },
+            )?;
+        }
+        let geometry = qa_render::assets::SpriteGeometry {
+            extents: [
+                -(sprite.origin[0] as f32),
+                (i64::from(sprite.width) - i64::from(sprite.origin[0])) as f32,
+                (i64::from(sprite.height) - i64::from(sprite.origin[1])) as f32,
+                -(sprite.origin[1] as f32),
+            ],
+        };
+        let model = images.assets.register_sprite(geometry, variants[0])?;
+        frames.push(ModelMaterials {
+            variants: variants.map(|material| ModelBinding {
+                model,
+                material,
+                pose: policy.presentation.pose,
+            }),
+        });
+    }
+    capacity.surfaces = next_surfaces;
+    capacity.skins = next_skins;
+    Ok(vec![frames])
+}
+
+fn model_image(
+    image: Image<'_>,
+    images: &mut Images<'_>,
+    options: ModelProfile,
+    indexed_external_pcx: bool,
+    transparent: Option<u8>,
+) -> Result<ImageId, String> {
+    let usage = ImageUse::default();
+    Ok(match image {
+        Image::Indexed {
+            width,
+            height,
+            pixels,
+        } => {
+            let palette = options
+                .source_palette
+                .ok_or("indexed model requires a source palette")?;
+            let texture = IndexedTexture::load_base(width, height, pixels, transparent)?;
+            let image = images
+                .register_indexed(texture, palette)
+                .map_err(|error| format!("indexed skin: {error:?}"))?;
+            let params = images
+                .upload_params(usage)
+                .map_err(|error| format!("skin upload: {error:?}"))?;
+            images.assets.prepare_image(image, params)?;
+            images
+                .assets
+                .set_image_native_sampler(image, usage.sampler)?;
+            image
+        }
+        Image::External(path) => {
+            let path = std::str::from_utf8(path).map_err(|_| "skin path is not UTF-8")?;
+            if indexed_external_pcx
+                && qa_formats::image::ImageFormat::from_path(path.as_bytes())
+                    == Some(qa_formats::image::ImageFormat::Pcx)
+            {
+                images
+                    .indexed_pcx(
+                        path,
+                        options
+                            .source_palette
+                            .ok_or("PCX skin requires a source palette")?,
+                        transparent,
+                        None,
+                        usage,
+                    )
+                    .map_err(|error| format!("skin {path}: {error:?}"))?
+            } else {
+                images
+                    .raster(
+                        path,
+                        usage,
+                        options.palette.map(|palette| IndexedTarget {
+                            palette,
+                            transparent_index: Some(255),
+                        }),
+                    )
+                    .map_err(|error| format!("skin {path}: {error:?}"))?
+                    .id
+            }
+        }
+    })
+}
+
 fn alias_materials(
     skins: &[Image<'_>],
     images: &mut Images<'_>,
@@ -1661,63 +1829,15 @@ fn alias_materials(
     model_policy: ModelPolicy,
 ) -> Result<Vec<[MaterialId; 4]>, String> {
     let options = registration.profile;
-    let usage = ImageUse::default();
     let mut materials = Vec::with_capacity(skins.len());
     for (index, skin) in skins.iter().enumerate() {
-        let image = match *skin {
-            Image::Indexed {
-                width,
-                height,
-                pixels,
-            } => {
-                let palette = options
-                    .source_palette
-                    .ok_or("indexed model requires a source palette")?;
-                let texture = IndexedTexture::load_base(width, height, pixels, None)?;
-                let image = images
-                    .register_indexed(texture, palette)
-                    .map_err(|error| format!("indexed skin: {error:?}"))?;
-                let params = images
-                    .upload_params(usage)
-                    .map_err(|error| format!("skin upload: {error:?}"))?;
-                images.assets.prepare_image(image, params)?;
-                images
-                    .assets
-                    .set_image_native_sampler(image, usage.sampler)?;
-                image
-            }
-            Image::External(path) => {
-                let path = std::str::from_utf8(path).map_err(|_| "skin path is not UTF-8")?;
-                if model_policy.source.indexed_external_pcx
-                    && qa_formats::image::ImageFormat::from_path(path.as_bytes())
-                        == Some(qa_formats::image::ImageFormat::Pcx)
-                {
-                    images
-                        .indexed_pcx(
-                            path,
-                            options
-                                .source_palette
-                                .ok_or("PCX skin requires a source palette")?,
-                            None,
-                            None,
-                            usage,
-                        )
-                        .map_err(|error| format!("skin {path}: {error:?}"))?
-                } else {
-                    images
-                        .raster(
-                            path,
-                            usage,
-                            options.palette.map(|palette| IndexedTarget {
-                                palette,
-                                transparent_index: Some(255),
-                            }),
-                        )
-                        .map_err(|error| format!("skin {path}: {error:?}"))?
-                        .id
-                }
-            }
-        };
+        let image = model_image(
+            *skin,
+            images,
+            options,
+            model_policy.source.indexed_external_pcx,
+            None,
+        )?;
         let mut variants = [MaterialId(0); 4];
         for policy in ModelMaterialPolicy::ALL {
             variants[policy.index()] = images.assets.register_material(

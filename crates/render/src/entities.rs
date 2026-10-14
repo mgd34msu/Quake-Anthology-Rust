@@ -160,10 +160,51 @@ fn vertex(position: Vec3, uv: [f32; 2], color: [u8; 4]) -> Vertex {
     }
 }
 
-pub fn prepare(entity: &SceneEntity, view: Refdef) -> Option<Prepared> {
+fn sprite_quad(
+    entity: &SceneEntity,
+    view: Refdef,
+    mut left: Vec3,
+    up: Vec3,
+    extents: [f32; 4],
+) -> Prepared {
+    if view.reflected_view {
+        left = -left;
+    }
+    let corner = |l: f32, u: f32, uv| Vertex {
+        position: (entity.origin + left * l) + up * u,
+        normal: -view.axes[0],
+        texcoord: uv,
+        lightmap_coord: uv,
+        color: entity.color,
+    };
+    Prepared::Quad([
+        corner(extents[0], extents[2], [0., 0.]),
+        corner(extents[1], extents[2], [1., 0.]),
+        corner(extents[1], extents[3], [1., 1.]),
+        corner(extents[0], extents[3], [0., 1.]),
+    ])
+}
+pub fn prepare(entity: &SceneEntity, view: Refdef, assets: &crate::Assets) -> Option<Prepared> {
     Some(match entity.model {
+        SceneModel::Mesh(model) => {
+            let sprite = assets.model(model)?.sprite?;
+            let scale_x = qa_core::math::length(entity.axes[0]);
+            let scale_z = qa_core::math::length(entity.axes[2]);
+            sprite_quad(
+                entity,
+                view,
+                -view.axes[1],
+                view.axes[2],
+                [
+                    sprite.extents[0] * scale_x,
+                    sprite.extents[1] * scale_x,
+                    sprite.extents[2] * scale_z,
+                    sprite.extents[3] * scale_z,
+                ],
+            )
+        }
         SceneModel::Sprite { radius, rotation } => {
-            let (mut left, up) = if rotation == 0. {
+            let (left, up) = if rotation == 0. {
                 (view.axes[1] * radius, view.axes[2] * radius)
             } else {
                 let angle = (std::f64::consts::PI * f64::from(rotation) / 180.) as f32;
@@ -174,22 +215,7 @@ pub fn prepare(entity: &SceneEntity, view: Refdef) -> Option<Prepared> {
                     view.axes[2] * (cosine * radius) + view.axes[1] * (sine * radius),
                 )
             };
-            if view.reflected_view {
-                left = -left;
-            }
-            let corner = |l: f32, u: f32, uv| Vertex {
-                position: (entity.origin + left * l) + up * u,
-                normal: -view.axes[0],
-                texcoord: uv,
-                lightmap_coord: uv,
-                color: entity.color,
-            };
-            Prepared::Quad([
-                corner(1., 1., [0., 0.]),
-                corner(-1., 1., [1., 0.]),
-                corner(-1., -1., [1., 1.]),
-                corner(1., -1., [0., 1.]),
-            ])
+            sprite_quad(entity, view, left, up, [1., -1., 1., -1.])
         }
         SceneModel::Beam { end } => {
             let direction = end - entity.origin;
@@ -266,7 +292,7 @@ pub fn prepare(entity: &SceneEntity, view: Refdef) -> Option<Prepared> {
                 color: entity.color,
             }
         }
-        SceneModel::Mesh(_) | SceneModel::World { .. } => return None,
+        SceneModel::World { .. } => return None,
         SceneModel::Portal { .. } | SceneModel::PolyMarker => Prepared::Empty,
     })
 }

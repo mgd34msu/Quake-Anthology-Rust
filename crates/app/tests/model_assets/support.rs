@@ -238,6 +238,22 @@ pub fn tga(width: u16, height: u16, pixels: &[[u8; 4]]) -> Vec<u8> {
 pub fn pcx(index: u8) -> Vec<u8> {
     pcx_dimensions(8, 4, index)
 }
+
+pub fn sp2() -> Vec<u8> {
+    let mut bytes = b"IDS2".to_vec();
+    integer(&mut bytes, 2);
+    integer(&mut bytes, 2);
+    for (width, height, x, y, path) in [
+        (8, 4, 2, 1, "sprites/first.pcx"),
+        (12, 6, -4, 3, "sprites/second.pcx"),
+    ] {
+        for value in [width, height, x, y] {
+            integer(&mut bytes, value);
+        }
+        name(&mut bytes, path.as_bytes(), 64);
+    }
+    bytes
+}
 pub fn pcx_dimensions(width: u16, height: u16, index: u8) -> Vec<u8> {
     let mut bytes = vec![0; 128];
     bytes[..4].copy_from_slice(&[10, 5, 1, 8]);

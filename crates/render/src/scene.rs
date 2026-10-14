@@ -882,12 +882,12 @@ impl Frame {
         }
         true
     }
-    fn generated_fits(&self, refdef: Refdef) -> bool {
+    fn generated_fits(&self, refdef: Refdef, assets: &Assets) -> bool {
         let generated = self.list.entities
             [self.first.entities.first as usize..self.list.entity_count]
             .iter()
             .filter(|entity| entity.visibility.visible(refdef.portal))
-            .filter_map(|entity| crate::entities::prepare(entity, refdef))
+            .filter_map(|entity| crate::entities::prepare(entity, refdef, assets))
             .try_fold(0usize, |total, geometry| {
                 total.checked_add(geometry.triangle_count())
             });
@@ -947,7 +947,7 @@ impl Frame {
                         })
                         && self.render_scene(child, hidden_areas, assets)
                         && self.copy_scene(source, None)
-                        && self.generated_fits(refdef)
+                        && self.generated_fits(refdef, assets)
                         && self.list.command_count < self.list.commands.len()
                         && hidden_areas.len() <= self.list.area_bytes.len() - self.list.area_count;
                     if !retained {
@@ -1230,7 +1230,7 @@ impl Frame {
             }
             if draw.kind == DrawKind::Entity
                 && let Some(geometry) =
-                    crate::entities::prepare(self.list.entity(draw.index), refdef)
+                    crate::entities::prepare(self.list.entity(draw.index), refdef, assets)
             {
                 let count = geometry.triangle_count();
                 if count > self.list.polys.len() - self.list.poly_count

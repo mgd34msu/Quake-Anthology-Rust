@@ -591,6 +591,7 @@ impl ClientSceneInput<'_> {
                     translucent: capabilities.alpha != 1.0,
                     fullbright: capabilities.fullbright,
                     custom_skin: 0,
+                    frame: u32::try_from(record.appearance.frame).unwrap_or(0),
                 },
             ) else {
                 counts.missing_models += 1;
