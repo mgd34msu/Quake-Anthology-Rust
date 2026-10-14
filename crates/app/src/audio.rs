@@ -779,11 +779,38 @@ pub(crate) fn config_music(
     let Some((owner, playback)) = client_music_owner(runtime, client) else {
         return;
     };
-    let Ok(path) = music_path(&runtime.vfs, text) else {
+    // A mounted filename remains literal. Otherwise decode the authored
+    // intro/loop pair using the shared borrowed data reader.
+    let (intro, loop_track) = if runtime.vfs.open(text).is_some() {
+        (text, text)
+    } else {
+        let mut words = qa_formats::text::Tokens::words(text);
+        let Ok(Some(intro)) = words.next() else {
+            return;
+        };
+        let Ok(loop_track) = words.next() else {
+            return;
+        };
+        (
+            intro,
+            loop_track.filter(|name| !name.is_empty()).unwrap_or(intro),
+        )
+    };
+    if intro.is_empty() {
+        let _ = runtime
+            .server
+            .events
+            .music_control(qa_core::primitives::MusicControl::Stop { only_active: false });
+        return;
+    }
+    let Ok(intro) = music_path(&runtime.vfs, intro) else {
+        return;
+    };
+    let Ok(loop_track) = music_path(&runtime.vfs, loop_track) else {
         return;
     };
     let _ = runtime
         .server
         .events
-        .music(owner, playback, path.as_bytes(), path.as_bytes());
+        .music(owner, playback, intro.as_bytes(), loop_track.as_bytes());
 }

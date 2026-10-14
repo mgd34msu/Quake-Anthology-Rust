@@ -1,10 +1,11 @@
 use crate::FormatError;
 
-pub(crate) struct Tokens<'a> {
-    pub bytes: &'a [u8],
-    pub at: usize,
+pub struct Tokens<'a> {
+    pub(crate) bytes: &'a [u8],
+    pub(crate) at: usize,
     punctuation: &'static [u8],
     block_comments: bool,
+    line_comments: bool,
     limit: usize,
     quoted_escapes: bool,
     comma: bool,
@@ -16,6 +17,7 @@ impl<'a> Tokens<'a> {
             at: 0,
             punctuation: b"{}()",
             block_comments: true,
+            line_comments: true,
             limit: usize::MAX,
             quoted_escapes: false,
             comma: false,
@@ -32,9 +34,17 @@ impl<'a> Tokens<'a> {
             at: 0,
             punctuation,
             block_comments,
+            line_comments: true,
             limit,
             quoted_escapes: false,
             comma: false,
+        }
+    }
+    /// Whitespace/quoted data words, with paths and punctuation kept literal.
+    pub fn words(bytes: &'a [u8]) -> Self {
+        Self {
+            line_comments: false,
+            ..Self::entity(bytes, b"", false, usize::MAX)
         }
     }
     pub fn quoted_escapes(mut self) -> Self {
@@ -58,7 +68,7 @@ impl<'a> Tokens<'a> {
                 self.at += 1;
             }
             let rest = &self.bytes[self.at..];
-            if rest.starts_with(b"//") {
+            if self.line_comments && rest.starts_with(b"//") {
                 self.at += rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
             } else if self.block_comments && rest.starts_with(b"/*") {
                 let length = rest[2..]

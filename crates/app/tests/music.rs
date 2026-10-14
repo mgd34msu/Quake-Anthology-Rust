@@ -84,6 +84,10 @@ impl Fixture {
         qa_platform::files::write(self.root.join("music/track03.wav"), wave).unwrap();
         let wave = qa_platform::files::read(self.root.join("music/intro.wav")).unwrap();
         qa_platform::files::write(self.root.join("music/choice.wav"), wave).unwrap();
+        let intro = qa_platform::files::read(self.root.join("music/intro.wav")).unwrap();
+        let loop_track = qa_platform::files::read(self.root.join("music/repeat.wav")).unwrap();
+        qa_platform::files::write(self.root.join("music/intro theme.wav"), intro).unwrap();
+        qa_platform::files::write(self.root.join("music/loop theme.wav"), loop_track).unwrap();
         self.vfs.mount_directory(&self.root, 2).unwrap();
     }
 }

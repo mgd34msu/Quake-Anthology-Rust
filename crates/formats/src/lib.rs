@@ -8,7 +8,7 @@ pub mod model;
 pub mod program;
 mod read;
 pub mod sound;
-mod text;
+pub mod text;
 
 pub use bsp::{Bsp, BspFormat};
 
