@@ -2,7 +2,8 @@
 use qa_audio::Mixer;
 use qa_content::vfs::{FileRef, Vfs};
 use qa_core::primitives::{
-    MusicControl, MusicOwner, MusicPlayback, PcmFormat, SoundAction, SoundEvent,
+    MUSIC_REMAP_TRACKS, MusicControl, MusicOwner, MusicPlayback, MusicQuery, MusicRemap, PcmFormat,
+    SoundAction, SoundEvent,
 };
 use qa_formats::{
     FormatError,
@@ -10,6 +11,67 @@ use qa_formats::{
     sound::{Vorbis, WavInfo},
 };
 use std::fmt::Write;
+
+struct Report<'a> {
+    music: &'a Music,
+    vfs: &'a Vfs,
+    query: MusicQuery,
+}
+impl std::fmt::Display for Report<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.query {
+            MusicQuery::Remaps => {
+                let mut changed = false;
+                for (source, &track) in self.music.remap.iter().enumerate().skip(1) {
+                    if track != source as u32 {
+                        changed = true;
+                        writeln!(f, "  {source} -> {track}")?;
+                    }
+                }
+                if !changed {
+                    writeln!(f, "CD track remap is identity.")?;
+                }
+                Ok(())
+            }
+            MusicQuery::Info { volume } => {
+                if !self.music.enabled {
+                    writeln!(f, "CD music is disabled.")?;
+                } else if let Some(current) = self.music.current {
+                    write!(
+                        f,
+                        "{} {} track ",
+                        if self.music.paused {
+                            "Paused"
+                        } else {
+                            "Currently"
+                        },
+                        if self.music.loop_track.is_some() {
+                            "looping"
+                        } else {
+                            "playing"
+                        }
+                    )?;
+                    if let Some((source, mapped)) = self.music.number {
+                        write!(f, "{source}")?;
+                        if source != mapped {
+                            write!(f, " (mapped to {mapped})")?;
+                        }
+                    } else {
+                        let name = self
+                            .vfs
+                            .name(self.music.tracks[current.track].file)
+                            .unwrap_or(b"<unavailable>");
+                        f.write_str(std::str::from_utf8(name).unwrap_or("<byte filename>"))?;
+                    }
+                    writeln!(f)?;
+                } else {
+                    writeln!(f, "Not playing.")?;
+                }
+                writeln!(f, "Volume is {volume}")
+            }
+        }
+    }
+}
 
 #[derive(Default, Debug)]
 pub struct MusicCounts {
@@ -157,6 +219,9 @@ fn read(
 }
 
 pub struct Music {
+    enabled: bool,
+    remap: [u32; MUSIC_REMAP_TRACKS],
+    number: Option<(u32, u32)>,
     owner: Option<MusicOwner>,
     current: Option<Source>,
     loop_track: Option<FileRef>,
@@ -182,6 +247,9 @@ impl Music {
         tracks.sort_unstable_by_key(|track| track.file);
         reader.close_stream();
         Self {
+            enabled: true,
+            remap: std::array::from_fn(|index| index as u32),
+            number: None,
             owner: None,
             current: None,
             loop_track: None,
@@ -259,6 +327,7 @@ impl Music {
         // Replacement closes the prior source first. Native Q3 keeps
         // already queued PCM even when the new source fails to open.
         self.current = None;
+        self.number = None;
         self.reader.close_stream();
         self.loop_track = None;
         self.owner = Some(owner);
@@ -289,17 +358,46 @@ impl Music {
         loop_track: Option<&[u8]>,
     ) -> bool {
         match control {
+            MusicControl::Enabled(enabled) => {
+                if !enabled {
+                    self.stop(mixer);
+                }
+                self.enabled = enabled;
+                true
+            }
+            MusicControl::Reset => {
+                self.stop(mixer);
+                self.enabled = true;
+                for (index, track) in self.remap.iter_mut().enumerate() {
+                    *track = index as u32;
+                }
+                true
+            }
+            MusicControl::Remap { .. } => {
+                let Some(remap) = intro.and_then(MusicRemap::parse) else {
+                    return false;
+                };
+                for (target, track) in self.remap[1..].iter_mut().zip(remap.tracks()) {
+                    *target = track;
+                }
+                true
+            }
+            MusicControl::Report(_) => true,
             MusicControl::Track {
                 owner,
                 playback,
                 number,
                 looping,
             } => {
-                if number == 0 {
+                if !self.enabled {
+                    return true;
+                }
+                let mapped = self.remap.get(number as usize).copied().unwrap_or(number);
+                if mapped == 0 {
                     self.stop(mixer);
                     return true;
                 }
-                let intro = self.numbered_track(vfs, number);
+                let intro = self.numbered_track(vfs, mapped);
                 let loop_track = intro
                     .filter(|_| looping)
                     .map(|track| self.tracks[track].file);
@@ -310,12 +408,17 @@ impl Music {
                         .is_some_and(|source| Some(source.track) == intro)
                     && self.loop_track == loop_track
                 {
+                    self.number = Some((number, mapped));
                     return true;
                 }
-                self.start(mixer, owner, playback, intro, loop_track)
+                let started = self.start(mixer, owner, playback, intro, loop_track);
+                if started {
+                    self.number = Some((number, mapped));
+                }
+                started
             }
             MusicControl::Pause(paused) => {
-                if self.owner.is_some() {
+                if self.owner.is_some() && (paused || self.enabled) {
                     self.paused = paused;
                     mixer.pause_raw(paused);
                 }
@@ -336,6 +439,9 @@ impl Music {
             MusicControl::Start {
                 owner, playback, ..
             } => {
+                if !self.enabled {
+                    return true;
+                }
                 let opened = intro
                     .and_then(|name| self.named_file(vfs, name, playback.wave_first))
                     .and_then(|file| self.track(file));
@@ -352,12 +458,20 @@ impl Music {
         }
         self.counts.stopped += u64::from(self.current.is_some() || self.owner.is_some());
         self.current = None;
+        self.number = None;
         self.loop_track = None;
         self.owner = None;
         self.paused = false;
         mixer.pause_raw(false);
         self.reader.close_stream();
         mixer.clear_raw();
+    }
+    pub fn report<'a>(&'a self, vfs: &'a Vfs, query: MusicQuery) -> impl std::fmt::Display + 'a {
+        Report {
+            music: self,
+            vfs,
+            query,
+        }
     }
     pub fn sound_control(&mut self, mixer: &mut Mixer, event: SoundEvent) {
         let Some(owner) = self.owner else {

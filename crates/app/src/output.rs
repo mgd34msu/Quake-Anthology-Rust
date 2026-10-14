@@ -123,83 +123,120 @@ pub fn dispatch(
     let now = time.seconds();
     // In-process presentation resynchronization needs no native channel reset.
     if source.presentation_ready() && server.events.resume_if_needed(&mut server.presentation) {
-        qa_core::events::dispatch_consumer(
-            &mut server.events,
-            server.presentation,
-            &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
-                let submitted = match record.event {
-                    FrameEvent::Music(control) => {
-                        counts.music += 1;
-                        let paths = match control {
-                            qa_core::primitives::MusicControl::Start {
-                                intro, loop_track, ..
-                            } => (texts.get(intro), texts.get(loop_track)),
-                            _ => (None, None),
-                        };
-                        counts.unhandled_music +=
-                            u64::from(!source.music(&runtime.vfs, control, paths.0, paths.1));
-                        true
-                    }
-                    FrameEvent::Sound(event) => {
-                        counts.sounds += 1;
-                        let sent = source.sound(event);
-                        counts.unhandled_sounds += u64::from(!sent);
-                        complete_sound(
-                            server.clients.as_mut(),
-                            snapshots,
-                            server.presentation,
-                            record.sequence,
-                            event,
-                            sent,
-                        );
-                        // Ordinary missing/rejecting backends remain counted
-                        // drops. Loop rejection invalidates only its producer's
-                        // settled settings through the same completion.
-                        true
-                    }
-                    FrameEvent::Effect(event) => {
-                        counts.effects += 1;
-                        let sent = source.effect(event);
-                        counts.unhandled_effects += u64::from(!sent);
-                        true
-                    }
-                    FrameEvent::Print(event) => {
-                        counts.prints += 1;
-                        if let Some(text) = texts.get(event.text) {
-                            if event.client.is_none_or(|id| local.contains(&Some(id)))
-                                && matches!(
-                                    event.kind,
-                                    PrintKind::Console | PrintKind::Notify | PrintKind::Chat
-                                )
-                            {
-                                qa_console::logger::console_bytes(text);
-                                // Keep the original ring text alive for this
-                                // independent display lifetime; no payload copy.
-                                if !scrollback.append(texts, event.text) {
-                                    counts.stale_texts += 1;
-                                }
+        loop {
+            let responded = std::cell::Cell::new(false);
+            let mut reply = None;
+            qa_core::events::dispatch_consumer_until(
+                &mut server.events,
+                server.presentation,
+                &mut |record: qa_core::events::OutputRecord,
+                      texts: &mut qa_core::events::TextStore| {
+                    let submitted = match record.event {
+                        FrameEvent::Music(control) => {
+                            counts.music += 1;
+                            if let qa_core::primitives::MusicControl::Report(query) = control {
+                                reply = source
+                                    .music_report(&runtime.vfs, query, texts)
+                                    .map(|lease| (record.sequence, lease));
+                                responded.set(reply.is_some());
+                                counts.unhandled_music += u64::from(reply.is_none());
+                                return if reply.is_some() {
+                                    OutputSubmission::Unsent
+                                } else {
+                                    OutputSubmission::BestEffort
+                                };
                             }
-                        } else {
-                            counts.stale_texts += 1;
+                            let paths = match control {
+                                qa_core::primitives::MusicControl::Start {
+                                    intro,
+                                    loop_track,
+                                    ..
+                                } => (texts.get(intro), texts.get(loop_track)),
+                                qa_core::primitives::MusicControl::Remap { entries } => {
+                                    (texts.get(entries), None)
+                                }
+                                _ => (None, None),
+                            };
+                            counts.unhandled_music +=
+                                u64::from(!source.music(&runtime.vfs, control, paths.0, paths.1));
+                            true
                         }
-                        true
+                        FrameEvent::Sound(event) => {
+                            counts.sounds += 1;
+                            let sent = source.sound(event);
+                            counts.unhandled_sounds += u64::from(!sent);
+                            complete_sound(
+                                server.clients.as_mut(),
+                                snapshots,
+                                server.presentation,
+                                record.sequence,
+                                event,
+                                sent,
+                            );
+                            // Ordinary missing/rejecting backends remain counted
+                            // drops. Loop rejection invalidates only its producer's
+                            // settled settings through the same completion.
+                            true
+                        }
+                        FrameEvent::Effect(event) => {
+                            counts.effects += 1;
+                            let sent = source.effect(event);
+                            counts.unhandled_effects += u64::from(!sent);
+                            true
+                        }
+                        FrameEvent::Print(event) => {
+                            counts.prints += 1;
+                            if let Some(text) = texts.get(event.text) {
+                                if event.client.is_none_or(|id| local.contains(&Some(id)))
+                                    && matches!(
+                                        event.kind,
+                                        PrintKind::Console | PrintKind::Notify | PrintKind::Chat
+                                    )
+                                {
+                                    qa_console::logger::console_bytes(text);
+                                    // Keep the original ring text alive for this
+                                    // independent display lifetime; no payload copy.
+                                    if !scrollback.append(texts, event.text) {
+                                        counts.stale_texts += 1;
+                                    }
+                                }
+                            } else {
+                                counts.stale_texts += 1;
+                            }
+                            true
+                        }
+                        // Native messages have per-client channel delivery below;
+                        // there is no second presentation copy of their payload.
+                        FrameEvent::Native(_) | FrameEvent::GameState { .. } => true,
+                        FrameEvent::Hud(_) => true,
+                        FrameEvent::ViewFeedback(_) => true,
+                        FrameEvent::ConfigString { .. } => true,
+                        FrameEvent::StaticEntity(_) => true,
+                        FrameEvent::PlayerValue { .. } | FrameEvent::SetAngles(_) => true,
+                    };
+                    if submitted {
+                        OutputSubmission::BestEffort
+                    } else {
+                        OutputSubmission::Unsent
                     }
-                    // Native messages have per-client channel delivery below;
-                    // there is no second presentation copy of their payload.
-                    FrameEvent::Native(_) | FrameEvent::GameState { .. } => true,
-                    FrameEvent::Hud(_) => true,
-                    FrameEvent::ViewFeedback(_) => true,
-                    FrameEvent::ConfigString { .. } => true,
-                    FrameEvent::StaticEntity(_) => true,
-                    FrameEvent::PlayerValue { .. } | FrameEvent::SetAngles(_) => true,
-                };
-                if submitted {
-                    OutputSubmission::BestEffort
-                } else {
-                    OutputSubmission::Unsent
-                }
-            },
-        );
+                },
+                || responded.get(),
+            );
+            let Some((sequence, reply)) = reply else {
+                break;
+            };
+            // Fill the original query slot after the consumer borrow ends.
+            // Its unchanged sequence keeps it ahead of later console prints.
+            if !server
+                .events
+                .console_response(server.presentation, sequence, reply)
+            {
+                counts.stale_texts += 1;
+                server
+                    .events
+                    .submit(server.presentation, sequence, OutputSubmission::BestEffort);
+            }
+        }
     }
     let client_count = server.clients.len();
     for slot in 0..client_count {

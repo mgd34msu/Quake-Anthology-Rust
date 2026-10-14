@@ -1183,3 +1183,87 @@ fn music_second_path_failure_rolls_back_first_path_and_counts_once() {
     ring.texts.release(new);
     ring.texts.release(retained);
 }
+
+#[test]
+fn music_remap_owns_binary_text_and_rejects_malformed_updates_atomically() {
+    let mut ring = EventRing::load(8, 2, 4, 1024).unwrap();
+    let consumer = ring.bind(OutputTarget::Presentation).unwrap();
+    let bytes: Vec<_> = [0_u32, u32::MAX]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    let sequence = ring.music_remap(&bytes).unwrap();
+    let before = ring.sequence_range();
+    for bad in [&b""[..], &b"abc"[..], &[0; 1024][..]] {
+        assert!(ring.music_remap(bad).is_err());
+        assert_eq!(ring.sequence_range(), before);
+    }
+    assert_eq!(ring.rejected_publications(), 3);
+    let mut batch = ring.batch(consumer).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::Music(MusicControl::Remap { entries }) = record.event else {
+        panic!("remap");
+    };
+    assert_eq!(record.sequence, sequence);
+    assert_eq!(ring.texts.get(entries).unwrap(), bytes);
+    let lease = ring.texts.lease(entries).unwrap();
+    assert!(ring.submit(consumer, sequence, OutputSubmission::BestEffort));
+    assert!(ring.is_empty());
+    assert_eq!(
+        MusicRemap::parse(ring.texts.get(entries).unwrap())
+            .unwrap()
+            .tracks()
+            .collect::<Vec<_>>(),
+        [0, u32::MAX]
+    );
+    ring.texts.release(lease);
+    assert_eq!(ring.texts.get(entries), None);
+}
+
+#[test]
+fn console_response_transfers_its_existing_text_and_preserves_display_leases() {
+    let mut ring = EventRing::load(8, 2, 4, 64).unwrap();
+    let consumer = ring.bind(OutputTarget::Presentation).unwrap();
+    let sequence = ring
+        .music_control(MusicControl::Report(MusicQuery::Remaps))
+        .unwrap();
+    let lease = ring
+        .texts
+        .insert_formatted(format_args!("response {}", 17))
+        .unwrap();
+    let id = lease.id();
+    let address = ring.texts.get(id).unwrap().as_ptr();
+    let before = ring.sequence_range();
+    assert!(ring.console_response(consumer, sequence, lease));
+    assert_eq!(ring.sequence_range(), before);
+    assert_eq!(ring.texts.get(id).unwrap().as_ptr(), address);
+    let display = ring.texts.lease(id).unwrap();
+    assert!(ring.submit(consumer, sequence, OutputSubmission::BestEffort));
+    assert_eq!(ring.texts.get(id), Some(&b"response 17"[..]));
+    ring.texts.release(display);
+    assert_eq!(ring.texts.get(id), None);
+}
+
+#[test]
+fn console_responses_reject_wrong_records_and_stale_consumers_without_lending_text() {
+    let mut ring = EventRing::load(8, 2, 4, 64).unwrap();
+    let consumer = ring.bind(OutputTarget::Presentation).unwrap();
+    let wrong = ring.music_control(MusicControl::Reset).unwrap();
+    let lease = ring.texts.insert(b"wrong").unwrap();
+    let id = lease.id();
+    assert!(!ring.console_response(consumer, wrong, lease));
+    assert_eq!(ring.texts.get(id), None);
+    assert!(ring.retained_for(consumer, wrong));
+    assert!(ring.submit(consumer, wrong, OutputSubmission::BestEffort));
+    ring.unbind(consumer);
+    let current = ring.bind(OutputTarget::Presentation).unwrap();
+    let sequence = ring
+        .music_control(MusicControl::Report(MusicQuery::Remaps))
+        .unwrap();
+    let lease = ring.texts.insert(b"stale").unwrap();
+    let id = lease.id();
+    assert!(!ring.console_response(consumer, sequence, lease));
+    assert_eq!(ring.texts.get(id), None);
+    assert!(ring.retained_for(current, sequence));
+    assert_eq!(ring.rejected_publications(), 2);
+}

@@ -473,10 +473,7 @@ impl ServiceStorage {
         };
         if let Some(owner) = row.music_owner {
             events
-                .push_to(
-                    qa_core::events::OutputTarget::Presentation,
-                    FrameEvent::Music(qa_core::primitives::MusicControl::Retire(owner)),
-                )
+                .music_control(qa_core::primitives::MusicControl::Retire(owner))
                 .map_err(|_| CallError::Capacity)?;
             row.music_owner = None;
         }
@@ -1332,10 +1329,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         let sequence = s
             .server
             .events
-            .push_to(
-                qa_core::events::OutputTarget::Presentation,
-                FrameEvent::Music(qa_core::primitives::MusicControl::Stop { only_active: true }),
-            )
+            .music_control(qa_core::primitives::MusicControl::Stop { only_active: true })
             .map_err(|_| CallError::Capacity)?;
         Ok(sequence)
     },

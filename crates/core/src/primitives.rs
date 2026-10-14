@@ -228,7 +228,7 @@ pub struct CvarHandle(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SoundId(pub u32);
 /// Exact publication owner; a reused CLIENT slot is a different lifetime.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MusicOwner {
     /// None is an engine-owned request, distinct from every native module id.
     pub module: Option<ModuleId>,
@@ -242,8 +242,36 @@ pub struct MusicPlayback {
     pub preserve_queued: bool,
     pub signed_stereo_bytes: bool,
 }
+pub const MUSIC_REMAP_TRACKS: usize = 256;
+/// One decoded view of an atomic music remap payload.
+pub struct MusicRemap<'a>(&'a [[u8; 4]]);
+impl<'a> MusicRemap<'a> {
+    pub fn parse(bytes: &'a [u8]) -> Option<Self> {
+        let (values, remainder) = bytes.as_chunks::<4>();
+        if values.is_empty() || values.len() >= MUSIC_REMAP_TRACKS || !remainder.is_empty() {
+            None
+        } else {
+            Some(Self(values))
+        }
+    }
+    pub fn tracks(self) -> impl ExactSizeIterator<Item = u32> + 'a {
+        self.0.iter().map(|bytes| u32::from_le_bytes(*bytes))
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub enum MusicQuery {
+    Info { volume: f32 },
+    Remaps,
+}
 #[derive(Clone, Copy, Debug)]
 pub enum MusicControl {
+    Enabled(bool),
+    Reset,
+    /// Little-endian u32 destinations for source tracks 1 onward.
+    Remap {
+        entries: TextId,
+    },
+    Report(MusicQuery),
     Track {
         owner: MusicOwner,
         playback: MusicPlayback,

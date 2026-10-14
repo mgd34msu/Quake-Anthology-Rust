@@ -567,14 +567,7 @@ pub fn music(
         _ => None,
     };
     let admitted = if let Some(control) = control {
-        runtime
-            .server
-            .events
-            .push_to(
-                qa_core::events::OutputTarget::Presentation,
-                FrameEvent::Music(control),
-            )
-            .is_ok()
+        runtime.server.events.music_control(control).is_ok()
     } else {
         let (intro, loop_track) = if keyword == Some(3) {
             if args.len() != 3 {
@@ -601,16 +594,18 @@ pub fn music(
             .server
             .events
             .music(
-                MusicOwner {
-                    module: None,
-                    client: None,
-                },
+                MusicOwner::default(),
                 qa_gameplay::rules::music_playback(context.source),
                 intro.as_bytes(),
                 loop_track.as_ref().map_or(&[][..], |name| name.as_bytes()),
             )
             .is_ok()
     };
+    music_admission(runtime, admitted);
+    Ok(())
+}
+
+fn music_admission(runtime: &mut Runtime, admitted: bool) {
     if !admitted {
         runtime.print_event(
             None,
@@ -618,7 +613,109 @@ pub fn music(
             format_args!("music control was not admitted\n"),
         );
     }
+}
+
+pub fn cd(
+    console: &mut Console<Runtime>,
+    runtime: &mut Runtime,
+    args: &qa_console::command_text::Arguments<'_>,
+    context: Context,
+) -> Result<(), CommandError> {
+    use qa_core::primitives::{MUSIC_REMAP_TRACKS, MusicControl, MusicOwner, MusicQuery};
+    if args.len() < 2 {
+        return Err(CommandError::Usage);
+    }
+    let command = args.get(1);
+    let keyword = [
+        "play", "loop", "stop", "pause", "resume", "on", "off", "reset", "info", "remap", "eject",
+        "close",
+    ]
+    .iter()
+    .position(|word| qa_core::names::compare_folded(command.as_bytes(), word.as_bytes()).is_eq());
+    let control = match keyword {
+        Some(0 | 1) => {
+            if args.len() != 3 {
+                return Err(CommandError::Usage);
+            }
+            let number = track_number(args.get(2))?;
+            if number == 0 {
+                return Err(CommandError::Usage);
+            }
+            MusicControl::Track {
+                owner: MusicOwner::default(),
+                playback: qa_gameplay::rules::music_playback(context.source),
+                number,
+                looping: keyword == Some(1),
+            }
+        }
+        Some(9) if args.len() > 2 => {
+            let count = args.len() - 2;
+            if count >= MUSIC_REMAP_TRACKS {
+                return Err(CommandError::Usage);
+            }
+            let mut entries = [0; (MUSIC_REMAP_TRACKS - 1) * 4];
+            for (bytes, value) in entries.chunks_exact_mut(4).zip(args.iter().skip(2)) {
+                bytes.copy_from_slice(&track_number(value)?.to_le_bytes());
+            }
+            let admitted = runtime
+                .server
+                .events
+                .music_remap(&entries[..count * 4])
+                .is_ok();
+            music_admission(runtime, admitted);
+            return Ok(());
+        }
+        Some(10 | 11) => {
+            if args.len() != 2 {
+                return Err(CommandError::Usage);
+            }
+            runtime.print_event(
+                None,
+                qa_core::primitives::PrintKind::Console,
+                format_args!(
+                    "cd {command}: disc tray operations are unavailable with file-backed music.\n"
+                ),
+            );
+            return Ok(());
+        }
+        Some(index) => {
+            if args.len() != 2 {
+                return Err(CommandError::Usage);
+            }
+            match index {
+                2 => MusicControl::Stop { only_active: false },
+                3 | 4 => MusicControl::Pause(index == 3),
+                5 | 6 => MusicControl::Enabled(index == 5),
+                7 => MusicControl::Reset,
+                8 => MusicControl::Report(MusicQuery::Info {
+                    volume: console
+                        .cvars
+                        .find("s_musicvolume")
+                        .map_or(0., |handle| console.cvars.value(handle)),
+                }),
+                9 => MusicControl::Report(MusicQuery::Remaps),
+                _ => return Err(CommandError::Usage),
+            }
+        }
+        None => {
+            runtime.print_event(
+                None,
+                qa_core::primitives::PrintKind::Console,
+                format_args!("Unknown cd command: {command}.\n"),
+            );
+            return Ok(());
+        }
+    };
+    let admitted = runtime.server.events.music_control(control).is_ok();
+    music_admission(runtime, admitted);
     Ok(())
+}
+fn track_number(text: &str) -> Result<u32, CommandError> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(CommandError::Usage);
+    }
+    let (number, _) = qa_core::text::integer_prefix(text.as_bytes());
+    u32::try_from(number).map_err(|_| CommandError::Usage)
 }
 fn music_path(
     vfs: &qa_content::vfs::Vfs,
@@ -655,15 +752,15 @@ fn client_music_owner(
 
 pub(crate) fn cd_track(runtime: &mut Runtime, client: qa_core::primitives::ClientId, number: u32) {
     if let Some((owner, playback)) = client_music_owner(runtime, client) {
-        let _ = runtime.server.events.push_to(
-            qa_core::events::OutputTarget::Presentation,
-            FrameEvent::Music(qa_core::primitives::MusicControl::Track {
+        let _ = runtime
+            .server
+            .events
+            .music_control(qa_core::primitives::MusicControl::Track {
                 owner,
                 playback,
                 number,
                 looping: true,
-            }),
-        );
+            });
     }
 }
 

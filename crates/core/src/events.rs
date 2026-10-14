@@ -43,6 +43,14 @@ pub enum FrameEvent {
         text: TextId,
     },
 }
+fn print_event(client: Option<ClientId>, kind: PrintKind, level: u8, text: TextId) -> FrameEvent {
+    FrameEvent::Print(PrintEvent {
+        client,
+        kind,
+        level,
+        text: text.into(),
+    })
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventStorageError {
     RingCapacity,
@@ -417,6 +425,9 @@ impl EventRing {
                 pages[0] = Some(intro);
                 pages[1] = Some(loop_track);
             }
+            FrameEvent::Music(crate::primitives::MusicControl::Remap { entries }) => {
+                pages[0] = Some(entries);
+            }
             FrameEvent::Native(payload) | FrameEvent::GameState { payload, .. } => {
                 pages = payload.pages;
             }
@@ -713,6 +724,25 @@ impl EventRing {
             },
         )
     }
+    /// All music controls use the presentation consumer's existing cursor.
+    pub fn music_control(
+        &mut self,
+        control: crate::primitives::MusicControl,
+    ) -> Result<u64, EventStorageError> {
+        self.push_to(OutputTarget::Presentation, FrameEvent::Music(control))
+    }
+    /// A complete remap update is one atomic presentation publication.
+    pub fn music_remap(&mut self, entries: &[u8]) -> Result<u64, EventStorageError> {
+        if crate::primitives::MusicRemap::parse(entries).is_none() {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        }
+        self.publish_text(
+            Some(OutputTarget::Presentation),
+            |texts| texts.insert(entries),
+            |entries| FrameEvent::Music(crate::primitives::MusicControl::Remap { entries }),
+        )
+    }
     /// Both track names belong to the same atomic output publication.
     pub fn music(
         &mut self,
@@ -740,15 +770,12 @@ impl EventRing {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         };
-        let result = self.push_to(
-            OutputTarget::Presentation,
-            FrameEvent::Music(crate::primitives::MusicControl::Start {
-                owner,
-                playback,
-                intro: first.id(),
-                loop_track: second.id(),
-            }),
-        );
+        let result = self.music_control(crate::primitives::MusicControl::Start {
+            owner,
+            playback,
+            intro: first.id(),
+            loop_track: second.id(),
+        });
         self.texts.release(first);
         self.texts.release(second);
         result
@@ -784,6 +811,39 @@ impl EventRing {
     ) -> Result<u64, EventStorageError> {
         self.publish_console(|texts| texts.insert_formatted(text))
     }
+    /// Replaces this consumer's pending query in place, preserving print order.
+    /// The response keeps its existing text lease and sequence.
+    pub fn console_response(
+        &mut self,
+        consumer: OutputConsumerId,
+        sequence: u64,
+        lease: TextLease,
+    ) -> bool {
+        let valid = self.retained_for(consumer, sequence)
+            && self.deliveries[self.offset(consumer.slot, sequence)] == Delivery::Pending
+            && self.texts.get(lease.id()).is_some();
+        if valid
+            && let Some(slot) = &mut self.slots[sequence as usize & self.mask]
+            && slot.record.sequence == sequence
+            && slot.target == Some(OutputTarget::Presentation)
+            && matches!(
+                slot.record.event,
+                FrameEvent::Music(crate::primitives::MusicControl::Report(_))
+            )
+        {
+            slot.record.event = print_event(
+                None,
+                PrintKind::Console,
+                PrintKind::Console.default_level(),
+                lease.id(),
+            );
+            slot.texts[0] = Some(lease);
+            return true;
+        }
+        self.texts.release(lease);
+        self.rejected_publications += 1;
+        false
+    }
     fn publish_console(
         &mut self,
         write: impl FnOnce(&mut TextStore) -> Option<TextLease>,
@@ -804,14 +864,7 @@ impl EventRing {
         level: u8,
         write: impl FnOnce(&mut TextStore) -> Option<TextLease>,
     ) -> Result<u64, EventStorageError> {
-        self.publish_text(target, write, |text| {
-            FrameEvent::Print(PrintEvent {
-                client,
-                kind,
-                level,
-                text: text.into(),
-            })
-        })
+        self.publish_text(target, write, |text| print_event(client, kind, level, text))
     }
     fn publish_text(
         &mut self,

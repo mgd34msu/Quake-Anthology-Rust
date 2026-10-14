@@ -1308,6 +1308,7 @@ fn main() {
         std::process::exit(status);
     }
     music::wire_music_reaches_shared_paint();
+    music::console_cd_reaches_music_and_ordered_console_responses();
     music::native_music_reaches_shared_paint(qvm, false);
     music::native_music_reaches_shared_paint(qvm, true);
     selected_commands_use_one_session_service(qvm);

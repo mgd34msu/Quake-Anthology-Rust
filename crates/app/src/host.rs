@@ -67,6 +67,14 @@ pub trait FrameSource {
         false
     }
     fn update_music(&mut self, _vfs: &qa_content::vfs::Vfs, _volume: f32) {}
+    fn music_report(
+        &self,
+        _vfs: &qa_content::vfs::Vfs,
+        _query: qa_core::primitives::MusicQuery,
+        texts: &mut qa_core::events::TextStore,
+    ) -> Option<qa_core::primitives::TextLease> {
+        texts.insert_formatted(format_args!("No soundtrack source selected.\n"))
+    }
     fn listeners(
         &mut self,
         _listeners: &[Option<qa_audio::Listener>; SeatId::COUNT],
@@ -141,6 +149,19 @@ impl FrameSource for LiveFrame<'_> {
     fn update_music(&mut self, vfs: &qa_content::vfs::Vfs, volume: f32) {
         if let Some(audio) = self.audio.as_deref_mut() {
             audio.music.update(vfs, &mut audio.mixer, volume);
+        }
+    }
+    fn music_report(
+        &self,
+        vfs: &qa_content::vfs::Vfs,
+        query: qa_core::primitives::MusicQuery,
+        texts: &mut qa_core::events::TextStore,
+    ) -> Option<qa_core::primitives::TextLease> {
+        match self.audio.as_deref() {
+            Some(audio) => {
+                texts.insert_formatted(format_args!("{}", audio.music.report(vfs, query)))
+            }
+            None => texts.insert_formatted(format_args!("No soundtrack source selected.\n")),
         }
     }
     fn listeners(&mut self, listeners: &[Option<qa_audio::Listener>; SeatId::COUNT], volume: f32) {
@@ -382,6 +403,7 @@ impl FrameHost {
         }
         console.register("play", crate::audio::play);
         console.register("music", crate::audio::music);
+        console.register("cd", crate::audio::cd);
         let volume = console.cvars.find("s_volume").ok_or("missing s_volume")?;
         let music_volume = console
             .cvars

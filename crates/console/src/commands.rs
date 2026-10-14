@@ -258,12 +258,12 @@ impl<H: Host> Console<H> {
             ) {
                 let raw = parser.line.as_str();
                 let expanded = if raw.contains('$') {
-                    command_text::expand(&mut parser.line, &mut parser.tokens, |name| {
+                    command_text::expand_engine(&mut parser.line, &mut parser.tokens, |name| {
                         self.cvars
                             .bind(name, context)
                             .and_then(|view| self.cvars.read(view).ok())
                     })
-                } else if raw.len() >= 1024 {
+                } else if raw.len() >= crate::text::MAX_TEXT {
                     Err(TextError::TooLong)
                 } else if raw.bytes().filter(|&b| b == b'"').count() & 1 != 0 {
                     Err(TextError::UnmatchedQuote)
@@ -275,7 +275,7 @@ impl<H: Host> Console<H> {
                     continue;
                 }
             }
-            let args = match command_text::tokenize(
+            let args = match command_text::tokenize_engine(
                 parser.line.as_str(),
                 context.source,
                 &mut parser.tokens,

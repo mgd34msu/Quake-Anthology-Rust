@@ -52,9 +52,103 @@ impl qa_app::host::FrameSource for Source {
         self.updates += 1;
         self.music.update(vfs, &mut self.mixer, volume);
     }
+    fn music_report(
+        &self,
+        vfs: &qa_content::vfs::Vfs,
+        query: MusicQuery,
+        texts: &mut qa_core::events::TextStore,
+    ) -> Option<TextLease> {
+        texts.insert_formatted(format_args!("{}", self.music.report(vfs, query)))
+    }
     fn mix_audio(&mut self, _: &[Option<qa_app::client_scene::ClientEntities<'_>>; SeatId::COUNT]) {
         assert!(self.mixer.paint(&mut self.pcm));
     }
+}
+
+pub(super) fn console_cd_reaches_music_and_ordered_console_responses() {
+    let mut fixture = fixture::Fixture::new();
+    fixture.numbered();
+    let mut runtime = Runtime::load(1, []).unwrap();
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let context = Context {
+        source: RuleSetId::Quake2,
+        ..Default::default()
+    };
+    let mut host = FrameHost::load(
+        Console::new(context).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    let volume = host
+        .console
+        .cvars
+        .bind("s_musicvolume", Context::default())
+        .unwrap();
+    host.console.cvars.force_write(volume, "1").unwrap();
+    let mut source = Source {
+        mixer: fixture::mixer(),
+        music: qa_app::audio::music::Music::load(&host.runtime.vfs),
+        owner: None,
+        time: EventTime::from_milliseconds(100),
+        updates: 0,
+        pcm: [0; 8],
+    };
+    host.console
+        .append(
+            "cd remap 3 0 2\ncd loop 1\ncd info\necho between\ncd pause\ncd info\ncd remap\n",
+            context,
+        )
+        .unwrap();
+    let frame = host.frame(&mut source, true);
+    assert_eq!(frame.output.music, 6);
+    assert_eq!(frame.output.unhandled_music, 0);
+    assert_eq!(frame.output.prints, 5);
+    assert_eq!(source.pcm, [0; 8]);
+    let printed: Vec<_> = host
+        .console
+        .scrollback
+        .chunks(&host.runtime.server.events.texts)
+        .flat_map(|bytes| bytes.iter().copied())
+        .collect();
+    assert_eq!(printed, b"Currently looping track 1 (mapped to 3)\nVolume is 1\nbetween \nPaused looping track 1 (mapped to 3)\nVolume is 1\n  1 -> 3\n  2 -> 0\n  3 -> 2\n");
+    assert!(host.runtime.server.events.is_empty());
+    assert_eq!(host.runtime.server.events.rejected_publications(), 0);
+    host.console
+        .append("cd resume\ncd info\n", context)
+        .unwrap();
+    source.time = EventTime::from_milliseconds(200);
+    let frame = host.frame(&mut source, true);
+    assert_eq!((frame.output.music, frame.output.prints), (2, 1));
+    assert_eq!(
+        source.pcm,
+        [1000, -1000, 2000, -2000, 1000, -1000, 2000, -2000]
+    );
+    host.console
+        .append(
+            "cd off\nmusic mono.ogg\ncd info\ncd on\ncd reset\ncd eject\ncd close\n",
+            context,
+        )
+        .unwrap();
+    source.time = EventTime::from_milliseconds(300);
+    let frame = host.frame(&mut source, true);
+    assert_eq!(frame.output.unhandled_music, 0);
+    assert_eq!(frame.output.prints, 3);
+    assert_eq!(source.pcm, [0; 8]);
+    let printed: Vec<_> = host
+        .console
+        .scrollback
+        .chunks(&host.runtime.server.events.texts)
+        .flat_map(|bytes| bytes.iter().copied())
+        .collect();
+    let text = String::from_utf8(printed).unwrap();
+    assert!(text.contains("CD music is disabled.\nVolume is 1\ncd eject:"));
+    assert!(
+        text.contains("cd close: disc tray operations are unavailable with file-backed music.")
+    );
+    assert!(host.runtime.server.events.is_empty());
+    println!("CD controls reached music and ordered ring-backed console responses");
 }
 
 pub(super) fn wire_music_reaches_shared_paint() {

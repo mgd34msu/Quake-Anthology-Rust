@@ -616,6 +616,7 @@ fn console_control(
                         );
                         (texts.get(intro), texts.get(loop_track))
                     }
+                    MusicControl::Remap { entries } => (texts.get(entries), None),
                     _ => (None, None),
                 };
                 assert!(music.control(&runtime.vfs, mix, control, paths.0, paths.1));
@@ -625,6 +626,150 @@ fn console_control(
         },
     );
     last
+}
+
+#[test]
+fn console_cd_controls_keep_one_player_and_apply_atomic_remaps() {
+    let mut fixture = Fixture::new();
+    fixture.numbered();
+    let mut runtime = qa_app::Runtime::load(1, []).unwrap();
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let context = qa_console::views::Context {
+        source: RuleSetId::Quake2,
+        ..Default::default()
+    };
+    let mut console = qa_console::commands::Console::new(context).unwrap();
+    console.register("cd", qa_app::audio::cd);
+    console.register("music", qa_app::audio::music);
+    let mut mix = mixer();
+    let mut music = Music::load(&runtime.vfs);
+    macro_rules! run {
+        ($line:expr) => {
+            console_control(
+                &mut runtime,
+                &mut console,
+                &mut music,
+                &mut mix,
+                $line,
+                context,
+            )
+        };
+    }
+    assert!(matches!(
+        run!("cd remap 3 0 2"),
+        Some(MusicControl::Remap { .. })
+    ));
+    assert_eq!(
+        music.report(&runtime.vfs, MusicQuery::Remaps).to_string(),
+        "  1 -> 3\n  2 -> 0\n  3 -> 2\n"
+    );
+    assert!(matches!(
+        run!("cd loop 1"),
+        Some(MusicControl::Track { looping: true, .. })
+    ));
+    music.update(&runtime.vfs, &mut mix, 1.);
+    let mut pcm = [0; 8];
+    mix.paint(&mut pcm);
+    assert_eq!(pcm, [1000, -1000, 2000, -2000, 1000, -1000, 2000, -2000]);
+    assert_eq!(
+        music
+            .report(&runtime.vfs, MusicQuery::Info { volume: 1. })
+            .to_string(),
+        "Currently looping track 1 (mapped to 3)\nVolume is 1\n"
+    );
+    run!("cd pause");
+    mix.paint(&mut pcm);
+    assert_eq!(pcm, [0; 8]);
+    run!("cd resume");
+    mix.paint(&mut pcm);
+    assert_ne!(pcm, [0; 8]);
+    run!("cd off");
+    let started = music.counts.started;
+    run!("cd play 3");
+    run!("music mono.ogg");
+    run!("cd resume");
+    assert!(!music.playing());
+    assert_eq!(music.counts.started, started);
+    run!("cd on");
+    assert!(!music.playing());
+    run!("cd loop 1");
+    assert!(music.playing());
+    assert!(run!("cd remap 2 bad").is_none());
+    assert!(run!("cd remap 4294967296").is_none());
+    assert_eq!(
+        music.report(&runtime.vfs, MusicQuery::Remaps).to_string(),
+        "  1 -> 3\n  2 -> 0\n  3 -> 2\n"
+    );
+    run!("cd loop 2");
+    assert!(!music.playing(), "mapped zero disables this track");
+    run!("cd off");
+    run!("cd reset");
+    assert_eq!(
+        music.report(&runtime.vfs, MusicQuery::Remaps).to_string(),
+        "CD track remap is identity.\n"
+    );
+    run!("cd play 2");
+    assert!(music.playing());
+    assert_eq!(music.counts.invalid, 0);
+}
+
+#[test]
+fn full_native_remap_range_is_available_through_every_engine_console_profile() {
+    for rules in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.numbered();
+        let mut runtime = qa_app::Runtime::load(1, []).unwrap();
+        runtime.vfs = std::mem::take(&mut fixture.vfs);
+        let context = qa_console::views::Context {
+            source: rules,
+            ..Default::default()
+        };
+        let mut console = qa_console::commands::Console::new(context).unwrap();
+        console.register("cd", qa_app::audio::cd);
+        let mut music = Music::load(&runtime.vfs);
+        let mut mix = mixer();
+        let mut line = String::from("cd remap");
+        for _ in 1..MUSIC_REMAP_TRACKS {
+            line.push_str(" 4294967295");
+        }
+        assert!(line.len() > 1024);
+        assert!(matches!(
+            console_control(
+                &mut runtime,
+                &mut console,
+                &mut music,
+                &mut mix,
+                &line,
+                context
+            ),
+            Some(MusicControl::Remap { .. })
+        ));
+        let report = music.report(&runtime.vfs, MusicQuery::Remaps).to_string();
+        assert_eq!(report.lines().count(), MUSIC_REMAP_TRACKS - 1);
+        assert!(report.ends_with("  255 -> 4294967295\n"));
+        line.push_str(" 3");
+        assert!(
+            console_control(
+                &mut runtime,
+                &mut console,
+                &mut music,
+                &mut mix,
+                &line,
+                context
+            )
+            .is_none()
+        );
+        assert_eq!(
+            music.report(&runtime.vfs, MusicQuery::Remaps).to_string(),
+            report
+        );
+    }
 }
 #[test]
 fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {

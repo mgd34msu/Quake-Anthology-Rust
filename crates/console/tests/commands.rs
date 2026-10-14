@@ -153,6 +153,47 @@ fn source_tokenizers_keep_original_quotes_comments_punctuation_and_limits() {
 }
 
 #[test]
+fn engine_commands_keep_full_owned_capacity_while_native_argument_limits_stay_original() {
+    let many = std::iter::repeat_n("word", 300)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let long = "z".repeat(2048);
+    for source in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        let mut storage = command_text::Tokens::default();
+        assert_eq!(
+            command_text::tokenize_engine(&many, source, &mut storage)
+                .unwrap()
+                .len(),
+            300
+        );
+        assert_eq!(
+            command_text::tokenize_engine(&long, source, &mut storage)
+                .unwrap()
+                .get(0),
+            long
+        );
+        assert_eq!(
+            tokens(&many, source).len(),
+            if source == RuleSetId::Quake3 { 300 } else { 80 }
+        );
+        if matches!(source, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+            assert_eq!(
+                command_text::tokenize(&long, source, &mut storage).err(),
+                Some(command_text::TextError::TooLong)
+            );
+        } else if matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) {
+            assert_eq!(tokens(&long, source)[0], "");
+        }
+    }
+}
+
+#[test]
 fn q2_macros_repeat_outside_quotes_and_reject_only_the_bad_command() {
     let values = |name: &str| {
         Some(qa_console::conversion::Text::Borrowed(match name {

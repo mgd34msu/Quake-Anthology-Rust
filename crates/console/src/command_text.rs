@@ -151,6 +151,29 @@ pub fn tokenize_bytes<'a>(
     source: RuleSetId,
     tokens: &'a mut Tokens,
 ) -> Result<Arguments<'a>, TextError> {
+    let maximum = if source == RuleSetId::Quake3 {
+        tokens.spans.len()
+    } else {
+        80
+    };
+    tokenize_limit(text, source, tokens, maximum, true)
+}
+/// Engine commands keep native lexical rules with the full owned token capacity.
+pub fn tokenize_engine<'a>(
+    text: &'a str,
+    source: RuleSetId,
+    tokens: &'a mut Tokens,
+) -> Result<Arguments<'a>, TextError> {
+    let maximum = tokens.spans.len();
+    tokenize_limit(text.as_bytes(), source, tokens, maximum, false)
+}
+fn tokenize_limit<'a>(
+    text: &'a [u8],
+    source: RuleSetId,
+    tokens: &'a mut Tokens,
+    maximum: usize,
+    native_limits: bool,
+) -> Result<Arguments<'a>, TextError> {
     tokens.len = 0;
     tokens.raw = 0..0;
     if text.len() > 8192 {
@@ -161,7 +184,6 @@ pub fn tokenize_bytes<'a>(
     }
     let q3 = source == RuleSetId::Quake3;
     let q1 = source == RuleSetId::Quake;
-    let maximum = if q3 { 1024 } else { 80 };
     let bytes = text;
     let mut at = 0;
     let mut args_start = text.len();
@@ -237,10 +259,16 @@ pub fn tokenize_bytes<'a>(
             end = at;
         }
         let mut value = &text[start..end];
-        if matches!(source, RuleSetId::Quake | RuleSetId::QuakeWorld) && value.len() >= 1024 {
+        if native_limits
+            && matches!(source, RuleSetId::Quake | RuleSetId::QuakeWorld)
+            && value.len() >= 1024
+        {
             return Err(TextError::TooLong);
         }
-        if matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) && value.len() >= 128 {
+        if native_limits
+            && matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
+            && value.len() >= 128
+        {
             if first == b'"' {
                 return Err(TextError::TooLong);
             }
@@ -282,12 +310,30 @@ pub fn expand<'a>(
 pub fn expand_bytes<'a>(
     text: &mut FixedText<MAX_TEXT>,
     tokens: &mut Tokens,
+    value: impl FnMut(&[u8]) -> Option<Text<'a>>,
+) -> Result<(), TextError> {
+    expand_limit(text, tokens, 1024, value)
+}
+/// Engine-owned lines use their full buffer while guest macro limits stay native.
+pub fn expand_engine<'a>(
+    text: &mut FixedText<MAX_TEXT>,
+    tokens: &mut Tokens,
+    mut value: impl FnMut(&str) -> Option<Text<'a>>,
+) -> Result<(), TextError> {
+    expand_limit(text, tokens, MAX_TEXT, |name| {
+        value(std::str::from_utf8(name).ok()?)
+    })
+}
+fn expand_limit<'a>(
+    text: &mut FixedText<MAX_TEXT>,
+    tokens: &mut Tokens,
+    maximum: usize,
     mut value: impl FnMut(&[u8]) -> Option<Text<'a>>,
 ) -> Result<(), TextError> {
     let mut replacements = 0;
     loop {
         let raw = text.as_bytes();
-        if raw.len() >= 1024 {
+        if raw.len() >= maximum {
             return Err(TextError::TooLong);
         }
         let mut quote = false;

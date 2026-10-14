@@ -385,6 +385,9 @@ impl Vfs {
     pub fn length(&self, reference: FileRef) -> Result<u64, VfsError> {
         Ok(self.entry(reference)?.length)
     }
+    pub fn name(&self, reference: FileRef) -> Result<&[u8], VfsError> {
+        Ok(&self.entry(reference)?.name)
+    }
 
     /// Cold whole-file read through the same loose/archive range reader.
     pub fn read_to_vec(
