@@ -1467,7 +1467,7 @@ fn background_track_ordinals_publish_leased_paths_in_all_address_modes() {
             else {
                 panic!("music start");
             };
-            assert_eq!(owner.module, context().module);
+            assert_eq!(owner.module, Some(context().module));
             assert_eq!(owner.client, None);
             assert_eq!(
                 playback,

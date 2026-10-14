@@ -230,7 +230,8 @@ pub struct SoundId(pub u32);
 /// Exact publication owner; a reused CLIENT slot is a different lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MusicOwner {
-    pub module: ModuleId,
+    /// None is an engine-owned request, distinct from every native module id.
+    pub module: Option<ModuleId>,
     pub client: Option<(ClientId, EntityId)>,
 }
 /// Transition and sample rules selected at the source boundary.
@@ -251,6 +252,7 @@ pub enum MusicControl {
     Stop {
         only_active: bool,
     },
+    Pause(bool),
     Retire(MusicOwner),
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

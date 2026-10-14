@@ -541,3 +541,99 @@ pub fn play(
     }
     Ok(())
 }
+
+/// The console and native modules use the same ordered presentation controls.
+pub fn music(
+    _: &mut Console<Runtime>,
+    runtime: &mut Runtime,
+    args: &qa_console::command_text::Arguments<'_>,
+    context: Context,
+) -> Result<(), CommandError> {
+    use qa_core::primitives::{MusicControl, MusicOwner};
+    if args.len() < 2 {
+        return Err(CommandError::Usage);
+    }
+    let first = args.get(1);
+    let keyword = ["stop", "pause", "resume", "once"]
+        .iter()
+        .position(|word| qa_core::names::compare_folded(first.as_bytes(), word.as_bytes()).is_eq());
+    if keyword.is_some_and(|index| index < 3) && args.len() != 2 {
+        return Err(CommandError::Usage);
+    }
+    let control = match keyword {
+        Some(0) => Some(MusicControl::Stop { only_active: false }),
+        Some(1) => Some(MusicControl::Pause(true)),
+        Some(2) => Some(MusicControl::Pause(false)),
+        _ => None,
+    };
+    let admitted = if let Some(control) = control {
+        runtime
+            .server
+            .events
+            .push_to(
+                qa_core::events::OutputTarget::Presentation,
+                FrameEvent::Music(control),
+            )
+            .is_ok()
+    } else {
+        let (intro, loop_track) = if keyword == Some(3) {
+            if args.len() != 3 {
+                return Err(CommandError::Usage);
+            }
+            (args.get(2), None)
+        } else {
+            if !(2..=3).contains(&args.len()) {
+                return Err(CommandError::Usage);
+            }
+            (
+                first,
+                Some(if args.len() == 3 { args.get(2) } else { first }),
+            )
+        };
+        if intro.is_empty() {
+            return Err(CommandError::Usage);
+        }
+        let intro = music_path(&runtime.vfs, intro)?;
+        let loop_track = loop_track
+            .map(|name| music_path(&runtime.vfs, name))
+            .transpose()?;
+        runtime
+            .server
+            .events
+            .music(
+                MusicOwner {
+                    module: None,
+                    client: None,
+                },
+                qa_gameplay::rules::music_playback(context.source),
+                intro.as_bytes(),
+                loop_track.as_ref().map_or(&[][..], |name| name.as_bytes()),
+            )
+            .is_ok()
+    };
+    if !admitted {
+        runtime.print_event(
+            None,
+            qa_core::primitives::PrintKind::Console,
+            format_args!("music control was not admitted\n"),
+        );
+    }
+    Ok(())
+}
+fn music_path(
+    vfs: &qa_content::vfs::Vfs,
+    name: &str,
+) -> Result<qa_core::text::FixedText<8192>, CommandError> {
+    let mut path = qa_core::text::FixedText::default();
+    // Explicit mounted paths remain usable outside music/. Bare names gain
+    // that directory and WAV extension when they do not name an existing file.
+    if vfs.open(name.as_bytes()).is_none() && !name.bytes().any(|byte| matches!(byte, b'/' | b'\\'))
+    {
+        path.append_bytes(b"music/")
+            .map_err(|_| CommandError::Usage)?;
+    }
+    path.append_bytes(name.as_bytes())
+        .map_err(|_| CommandError::Usage)?;
+    qa_core::names::default_extension(&mut path, b".wav", true).map_err(|_| CommandError::Usage)?;
+    Ok(path)
+}

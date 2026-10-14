@@ -81,7 +81,7 @@ pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program) {
     assert_eq!(
         source.owner,
         Some(MusicOwner {
-            module: ModuleId(1),
+            module: Some(ModuleId(1)),
             client: Some((clients[0], host.runtime.server.clients[0].entity))
         })
     );

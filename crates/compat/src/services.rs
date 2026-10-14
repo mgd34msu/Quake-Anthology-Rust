@@ -1316,7 +1316,10 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .map(|connection| connection.identity(s.server))
             .transpose()?;
         let row = s.storage.range_mut(module).ok_or(CallError::ConfigString)?;
-        let owner = qa_core::primitives::MusicOwner { module, client };
+        let owner = qa_core::primitives::MusicOwner {
+            module: Some(module),
+            client,
+        };
         let sequence = s
             .server
             .events

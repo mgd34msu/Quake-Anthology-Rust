@@ -1111,7 +1111,7 @@ fn music_paths_retire_with_presentation_and_an_independent_text_lease() {
     let healthy = ring.bind(OutputTarget::Presentation).unwrap();
     let remote = ring.bind(OutputTarget::Client(ClientId(2))).unwrap();
     let owner = MusicOwner {
-        module: ModuleId(7),
+        module: Some(ModuleId(7)),
         client: Some((
             ClientId(2),
             EntityId {
@@ -1158,7 +1158,7 @@ fn music_second_path_failure_rolls_back_first_path_and_counts_once() {
     let retained = ring.texts.insert(b"held display text").unwrap();
     let before = ring.sequence_range();
     let owner = MusicOwner {
-        module: ModuleId(1),
+        module: Some(ModuleId(1)),
         client: None,
     };
     let playback = MusicPlayback {

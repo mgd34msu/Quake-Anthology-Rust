@@ -165,3 +165,56 @@ fn raw_and_effects_saturate_only_after_common_accumulation() {
     mix.paint(&mut output);
     assert_eq!(output, [-118, -118]);
 }
+
+#[test]
+fn pausing_raw_retains_its_read_position_while_effects_keep_playing() {
+    let output_rate = rate(22050);
+    let bank = Bank::load(
+        output_rate,
+        vec![(
+            "tone".into(),
+            Pcm {
+                rate: output_rate,
+                channels: PcmChannels::Mono,
+                samples: vec![1000; 5],
+                loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
+            },
+        )],
+    )
+    .unwrap();
+    let sound = bank.find("tone").unwrap();
+    let mut mix = Mixer::load(Arc::new(bank), 4, 1);
+    let fmt = format(22050, PcmChannels::Mono, PcmWidth::Short);
+    mix.queue_raw(fmt, &shorts(&[100, 200, 300]), 1., false)
+        .unwrap();
+    let mut first = [0; 2];
+    mix.paint(&mut first);
+    assert_eq!(first, [100; 2]);
+    let remaining = mix.raw_remaining();
+    mix.pause_raw(true);
+    assert!(mix.sound(SoundEvent {
+        sound,
+        bus: SoundBus::Local,
+        volume: 1.,
+        action: SoundAction::Play,
+        ..Default::default()
+    }));
+    let mut paused = [0; 8];
+    mix.paint(&mut paused);
+    assert_eq!(paused, [996; 8]);
+    assert_eq!(mix.raw_remaining(), remaining);
+    mix.queue_raw(fmt, &shorts(&[400]), 1., false).unwrap();
+    mix.pause_raw(false);
+    let mut resumed = [0; 8];
+    mix.paint(&mut resumed);
+    assert_eq!(resumed, [1196, 1196, 300, 300, 400, 400, 0, 0]);
+    mix.pause_raw(true);
+    mix.paint(&mut paused);
+    mix.clear_raw();
+    mix.queue_raw(fmt, &shorts(&[500]), 1., false).unwrap();
+    mix.pause_raw(false);
+    mix.paint(&mut first);
+    assert_eq!(first, [500; 2]);
+}

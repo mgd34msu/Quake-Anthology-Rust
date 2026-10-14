@@ -486,6 +486,9 @@ impl Mixer {
     pub fn clear_raw(&mut self) {
         self.raw.clear(self.counts.frames);
     }
+    pub fn pause_raw(&mut self, paused: bool) {
+        self.raw.pause(paused);
+    }
     pub fn listen(&mut self, listeners: &[Option<Listener>], volume: f32) {
         for index in 0..self.listeners.len() {
             if self.listeners[index].owner.is_some() {

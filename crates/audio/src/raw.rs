@@ -14,21 +14,37 @@ pub enum RawError {
 pub(crate) struct Raw {
     samples: Box<[[i32; 2]]>,
     end: u64,
+    paused: bool,
+    suspended: u64,
 }
 impl Raw {
     pub fn load() -> Self {
         Self {
             samples: vec![[0; 2]; RAW_FRAMES].into_boxed_slice(),
             end: 0,
+            paused: false,
+            suspended: 0,
         }
     }
     pub fn clear(&mut self, painted: u64) {
         self.end = painted;
+        self.suspended = 0;
+    }
+    pub fn pause(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+    fn playback_frame(&self, painted: u64) -> u64 {
+        painted.saturating_sub(self.suspended)
     }
     pub fn remaining(&self, painted: u64) -> usize {
-        RAW_FRAMES.saturating_sub(self.end.saturating_sub(painted) as usize)
+        RAW_FRAMES.saturating_sub(self.end.saturating_sub(self.playback_frame(painted)) as usize)
     }
-    pub fn sample(&self, time: u64) -> [i32; 2] {
+    pub fn sample(&mut self, time: u64) -> [i32; 2] {
+        if self.paused {
+            self.suspended += 1;
+            return [0; 2];
+        }
+        let time = self.playback_frame(time);
         if time < self.end {
             self.samples[time as usize & (RAW_FRAMES - 1)]
         } else {
@@ -62,6 +78,7 @@ impl Raw {
         if frames > self.remaining(painted) {
             return Err(RawError::Capacity);
         }
+        let painted = self.playback_frame(painted);
         // Native S_RawSamples restarts i*scale for every submitted source block.
         // Retained output time, not effect-channel fixed-point resampling,
         // determines where that block enters the shared paint buffer.

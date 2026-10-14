@@ -264,3 +264,25 @@ fn native_byte_path_lookup_preserves_non_ascii_bytes_and_stable_ids() {
         Ok(utf8)
     );
 }
+
+#[test]
+fn default_extensions_keep_native_component_rules_and_buffer_bounds() {
+    use qa_core::{names::default_extension, text::FixedText};
+    for (name, backslash, expected) in [
+        ("music/intro", false, "music/intro.wav"),
+        ("music/intro.ogg", true, "music/intro.ogg"),
+        ("music.old/intro", false, "music.old/intro.wav"),
+        ("music.old\\intro", false, "music.old\\intro"),
+        ("music.old\\intro", true, "music.old\\intro.wav"),
+        ("music/intro.", true, "music/intro."),
+    ] {
+        let mut path = FixedText::<64>::default();
+        path.append_bytes(name.as_bytes()).unwrap();
+        default_extension(&mut path, b".wav", backslash).unwrap();
+        assert_eq!(path.as_str(), expected);
+    }
+    let mut full = FixedText::<8>::default();
+    full.append_bytes(b"abcdefgh").unwrap();
+    assert!(default_extension(&mut full, b".wav", true).is_err());
+    assert_eq!(full.as_bytes(), b"abcdefgh");
+}

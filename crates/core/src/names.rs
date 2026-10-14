@@ -15,6 +15,24 @@ pub fn compare_folded(left: &[u8], right: &[u8]) -> Ordering {
 pub fn path_byte(byte: u8) -> u8 {
     fold(if byte == b'\\' { b'/' } else { byte })
 }
+/// Native COM_DefaultExtension ignores dots before the final directory
+/// separator. Callers retain the source's backslash interpretation explicitly.
+pub fn default_extension<const N: usize>(
+    path: &mut crate::text::FixedText<N>,
+    extension: &[u8],
+    backslash_separator: bool,
+) -> std::fmt::Result {
+    let component = path
+        .as_bytes()
+        .rsplit(|&byte| byte == b'/' || backslash_separator && byte == b'\\')
+        .next()
+        .unwrap_or_default();
+    if component.contains(&b'.') {
+        Ok(())
+    } else {
+        path.append_bytes(extension)
+    }
+}
 /// The sole renderer path conversion; other exact names never use this rule.
 pub fn canonical_path(name: &str) -> String {
     name.chars()

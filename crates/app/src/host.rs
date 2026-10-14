@@ -381,6 +381,7 @@ impl FrameHost {
                 .map_err(|e| format!("localization: {e:?}"))?;
         }
         console.register("play", crate::audio::play);
+        console.register("music", crate::audio::music);
         let volume = console.cvars.find("s_volume").ok_or("missing s_volume")?;
         let music_volume = console
             .cvars

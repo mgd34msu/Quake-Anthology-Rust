@@ -62,7 +62,7 @@ pub fn mixer() -> Mixer {
 }
 fn owner(generation: u32) -> MusicOwner {
     MusicOwner {
-        module: ModuleId(1),
+        module: Some(ModuleId(1)),
         client: Some((
             ClientId(2),
             EntityId {
@@ -200,5 +200,146 @@ fn retirement_does_not_stop_a_reused_client_or_a_new_module_owner() {
     let mut out = [0; 4];
     mix.paint(&mut out);
     assert_eq!(out, [0; 4]);
+    assert!(!music.playing());
+}
+
+fn console_control(
+    runtime: &mut qa_app::Runtime,
+    console: &mut qa_console::commands::Console<qa_app::Runtime>,
+    music: &mut Music,
+    mix: &mut Mixer,
+    line: &str,
+    context: qa_console::views::Context,
+) -> Option<MusicControl> {
+    use qa_core::events::{FrameEvent, OutputSubmission, dispatch_consumer};
+    console.append_line(line, context).unwrap();
+    console.execute_frame(runtime);
+    let mut last = None;
+    let consumer = runtime.server.presentation;
+    dispatch_consumer(
+        &mut runtime.server.events,
+        consumer,
+        &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
+            if let FrameEvent::Music(control) = record.event {
+                let paths = match control {
+                    MusicControl::Start {
+                        owner,
+                        intro,
+                        loop_track,
+                        ..
+                    } => {
+                        assert_eq!(
+                            owner,
+                            MusicOwner {
+                                module: None,
+                                client: None
+                            }
+                        );
+                        (texts.get(intro), texts.get(loop_track))
+                    }
+                    _ => (None, None),
+                };
+                assert!(music.control(&runtime.vfs, mix, control, paths.0, paths.1));
+                last = Some(control);
+            }
+            OutputSubmission::BestEffort
+        },
+    );
+    last
+}
+#[test]
+fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
+    let mut fixture = Fixture::new();
+    let mut runtime = qa_app::Runtime::load(1, []).unwrap();
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let context = qa_console::views::Context {
+        source: RuleSetId::Quake2,
+        ..Default::default()
+    };
+    let mut console = qa_console::commands::Console::new(context).unwrap();
+    console.register("music", qa_app::audio::music);
+    let mut mix = mixer();
+    let mut music = Music::default();
+    assert!(matches!(
+        console_control(
+            &mut runtime,
+            &mut console,
+            &mut music,
+            &mut mix,
+            "music intro repeat",
+            context
+        ),
+        Some(MusicControl::Start { .. })
+    ));
+    music.update(&runtime.vfs, &mut mix, 1.);
+    let mut pcm = [0; 2];
+    mix.paint(&mut pcm);
+    assert_eq!(pcm, [1000, -1000]);
+    assert!(matches!(
+        console_control(
+            &mut runtime,
+            &mut console,
+            &mut music,
+            &mut mix,
+            "music PAUSE",
+            context
+        ),
+        Some(MusicControl::Pause(true))
+    ));
+    music.update(&runtime.vfs, &mut mix, 1.);
+    mix.paint(&mut pcm);
+    assert_eq!(pcm, [0; 2]);
+    assert!(matches!(
+        console_control(
+            &mut runtime,
+            &mut console,
+            &mut music,
+            &mut mix,
+            "music resume",
+            context
+        ),
+        Some(MusicControl::Pause(false))
+    ));
+    mix.paint(&mut pcm);
+    assert_eq!(pcm, [2000, -2000]);
+    music.control(
+        &runtime.vfs,
+        &mut mix,
+        MusicControl::Retire(MusicOwner {
+            module: Some(ModuleId(0)),
+            client: None,
+        }),
+        None,
+        None,
+    );
+    assert!(music.playing());
+    assert!(matches!(
+        console_control(
+            &mut runtime,
+            &mut console,
+            &mut music,
+            &mut mix,
+            "music stop",
+            context
+        ),
+        Some(MusicControl::Stop { only_active: false })
+    ));
+    mix.paint(&mut pcm);
+    assert_eq!(pcm, [0; 2]);
+    assert!(matches!(
+        console_control(
+            &mut runtime,
+            &mut console,
+            &mut music,
+            &mut mix,
+            "music once intro",
+            context
+        ),
+        Some(MusicControl::Start { .. })
+    ));
+    music.update(&runtime.vfs, &mut mix, 1.);
+    let mut output = [0; 6];
+    mix.paint(&mut output);
+    assert_eq!(output, [1000, -1000, 2000, -2000, 0, 0]);
     assert!(!music.playing());
 }

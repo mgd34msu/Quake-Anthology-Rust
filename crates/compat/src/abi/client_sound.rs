@@ -8,10 +8,7 @@ fn track_name(name: &[u8]) -> Result<qa_core::text::FixedText<64>, CallError> {
     let name = &name[..name.len().min(59)];
     let mut path = qa_core::text::FixedText::default();
     path.append_bytes(name).map_err(|_| CallError::Text)?;
-    let component = name.rsplit(|&byte| byte == b'/').next().unwrap_or_default();
-    if !component.contains(&b'.') {
-        path.append_bytes(b".wav").map_err(|_| CallError::Text)?;
-    }
+    qa_core::names::default_extension(&mut path, b".wav", false).map_err(|_| CallError::Text)?;
     Ok(path)
 }
 pub(super) fn start_background(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

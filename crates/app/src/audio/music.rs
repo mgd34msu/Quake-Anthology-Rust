@@ -54,6 +54,7 @@ pub struct Music {
     loop_track: Option<FileRef>,
     playback: MusicPlayback,
     volume: f32,
+    paused: bool,
     reader: ArchiveReader,
     bytes: Box<[u8]>,
     pub counts: MusicCounts,
@@ -70,6 +71,7 @@ impl Default for Music {
                 signed_stereo_bytes: false,
             },
             volume: 0.5,
+            paused: false,
             reader: ArchiveReader::default(),
             bytes: vec![0; 30000].into_boxed_slice(),
             counts: MusicCounts::default(),
@@ -89,6 +91,13 @@ impl Music {
         loop_track: Option<&[u8]>,
     ) -> bool {
         match control {
+            MusicControl::Pause(paused) => {
+                if self.owner.is_some() {
+                    self.paused = paused;
+                    mixer.pause_raw(paused);
+                }
+                true
+            }
             MusicControl::Stop { only_active } => {
                 if !only_active || self.current.is_some() {
                     self.stop(mixer);
@@ -111,6 +120,8 @@ impl Music {
                 self.loop_track = None;
                 self.owner = Some(owner);
                 self.playback = playback;
+                self.paused = false;
+                mixer.pause_raw(false);
                 if !playback.preserve_queued {
                     mixer.clear_raw();
                 }
@@ -131,10 +142,15 @@ impl Music {
         }
     }
     fn stop(&mut self, mixer: &mut Mixer) {
+        if self.owner.is_none() {
+            return;
+        }
         self.counts.stopped += u64::from(self.current.is_some() || self.owner.is_some());
         self.current = None;
         self.loop_track = None;
         self.owner = None;
+        self.paused = false;
+        mixer.pause_raw(false);
         self.reader.close_stream();
         mixer.clear_raw();
     }
@@ -147,7 +163,8 @@ impl Music {
                 event.client == Some(client) && event.client_lifetime == Some(lifetime)
             }),
             SoundAction::ReleaseListener => {
-                event.listener_owner == Some(owner.module)
+                owner.module.is_some()
+                    && event.listener_owner == owner.module
                     && owner.client.is_some_and(|(client, lifetime)| {
                         event.client == Some(client) && event.client_lifetime == Some(lifetime)
                     })
@@ -160,7 +177,7 @@ impl Music {
     }
     /// Called once per presentation frame, independently of PCM write retries.
     pub fn update(&mut self, vfs: &Vfs, mixer: &mut Mixer, target_volume: f32) {
-        if self.current.is_none() {
+        if self.current.is_none() || self.paused {
             return;
         }
         let target = if target_volume.is_finite() {
