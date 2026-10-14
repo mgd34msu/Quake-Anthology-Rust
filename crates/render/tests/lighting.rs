@@ -120,6 +120,55 @@ fn legacy_point_samples_preserve_style_arithmetic_dark_hits_and_texture_truncati
             .ambient,
         [0.; 3]
     );
+    // Independent BSPX coordinates select the light sample even when the
+    // texture lattice cannot represent this point. Swap axes and translate.
+    geometry.surfaces[0].lightmap_projection = Some([[0., 0.125, 0., 2.], [0.125, 0., 0., 2.]]);
+    geometry.surfaces[0].texture_minima = [i32::MAX; 2];
+    geometry.light_samples[3] = [128, 64, 32];
+    geometry.light_samples[12] = [16, 8, 4];
+    let decoupled_point = Vec3([-8., -16., 8.]);
+    assert_eq!(
+        rgb.sample(
+            &geometry,
+            &visibility,
+            &mut scratch,
+            decoupled_point,
+            &styles,
+            2.
+        )
+        .unwrap()
+        .ambient,
+        [272., 80., 128.]
+    );
+    assert_eq!(
+        indexed
+            .sample(
+                &geometry,
+                &visibility,
+                &mut scratch,
+                decoupled_point,
+                &styles,
+                2.
+            )
+            .unwrap()
+            .ambient,
+        [80., 40., 20.]
+    );
+    assert_eq!(
+        rgb.sample(
+            &geometry,
+            &visibility,
+            &mut scratch,
+            Vec3([-17., -16., 8.]),
+            &styles,
+            2.
+        )
+        .unwrap()
+        .ambient,
+        [0.; 3]
+    );
+    geometry.surfaces[0].lightmap_projection = None;
+    geometry.surfaces[0].texture_minima = [-16; 2];
     geometry.surfaces[0].light_samples.count = 0;
     assert_eq!(
         indexed

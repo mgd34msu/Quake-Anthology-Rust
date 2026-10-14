@@ -61,6 +61,33 @@ fn retail_base1_decoupled_samples_reach_the_indexed_surface_cache() {
     .unwrap();
     let geometry = assets.world(loaded.world).unwrap().geometry();
     assert!(geometry.light_samples.iter().any(|rgb| *rgb != [0; 3]));
+    let world = assets.world(loaded.world).unwrap();
+    let mut point_view = qa_render::world::WorldView::load(world);
+    let styles = [qa_render::LightStyle::default(); 256];
+    let point_sample = geometry
+        .surfaces
+        .iter()
+        .filter(|surface| {
+            surface.plane.is_some_and(|plane| plane.normal.0[2] == 1.)
+                && surface.lightmap_projection.is_some()
+                && surface.light_samples.count > 0
+                && surface.source_flags & 12 == 0
+        })
+        .find_map(|surface| {
+            let vertices = &geometry.vertices[surface.vertices.range()];
+            let point = vertices
+                .iter()
+                .fold(Vec3::default(), |sum, vertex| sum + vertex.vertex.position)
+                / vertices.len() as f32
+                + Vec3([0., 0., 1.]);
+            let light = point_view
+                .point_lighting(world, point, &styles, 1.)
+                .unwrap();
+            (light.ambient.iter().any(|&value| value > 0.)).then_some((point, light.ambient))
+        })
+        .expect("production BSPX point-light sample above a lit floor");
+    assert!(point_sample.1.iter().all(|value| value.is_finite()));
+    println!("retail BSPX point-light sample {point_sample:?}");
     // These real lit, opaque, non-collinear faces have rank-one texture UVs.
     // Their independent lightmaps need a two-dimensional cache chart.
     let rank_one_faces = [
