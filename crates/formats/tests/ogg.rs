@@ -373,6 +373,64 @@ fn interleaved_non_audio_packets_do_not_change_vorbis_pcm() {
 }
 
 #[test]
+fn source_reader_reuses_loaded_headers_and_rewinds_chains_without_whole_file_pcm() {
+    let bytes = [change_serial(STEREO, 200), change_serial(STEREO, 100)].concat();
+    let mut largest_read = 0;
+    let mut decoder = sound::Vorbis::load(bytes.len() as u64, |at, out| {
+        largest_read = largest_read.max(out.len());
+        framing::slice_read(&bytes, at, out)
+    })
+    .unwrap();
+    assert!(largest_read < bytes.len());
+    assert_eq!(decoder.logical_streams(), 2);
+    assert_eq!(decoder.source_position(), 0);
+    assert_eq!(decoder.format().rate.get(), 48000);
+    assert_eq!(decoder.format().channels as usize, 2);
+    assert!(!decoder.comments().vendor.is_empty());
+    let expected = sound::vorbis(&bytes).unwrap();
+    for _ in 0..2 {
+        let mut actual = Vec::new();
+        let mut packets = 0;
+        while let Some(samples) = decoder
+            .read_packet(|at, out| framing::slice_read(&bytes, at, out))
+            .unwrap()
+        {
+            assert!(!samples.is_empty());
+            assert!(samples.len() < expected.samples.len());
+            actual.extend_from_slice(samples);
+            packets += 1;
+        }
+        assert!(packets > 2);
+        assert_eq!(actual, expected.samples);
+        assert_eq!(decoder.source_position(), bytes.len() as u64);
+        decoder.rewind();
+        assert_eq!(decoder.source_position(), 0);
+    }
+}
+
+#[test]
+fn source_reader_reports_io_errors_and_can_restart_after_failure() {
+    let mut decoder = sound::Vorbis::load(MONO.len() as u64, |at, out| {
+        framing::slice_read(MONO, at, out)
+    })
+    .unwrap();
+    assert_eq!(
+        decoder
+            .read_packet(|_, _| Err(FormatError::Io(std::io::ErrorKind::UnexpectedEof)))
+            .unwrap_err(),
+        FormatError::Io(std::io::ErrorKind::UnexpectedEof)
+    );
+    decoder.rewind();
+    assert!(decoder.read_slice(MONO).unwrap().is_some());
+    assert!(
+        sound::Vorbis::load(MONO.len() as u64, |_, _| Err(FormatError::Io(
+            std::io::ErrorKind::Other
+        )))
+        .is_err()
+    );
+}
+
+#[test]
 #[ignore = "optional full retail music PCM comparison; set QA_TEST_OGG"]
 fn retail_pcm_matches_existing_decoder() {
     let bytes =

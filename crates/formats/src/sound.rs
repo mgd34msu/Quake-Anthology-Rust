@@ -1,8 +1,10 @@
-//! Decode once at precache into the shared PCM representation.
+//! Common PCM readers for precached sounds and streamed music.
 use crate::{FormatError, read::Reader};
 use qa_core::primitives::{Pcm, PcmChannels, PcmFormat, PcmWidth};
 use std::num::NonZeroU32;
 pub mod ogg;
+mod vorbis;
+pub use vorbis::Vorbis;
 
 const MAX_SAMPLES: usize = 256 * 1024 * 1024 / 2;
 
@@ -372,112 +374,23 @@ pub fn decode(bytes: &[u8], policy: WavPolicy) -> Result<Pcm, FormatError> {
     }
 }
 pub fn vorbis(bytes: &[u8]) -> Result<Pcm, FormatError> {
-    use lewton::{
-        audio::{PreviousWindowRight, read_audio_packet_generic},
-        header::read_header_ident,
-        samples::InterleavedSamples,
-    };
-    let plan = ogg::Plan::inspect(bytes.len() as u64, |at, out| {
+    let mut decoder = Vorbis::load(bytes.len() as u64, |at, out| {
         ogg::slice_read(bytes, at, out)
     })?;
-    let mut reader = ogg::Packets::load(plan)?;
-    let mut serial;
-    let mut ident;
-    loop {
-        let packet = reader.next_slice(bytes)?.ok_or(FormatError::Truncated)?;
-        if packet.data.starts_with(b"\x01vorbis") {
-            serial = packet.serial;
-            ident = read_header_ident(packet.data).map_err(|_| FormatError::InvalidValue)?;
-            break;
-        }
-    }
-    let mut setup = vorbis_setup(&mut reader, bytes, serial, &ident)?;
-    let channels = match ident.audio_channels {
-        1 => PcmChannels::Mono,
-        2 => PcmChannels::Stereo,
-        _ => return Err(FormatError::Unsupported),
-    };
-    let rate = NonZeroU32::new(ident.audio_sample_rate).ok_or(FormatError::InvalidValue)?;
+    let format = decoder.format();
     let mut samples = Vec::new();
-    let mut previous = PreviousWindowRight::new();
-    let mut granule = Some(0u64);
-    let mut ended = false;
-    while let Some(packet) = reader.next_slice(bytes)? {
-        if packet.serial != serial {
-            if !ended || !packet.first_in_stream || !packet.data.starts_with(b"\x01vorbis") {
-                continue;
-            }
-            serial = packet.serial;
-            ident = read_header_ident(packet.data).map_err(|_| FormatError::InvalidValue)?;
-            if ident.audio_channels != channels as u8 || ident.audio_sample_rate != rate.get() {
-                return Err(FormatError::Unsupported);
-            }
-            setup = vorbis_setup(&mut reader, bytes, serial, &ident)?;
-            previous = PreviousWindowRight::new();
-            granule = Some(0);
-            ended = false;
-            continue;
-        }
-        let mut decoded: InterleavedSamples<i16> =
-            read_audio_packet_generic(&ident, &setup, packet.data, &mut previous)
-                .map_err(|_| FormatError::InvalidValue)?;
-        if packet.last_in_stream
-            && let (Some(before), Some(end)) = (granule, packet.granule)
-        {
-            let frames = usize::try_from(end.saturating_sub(before)).unwrap_or(usize::MAX);
-            let count = frames
-                .saturating_mul(channels as usize)
-                .min(decoded.samples.len());
-            decoded.samples.truncate(count);
-        }
-        if packet.last_in_page {
-            granule = packet.granule;
-        } else if let Some(before) = &mut granule {
-            *before = before
-                .checked_add((decoded.samples.len() / channels as usize) as u64)
-                .ok_or(FormatError::InvalidRange)?;
-        }
-        ended = packet.last_in_stream;
-        if decoded.samples.len() > MAX_SAMPLES - samples.len()
-            || decoded.samples.len() % channels as usize != 0
-        {
+    while let Some(packet) = decoder.read_slice(bytes)? {
+        if packet.len() > MAX_SAMPLES - samples.len() {
             return Err(FormatError::InvalidRange);
         }
-        samples.extend(decoded.samples);
+        samples.extend_from_slice(packet);
     }
     Ok(Pcm {
-        rate,
-        channels,
+        rate: format.rate,
+        channels: format.channels,
         samples,
         loop_start: None,
         loop_end: None,
         loop_invalid: false,
     })
-}
-fn vorbis_setup(
-    reader: &mut ogg::Packets,
-    bytes: &[u8],
-    serial: u32,
-    ident: &lewton::header::IdentHeader,
-) -> Result<lewton::header::SetupHeader, FormatError> {
-    for setup in [false, true] {
-        loop {
-            let packet = reader.next_slice(bytes)?.ok_or(FormatError::Truncated)?;
-            if packet.serial != serial {
-                continue;
-            }
-            if setup {
-                return lewton::header::read_header_setup(
-                    packet.data,
-                    ident.audio_channels,
-                    (ident.blocksize_0, ident.blocksize_1),
-                )
-                .map_err(|_| FormatError::InvalidValue);
-            }
-            lewton::header::read_header_comment(packet.data)
-                .map_err(|_| FormatError::InvalidValue)?;
-            break;
-        }
-    }
-    Err(FormatError::InvalidValue)
 }
