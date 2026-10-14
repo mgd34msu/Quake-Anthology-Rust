@@ -23,6 +23,7 @@ pub struct ClientView {
     pub angles: qa_core::primitives::Vec3,
     pub fov_x: f32,
     pub time_ms: u64,
+    pub lighting_scales: [f32; 2],
 }
 
 /// The live adapter delegates every OS operation to platform. The same host
@@ -195,6 +196,7 @@ pub struct FrameHost {
     pub local_presentations: [qa_render::material::world_load::PresentationDefaults; SeatId::COUNT],
     maxfps: CvarHandle,
     fov: CvarHandle,
+    lighting_scales: [CvarHandle; 2],
     roll_angle: CvarHandle,
     roll_speed: CvarHandle,
     kick_angles: CvarHandle,
@@ -286,6 +288,12 @@ impl FrameHost {
             .find("com_maxfps")
             .ok_or("missing com_maxfps")?;
         let fov = console.cvars.find("cg_fov").ok_or("missing cg_fov")?;
+        let lighting_scales =
+            ["r_ambientScale", "r_directedScale"].map(|name| console.cvars.find(name));
+        let [Some(ambient), Some(directed)] = lighting_scales else {
+            return Err("missing entity lighting scales".into());
+        };
+        let lighting_scales = [ambient, directed];
         let roll_angle = console
             .cvars
             .find("cl_rollangle")
@@ -349,6 +357,7 @@ impl FrameHost {
             local_presentations: [Default::default(); SeatId::COUNT],
             maxfps,
             fov,
+            lighting_scales,
             roll_angle,
             roll_speed,
             kick_angles,
@@ -551,6 +560,9 @@ impl FrameHost {
                 angles: self.client_angles(client, row, player),
                 fov_x: self.console.cvars.value(self.fov),
                 time_ms: self.time.milliseconds(),
+                lighting_scales: self
+                    .lighting_scales
+                    .map(|handle| self.console.cvars.value(handle)),
             })
         })
     }

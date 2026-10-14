@@ -240,6 +240,28 @@ struct WorldScene {
     views: [WorldView; SeatId::COUNT],
     presentations: Box<[qa_render::material::world_load::LoadedWorldPresentation]>,
 }
+pub(crate) fn light_view_entities(
+    frame: &mut qa_render::scene::Frame,
+    assets: &Assets,
+    world: Option<qa_render::world::WorldId>,
+    view: &Refdef,
+    sun: qa_core::primitives::Vec3,
+    scales: [f32; 2],
+) {
+    let grid = world
+        .and_then(|world| assets.world(world))
+        .and_then(|world| world.light_grid());
+    let unlit = qa_render::lighting::unlit_sample(view.identity_light, sun);
+    frame.light_entities(view.identity_light, |entity| {
+        grid.map_or(unlit, |grid| {
+            grid.sample(
+                entity.lighting_origin.unwrap_or(entity.origin),
+                scales[0],
+                scales[1],
+            )
+        })
+    });
+}
 /// Each CLIENT supplies its selected presentation independently of the world.
 pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef {
     let basis = angle_vectors(client.angles);
@@ -649,6 +671,14 @@ impl Renderer {
                     self.effects
                         .append(frame, effect_client.client, effect_client.lifetime);
                 }
+                light_view_entities(
+                    frame,
+                    &composition.assets,
+                    Some(client.world),
+                    &refdef,
+                    composition.sun_direction,
+                    client.lighting_scales,
+                );
                 if !world_added || !frame.render_scene(refdef, hidden_areas, &composition.assets) {
                     rejected += 1;
                 }

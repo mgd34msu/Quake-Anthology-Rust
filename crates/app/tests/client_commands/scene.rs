@@ -582,6 +582,7 @@ pub(super) fn ownership() {
         angles: Vec3::default(),
         fov_x: 90.,
         time_ms: 16,
+        lighting_scales: [0.6, 1.],
     };
     let mut source = Source {
         renderer,

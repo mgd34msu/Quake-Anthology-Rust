@@ -39,6 +39,7 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
         fov_x: 90.0,
         time_ms: 123,
         presentation: presentation(PaletteId(0), IndexedLighting::Gray),
+        lighting_scales: [0.6, 1.],
     };
     let mut second = first;
     second.world_presentation = WorldPresentationId(4);
