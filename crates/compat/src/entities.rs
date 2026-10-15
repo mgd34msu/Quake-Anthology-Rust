@@ -305,10 +305,17 @@ pub(crate) fn native_slot(
     (slot < native.capacity).then_some(slot)
 }
 impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
-    fn module(&self) -> ModuleId {
-        self.module
+    fn failed(&self) -> bool {
+        self.error.failed()
     }
-    fn owner(&self, slot: i32) -> Option<CollisionOwner> {
+    fn supports(&self, module: ModuleId) -> bool {
+        self.module == module
+    }
+    fn owner(&self, native: NativeEntity) -> Option<CollisionOwner> {
+        if !self.supports(native.module) {
+            return None;
+        }
+        let slot = native.slot;
         if self.layout.owner_number
             && slot == q3::ENTITY_WORLD
             && slot as u32 >= self.entities.capacity
@@ -327,7 +334,11 @@ impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
             )
         })
     }
-    fn fields(&self, slot: i32, point_contents: bool) -> Option<NativeTraceFields> {
+    fn fields(&self, native: NativeEntity, point_contents: bool) -> Option<NativeTraceFields> {
+        if !self.supports(native.module) {
+            return None;
+        }
+        let slot = native.slot;
         self.error.capture(|| {
             let address = self.address_at(slot)?;
             let solid = field(self.memory, address, self.layout.solid)?;
@@ -355,7 +366,11 @@ impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
             })
         })
     }
-    fn bounds(&self, slot: i32, _cached: Bounds) -> Option<Bounds> {
+    fn bounds(&self, native: NativeEntity, _cached: Bounds) -> Option<Bounds> {
+        if !self.supports(native.module) {
+            return None;
+        }
+        let slot = native.slot;
         self.error.capture(|| {
             let address = self.address_at(slot)?;
             self.layout.bounds(self.memory, address)
@@ -363,13 +378,17 @@ impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
     }
     fn target(
         &self,
-        slot: i32,
+        native: NativeEntity,
         _cached: NativeTraceTarget,
         point_contents: bool,
         store: &CollisionStore,
         geometry: qa_core::primitives::GeometryId,
         names: Option<&dyn NativeModelNames>,
     ) -> Option<NativeTraceTarget> {
+        if !self.supports(native.module) {
+            return None;
+        }
+        let slot = native.slot;
         self.error.capture(|| {
             let address = self.address_at(slot)?;
             self.target_at(address, point_contents, false, store, Some(geometry), names)
@@ -1606,12 +1625,18 @@ pub(crate) fn inline_model(
 }
 
 #[derive(Default)]
-struct TraceError(Cell<Option<CallError>>);
+pub struct TraceError(Cell<Option<CallError>>);
 impl TraceError {
-    fn finish(&self) -> Result<(), CallError> {
+    pub fn failed(&self) -> bool {
+        self.0.get().is_some()
+    }
+    pub fn finish(&self) -> Result<(), CallError> {
         self.0.get().map_or(Ok(()), Err)
     }
-    fn capture<T>(&self, run: impl FnOnce() -> Result<T, CallError>) -> Option<T> {
+    pub fn take(&self) -> Result<(), CallError> {
+        self.0.take().map_or(Ok(()), Err)
+    }
+    pub fn capture<T>(&self, run: impl FnOnce() -> Result<T, CallError>) -> Option<T> {
         if self.0.get().is_some() {
             return None;
         }

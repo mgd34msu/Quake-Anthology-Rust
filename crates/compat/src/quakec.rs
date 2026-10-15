@@ -976,14 +976,19 @@ impl Vm {
         &self,
         context: crate::services::CallContext,
         pass: u32,
+        native_geometry: Option<qa_core::primitives::GeometryId>,
         query: impl FnOnce(
             &dyn qa_world::collision::NativeTraceEntities,
             qa_core::primitives::CollisionOwner,
         ) -> Result<R, crate::services::CallError>,
     ) -> Result<R, crate::services::CallError> {
-        let (view, pass) =
-            self.projection
-                .quakec_trace_view(&self.entities, &self.strings, context, pass)?;
+        let (view, pass) = self.projection.quakec_trace_view(
+            &self.entities,
+            &self.strings,
+            context,
+            pass,
+            native_geometry,
+        )?;
         let result = query(&view, pass);
         view.finish()?;
         result

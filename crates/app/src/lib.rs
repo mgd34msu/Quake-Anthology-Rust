@@ -261,6 +261,8 @@ impl Runtime {
             storage,
             geometry: &self.geometry,
             world: identity,
+            native_geometry: identity.map(|(geometry, _)| geometry),
+            foreign_trace: None,
             visibility,
             portals,
             scratch,

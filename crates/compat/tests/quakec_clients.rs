@@ -336,6 +336,8 @@ fn with_native_client(
         storage: &mut storage,
         geometry: &geometry,
         world: None,
+        native_geometry: None,
+        foreign_trace: None,
         visibility: None,
         portals: None,
         scratch: &mut scratch,

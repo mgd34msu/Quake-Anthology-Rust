@@ -633,6 +633,7 @@ pub(crate) struct QuakeCTraceView<'a, 'memory> {
     layout: QuakeCLayout,
     projection: &'a EntityProjection,
     module: ModuleId,
+    geometry: Option<qa_core::primitives::GeometryId>,
     error: TraceError,
 }
 impl QuakeCTraceView<'_, '_> {
@@ -648,16 +649,27 @@ impl QuakeCTraceView<'_, '_> {
     }
 }
 impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
-    fn module(&self) -> ModuleId {
-        self.module
+    fn failed(&self) -> bool {
+        self.error.failed()
     }
-    fn owner(&self, slot: i32) -> Option<CollisionOwner> {
+    fn supports(&self, module: ModuleId) -> bool {
+        self.module == module
+    }
+    fn owner(&self, native: NativeEntity) -> Option<CollisionOwner> {
+        if !self.supports(native.module) {
+            return None;
+        }
+        let slot = native.slot;
         self.error.capture(|| {
             self.projection
                 .quakec_collision_owner(self.memory, self.module, self.address(slot)?)
         })
     }
-    fn fields(&self, slot: i32, point_contents: bool) -> Option<NativeTraceFields> {
+    fn fields(&self, native: NativeEntity, point_contents: bool) -> Option<NativeTraceFields> {
+        if !self.supports(native.module) {
+            return None;
+        }
+        let slot = native.slot;
         self.error.capture(|| {
             let address = self.address(slot)?;
             let solid = self.layout.solid(self.memory, address)?;
@@ -676,19 +688,27 @@ impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
             })
         })
     }
-    fn bounds(&self, slot: i32, cached: Bounds) -> Option<Bounds> {
+    fn bounds(&self, native: NativeEntity, cached: Bounds) -> Option<Bounds> {
+        if !self.supports(native.module) {
+            return None;
+        }
+        let slot = native.slot;
         self.error
             .capture(|| self.layout.bounds(self.memory, self.address(slot)?, cached))
     }
     fn target(
         &self,
-        slot: i32,
+        native: NativeEntity,
         cached: NativeTraceTarget,
         point_contents: bool,
         store: &CollisionStore,
-        geometry: qa_core::primitives::GeometryId,
+        _geometry: qa_core::primitives::GeometryId,
         _names: Option<&dyn NativeModelNames>,
     ) -> Option<NativeTraceTarget> {
+        if !self.supports(native.module) {
+            return None;
+        }
+        let slot = native.slot;
         self.error.capture(|| {
             let address = self.address(slot)?;
             self.layout.target(
@@ -697,7 +717,7 @@ impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
                 address,
                 cached,
                 store,
-                Some(geometry),
+                self.geometry,
                 Some(point_contents),
             )
         })
@@ -1764,6 +1784,7 @@ impl EntityProjection {
         strings: &'a ModuleMemory<'memory>,
         context: CallContext,
         pass: u32,
+        geometry: Option<qa_core::primitives::GeometryId>,
     ) -> Result<(QuakeCTraceView<'a, 'memory>, CollisionOwner), CallError> {
         self.quakec_validate_owner(context.module)?;
         let pass = self.quakec_entity_owner(memory, context.module, pass)?;
@@ -1774,6 +1795,7 @@ impl EntityProjection {
                 layout: self.quakec_layout()?,
                 projection: self,
                 module: context.module,
+                geometry,
                 error: TraceError::default(),
             },
             pass,
@@ -2446,7 +2468,8 @@ impl EntityProjection {
         let origin = self.quakec_monster_origin(memory, value)?;
         let bounds = self.quakec_monster_bounds(memory, value)?;
         let (rules, entity_rules) = trace_policy(context.trace_rules);
-        let (view, pass) = self.quakec_trace_view(memory, strings, context, value)?;
+        let (view, pass) =
+            self.quakec_trace_view(memory, strings, context, value, services.native_geometry)?;
         let result = qa_session::physics::check_bottom(
             &mut QuakeCSupport {
                 services,
@@ -2490,10 +2513,12 @@ impl EntityProjection {
         );
         query.mins = mins;
         query.maxs = maxs;
-        let (view, pass) = self.quakec_trace_view(memory, strings, context, value)?;
+        let (view, pass) =
+            self.quakec_trace_view(memory, strings, context, value, services.native_geometry)?;
         query.pass = pass;
-        let trace = (ENGINE_CALLS.trace)(services, query, Some(&view))?;
+        let trace = (ENGINE_CALLS.trace)(services, query, Some(&view));
         view.finish()?;
+        let trace = trace?;
         if trace.fraction == 1.0 || trace.all_solid {
             return Ok(false);
         }

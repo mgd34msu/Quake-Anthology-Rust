@@ -301,6 +301,8 @@ fn native_walk_fly_toss_and_bounce_integrate_after_one_due_think() {
                 geometry,
                 0,
                 &mut world.scratch,
+                None,
+                None,
                 |_, error| panic!("{error:?}")
             ),
             0
@@ -438,6 +440,143 @@ fn native_waterjump_control_uses_live_direction_and_clears_expired_state_next_fr
 }
 
 #[test]
+fn foreign_pmove_rereads_aliased_native_owner_after_its_first_scalar_boundary() {
+    use qa_world::{
+        area::{LinkFlags, LinkIntent},
+        collision::Contents,
+    };
+    for aliased in [false, true] {
+        let mut vm = mode_vm(3.0, Vec3([100.0, 0.0, 0.0]), true);
+        if aliased {
+            let name = vm.image.names.find(b"owner").unwrap();
+            vm.image
+                .fielddefs
+                .iter_mut()
+                .find(|field| field.name == name)
+                .unwrap()
+                .offset = 0;
+            vm = Vm::load(
+                vm.image,
+                Layout {
+                    entities: 256,
+                    header_bytes: 16,
+                    extra_string_bytes: 8192,
+                    state_step: 0.1,
+                    random_seed: 1,
+                },
+            )
+            .unwrap();
+        }
+        let (mut host, id, geometry, entity, _) =
+            qc_client_host(RuleSetId::Quake, RuleSetId::Quake3, vm, &[]);
+        host.connect_module_client(ModuleId(1), id, b"\\name\\owner alias")
+            .unwrap();
+        let wall = host
+            .runtime
+            .server
+            .entities
+            .allocate(
+                ThinkTime::Seconds(0.0),
+                ModuleId(9),
+                AllocationPolicy::EDICT,
+            )
+            .unwrap()
+            .id;
+        let columns = &mut host.runtime.server.entities.columns;
+        columns.set_body(
+            wall.slot as usize,
+            Body {
+                position: Vec3([17.0, 0.0, 0.0]),
+                mins: Vec3([-1.0, -100.0, -100.0]),
+                maxs: Vec3([1.0, 100.0, 100.0]),
+                ..Default::default()
+            },
+        );
+        columns.collision_shape[wall.slot as usize] = CollisionShape::Box;
+        columns.collision_contents[wall.slot as usize] = Contents::SOLID.0;
+        assert!(host.runtime.server.area.link(
+            &host.runtime.server.entities,
+            wall,
+            LinkFlags::SOLID,
+            qa_gameplay::rules::link_order(RuleSetId::Quake),
+            LinkIntent::Explicit
+        ));
+        tick(&mut host, 0);
+        let player = &host.runtime.server.clients[id.0 as usize].player;
+        let mut first_step = PlayerState {
+            body: player.body,
+            movement: player.movement,
+            movement_rules: player.movement_rules,
+            trace_rules: player.trace_rules,
+            view_angles: player.view_angles,
+            view_offset: player.view_offset,
+            health: player.health,
+            ..Default::default()
+        };
+        first_step.movement.tuning =
+            qa_console::movement::MovementHandles::bind(&host.console.cvars)
+                .unwrap()
+                .resolve(
+                    &host.console.cvars,
+                    player.movement_rules,
+                    player.movement.tuning,
+                );
+        let mut scratch = host.runtime.geometry.scratch();
+        let mut trace = qa_world::collision::WorldTrace::new(
+            &host.runtime.geometry,
+            geometry,
+            0,
+            &host.runtime.server.entities,
+            &host.runtime.server.area,
+            &mut scratch,
+            CollisionOwner::Lifetime(entity),
+        );
+        let step = qa_movement::pmove(
+            UserCmd {
+                server_time_ms: 66,
+                duration_ms: 66,
+                units: qa_gameplay::rules::command_units(RuleSetId::Quake),
+                ..Default::default()
+            },
+            &mut first_step,
+            &mut trace,
+            qa_movement::MoveOptions {
+                phase: qa_movement::MovePhase::Integrate { seconds: 0.066 },
+                ..Default::default()
+            },
+            qa_movement::no_boundary,
+        )
+        .unwrap();
+        assert_eq!(step.steps, 1);
+        host.console
+            .append(
+                "host_framerate 0.1\n",
+                Context {
+                    source: RuleSetId::Quake,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        host.execute_commands();
+        queue(&mut host, id, [0.0; 3]);
+        tick(&mut host, 20);
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        assert_eq!(counts.traps, 0);
+        assert_eq!(counts.rejected, u64::from(aliased));
+        let player = &host.runtime.server.clients[id.0 as usize].player;
+        if aliased {
+            // Q3's first 66ms substep stores origin.x through the overlapping
+            // native owner word. The next query rejects before its own stores.
+            assert_eq!(player.body.position, first_step.body.position);
+            assert_eq!(player.body.velocity, first_step.body.velocity);
+            assert_eq!(player.movement.command_time_ms, 100);
+        } else {
+            assert_eq!(player.movement.command_time_ms, 100);
+        }
+    }
+}
+
+#[test]
 fn foreign_walk_uses_one_ordinary_q3_pmove_with_independent_q2_trace() {
     use qa_world::collision::WorldTrace;
 
@@ -570,6 +709,8 @@ fn foreign_walk_uses_one_ordinary_q3_pmove_with_independent_q2_trace() {
             geometry,
             0,
             &mut world.scratch,
+            None,
+            None,
             |_, error| panic!("{error:?}")
         ),
         0

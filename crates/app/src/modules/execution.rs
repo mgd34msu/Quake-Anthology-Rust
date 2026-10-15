@@ -1268,10 +1268,10 @@ fn advance(
     else {
         return Err(());
     };
-    let (row, storage) = host
+    let (row, storage, traces) = host
         .modules
         .as_mut()
-        .and_then(|modules| modules.parts_mut(start.module))
+        .and_then(|modules| modules.trace_parts_mut(start.module))
         .ok_or(())?;
     let entering = frame.backend.is_none();
     if entering && let Program::QuakeC(qc) = &mut row.request.program {
@@ -1289,6 +1289,8 @@ fn advance(
             let mut services =
                 host.runtime
                     .engine_services(&mut host.console, storage, &mut row.scratch);
+            services.native_geometry = row.geometry;
+            services.foreign_trace = Some(traces.borrow());
             if motion::sync_attachments(&mut qc.vm, &mut services, row.request.context).is_err() {
                 row.counts.rejected += 1;
                 return Err(());
@@ -1382,6 +1384,8 @@ fn advance(
         &mut row.scratch,
         start.connection,
     );
+    services.native_geometry = row.geometry;
+    services.foreign_trace = Some(traces.borrow());
     crate::renderer::native::select_publisher(composer.as_deref_mut(), start.module, entering);
     let mut scene = crate::renderer::native::SceneBorrow::new(
         composer,

@@ -1263,10 +1263,12 @@ fn qc_trace_line(
         &vm.strings,
         c.context,
         qc_word(arguments, 7)?,
+        c.services.native_geometry,
     )?;
     query.pass = pass;
-    let trace = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
+    let trace = (ENGINE_CALLS.trace)(c.services, query, Some(&view));
     view.finish()?;
+    let trace = trace?;
     let entity = vm.with_entity_stores(|projection, memory, _, store| {
         projection.quakec_encode_hit(
             &c.services.server.entities,
@@ -2712,8 +2714,9 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
             pass: view.pass(c.pointer(5)?)?,
             ..query
         };
-        let result = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
+        let result = (ENGINE_CALLS.trace)(c.services, query, Some(&view));
         view.finish()?;
+        let result = result?;
         let entity = view.address(&c.services.server.entities, result.entity)?;
         (result, entity)
     };
@@ -2746,10 +2749,11 @@ fn q3_trace<const CAPSULE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, 
         query,
         view.as_ref()
             .map(|view| view as &dyn qa_world::collision::NativeTraceEntities),
-    )?;
+    );
     if let Some(view) = &view {
         view.finish()?;
     }
+    let result = result?;
     let entity = crate::entities::NativeTraceView::number(
         view.as_ref(),
         &c.services.server.entities,
@@ -2824,8 +2828,9 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         );
         let options = codec.options(c.memory, address)?;
         let view = entities.trace_view(c.memory, c.context)?;
-        let result = (ENGINE_CALLS.pmove)(c.services, id, Some(&view), options)?;
+        let result = (ENGINE_CALLS.pmove)(c.services, id, Some(&view), options);
         view.finish()?;
+        let result = result?;
         let client = &c.services.server.clients[id.0 as usize];
         let player = &client.player;
         let native_address = |id| {
@@ -2958,10 +2963,11 @@ fn native_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
         qa_core::primitives::CollisionOwner::None,
         view.as_ref()
             .map(|view| view as &dyn qa_world::collision::NativeTraceEntities),
-    )?;
+    );
     if let Some(view) = view {
         view.finish()?;
     }
+    let contents = contents?;
     Ok(u64::from(contents.to_q2()))
 }
 
@@ -2978,7 +2984,13 @@ fn qc_point_contents(
     {
         Some(
             vm.projection
-                .quakec_trace_view(&vm.entities, &vm.strings, c.context, 0)?
+                .quakec_trace_view(
+                    &vm.entities,
+                    &vm.strings,
+                    c.context,
+                    0,
+                    c.services.native_geometry,
+                )?
                 .0,
         )
     } else {
@@ -2991,10 +3003,11 @@ fn qc_point_contents(
         qa_core::primitives::CollisionOwner::None,
         view.as_ref()
             .map(|view| view as &dyn qa_world::collision::NativeTraceEntities),
-    )?;
+    );
     if let Some(view) = view {
         view.finish()?;
     }
+    let contents = contents?;
     Ok(CallValue::Word(bits::<false>(f64::from(contents.to_q1()))))
 }
 
@@ -3105,10 +3118,11 @@ fn q3_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         pass,
         view.as_ref()
             .map(|view| view as &dyn qa_world::collision::NativeTraceEntities),
-    )?;
+    );
     if let Some(view) = view {
         view.finish()?;
     }
+    let contents = contents?;
     Ok(u64::from(contents.to_q3()))
 }
 

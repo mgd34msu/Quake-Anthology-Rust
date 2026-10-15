@@ -36,7 +36,7 @@ fn admit(
     })
 }
 
-const FIELDS: &[(u16, u16, &[u8])] = &[
+pub(in crate::modules) const FIELDS: &[(u16, u16, &[u8])] = &[
     (3, 0, b"origin"),
     (3, 3, b"velocity"),
     (3, 6, b"angles"),
@@ -143,7 +143,7 @@ fn program(position: Vec3) -> Vm {
     vm
 }
 
-fn request(
+pub(in crate::modules) fn request(
     runtime: &mut Runtime,
     module: ModuleId,
     program: Program,

@@ -21,6 +21,7 @@ pub use store::{CollisionStore, StoreError, TraceScratch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraceError {
+    Entity,
     Geometry {
         geometry: GeometryId,
         model: u32,
@@ -36,6 +37,7 @@ pub enum TraceError {
 impl std::fmt::Display for TraceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Entity => formatter.write_str("unavailable native collision entity"),
             Self::Geometry { geometry, model } => {
                 write!(
                     formatter,

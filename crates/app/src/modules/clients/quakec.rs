@@ -1,6 +1,6 @@
 //! QuakeC native client phases over the common lifetime and movement services.
 use super::*;
-use qa_compat::services::CallError as ServiceError;
+use qa_compat::services::{CallError as ServiceError, ForeignTraceRead};
 use qa_core::primitives::{EntityId, Motion, MovementMode};
 use qa_session::dispatch::{ThinkFrame, run_think_with_rebind};
 use std::sync::Arc;
@@ -347,6 +347,9 @@ fn move_frame_client(
                 &mut services.server.clients[id.0 as usize].player,
             )?;
             let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
+            let foreign = services.foreign_trace;
+            let current =
+                super::super::trace::TraceView::current(vm, context, services.native_geometry);
             let moved = services.server.move_client(
                 id,
                 command,
@@ -354,11 +357,21 @@ fn move_frame_client(
                 geometry,
                 index,
                 services.scratch,
+                Some(&current),
+                foreign.map(|read| read.view),
                 options,
                 |entities, player, write| {
-                    vm.write_frame_scalar(entities, context, offset, captured, player, write)
+                    current.edit(|vm| {
+                        vm.write_frame_scalar(entities, context, offset, captured, player, write)
+                    })
                 },
-            )?;
+            );
+            let moved = ForeignTraceRead::complete(
+                Some(current.borrow()),
+                ForeignTraceRead::complete(foreign, moved),
+            );
+            drop(current);
+            let moved = moved?;
             vm.finish_frame_client(services, context, offset)?;
             Ok(moved)
         })
@@ -537,24 +550,28 @@ pub(super) fn command(
                 .wrapping_add(i32::from(command.duration_ms));
         }
         let moved = with_tuning(host, id, |host| {
-            let world = host
-                .runtime
-                .collision
-                .as_mut()
-                .ok_or(ClientCommandError::Usercmd(ServiceError::Geometry))?;
-            host.runtime
-                .server
-                .move_client(
-                    id,
-                    command,
-                    &host.runtime.geometry,
-                    world.geometry,
-                    world.index,
-                    &mut world.scratch,
-                    Default::default(),
-                    qa_session::physics::no_body_boundary,
-                )
-                .map_err(|_| ClientCommandError::Usercmd(ServiceError::Geometry))
+            edit(host, module, |vm, services, context| {
+                let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
+                let foreign = services.foreign_trace;
+                vm.with_trace_view(context, offset, services.native_geometry, |view, _| {
+                    let moved = services
+                        .server
+                        .move_client(
+                            id,
+                            command,
+                            services.geometry,
+                            geometry,
+                            index,
+                            services.scratch,
+                            Some(view),
+                            foreign.map(|read| read.view),
+                            Default::default(),
+                            qa_session::physics::no_body_boundary,
+                        )
+                        .map_err(|_| ServiceError::Geometry);
+                    ForeignTraceRead::complete(foreign, moved)
+                })
+            })
         })?;
         edit(host, module, |vm, services, context| {
             vm.write_client(services, context, offset, origin_offset)

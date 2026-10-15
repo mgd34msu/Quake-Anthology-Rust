@@ -37,6 +37,137 @@ fn body_bits(body: Body) -> [[u32; 3]; 4] {
 }
 
 #[test]
+fn failed_native_collider_read_rejects_pending_motion_before_body_or_link_commit() {
+    use qa_core::primitives::{ClientId, GeometryId, NativeEntity};
+    use qa_world::collision::{
+        NativeModelNames, NativeTraceEntities, NativeTraceFields, NativeTraceTarget,
+    };
+    use std::cell::Cell;
+
+    struct FailedRead(Cell<bool>);
+    impl NativeTraceEntities for FailedRead {
+        fn supports(&self, module: ModuleId) -> bool {
+            module == ModuleId(3)
+        }
+        fn failed(&self) -> bool {
+            self.0.get()
+        }
+        fn owner(&self, _: NativeEntity) -> Option<CollisionOwner> {
+            Some(CollisionOwner::None)
+        }
+        fn fields(&self, _: NativeEntity, _: bool) -> Option<NativeTraceFields> {
+            self.0.set(true);
+            None
+        }
+        fn bounds(&self, _: NativeEntity, cached: Bounds) -> Option<Bounds> {
+            Some(cached)
+        }
+        fn target(
+            &self,
+            _: NativeEntity,
+            cached: NativeTraceTarget,
+            _: bool,
+            _: &CollisionStore,
+            _: GeometryId,
+            _: Option<&dyn NativeModelNames>,
+        ) -> Option<NativeTraceTarget> {
+            Some(cached)
+        }
+    }
+    let mut server = Server::load(1, 8, 1, 0, 0, 0).unwrap();
+    let mut store = CollisionStore::new();
+    let geometry = floor(&mut store);
+    let mut scratch = store.scratch();
+    let client = server
+        .connect(Connection::Local, ModuleId(2), None)
+        .unwrap();
+    assert_eq!(client, ClientId(0));
+    let player = &mut server.clients[0].player;
+    player.movement_rules = RuleSetId::Quake3;
+    player.trace_rules = RuleSetId::Quake3;
+    qa_movement::set_bounds(player);
+    player.body.position = Vec3([0.0, 0.0, 64.0]);
+    let before = body_bits(player.body);
+    let before_time = player.movement.command_time_ms;
+    let entity = server.clients[0].entity;
+    server
+        .entities
+        .columns
+        .set_body(entity.slot as usize, server.clients[0].player.body);
+    assert!(server.area.link(
+        &server.entities,
+        entity,
+        LinkFlags::SOLID,
+        LinkOrder::Tail,
+        LinkIntent::Explicit
+    ));
+    let before_link = server.area.bounds(entity);
+    let obstacle = server
+        .entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(3),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    server.entities.columns.set_body(
+        obstacle.slot as usize,
+        Body {
+            position: Vec3([0.0, 0.0, 64.0]),
+            mins: Vec3([-32.0; 3]),
+            maxs: Vec3([32.0; 3]),
+            ..Default::default()
+        },
+    );
+    server.entities.columns.native_entity[obstacle.slot as usize] = Some(NativeEntity {
+        module: ModuleId(3),
+        slot: 7,
+    });
+    server.entities.columns.collision_shape[obstacle.slot as usize] = CollisionShape::Box;
+    server.entities.columns.collision_contents[obstacle.slot as usize] = Contents::BODY.0;
+    assert!(server.area.link(
+        &server.entities,
+        obstacle,
+        LinkFlags::SOLID,
+        LinkOrder::Tail,
+        LinkIntent::Explicit
+    ));
+    server.submit_command(
+        client,
+        UserCmd {
+            duration_ms: 16,
+            server_time_ms: 16,
+            movement: [127.0, 0.0, 0.0],
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
+            ..Default::default()
+        },
+        CommandExecution::PerCommand,
+        None,
+    );
+    let view = FailedRead(Cell::new(false));
+    assert!(matches!(
+        server.move_pending_client(client, &store, geometry, 0, &mut scratch, None, Some(&view)),
+        Err(TraceError::Entity)
+    ));
+    assert!(view.failed());
+    assert_eq!(body_bits(server.clients[0].player.body), before);
+    assert_eq!(
+        server.clients[0].player.movement.command_time_ms,
+        before_time
+    );
+    assert_eq!(
+        body_bits(server.entities.columns.body(entity.slot as usize)),
+        before
+    );
+    assert_eq!(server.area.bounds(entity), before_link);
+    assert_eq!(
+        server.move_pending_client(client, &store, geometry, 0, &mut scratch, None, Some(&view)),
+        Ok(0)
+    );
+}
+
+#[test]
 fn failed_client_is_consumed_once_and_healthy_client_commits() {
     let mut server = Server::load(2, 16, 1, 0, 0, 0).unwrap();
     let mut store = CollisionStore::new();
@@ -116,8 +247,15 @@ fn failed_client_is_consumed_once_and_healthy_client_commits() {
     ));
     let mut rejected = Vec::new();
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 0, &mut scratch, |id, error| rejected
-            .push((id, error))),
+        server.move_pending_clients(
+            &store,
+            geometry,
+            0,
+            &mut scratch,
+            None,
+            None,
+            |id, error| rejected.push((id, error))
+        ),
         1
     );
     assert_eq!(
@@ -142,8 +280,15 @@ fn failed_client_is_consumed_once_and_healthy_client_commits() {
         body_bits(server.clients[1].player.body)
     );
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 0, &mut scratch, |id, error| rejected
-            .push((id, error))),
+        server.move_pending_clients(
+            &store,
+            geometry,
+            0,
+            &mut scratch,
+            None,
+            None,
+            |id, error| rejected.push((id, error))
+        ),
         0
     );
     assert_eq!(rejected.len(), 1);

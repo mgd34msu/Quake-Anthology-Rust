@@ -8,7 +8,9 @@ use qa_core::sys_events::EventTime;
 use qa_core::text::{FixedText, InfoError, InfoRules, InfoUpdate};
 use qa_world::{
     area::{AreaGrid, AttachmentTransport, LinkFlags, LinkIntent, LinkOrder},
-    collision::{CollisionStore, Contents, TraceError, TraceScratch, WorldTrace},
+    collision::{
+        CollisionStore, Contents, NativeTraceEntities, TraceError, TraceScratch, WorldTrace,
+    },
     entities::EntityTable,
 };
 
@@ -612,6 +614,8 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
+        native: Option<&dyn NativeTraceEntities>,
+        foreign: Option<&dyn NativeTraceEntities>,
     ) -> Result<u32, TraceError> {
         let module_moves = self.module_moves(id).is_some();
         let Some((command, _)) = self.take_pending_command(id) else {
@@ -627,6 +631,8 @@ impl Server {
             geometry,
             index,
             scratch,
+            native,
+            foreign,
             Default::default(),
             crate::physics::no_body_boundary,
         )?;
@@ -654,6 +660,8 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
+        native: Option<&dyn NativeTraceEntities>,
+        foreign: Option<&dyn NativeTraceEntities>,
         options: qa_movement::MoveOptions,
         mut boundary: B,
     ) -> Result<qa_movement::MovementResult, E>
@@ -670,7 +678,9 @@ impl Server {
             &self.area,
             scratch,
             CollisionOwner::Lifetime(client.entity),
-        );
+        )
+        .with_native_entities(native)
+        .with_foreign_entities(foreign);
         qa_movement::pmove(
             command,
             &mut client.player,
@@ -689,12 +699,14 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
+        native: Option<&dyn NativeTraceEntities>,
+        foreign: Option<&dyn NativeTraceEntities>,
         mut rejected: impl FnMut(ClientId, TraceError),
     ) -> u32 {
         let mut steps = 0;
         for client_index in 0..self.clients.len() {
             let id = ClientId(client_index as u32);
-            match self.move_pending_client(id, store, geometry, index, scratch) {
+            match self.move_pending_client(id, store, geometry, index, scratch, native, foreign) {
                 Ok(count) => steps += count,
                 Err(error) => rejected(id, error),
             }

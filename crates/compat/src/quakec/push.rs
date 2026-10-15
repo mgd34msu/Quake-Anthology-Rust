@@ -123,7 +123,7 @@ impl Vm {
         );
         query.mins = bounds.mins;
         query.maxs = bounds.maxs;
-        self.with_trace_view(context, value, |view, pass| {
+        self.with_trace_view(context, value, services.native_geometry, |view, pass| {
             query.pass = pass;
             Ok((ENGINE_CALLS.trace)(services, query, Some(view))?.start_solid)
         })

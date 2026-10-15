@@ -85,6 +85,8 @@ fn with_services(run: impl FnOnce(&mut EngineServices<'_>, [CallContext; 2])) {
             storage: &mut storage,
             geometry: &geometry,
             world: None,
+            native_geometry: None,
+            foreign_trace: None,
             visibility: None,
             portals: None,
             scratch: &mut scratch,
