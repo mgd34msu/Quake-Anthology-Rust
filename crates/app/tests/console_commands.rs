@@ -19,6 +19,8 @@ use qa_world::{area::LinkOrder, entities::AllocationPolicy};
 #[path = "support/service_program.rs"]
 #[allow(dead_code)]
 mod service_program;
+#[path = "support/visibility_world.rs"]
+mod visibility_world;
 
 type Code = Vec<(Opcode, i32)>;
 #[derive(Default)]
@@ -921,4 +923,282 @@ fn cgame_caller_bytes_and_explicit_retained_selection_survive_console_fallback()
         host.module_counts(ModuleId(1)).unwrap().last_result,
         Some(ModuleResult::Qvm(4))
     );
+}
+
+const TRACE_ENTITIES: i32 = 4096;
+const TRACE_STRIDE: i32 = 608;
+const TRACE_ACTOR: i32 = TRACE_ENTITIES + TRACE_STRIDE;
+const TRACE_OUTPUT: i32 = 256;
+const TRACE_CONTENTS: i32 = 0x0200_0000; // Q3 temporary boxes carry CONTENTS_BODY.
+
+fn trace_store(code: &mut Code, address: i32, value: i32) {
+    code.extend([(Const, address), (Const, value), (Store4, 0)]);
+}
+
+fn trace_export(host: &mut FrameHost, callback: u32) -> i32 {
+    host.call_module_export(
+        ModuleId(1),
+        Export::words(CallbackId(callback), &[]),
+        ThinkTime::Milliseconds(0),
+    )
+    .unwrap();
+    let Some(ModuleResult::Qvm(word)) = host.module_counts(ModuleId(1)).unwrap().last_result else {
+        unreachable!()
+    };
+    word
+}
+
+fn qvm_foreign_trace_fixture() -> (FrameHost, qa_core::primitives::EntityId) {
+    use qa_core::primitives::{Bounds, NativeEntity, Vec3};
+    use qa_world::collision::{brushes::BrushTree, surfaces::SurfaceTable};
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let geometry = runtime
+        .geometry
+        .load_brushes(
+            vec![],
+            vec![],
+            SurfaceTable::flags(vec![]),
+            BrushTree::direct(0).unwrap(),
+            vec![Bounds {
+                mins: Vec3([-128.0; 3]),
+                maxs: Vec3([128.0; 3]),
+            }],
+        )
+        .unwrap();
+    let mut world = visibility_world::collision(
+        &runtime.geometry,
+        [Some(0), Some(1)],
+        qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![3, 3]).unwrap(),
+    );
+    world.geometry = geometry;
+    runtime.collision = Some(world);
+
+    let mut data = Data(vec![0; 16384]);
+    for slot in 0..2 {
+        let row = (TRACE_ENTITIES + slot * TRACE_STRIDE) as usize;
+        for (offset, word) in [(0, slot), (460, TRACE_CONTENTS), (512, 1023)] {
+            data.0[row + offset..row + offset + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        for (offset, vector) in [
+            (436, [-1.0f32; 3]),
+            (448, [1.0f32; 3]),
+            (488, [if slot == 0 { 100.0 } else { 20.0 }, 0.0, 0.0]),
+        ] {
+            for (axis, number) in vector.into_iter().enumerate() {
+                let at = row + offset + axis * 4;
+                data.0[at..at + 4].copy_from_slice(&number.to_le_bytes());
+            }
+        }
+    }
+    let text = data.text(b"qa_live_foreign_trace");
+    let mut setup = Code::new();
+    syscall(
+        &mut setup,
+        15,
+        &[TRACE_ENTITIES, 2, TRACE_STRIDE, 8192, 468],
+    );
+    syscall(&mut setup, 30, &[TRACE_ENTITIES]);
+    syscall(&mut setup, 30, &[TRACE_ACTOR]);
+    setup.extend([(Const, 0), (Leave, 64)]);
+    let mut moved = Code::new();
+    trace_store(&mut moved, TRACE_ACTOR + 488, 24.0f32.to_bits() as i32);
+    syscall(&mut moved, 14, &[0, text]);
+    moved.extend([(Const, 7), (Leave, 64)]);
+    let mut disabled = Code::new();
+    trace_store(&mut disabled, TRACE_ACTOR + 460, 0);
+    disabled.extend([(Const, 0), (Leave, 64)]);
+    let mut enabled = Code::new();
+    trace_store(&mut enabled, TRACE_ACTOR + 460, TRACE_CONTENTS);
+    enabled.extend([(Const, 0), (Leave, 64)]);
+    let mut malformed = Code::new();
+    trace_store(&mut malformed, TRACE_ACTOR + 436, f32::NAN.to_bits() as i32);
+    syscall(&mut malformed, 14, &[0, text]);
+    trace_store(
+        &mut malformed,
+        TRACE_ACTOR + 436,
+        (-1.0f32).to_bits() as i32,
+    );
+    malformed.extend([(Const, 42), (Leave, 64)]);
+    let mut lazy_model = Code::new();
+    for (offset, word) in [(432, 1), (160, i32::MAX), (460, 0)] {
+        trace_store(&mut lazy_model, TRACE_ACTOR + offset, word);
+    }
+    syscall(&mut lazy_model, 14, &[0, text]);
+    for (offset, word) in [(432, 0), (160, 0), (460, TRACE_CONTENTS)] {
+        trace_store(&mut lazy_model, TRACE_ACTOR + offset, word);
+    }
+    lazy_model.extend([(Const, 13), (Leave, 64)]);
+    let read_link_count = vec![(Const, TRACE_ACTOR + 420), (Load4, 0), (Leave, 64)];
+    let mut producer = vm(
+        &[
+            (9, vec![(Const, 0), (Leave, 64)]), // Own nested handler declines before B runs.
+            (10, setup),
+            (11, moved),
+            (12, disabled),
+            (13, enabled),
+            (14, malformed),
+            (15, lazy_model),
+            (16, read_link_count),
+            (
+                17,
+                vec![(Const, TRACE_ACTOR + 488), (Load4, 0), (Leave, 64)],
+            ),
+        ],
+        data,
+    );
+    producer.configure_q3_game(qa_core::primitives::Q3StatLayout::BASE);
+    let mut producer = request(&mut runtime, 1, &Q3_SERVER, SeatId::FIRST, producer);
+    producer.entries.extend(11..=17);
+
+    let mut query = Data(vec![0; 384]);
+    query.0[352..356].copy_from_slice(&40.0f32.to_le_bytes());
+    let mut trace = Code::new();
+    syscall(
+        &mut trace,
+        24,
+        &[TRACE_OUTPUT, 336, 0, 0, 352, 1023, TRACE_CONTENTS],
+    );
+    trace.extend([(Const, TRACE_OUTPUT + 12), (Load4, 0), (Leave, 64)]);
+    let consumer = request(
+        &mut runtime,
+        2,
+        &Q3_SERVER,
+        SeatId::FIRST,
+        vm(&[(9, trace)], query),
+    );
+    let mut console = Console::new(Context::default()).unwrap();
+    let clients = console
+        .cvars
+        .bind(
+            "sv_maxclients",
+            Context {
+                source: RuleSetId::Quake3,
+                ..Context::default()
+            },
+        )
+        .unwrap();
+    console.cvars.force_write(clients, "1").unwrap();
+    let mut host = FrameHost::load_modules(
+        console,
+        runtime,
+        TickRate::FrameDriven,
+        vec![producer, consumer],
+    )
+    .unwrap();
+    assert_eq!(trace_export(&mut host, 1), 0);
+    let actor = host
+        .runtime
+        .server
+        .entities
+        .find_native(
+            NativeEntity {
+                module: ModuleId(1),
+                slot: 1,
+            },
+            None,
+        )
+        .unwrap();
+    (host, actor)
+}
+
+fn qvm_foreign_probe(host: &mut FrameHost) -> f32 {
+    host.console
+        .append("qa_live_foreign_trace\n", Context::default())
+        .unwrap();
+    host.execute_commands();
+    let Some(ModuleResult::Qvm(bits)) = host.module_counts(ModuleId(2)).unwrap().last_result else {
+        unreachable!()
+    };
+    f32::from_bits(bits as u32)
+}
+
+#[test]
+fn qvm_exec_now_foreign_trace_reads_live_pose_after_same_owner_handler_returns() {
+    use qa_core::primitives::{Bounds, Vec3};
+    use qa_world::area::LinkFlags;
+    let (mut host, actor) = qvm_foreign_trace_fixture();
+    let linked = host.runtime.server.area.bounds(actor).unwrap();
+    let bounds = Bounds {
+        mins: Vec3([-128.0; 3]),
+        maxs: Vec3([128.0; 3]),
+    };
+    let order = |host: &FrameHost| {
+        host.runtime
+            .server
+            .area
+            .query(&host.runtime.server.entities, bounds, LinkFlags::SOLID)
+            .map(|linked| linked.id)
+            .collect::<Vec<_>>()
+    };
+    let before = order(&host);
+    assert_eq!(
+        host.runtime
+            .server
+            .entities
+            .columns
+            .body(actor.slot as usize)
+            .position
+            .0[0],
+        20.0
+    );
+    assert_eq!(trace_export(&mut host, 2), 7);
+    assert_eq!(
+        host.module_counts(ModuleId(2)).unwrap().last_result,
+        Some(ModuleResult::Qvm(22.875f32.to_bits() as i32))
+    );
+    assert_eq!(
+        host.runtime
+            .server
+            .entities
+            .columns
+            .body(actor.slot as usize)
+            .position
+            .0[0],
+        24.0
+    );
+    assert_eq!(host.runtime.server.area.bounds(actor), Some(linked));
+    assert_eq!(order(&host), before);
+    assert_eq!(trace_export(&mut host, 7), 1); // Explicit LinkEntity count never changes.
+    assert_eq!(trace_export(&mut host, 8), 24.0f32.to_bits() as i32);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+}
+
+#[test]
+fn qvm_foreign_trace_reads_returned_collision_fields_and_keeps_filtered_models_lazy() {
+    let (mut host, actor) = qvm_foreign_trace_fixture();
+    let linked = host.runtime.server.area.bounds(actor);
+    assert_eq!(qvm_foreign_probe(&mut host), 18.875);
+    trace_export(&mut host, 3); // Normal outer publication does not relink collision contents.
+    assert_eq!(
+        host.runtime.server.entities.columns.collision_contents[actor.slot as usize],
+        TRACE_CONTENTS as u64
+    );
+    assert_eq!(qvm_foreign_probe(&mut host), 40.0);
+    trace_export(&mut host, 4);
+    assert_eq!(qvm_foreign_probe(&mut host), 18.875);
+    assert_eq!(trace_export(&mut host, 6), 13); // Invalid model is behind a contents-mask rejection.
+    assert_eq!(
+        host.module_counts(ModuleId(2)).unwrap().last_result,
+        Some(ModuleResult::Qvm(40.0f32.to_bits() as i32))
+    );
+    assert_eq!(host.runtime.server.area.bounds(actor), linked);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    assert_eq!(qvm_foreign_probe(&mut host), 18.875);
+}
+
+#[test]
+fn malformed_foreign_qvm_trace_rejects_the_consumer_and_preserves_producer_recovery() {
+    let (mut host, actor) = qvm_foreign_trace_fixture();
+    let linked = host.runtime.server.area.bounds(actor);
+    assert_eq!(trace_export(&mut host, 5), 42);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 1);
+    assert_eq!(
+        host.module_state(ModuleId(1)),
+        Some(qa_app::modules::State::Running)
+    );
+    assert_eq!(host.runtime.server.area.bounds(actor), linked);
+    assert_eq!(qvm_foreign_probe(&mut host), 18.875);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 1);
 }

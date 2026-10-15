@@ -1311,7 +1311,7 @@ impl FrameHost {
             } else {
                 continue;
             }
-            self.retire_client(id);
+            self.retire_client(id, crate::modules::TraceAccess::empty());
         }
     }
 
@@ -1701,7 +1701,7 @@ impl FrameHost {
         self.runtime.network = network;
         if let Some(id) = completed_close {
             self.close_acknowledged += 1;
-            self.retire_client(id);
+            self.retire_client(id, crate::modules::TraceAccess::empty());
         }
     }
 

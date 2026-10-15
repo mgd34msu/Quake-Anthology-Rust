@@ -315,9 +315,13 @@ fn qc_host_yield_publishes_unrelated_dirty_body_without_relinking_it() {
         let order = other_links(&host, ids[0]);
         let relinks = host.runtime.server.area.relinks;
         let mut frame = activation(&mut host, publish, ids[0]);
-        let GuestStep::Host(request, point) =
-            advance(&mut host, &mut frame, Arguments::default()).unwrap()
-        else {
+        let GuestStep::Host(request, point) = advance(
+            &mut host,
+            &mut frame,
+            Arguments::default(),
+            TraceAccess::empty(),
+        )
+        .unwrap() else {
             panic!("walkmove must yield before its trigger callback");
         };
         assert_eq!(
@@ -390,7 +394,15 @@ fn qc_rejected_host_publication_consumes_continuation_before_cancel_and_recovers
         } = fixture(rules);
         let bounds = host.runtime.server.area.bounds(ids[2]).unwrap();
         let mut frame = activation(&mut host, malformed, ids[0]);
-        assert!(advance(&mut host, &mut frame, Arguments::default()).is_err());
+        assert!(
+            advance(
+                &mut host,
+                &mut frame,
+                Arguments::default(),
+                TraceAccess::empty()
+            )
+            .is_err()
+        );
         assert!(frame.pending.is_none());
         assert!(frame.reply.is_none());
         // A successfully imported prefix survives the later malformed row.
@@ -408,7 +420,12 @@ fn qc_rejected_host_publication_consumes_continuation_before_cancel_and_recovers
         // The yielded import is already consumed. Cancellation must not apply
         // its saved self a second time over a later scalar value.
         qc.vm.image.globals[34] = SENTINEL as u32 * stride;
-        cancel(&mut host, &mut frame, Arguments::default());
+        cancel(
+            &mut host,
+            &mut frame,
+            Arguments::default(),
+            TraceAccess::empty(),
+        );
         let Program::QuakeC(qc) = &host.module_row(MODULE).unwrap().request.program else {
             unreachable!()
         };

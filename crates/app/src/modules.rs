@@ -31,8 +31,8 @@ pub use clients::{ClientCommandError, ClientLifecycleInfo};
 mod cues;
 mod execution;
 mod input;
-pub(crate) use execution::ExecutionSlot;
 use execution::ModuleDispatch;
+pub(crate) use execution::{ExecutionSlot, TraceAccess};
 mod map_start;
 mod motion;
 mod resources;
@@ -367,16 +367,17 @@ impl Modules {
         let row = self.rows.get_mut(id.0 as usize)?.as_mut()?;
         Some((row, &mut self.storage))
     }
-    fn trace_parts_mut(
-        &mut self,
+    fn trace_parts_mut<'a>(
+        &'a mut self,
         id: ModuleId,
-    ) -> Option<(&mut Module, &mut ServiceStorage, trace::TraceView<'_>)> {
+        access: execution::TraceAccess<'a>,
+    ) -> Option<(&'a mut Module, &'a mut ServiceStorage, trace::TraceView<'a>)> {
         let (before, current) = self.rows.split_at_mut_checked(id.0 as usize)?;
         let (current, after) = current.split_first_mut()?;
         Some((
             current.as_mut()?,
             &mut self.storage,
-            trace::TraceView::rows(before, after),
+            trace::TraceView::rows(before, after, access),
         ))
     }
 }
@@ -455,18 +456,23 @@ impl ThinkWorld for FrameHost {
         let subject = subject
             .map_or_else(|| contacts::reference(self, entity), Ok)
             .map_err(|_| CallError::Rejected)?;
-        edit_quakec(self, module, |vm, services, context| {
-            if !vm.is_running() {
-                motion::sync_attachments(vm, services, context)?;
-            }
-            let native = vm.weak_entity_offset(context.module, subject)?;
-            let binding = vm.prepare_think(native, time);
-            let published = vm.project_entity(services, context, native);
-            Ok(PreparedNativeThink {
-                subject,
-                binding: binding.and_then(|binding| published.map(|()| binding))?,
-            })
-        })
+        edit_quakec(
+            self,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                if !vm.is_running() {
+                    motion::sync_attachments(vm, services, context)?;
+                }
+                let native = vm.weak_entity_offset(context.module, subject)?;
+                let binding = vm.prepare_think(native, time);
+                let published = vm.project_entity(services, context, native);
+                Ok(PreparedNativeThink {
+                    subject,
+                    binding: binding.and_then(|binding| published.map(|()| binding))?,
+                })
+            },
+        )
         .map(Some)
         .map_err(|_| CallError::Rejected)
     }
@@ -1762,6 +1768,7 @@ fn entity_think(
 fn edit_quakec<R>(
     host: &mut FrameHost,
     module: ModuleId,
+    access: execution::TraceAccess<'_>,
     call: impl FnOnce(
         &mut qa_compat::quakec::Vm,
         &mut qa_compat::services::EngineServices<'_>,
@@ -1772,7 +1779,7 @@ fn edit_quakec<R>(
     let (row, storage, traces) = host
         .modules
         .as_mut()
-        .and_then(|m| m.trace_parts_mut(module))
+        .and_then(|m| m.trace_parts_mut(module, access))
         .ok_or(ClientCommandError::MissingModule)?;
     let clock = row.time(time);
     let Program::QuakeC(qc) = &mut row.request.program else {
