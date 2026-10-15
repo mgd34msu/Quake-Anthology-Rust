@@ -606,13 +606,19 @@ fn intentional_none_and_box_shapes_do_not_require_geometry_or_scratch() {
             &body,
             Vec3::default(),
             ModelRules::default(),
+            qa_world::collision::store::BodyTraceMode::Transformed,
             None,
             &mut scratch,
         )
         .expect("intentional no geometry");
     assert_eq!(clear.fraction.to_bits(), 1.0f32.to_bits());
     assert_eq!(clear.end.0.map(f32::to_bits), query.end.0.map(f32::to_bits));
-    let expected = qa_world::collision::boxes::trace_box(query, &body, None);
+    let expected = qa_world::collision::boxes::trace_box(
+        query,
+        &body,
+        None,
+        qa_world::collision::store::BodyTraceMode::Transformed,
+    );
     let boxed = store
         .trace_body(
             query,
@@ -620,6 +626,7 @@ fn intentional_none_and_box_shapes_do_not_require_geometry_or_scratch() {
             &body,
             Vec3::default(),
             ModelRules::default(),
+            qa_world::collision::store::BodyTraceMode::Transformed,
             None,
             &mut scratch,
         )
@@ -641,6 +648,7 @@ fn intentional_none_and_box_shapes_do_not_require_geometry_or_scratch() {
                 &body,
                 Vec3::default(),
                 ModelRules::default(),
+                qa_world::collision::store::BodyTraceMode::Transformed,
                 None,
                 &mut scratch
             )
@@ -659,4 +667,88 @@ fn intentional_none_and_box_shapes_do_not_require_geometry_or_scratch() {
         ),
         Err(TraceError::Geometry { geometry, model: 3 })
     );
+}
+
+#[test]
+fn direct_body_model_queries_keep_the_selected_native_model_namespace() -> Result<(), StoreError> {
+    use qa_core::primitives::{Body, CollisionShape, RuleSetId};
+    use qa_world::collision::store::BodyTraceMode;
+    let mut store = CollisionStore::new();
+    let geometry = add_brush(&mut store)?;
+    let hull = add_hull(&mut store)?;
+    assert!(!store.has_bsp_nodes(geometry).unwrap());
+    assert!(store.has_bsp_nodes(hull).unwrap());
+    let mut scratch = store.scratch();
+    let (rules, caller) = qa_world::collision::trace_policy(RuleSetId::Quake3);
+    let query = crossing(rules, caller);
+    let body = Body {
+        position: Vec3([10.0, 0.0, 0.0]),
+        ..Body::default()
+    };
+    // Model zero is intentionally empty; one owns the native wall brush.
+    let shape = CollisionShape::Model { geometry, index: 1 };
+    let direct = store
+        .trace_body(
+            query,
+            shape,
+            &body,
+            Vec3([90.0; 3]),
+            ModelRules::default(),
+            BodyTraceMode::Direct,
+            None,
+            &mut scratch,
+        )
+        .unwrap();
+    assert_eq!(direct.fraction.to_bits(), (7.0f32 / 16.0).to_bits());
+    assert_eq!(direct.surface_id.unwrap().geometry, geometry);
+    let transformed = store
+        .trace_body(
+            query,
+            shape,
+            &body,
+            Vec3::default(),
+            ModelRules::default(),
+            BodyTraceMode::Transformed,
+            None,
+            &mut scratch,
+        )
+        .unwrap();
+    assert!(transformed.start_solid && transformed.all_solid);
+    for (mode, expected) in [
+        (BodyTraceMode::Direct, Contents::EMPTY),
+        (BodyTraceMode::Transformed, Contents::SOLID),
+    ] {
+        assert_eq!(
+            store
+                .point_contents_body(
+                    Vec3([1.0, 0.0, 0.0]),
+                    shape,
+                    &body,
+                    Vec3::default(),
+                    ModelRules::default(),
+                    caller,
+                    mode,
+                )
+                .unwrap(),
+            expected,
+        );
+    }
+    assert!(store.remove(geometry));
+    assert_eq!(
+        store.has_bsp_nodes(geometry),
+        Err(TraceError::Geometry { geometry, model: 0 }),
+    );
+    assert_eq!(
+        store.point_contents_body(
+            Vec3::default(),
+            shape,
+            &body,
+            Vec3::default(),
+            ModelRules::default(),
+            caller,
+            BodyTraceMode::Direct,
+        ),
+        Err(TraceError::Geometry { geometry, model: 1 }),
+    );
+    Ok(())
 }

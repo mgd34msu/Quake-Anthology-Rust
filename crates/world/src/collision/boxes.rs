@@ -1,4 +1,5 @@
 use super::EntityTraceFlags;
+use super::store::BodyTraceMode;
 use super::surfaces::{SurfaceRecord, SurfaceRows};
 use super::{
     Contents, Trace, TraceQuery,
@@ -22,9 +23,14 @@ const fn nodes() -> [ClipNode; 6] {
 }
 static NODES: [ClipNode; 6] = nodes();
 
-pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Trace {
+pub fn trace_box(
+    query: TraceQuery,
+    body: &Body,
+    entity: Option<EntityId>,
+    mode: BodyTraceMode,
+) -> Trace {
     if query.entity_rules.quake_kind().is_none() || query.capsule.is_some() {
-        return trace_convex_box(query, body, entity, None);
+        return trace_convex_box(query, body, entity, mode, None);
     }
     let TraceQuery {
         start,
@@ -44,7 +50,10 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Tr
             },
         )
     });
-    let local = |point: Vec3| point - body.position;
+    let local = |point: Vec3| match mode {
+        BodyTraceMode::Direct => point,
+        BodyTraceMode::Transformed => point - body.position,
+    };
     let mut stack = [Frame::default(); 7];
     let mut trace = Hull {
         nodes: &NODES,
@@ -60,7 +69,9 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Tr
         &mut stack,
     );
     if trace.fraction < 1.0 {
-        trace.end = trace.end + body.position;
+        if mode == BodyTraceMode::Transformed {
+            trace.end = trace.end + body.position;
+        }
     } else {
         trace.end = end;
     }
@@ -75,11 +86,13 @@ pub(super) fn trace_convex_box(
     query: TraceQuery,
     body: &Body,
     entity: Option<EntityId>,
+    mode: BodyTraceMode,
     culling_bounds: Option<qa_core::primitives::Bounds>,
 ) -> Trace {
     let original = query;
     let mut query = query;
-    if culling_bounds.is_none()
+    if mode == BodyTraceMode::Transformed
+        && culling_bounds.is_none()
         && (query.capsule.is_some()
             || query
                 .entity_rules
@@ -120,7 +133,10 @@ pub(super) fn trace_convex_box(
             },
         }
     });
-    let local = |point: Vec3| point - body.position;
+    let local = |point: Vec3| match mode {
+        BodyTraceMode::Direct => point,
+        BodyTraceMode::Transformed => point - body.position,
+    };
     let local_query = TraceQuery {
         start: local(query.start),
         end: local(query.end),
@@ -147,8 +163,7 @@ pub(super) fn trace_convex_box(
             geometry: None,
         },
     );
-    // CM_TransformedBoxTrace derives the endpoint from the original segment.
-    trace.end = original.start.lerp(original.end, trace.fraction);
+    trace.end = mode.end_position(original.start, original.end, trace.fraction);
     if trace.fraction < 1.0 || trace.start_solid {
         trace.entity = entity;
     }

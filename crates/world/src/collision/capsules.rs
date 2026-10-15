@@ -1,4 +1,5 @@
 //! Rounded entity targets use the same body dispatcher and box/brush reducer.
+use super::store::BodyTraceMode;
 use super::{Trace, TraceQuery, boxes::trace_convex_box};
 use qa_core::{
     math,
@@ -7,12 +8,22 @@ use qa_core::{
 
 const RADIUS_MARGIN: f32 = 1.0;
 
-pub fn trace_capsule(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Trace {
+pub fn trace_capsule(
+    query: TraceQuery,
+    body: &Body,
+    entity: Option<EntityId>,
+    mode: BodyTraceMode,
+) -> Trace {
     let original = query;
     let mut query = query;
-    query.center_box();
-    query.start = query.start - body.position;
-    query.end = query.end - body.position;
+    let model_origin = if mode == BodyTraceMode::Transformed {
+        query.center_box();
+        query.start = query.start - body.position;
+        query.end = query.end - body.position;
+        body.position
+    } else {
+        Vec3::default()
+    };
     // The transformed wrapper and native kernel each recenter independently.
     query.center_box();
     let bounds = Bounds {
@@ -41,7 +52,7 @@ pub fn trace_capsule(query: TraceQuery, body: &Body, entity: Option<EntityId>) -
                         Some(half_height),
                         query.start,
                         query.end,
-                        body.position,
+                        model_origin,
                     );
                 }
             }
@@ -53,7 +64,7 @@ pub fn trace_capsule(query: TraceQuery, body: &Body, entity: Option<EntityId>) -
                 None,
                 query.start - moving.offset,
                 query.end - moving.offset,
-                body.position,
+                model_origin,
             );
             rounded_section(
                 &mut trace,
@@ -63,7 +74,7 @@ pub fn trace_capsule(query: TraceQuery, body: &Body, entity: Option<EntityId>) -
                 None,
                 query.start + moving.offset,
                 query.end + moving.offset,
-                body.position,
+                model_origin,
             );
         }
         trace
@@ -82,11 +93,11 @@ pub fn trace_capsule(query: TraceQuery, body: &Body, entity: Option<EntityId>) -
                 ..Body::default()
             },
             entity,
+            BodyTraceMode::Direct,
             Some(culling_bounds),
         )
     };
-    // Native transformed traces reconstruct this from the original endpoints.
-    trace.end = original.start.lerp(original.end, trace.fraction);
+    trace.end = mode.end_position(original.start, original.end, trace.fraction);
     if trace.fraction < 1.0 || trace.start_solid {
         trace.entity = entity;
     }

@@ -1,4 +1,5 @@
 use super::EntityTraceFlags;
+use super::store::BodyTraceMode;
 use super::{
     CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, Trace, TraceError, TraceQuery,
     TraceScope, TraceScratch, WorldEntityRule,
@@ -246,6 +247,7 @@ impl<'a> WorldTrace<'a> {
                 &target.body,
                 target.angles,
                 target.rules,
+                BodyTraceMode::Transformed,
                 Some(id),
                 self.scratch,
             )?;
@@ -297,50 +299,17 @@ impl<'a> WorldTrace<'a> {
                 position: target.body.position,
                 angles: target.angles,
             });
-            match target.shape {
-                CollisionShape::None => continue,
-                CollisionShape::Model { geometry, index } => {
-                    result |= self.store.point_contents_transformed(
-                        geometry,
-                        index,
-                        point,
-                        pose.position,
-                        pose.angles,
-                        target.rules,
-                        rules,
-                    )?;
-                    continue;
-                }
-                CollisionShape::Capsule => {
-                    let bounds = Bounds {
-                        mins: target.body.mins,
-                        maxs: target.body.maxs,
-                    };
-                    let center = pose.position + qa_core::math::midpoint(bounds.mins, bounds.maxs);
-                    if qa_core::primitives::Capsule::from_bounds(bounds).contains(center, point) {
-                        result |= Contents::BODY;
-                    }
-                    continue;
-                }
-                CollisionShape::Box => {}
-            }
-            // CM_TransformedPointContents temporary-box contents are the native
-            // BODY/MONSTER brush, independently of an entity's content filter.
-            let inside = (0..3).all(|axis| {
-                let coordinate = point.0[axis] - pose.position.0[axis];
-                coordinate >= target.body.mins.0[axis]
-                    && if !rules
-                        .filtering
-                        .contains(EntityTraceFlags::INCLUSIVE_CONTENTS_MAX)
-                    {
-                        coordinate < target.body.maxs.0[axis]
-                    } else {
-                        coordinate <= target.body.maxs.0[axis]
-                    }
-            });
-            if inside {
-                result |= Contents::BODY;
-            }
+            let mut body = target.body;
+            body.position = pose.position;
+            result |= self.store.point_contents_body(
+                point,
+                target.shape,
+                &body,
+                pose.angles,
+                target.rules,
+                rules,
+                BodyTraceMode::Transformed,
+            )?;
         }
         Ok(result)
     }

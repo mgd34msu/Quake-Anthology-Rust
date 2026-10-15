@@ -19,6 +19,7 @@ use qa_core::{
     },
 };
 use qa_session::clients::Server;
+use qa_world::collision::store::BodyTraceMode;
 use qa_world::{
     area::{LinkFlags, LinkIntent, LinkOrder},
     collision::{
@@ -100,6 +101,7 @@ pub struct LoadedWorldBinding {
 #[derive(Default)]
 pub struct ClientCollision {
     selected: Option<GeometryId>,
+    temporary: Bounds,
 }
 impl ClientCollision {
     pub fn geometry(&self) -> Option<GeometryId> {
@@ -107,6 +109,7 @@ impl ClientCollision {
     }
     pub fn reset(&mut self) {
         self.selected = None;
+        self.temporary = Bounds::default();
     }
 }
 
@@ -993,6 +996,27 @@ pub struct EngineCallTable {
     pub client_collision_load: fn(&mut EngineServices<'_>, &[u8]) -> Result<(), CallError>,
     pub client_collision_count: fn(&EngineServices<'_>) -> Result<u32, CallError>,
     pub client_collision_inline: fn(&EngineServices<'_>, i32) -> Result<i32, CallError>,
+    pub client_collision_temp: fn(&mut EngineServices<'_>, Bounds) -> Result<i32, CallError>,
+    pub client_collision_ready: fn(&EngineServices<'_>) -> Result<bool, CallError>,
+    pub client_collision_target:
+        fn(&EngineServices<'_>, i32) -> Result<(CollisionShape, Bounds), CallError>,
+    pub client_collision_contents: fn(
+        &EngineServices<'_>,
+        Vec3,
+        (CollisionShape, Bounds),
+        Vec3,
+        Vec3,
+        EntityTracePolicy,
+        BodyTraceMode,
+    ) -> Result<Contents, CallError>,
+    pub client_collision_trace: fn(
+        &mut EngineServices<'_>,
+        TraceQuery<'_>,
+        (CollisionShape, Bounds),
+        Vec3,
+        Vec3,
+        BodyTraceMode,
+    ) -> Result<Trace, CallError>,
     pub render_world: fn(&mut EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
     pub clear_scene: fn(&mut EngineServices<'_>),
     pub add_light: fn(&mut EngineServices<'_>, qa_render::scene::Light) -> bool,
@@ -1152,6 +1176,62 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     client_collision_load: |s, name| s.client_collision_load(name),
     client_collision_count: |s| s.client_collision_count(),
     client_collision_inline: |s, index| s.client_collision_inline(index),
+    client_collision_temp: |s, bounds| {
+        s.client_collision
+            .as_deref_mut()
+            .ok_or(CallError::Unsupported)?
+            .temporary = bounds;
+        Ok(255)
+    },
+    client_collision_ready: |s| {
+        s.client_collision
+            .as_deref()
+            .ok_or(CallError::Unsupported)?
+            .selected
+            .map_or(Ok(false), |geometry| {
+                s.geometry
+                    .has_bsp_nodes(geometry)
+                    .map_err(|_| CallError::Geometry)
+            })
+    },
+    client_collision_target: |s, handle| s.client_collision_target(handle),
+    client_collision_contents: |s, point, (shape, bounds), origin, angles, caller, mode| {
+        s.geometry
+            .point_contents_body(
+                point,
+                shape,
+                &Body {
+                    position: origin,
+                    mins: bounds.mins,
+                    maxs: bounds.maxs,
+                    ..Body::default()
+                },
+                angles,
+                crate::entities::Q3_MODEL_RULES,
+                caller,
+                mode,
+            )
+            .map_err(|_| CallError::Geometry)
+    },
+    client_collision_trace: |s, query, (shape, bounds), origin, angles, mode| {
+        s.geometry
+            .trace_body(
+                query,
+                shape,
+                &Body {
+                    position: origin,
+                    mins: bounds.mins,
+                    maxs: bounds.maxs,
+                    ..Body::default()
+                },
+                angles,
+                crate::entities::Q3_MODEL_RULES,
+                mode,
+                None,
+                s.scratch,
+            )
+            .map_err(|_| CallError::Geometry)
+    },
     render_world: |s, name| {
         let world = s
             .model_loader
@@ -1455,10 +1535,14 @@ impl EngineServices<'_> {
         if count > 256 {
             return Err(CallError::Capacity);
         }
-        self.client_collision
+        let selection = self
+            .client_collision
             .as_deref_mut()
-            .ok_or(CallError::Unsupported)?
-            .selected = Some(geometry);
+            .ok_or(CallError::Unsupported)?;
+        if selection.selected != Some(geometry) {
+            selection.temporary = Bounds::default();
+            selection.selected = Some(geometry);
+        }
         Ok(())
     }
     fn client_collision_count(&self) -> Result<u32, CallError> {
@@ -1477,6 +1561,27 @@ impl EngineServices<'_> {
         (index >= 0 && (index as u32) < count)
             .then_some(index)
             .ok_or(CallError::Geometry)
+    }
+    fn client_collision_target(&self, handle: i32) -> Result<(CollisionShape, Bounds), CallError> {
+        let selection = self
+            .client_collision
+            .as_deref()
+            .ok_or(CallError::Unsupported)?;
+        let count = self.client_collision_count()?;
+        // Real inline models take precedence, including native ordinal 255.
+        if handle >= 0 && (handle as u32) < count {
+            return Ok((
+                CollisionShape::Model {
+                    geometry: selection.selected.ok_or(CallError::Geometry)?,
+                    index: handle as u32,
+                },
+                Bounds::default(),
+            ));
+        }
+        if handle == 255 {
+            return Ok((CollisionShape::Box, selection.temporary));
+        }
+        Err(CallError::Geometry)
     }
     fn models(&self) -> Option<&dyn ModelLookup> {
         self.model_loader
@@ -1758,9 +1863,16 @@ impl EngineServices<'_> {
                 shape,
                 angles,
                 rules,
-            } => self
-                .geometry
-                .trace_body(query, shape, &body, angles, rules, None, self.scratch),
+            } => self.geometry.trace_body(
+                query,
+                shape,
+                &body,
+                angles,
+                rules,
+                BodyTraceMode::Transformed,
+                None,
+                self.scratch,
+            ),
         }
         .map_err(|_| CallError::Geometry)
     }

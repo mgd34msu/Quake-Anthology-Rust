@@ -498,6 +498,7 @@ impl Input {
         forward: f32,
     ) -> Option<Vec3> {
         if !player.prediction.angles
+            || !player.movement.mode.allows_view_angles()
             || !policy.pitch_drift()
             || self.seats[seat.index()].catchers != 0
         {

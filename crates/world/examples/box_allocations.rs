@@ -1,5 +1,7 @@
 use qa_core::primitives::{Body, EntityId, Vec3};
-use qa_world::collision::{Contents, TraceQuery, TraceRules, boxes::trace_box};
+use qa_world::collision::{
+    Contents, TraceQuery, TraceRules, boxes::trace_box, store::BodyTraceMode,
+};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -61,6 +63,7 @@ fn main() -> Result<(), &'static str> {
                     slot: slot as u32,
                     generation: 1,
                 }),
+                BodyTraceMode::Transformed,
             );
             if black_box(trace).fraction < 1.0 {
                 hits += 1;

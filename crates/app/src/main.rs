@@ -114,13 +114,11 @@ fn run() -> Result<(), String> {
                 let cvars = &mut console.cvars;
                 let name = args.next().ok_or("+set needs a cvar name")?;
                 let value = args.next().ok_or("+set needs a value")?;
-                let view = cvars
-                    .bind(&name, cvars.context())
-                    .ok_or_else(|| format!("unknown cvar: {name}"))?;
+                let context = cvars.context();
                 cvars
-                    .write(view, &value)
+                    .set_user(&name, &value, context, None, 0)
                     .map_err(|error| format!("cvar {name}: {error:?}"))?;
-                startup_sets.push((name, value, cvars.context()));
+                startup_sets.push((name, value, context));
             }
             "--commands" => {
                 let text = args.next().ok_or("--commands needs text")?;
@@ -428,13 +426,9 @@ fn run() -> Result<(), String> {
     // Saved settings are already in the one table. Explicit CLI values win
     // before image/material registration consumes its cold settings.
     for (name, value, context) in &startup_sets {
-        let view = console
-            .cvars
-            .bind(name, *context)
-            .ok_or_else(|| format!("unknown startup cvar {name}"))?;
         console
             .cvars
-            .write(view, value)
+            .set_user(name, value, *context, None, 0)
             .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
     }
     let mut assets = Assets::load().map_err(|e| e.to_string())?;

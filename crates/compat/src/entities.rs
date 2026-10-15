@@ -19,6 +19,8 @@ mod q3;
 mod quakec;
 pub(crate) use quakec::QuakeCLayout;
 
+pub(crate) const Q3_MODEL_RULES: ModelRules = q3::LAYOUT.model_rules;
+
 /// Published ABI data is read only while the owned child is stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entities {

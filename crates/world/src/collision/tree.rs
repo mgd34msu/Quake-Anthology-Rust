@@ -91,6 +91,10 @@ fn root_child(root: ModelRoot) -> i32 {
 }
 
 impl Topology {
+    pub(super) fn has_bsp_nodes(&self) -> bool {
+        !self.nodes.is_empty()
+    }
+
     pub(super) fn load(
         tree: BrushTree,
         brushes: &[Brush],

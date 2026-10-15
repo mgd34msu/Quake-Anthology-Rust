@@ -1,5 +1,6 @@
 use super::{
-    Contents, EntityTracePolicy, HullPositionLimits, HullShape, Trace, TraceError, TraceQuery,
+    Contents, EntityTraceFlags, EntityTracePolicy, HullPositionLimits, HullShape, Trace,
+    TraceError, TraceQuery,
     brushes::{Brush, BrushMap, BrushTree, GeometryError, ModelRoot},
     hulls::{HullError, HullModel, HullScratch, Q1Hulls},
     position,
@@ -25,6 +26,24 @@ pub enum StoreError {
     Models,
     Bounds,
     Capacity,
+}
+
+/// A direct native CM query runs only the kernel. A transformed query runs
+/// the target wrapper first, including its separately rounded centering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyTraceMode {
+    Direct,
+    Transformed,
+}
+
+impl BodyTraceMode {
+    pub(super) fn end_position(self, start: Vec3, end: Vec3, fraction: f32) -> Vec3 {
+        if self == Self::Direct && fraction == 1.0 {
+            end
+        } else {
+            start.lerp(end, fraction)
+        }
+    }
 }
 
 enum Geometry {
@@ -272,6 +291,18 @@ impl CollisionStore {
         Some(self.resolve(geometry, index)?.1.bounds)
     }
 
+    /// Native CLIENT no-map handling uses source topology, without changing
+    /// the shared query behavior of valid direct-leaf analytic resources.
+    pub fn has_bsp_nodes(&self, geometry: GeometryId) -> Result<bool, TraceError> {
+        let resource = self
+            .resource(geometry)
+            .ok_or(TraceError::Geometry { geometry, model: 0 })?;
+        Ok(match &resource.geometry {
+            Geometry::Hulls(hulls) => hulls.has_bsp_nodes(),
+            Geometry::Brushes(brushes) => brushes.topology.has_bsp_nodes(),
+        })
+    }
+
     pub fn surface_count(&self, geometry: GeometryId) -> Option<u32> {
         Some(match &self.resource(geometry)?.geometry {
             Geometry::Hulls(_) => 0,
@@ -370,6 +401,10 @@ impl CollisionStore {
 
     /// The shared narrow phase also accepts targets without a common lifetime
     /// or area link, as required by native direct-entity clipping.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Shape, target transform and direct/transformed phase are independent query inputs"
+    )]
     pub fn trace_body(
         &self,
         query: TraceQuery,
@@ -377,22 +412,28 @@ impl CollisionStore {
         body: &Body,
         angles: Vec3,
         rules: ModelRules,
+        mode: BodyTraceMode,
         entity: Option<EntityId>,
         scratch: &mut TraceScratch,
     ) -> Result<Trace, TraceError> {
         match shape {
-            CollisionShape::Box => Ok(super::boxes::trace_box(query, body, entity)),
-            CollisionShape::Capsule => Ok(super::capsules::trace_capsule(query, body, entity)),
+            CollisionShape::Box => Ok(super::boxes::trace_box(query, body, entity, mode)),
+            CollisionShape::Capsule => {
+                Ok(super::capsules::trace_capsule(query, body, entity, mode))
+            }
             CollisionShape::Model { geometry, index } => {
-                let mut trace = self.trace_transformed(
-                    geometry,
-                    index,
-                    query,
-                    body.position,
-                    angles,
-                    rules,
-                    scratch,
-                )?;
+                let mut trace = match mode {
+                    BodyTraceMode::Direct => self.trace_model(geometry, index, query, scratch)?,
+                    BodyTraceMode::Transformed => self.trace_transformed(
+                        geometry,
+                        index,
+                        query,
+                        body.position,
+                        angles,
+                        rules,
+                        scratch,
+                    )?,
+                };
                 if trace.fraction < 1.0 || trace.start_solid || trace.all_solid {
                     trace.entity = entity;
                 }
@@ -401,6 +442,73 @@ impl CollisionStore {
             }
             CollisionShape::None => Ok(Trace::clear(query.end)),
         }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Shape, target transform and caller containment rules are independent body inputs"
+    )]
+    pub fn point_contents_body(
+        &self,
+        point: Vec3,
+        shape: CollisionShape,
+        body: &Body,
+        angles: Vec3,
+        model_rules: ModelRules,
+        caller: EntityTracePolicy,
+        mode: BodyTraceMode,
+    ) -> Result<Contents, TraceError> {
+        let transformed = mode == BodyTraceMode::Transformed;
+        let inside = match shape {
+            CollisionShape::None => return Ok(Contents::EMPTY),
+            CollisionShape::Model { geometry, index } => {
+                return if transformed {
+                    self.point_contents_transformed(
+                        geometry,
+                        index,
+                        point,
+                        body.position,
+                        angles,
+                        model_rules,
+                        caller,
+                    )
+                } else {
+                    self.point_contents_model(geometry, index, point, caller)
+                };
+            }
+            CollisionShape::Capsule => {
+                let bounds = Bounds {
+                    mins: body.mins,
+                    maxs: body.maxs,
+                };
+                let mut center = qa_core::math::midpoint(bounds.mins, bounds.maxs);
+                if transformed {
+                    center = body.position + center;
+                }
+                qa_core::primitives::Capsule::from_bounds(bounds).contains(center, point)
+            }
+            CollisionShape::Box => (0..3).all(|axis| {
+                let coordinate = if transformed {
+                    point.0[axis] - body.position.0[axis]
+                } else {
+                    point.0[axis]
+                };
+                coordinate >= body.mins.0[axis]
+                    && if caller
+                        .filtering
+                        .contains(EntityTraceFlags::INCLUSIVE_CONTENTS_MAX)
+                    {
+                        coordinate <= body.maxs.0[axis]
+                    } else {
+                        coordinate < body.maxs.0[axis]
+                    }
+            }),
+        };
+        Ok(if inside {
+            Contents::BODY
+        } else {
+            Contents::EMPTY
+        })
     }
 
     pub fn trace_model(

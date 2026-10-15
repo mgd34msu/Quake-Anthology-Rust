@@ -2,10 +2,51 @@
 #[path = "support/console.rs"]
 mod support;
 use qa_core::{
-    primitives::{PlayerState, RuleSetId, Vec3},
+    primitives::{MovementMode, PlayerState, RuleSetId, Vec3},
     sys_events::{EventTime, SeatId},
 };
 use qa_input::{Action, Input};
+
+#[test]
+fn intermission_cannot_be_replaced_by_quake_render_pitch_drift() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for mode in [
+            MovementMode::Intermission,
+            MovementMode::SinglePlayerIntermission,
+        ] {
+            let mut input = Input::load();
+            input.seed(EventTime(0));
+            input.set_view_angles(SeatId::FIRST, Vec3([40.0, 5.0, 2.0]));
+            input.center_view(SeatId::FIRST);
+            let policy = support::catalog_policy(rules);
+            let time = EventTime::from_milliseconds(16);
+            input.build_frame_with_policy(time, &[policy; SeatId::COUNT]);
+            let mut player = PlayerState {
+                movement_rules: RuleSetId::Quake2Rerelease,
+                trace_rules: RuleSetId::Quake3,
+                view_angles: Vec3([-17.0, 133.0, 9.0]),
+                ideal_pitch: 20.0,
+                ..Default::default()
+            };
+            player.movement.mode = mode;
+            player.movement.grounded = true;
+            assert_eq!(
+                input.drift_view(SeatId::FIRST, time, policy, &player, 0.0),
+                None,
+            );
+            // The rejected render update did not consume the centerview/drift
+            // request. Freeze still follows the selected native input policy.
+            player.movement.mode = MovementMode::Frozen;
+            assert_eq!(
+                input
+                    .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
+                    .unwrap()
+                    .0[0],
+                32.0,
+            );
+        }
+    }
+}
 
 #[test]
 fn accepted_interpolated_view_is_not_replaced_by_local_quake_pitch_drift() {

@@ -50,6 +50,59 @@ fn integrate(seconds: f64) -> MoveOptions {
 }
 
 #[test]
+fn stopped_common_modes_do_not_commit_split_quake_control_or_integration() {
+    for mode in [
+        MovementMode::Frozen,
+        MovementMode::Intermission,
+        MovementMode::SinglePlayerIntermission,
+    ] {
+        let mut state = player(RuleSetId::Quake);
+        state.movement.mode = mode;
+        let body = [
+            state.body.position,
+            state.body.velocity,
+            state.body.mins,
+            state.body.maxs,
+        ]
+        .map(|row| row.0.map(f32::to_bits));
+        let movement = state.movement;
+        let view = state.view_angles;
+        let mut writes = 0;
+        for options in [control(Vec3([0.0, 90.0, 0.0]), 7.0), integrate(0.1)] {
+            let result = pmove(
+                UserCmd {
+                    movement: [127.0, 64.0, 32.0],
+                    view_angles: Vec3([45.0, 180.0, 90.0]),
+                    ..Default::default()
+                },
+                &mut state,
+                &mut NoTrace,
+                options,
+                |_: &mut PlayerState, _| {
+                    writes += 1;
+                    Ok::<_, TraceError>(())
+                },
+            )
+            .unwrap();
+            assert_eq!(result.traces, 0);
+            assert_eq!(
+                [
+                    state.body.position,
+                    state.body.velocity,
+                    state.body.mins,
+                    state.body.maxs
+                ]
+                .map(|row| row.0.map(f32::to_bits)),
+                body,
+            );
+            assert_eq!(state.movement, movement);
+            assert_eq!(state.view_angles, view);
+        }
+        assert_eq!(writes, 0, "{mode:?}");
+    }
+}
+
+#[test]
 fn complete_and_native_control_share_raw_and_capped_velocity_and_scalar_order() {
     for (axes, expected) in [
         ([1.0, -1.0, 0.0], Vec3([1.0, 1.0, 0.0])),

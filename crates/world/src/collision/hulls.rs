@@ -214,6 +214,10 @@ impl HullScratch {
 }
 
 impl Q1Hulls {
+    pub(crate) fn has_bsp_nodes(&self) -> bool {
+        !self.drawing.is_empty()
+    }
+
     pub(crate) fn load(
         planes: Vec<Plane>,
         drawing: Vec<ClipNode>,

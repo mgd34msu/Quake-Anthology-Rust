@@ -1,6 +1,8 @@
 //! Original-source collision comparison, without timing or allocation gates.
 use qa_core::primitives::{Body, CollisionShape, RuleSetId, Vec3};
-use qa_world::collision::{CollisionStore, Contents, TraceQuery, trace_policy};
+use qa_world::collision::{
+    CollisionStore, Contents, TraceQuery, store::BodyTraceMode, trace_policy,
+};
 
 fn word(data: &mut &[u8]) -> Result<u32, &'static str> {
     let (head, tail) = data.split_first_chunk::<4>().ok_or("truncated fixture")?;
@@ -56,6 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &body,
             Vec3::default(),
             Default::default(),
+            BodyTraceMode::Transformed,
             None,
             &mut scratch,
         )?;

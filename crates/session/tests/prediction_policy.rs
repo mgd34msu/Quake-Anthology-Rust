@@ -21,6 +21,56 @@ fn body_bits(body: Body) -> [[u32; 3]; 4] {
 }
 
 #[test]
+fn intermission_lock_survives_angle_only_and_exhausted_history_prediction() {
+    use qa_core::command_history::{Acknowledgement, CommandHistory};
+    for rules in RuleSetId::ALL {
+        for mode in [
+            MovementMode::Intermission,
+            MovementMode::SinglePlayerIntermission,
+        ] {
+            let mut prediction = Prediction::default();
+            let player = &mut prediction.player;
+            player.health = 100;
+            player.movement_rules = rules;
+            player.trace_rules = RuleSetId::Quake2;
+            player.movement.mode = mode;
+            player.view_angles = Vec3([-0.0, 117.25, 6.5]);
+            player.movement.delta_angles = AngleOffsets([AngleOffset::Units(17000); 3]);
+            player.prediction.position = false;
+            let angles = player.view_angles.0.map(f32::to_bits);
+            let delta = player.movement.delta_angles;
+            let command = UserCmd {
+                duration_ms: 16,
+                server_time_ms: 16,
+                view_angles: Vec3([180.0, 0.0, 90.0]),
+                ..Default::default()
+            };
+            prediction.advance(command, &mut NoQueries).unwrap();
+            assert_eq!(prediction.player.view_angles.0.map(f32::to_bits), angles);
+            assert_eq!(prediction.player.movement.delta_angles, delta);
+            prediction.player.prediction.position = true;
+            prediction.remember_snapshot(Some(Acknowledgement::Number(0)));
+            let mut history = CommandHistory::load(2, 0).unwrap();
+            for number in 1..=3 {
+                history.append(UserCmd {
+                    server_time_ms: number * 16,
+                    ..command
+                });
+            }
+            assert_eq!(prediction.replay(&history, &mut NoQueries).unwrap(), 0);
+            assert_eq!(prediction.history_resyncs, 1);
+            assert_eq!(prediction.replay(&history, &mut NoQueries).unwrap(), 0);
+            assert_eq!(prediction.player.view_angles.0.map(f32::to_bits), angles);
+            assert_eq!(prediction.player.movement.delta_angles, delta);
+            assert_eq!(prediction.player.movement.mode, mode);
+            assert_eq!(prediction.player.prediction.angles, true);
+            assert_eq!(prediction.player.movement_rules, rules);
+            assert_eq!(prediction.player.trace_rules, RuleSetId::Quake2);
+        }
+    }
+}
+
+#[test]
 fn angles_only_prediction_uses_native_unclamped_command_delta_without_movement() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld, RuleSetId::Quake2] {
         for command_angles in [Vec3([179.0, -0.0, 360.0]), Vec3([-270.0, 721.0, -17.25])] {

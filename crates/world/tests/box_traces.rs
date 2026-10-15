@@ -1,5 +1,7 @@
 use qa_core::primitives::{Body, EntityId, Vec3};
-use qa_world::collision::{Contents, TraceQuery, TraceRules, boxes::trace_box};
+use qa_world::collision::{
+    Contents, TraceQuery, TraceRules, boxes::trace_box, store::BodyTraceMode,
+};
 
 #[test]
 fn temporary_box_planes_keep_native_type_and_sign_conventions() {
@@ -27,7 +29,7 @@ fn temporary_box_planes_keep_native_type_and_sign_conventions() {
                     mask: Contents::BODY,
                     ..TraceQuery::point(Vec3(start), Vec3::default(), rules, entities)
                 };
-                let hit = trace_box(query, &body, Some(entity));
+                let hit = trace_box(query, &body, Some(entity), BodyTraceMode::Transformed);
                 assert!(hit.fraction < 1.0);
                 assert_eq!(
                     hit.plane.type_sign(),
@@ -74,6 +76,7 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
         },
         &body,
         Some(entity),
+        BodyTraceMode::Transformed,
     );
     assert_eq!(trace.fraction, (100.0 - 46.0 - 0.03125) / 100.0);
     assert_eq!(trace.end.0[0], 46.03125);
@@ -96,6 +99,7 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
         },
         &body,
         Some(entity),
+        BodyTraceMode::Transformed,
     );
     assert_eq!(foreign_contact.fraction, (100.0 - 46.0 - 0.125) / 100.0);
     assert_eq!(foreign_contact.end.0[0], 46.125);
@@ -116,6 +120,7 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
         },
         &body,
         Some(entity),
+        BodyTraceMode::Transformed,
     );
     assert!(embedded.start_solid && embedded.all_solid);
     assert_eq!(embedded.entity, Some(entity));
@@ -141,7 +146,7 @@ fn q2_transformed_box_reconstructs_clear_and_embedded_endpoints() {
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
         )
     };
-    let enclosed = trace_box(query, &body, Some(entity));
+    let enclosed = trace_box(query, &body, Some(entity), BodyTraceMode::Transformed);
     assert!(enclosed.all_solid && enclosed.start_solid);
     assert_eq!(enclosed.fraction, 1.0);
     assert_eq!(enclosed.end.0[0].to_bits(), 0.0f32.to_bits());
@@ -152,6 +157,7 @@ fn q2_transformed_box_reconstructs_clear_and_embedded_endpoints() {
         },
         &body,
         Some(entity),
+        BodyTraceMode::Transformed,
     );
     assert!(!clear.all_solid && !clear.start_solid);
     assert_eq!(clear.fraction, 1.0);
@@ -181,7 +187,7 @@ fn q3_transformed_box_centers_before_subtracting_a_large_origin() {
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         )
     };
-    let result = trace_box(query, &body, Some(entity));
+    let result = trace_box(query, &body, Some(entity), BodyTraceMode::Transformed);
     assert_eq!(result.fraction, 1.0);
     assert!(!result.start_solid && !result.all_solid);
     assert_eq!(result.entity, None);

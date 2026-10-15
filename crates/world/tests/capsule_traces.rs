@@ -1,5 +1,7 @@
 use qa_core::primitives::{Body, Bounds, Capsule, CollisionShape, EntityId, RuleSetId, Vec3};
-use qa_world::collision::{CollisionStore, Contents, TraceQuery, trace_policy};
+use qa_world::collision::{
+    CollisionStore, Contents, TraceQuery, store::BodyTraceMode, trace_policy,
+};
 
 fn query(start: Vec3, end: Vec3) -> TraceQuery<'static> {
     let (rules, entities) = trace_policy(RuleSetId::Quake3);
@@ -37,6 +39,7 @@ fn capsule_targets_use_the_common_dispatch_with_native_startsolid_and_plane_fiel
                 &body,
                 Vec3([45.0, 90.0, 0.0]),
                 Default::default(),
+                BodyTraceMode::Transformed,
                 Some(id),
                 &mut scratch,
             )
@@ -54,6 +57,7 @@ fn capsule_targets_use_the_common_dispatch_with_native_startsolid_and_plane_fiel
                 &body,
                 Vec3::default(),
                 Default::default(),
+                BodyTraceMode::Transformed,
                 Some(id),
                 &mut scratch,
             )
@@ -88,6 +92,7 @@ fn capsule_targets_use_the_common_dispatch_with_native_startsolid_and_plane_fiel
             &body,
             Vec3::default(),
             Default::default(),
+            BodyTraceMode::Transformed,
             Some(id),
             &mut scratch,
         )

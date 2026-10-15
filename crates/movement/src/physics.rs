@@ -103,9 +103,10 @@ where
 }
 
 fn update_view_angles(command: UserCmd, player: &mut PlayerState, policy: ViewAnglePolicy) {
-    if policy.lock_dead_non_spectator
-        && player.health <= 0
-        && player.movement.mode != MovementMode::Spectator
+    if !player.movement.mode.allows_view_angles()
+        || policy.lock_dead_non_spectator
+            && player.health <= 0
+            && player.movement.mode != MovementMode::Spectator
     {
         return;
     }
@@ -1469,7 +1470,7 @@ impl Step<'_> {
         {
             self.player.movement.jump_held = false;
         }
-        if self.player.movement.mode == MovementMode::Frozen {
+        if !self.player.movement.mode.allows_movement() {
             return Ok(());
         }
         if let Some(policy) = self.parameters.free.get(self.player.movement.mode) {
@@ -1606,7 +1607,9 @@ where
         match options.phase {
             MovePhase::Control { .. } => {
                 let mut result = MovementResult::default();
-                if let Some(policy) = parameters.control {
+                if let Some(policy) = parameters.control
+                    && player.movement.mode.allows_movement()
+                {
                     let previous_velocity = player.body.velocity;
                     let mut step = Step {
                         player,
@@ -1630,6 +1633,9 @@ where
                 Ok(result)
             }
             MovePhase::Integrate { seconds } if parameters.control.is_some() => {
+                if !player.movement.mode.allows_movement() {
+                    return Ok(MovementResult::default());
+                }
                 direct_motion(player, seconds as f32, boundary)?;
                 Ok(MovementResult {
                     steps: 1,

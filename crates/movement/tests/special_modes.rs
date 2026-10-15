@@ -83,6 +83,7 @@ impl TraceServices for World {
                     },
                     &body,
                     None,
+                    qa_world::collision::store::BodyTraceMode::Transformed,
                 );
                 shelf.contents = if shelf.fraction < 1.0 || shelf.start_solid {
                     Contents::SOLID

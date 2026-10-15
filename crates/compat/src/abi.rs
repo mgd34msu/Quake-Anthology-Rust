@@ -501,6 +501,11 @@ const fn client() -> CallTable {
     t.entries[18] = scalar!(client_collision_load);
     t.entries[19] = scalar!(client_collision_count);
     t.entries[20] = scalar!(client_collision_inline);
+    t.entries[22] = scalar!(client_collision_temp);
+    t.entries[23] = scalar!(client_collision_contents::<false>);
+    t.entries[24] = scalar!(client_collision_contents::<true>);
+    t.entries[25] = scalar!(client_collision_trace::<false>);
+    t.entries[26] = scalar!(client_collision_trace::<true>);
     t.entries[28] = scalar!(client_sound::play);
     t.entries[29] = scalar!(client_sound::local::<false>);
     t.entries[30] = client_audio!(client_sound::clear);
@@ -2004,6 +2009,112 @@ fn client_collision_count(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
 fn client_collision_inline(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.client_collision_inline)(c.services, c.arg(0)? as u32 as i32)
         .map(|index| index as u32 as u64)
+}
+fn client_collision_temp(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    // Native CM_TempBoxModel accepts finite inverted bounds as plane data.
+    let bounds = qa_core::primitives::Bounds {
+        mins: c.vector(0, false)?,
+        maxs: c.vector(1, false)?,
+    };
+    (ENGINE_CALLS.client_collision_temp)(c.services, bounds).map(|handle| handle as u64)
+}
+fn client_collision_contents<const TRANSFORMED: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    use qa_core::primitives::Vec3;
+    use qa_world::collision::store::BodyTraceMode;
+    if !TRANSFORMED && !(ENGINE_CALLS.client_collision_ready)(c.services)? {
+        // CM_PointContents tests numNodes before touching point or handle.
+        return Ok(0);
+    }
+    let point = c.vector(0, false)?;
+    let handle = c.arg(1)? as u32 as i32;
+    let origin = if TRANSFORMED {
+        c.vector(2, false)?
+    } else {
+        Vec3::default()
+    };
+    let angles = if TRANSFORMED && handle != 255 {
+        c.vector(3, false)?
+    } else {
+        Vec3::default()
+    };
+    if TRANSFORMED && !(ENGINE_CALLS.client_collision_ready)(c.services)? {
+        return Ok(0);
+    }
+    let target = (ENGINE_CALLS.client_collision_target)(c.services, handle)?;
+    let caller = qa_world::collision::trace_policy(c.context.trace_rules).1;
+    let mode = if TRANSFORMED {
+        BodyTraceMode::Transformed
+    } else {
+        BodyTraceMode::Direct
+    };
+    (ENGINE_CALLS.client_collision_contents)(
+        c.services, point, target, origin, angles, caller, mode,
+    )
+    .map(|contents| u64::from(contents.to_q3()))
+}
+fn client_collision_trace<const TRANSFORMED: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    use qa_core::primitives::Vec3;
+    use qa_world::collision::{Contents, Trace, TraceQuery, store::BodyTraceMode};
+    let handle = c.arg(5)? as u32 as i32;
+    // Direct CM_Trace resolves the model and tests numNodes before inputs.
+    let early = if !TRANSFORMED {
+        let target = (ENGINE_CALLS.client_collision_target)(c.services, handle)?;
+        if !(ENGINE_CALLS.client_collision_ready)(c.services)? {
+            let output = c.required_pointer(0)?;
+            crate::traces::write_q3(c.memory, output, Trace::clear(Vec3::default()), 0)?;
+            return Ok(0);
+        }
+        Some(target)
+    } else {
+        None
+    };
+    let start = c.vector(1, false)?;
+    let end = c.vector(2, false)?;
+    let mins = c.vector(3, true)?;
+    let maxs = c.vector(4, true)?;
+    let origin = if TRANSFORMED {
+        c.vector(7, false)?
+    } else {
+        Vec3::default()
+    };
+    // The native raw handle test skips angles even when inline model 255 exists.
+    let angles = if TRANSFORMED && handle != 255 {
+        c.vector(8, false)?
+    } else {
+        Vec3::default()
+    };
+    let target = match early {
+        Some(target) => target,
+        None => (ENGINE_CALLS.client_collision_target)(c.services, handle)?,
+    };
+    let output = c.required_pointer(0)?;
+    c.memory.read(output, 56)?;
+    let trace = if !(ENGINE_CALLS.client_collision_ready)(c.services)? {
+        // CM_TransformedBoxTrace reconstructs endpos after its empty-map trace.
+        Trace::clear(start.lerp(end, 1.0))
+    } else {
+        let (rules, entity_rules) = qa_world::collision::trace_policy(c.context.trace_rules);
+        let query = TraceQuery {
+            start,
+            end,
+            mins,
+            maxs,
+            mask: Contents::from_q3(c.arg(6)? as u32),
+            ..TraceQuery::point(start, end, rules, entity_rules)
+        };
+        let mode = if TRANSFORMED {
+            BodyTraceMode::Transformed
+        } else {
+            BodyTraceMode::Direct
+        };
+        (ENGINE_CALLS.client_collision_trace)(c.services, query, target, origin, angles, mode)?
+    };
+    crate::traces::write_q3(c.memory, output, trace, 0)?;
+    Ok(0)
 }
 fn renderer_clear_scene(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.clear_scene)(c.services);

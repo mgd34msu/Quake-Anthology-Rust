@@ -1175,6 +1175,19 @@ pub enum MovementMode {
     Dead,
     Gib,
     Frozen,
+    Intermission,
+    SinglePlayerIntermission,
+}
+impl MovementMode {
+    pub const fn allows_movement(self) -> bool {
+        !matches!(
+            self,
+            Self::Frozen | Self::Intermission | Self::SinglePlayerIntermission
+        )
+    }
+    pub const fn allows_view_angles(self) -> bool {
+        !matches!(self, Self::Intermission | Self::SinglePlayerIntermission)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

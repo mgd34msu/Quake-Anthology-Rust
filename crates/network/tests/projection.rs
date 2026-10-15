@@ -1056,6 +1056,8 @@ fn native_ordinals_and_modes_remain_boundary_data() {
         (MovementMode::Dead, 3),
         (MovementMode::Gib, 3),
         (MovementMode::Frozen, 4),
+        (MovementMode::Intermission, 5),
+        (MovementMode::SinglePlayerIntermission, 6),
     ] {
         p.movement.mode = mode;
         assert!(projection.reduce(
@@ -1180,6 +1182,127 @@ fn native_q3_delta_units_keep_full_signed_words_until_the_target_boundary() {
     ]) {
         assert!(matches!(angle, AngleOffset::Degrees(_)));
         assert_eq!(angle.degrees().to_bits(), bits);
+    }
+}
+
+#[test]
+fn q3_freeze_and_intermission_modes_survive_native_and_wire_projection()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{ClientId, ModuleId, PredictionPolicy, ResourceNamespace};
+    let native = PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
+    let wire = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let mut words = [0; states::PLAYER_WORDS];
+    let mut output = [0; states::PLAYER_WORDS];
+    for (number, mode) in [
+        (4, MovementMode::Frozen),
+        (5, MovementMode::Intermission),
+        (6, MovementMode::SinglePlayerIntermission),
+    ] {
+        words[34] = number;
+        let mut player = PlayerState::default();
+        player.movement_rules = RuleSetId::QuakeWorld;
+        player.trace_rules = RuleSetId::Quake2;
+        player.prediction = PredictionPolicy::DISABLED;
+        assert!(native.apply(
+            &words,
+            &mut player,
+            &mut PlayerContext::default(),
+            ResourceNamespace::Module(ModuleId(7)),
+            |_| None,
+        ));
+        assert_eq!(player.movement.mode, mode);
+        assert_eq!(player.prediction, PredictionPolicy::default());
+        assert!(native.reduce(
+            &player,
+            &PlayerContext::default(),
+            &mut output,
+            |_| None,
+            |_| None,
+        ));
+        assert_eq!(output[34], number);
+        assert!(wire.reduce(
+            &player,
+            &PlayerContext::default(),
+            &mut output,
+            |_| None,
+            |_| None,
+        ));
+        let mut bytes = [0; 1024];
+        let mut writer = Writer::new(&mut bytes, Encoding::Q3);
+        states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &output)?;
+        let received = states::read_q3_player(
+            &mut Reader::new(writer.bytes(), Encoding::Q3),
+            &[0; states::PLAYER_WORDS],
+        )?;
+        assert_eq!(received[34], number);
+        let mut accepted = PlayerState::default();
+        accepted.movement_rules = RuleSetId::Quake2Rerelease;
+        accepted.trace_rules = RuleSetId::Quake;
+        assert!(wire.apply(
+            &received,
+            &mut accepted,
+            &mut PlayerContext::default(),
+            ResourceNamespace::Client(ClientId(3)),
+            |_| None,
+        ));
+        assert_eq!(accepted.movement.mode, mode);
+        assert_eq!(accepted.movement_rules, RuleSetId::Quake2Rerelease);
+        assert_eq!(accepted.trace_rules, RuleSetId::Quake);
+        // A stats-only publication cannot release a received control lock.
+        words[34] = 0;
+        assert!(native.apply_stats(
+            &words,
+            &mut accepted,
+            ResourceNamespace::Module(ModuleId(9)),
+        ));
+        assert_eq!(accepted.movement.mode, mode);
+        assert_eq!(player.movement_rules, RuleSetId::QuakeWorld);
+        assert_eq!(player.trace_rules, RuleSetId::Quake2);
+    }
+    Ok(())
+}
+
+#[test]
+fn q2_boundaries_map_intermission_controls_to_their_existing_freeze_value() {
+    use qa_core::primitives::{ClientId, ResourceNamespace};
+    for (protocol, number) in [(Protocol::Quake2_34, 4), (Protocol::Quake2Repro1038, 6)] {
+        let projection = PlayerProjection::load(protocol, &[]);
+        let mut words = vec![0; projection.words()];
+        for mode in [
+            MovementMode::Intermission,
+            MovementMode::SinglePlayerIntermission,
+        ] {
+            let mut source = PlayerState::default();
+            source.movement.mode = mode;
+            assert!(projection.reduce(
+                &source,
+                &PlayerContext::default(),
+                &mut words,
+                |_| None,
+                |_| None,
+            ));
+            assert_eq!(words[0], number);
+            let mut receiver = PlayerState::default();
+            assert!(projection.apply(
+                &words,
+                &mut receiver,
+                &mut PlayerContext::default(),
+                ResourceNamespace::Client(ClientId(0)),
+                |_| None,
+            ));
+            assert_eq!(receiver.movement.mode, MovementMode::Frozen);
+            assert!(receiver.movement.mode.allows_view_angles());
+            // A round trip through an aliased native pmove field preserves the
+            // already selected common mode, as it does for Fly/Noclip/Gib.
+            assert!(projection.apply(
+                &words,
+                &mut source,
+                &mut PlayerContext::default(),
+                ResourceNamespace::Client(ClientId(0)),
+                |_| None,
+            ));
+            assert_eq!(source.movement.mode, mode);
+        }
     }
 }
 
@@ -1703,8 +1826,8 @@ fn imports_keep_lossy_modes_and_resolve_native_lifetimes_at_the_caller() {
     p.weapon_state = None;
     for (native, mode) in [
         (3, MovementMode::Dead),
-        (5, MovementMode::Frozen),
-        (6, MovementMode::Frozen),
+        (5, MovementMode::Intermission),
+        (6, MovementMode::SinglePlayerIntermission),
         (255, MovementMode::Frozen),
     ] {
         p.movement.mode = MovementMode::Walk;

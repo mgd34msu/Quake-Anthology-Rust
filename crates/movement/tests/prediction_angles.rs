@@ -40,6 +40,70 @@ fn angle_offset_bits(offsets: AngleOffsets) -> [(u8, u32); 3] {
 }
 
 #[test]
+fn intermission_locks_controls_independently_of_movement_and_trace_roles() {
+    for rules in RuleSetId::ALL {
+        for mode in [
+            MovementMode::Frozen,
+            MovementMode::Intermission,
+            MovementMode::SinglePlayerIntermission,
+        ] {
+            for angle_only in [false, true] {
+                let mut state = player(rules, mode);
+                state.body.position = Vec3([17.0, -8.0, 64.0]);
+                state.body.velocity = Vec3([12.0, -4.0, 8.0]);
+                state.view_angles = Vec3([-0.0, 13.75, 97.25]);
+                state.movement.delta_angles = AngleOffsets([
+                    AngleOffset::Degrees(-0.0),
+                    AngleOffset::Units(i32::MAX - 1),
+                    AngleOffset::Units(i32::MIN + 1),
+                ]);
+                state.movement.timer = MovementTimer::TELEPORT;
+                state.movement.remaining_ms = 83;
+                let body = body_bits(state.body);
+                let view = state.view_angles.0.map(f32::to_bits);
+                let deltas = angle_offset_bits(state.movement.delta_angles);
+                let command = UserCmd {
+                    server_time_ms: 150,
+                    duration_ms: 150,
+                    duration_ns: 150_000_000,
+                    movement: [127.0, 64.0, 32.0],
+                    view_angles: Vec3([90.0, 180.0, 270.0]),
+                    ..Default::default()
+                };
+                if angle_only {
+                    predict_view_angles(command, &mut state);
+                } else {
+                    pmove(
+                        command,
+                        &mut state,
+                        &mut RejectTrace,
+                        MoveOptions::default(),
+                        no_boundary,
+                    )
+                    .unwrap();
+                    // Q3 advances commandTime even when the step stops before
+                    // movement, as PmoveSingle does before its mode checks.
+                    if rules == RuleSetId::Quake3 {
+                        assert_eq!(state.movement.command_time_ms, 150);
+                    }
+                }
+                assert_eq!(body_bits(state.body), body, "{rules:?} {mode:?}");
+                if mode == MovementMode::Frozen {
+                    assert_ne!(state.view_angles.0.map(f32::to_bits), view);
+                } else {
+                    assert_eq!(state.view_angles.0.map(f32::to_bits), view);
+                    assert_eq!(angle_offset_bits(state.movement.delta_angles), deltas);
+                }
+                assert_eq!(state.movement.timer, MovementTimer::TELEPORT);
+                assert_eq!(state.movement.remaining_ms, 83);
+                assert_eq!(state.movement_rules, rules);
+                assert_eq!(state.trace_rules, RuleSetId::QuakeWorld);
+            }
+        }
+    }
+}
+
+#[test]
 fn q3_nonpositive_health_locks_view_and_all_delta_words_in_movement_and_angle_only() {
     // PM_UpdateViewAngles returns before writing either viewangles or deltas
     // when the player is not a spectator and STAT_HEALTH is nonpositive.
@@ -51,6 +115,8 @@ fn q3_nonpositive_health_locks_view_and_all_delta_words_in_movement_and_angle_on
             MovementMode::Dead,
             MovementMode::Gib,
             MovementMode::Frozen,
+            MovementMode::Intermission,
+            MovementMode::SinglePlayerIntermission,
         ] {
             for angle_only in [false, true] {
                 let mut state = player(RuleSetId::Quake3, mode);
@@ -329,6 +395,8 @@ fn position_only_movement_uses_the_accepted_view_in_every_movement_mode() {
             MovementMode::Noclip,
             MovementMode::Spectator,
             MovementMode::Frozen,
+            MovementMode::Intermission,
+            MovementMode::SinglePlayerIntermission,
         ] {
             let mut state = player(rules, mode);
             state.movement.delta_angles = AngleOffsets([
@@ -364,7 +432,7 @@ fn position_only_movement_uses_the_accepted_view_in_every_movement_mode() {
                 "{rules:?} {mode:?}"
             );
             assert_eq!(state.movement.delta_angles, delta, "{rules:?} {mode:?}");
-            if mode != MovementMode::Frozen {
+            if mode.allows_movement() {
                 assert!(state.body.velocity.0[1] > 0.0, "{rules:?} {mode:?}");
                 assert!(
                     state.body.velocity.0[0].abs() < state.body.velocity.0[1].abs() * 0.01,

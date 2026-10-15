@@ -40,7 +40,7 @@ impl GameData {
     }
 }
 
-const LAYOUT: EntityLayout = EntityLayout {
+pub(super) const LAYOUT: EntityLayout = EntityLayout {
     source: RuleSetId::Quake3,
     bytes: ENTITY_BYTES,
     in_use: None,
