@@ -216,6 +216,62 @@ fn load(helper: &std::path::Path, bytes: &[u8], imports: &[NativeImport<'_>]) ->
 }
 
 #[test]
+fn cdecl_crt_random_uses_glibc_state_and_unsigned_seed_cells() {
+    let Some(helper) = helper() else { return };
+    let functions = [b"rand".as_slice(), b"srand"].map(|name| {
+        qa_platform::native::runtime::FUNCTIONS
+            .iter()
+            .find(|function| function.name == name)
+            .unwrap()
+    });
+    let imports = functions.map(|function| NativeImport {
+        trap: false,
+        filter: None,
+        format: None,
+        number: function.number,
+        abi: NativeAbi::SystemV,
+        parameters: function.parameters,
+        result: function.result,
+    });
+    let mut bytes = [0; 8192];
+    bytes[0] = 0xc3;
+    let mut child = load(&helper, &bytes, &imports);
+    let entries = std::array::from_fn::<_, 2, _>(|index| {
+        child
+            .bind(
+                child.import_pointer(index).unwrap(),
+                NativeAbi::SystemV,
+                functions[index].parameters,
+                functions[index].result,
+            )
+            .unwrap()
+    });
+    let mut invoke = |index: usize, seed| {
+        let mut words = [0; 13];
+        words[0] = seed;
+        child
+            .invoke::<()>(entries[index], words, |_, _, _| {
+                panic!("child-local cdecl CRT random")
+            })
+            .unwrap()
+    };
+    for expected in [1804289383, 846930886, 1681692777] {
+        assert_eq!(invoke(0, 0), expected);
+    }
+    for (seed, expected) in [
+        (0, 1804289383),
+        (1, 1804289383),
+        (2, 1505335290),
+        (0x7fff_ffff, 1065668062),
+        (0x8000_0000, 1336741213),
+        (0xffff_ffff, 254925627),
+    ] {
+        assert_eq!(invoke(1, 0xabcd_0000_0000_0000 | seed), 0);
+        assert_eq!(invoke(0, 0), expected);
+    }
+}
+
+#[test]
 fn cdecl_scalar_cells_and_word_width_are_selected_by_the_child() {
     let Some(helper) = helper() else {
         return;

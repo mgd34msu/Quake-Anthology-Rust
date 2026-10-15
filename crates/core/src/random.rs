@@ -1,8 +1,9 @@
-//! Owned MT19937 and glibc TYPE_3 streams, selected at load.
+//! Owned random streams with native algorithms selected at their boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Algorithm {
     Mt19937,
     GlibcType3,
+    MsvcRand,
 }
 
 #[expect(
@@ -19,6 +20,9 @@ enum State {
         words: [u32; 31],
         front: usize,
         rear: usize,
+    },
+    MsvcRand {
+        word: u32,
     },
 }
 
@@ -70,6 +74,9 @@ impl Random {
                 }
                 random
             }
+            Algorithm::MsvcRand => Self {
+                state: State::MsvcRand { word: seed },
+            },
         }
     }
 
@@ -98,6 +105,10 @@ impl Random {
                 *front = (*front + 1) % words.len();
                 *rear = (*rear + 1) % words.len();
                 value
+            }
+            State::MsvcRand { word } => {
+                *word = word.wrapping_mul(214013).wrapping_add(2531011);
+                (*word >> 16) & 0x7fff
             }
         }
     }

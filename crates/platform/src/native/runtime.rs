@@ -224,6 +224,12 @@ pub const FUNCTIONS: &[Function] = &[
     Function { name: b"vsnprintf", number: FIRST + 21, heap: false, provider: LIBC,
         versions: BASE_VERSION, parameters: &[Word, Word, Word, Word], result: I32,
         operation: Operation::Format { sized: true, list: true } },
+    Function { name: b"rand", number: FIRST + 22, heap: false, provider: LIBC,
+        versions: &[(b"GLIBC_2.2.5", 8), (b"GLIBC_2.0", 4)], parameters: &[], result: I32,
+        operation: Operation::Random { seed: false } },
+    Function { name: b"srand", number: FIRST + 23, heap: false, provider: LIBC,
+        versions: &[(b"GLIBC_2.2.5", 8), (b"GLIBC_2.0", 4)], parameters: &[U32], result: Void,
+        operation: Operation::Random { seed: true } },
     windows(FIRST + 100, b"msvcp140.dll", b"?_Incref@facet@locale@std@@UEAAXXZ", Operation::Msvc(Msvc::Incref), &[Word], NativeScalar::Void),
     windows(FIRST + 101, b"msvcp140.dll", b"?_Decref@facet@locale@std@@UEAAPEAV_Facet_base@3@XZ", Operation::Msvc(Msvc::Decref), &[Word], NativeScalar::Word),
     windows(FIRST + 102, b"msvcp140.dll", b"??1facet@locale@std@@MEAA@XZ", Operation::Msvc(Msvc::FacetDtor), &[Word], NativeScalar::Void),
@@ -385,6 +391,7 @@ pub(crate) enum Operation {
     Compare(Comparison),
     Find(bool),
     Math(Math, NativeScalar),
+    Random { seed: bool },
     Crt(Crt),
     Kernel(Kernel),
     Malloc,
@@ -502,6 +509,7 @@ impl Function {
                         | Operation::Compare(_)
                         | Operation::Find(_)
                         | Operation::Math(_, _)
+                        | Operation::Random { .. }
                         | Operation::Malloc
                         | Operation::Calloc
                         | Operation::Realloc
@@ -543,6 +551,7 @@ impl Function {
             }
             Operation::Math(_, _) => b"api-ms-win-crt-math-l1-1-0.dll",
             Operation::Format { .. } => b"api-ms-win-crt-stdio-l1-1-0.dll",
+            Operation::Random { .. } => b"api-ms-win-crt-utility-l1-1-0.dll",
             _ => return false,
         };
         equal(library)

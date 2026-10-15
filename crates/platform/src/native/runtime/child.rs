@@ -3,6 +3,7 @@
 use super::{ImportResult, NativeEntry, NativeError, NativeRegion};
 use crate::native::runtime::{Comparison, Function, Operation, RuntimeConfig};
 use qa_core::heap::{Heap, MemoryError};
+use qa_core::random::{Algorithm, Random};
 use std::sync::{
     Mutex, OnceLock,
     atomic::{AtomicUsize, Ordering},
@@ -196,7 +197,11 @@ struct Runtime {
     config: Option<RuntimeConfig>,
     kernel: Mutex<kernel::State>,
     filter_depth: AtomicUsize,
+    random: Mutex<[Random; 2]>,
 }
+// NativeAbi's source calling convention selects the admitted CRT profile.
+// Streams are child-private, and their algorithms live only in core.
+const RANDOM_ALGORITHMS: [Algorithm; 2] = [Algorithm::GlibcType3, Algorithm::MsvcRand];
 static CHILD: OnceLock<Runtime> = OnceLock::new();
 
 pub(super) enum ImportBinding {
@@ -268,6 +273,9 @@ pub(super) fn initialize(
             config,
             kernel: Mutex::new(kernel::State::default()),
             filter_depth: AtomicUsize::new(0),
+            random: Mutex::new(
+                RANDOM_ALGORITHMS.map(|algorithm| Random::with_algorithm(1, algorithm)),
+            ),
         })
         .map_err(|_| NativeError::Protocol)
 }
@@ -532,6 +540,17 @@ impl Runtime {
             Operation::Kernel(operation) => return self.kernel(operation, a),
             Operation::Crt(operation) => return self.crt(operation, a, abi),
             Operation::Math(operation, precision) => return self.math(operation, precision, a),
+            Operation::Random { seed } => {
+                let index = abi as usize;
+                let mut streams = self.random.lock().map_err(|_| NativeError::Protocol)?;
+                let stream = &mut streams[index];
+                if seed {
+                    *stream = Random::with_algorithm(a[0] as u32, RANDOM_ALGORITHMS[index]);
+                    0
+                } else {
+                    u64::from(stream.next_u32())
+                }
+            }
             Operation::Data(_) | Operation::Format { .. } => return Err(NativeError::Unsupported),
             Operation::Copy => {
                 m.copy(a[0], a[1], size(a[2])?)?;

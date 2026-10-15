@@ -122,7 +122,11 @@ fn glibc_zero_seed_is_one_and_qc_low_bits_can_reach_the_upper_endpoint() {
 
 #[test]
 fn cloned_streams_resume_independently_across_algorithm_boundaries() {
-    for algorithm in [Algorithm::Mt19937, Algorithm::GlibcType3] {
+    for algorithm in [
+        Algorithm::Mt19937,
+        Algorithm::GlibcType3,
+        Algorithm::MsvcRand,
+    ] {
         let mut random = Random::with_algorithm(0x80000000, algorithm);
         for _ in 0..620 {
             random.next_u32();
@@ -140,6 +144,34 @@ fn cloned_streams_resume_independently_across_algorithm_boundaries() {
         let mut untouched = checkpoint;
         for value in expected {
             assert_eq!(untouched.next_u32(), value, "{algorithm:?}");
+        }
+    }
+}
+
+#[test]
+fn microsoft_crt_matches_published_sequence_and_keeps_zero_seed() {
+    // Microsoft's rand documentation publishes this seed and sequence:
+    // https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/rand
+    let mut random = Random::with_algorithm(1792, Algorithm::MsvcRand);
+    for expected in [
+        5890, 1279, 19497, 1207, 11420, 3377, 15317, 29489, 9716, 23323,
+    ] {
+        assert_eq!(random.next_u32(), expected);
+    }
+
+    let mut default = Random::with_algorithm(1, Algorithm::MsvcRand);
+    for expected in [41, 18467, 6334, 26500, 19169] {
+        assert_eq!(default.next_u32(), expected);
+    }
+    // Unlike glibc, the Microsoft recurrence does not replace zero with one.
+    assert_eq!(
+        Random::with_algorithm(0, Algorithm::MsvcRand).next_u32(),
+        38
+    );
+    for seed in [0, 1, 2, 0x7fff_ffff, 0x8000_0000, u32::MAX] {
+        let mut stream = Random::with_algorithm(seed, Algorithm::MsvcRand);
+        for _ in 0..2048 {
+            assert!(stream.next_u32() <= 0x7fff);
         }
     }
 }

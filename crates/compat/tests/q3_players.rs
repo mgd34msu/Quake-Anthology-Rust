@@ -2175,6 +2175,10 @@ mod drop_client;
 #[path = "support/native_continuation.rs"]
 mod native_continuation;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "support/native_random.rs"]
+mod native_random;
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
@@ -2182,6 +2186,8 @@ fn main() {
     drop_client::run();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     native_continuation::run();
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    native_random::run();
     qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin();
     qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning();
     qvm_export_relocation_zero_address_and_stale_bindings();

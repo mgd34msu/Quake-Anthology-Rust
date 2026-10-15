@@ -693,3 +693,232 @@ fn crt_catalog_windows_provider_aliases_are_exact() {
         assert!(!function.windows_provider(b"arbitrary.dll"));
     }
 }
+
+fn random_child(abi: NativeAbi) -> NativeProcess {
+    let mut imports: Vec<_> = [b"rand".as_slice(), b"srand"]
+        .map(|name| {
+            let function = FUNCTIONS
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap();
+            NativeImport {
+                trap: false,
+                format: None,
+                filter: None,
+                number: function.number,
+                abi,
+                parameters: function.parameters,
+                result: function.result,
+            }
+        })
+        .into();
+    imports.push(NativeImport {
+        trap: false,
+        format: None,
+        filter: None,
+        number: 777,
+        abi,
+        parameters: &[],
+        result: NativeScalar::I32,
+    });
+    let mut bytes = [0; 8192];
+    let rand = NativeProcess::import_address(BASE, bytes.len(), 0).unwrap();
+    let engine = NativeProcess::import_address(BASE, bytes.len(), 2).unwrap();
+    let mut code = vec![0x48, 0x83, 0xec, 40];
+    for (index, target) in [rand, engine, rand].into_iter().enumerate() {
+        code.extend([0x48, 0xb8]);
+        code.extend(target.to_le_bytes());
+        code.extend([0xff, 0xd0]);
+        if index != 1 {
+            code.extend([0x48, 0xba]);
+            code.extend((BASE + 4096 + if index == 0 { 0 } else { 4 }).to_le_bytes());
+            code.extend([0x89, 0x02]);
+        }
+    }
+    code.extend([0x48, 0x83, 0xc4, 40, 0xc3]);
+    bytes[..code.len()].copy_from_slice(&code);
+    // No RuntimeConfig, guest heap or CRT page is needed for random state.
+    configured_child(&bytes, &REGIONS, &imports, Duration::from_secs(3), None).unwrap()
+}
+fn random_entry(process: &NativeProcess, abi: NativeAbi, seed: bool) -> crate::native::NativeEntry {
+    let name = if seed { b"srand".as_slice() } else { b"rand" };
+    let function = FUNCTIONS
+        .iter()
+        .find(|function| function.name == name)
+        .unwrap();
+    process
+        .bind(
+            process.import_pointer(usize::from(seed)).unwrap(),
+            abi,
+            function.parameters,
+            function.result,
+        )
+        .unwrap()
+}
+fn random_call(process: &mut NativeProcess, abi: NativeAbi, seed: Option<u64>) -> u64 {
+    let entry = random_entry(process, abi, seed.is_some());
+    let mut words = [0; 13];
+    words[0] = seed.unwrap_or(0);
+    process
+        .invoke::<()>(entry, words, |_, _, _| {
+            panic!("CRT random stays child-local")
+        })
+        .unwrap()
+}
+
+#[test]
+fn native_crt_random_profiles_keep_default_seed_reseed_and_unsigned_width() {
+    for (abi, expected) in [
+        (
+            NativeAbi::SystemV,
+            [1804289383, 846930886, 1681692777, 1714636915, 1957747793],
+        ),
+        (NativeAbi::Microsoft, [41, 18467, 6334, 26500, 19169]),
+    ] {
+        let mut process = random_child(abi);
+        for value in expected {
+            assert_eq!(random_call(&mut process, abi, None), value);
+        }
+        assert_eq!(
+            random_call(&mut process, abi, Some(0xabcd_0000_0000_0001)),
+            0
+        );
+        for value in expected {
+            assert_eq!(random_call(&mut process, abi, None), value);
+        }
+        for (seed, glibc, msvc) in [
+            (0, 1804289383, 38),
+            (1, 1804289383, 41),
+            (2, 1505335290, 45),
+            (0x7fff_ffff, 1065668062, 35),
+            (0x8000_0000, 1336741213, 38),
+            (0xffff_ffff, 254925627, 35),
+        ] {
+            random_call(&mut process, abi, Some(seed));
+            assert_eq!(
+                random_call(&mut process, abi, None),
+                if abi == NativeAbi::SystemV {
+                    glibc
+                } else {
+                    msvc
+                }
+            );
+        }
+    }
+    // Independent published Microsoft srand(1792) example.
+    let mut process = random_child(NativeAbi::Microsoft);
+    random_call(&mut process, NativeAbi::Microsoft, Some(1792));
+    for expected in [
+        5890, 1279, 19497, 1207, 11420, 3377, 15317, 29489, 9716, 23323,
+    ] {
+        assert_eq!(
+            random_call(&mut process, NativeAbi::Microsoft, None),
+            expected
+        );
+    }
+}
+
+#[test]
+fn native_crt_random_survives_nested_host_stops_and_children_are_isolated() {
+    use crate::native::NativeStop;
+    for (abi, first, second, third, seeded, next) in [
+        (
+            NativeAbi::SystemV,
+            1804289383,
+            846930886,
+            1681692777,
+            71876166,
+            708592740,
+        ),
+        (NativeAbi::Microsoft, 41, 18467, 6334, 175, 400),
+    ] {
+        let mut process = random_child(abi);
+        let mut healthy = random_child(abi);
+        assert_eq!(random_call(&mut healthy, abi, None), first);
+        let entry = process.bind(BASE, abi, &[], NativeScalar::I32).unwrap();
+        let outer = process.enter(entry, [0; 13]).unwrap();
+        let NativeStop::Import { call, stopped } = process.advance(&outer).unwrap() else {
+            panic!("owned engine stop");
+        };
+        assert_eq!(call.number, 777);
+        process
+            .with_import_memory(&stopped, |_, bytes| {
+                assert_eq!(
+                    u32::from_le_bytes(bytes[4096..4100].try_into().unwrap()),
+                    first as u32
+                );
+                Ok(())
+            })
+            .unwrap();
+        let nested_entry = random_entry(&process, abi, false);
+        let nested = process.enter(nested_entry, [0; 13]).unwrap();
+        assert!(
+            matches!(process.advance(&nested).unwrap(), NativeStop::Returned(value) if value == second)
+        );
+        let mut seed = [0; 13];
+        seed[0] = 42;
+        let nested_seed_entry = random_entry(&process, abi, true);
+        let nested_seed = process.enter(nested_seed_entry, seed).unwrap();
+        assert!(matches!(
+            process.advance(&nested_seed).unwrap(),
+            NativeStop::Returned(0)
+        ));
+        let nested = process.enter(nested_entry, [0; 13]).unwrap();
+        assert!(
+            matches!(process.advance(&nested).unwrap(), NativeStop::Returned(value) if value == seeded)
+        );
+        // The same outer logical token is valid under the nested return park.
+        process.with_import_memory(&stopped, |_, _| Ok(())).unwrap();
+        assert_eq!(random_call(&mut healthy, abi, None), second);
+        process.reply(stopped, 0).unwrap();
+        assert!(
+            matches!(process.advance(&outer).unwrap(), NativeStop::Returned(value) if value == next)
+        );
+        assert_eq!(
+            u32::from_le_bytes(process.memory().unwrap()[4100..4104].try_into().unwrap()),
+            next as u32
+        );
+        let canceled = process.enter(entry, [0; 13]).unwrap();
+        assert!(matches!(
+            process.advance(&canceled).unwrap(),
+            NativeStop::Import { .. }
+        ));
+        assert!(matches!(
+            process.abort(canceled, NativeError::Callback),
+            NativeError::Callback
+        ));
+        assert_eq!(process.pid(), 0);
+        assert_eq!(random_call(&mut healthy, abi, None), third);
+    }
+}
+
+#[test]
+fn native_crt_random_catalog_admits_only_native_width_versions_and_crt_providers() {
+    for name in [b"rand".as_slice(), b"srand"] {
+        let function = FUNCTIONS
+            .iter()
+            .find(|function| function.name == name)
+            .unwrap();
+        assert!(function.supports_pointer_bytes(4));
+        assert!(function.supports_pointer_bytes(8));
+        assert!(function.supports_version(8, b"GLIBC_2.2.5"));
+        assert!(function.supports_version(4, b"GLIBC_2.0"));
+        assert!(!function.supports_version(8, b"GLIBC_2.0"));
+        assert!(!function.supports_version(4, b"GLIBC_2.2.5"));
+        assert!(!function.supports_version(8, b"GLIBC_2.99"));
+        for provider in [
+            b"msvcrt.dll".as_slice(),
+            b"UCRTBASE.DLL",
+            b"api-ms-win-crt-utility-l1-1-0.dll",
+        ] {
+            assert!(function.windows_provider(provider));
+        }
+        for provider in [
+            b"arbitrary.dll".as_slice(),
+            b"msvcp140.dll",
+            b"api-ms-win-crt-math-l1-1-0.dll",
+        ] {
+            assert!(!function.windows_provider(provider));
+        }
+    }
+}
