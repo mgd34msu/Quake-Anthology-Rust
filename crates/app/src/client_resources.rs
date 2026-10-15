@@ -36,9 +36,7 @@ impl ClientResources {
         protocol: Protocol,
         sound_rules: RuleSetId,
     ) -> Result<Option<Self>, String> {
-        let Some(layout) = protocol.config_layout() else {
-            return Ok(None);
-        };
+        let layout = protocol.resource_layout();
         Ok(Some(Self {
             commands: qa_network::outputs::ConfigCommandReader::load(),
             selected: Box::default(),

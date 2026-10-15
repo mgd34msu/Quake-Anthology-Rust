@@ -1167,6 +1167,7 @@ fn read_qw_records(
                         &mut words,
                         |model| Some(model.ordinal),
                         |sound| Some(sound.ordinal),
+                        |reference| Some(reference.ordinal()),
                     );
                     peer_mask |= 1 << info.number;
                     Entity {

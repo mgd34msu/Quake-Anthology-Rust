@@ -30,6 +30,7 @@ struct ArrayLayout {
     offset: usize,
     width: Width,
 }
+#[derive(Clone, Copy)]
 struct MemoryField {
     offset: u64,
     word: usize,
@@ -164,6 +165,19 @@ const Q3_ENTITY_FIELDS: &[(usize, u64)] = &[
     (50, 172),
 ];
 
+/// Collision and publication select offsets from the same public ABI table.
+pub(crate) const fn q3_entity_offset(word: usize) -> usize {
+    let mut field = 0;
+    while field < Q3_ENTITY_FIELDS.len() {
+        if Q3_ENTITY_FIELDS[field].0 == word {
+            return Q3_ENTITY_FIELDS[field].1 as usize;
+        }
+        field += 1;
+    }
+    // Only compile-time, table-owned field ordinals call this helper.
+    Q3_ENTITY_STATE_BYTES
+}
+
 fn array_fields(protocol: Protocol, arrays: [ArrayLayout; 4]) -> impl Iterator<Item = MemoryField> {
     qa_network::states::player_value_layout(protocol)
         .1
@@ -194,6 +208,36 @@ fn write_fields(output: &mut [u8], words: &[u32], fields: impl Iterator<Item = M
         let width = field.width.len();
         output[start..start + width].copy_from_slice(&words[field.word].to_le_bytes()[..width]);
     }
+}
+
+fn read_fields(
+    memory: &ModuleMemory<'_>,
+    base: u64,
+    words: &mut [u32],
+    fields: impl Iterator<Item = MemoryField>,
+) -> Result<(), CallError> {
+    for field in fields {
+        let address = base.checked_add(field.offset).ok_or(CallError::Memory)?;
+        let value = memory.read_field(address, field.width)?;
+        words[field.word] = if matches!(field.width, Width::Short) {
+            value as i16 as i32 as u32
+        } else {
+            value
+        };
+    }
+    Ok(())
+}
+
+/// A parked native child publishes one checked public ES through the same
+/// descriptor used by GetSnapshot. The words are invocation-local scratch.
+pub(crate) fn read_q3_entity_state(
+    memory: &ModuleMemory<'_>,
+    base: u64,
+) -> Result<[u32; qa_network::states::ENTITY_WORDS], CallError> {
+    memory.read(base, Q3_ENTITY_STATE_BYTES)?;
+    let mut words = [0; qa_network::states::ENTITY_WORDS];
+    read_fields(memory, base, &mut words, scalar_fields(Q3_ENTITY_FIELDS))?;
+    Ok(words)
 }
 
 /// Reconstructs the public pointer-free ABI from accepted Q3 snapshot words.
@@ -428,15 +472,12 @@ impl PlayerValues {
                 }) {
                     return Err(CallError::Capacity);
                 }
-                for field in &self.fields {
-                    let address = pointer.checked_add(field.offset).ok_or(CallError::Memory)?;
-                    let value = memory.read_field(address, field.width)?;
-                    self.words[field.word] = if matches!(field.width, Width::Short) {
-                        value as i16 as i32 as u32
-                    } else {
-                        value
-                    };
-                }
+                read_fields(
+                    memory,
+                    pointer,
+                    &mut self.words,
+                    self.fields.iter().copied(),
+                )?;
                 let mut context = PlayerContext::default();
                 let namespace = ResourceNamespace::Module(module);
                 let imported = if module_moves {

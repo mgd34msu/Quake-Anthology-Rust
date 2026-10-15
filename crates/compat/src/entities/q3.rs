@@ -5,6 +5,8 @@ pub(crate) const ENTITY_NONE: i32 = 1023;
 pub(crate) const ENTITY_WORLD: i32 = ENTITY_NONE - 1;
 const ENTITY_BYTES: usize = 516;
 const PLAYER_BYTES: usize = 468;
+static APPEARANCE: qa_network::projection::EntityProjection =
+    qa_network::projection::EntityProjection::load_native_q3();
 
 #[derive(Clone, Copy)]
 pub(super) struct GameData {
@@ -64,25 +66,15 @@ pub(super) const LAYOUT: EntityLayout = EntityLayout {
     contents: Some(460),
     world_zero: false,
     number: Some(0),
-    contents_pose: Some((92, 116)),
+    contents_pose: Some((
+        crate::players::q3_entity_offset(24),
+        crate::players::q3_entity_offset(37),
+    )),
     area: None,
     area2: None,
     clusters: None,
-    network_solid: 176,
-    appearance: AppearanceLayout {
-        entity_type: Some(4),
-        other_entity: Some(140),
-        models: [Some(160), Some(164), None, None],
-        frame: 172,
-        skin: None,
-        old_origin: 104,
-        effects: None,
-        effects_wide: false,
-        render_flags: 8,
-        loop_sound: 156,
-        event: (180, false),
-        extended: None,
-    },
+    network_solid: crate::players::q3_entity_offset(27),
+    appearance: AppearanceImport::Projected(&APPEARANCE),
     model_rules: ModelRules {
         rotation: qa_core::primitives::ModelRotation::TransposeBasis,
         link_bounds: qa_core::primitives::RotatedLinkBounds::RadiusCube,

@@ -102,7 +102,8 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
             &record,
             &mut words,
             |model| Some(model.ordinal),
-            |sound| Some(sound.ordinal)
+            |sound| Some(sound.ordinal),
+            |reference| Some(reference.ordinal())
         ));
         let rows = [Entity { number: 12, words }];
         let native_player = [0; states::Q2_PLAYER_WORDS];
@@ -203,7 +204,8 @@ fn classic_frame_origin_motion_reaches_alias_pose_without_affecting_rerelease() 
                 &mut rerelease_words[..]
             },
             |model| Some(model.ordinal),
-            |sound| Some(sound.ordinal)
+            |sound| Some(sound.ordinal),
+            |reference| Some(reference.ordinal())
         ));
         let classic_rows = [Entity {
             number: 12,
@@ -344,7 +346,8 @@ fn received_native_beams_keep_palette_width_endpoints_and_float_alpha_without_a_
                     &mut rerelease[index][..]
                 },
                 |model| Some(model.ordinal),
-                |sound| Some(sound.ordinal)
+                |sound| Some(sound.ordinal),
+                |reference| Some(reference.ordinal())
             ));
         }
         let classic_rows = classic.map(|words| [Entity { number: 12, words }]);
@@ -578,7 +581,8 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
         &source_edict,
         &mut words,
         |model| Some(model.ordinal),
-        |sound| Some(sound.ordinal)
+        |sound| Some(sound.ordinal),
+        |reference| Some(reference.ordinal())
     ));
     let rows = [Entity { number: 3, words }];
     let native_player = [];
@@ -882,7 +886,8 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             &record,
             &mut words,
             |reference| Some(reference.ordinal),
-            |sound| Some(sound.ordinal)
+            |sound| Some(sound.ordinal),
+            |reference| Some(reference.ordinal())
         ));
         let entities = [Entity { number: 12, words }];
         let mut native_player = PlayerState::default();
@@ -1354,7 +1359,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
             &PlayerContext::default(),
             &mut words,
             |model| Some(model.ordinal),
-            |sound| Some(sound.ordinal),
+            |sound| Some(sound.ordinal)
         ));
         ring.store(Frame {
             sequence,
@@ -1632,7 +1637,8 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
             &record,
             &mut words,
             |model| Some(model.ordinal),
-            |sound| Some(sound.ordinal)
+            |sound| Some(sound.ordinal),
+            |reference| Some(reference.ordinal())
         ));
         [Entity { number: 12, words }]
     };
@@ -1795,7 +1801,8 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
         &record,
         &mut words,
         |model| Some(model.ordinal),
-        |sound| Some(sound.ordinal)
+        |sound| Some(sound.ordinal),
+        |reference| Some(reference.ordinal())
     ));
     let rows = [Entity { number: 0, words }];
     let frame = Frame {
@@ -1865,7 +1872,13 @@ fn synthesized_q3_player_sound_origin_does_not_interpolate_a_packet_pose() {
         position: Vec3([4., 8., 12.]),
         ..Default::default()
     };
-    assert!(projection.reduce(&record, &mut previous_words, |_| None, |_| None));
+    assert!(projection.reduce(
+        &record,
+        &mut previous_words,
+        |_| None,
+        |_| None,
+        |reference| Some(reference.ordinal())
+    ));
     let previous_entities = [Entity {
         number: 0,
         words: previous_words,

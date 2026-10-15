@@ -50,7 +50,13 @@ pub fn static_entity(
         None => None,
     };
     let mut words = [0; states::QW_ENTITY_WORDS];
-    if !EntityProjection::load(protocol).reduce(record, &mut words, |_| model, |_| None) {
+    if !EntityProjection::load(protocol).reduce(
+        record,
+        &mut words,
+        |_| model,
+        |_| None,
+        |reference| Some(reference.ordinal()),
+    ) {
         return Err(Error::Unsupported);
     }
     let mut writer = Writer::new(output, Encoding::Bytes);

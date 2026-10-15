@@ -1,6 +1,6 @@
 //! One connection-owned entity-number projection shared by snapshots and cues.
 use qa_core::{
-    primitives::{EntityId, ModuleId},
+    primitives::{ClientId, EntityId, ModuleId, NativeReference, ResourceNamespace},
     stamps::StampSet,
 };
 use qa_network::{commands::packet::Protocol, snapshots::snapshot_limits, states};
@@ -229,6 +229,30 @@ impl NativeNumbers {
         }
         let id = entities.find_native(qa_core::primitives::NativeEntity { module, slot }, None)?;
         self.project(entities, id)
+    }
+    /// Weak native references preserve their published ordinal in the primary
+    /// namespace. Foreign entities need a real lifetime to rebase; player-config
+    /// references need an actual client binding, not an entity-number mapping.
+    pub fn reference(
+        &mut self,
+        entities: &EntityTable,
+        receiver: ClientId,
+        reference: NativeReference,
+    ) -> Option<u32> {
+        match reference.namespace() {
+            ResourceNamespace::Client(client) => {
+                (client == receiver).then_some(reference.ordinal())
+            }
+            ResourceNamespace::Module(module) if Some(module) == self.module => {
+                Some(reference.ordinal())
+            }
+            ResourceNamespace::Module(module) => match reference {
+                NativeReference::Entity(value) => {
+                    self.native(entities, module, i32::try_from(value.ordinal).ok()?)
+                }
+                NativeReference::Client(_) => None,
+            },
+        }
     }
     pub fn entity(&self, number: u32) -> Option<EntityId> {
         self.owners.get(number as usize).copied().flatten()

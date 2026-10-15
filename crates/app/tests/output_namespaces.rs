@@ -111,3 +111,84 @@ fn common_self_claim_and_native_reservations_survive_output_resync() {
     assert_eq!(numbers.project(&table, client), Some(1));
     assert_eq!(numbers.project(&table, foreign), Some(2));
 }
+
+#[test]
+fn weak_references_preserve_primary_ordinals_and_rebase_only_foreign_entities() {
+    use qa_core::primitives::{
+        ClientId, NativeClientRef, NativeEntityRef, NativeReference, ResourceNamespace,
+    };
+    let primary = ModuleId(1);
+    let secondary = ModuleId(2);
+    let receiver = ClientId(3);
+    let mut table = EntityTable::new(8, 1).unwrap();
+    let foreign = entity(&mut table, secondary, 12);
+    let mut numbers = NativeNumbers::load(Protocol::Quake3_68);
+    numbers.refresh(&table, Some(primary), Protocol::Quake3_68);
+    let reference = |module, ordinal| {
+        NativeReference::Entity(NativeEntityRef::entity(
+            ResourceNamespace::Module(module),
+            ordinal,
+        ))
+    };
+    // Public references can name primary slots before those slots are active.
+    assert_eq!(
+        numbers.reference(&table, receiver, reference(primary, 0)),
+        Some(0)
+    );
+    assert_eq!(
+        numbers.reference(&table, receiver, reference(primary, 12)),
+        Some(12)
+    );
+    let projected = numbers
+        .reference(&table, receiver, reference(secondary, 12))
+        .unwrap();
+    assert_eq!(numbers.entity(projected), Some(foreign));
+    assert_eq!(
+        numbers.reference(&table, receiver, reference(secondary, 13)),
+        None
+    );
+    assert_eq!(
+        numbers.reference(
+            &table,
+            receiver,
+            NativeReference::Client(NativeClientRef::client(
+                ResourceNamespace::Module(secondary),
+                12
+            ))
+        ),
+        None
+    );
+    assert_eq!(
+        numbers.reference(
+            &table,
+            receiver,
+            NativeReference::Client(NativeClientRef::client(
+                ResourceNamespace::Module(primary),
+                0
+            ))
+        ),
+        Some(0)
+    );
+    assert_eq!(
+        numbers.reference(
+            &table,
+            receiver,
+            NativeReference::Entity(NativeEntityRef::entity(
+                ResourceNamespace::Client(receiver),
+                0
+            ))
+        ),
+        Some(0)
+    );
+    assert_eq!(
+        numbers.reference(
+            &table,
+            receiver,
+            NativeReference::Entity(NativeEntityRef::entity(
+                ResourceNamespace::Client(ClientId(4)),
+                0
+            ))
+        ),
+        None
+    );
+}

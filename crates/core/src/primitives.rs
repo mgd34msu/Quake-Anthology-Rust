@@ -1059,6 +1059,193 @@ impl<T> ResourceRef<T> {
 }
 pub type ModelRef = ResourceRef<ModelId>;
 pub type SoundRef = ResourceRef<SoundId>;
+/// Weak entity ordinal in an explicitly selected module or CLIENT namespace.
+/// Unlike model/sound resources, native entity zero is an ordinary reference.
+pub type NativeEntityRef = ResourceRef<EntityId>;
+pub type NativeClientRef = ResourceRef<ClientId>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeReference {
+    Entity(NativeEntityRef),
+    Client(NativeClientRef),
+}
+impl NativeReference {
+    pub const fn namespace(self) -> ResourceNamespace {
+        match self {
+            Self::Entity(value) => value.namespace,
+            Self::Client(value) => value.namespace,
+        }
+    }
+    pub const fn ordinal(self) -> u32 {
+        match self {
+            Self::Entity(value) => value.ordinal,
+            Self::Client(value) => value.ordinal,
+        }
+    }
+}
+impl ResourceRef<EntityId> {
+    pub const fn entity(namespace: ResourceNamespace, ordinal: u32) -> Self {
+        Self {
+            namespace,
+            ordinal,
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+impl ResourceRef<ClientId> {
+    pub const fn client(namespace: ResourceNamespace, ordinal: u32) -> Self {
+        Self {
+            namespace,
+            ordinal,
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrajectoryCurve {
+    #[default]
+    Stationary,
+    Interpolate,
+    Linear,
+    LinearStop,
+    Sine,
+    Gravity,
+    Unsupported(u32),
+}
+
+/// Published motion is independent of the linked physical Body. Native time
+/// arithmetic and gravity are supplied by the source's trajectory capability.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Trajectory {
+    pub curve: TrajectoryCurve,
+    pub start: ThinkTime,
+    pub duration_ms: i64,
+    pub base: Vec3,
+    pub delta: Vec3,
+}
+impl Default for Trajectory {
+    fn default() -> Self {
+        Self {
+            curve: TrajectoryCurve::Stationary,
+            start: ThinkTime::Milliseconds(0),
+            duration_ms: 0,
+            base: Vec3::default(),
+            delta: Vec3::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EntityTrajectories {
+    pub position: Trajectory,
+    pub angles: Trajectory,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntityAnimation {
+    pub legs: u32,
+    pub torso: u32,
+}
+
+/// The source/type role determines whether a native model cell names a model,
+/// an item, a team, or a scalar health value. Actual render models stay in the
+/// enclosing appearance's shared ModelRef array.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EntityModelData {
+    #[default]
+    Models,
+    Item {
+        index: i32,
+        secondary: i32,
+    },
+    Team {
+        team: i32,
+        health: i32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityParameter {
+    Scalar(u32),
+    Sound(Option<SoundRef>),
+    Entity(NativeEntityRef),
+}
+impl Default for EntityParameter {
+    fn default() -> Self {
+        Self::Scalar(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityClientData {
+    Scalar(i32),
+    Client(NativeClientRef),
+}
+impl Default for EntityClientData {
+    fn default() -> Self {
+        Self::Scalar(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntityLight {
+    pub color: [u8; 3],
+    pub intensity: u8,
+}
+impl EntityLight {
+    pub const fn from_packed(value: u32) -> Self {
+        let bytes = value.to_le_bytes();
+        Self {
+            color: [bytes[0], bytes[1], bytes[2]],
+            intensity: bytes[3],
+        }
+    }
+    pub const fn packed(self) -> u32 {
+        u32::from_le_bytes([self.color[0], self.color[1], self.color[2], self.intensity])
+    }
+}
+
+/// Named public presentation capabilities. This is not a retained native row;
+/// each field is consumed by the shared projection or presentation services.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EntityPresentation {
+    pub namespace: ResourceNamespace,
+    pub trajectories: EntityTrajectories,
+    pub pose: EntityPose,
+    pub secondary_pose: EntityPose,
+    pub times: [ThinkTime; 2],
+    pub animation: EntityAnimation,
+    pub event_parameter: EntityParameter,
+    pub ground: Option<NativeEntityRef>,
+    pub other_entity2: Option<NativeEntityRef>,
+    pub client: EntityClientData,
+    pub model_data: EntityModelData,
+    pub weapon: u32,
+    pub powerups: u32,
+    pub generic: u32,
+    pub light: EntityLight,
+}
+impl EntityPresentation {
+    pub fn new(namespace: ResourceNamespace) -> Self {
+        Self {
+            namespace,
+            trajectories: EntityTrajectories::default(),
+            pose: EntityPose::default(),
+            secondary_pose: EntityPose::default(),
+            times: [ThinkTime::Milliseconds(0); 2],
+            animation: EntityAnimation::default(),
+            event_parameter: EntityParameter::default(),
+            ground: None,
+            other_entity2: None,
+            client: EntityClientData::default(),
+            model_data: EntityModelData::default(),
+            weapon: 0,
+            powerups: 0,
+            generic: 0,
+            light: EntityLight::default(),
+        }
+    }
+}
 
 /// Residual source-native appearance bits are interpreted using the enclosing
 /// EntityAppearance's source, independently of movement or trace rules.
@@ -1069,7 +1256,7 @@ pub struct NativeAppearanceTail {
     pub render_flags: u32,
     pub event: u32,
     pub entity_type: u32,
-    pub other_entity: u32,
+    pub other_entity: Option<NativeEntityRef>,
     pub solid: u32,
     pub instance_bits: u8,
     pub loop_volume: f32,
@@ -1084,6 +1271,7 @@ pub struct EntityAppearance {
     pub snapshot_excluded: bool,
     pub models: [Option<ModelRef>; 4],
     pub loop_sound: Option<SoundRef>,
+    pub presentation: Option<EntityPresentation>,
     pub frame: i32,
     pub skin: i32,
     pub old_origin: Vec3,
@@ -1098,6 +1286,7 @@ impl Default for EntityAppearance {
             snapshot_excluded: false,
             models: [None; 4],
             loop_sound: None,
+            presentation: None,
             frame: 0,
             skin: 0,
             old_origin: Vec3::default(),

@@ -739,6 +739,7 @@ impl Runtime {
                         channel,
                         &client.player,
                         snapshots::EntitySource {
+                            receiver: id,
                             entities: &self.server.entities,
                             players: &self.server.clients,
                             registry: &self.catalog.registry,

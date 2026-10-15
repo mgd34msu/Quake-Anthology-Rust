@@ -290,10 +290,9 @@ fn positioned_signed_emitter_and_stale_metadata_do_not_read_origin_rows() {
 fn failed_publication_is_counted_and_never_settles_native_origin() {
     let (mut host, ids) = fixture(1);
     let id = ids[0];
-    assert!(
-        host.runtime.client_resources[id.0 as usize].is_none(),
-        "NQ cleanup cannot depend on a native configstring adapter"
-    );
+    // Resource storage now exists for NQ too. Exercise teardown after that
+    // storage has gone away: audio ownership cannot depend on its availability.
+    host.runtime.client_resources[id.0 as usize] = None;
     let mut source = Source::default();
     dispatch(&mut host, &mut source);
     for _ in 0..=host.runtime.server.events.capacity() {

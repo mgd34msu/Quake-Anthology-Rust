@@ -187,6 +187,7 @@ impl AppearancePolicy {
             || appearance.native.effects != 0
             || appearance.native.event != 0
             || appearance.loop_sound.is_some()
+            || appearance.presentation.is_some()
     }
     pub fn adjacent(self, current: u32, previous: u32) -> bool {
         self.rules

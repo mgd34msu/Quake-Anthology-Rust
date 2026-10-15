@@ -517,14 +517,20 @@ fn q3_stops_keep_toggle_keys_and_standalone_event_player_targets() {
     appearance.native.event = 0;
     appearance.native.entity_type = 13 + 75;
     appearance.native.render_flags = 0x10;
-    appearance.native.other_entity = 0;
+    appearance.native.other_entity = Some(qa_core::primitives::NativeEntityRef::entity(
+        qa_core::primitives::ResourceNamespace::Module(qa_core::primitives::ModuleId(1)),
+        0,
+    ));
     assert!(rules.event_once(&appearance.native));
     assert_eq!(
         rules.stop(&appearance.native),
         Some(0x8000_0000 | (13 + 75))
     );
     assert_eq!(rules.stop_emitter(&appearance, 53), Some(0));
-    assert_eq!(rules.stop_target(&appearance.native), Some(0));
+    assert_eq!(
+        rules.stop_target(&appearance.native),
+        appearance.native.other_entity
+    );
     assert!(
         rules
             .admit(&appearance, loop_spatial_policy(RuleSetId::Quake3))

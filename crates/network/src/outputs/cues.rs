@@ -1,4 +1,4 @@
-//! Native Q2 cue fields stay at the wire boundary, before asset/entity binding.
+//! Native cue fields stay at the wire boundary, before asset/entity binding.
 //! qsrc quake-2/client/cl_parse.c and q2proto_read_gamemsg.inc define sounds;
 //! q2proto's common and q2repro muzzle readers define both monster encodings.
 use super::{Error, Protocol};
@@ -18,7 +18,8 @@ const ENTITY: u8 = 8;
 const OFFSET: u8 = 16;
 const INDEX16: u8 = 32;
 
-/// Presence bits retain explicit defaults when a native payload is re-encoded.
+/// Shared presence bits retain explicit defaults. Native implicit entity/position
+/// fields and packed high-bit flags are converted at the reader/writer boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sound {
     pub flags: u8,
@@ -158,12 +159,7 @@ pub fn sound(
     let format = format(protocol)?;
     if event.action != SoundAction::Play
         || ordinal == 0
-        || ordinal
-            >= protocol
-                .config_layout()
-                .ok_or(Error::Unsupported)?
-                .resources[1]
-                .count
+        || ordinal >= protocol.resource_layout().resources[1].count
         || entity.is_some_and(|entity| {
             entity as usize >= crate::snapshots::snapshot_limits(protocol).native_numbers
         })
@@ -192,7 +188,7 @@ pub fn sound(
         }
         flags |= INDEX16;
     }
-    write_cue(
+    let cue = project_cue(
         protocol,
         Cue::Sound(Sound {
             flags,
@@ -204,8 +200,8 @@ pub fn sound(
             channel: event.channel as u8 & 7,
             position: event.position,
         }),
-        output,
-    )
+    )?;
+    write_cue(protocol, cue, output)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MuzzleFormat {
@@ -227,27 +223,105 @@ pub enum Cue {
     StaticSound(Sound),
     MuzzleFlash(MuzzleFlash),
 }
+#[derive(Clone, Copy)]
+enum SoundField {
+    Header,
+    Index,
+    Byte(u8),
+    Entity,
+    Position,
+}
+const Q2_SOUND: &[SoundField] = &[
+    SoundField::Header,
+    SoundField::Index,
+    SoundField::Byte(VOLUME),
+    SoundField::Byte(ATTENUATION),
+    SoundField::Byte(OFFSET),
+    SoundField::Entity,
+    SoundField::Position,
+];
+const NQ_SOUND: &[SoundField] = &[
+    SoundField::Header,
+    SoundField::Byte(VOLUME),
+    SoundField::Byte(ATTENUATION),
+    SoundField::Entity,
+    SoundField::Index,
+    SoundField::Position,
+];
+const QW_SOUND: &[SoundField] = &[
+    SoundField::Header,
+    SoundField::Byte(VOLUME),
+    SoundField::Byte(ATTENUATION),
+    SoundField::Index,
+    SoundField::Position,
+];
 struct Format {
     float_position: bool,
     extended_monster: bool,
     sound_flags: u8,
+    required_flags: u8,
+    packed_flags: Option<[u16; 2]>,
+    entity_mask: u16,
+    sound_opcode: u8,
+    fields: &'static [SoundField],
 }
 impl Format {
     fn muzzle_entity(&self, entity: u16) -> bool {
         entity != 0 && entity < if self.extended_monster { 8192 } else { 1024 }
     }
+    fn sound_entity(&self, packed: u16, sound: &mut Sound) {
+        sound.entity = (packed >> 3) & self.entity_mask;
+        sound.channel = packed as u8 & 7;
+    }
+    fn valid_sound(&self, sound: Sound) -> bool {
+        sound.flags & !self.sound_flags == 0
+            && sound.flags & self.required_flags == self.required_flags
+            && (sound.flags & INDEX16 != 0 || sound.index <= u8::MAX.into())
+            && (sound.flags & ENTITY == 0 || sound.entity <= self.entity_mask && sound.channel < 8)
+    }
 }
 fn format(protocol: Protocol) -> Result<Format, Error> {
     match protocol {
+        Protocol::NetQuake15 => Ok(Format {
+            float_position: false,
+            extended_monster: false,
+            sound_flags: VOLUME | ATTENUATION | ENTITY | POSITION,
+            required_flags: ENTITY | POSITION,
+            packed_flags: None,
+            entity_mask: 8191,
+            sound_opcode: 6,
+            fields: NQ_SOUND,
+        }),
+        Protocol::QuakeWorld28 => Ok(Format {
+            float_position: false,
+            extended_monster: false,
+            sound_flags: VOLUME | ATTENUATION | ENTITY | POSITION,
+            required_flags: ENTITY | POSITION,
+            packed_flags: Some([1 << 15, 1 << 14]),
+            // CL_ParseStartSoundPacket explicitly masks the native entity to10 bits.
+            entity_mask: 1023,
+            sound_opcode: 6,
+            fields: QW_SOUND,
+        }),
         Protocol::Quake2_34 => Ok(Format {
             float_position: false,
             extended_monster: false,
             sound_flags: 31,
+            required_flags: 0,
+            packed_flags: None,
+            entity_mask: 8191,
+            sound_opcode: 9,
+            fields: Q2_SOUND,
         }),
         Protocol::Quake2Repro1038 => Ok(Format {
             float_position: true,
             extended_monster: true,
             sound_flags: 63,
+            required_flags: 0,
+            packed_flags: None,
+            entity_mask: 8191,
+            sound_opcode: 9,
+            fields: Q2_SOUND,
         }),
         _ => Err(Error::Unsupported),
     }
@@ -267,6 +341,18 @@ pub(super) fn project_cue(protocol: Protocol, mut cue: Cue) -> Result<Cue, Error
     let format = format(protocol)?;
     match &mut cue {
         Cue::Sound(sound) => {
+            if format.required_flags != 0 {
+                if sound.index > u8::MAX.into()
+                    || sound.flags & OFFSET != 0 && sound.time_offset != 0
+                    || sound
+                        .entity()
+                        .is_some_and(|entity| entity > format.entity_mask)
+                {
+                    return Err(Error::Unsupported);
+                }
+                sound.flags = (sound.flags & (VOLUME | ATTENUATION)) | format.required_flags;
+                sound.time_offset = 0;
+            }
             if protocol == Protocol::Quake2_34 {
                 if sound.index > u8::MAX.into()
                     || sound.entity().is_some_and(|entity| {
@@ -297,10 +383,7 @@ pub(super) fn project_cue(protocol: Protocol, mut cue: Cue) -> Result<Cue, Error
 pub fn read_cue(protocol: Protocol, bytes: &[u8]) -> Result<(Cue, usize), Error> {
     let mut reader = Reader::new(bytes, Encoding::Bytes);
     let opcode = reader.read_bits(8)? as u8;
-    if matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28) {
-        if opcode != 29 {
-            return Err(Error::Unsupported);
-        }
+    if matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28) && opcode == 29 {
         let position = read_position(&mut reader, false)?;
         let sound = Sound {
             flags: VOLUME | ATTENUATION | POSITION,
@@ -316,14 +399,10 @@ pub fn read_cue(protocol: Protocol, bytes: &[u8]) -> Result<(Cue, usize), Error>
     }
     let format = format(protocol)?;
     let cue = match opcode {
-        9 => {
-            let flags = reader.read_bits(8)? as u8;
-            if flags & !format.sound_flags != 0 {
-                return Err(Error::Unsupported);
-            }
+        opcode if opcode == format.sound_opcode => {
             let mut sound = Sound {
-                flags,
-                index: reader.read_bits(if flags & INDEX16 != 0 { 16 } else { 8 })? as u16,
+                flags: format.required_flags,
+                index: 0,
                 volume: 255,
                 attenuation: 64,
                 time_offset: 0,
@@ -331,26 +410,50 @@ pub fn read_cue(protocol: Protocol, bytes: &[u8]) -> Result<(Cue, usize), Error>
                 channel: 0,
                 position: Vec3::default(),
             };
-            for (flag, output) in [
-                (VOLUME, &mut sound.volume),
-                (ATTENUATION, &mut sound.attenuation),
-                (OFFSET, &mut sound.time_offset),
-            ] {
-                if flags & flag != 0 {
-                    *output = reader.read_bits(8)? as u8;
+            for &field in format.fields {
+                match field {
+                    SoundField::Header => {
+                        if let Some(masks) = format.packed_flags {
+                            let packed = reader.read_bits(16)? as u16;
+                            format.sound_entity(packed, &mut sound);
+                            for (native, shared) in masks.into_iter().zip([VOLUME, ATTENUATION]) {
+                                if packed & native != 0 {
+                                    sound.flags |= shared;
+                                }
+                            }
+                        } else {
+                            let flags = reader.read_bits(8)? as u8;
+                            if flags & !(format.sound_flags & !format.required_flags) != 0 {
+                                return Err(Error::Unsupported);
+                            }
+                            sound.flags |= flags;
+                        }
+                    }
+                    SoundField::Index => {
+                        sound.index =
+                            reader.read_bits(if sound.flags & INDEX16 != 0 { 16 } else { 8 })?
+                                as u16
+                    }
+                    SoundField::Byte(flag) if sound.flags & flag != 0 => {
+                        let value = reader.read_bits(8)? as u8;
+                        match flag {
+                            VOLUME => sound.volume = value,
+                            ATTENUATION => sound.attenuation = value,
+                            _ => sound.time_offset = value,
+                        }
+                    }
+                    SoundField::Entity if sound.flags & ENTITY != 0 => {
+                        format.sound_entity(reader.read_bits(16)? as u16, &mut sound);
+                    }
+                    SoundField::Position if sound.flags & POSITION != 0 => {
+                        sound.position = read_position(&mut reader, format.float_position)?;
+                    }
+                    _ => {}
                 }
-            }
-            if flags & ENTITY != 0 {
-                let channel = reader.read_bits(16)? as u16;
-                sound.entity = channel >> 3;
-                sound.channel = channel as u8 & 7;
-            }
-            if flags & POSITION != 0 {
-                sound.position = read_position(&mut reader, format.float_position)?;
             }
             Cue::Sound(sound)
         }
-        1 | 2 | 32 => {
+        1 | 2 | 32 if format.sound_opcode == 9 => {
             let kind = match opcode {
                 1 => MuzzleFormat::Player,
                 2 => MuzzleFormat::Monster,
@@ -411,38 +514,59 @@ pub fn write_cue(protocol: Protocol, cue: Cue, output: &mut [u8]) -> Result<usiz
     let mut writer = Writer::new(output, Encoding::Bytes);
     match cue {
         Cue::Sound(sound) => {
-            if sound.flags & !format.sound_flags != 0
-                || (sound.flags & INDEX16 == 0 && sound.index > 255)
-                || (sound.flags & ENTITY != 0 && (sound.entity >= 8192 || sound.channel >= 8))
-            {
+            if !format.valid_sound(sound) {
                 return Err(Error::Unsupported);
             }
-            writer.write_bits(9, 8)?;
-            writer.write_bits(sound.flags.into(), 8)?;
-            writer.write_bits(
-                sound.index.into(),
-                if sound.flags & INDEX16 != 0 { 16 } else { 8 },
-            )?;
-            for (flag, value) in [
-                (VOLUME, sound.volume),
-                (ATTENUATION, sound.attenuation),
-                (OFFSET, sound.time_offset),
-            ] {
-                if sound.flags & flag != 0 {
-                    writer.write_bits(value.into(), 8)?;
+            writer.write_bits(format.sound_opcode.into(), 8)?;
+            for &field in format.fields {
+                match field {
+                    SoundField::Header => {
+                        if let Some(masks) = format.packed_flags {
+                            let mut packed =
+                                (u32::from(sound.entity) << 3) | u32::from(sound.channel);
+                            for (native, shared) in masks.into_iter().zip([VOLUME, ATTENUATION]) {
+                                if sound.flags & shared != 0 {
+                                    packed |= u32::from(native);
+                                }
+                            }
+                            writer.write_bits(packed, 16)?;
+                        } else {
+                            writer
+                                .write_bits(u32::from(sound.flags & !format.required_flags), 8)?;
+                        }
+                    }
+                    SoundField::Index => writer.write_bits(
+                        sound.index.into(),
+                        if sound.flags & INDEX16 != 0 { 16 } else { 8 },
+                    )?,
+                    SoundField::Byte(flag) if sound.flags & flag != 0 => {
+                        writer.write_bits(
+                            match flag {
+                                VOLUME => sound.volume,
+                                ATTENUATION => sound.attenuation,
+                                _ => sound.time_offset,
+                            }
+                            .into(),
+                            8,
+                        )?;
+                    }
+                    SoundField::Entity if sound.flags & ENTITY != 0 => {
+                        writer.write_bits(
+                            (u32::from(sound.entity) << 3) | u32::from(sound.channel),
+                            16,
+                        )?;
+                    }
+                    SoundField::Position if sound.flags & POSITION != 0 => {
+                        write_position(&mut writer, sound.position, format.float_position)?;
+                    }
+                    _ => {}
                 }
-            }
-            if sound.flags & ENTITY != 0 {
-                writer.write_bits(
-                    (u32::from(sound.entity) << 3) | u32::from(sound.channel),
-                    16,
-                )?;
-            }
-            if sound.flags & POSITION != 0 {
-                write_position(&mut writer, sound.position, format.float_position)?;
             }
         }
         Cue::MuzzleFlash(muzzle) => {
+            if format.sound_opcode != 9 {
+                return Err(Error::Unsupported);
+            }
             if !format.muzzle_entity(muzzle.entity) {
                 return Err(Error::Unsupported);
             }

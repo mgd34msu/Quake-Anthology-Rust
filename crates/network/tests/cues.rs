@@ -9,6 +9,7 @@ use qa_network::{
     ingress::{Connection, Connections, Incoming, Route},
     outputs::{self, Cue, MuzzleFormat},
 };
+mod support;
 
 fn exact(protocol: Protocol, bytes: &[u8]) -> Cue {
     let (cue, consumed) = outputs::read_cue(protocol, bytes).unwrap();
@@ -21,6 +22,190 @@ fn exact(protocol: Protocol, bytes: &[u8]) -> Cue {
         assert!(outputs::read_cue(protocol, &bytes[..cut]).is_err());
     }
     cue
+}
+
+#[test]
+fn nq_qw_dynamic_sounds_keep_native_field_order_presence_and_coordinate_widths() {
+    use qa_core::primitives::{SoundAction, SoundId, SpatialPolicy};
+    for (protocol, bytes) in [
+        (
+            Protocol::NetQuake15,
+            &[6, 0, 41, 0, 49, 247, 255, 162, 0, 1, 4][..],
+        ),
+        (
+            Protocol::NetQuake15,
+            &[6, 3, 255, 64, 41, 0, 49, 247, 255, 162, 0, 1, 4][..],
+        ),
+        (
+            Protocol::NetQuake15,
+            &[6, 3, 204, 128, 41, 0, 49, 247, 255, 162, 0, 1, 4][..],
+        ),
+        (
+            Protocol::QuakeWorld28,
+            &[6, 41, 0, 49, 247, 255, 162, 0, 1, 4][..],
+        ),
+        (
+            Protocol::QuakeWorld28,
+            &[6, 41, 192, 255, 64, 49, 247, 255, 162, 0, 1, 4][..],
+        ),
+        (
+            Protocol::QuakeWorld28,
+            &[6, 41, 192, 204, 128, 49, 247, 255, 162, 0, 1, 4][..],
+        ),
+    ] {
+        let Cue::Sound(wire) = exact(protocol, bytes) else {
+            panic!("dynamic sound");
+        };
+        assert_eq!((wire.entity(), wire.channel, wire.index), (Some(5), 1, 49));
+        assert_eq!(wire.position().unwrap().0, [-1.125, 20.25, 128.125]);
+        let event = wire.into_event(
+            SoundId(7),
+            SpatialPolicy::default(),
+            None,
+            wire.position,
+            None,
+            SoundAction::Play,
+        );
+        let mut encoded = [0xa5; 32];
+        let length = outputs::sound(protocol, event, 49, Some(5), false, &mut encoded).unwrap();
+        assert_eq!(&encoded[..length], bytes);
+        assert_eq!(encoded[length], 0xa5);
+        for cut in 0..length {
+            assert!(outputs::write_cue(protocol, Cue::Sound(wire), &mut [0; 32][..cut]).is_err());
+        }
+    }
+    // POSITION/ENTITY are implicit in stock NQ, not NQ extension-mask bits.
+    for unsupported_mask in [4, 8, 16, 32, 64, 128] {
+        assert!(outputs::read_cue(Protocol::NetQuake15, &[6, unsupported_mask]).is_err());
+    }
+}
+
+#[test]
+fn dynamic_sound_field_limits_keep_world_zero_and_native_optional_byte_values() {
+    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        for presence in 0..4 {
+            for entity in [
+                0,
+                if protocol == Protocol::NetQuake15 {
+                    8191
+                } else {
+                    1023
+                },
+            ] {
+                let wire = outputs::Sound {
+                    flags: 12 | presence,
+                    index: 255,
+                    volume: 0,
+                    attenuation: 255,
+                    time_offset: 0,
+                    entity,
+                    channel: 7,
+                    position: qa_core::primitives::Vec3([-4096.0, 4095.875, 0.125]),
+                };
+                let mut bytes = [0xa5; 32];
+                let length = outputs::write_cue(protocol, Cue::Sound(wire), &mut bytes).unwrap();
+                let Cue::Sound(decoded) = exact(protocol, &bytes[..length]) else {
+                    panic!("sound");
+                };
+                assert_eq!(decoded.entity(), Some(entity));
+                assert_eq!(
+                    (decoded.channel, decoded.index, decoded.position),
+                    (7, 255, wire.position)
+                );
+                assert_eq!(decoded.volume, if presence & 1 != 0 { 0 } else { 255 });
+                assert_eq!(
+                    decoded.attenuation,
+                    if presence & 2 != 0 { 255 } else { 64 }
+                );
+                assert_eq!(decoded.flags, wire.flags);
+            }
+        }
+    }
+}
+
+#[test]
+fn common_and_cross_protocol_sounds_translate_implicit_fields_and_drop_unrepresentable_values() {
+    use qa_core::primitives::{SoundEvent, Vec3};
+    let event = SoundEvent {
+        channel: 2,
+        volume: 0.8,
+        attenuation: 2.0,
+        position: Vec3([-1.125, 20.25, 128.125]),
+        ..Default::default()
+    };
+    for (protocol, expected) in [
+        (
+            Protocol::NetQuake15,
+            &[6, 3, 204, 128, 2, 0, 49, 247, 255, 162, 0, 1, 4][..],
+        ),
+        (
+            Protocol::QuakeWorld28,
+            &[6, 2, 192, 204, 128, 49, 247, 255, 162, 0, 1, 4][..],
+        ),
+    ] {
+        let mut bytes = [0; 64];
+        let length = outputs::sound(protocol, event, 49, Some(0), false, &mut bytes).unwrap();
+        assert_eq!(&bytes[..length], expected);
+        assert_eq!(
+            outputs::sound(
+                protocol,
+                SoundEvent {
+                    time_offset: 0.125,
+                    ..event
+                },
+                49,
+                Some(0),
+                false,
+                &mut bytes
+            ),
+            Err(outputs::Error::Unsupported)
+        );
+        assert!(outputs::sound(protocol, event, 256, Some(0), false, &mut bytes).is_err());
+    }
+    // Q2 uses flags/index before optional values; its4/8 bits must become
+    // implicit NQ/QW fields rather than being emitted in NQ's mask byte.
+    let source = [9, 15, 49, 255, 64, 41, 0, 247, 255, 162, 0, 1, 4];
+    for target in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        let mut bytes = [0; 64];
+        let encoded = outputs::native(
+            target,
+            qa_core::primitives::RuleSetId::Quake2,
+            &source,
+            &mut bytes,
+            false,
+            |cue, _| Ok(cue),
+        )
+        .unwrap();
+        let Cue::Sound(wire) = exact(target, &bytes[..encoded.length]) else {
+            panic!("sound");
+        };
+        assert_eq!((wire.flags, wire.entity(), wire.channel), (15, Some(5), 1));
+        assert_eq!(encoded.unsupported, 0);
+        let mut restored = [0; 64];
+        let reencoded = outputs::native(
+            Protocol::Quake2_34,
+            target.rule_set(),
+            &bytes[..encoded.length],
+            &mut restored,
+            false,
+            |cue, _| Ok(cue),
+        )
+        .unwrap();
+        assert_eq!(&restored[..reencoded.length], &source);
+        for source in [&[9, 16, 49, 125][..], &[9, 32, 1, 4][..]] {
+            let mut bytes = [0; 64];
+            let encoded = outputs::native(
+                target,
+                qa_core::primitives::RuleSetId::Quake2Rerelease,
+                source,
+                &mut bytes,
+                false,
+                |cue, _| Ok(cue),
+            )
+            .unwrap();
+            assert_eq!((encoded.length, encoded.unsupported), (0, 1));
+        }
+    }
 }
 #[test]
 fn shared_sound_events_preserve_explicit_defaults_and_index_width_flags() {
@@ -466,6 +651,75 @@ fn connected_channel_delivers_cues_in_order_and_continues_to_the_next_service() 
         assert!(matches!(cues[0], Cue::MuzzleFlash(_)));
         assert!(matches!(cues[1], Cue::Sound(_)));
         assert_eq!(prints, [b"after".to_vec()]);
+        assert_eq!((connections.command_errors, connections.malformed), (0, 0));
+    }
+}
+
+#[test]
+fn framed_nq_qw_dynamic_sound_intake_continues_to_the_following_print() {
+    for (protocol, body) in [
+        (
+            Protocol::NetQuake15,
+            &[6, 0, 2, 0, 49, 8, 0, 16, 0, 24, 0, 8, b'o', b'k', 0][..],
+        ),
+        (
+            Protocol::QuakeWorld28,
+            &[6, 2, 0, 49, 8, 0, 16, 0, 24, 0, 8, 2, b'o', b'k', 0][..],
+        ),
+    ] {
+        let client = ClientId(0);
+        let mut sender = Channel::load(protocol.channel(), Endpoint::Server, 8192, 4).unwrap();
+        if protocol == Protocol::QuakeWorld28 {
+            support::admit_qw_reply(&mut sender, 1);
+        }
+        let mut connections = Connections::load(1);
+        connections
+            .bind(
+                client,
+                Endpoint::Client,
+                Connection {
+                    route: Route {
+                        socket: Endpoint::Client.socket(),
+                        peer: Peer::Loopback(client),
+                    },
+                    channel: Channel::load(protocol.channel(), Endpoint::Client, 8192, 4).unwrap(),
+                    output: None,
+                    pending_output: None,
+                    commands: Some(Commands::load(protocol, 8192)),
+                },
+            )
+            .unwrap();
+        let packet = sender
+            .prepare(Some(body), EventTime(1))
+            .unwrap()
+            .unwrap()
+            .bytes
+            .to_vec();
+        let mut cues = Vec::new();
+        let mut prints = Vec::new();
+        connections.receive(
+            Endpoint::Client.socket(),
+            Peer::Loopback(client),
+            &packet,
+            EventTime(2),
+            |_, _, incoming| {
+                match incoming {
+                    Incoming::Cue { cue, .. } => cues.push(cue),
+                    Incoming::Print(print) => prints.push(print.text.to_vec()),
+                    _ => {}
+                }
+                std::ops::ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(cues.len(), 1);
+        let Cue::Sound(sound) = cues[0] else {
+            panic!("dynamic sound");
+        };
+        assert_eq!(
+            (sound.entity(), sound.channel, sound.position),
+            (Some(0), 2, qa_core::primitives::Vec3([1.0, 2.0, 3.0]))
+        );
+        assert_eq!(prints, [b"ok".to_vec()]);
         assert_eq!((connections.command_errors, connections.malformed), (0, 0));
     }
 }

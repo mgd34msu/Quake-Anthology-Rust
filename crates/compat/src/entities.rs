@@ -61,13 +61,16 @@ pub(crate) struct EntityLayout {
     pub area2: Option<usize>,
     pub clusters: Option<(usize, usize, usize)>,
     pub network_solid: usize,
-    pub appearance: AppearanceLayout,
+    pub appearance: AppearanceImport,
     pub model_rules: ModelRules,
 }
 #[derive(Clone, Copy)]
+pub(crate) enum AppearanceImport {
+    Fields(AppearanceLayout),
+    Projected(&'static qa_network::projection::EntityProjection),
+}
+#[derive(Clone, Copy)]
 pub(crate) struct AppearanceLayout {
-    pub entity_type: Option<usize>,
-    pub other_entity: Option<usize>,
     pub models: [Option<usize>; 4],
     pub frame: usize,
     pub skin: Option<usize>,
@@ -90,6 +93,12 @@ pub(crate) struct ExtendedAppearance {
     pub old_frame: usize,
 }
 impl EntityLayout {
+    fn model_offset(self) -> Option<usize> {
+        match self.appearance {
+            AppearanceImport::Fields(layout) => layout.models[0],
+            AppearanceImport::Projected(_) => Some(const { crate::players::q3_entity_offset(29) }),
+        }
+    }
     fn box_shape(self, flags: u32) -> CollisionShape {
         if flags & self.capsule_flag != 0 {
             CollisionShape::Capsule
@@ -758,6 +767,11 @@ impl EntityProjection {
             } else {
                 self.appearance(memory, address, context.module)?
             };
+            let contents_pose = layout.point_contents_pose(
+                memory,
+                address,
+                appearance.presentation.map(|value| value.pose),
+            )?;
             let flags = memory.read_word(address + self.native_layout()?.flags as u64)? as u32;
             appearance.snapshot_excluded = flags & layout.snapshot_exclusion_mask != 0;
             let bound = self.binding(
@@ -775,8 +789,8 @@ impl EntityProjection {
             columns.maxs[slot] = body.maxs;
             columns.angles[slot] = angles;
             columns.flags[slot] = flags;
+            columns.point_contents_pose[slot] = contents_pose;
             columns.appearance[slot] = appearance;
-            columns.point_contents_pose[slot] = self.point_contents_pose(memory, address)?;
         }
         Ok(native)
     }
@@ -786,7 +800,17 @@ impl EntityProjection {
         address: u64,
         module: ModuleId,
     ) -> Result<EntityAppearance, CallError> {
-        let layout = self.native_layout()?.appearance;
+        let layout = match self.native_layout()?.appearance {
+            AppearanceImport::Fields(layout) => layout,
+            AppearanceImport::Projected(projection) => {
+                let words = crate::players::read_q3_entity_state(memory, address)?;
+                let mut record = qa_core::primitives::EntityRecord::default();
+                if !projection.apply(&words, &mut record, ResourceNamespace::Module(module)) {
+                    return Err(CallError::Capacity);
+                }
+                return Ok(record.appearance);
+            }
+        };
         let mut models = [None; 4];
         for (offset, model) in layout.models.into_iter().zip(models.iter_mut()) {
             let Some(offset) = offset else {
@@ -798,16 +822,6 @@ impl EntityProjection {
             );
         }
         let mut native = NativeAppearanceTail {
-            entity_type: layout
-                .entity_type
-                .map(|offset| memory.read_word(address + offset as u64))
-                .transpose()?
-                .unwrap_or(0) as u32,
-            other_entity: layout
-                .other_entity
-                .map(|offset| memory.read_word(address + offset as u64))
-                .transpose()?
-                .unwrap_or(0) as u32,
             effects: match layout.effects {
                 Some(offset) if layout.effects_wide => memory.read_u64(address + offset as u64)?,
                 Some(offset) => u64::from(memory.read_word(address + offset as u64)? as u32),
@@ -1222,7 +1236,8 @@ impl EntityProjection {
         memory: &ModuleMemory<'_>,
         address: u64,
     ) -> Result<Option<qa_core::primitives::EntityPose>, CallError> {
-        self.native_layout()?.point_contents_pose(memory, address)
+        self.native_layout()?
+            .point_contents_pose(memory, address, None)
     }
     fn model(
         &mut self,
@@ -1311,7 +1326,7 @@ impl EntityProjection {
                 .model_bounds(geometry, model)
                 .ok_or(CallError::Geometry)?;
             memory.write_word(
-                address + layout.appearance.models[0].ok_or(CallError::Geometry)? as u64,
+                address + layout.model_offset().ok_or(CallError::Geometry)? as u64,
                 model as i32,
             )?;
             memory.write_vec3(address + layout.mins as u64, bounds.mins)?;
@@ -1331,7 +1346,7 @@ impl EntityProjection {
             None
         };
         memory.write_word(
-            address + layout.appearance.models[0].ok_or(CallError::Geometry)? as u64,
+            address + layout.model_offset().ok_or(CallError::Geometry)? as u64,
             model as i32,
         )?;
         if let Some((_, bounds)) = inline {
@@ -1446,12 +1461,17 @@ impl EntityLayout {
         self,
         memory: &ModuleMemory<'_>,
         address: u64,
+        published: Option<qa_core::primitives::EntityPose>,
     ) -> Result<Option<qa_core::primitives::EntityPose>, CallError> {
         self.contents_pose
             .map(|(origin, angles)| {
-                let pose = qa_core::primitives::EntityPose {
-                    position: memory.read_vec3(address + origin as u64)?,
-                    angles: memory.read_vec3(address + angles as u64)?,
+                let pose = if let Some(pose) = published {
+                    pose
+                } else {
+                    qa_core::primitives::EntityPose {
+                        position: memory.read_vec3(address + origin as u64)?,
+                        angles: memory.read_vec3(address + angles as u64)?,
+                    }
                 };
                 if !pose.position.is_finite() || !pose.angles.is_finite() {
                     return Err(CallError::Entity);
@@ -1478,7 +1498,7 @@ fn resolve_model(
     name: Option<&[u8]>,
 ) -> Result<(CollisionShape, Bounds), CallError> {
     let model = memory
-        .read_word(address + layout.appearance.models[0].ok_or(CallError::Geometry)? as u64)?
+        .read_word(address + layout.model_offset().ok_or(CallError::Geometry)? as u64)?
         as u32;
     if layout.contents.is_some() {
         let bounds = store

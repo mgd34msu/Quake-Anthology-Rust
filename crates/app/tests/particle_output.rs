@@ -383,6 +383,14 @@ fn reconnect_drops_queued_old_packet_and_retires_old_particle_lifetime() {
     publish(&mut host, NativeTarget::Client(client));
     host.frame(&mut source, true);
     assert!(host.runtime.disconnect_client(client));
+    // NQ owns audio resources too: retire the old CLIENT through the existing
+    // Presentation consumer before that same bounded client slot is reusable.
+    host.frame(&mut source, true);
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .audio_retirement
+            .is_none()
+    );
     let rebound = connect_local(&mut host.runtime);
     assert_eq!(rebound, client);
     let new_lifetime = host.runtime.server.clients[client.0 as usize].entity;

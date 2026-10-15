@@ -262,7 +262,8 @@ fn snapshot_with_player(
                         |sound| {
                             (sound.namespace == ResourceNamespace::Client(client))
                                 .then_some(sound.ordinal)
-                        }
+                        },
+                        |reference| Some(reference.ordinal())
                     ));
                     Entity {
                         number: *number,
@@ -726,7 +727,10 @@ fn q3_standalone_stop_is_once_until_disappearance() {
     dispatch(&mut host, &mut source);
     let mut event = record(protocol, client, 0, 13 + 75);
     event.appearance.native.render_flags = 0x10;
-    event.appearance.native.other_entity = 0;
+    event.appearance.native.other_entity = Some(qa_core::primitives::NativeEntityRef::entity(
+        ResourceNamespace::Client(client),
+        0,
+    ));
     snapshot(&mut host, client, protocol, 2, &[(0, real), (3, event)]);
     // The one-record budget publishes the stop, with no underflow/start in
     // the same pass. It targets native zero rather than the event row.
@@ -802,7 +806,10 @@ fn q3_cross_target_stop_retires_the_event_rows_old_loop() {
     assert_eq!(starts(&source), 2);
     let mut stop = record(protocol, client, 0, 13 + 75);
     stop.appearance.native.render_flags = 0x10;
-    stop.appearance.native.other_entity = 0;
+    stop.appearance.native.other_entity = Some(qa_core::primitives::NativeEntityRef::entity(
+        ResourceNamespace::Client(client),
+        0,
+    ));
     snapshot(&mut host, client, protocol, 2, &[(0, real), (42, stop)]);
     for number in [0, 42] {
         let before = source.observations.len();

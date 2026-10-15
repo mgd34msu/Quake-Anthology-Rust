@@ -2,7 +2,7 @@
 use super::{Error, NamedExport, ReturnedTable, TableFunction, Vm, runtime::ImportTrap};
 use crate::abi::{CallTable, Q2_CLASSIC, Q2_RERELEASE};
 use crate::cvars::NativeCvars;
-use crate::entities::{AppearanceLayout, EntityLayout, ExtendedAppearance};
+use crate::entities::{AppearanceImport, AppearanceLayout, EntityLayout, ExtendedAppearance};
 use qa_core::{
     configstrings::ConfigLayout,
     names::NameTable,
@@ -126,9 +126,7 @@ const CLASSIC: Layout = Layout {
         area2: Some(196),
         clusters: Some((120, 124, 188)),
         network_solid: 72,
-        appearance: AppearanceLayout {
-            entity_type: None,
-            other_entity: None,
+        appearance: AppearanceImport::Fields(AppearanceLayout {
             models: [Some(40), Some(44), Some(48), Some(52)],
             frame: 56,
             skin: Some(60),
@@ -139,7 +137,7 @@ const CLASSIC: Layout = Layout {
             loop_sound: 76,
             event: (80, false),
             extended: None,
-        },
+        }),
         model_rules: qa_core::primitives::ModelRules {
             rotation: qa_core::primitives::ModelRotation::NegativeEuler,
             link_bounds: qa_core::primitives::RotatedLinkBounds::MaxAbsCube,
@@ -184,9 +182,7 @@ const RERELEASE: Layout = Layout {
         area2: Some(1388),
         clusters: None,
         network_solid: 76,
-        appearance: AppearanceLayout {
-            entity_type: None,
-            other_entity: None,
+        appearance: AppearanceImport::Fields(AppearanceLayout {
             models: [Some(40), Some(44), Some(48), Some(52)],
             frame: 56,
             skin: Some(60),
@@ -205,7 +201,7 @@ const RERELEASE: Layout = Layout {
                 owner: 108,
                 old_frame: 112,
             }),
-        },
+        }),
         model_rules: CLASSIC.entity.model_rules,
     },
 };

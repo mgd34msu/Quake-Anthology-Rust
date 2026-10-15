@@ -74,7 +74,7 @@ pub fn read_native_service(
             let (particle, length) = read_particle(protocol, bytes)?;
             Ok((NativeService::Particle(particle), length))
         }
-        (Protocol::NetQuake15 | Protocol::QuakeWorld28, 29)
+        (Protocol::NetQuake15 | Protocol::QuakeWorld28, 6 | 29)
         | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 1 | 2 | 9 | 32) => {
             let (cue, length) = read_cue(protocol, bytes)?;
             Ok((NativeService::Cue(cue), length))

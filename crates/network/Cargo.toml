@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 qa-core = { path = "../core" }
+qa-gameplay = { path = "../gameplay" }
 
 [dev-dependencies]
 qa-console = { path = "../console" }

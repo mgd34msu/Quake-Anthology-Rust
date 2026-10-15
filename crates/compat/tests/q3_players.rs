@@ -306,6 +306,186 @@ fn entity(memory: &mut ModuleMemory<'_>, address: u64) {
         .write_vec3(address + 488, Vec3([-900.0, 2.0, 3.0]))
         .unwrap();
 }
+
+// Original q_shared.h declaration order, independent of the wire/ABI mapper.
+fn public_entity_cells() -> [u32; 52] {
+    [
+        0,
+        2,
+        0x8101_0001,
+        3,
+        i32::MIN as u32 + 41,
+        1234567,
+        101.25f32.to_bits(),
+        102.5f32.to_bits(),
+        103.75f32.to_bits(),
+        (-11.25f32).to_bits(),
+        12.5f32.to_bits(),
+        13.75f32.to_bits(),
+        2,
+        i32::MAX as u32 - 51,
+        7654321,
+        81.25f32.to_bits(),
+        82.5f32.to_bits(),
+        83.75f32.to_bits(),
+        21.25f32.to_bits(),
+        (-22.5f32).to_bits(),
+        23.75f32.to_bits(),
+        i32::MIN as u32 + 17,
+        i32::MAX as u32 - 17,
+        201.25f32.to_bits(),
+        202.5f32.to_bits(),
+        203.75f32.to_bits(),
+        301.25f32.to_bits(),
+        302.5f32.to_bits(),
+        303.75f32.to_bits(),
+        401.25f32.to_bits(),
+        402.5f32.to_bits(),
+        403.75f32.to_bits(),
+        501.25f32.to_bits(),
+        502.5f32.to_bits(),
+        503.75f32.to_bits(),
+        0,
+        1023,
+        1022,
+        0x8123_4567,
+        0x8001_0009,
+        7,
+        0x8100_0007,
+        0x8100_0008,
+        0x8100_0009,
+        0x8100_000a,
+        0x8100_0300,
+        0x8100_000b,
+        0x8100_000c,
+        0x8100_000d,
+        0x8100_000e,
+        0x8100_000f,
+        0x8100_0010,
+    ]
+}
+fn verify_entity_fields(f: &Fixture) {
+    use qa_core::primitives::{EntityModelData, EntityPose, EntityRecord, NativeEntityRef};
+    let entity = f.server.clients[1].entity;
+    let slot = entity.slot as usize;
+    let columns = &f.server.entities.columns;
+    assert_eq!(columns.position[slot], Vec3([-900., 2., 3.]));
+    assert_eq!(columns.angles[slot], Vec3::default());
+    assert_eq!(columns.velocity[slot], Vec3::default());
+    let appearance = columns.appearance[slot];
+    let published = appearance.presentation.unwrap();
+    assert_eq!(published.namespace, ResourceNamespace::Module(MODULE));
+    assert_eq!(
+        published.pose,
+        EntityPose {
+            position: Vec3([201.25, 202.5, 203.75]),
+            angles: Vec3([401.25, 402.5, 403.75]),
+        }
+    );
+    assert_eq!(columns.point_contents_pose[slot], Some(published.pose));
+    assert_eq!(
+        published.trajectories.position.base,
+        Vec3([101.25, 102.5, 103.75])
+    );
+    assert_eq!(
+        published.secondary_pose.position,
+        Vec3([301.25, 302.5, 303.75])
+    );
+    assert_eq!(
+        published.model_data,
+        EntityModelData::Item {
+            index: 7,
+            secondary: 0x8100_0007u32 as i32
+        }
+    );
+    assert_eq!(appearance.models, [None; 4]); // Item7 is not CS_MODELS7.
+    assert_eq!(
+        appearance.native.other_entity,
+        Some(NativeEntityRef::entity(
+            ResourceNamespace::Module(MODULE),
+            0
+        ))
+    );
+    let record = EntityRecord {
+        position: columns.position[slot],
+        velocity: columns.velocity[slot],
+        angles: columns.angles[slot],
+        appearance,
+    };
+    let mut words = [0; qa_network::states::ENTITY_WORDS];
+    assert!(
+        qa_network::projection::EntityProjection::load_native_q3().reduce(
+            &record,
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+            |reference| Some(reference.ordinal()),
+        )
+    );
+    let mut bytes = [0xa5; qa_compat::abi::Q3_ENTITY_STATE_BYTES + 8];
+    let mut memory = ModuleMemory::borrow(0x1234_0000, &mut bytes).unwrap();
+    qa_compat::abi::write_q3_entity_state(&mut memory, 0x1234_0004, 0, &words).unwrap();
+    for (index, expected) in public_entity_cells().into_iter().enumerate() {
+        assert_eq!(
+            memory.read_word(0x1234_0004 + index as u64 * 4).unwrap() as u32,
+            expected,
+            "public native entity cell{index}"
+        );
+    }
+    assert_eq!(memory.read_word(0x1234_0000).unwrap() as u32, 0xa5a5a5a5);
+    assert_eq!(memory.read_word(0x1234_00d4).unwrap() as u32, 0xa5a5a5a5);
+}
+
+fn qvm_entity_publication_preserves_all_fields_and_separate_physical_pose() {
+    let mut f = Fixture::new();
+    let mut operations = vec![(Opcode::Enter, 16)];
+    for (index, value) in public_entity_cells().into_iter().enumerate() {
+        operations.extend([
+            (Opcode::Const, ENTITIES as i32 + index as i32 * 4),
+            (Opcode::Const, value as i32),
+            (Opcode::Store4, 0),
+        ]);
+    }
+    operations.extend([
+        (Opcode::Const, ENTITIES as i32 + 416),
+        (Opcode::Const, 1),
+        (Opcode::Store4, 0),
+        (Opcode::Const, 0),
+        (Opcode::Leave, 16),
+    ]);
+    let mut vm = qvm(&operations, &f.registry);
+    entity(&mut vm.memory, ENTITIES);
+    player(&mut vm.memory, PLAYERS);
+    f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+    let common = f.server.clients[1].entity;
+    let old_area = f.server.area.bounds(common);
+    let old_owner = f.server.entities.columns.native_entity[common.slot as usize];
+    {
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let mut engine = f.engine();
+        let mut calls = QvmCalls {
+            services: &mut engine,
+            table: &Q3_SERVER,
+            context: context(),
+            platform_time: EventTime(0),
+            command: &[],
+            unknown: &mut unknown,
+        };
+        assert_eq!(vm.call(&mut calls, [8; 10], 1000, false), Ok(0));
+    }
+    f.publish(&mut vm).unwrap();
+    verify_entity_fields(&f);
+    assert_eq!(f.server.area.bounds(common), old_area);
+    assert_eq!(
+        f.server.entities.columns.native_entity[common.slot as usize],
+        old_owner
+    );
+    assert_eq!(
+        f.server.clients[1].player.movement_rules,
+        RuleSetId::QuakeWorld
+    );
+    assert_eq!(f.server.clients[1].player.trace_rules, RuleSetId::Quake2);
+}
 fn player(memory: &mut ModuleMemory<'_>, address: u64) {
     memory
         .read_mut(address, PLAYER_STRIDE as usize)
@@ -1603,6 +1783,38 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     vm.bind_client(&f.server.entities, NATIVE, f.server.clients[1].entity)
         .unwrap();
     verify(&f);
+    let mut published_entity = vec![0x48, 0xb8];
+    published_entity.extend(native_entities.to_le_bytes());
+    for (index, value) in public_entity_cells().into_iter().enumerate() {
+        published_entity.extend([0xc7, 0x80]);
+        published_entity.extend((index as u32 * 4).to_le_bytes());
+        published_entity.extend(value.to_le_bytes());
+    }
+    published_entity.extend([0xc7, 0x80]);
+    published_entity.extend(416u32.to_le_bytes());
+    published_entity.extend(1u32.to_le_bytes());
+    published_entity.extend(&code);
+    let area_before = f.server.area.bounds(f.server.clients[1].entity);
+    qa_compat::memory::process_memory(&mut vm.process)
+        .unwrap()
+        .write(base + 0x1200, &published_entity)
+        .unwrap();
+    assert_eq!(
+        invoke(
+            &mut vm,
+            &mut f,
+            &mut unknown,
+            ThinkTime::Milliseconds(900),
+            EventTime::from_milliseconds(4567)
+        )
+        .unwrap(),
+        0
+    );
+    verify_entity_fields(&f);
+    assert_eq!(
+        f.server.area.bounds(f.server.clients[1].entity),
+        area_before
+    );
     let weapon_item = f
         .registry
         .weapon(f.registry.native_weapon(RuleSetId::Quake3, 4).unwrap())
@@ -1834,6 +2046,10 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         failing.extend((offset as u32).to_le_bytes());
         failing.extend(value.wrapping_add(1).to_le_bytes());
     }
+    failing.extend([0x48, 0xb8]);
+    failing.extend(native_entities.to_le_bytes());
+    failing.extend([0xc7, 0x40, 92]);
+    failing.extend(999.5f32.to_bits().to_le_bytes());
     failing.extend([0x0f, 0x0b]);
     qa_compat::memory::process_memory(&mut vm.process)
         .unwrap()
@@ -1857,6 +2073,7 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
     );
     assert_eq!(f.server.clients[1].player.loop_sound, accepted_loop);
     assert_eq!(f.server.clients[1].player.native_clock, accepted_clock);
+    verify_entity_fields(&f);
     assert_eq!(
         f.server.clients[1].player.inventory.powerup_until[usize::from(quad.id.0)],
         116.0
@@ -1963,6 +2180,7 @@ fn main() {
     qvm_nonframe_exports_keep_the_frame_clock_and_current_acquisition_time();
     qvm_player_loop_sound_uses_public_memory_and_the_owning_namespace();
     qvm_player_signals_preserve_native_cells_and_publication_boundaries();
+    qvm_entity_publication_preserves_all_fields_and_separate_physical_pose();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     owned_native_export_imports_public_player_memory_only_after_success();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

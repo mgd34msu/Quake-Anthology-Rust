@@ -1,7 +1,7 @@
 //! Connection-owned wire scratch and explicit entity-number projection.
 use crate::output_namespace::NativeNumbers;
 use qa_core::primitives::{
-    Bounds, EntityId, ModelRef, ModuleId, PlayerState, ResourceNamespace, SoundRef, Vec3,
+    Bounds, ClientId, EntityId, ModelRef, ModuleId, PlayerState, ResourceNamespace, SoundRef, Vec3,
 };
 use qa_network::{
     commands::packet::{Error, Protocol},
@@ -19,6 +19,7 @@ use qa_world::{
 /// SERVER inputs are borrowed only while reducing a frame. CLIENT entities
 /// continue to belong to the receiving channel's native snapshot ring.
 pub struct EntitySource<'a> {
+    pub receiver: ClientId,
     pub entities: &'a EntityTable,
     pub players: &'a [qa_session::clients::Client],
     pub registry: &'a qa_gameplay::registry::Registry,
@@ -178,24 +179,7 @@ impl<const N: usize> Rows<N> {
             }
             let slot = self.sources[index].slot as usize;
             let columns = &source.entities.columns;
-            let mut appearance = columns.appearance[slot];
-            if protocol == Protocol::Quake3_68
-                && let Some(target) = qa_gameplay::rules::loop_rules(appearance.source)
-                    .and_then(|rules| rules.stop_target(&appearance.native))
-            {
-                let mapped = columns.native_entity[slot]
-                    .and_then(|owner| {
-                        numbers.native(source.entities, owner.module, i32::try_from(target).ok()?)
-                    })
-                    .filter(|&number| number < snapshot_limits(protocol).end_entity);
-                let Some(mapped) = mapped else {
-                    // This is a standalone stop record. Inventing target zero
-                    // would stop a legitimate Q3 client rather than drop it.
-                    rejected += 1;
-                    continue;
-                };
-                appearance.native.other_entity = mapped;
-            }
+            let appearance = columns.appearance[slot];
             let record = EntityRecord {
                 position: columns.position[slot],
                 velocity: columns.velocity[slot],
@@ -207,6 +191,7 @@ impl<const N: usize> Rows<N> {
                 &mut row.words,
                 &mut *source.resolve_model,
                 &mut *source.resolve_sound,
+                |reference| numbers.reference(source.entities, source.receiver, reference),
             ) {
                 rejected += 1;
                 continue;

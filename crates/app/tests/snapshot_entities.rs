@@ -157,6 +157,7 @@ fn transmit(
         (model.namespace == ResourceNamespace::Module(MODULE)).then_some(model.ordinal)
     };
     let source = EntitySource {
+        receiver: client,
         entities: &runtime.server.entities,
         players: &runtime.server.clients,
         registry: &runtime.catalog.registry,
@@ -389,7 +390,10 @@ fn q3_event_only_stop_survives_the_server_presence_filter_and_queued_snapshot() 
         let appearance = &mut host.runtime.server.entities.columns.appearance[entity.slot as usize];
         appearance.models = [None; 4];
         appearance.native.entity_type = 13 + 75;
-        appearance.native.other_entity = target as u32;
+        appearance.native.other_entity = Some(qa_core::primitives::NativeEntityRef::entity(
+            ResourceNamespace::Module(MODULE),
+            target as u32,
+        ));
         appearance.native.render_flags = 0x10;
         assert_eq!(appearance.native.event, 0);
         assert_eq!(appearance.loop_sound, None);
@@ -410,7 +414,13 @@ fn q3_event_only_stop_survives_the_server_presence_filter_and_queued_snapshot() 
             .1
             .appearance;
         assert_eq!(appearance.native.entity_type, 88);
-        assert_eq!(appearance.native.other_entity, target as u32);
+        assert_eq!(
+            appearance.native.other_entity,
+            Some(qa_core::primitives::NativeEntityRef::entity(
+                ResourceNamespace::Client(client),
+                target as u32
+            ))
+        );
         assert_eq!(appearance.native.render_flags, 0x10);
         assert_eq!(appearance.native.event, 0);
         assert_eq!(appearance.loop_sound, None);
@@ -436,7 +446,10 @@ fn q3_secondary_module_stop_target_uses_the_connection_entity_namespace() -> Res
     let appearance = &mut host.runtime.server.entities.columns.appearance[event.slot as usize];
     appearance.models = [None; 4];
     appearance.native.entity_type = 13 + 75;
-    appearance.native.other_entity = 12;
+    appearance.native.other_entity = Some(qa_core::primitives::NativeEntityRef::entity(
+        ResourceNamespace::Module(ModuleId(8)),
+        12,
+    ));
     appearance.native.render_flags = 0x10;
     add(
         &mut host,
@@ -485,12 +498,21 @@ fn q3_secondary_module_stop_target_uses_the_connection_entity_namespace() -> Res
         .find(|(_, record)| record.appearance.native.entity_type == 88)
         .ok_or("secondary stop event")?
         .1;
-    assert_eq!(record.appearance.native.other_entity, target);
+    assert_eq!(
+        record.appearance.native.other_entity,
+        Some(qa_core::primitives::NativeEntityRef::entity(
+            ResourceNamespace::Client(client),
+            target
+        ))
+    );
     assert_eq!(
         host.runtime.server.entities.columns.appearance[event.slot as usize]
             .native
             .other_entity,
-        12
+        Some(qa_core::primitives::NativeEntityRef::entity(
+            ResourceNamespace::Module(secondary),
+            12
+        ))
     );
     Ok(())
 }
@@ -510,7 +532,10 @@ fn q3_stop_with_an_unresolved_native_target_does_not_invent_client_zero() -> Res
     let appearance = &mut host.runtime.server.entities.columns.appearance[event.slot as usize];
     appearance.models = [None; 4];
     appearance.native.entity_type = 13 + 75;
-    appearance.native.other_entity = 12;
+    appearance.native.other_entity = Some(qa_core::primitives::NativeEntityRef::entity(
+        ResourceNamespace::Module(ModuleId(8)),
+        12,
+    ));
     appearance.native.render_flags = 0x10;
     transmit(
         &mut host,

@@ -190,11 +190,14 @@ impl LoopRules {
 
     /// A standalone player event carries another native entity's number.
     /// SERVER maps it in that module's namespace before the wire projection.
-    pub fn stop_target(self, native: &NativeAppearanceTail) -> Option<u32> {
+    pub fn stop_target(
+        self,
+        native: &NativeAppearanceTail,
+    ) -> Option<qa_core::primitives::NativeEntityRef> {
         self.stop(native)?;
         let (_, _, player_event) = self.stop_event?;
         if self.event_once(native) && native.render_flags & player_event != 0 {
-            Some(native.other_entity)
+            native.other_entity
         } else {
             None
         }
@@ -204,7 +207,7 @@ impl LoopRules {
         self.stop(&appearance.native)?;
         Some(
             self.stop_target(&appearance.native)
-                .unwrap_or(native_number),
+                .map_or(native_number, |target| target.ordinal),
         )
     }
 }
