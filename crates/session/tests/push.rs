@@ -11,7 +11,7 @@ use qa_world::{
         surfaces::SurfaceTable,
         trace_policy,
     },
-    entities::{AllocationPolicy, EntityTable},
+    entities::{AllocationPolicy, EntityReference, EntityTable},
 };
 
 #[derive(Clone)]
@@ -45,6 +45,7 @@ struct Host {
     on_think: Option<fn(&mut Host)>,
     fail_push: bool,
     local_alias: bool,
+    blocked_capture: Option<EntityReference>,
 }
 fn native(slot: usize) -> CollisionOwner {
     CollisionOwner::Native(NativeEntity {
@@ -115,6 +116,7 @@ impl Host {
             on_think: None,
             fail_push: false,
             local_alias: false,
+            blocked_capture: None,
         };
         assert_eq!(host.add(Vec3::default(), 7.0, 4.0), 1);
         host.meta[1].deadline = 10.0;
@@ -215,9 +217,13 @@ impl Host {
 }
 impl PushHost for Host {
     type Error = PhysicsError;
+    type Cursor = usize;
+    fn start_candidates(&self) -> Self::Cursor {
+        1
+    }
     fn next_candidate(
         &mut self,
-        cursor: &mut usize,
+        cursor: &mut Self::Cursor,
     ) -> Result<Option<CollisionOwner>, PhysicsError> {
         if *cursor >= self.meta.len() {
             return Ok(None);
@@ -341,7 +347,22 @@ impl PushHost for Host {
         }
         self.link(owner, true)
     }
-    fn blocked(&mut self, _: CollisionOwner, blocker: CollisionOwner) -> Result<(), PhysicsError> {
+    fn capture_blocker(
+        &self,
+        owner: CollisionOwner,
+    ) -> Result<Option<EntityReference>, PhysicsError> {
+        Ok(self
+            .entities
+            .id_at(self.slot(owner)?)
+            .and_then(|entity| self.entities.capture_reference(entity)))
+    }
+    fn blocked(
+        &mut self,
+        _: CollisionOwner,
+        blocker: CollisionOwner,
+        captured: Option<EntityReference>,
+    ) -> Result<(), PhysicsError> {
+        self.blocked_capture = captured;
         self.events.push(Event::Blocked(self.slot(blocker)?));
         if let Some(callback) = self.on_block {
             callback(self);
@@ -570,6 +591,56 @@ fn blocked_undo_writes_reused_native_backing_without_restoring_other_fields() {
     assert_eq!(h.entities.columns.velocity[2], Vec3([71.0; 3]));
     assert_eq!(h.entities.columns.flags[2], 0x8000);
 }
+
+#[test]
+fn blocker_capture_precedes_passenger_touch_and_keeps_native_rebind_semantics() {
+    let wall = Bounds {
+        mins: Vec3([7.0, 0.0, -20.0]),
+        maxs: Vec3([9.0, 3.0, 20.0]),
+    };
+    let mut h = Host::new(RuleSetId::Quake, &[wall]);
+    let rider = h.add(Vec3([3.0, 1.0, 0.0]), 3.0, 2.0);
+    let old = h.entities.id_at(rider).unwrap();
+    let CollisionOwner::Native(reference) = native(rider) else {
+        unreachable!()
+    };
+    h.entities.columns.native_entity[rider] = Some(reference);
+    h.on_link = Some(|h, slot, touch| {
+        if slot == 2 && touch {
+            h.on_link = None;
+            let old = h.entities.id_at(slot).unwrap();
+            let body = h.entities.columns.body(slot);
+            let native = h.entities.columns.native_entity[slot];
+            h.area.unlink(old);
+            assert!(h.entities.release(old, ThinkTime::Seconds(1.0)));
+            let replacement = h
+                .entities
+                .allocate(
+                    ThinkTime::Seconds(3.0),
+                    ModuleId(7),
+                    AllocationPolicy::EDICT,
+                )
+                .unwrap()
+                .id;
+            assert_eq!(replacement.slot, old.slot);
+            assert_ne!(replacement, old);
+            h.entities.columns.set_body(slot, body);
+            h.entities.columns.native_entity[slot] = native;
+            h.entities.columns.collision_shape[slot] = CollisionShape::Box;
+            h.entities.columns.collision_contents[slot] = Contents::SOLID.0;
+        }
+    });
+    h.run(8, 1.0).unwrap();
+    assert!(h.events.contains(&Event::Blocked(rider)));
+    let captured = h.blocked_capture.unwrap();
+    assert_eq!(captured.entity(), old);
+    assert!(h.entities.resolve(old).is_none());
+    let replacement = h.entities.id_at(rider).unwrap();
+    assert_ne!(replacement, old);
+    assert_eq!(h.entities.resolve_reference(captured), Some(replacement));
+    assert_eq!(h.entities.columns.position[rider], Vec3([3.0, 1.0, 0.0]));
+}
+
 #[test]
 fn later_native_spawn_joins_the_same_monotonic_scan() {
     let mut h = Host::new(RuleSetId::Quake, &[]);

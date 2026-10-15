@@ -1690,6 +1690,249 @@ fn push_native_scan_includes_clients_freed_rows_and_later_spawns() {
 }
 
 #[test]
+fn push_native_scan_skips_aliases_without_skipping_primary_freed_or_later_rows() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let first = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let first_ordinal = vm.entity_number(first).unwrap() as i32;
+            let foreign = alias_actor(calls, ModuleId(2), 7);
+            let alias = vm
+                .admit_entity(&calls.services.server.entities, calls.context, foreign)
+                .unwrap();
+            assert_eq!(
+                vm.entity_number(alias.offset()).unwrap() as i32,
+                first_ordinal + 1
+            );
+            let last = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let last_ordinal = vm.entity_number(last).unwrap() as i32;
+            assert_eq!(last_ordinal, first_ordinal + 2);
+            vm.remove_entity(calls.services, calls.context, first)
+                .unwrap();
+            let mut cursor = 1;
+            for slot in (1..=first_ordinal).chain([last_ordinal]) {
+                let observed = vm.push_candidate(&mut cursor).unwrap().unwrap();
+                assert_eq!(
+                    observed,
+                    NativeEntity {
+                        module: calls.context.module,
+                        slot
+                    }
+                );
+                assert_eq!(
+                    vm.push_free(&calls.services.server.entities, observed)
+                        .unwrap(),
+                    slot == first_ordinal
+                );
+            }
+            assert_eq!(vm.push_candidate(&mut cursor).unwrap(), None);
+            let foreign = alias_actor(calls, ModuleId(3), 7);
+            let later_alias = vm
+                .admit_entity(&calls.services.server.entities, calls.context, foreign)
+                .unwrap();
+            assert_eq!(
+                vm.entity_number(later_alias.offset()).unwrap() as i32,
+                last_ordinal + 1
+            );
+            let later = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let later_ordinal = vm.entity_number(later).unwrap() as i32;
+            assert_eq!(later_ordinal, last_ordinal + 2);
+            assert_eq!(
+                vm.push_candidate(&mut cursor).unwrap().unwrap().slot,
+                later_ordinal
+            );
+            assert_eq!(vm.push_candidate(&mut cursor).unwrap(), None);
+            vm.release_entity(alias).unwrap();
+            vm.release_entity(later_alias).unwrap();
+        });
+    }
+}
+
+#[test]
+fn push_saved_primary_backing_cannot_write_an_alias_after_slot_takeover() {
+    use qa_session::physics::{MotionWrite, PushNumber};
+
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let saved = vm.spawn_entity(calls.services, calls.context).unwrap();
+            vm.remove_entity(calls.services, calls.context, saved)
+                .unwrap();
+            calls.context.clock = ThinkTime::Seconds(100.0);
+            let foreign = alias_actor(calls, ModuleId(2), 7);
+            let alias = vm
+                .admit_entity(&calls.services.server.entities, calls.context, foreign)
+                .unwrap();
+            assert_eq!(alias.offset(), saved);
+            let backing = vm
+                .entities
+                .read(u64::from(saved), vm.stride)
+                .unwrap()
+                .to_vec();
+            let body = calls
+                .services
+                .server
+                .entities
+                .columns
+                .body(foreign.slot as usize);
+            assert_eq!(
+                vm.push_store(
+                    &mut calls.services.server.entities,
+                    calls.context,
+                    saved,
+                    PushNumber::Motion(MotionWrite::Origin(0)),
+                    91.0,
+                ),
+                Err(CallError::Unsupported)
+            );
+            assert_eq!(
+                vm.push_number(saved, PushNumber::Motion(MotionWrite::Origin(0))),
+                Err(CallError::Unsupported)
+            );
+            assert_eq!(vm.push_flags(saved), Err(CallError::Unsupported));
+            assert_eq!(vm.blocked_binding(saved), Err(CallError::Unsupported));
+            assert_eq!(
+                vm.entities.read(u64::from(saved), vm.stride).unwrap(),
+                backing
+            );
+            assert_eq!(
+                body_bits(
+                    calls
+                        .services
+                        .server
+                        .entities
+                        .columns
+                        .body(foreign.slot as usize)
+                ),
+                body_bits(body)
+            );
+            assert_eq!(
+                vm.resolve_entity(&calls.services.server.entities, calls.context.module, saved)
+                    .unwrap(),
+                Some(foreign)
+            );
+            vm.release_entity(alias).unwrap();
+        });
+    }
+}
+
+#[test]
+fn pushed_client_pose_refresh_preserves_selected_bounds_and_rejects_old_lifetimes() {
+    use qa_session::clients::Connection;
+
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let native = NativeEntity {
+                module: calls.context.module,
+                slot: 1,
+            };
+            let client = calls
+                .services
+                .server
+                .connect(Connection::Local, calls.context.module, Some(native))
+                .unwrap();
+            let mut vm = seeded_vm(calls, 8);
+            let value = vm.stride as u32;
+            let captured = calls.services.server.clients[client.0 as usize].entity;
+            write(
+                &mut vm,
+                value,
+                b"origin",
+                &[100.0f32.to_bits(), 200.0f32.to_bits(), 300.0f32.to_bits()],
+            );
+            write(
+                &mut vm,
+                value,
+                b"velocity",
+                &[4.0f32.to_bits(), 5.0f32.to_bits(), 6.0f32.to_bits()],
+            );
+            write(
+                &mut vm,
+                value,
+                b"mins",
+                &[
+                    (-16.0f32).to_bits(),
+                    (-16.0f32).to_bits(),
+                    (-24.0f32).to_bits(),
+                ],
+            );
+            // The narrow pose boundary must not parse unrelated model/owner or
+            // require absent health, view, environment and tuning fields.
+            write(&mut vm, value, b"model", &[u32::MAX]);
+            write(&mut vm, value, b"owner", &[u32::MAX]);
+            let player = &mut calls.services.server.clients[client.0 as usize].player;
+            player.body.mins = Vec3([-15.0, -15.0, -12.0]);
+            player.body.maxs = Vec3([15.0, 15.0, 20.0]);
+            player.movement_rules = RuleSetId::Quake3;
+            player.trace_rules = RuleSetId::Quake2;
+            player.movement.mode = MovementMode::Fly;
+            player.movement.water_level = 3;
+            player.movement.tuning.gravity_multiplier = 1.75;
+            player.view_angles = Vec3([11.0, 22.0, 33.0]);
+            player.view_offset = Vec3([1.0, 2.0, 3.0]);
+
+            vm.refresh_client_pose(calls.services, calls.context, value, captured)
+                .unwrap();
+            let player = &calls.services.server.clients[client.0 as usize].player;
+            assert_eq!(
+                player.body.position,
+                if rules == RuleSetId::QuakeWorld {
+                    Vec3([99.0, 199.0, 288.0])
+                } else {
+                    Vec3([100.0, 200.0, 300.0])
+                }
+            );
+            assert_eq!(player.body.velocity, Vec3([4.0, 5.0, 6.0]));
+            assert_eq!(player.body.mins, Vec3([-15.0, -15.0, -12.0]));
+            assert_eq!(player.body.maxs, Vec3([15.0, 15.0, 20.0]));
+            assert_eq!(player.movement_rules, RuleSetId::Quake3);
+            assert_eq!(player.trace_rules, RuleSetId::Quake2);
+            assert_eq!(player.movement.mode, MovementMode::Fly);
+            assert_eq!(player.movement.water_level, 3);
+            assert_eq!(player.movement.tuning.gravity_multiplier, 1.75);
+            assert_eq!(player.view_angles, Vec3([11.0, 22.0, 33.0]));
+            assert_eq!(player.view_offset, Vec3([1.0, 2.0, 3.0]));
+
+            let before = body_bits(player.body);
+            calls.services.server.clients[client.0 as usize].module = ModuleId(17);
+            assert_eq!(
+                vm.refresh_client_pose(calls.services, calls.context, value, captured),
+                Err(CallError::Entity)
+            );
+            assert_eq!(
+                body_bits(calls.services.server.clients[client.0 as usize].player.body),
+                before
+            );
+            calls.services.server.clients[client.0 as usize].module = calls.context.module;
+            assert!(calls.services.server.disconnect(client));
+            vm.refresh_client_pose(calls.services, calls.context, value, captured)
+                .unwrap();
+            let reconnected = calls
+                .services
+                .server
+                .connect(Connection::Local, calls.context.module, Some(native))
+                .unwrap();
+            assert_eq!(reconnected, client);
+            let replacement = calls.services.server.clients[client.0 as usize].entity;
+            assert_ne!(replacement, captured);
+            vm.bind_client(&calls.services.server.entities, native, replacement)
+                .unwrap();
+            calls.services.server.clients[client.0 as usize]
+                .player
+                .body
+                .position = Vec3([777.0; 3]);
+            let before = body_bits(calls.services.server.clients[client.0 as usize].player.body);
+            vm.refresh_client_pose(calls.services, calls.context, value, captured)
+                .unwrap();
+            assert_eq!(
+                body_bits(calls.services.server.clients[client.0 as usize].player.body),
+                before
+            );
+        });
+    }
+}
+
+#[test]
 fn qc_trace_targets_validate_models_lazily_in_their_owners_geometry_namespace() {
     use qa_world::collision::{NativeTraceTarget, brushes::ModelRoot};
 

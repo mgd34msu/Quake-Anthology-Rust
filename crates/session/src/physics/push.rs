@@ -4,6 +4,7 @@ use qa_core::{
     primitives::{CollisionOwner, ThinkTime, Vec3},
 };
 use qa_gameplay::rules::motion::PushRules;
+use qa_world::entities::EntityReference;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PushFrame {
@@ -28,8 +29,12 @@ pub enum PushNumber {
 /// references remain generation checked. No body/VM borrow survives a method.
 pub trait PushHost {
     type Error: From<PhysicsError>;
-    fn next_candidate(&mut self, cursor: &mut usize)
-    -> Result<Option<CollisionOwner>, Self::Error>;
+    type Cursor;
+    fn start_candidates(&self) -> Self::Cursor;
+    fn next_candidate(
+        &mut self,
+        cursor: &mut Self::Cursor,
+    ) -> Result<Option<CollisionOwner>, Self::Error>;
     fn free(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error>;
     fn number(&mut self, owner: CollisionOwner, field: PushNumber) -> Result<f32, Self::Error>;
     fn store(
@@ -46,10 +51,15 @@ pub trait PushHost {
     fn link(&mut self, owner: CollisionOwner, touch: bool) -> Result<(), Self::Error>;
     fn push_entity(&mut self, owner: CollisionOwner, displacement: Vec3)
     -> Result<(), Self::Error>;
+    fn capture_blocker(
+        &self,
+        owner: CollisionOwner,
+    ) -> Result<Option<EntityReference>, Self::Error>;
     fn blocked(
         &mut self,
         pusher: CollisionOwner,
         blocker: CollisionOwner,
+        captured: Option<EntityReference>,
     ) -> Result<(), Self::Error>;
     /// Clear native deadline, prepare world time/self/other in source order,
     /// select the resulting current function and call it exactly once.
@@ -258,7 +268,7 @@ fn displace<H: PushHost>(
         host.store(pusher, PushNumber::LocalTime, value)?;
     }
     host.link(pusher, false)?;
-    let mut cursor = 1;
+    let mut cursor = host.start_candidates();
     while let Some(candidate) = host.next_candidate(&mut cursor)? {
         if host.free(candidate)? || !rules.candidate(host.number(candidate, PushNumber::MoveType)?)
         {
@@ -305,6 +315,7 @@ fn displace<H: PushHost>(
         }
         let original = vector(host, candidate, origin)?;
         undo.admit(candidate, original)?;
+        let captured = host.capture_blocker(candidate)?;
         if rules.traced_passengers {
             nonsolid(host, pusher, rules, |host| {
                 host.push_entity(candidate, movement)
@@ -355,7 +366,7 @@ fn displace<H: PushHost>(
             let value = host.number(pusher, PushNumber::LocalTime)? - time;
             host.store(pusher, PushNumber::LocalTime, value)?;
         }
-        host.blocked(pusher, candidate)?;
+        host.blocked(pusher, candidate, captured)?;
         for index in 0..undo.used {
             let entry = undo.entries[index].ok_or(PhysicsError::Entity)?;
             set_origin(host, entry.owner, entry.origin)?;

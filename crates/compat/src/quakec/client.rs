@@ -444,6 +444,23 @@ impl Vm {
         self.projection
             .quakec_read_client(services, &self.entities, &self.strings, context, native)
     }
+    /// Import only the physical pose of this captured connected lifetime.
+    /// QW retains the selected player's bounds when converting native origin.
+    pub fn refresh_client_pose(
+        &self,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        native: u32,
+        entity: EntityId,
+    ) -> Result<(), CallError> {
+        self.projection.quakec_refresh_client_pose(
+            services,
+            &self.entities,
+            context,
+            native,
+            entity,
+        )
+    }
     pub fn write_client(
         &mut self,
         services: &mut EngineServices<'_>,

@@ -91,6 +91,17 @@ struct ClientEnvironmentWrite {
     flags: Option<u32>,
     ground: Option<u32>,
 }
+fn apply_client_pose(
+    player: &mut PlayerState,
+    origin: Vec3,
+    velocity: Vec3,
+    native_mins: Option<Vec3>,
+) -> Vec3 {
+    let offset = native_mins.map(|mins| mins - player.body.mins);
+    player.body.position = offset.map_or(origin, |offset| origin + offset);
+    player.body.velocity = velocity;
+    offset.unwrap_or_default()
+}
 fn apply_client_mode(player: &mut PlayerState, mode: Option<qa_core::primitives::MovementMode>) {
     if player.movement.mode != qa_core::primitives::MovementMode::Spectator
         && let Some(mode) = mode
@@ -539,8 +550,7 @@ impl QuakeCLayout {
     ) -> Result<(), CallError> {
         let origin = self.vector(memory, address, self.origin)?;
         let velocity = self.vector(memory, address, self.velocity)?;
-        player.body.position = origin;
-        player.body.velocity = velocity;
+        apply_client_pose(player, origin, velocity, None);
         Ok(())
     }
     fn store_client_environment(
@@ -1627,6 +1637,53 @@ impl EntityProjection {
         entities.columns.set_velocity(slot, velocity);
         Ok(())
     }
+    pub(crate) fn quakec_refresh_client_pose(
+        &self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        entity: EntityId,
+    ) -> Result<(), CallError> {
+        if !matches!(
+            context.native_rules,
+            RuleSetId::Quake | RuleSetId::QuakeWorld
+        ) {
+            return Err(CallError::Unsupported);
+        }
+        let Some(index) = services.server.entities.client_index(entity) else {
+            return Ok(());
+        };
+        let client = services
+            .server
+            .clients
+            .get(index)
+            .ok_or(CallError::Entity)?;
+        if !client.is_active() {
+            return Ok(());
+        }
+        let native = self.quakec_identity(memory, context, value)?;
+        if client.entity != entity
+            || client.module != context.module
+            || self.quakec_bound_entity(&services.server.entities, native)? != Some(entity)
+        {
+            return Err(CallError::Entity);
+        }
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
+        let origin = layout.vector(memory, address, layout.origin)?;
+        let velocity = layout.vector(memory, address, layout.velocity)?;
+        let mins = (context.native_rules == RuleSetId::QuakeWorld)
+            .then(|| layout.vector(memory, address, layout.mins))
+            .transpose()?;
+        apply_client_pose(
+            &mut services.server.clients[index].player,
+            origin,
+            velocity,
+            mins,
+        );
+        Ok(())
+    }
     pub(crate) fn quakec_read_client(
         &mut self,
         services: &mut EngineServices<'_>,
@@ -1664,9 +1721,7 @@ impl EntityProjection {
         if layout.client.view_offset.is_some() {
             player.view_offset = view_offset;
         }
-        let offset = mins - player.body.mins;
-        player.body.position = origin + offset;
-        player.body.velocity = velocity;
+        let offset = apply_client_pose(player, origin, velocity, Some(mins));
         player.view_angles = view;
         if player.movement.mode != qa_core::primitives::MovementMode::Spectator {
             player.movement.mode = if health <= 0.0 {
@@ -1997,12 +2052,15 @@ impl EntityProjection {
         cursor: &mut usize,
     ) -> Result<Option<NativeEntity>, CallError> {
         let module = self.owner.ok_or(CallError::Entity)?;
-        if *cursor >= self.observed_count {
-            return Ok(None);
+        while *cursor < self.observed_count {
+            let slot = i32::try_from(*cursor).map_err(|_| CallError::Entity)?;
+            *cursor += 1;
+            if self.quakec_is_foreign(slot as usize) {
+                continue;
+            }
+            return Ok(Some(NativeEntity { module, slot }));
         }
-        let slot = i32::try_from(*cursor).map_err(|_| CallError::Entity)?;
-        *cursor += 1;
-        Ok(Some(NativeEntity { module, slot }))
+        Ok(None)
     }
     pub(crate) fn quakec_push_free(
         &self,
