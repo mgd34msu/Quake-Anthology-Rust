@@ -981,6 +981,20 @@ impl ServiceStorage {
 
 /// References are borrowed for a module call. The server, cvar table, command
 /// buffer, VFS, geometry and output ring remain their existing single owners.
+#[derive(Clone, Copy)]
+pub struct ForeignTraceRead<'a> {
+    pub view: &'a dyn NativeTraceEntities,
+    pub error: &'a crate::entities::TraceError,
+}
+impl ForeignTraceRead<'_> {
+    pub fn complete<T>(read: Option<Self>, result: Result<T, CallError>) -> Result<T, CallError> {
+        if let Some(read) = read {
+            read.error.take()?;
+        }
+        result
+    }
+}
+
 pub struct EngineServices<'a> {
     pub server: &'a mut Server,
     pub callbacks: Option<&'a dyn qa_session::dispatch::CallbackResolver>,
@@ -1005,6 +1019,8 @@ pub struct EngineServices<'a> {
     pub storage: &'a mut ServiceStorage,
     pub geometry: &'a CollisionStore,
     pub world: Option<(GeometryId, u32)>,
+    pub native_geometry: Option<GeometryId>,
+    pub foreign_trace: Option<ForeignTraceRead<'a>>,
     pub visibility: Option<(
         &'a qa_world::visibility::VisibilityWorld,
         &'a mut qa_world::leaves::LeafScratch,
@@ -1793,6 +1809,7 @@ impl EngineServices<'_> {
                 pass,
             )
             .with_native_entities(native)
+            .with_foreign_entities(self.foreign_trace.map(|read| read.view))
             .with_native_models(Some(self.storage)),
             &mut self.server.clients,
         ))
@@ -1803,32 +1820,36 @@ impl EngineServices<'_> {
         native: Option<&dyn NativeTraceEntities>,
         options: qa_movement::MoveOptions,
     ) -> Result<qa_movement::MovementResult, CallError> {
-        let player = &self
-            .server
-            .clients
-            .get(id.0 as usize)
-            .filter(|client| client.connection.is_some())
-            .ok_or(CallError::Entity)?
-            .player;
-        let tuning = self.storage.movement.resolve(
-            self.cvars,
-            player.movement_rules,
-            player.movement.tuning,
-        );
-        let (trace, clients) = self.world_trace(CollisionOwner::None, native)?;
-        // Admission was checked before the disjoint world/client borrow.
-        let client = &mut clients[id.0 as usize];
-        let mut trace = trace.with_pass(CollisionOwner::Lifetime(client.entity));
-        let base = std::mem::replace(&mut client.player.movement.tuning, tuning);
-        let result = qa_movement::pmove(
-            client.command,
-            &mut client.player,
-            &mut trace,
-            options,
-            qa_movement::no_boundary,
-        );
-        client.player.movement.tuning = base;
-        result.map_err(|_| CallError::Geometry)
+        let foreign = self.foreign_trace;
+        let result = (|| {
+            let player = &self
+                .server
+                .clients
+                .get(id.0 as usize)
+                .filter(|client| client.connection.is_some())
+                .ok_or(CallError::Entity)?
+                .player;
+            let tuning = self.storage.movement.resolve(
+                self.cvars,
+                player.movement_rules,
+                player.movement.tuning,
+            );
+            let (trace, clients) = self.world_trace(CollisionOwner::None, native)?;
+            // Admission was checked before the disjoint world/client borrow.
+            let client = &mut clients[id.0 as usize];
+            let mut trace = trace.with_pass(CollisionOwner::Lifetime(client.entity));
+            let base = std::mem::replace(&mut client.player.movement.tuning, tuning);
+            let result = qa_movement::pmove(
+                client.command,
+                &mut client.player,
+                &mut trace,
+                options,
+                qa_movement::no_boundary,
+            );
+            client.player.movement.tuning = base;
+            result.map_err(|_| CallError::Geometry)
+        })();
+        ForeignTraceRead::complete(foreign, result)
     }
     pub fn ignore_areas(&self, source: qa_core::primitives::RuleSetId, integer: bool) -> bool {
         if integer {
@@ -2033,8 +2054,12 @@ impl EngineServices<'_> {
         query: TraceQuery<'_>,
         native: Option<&dyn NativeTraceEntities>,
     ) -> Result<Trace, CallError> {
-        let (mut trace, _) = self.world_trace(CollisionOwner::None, native)?;
-        trace.trace(query).map_err(|_| CallError::Geometry)
+        let foreign = self.foreign_trace;
+        let result = (|| {
+            let (mut trace, _) = self.world_trace(CollisionOwner::None, native)?;
+            trace.trace(query).map_err(|_| CallError::Geometry)
+        })();
+        ForeignTraceRead::complete(foreign, result)
     }
     pub fn clip(&mut self, query: TraceQuery<'_>, target: ClipTarget) -> Result<Trace, CallError> {
         match target {
@@ -2068,10 +2093,14 @@ impl EngineServices<'_> {
         pass: CollisionOwner,
         native: Option<&dyn NativeTraceEntities>,
     ) -> Result<Contents, CallError> {
-        let (trace, _) = self.world_trace(pass, native)?;
-        trace
-            .point_contents(point, rules, &[])
-            .map_err(|_| CallError::Geometry)
+        let foreign = self.foreign_trace;
+        let result = (|| {
+            let (trace, _) = self.world_trace(pass, native)?;
+            trace
+                .point_contents(point, rules, &[])
+                .map_err(|_| CallError::Geometry)
+        })();
+        ForeignTraceRead::complete(foreign, result)
     }
     pub fn link(
         &mut self,

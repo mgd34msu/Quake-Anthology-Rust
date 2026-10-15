@@ -119,13 +119,17 @@ impl MonsterHost for Host<'_, '_> {
     fn contents(&mut self, point: Vec3) -> Result<i32, CallError> {
         let services = &mut self.services;
         let entity_rules = self.entity_rules;
-        self.vm
-            .with_trace_view(self.context, self.native, |view, pass| {
+        self.vm.with_trace_view(
+            self.context,
+            self.native,
+            services.native_geometry,
+            |view, pass| {
                 Ok(
                     (ENGINE_CALLS.point_contents)(services, point, entity_rules, pass, Some(view))?
                         .to_q1(),
                 )
-            })
+            },
+        )
     }
     fn trace(
         &mut self,
@@ -143,12 +147,15 @@ impl MonsterHost for Host<'_, '_> {
         query.mins = bounds.mins;
         query.maxs = bounds.maxs;
         let services = &mut self.services;
-        let trace = self
-            .vm
-            .with_trace_view(self.context, self.native, |view, pass| {
+        let trace = self.vm.with_trace_view(
+            self.context,
+            self.native,
+            services.native_geometry,
+            |view, pass| {
                 query.pass = pass;
                 (ENGINE_CALLS.trace)(services, query, Some(view))
-            })?;
+            },
+        )?;
         let ground = trace
             .entity
             .map(|hit| {

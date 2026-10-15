@@ -156,6 +156,8 @@ impl Fixture {
             storage: &mut self.storage,
             geometry: &self.geometry,
             world: None,
+            native_geometry: None,
+            foreign_trace: None,
             visibility: Some((&self.world, &mut self.leaves, &mut self.row)),
             portals: Some(&mut self.portals),
             scratch: &mut self.scratch,

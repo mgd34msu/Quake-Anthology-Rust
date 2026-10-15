@@ -8,7 +8,9 @@ use qa_core::sys_events::EventTime;
 use qa_core::text::{FixedText, InfoError, InfoRules, InfoUpdate};
 use qa_world::{
     area::{AreaGrid, AttachmentTransport, LinkFlags, LinkIntent, LinkOrder},
-    collision::{CollisionStore, Contents, TraceError, TraceScratch, WorldTrace},
+    collision::{
+        CollisionStore, Contents, NativeTraceEntities, TraceError, TraceScratch, WorldTrace,
+    },
     entities::EntityTable,
 };
 
@@ -627,6 +629,8 @@ impl Server {
             geometry,
             index,
             scratch,
+            None,
+            None,
             Default::default(),
             crate::physics::no_body_boundary,
         )?;
@@ -654,6 +658,8 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
+        native: Option<&dyn NativeTraceEntities>,
+        foreign: Option<&dyn NativeTraceEntities>,
         options: qa_movement::MoveOptions,
         mut boundary: B,
     ) -> Result<qa_movement::MovementResult, E>
@@ -670,7 +676,9 @@ impl Server {
             &self.area,
             scratch,
             CollisionOwner::Lifetime(client.entity),
-        );
+        )
+        .with_native_entities(native)
+        .with_foreign_entities(foreign);
         qa_movement::pmove(
             command,
             &mut client.player,

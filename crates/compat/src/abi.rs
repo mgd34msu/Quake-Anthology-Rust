@@ -1263,6 +1263,7 @@ fn qc_trace_line(
         &vm.strings,
         c.context,
         qc_word(arguments, 7)?,
+        c.services.native_geometry,
     )?;
     query.pass = pass;
     let trace = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
@@ -2978,7 +2979,13 @@ fn qc_point_contents(
     {
         Some(
             vm.projection
-                .quakec_trace_view(&vm.entities, &vm.strings, c.context, 0)?
+                .quakec_trace_view(
+                    &vm.entities,
+                    &vm.strings,
+                    c.context,
+                    0,
+                    c.services.native_geometry,
+                )?
                 .0,
         )
     } else {

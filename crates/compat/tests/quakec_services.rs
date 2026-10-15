@@ -912,6 +912,8 @@ fn with_collision_services(
         storage: &mut storage,
         geometry: &geometry,
         world: Some((world, 0)),
+        native_geometry: Some(world),
+        foreign_trace: None,
         visibility: None,
         portals: None,
         scratch: &mut scratch,
@@ -1615,6 +1617,162 @@ fn push_native_scan_includes_clients_freed_rows_and_later_spawns() {
 }
 
 #[test]
+fn qc_trace_targets_validate_models_lazily_in_their_owners_geometry_namespace() {
+    use qa_world::collision::{NativeTraceTarget, brushes::ModelRoot};
+
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let id = entity(calls, &vm, value);
+        let native = NativeEntity {
+            module: calls.context.module,
+            slot: vm.entity_number(value).unwrap() as i32,
+        };
+        let columns = &calls.services.server.entities.columns;
+        let cached = NativeTraceTarget {
+            body: columns.body(id.slot as usize),
+            angles: Vec3::default(),
+            shape: CollisionShape::Box,
+            rules: columns.model_rules[id.slot as usize],
+            contents_pose: None,
+        };
+        let mut store = CollisionStore::new();
+        let load = |store: &mut CollisionStore, inline: Bounds| {
+            let mut tree = BrushTree::direct(0).unwrap();
+            tree.models.push(ModelRoot::Leaf(0));
+            store
+                .load_brushes(
+                    Vec::new(),
+                    Vec::new(),
+                    SurfaceTable::flags(Vec::new()),
+                    tree,
+                    vec![Bounds::default(), inline],
+                )
+                .unwrap()
+        };
+        let query_geometry = load(
+            &mut store,
+            Bounds {
+                mins: Vec3([-4.0; 3]),
+                maxs: Vec3([4.0; 3]),
+            },
+        );
+        let owner_geometry = load(
+            &mut store,
+            Bounds {
+                mins: Vec3([-8.0; 3]),
+                maxs: Vec3([8.0; 3]),
+            },
+        );
+        assert_ne!(query_geometry, owner_geometry);
+        write(&mut vm, value, b"model", &[u32::MAX]);
+        write(&mut vm, value, b"solid", &[0]);
+        assert!(
+            !vm.with_trace_view(calls.context, value, None, |view, _| {
+                Ok(view.fields(native, false).unwrap().enabled)
+            })
+            .unwrap()
+        );
+        write(&mut vm, value, b"solid", &[2.0_f32.to_bits()]);
+        let target = vm
+            .with_trace_view(calls.context, value, None, |view, _| {
+                Ok(view.target(native, cached, false, &store, query_geometry, None))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.shape, CollisionShape::Box);
+        write(&mut vm, value, b"solid", &[4.0_f32.to_bits()]);
+        assert!(
+            vm.with_trace_view(calls.context, value, Some(owner_geometry), |view, _| {
+                Ok(view.fields(native, false).unwrap().enabled)
+            })
+            .unwrap()
+        );
+        assert!(matches!(
+            vm.with_trace_view(calls.context, value, Some(owner_geometry), |view, _| {
+                Ok(view.target(native, cached, false, &store, query_geometry, None))
+            }),
+            Err(CallError::Memory)
+        ));
+        let inline = vm.insert_string(b"*1").unwrap() as u32;
+        write(&mut vm, value, b"model", &[inline]);
+        assert!(matches!(
+            vm.with_trace_view(calls.context, value, None, |view, _| {
+                Ok(view.target(native, cached, false, &store, query_geometry, None))
+            }),
+            Err(CallError::Geometry)
+        ));
+        let target = vm
+            .with_trace_view(calls.context, value, Some(owner_geometry), |view, _| {
+                assert!(view.supports(native.module));
+                assert!(!view.supports(ModuleId(2)));
+                assert!(
+                    view.fields(
+                        NativeEntity {
+                            module: ModuleId(2),
+                            ..native
+                        },
+                        false
+                    )
+                    .is_none()
+                );
+                Ok(view.target(native, cached, false, &store, query_geometry, None))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            target.shape,
+            CollisionShape::Model {
+                geometry: owner_geometry,
+                index: 1
+            }
+        );
+    });
+}
+
+#[test]
+fn shared_foreign_trace_errors_keep_the_first_failure_until_the_operation_drains_it() {
+    use qa_compat::{entities::TraceError, services::ForeignTraceRead};
+
+    with_services(RuleSetId::Quake, |calls| {
+        let vm = seeded_vm(calls, 4);
+        vm.with_trace_view(calls.context, 0, None, |view, _| {
+            let error = TraceError::default();
+            let read = Some(ForeignTraceRead {
+                view,
+                error: &error,
+            });
+            assert_eq!(error.capture(|| Err::<(), _>(CallError::Memory)), None);
+            assert_eq!(
+                error.capture(|| panic!("later reads stop after the first error")),
+                None::<()>
+            );
+            assert_eq!(error.finish(), Err(CallError::Memory));
+            assert_eq!(error.finish(), Err(CallError::Memory));
+            assert_eq!(
+                ForeignTraceRead::complete(read, Err::<(), _>(CallError::Geometry)),
+                Err(CallError::Memory)
+            );
+            assert_eq!(error.finish(), Ok(()));
+            assert_eq!(
+                ForeignTraceRead::complete(read, Err::<(), _>(CallError::Geometry)),
+                Err(CallError::Geometry)
+            );
+            assert_eq!(error.capture(|| Ok(7)), Some(7));
+            assert_eq!(error.capture(|| Err::<(), _>(CallError::Entity)), None);
+            assert_eq!(
+                ForeignTraceRead::complete(read, Ok(7)),
+                Err(CallError::Entity)
+            );
+            assert_eq!(ForeignTraceRead::complete(read, Ok(7)), Ok(7));
+            assert_eq!(ForeignTraceRead::complete(None, Ok(7)), Ok(7));
+            Ok(())
+        })
+        .unwrap();
+    });
+}
+
+#[test]
 fn push_ground_decodes_foreign_aliases_without_rebinding_stale_lifetimes() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         with_services(rules, |calls| {
@@ -1637,22 +1795,35 @@ fn push_ground_decodes_foreign_aliases_without_rebinding_stale_lifetimes() {
             assert_eq!(ground, CollisionOwner::Lifetime(foreign));
             assert!(calls.services.server.entities.same_owner(ground, weak));
             assert_eq!(
-                vm.with_trace_view(calls.context, rider, |view, pass| {
-                    assert_eq!(
-                        pass,
-                        CollisionOwner::Native(NativeEntity {
+                vm.with_trace_view(
+                    calls.context,
+                    rider,
+                    calls.services.native_geometry,
+                    |view, pass| {
+                        assert_eq!(
+                            pass,
+                            CollisionOwner::Native(NativeEntity {
+                                module: calls.context.module,
+                                slot: ordinal,
+                            })
+                        );
+                        Ok(view.owner(NativeEntity {
                             module: calls.context.module,
                             slot: ordinal,
-                        })
-                    );
-                    Ok(view.owner(ordinal))
-                })
+                        }))
+                    }
+                )
                 .unwrap(),
                 Some(ground)
             );
             assert_eq!(
-                vm.with_trace_view(calls.context, alias.offset(), |_, pass| Ok(pass))
-                    .unwrap(),
+                vm.with_trace_view(
+                    calls.context,
+                    alias.offset(),
+                    calls.services.native_geometry,
+                    |_, pass| Ok(pass)
+                )
+                .unwrap(),
                 ground
             );
             assert!(
@@ -1692,8 +1863,16 @@ fn push_ground_decodes_foreign_aliases_without_rebinding_stale_lifetimes() {
                     .same_owner(world, CollisionOwner::None)
             );
             assert_eq!(
-                vm.with_trace_view(calls.context, rider, |view, _| Ok(view.owner(ordinal)))
-                    .unwrap(),
+                vm.with_trace_view(
+                    calls.context,
+                    rider,
+                    calls.services.native_geometry,
+                    |view, _| Ok(view.owner(NativeEntity {
+                        module: calls.context.module,
+                        slot: ordinal
+                    }))
+                )
+                .unwrap(),
                 Some(CollisionOwner::None)
             );
             let anonymous = alias_actor(calls, ModuleId(3), 4);

@@ -36,13 +36,16 @@ pub trait NativeModelNames {
 /// A stopped module's current ownership/classification fields. Geometry and
 /// narrow-phase clipping remain in this shared trace implementation.
 pub trait NativeTraceEntities {
-    fn module(&self) -> ModuleId;
-    fn owner(&self, slot: i32) -> Option<CollisionOwner>;
-    fn fields(&self, slot: i32, point_contents: bool) -> Option<NativeTraceFields>;
-    fn bounds(&self, slot: i32, cached: Bounds) -> Option<Bounds>;
+    fn supports(&self, module: ModuleId) -> bool;
+    fn anchor(&self, _module: ModuleId) -> Option<EntityId> {
+        None
+    }
+    fn owner(&self, native: NativeEntity) -> Option<CollisionOwner>;
+    fn fields(&self, native: NativeEntity, point_contents: bool) -> Option<NativeTraceFields>;
+    fn bounds(&self, native: NativeEntity, cached: Bounds) -> Option<Bounds>;
     fn target(
         &self,
-        slot: i32,
+        native: NativeEntity,
         cached: NativeTraceTarget,
         point_contents: bool,
         store: &CollisionStore,
@@ -61,7 +64,8 @@ pub struct WorldTrace<'a> {
     area: &'a AreaGrid,
     scratch: &'a mut TraceScratch,
     pass: CollisionOwner,
-    native_entities: Option<(ModuleId, &'a dyn NativeTraceEntities)>,
+    native_entities: Option<&'a dyn NativeTraceEntities>,
+    foreign_entities: Option<&'a dyn NativeTraceEntities>,
     native_models: Option<&'a dyn NativeModelNames>,
     candidates: Option<&'a [EntityId]>,
 }
@@ -85,6 +89,7 @@ impl<'a> WorldTrace<'a> {
             scratch,
             pass,
             native_entities: None,
+            foreign_entities: None,
             native_models: None,
             candidates: None,
         }
@@ -96,7 +101,12 @@ impl<'a> WorldTrace<'a> {
     }
 
     pub fn with_native_entities(mut self, view: Option<&'a dyn NativeTraceEntities>) -> Self {
-        self.native_entities = view.map(|view| (view.module(), view));
+        self.native_entities = view;
+        self
+    }
+
+    pub fn with_foreign_entities(mut self, view: Option<&'a dyn NativeTraceEntities>) -> Self {
+        self.foreign_entities = view;
         self
     }
 
@@ -346,11 +356,10 @@ impl<'a> WorldTrace<'a> {
                 )
             }
         };
-        if let Some((module, view)) = self.native_entities
-            && let Some(native) = native
-            && native.module == module
+        if let Some(native) = native
+            && let Some(view) = self.native_view(native)
         {
-            return view.owner(native.slot);
+            return view.owner(native);
         }
         Some(cached)
     }
@@ -384,11 +393,10 @@ impl<'a> WorldTrace<'a> {
                 )
             }
         };
-        let mut fields = if let Some((module, view)) = self.native_entities
-            && let Some(native) = native
-            && native.module == module
+        let mut fields = if let Some(native) = native
+            && let Some(view) = self.native_view(native)
         {
-            view.fields(native.slot, point_contents)?
+            view.fields(native, point_contents)?
         } else {
             cached
         };
@@ -398,11 +406,24 @@ impl<'a> WorldTrace<'a> {
         Some(fields)
     }
 
+    fn native_view(&self, native: NativeEntity) -> Option<&'a dyn NativeTraceEntities> {
+        let supports = |view: &dyn NativeTraceEntities| {
+            view.supports(native.module)
+                && view.anchor(native.module).is_none_or(|anchor| {
+                    self.entities
+                        .resolve(anchor)
+                        .is_some_and(|slot| self.entities.columns.owner[slot] == native.module)
+                })
+        };
+        self.native_entities
+            .filter(|view| supports(*view))
+            .or_else(|| self.foreign_entities.filter(|view| supports(*view)))
+    }
+
     fn native(&self, id: EntityId) -> Option<(NativeEntity, &'a dyn NativeTraceEntities)> {
         let slot = self.entities.resolve(id)?;
         let native = self.entities.columns.native_entity[slot]?;
-        let (module, view) = self.native_entities?;
-        (native.module == module).then_some((native, view))
+        self.native_view(native).map(|view| (native, view))
     }
 
     fn owner_bounds(&self, owner: CollisionOwner) -> Option<Bounds> {
@@ -410,10 +431,7 @@ impl<'a> WorldTrace<'a> {
             CollisionOwner::None => None,
             CollisionOwner::Lifetime(id) => self.bounds(id),
             CollisionOwner::Native(native) => {
-                let (module, view) = self.native_entities?;
-                (native.module == module)
-                    .then(|| view.bounds(native.slot, Bounds::default()))
-                    .flatten()
+                self.native_view(native)?.bounds(native, Bounds::default())
             }
         }
     }
@@ -425,7 +443,7 @@ impl<'a> WorldTrace<'a> {
             maxs: self.entities.columns.maxs[slot],
         };
         if let Some((native, view)) = self.native(id) {
-            view.bounds(native.slot, cached)
+            view.bounds(native, cached)
         } else {
             Some(cached)
         }
@@ -443,7 +461,7 @@ impl<'a> WorldTrace<'a> {
         };
         if let Some((native, view)) = self.native(id) {
             view.target(
-                native.slot,
+                native,
                 cached,
                 point_contents,
                 self.store,

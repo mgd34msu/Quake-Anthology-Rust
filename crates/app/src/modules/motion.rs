@@ -383,7 +383,7 @@ impl<'a> Host<'a> {
                 query.mins = mins;
                 query.maxs = maxs;
             }
-            vm.with_trace_view(context, native, |view, pass| {
+            vm.with_trace_view(context, native, services.native_geometry, |view, pass| {
                 query.pass = pass;
                 services.trace(query, Some(view))
             })
@@ -778,7 +778,7 @@ impl ClientHost for Host<'_> {
     fn point_contents(&mut self, entity: EntityId, point: Vec3) -> Result<i32, Self::Error> {
         self.edit(entity, |vm, services, context, native| {
             let (_, rules) = trace_policy(context.trace_rules);
-            vm.with_trace_view(context, native, |view, pass| {
+            vm.with_trace_view(context, native, services.native_geometry, |view, pass| {
                 services.point_contents(point, rules, pass, Some(view))
             })
             .map(|contents| contents.to_q1())

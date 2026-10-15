@@ -782,15 +782,15 @@ fn live_native_flags_keep_common_players_and_replace_stale_native_classes() {
     };
     struct LiveClasses;
     impl NativeTraceEntities for LiveClasses {
-        fn module(&self) -> ModuleId {
-            ModuleId(2)
+        fn supports(&self, module: ModuleId) -> bool {
+            module == ModuleId(2)
         }
-        fn owner(&self, _: i32) -> Option<CollisionOwner> {
+        fn owner(&self, _: NativeEntity) -> Option<CollisionOwner> {
             Some(CollisionOwner::None)
         }
-        fn fields(&self, slot: i32, _: bool) -> Option<NativeTraceFields> {
+        fn fields(&self, native: NativeEntity, _: bool) -> Option<NativeTraceFields> {
             Some(NativeTraceFields {
-                tags: if slot == 0 {
+                tags: if native.slot == 0 {
                     CollisionTags::default()
                 } else {
                     CollisionTags::MONSTER
@@ -800,12 +800,12 @@ fn live_native_flags_keep_common_players_and_replace_stale_native_classes() {
                 contents: Contents::BODY,
             })
         }
-        fn bounds(&self, _: i32, cached: Bounds) -> Option<Bounds> {
+        fn bounds(&self, _: NativeEntity, cached: Bounds) -> Option<Bounds> {
             Some(cached)
         }
         fn target(
             &self,
-            _: i32,
+            _: NativeEntity,
             cached: NativeTraceTarget,
             _: bool,
             _: &CollisionStore,
@@ -866,6 +866,177 @@ fn live_native_flags_keep_common_players_and_replace_stale_native_classes() {
     assert_eq!(tracer.trace(q).unwrap().entity, Some(monster));
     q.mask |= Contents::PLAYER;
     assert_eq!(tracer.trace(q).unwrap().entity, Some(client));
+}
+
+#[test]
+fn owner_views_select_each_namespace_and_never_fall_back_after_a_supported_read() {
+    use qa_core::primitives::RuleSetId;
+    use qa_world::collision::{
+        NativeModelNames, NativeTraceEntities, NativeTraceFields, NativeTraceTarget,
+    };
+    use std::cell::Cell;
+
+    struct View {
+        module: ModuleId,
+        enabled: Option<bool>,
+        anchor: Option<EntityId>,
+        reads: Cell<usize>,
+    }
+    impl NativeTraceEntities for View {
+        fn supports(&self, module: ModuleId) -> bool {
+            module == self.module
+        }
+        fn anchor(&self, _: ModuleId) -> Option<EntityId> {
+            self.anchor
+        }
+        fn owner(&self, native: NativeEntity) -> Option<CollisionOwner> {
+            assert_eq!(native.module, self.module);
+            Some(CollisionOwner::None)
+        }
+        fn fields(&self, native: NativeEntity, _: bool) -> Option<NativeTraceFields> {
+            assert_eq!(native.module, self.module);
+            self.reads.set(self.reads.get() + 1);
+            Some(NativeTraceFields {
+                enabled: self.enabled?,
+                box_target: true,
+                contents: Contents::BODY,
+                ..Default::default()
+            })
+        }
+        fn bounds(&self, native: NativeEntity, cached: Bounds) -> Option<Bounds> {
+            assert_eq!(native.module, self.module);
+            Some(cached)
+        }
+        fn target(
+            &self,
+            native: NativeEntity,
+            cached: NativeTraceTarget,
+            _: bool,
+            _: &CollisionStore,
+            _: GeometryId,
+            _: Option<&dyn NativeModelNames>,
+        ) -> Option<NativeTraceTarget> {
+            assert_eq!(native.module, self.module);
+            Some(cached)
+        }
+    }
+
+    let world = empty();
+    let (mut table, mut area) = table();
+    let local_body = body(
+        &mut table,
+        &mut area,
+        Vec3([-20.0, 0.0, 0.0]),
+        Vec3([-2.0; 3]),
+        Vec3([2.0; 3]),
+    );
+    let foreign_body = body(
+        &mut table,
+        &mut area,
+        Vec3([20.0, 0.0, 0.0]),
+        Vec3([-2.0; 3]),
+        Vec3([2.0; 3]),
+    );
+    table.columns.owner[foreign_body.slot as usize] = ModuleId(3);
+    table.columns.native_entity[foreign_body.slot as usize]
+        .as_mut()
+        .unwrap()
+        .module = ModuleId(3);
+    let local = View {
+        module: ModuleId(2),
+        enabled: Some(false),
+        anchor: None,
+        reads: Cell::new(0),
+    };
+    let mut foreign = View {
+        module: ModuleId(3),
+        enabled: Some(true),
+        anchor: None,
+        reads: Cell::new(0),
+    };
+    let rules = qa_world::collision::trace_policy(RuleSetId::Quake2).1;
+    let mut scratch = world.store.scratch();
+    let trace = WorldTrace::new(
+        &world.store,
+        world.geometry,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    )
+    .with_native_entities(Some(&local))
+    .with_foreign_entities(Some(&foreign))
+    .trace(query(rules))
+    .unwrap();
+    assert_eq!(trace.entity, Some(foreign_body));
+    assert!(local.reads.get() > 0);
+    assert!(foreign.reads.get() > 0);
+
+    let candidates = [local_body];
+    foreign.module = ModuleId(2);
+    foreign.reads.set(0);
+    for enabled in [Some(false), None] {
+        let local = View {
+            module: ModuleId(2),
+            enabled,
+            anchor: None,
+            reads: Cell::new(0),
+        };
+        let trace = WorldTrace::new(
+            &world.store,
+            world.geometry,
+            0,
+            &table,
+            &area,
+            &mut scratch,
+            CollisionOwner::None,
+        )
+        .with_native_entities(Some(&local))
+        .with_foreign_entities(Some(&foreign))
+        .with_candidates(&candidates)
+        .trace(query(rules))
+        .unwrap();
+        assert_eq!(trace.entity, None);
+        assert_eq!(foreign.reads.get(), 0);
+    }
+
+    // An invalid module lifetime is ineligible before any native field read.
+    foreign.anchor = Some(EntityId {
+        generation: u32::MAX,
+        ..local_body
+    });
+    let trace = WorldTrace::new(
+        &world.store,
+        world.geometry,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    )
+    .with_foreign_entities(Some(&foreign))
+    .with_candidates(&candidates)
+    .trace(query(rules))
+    .unwrap();
+    assert_eq!(trace.entity, Some(local_body));
+    assert_eq!(foreign.reads.get(), 0);
+    foreign.anchor = Some(foreign_body);
+    let trace = WorldTrace::new(
+        &world.store,
+        world.geometry,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    )
+    .with_foreign_entities(Some(&foreign))
+    .with_candidates(&candidates)
+    .trace(query(rules))
+    .unwrap();
+    assert_eq!(trace.entity, Some(local_body));
+    assert_eq!(foreign.reads.get(), 0);
 }
 
 #[test]

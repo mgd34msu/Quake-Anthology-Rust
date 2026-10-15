@@ -14,10 +14,10 @@ fn edit<R>(
         CallContext,
     ) -> Result<R, ServiceError>,
 ) -> Result<R, ServiceError> {
-    let (row, storage) = host
+    let (row, storage, traces) = host
         .modules
         .as_mut()
-        .and_then(|m| m.parts_mut(module))
+        .and_then(|m| m.trace_parts_mut(module))
         .ok_or(ServiceError::Aborted)?;
     let Program::QuakeC(qc) = &mut row.request.program else {
         return Err(ServiceError::Aborted);
@@ -25,6 +25,8 @@ fn edit<R>(
     let mut services = host
         .runtime
         .engine_services(&mut host.console, storage, &mut row.scratch);
+    services.native_geometry = row.geometry;
+    services.foreign_trace = Some(traces.borrow());
     call(qc, &mut services, row.request.context)
 }
 

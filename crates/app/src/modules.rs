@@ -36,6 +36,7 @@ use execution::ModuleDispatch;
 mod map_start;
 mod motion;
 mod resources;
+mod trace;
 
 fn host_clear_feedback(runtime: &mut Runtime, client: ClientId) {
     if let Some(client) = runtime.server.clients.get_mut(client.0 as usize) {
@@ -265,6 +266,7 @@ impl ModuleResult {
 }
 struct Module {
     request: ModuleRequest,
+    geometry: Option<qa_core::primitives::GeometryId>,
     scratch: qa_world::collision::TraceScratch,
     unknown: UnknownCalls,
     counts: Counts,
@@ -364,6 +366,18 @@ impl Modules {
     fn parts_mut(&mut self, id: ModuleId) -> Option<(&mut Module, &mut ServiceStorage)> {
         let row = self.rows.get_mut(id.0 as usize)?.as_mut()?;
         Some((row, &mut self.storage))
+    }
+    fn trace_parts_mut(
+        &mut self,
+        id: ModuleId,
+    ) -> Option<(&mut Module, &mut ServiceStorage, trace::RowsView<'_>)> {
+        let (before, current) = self.rows.split_at_mut_checked(id.0 as usize)?;
+        let (current, after) = current.split_first_mut()?;
+        Some((
+            current.as_mut()?,
+            &mut self.storage,
+            trace::RowsView::new(before, after),
+        ))
     }
 }
 impl FrameHost {
@@ -863,6 +877,7 @@ impl FrameHost {
             };
             rows[index] = Some(Module {
                 request,
+                geometry: host.runtime.collision.as_ref().map(|world| world.geometry),
                 scratch: host.runtime.geometry.scratch(),
                 unknown: UnknownCalls::load(256).map_err(|e| e.to_string())?,
                 counts: Counts::default(),
@@ -1753,10 +1768,10 @@ fn edit_quakec<R>(
     ) -> Result<R, qa_compat::services::CallError>,
 ) -> Result<R, ClientCommandError> {
     let time = host.time;
-    let (row, storage) = host
+    let (row, storage, traces) = host
         .modules
         .as_mut()
-        .and_then(|m| m.parts_mut(module))
+        .and_then(|m| m.trace_parts_mut(module))
         .ok_or(ClientCommandError::MissingModule)?;
     let clock = row.time(time);
     let Program::QuakeC(qc) = &mut row.request.program else {
@@ -1765,6 +1780,8 @@ fn edit_quakec<R>(
     let mut services = host
         .runtime
         .engine_services(&mut host.console, storage, &mut row.scratch);
+    services.native_geometry = row.geometry;
+    services.foreign_trace = Some(traces.borrow());
     call(
         &mut qc.vm,
         &mut services,
