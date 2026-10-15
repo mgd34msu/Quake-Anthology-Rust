@@ -1752,6 +1752,7 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'_>) 
     let mut services = host
         .runtime
         .engine_services(&mut host.console, storage, &mut row.scratch);
+    services.native_geometry = row.geometry;
     services.storage.abort_client_callbacks(frame.start.module);
     match (&mut row.request.program, frame.backend.as_mut()) {
         (Program::QuakeC(qc), Some(Backend::QuakeC { run, .. })) => {

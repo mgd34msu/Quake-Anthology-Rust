@@ -38,7 +38,7 @@ fn body_bits(body: Body) -> [[u32; 3]; 4] {
 
 #[test]
 fn failed_native_collider_read_rejects_pending_motion_before_body_or_link_commit() {
-    use qa_core::primitives::{ClientId, GeometryId, NativeEntity};
+    use qa_core::primitives::{ClientId, NativeEntity};
     use qa_world::collision::{
         NativeModelNames, NativeTraceEntities, NativeTraceFields, NativeTraceTarget,
     };
@@ -68,7 +68,6 @@ fn failed_native_collider_read_rejects_pending_motion_before_body_or_link_commit
             cached: NativeTraceTarget,
             _: bool,
             _: &CollisionStore,
-            _: GeometryId,
             _: Option<&dyn NativeModelNames>,
         ) -> Option<NativeTraceTarget> {
             Some(cached)

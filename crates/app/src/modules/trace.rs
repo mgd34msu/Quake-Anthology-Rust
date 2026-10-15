@@ -165,11 +165,10 @@ impl NativeTraceEntities for TraceView<'_> {
         cached: NativeTraceTarget,
         point_contents: bool,
         store: &CollisionStore,
-        geometry: GeometryId,
         models: Option<&dyn NativeModelNames>,
     ) -> Option<NativeTraceTarget> {
         self.read(native, |view| {
-            view.target(native, cached, point_contents, store, geometry, models)
+            view.target(native, cached, point_contents, store, models)
         })
     }
 }

@@ -2927,25 +2927,92 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             mins: qa_core::primitives::Vec3([-1000.0; 3]),
             maxs: qa_core::primitives::Vec3([1000.0; 3]),
         };
-        let geometry = runtime
-            .geometry
-            .load_brushes(
-                vec![],
-                vec![],
-                qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
-                qa_world::collision::brushes::BrushTree {
-                    planes: vec![],
-                    nodes: vec![],
-                    leaves: vec![qa_world::collision::brushes::CollisionLeaf {
+        let load_geometry =
+            |runtime: &mut Runtime, models: [Option<qa_core::primitives::Bounds>; 3]| {
+                use qa_core::primitives::{IndexSpan, Plane, SurfaceFlags, Vec3};
+                use qa_world::collision::{
+                    Contents,
+                    brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
+                    surfaces::SurfaceTable,
+                };
+                let mut planes = vec![];
+                let mut brushes = vec![];
+                let mut leaves = vec![CollisionLeaf {
+                    stored_contents: None,
+                    brushes: IndexSpan::default(),
+                }];
+                let models = models.map(|model| {
+                    let Some(model) = model else {
+                        return ModelRoot::Leaf(0);
+                    };
+                    let first = planes.len() as u32;
+                    for axis in 0..3 {
+                        let mut normal = [0.0; 3];
+                        normal[axis] = 1.0;
+                        planes.push(Plane::oriented(Vec3(normal), model.maxs.0[axis]));
+                        normal[axis] = -1.0;
+                        planes.push(Plane::oriented(Vec3(normal), -model.mins.0[axis]));
+                    }
+                    let brush = brushes.len() as u32;
+                    brushes.push(Brush {
+                        sides: IndexSpan { first, count: 6 },
+                        contents: Contents::SOLID,
+                    });
+                    leaves.push(CollisionLeaf {
                         stored_contents: None,
-                        brushes: qa_core::primitives::IndexSpan { first: 0, count: 0 },
-                    }],
-                    leaf_brushes: vec![],
-                    models: vec![qa_world::collision::brushes::ModelRoot::Leaf(0); 2],
-                },
-                vec![bounds; 2],
-            )
-            .unwrap();
+                        brushes: IndexSpan {
+                            first: brush,
+                            count: 1,
+                        },
+                    });
+                    ModelRoot::Leaf(leaves.len() as u32 - 1)
+                });
+                let surfaces = SurfaceTable::flags(vec![SurfaceFlags::default(); planes.len()]);
+                let leaf_brushes = (0..brushes.len() as u32).collect();
+                runtime
+                    .geometry
+                    .load_brushes(
+                        planes,
+                        brushes,
+                        surfaces,
+                        BrushTree {
+                            planes: vec![],
+                            nodes: vec![],
+                            leaves,
+                            leaf_brushes,
+                            models: models.to_vec(),
+                        },
+                        vec![bounds; 3],
+                    )
+                    .unwrap()
+            };
+        // Inline model ordinals belong to the module's retained geometry A.
+        // The selected query world B intentionally assigns different shapes.
+        let geometry = load_geometry(
+            &mut runtime,
+            [
+                None,
+                None,
+                Some(qa_core::primitives::Bounds {
+                    mins: qa_core::primitives::Vec3([-4.0; 3]),
+                    maxs: qa_core::primitives::Vec3([4.0; 3]),
+                }),
+            ],
+        );
+        let query_geometry = load_geometry(
+            &mut runtime,
+            [
+                Some(qa_core::primitives::Bounds {
+                    mins: qa_core::primitives::Vec3([140.0, -100.0, -100.0]),
+                    maxs: qa_core::primitives::Vec3([148.0, 100.0, 100.0]),
+                }),
+                Some(qa_core::primitives::Bounds {
+                    mins: qa_core::primitives::Vec3([-20.0; 3]),
+                    maxs: qa_core::primitives::Vec3([20.0; 3]),
+                }),
+                None,
+            ],
+        );
         let visibility = qa_world::visibility::VisibilityWorld::load(
             vec![qa_core::primitives::Plane::oriented(
                 qa_core::primitives::Vec3([1.0, 0.0, 0.0]),
@@ -2976,7 +3043,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         )
         .unwrap();
         runtime.collision = Some(
-            qa_app::WorldCollision::new(&runtime.geometry, geometry, 0)
+            qa_app::WorldCollision::new(&runtime.geometry, query_geometry, 0)
                 .with_visibility(std::sync::Arc::new(visibility))
                 .with_portals(Some(
                     qa_world::portals::AreaPortals::load(
@@ -3145,6 +3212,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             .copy_from_slice(&factory);
         let returned = {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            services.native_geometry = Some(geometry);
             game.vm
                 .call(
                     &mut NativeCalls {
@@ -3228,6 +3296,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()].copy_from_slice(&code);
         for _ in 0..3 {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            services.native_geometry = Some(geometry);
             let error = game
                 .vm
                 .call(
@@ -3309,6 +3378,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 console.cvars.force_write(view, text).unwrap();
             }
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            services.native_geometry = Some(geometry);
             game.vm
                 .call(
                     &mut NativeCalls {
@@ -3462,6 +3532,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
                 .copy_from_slice(&code);
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            services.native_geometry = Some(geometry);
             let before_spatial = (slot == trace_slot || slot == contents_slot)
                 .then(|| services.server.area.bounds(bound));
             let before_clip = (rr && slot == 15).then(|| {
@@ -3471,9 +3542,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     services.server.area.bounds(bound),
                 )
             });
-            let before_config = (slot == if rr { 7 } else { 6 } && a[0] == 3).then(|| {
-                let (value, revision) = services.storage.configstring(ModuleId(1), 3).unwrap();
-                (value.to_vec(), revision)
+            let before_config = (slot == if rr { 7 } else { 6 }).then(|| {
+                let ordinal = a[0] as usize;
+                let (value, revision) =
+                    services.storage.configstring(ModuleId(1), ordinal).unwrap();
+                (ordinal, value.to_vec(), revision)
             });
             game.vm
                 .call(
@@ -3728,7 +3801,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     );
                 }
             }
-            if let Some((before, revision)) = before_config {
+            if let Some((ordinal, before, revision)) = before_config {
                 let memory = qa_compat::memory::ModuleMemory::borrow(
                     base,
                     game.vm.process.memory_mut().unwrap(),
@@ -3741,7 +3814,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 };
                 let value = &value[..value.len().min(if rr { 95 } else { 8192 })];
                 assert_eq!(
-                    services.storage.configstring(ModuleId(1), 3).unwrap(),
+                    services.storage.configstring(ModuleId(1), ordinal).unwrap(),
                     (value, revision + u64::from(before != value))
                 );
             }
@@ -4286,14 +4359,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             &[output, start, 0, 0, end, 0, body_mask],
         );
         // Current model selection must use the existing config revision/cache
-        // even when the old linked common shape was a box. Model1 is empty.
+        // even when the old linked common shape was a box. A's model1 is empty;
+        // B's model1 is solid. Include SOLID so the target conversion executes.
         let model_row = game.vm.resource_ranges().unwrap()[0].get(1).unwrap();
-        game.vm.process.memory_mut().unwrap()[0x1b00..0x1b03].copy_from_slice(b"*1\0");
-        invoke_import(
-            &mut game,
-            if rr { 7 } else { 6 },
-            &[model_row as u64, base + 0x1b00],
-        );
+        let model_mask = body_mask | qa_world::collision::Contents::SOLID.to_q2() as u64;
         live_edits.borrow_mut().extend([
             (
                 entity_address + if rr { 1456 } else { 264 },
@@ -4305,12 +4374,42 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             ),
             (entity_address + 40, 1u32.to_le_bytes().to_vec()),
         ]);
-        invoke_import(
-            &mut game,
-            trace_slot,
-            &[output, start, 0, 0, end, 0, body_mask],
-        );
-        assert_eq!(fraction(&mut game), 1.0f32.to_bits());
+        for (name, expected) in [
+            (b"*1\0", 1.0),
+            (b"*2\0", (49.0f32 - 0.03125) / 100.0),
+            (b"*2\0", (49.0f32 - 0.03125) / 100.0),
+            (b"*1\0", 1.0),
+        ] {
+            game.vm.process.memory_mut().unwrap()[0x1b00..0x1b03].copy_from_slice(name);
+            // invoke_import also checks that only changed text increments the
+            // config revision. The modelindex stays 1 across every replacement.
+            invoke_import(&mut game, config_slot, &[model_row as u64, base + 0x1b00]);
+            invoke_import(
+                &mut game,
+                trace_slot,
+                &[output, start, 0, 0, end, 0, model_mask],
+            );
+            assert_eq!(fraction(&mut game), expected.to_bits());
+            assert_eq!(
+                result_entity(&mut game),
+                if expected == 1.0 {
+                    base + 0x3000
+                } else {
+                    entity_address
+                }
+            );
+            if rr {
+                // A nonworld direct clip has the same owner namespace and
+                // cache revision, while its miss still returns its target.
+                invoke_import(
+                    &mut game,
+                    15,
+                    &[output, entity_address, start, 0, 0, end, model_mask],
+                );
+                assert_eq!(fraction(&mut game), expected.to_bits());
+                assert_eq!(result_entity(&mut game), entity_address);
+            }
+        }
         live_edits.borrow_mut().push((
             entity_address + if rr { 1456 } else { 264 },
             if rr {
@@ -4368,6 +4467,31 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             );
             assert_eq!(fraction(&mut game), 1.0f32.to_bits());
             assert_eq!(result_entity(&mut game), base + 0x3000);
+            // World0 clips query world B, whose distant brush is absent from A.
+            let mut memory = qa_compat::memory::ModuleMemory::borrow(
+                base,
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            memory
+                .write_vec3(start, qa_core::primitives::Vec3([100.0, 5.0, 7.0]))
+                .unwrap();
+            memory
+                .write_vec3(end, qa_core::primitives::Vec3([200.0, 5.0, 7.0]))
+                .unwrap();
+            drop(memory);
+            invoke_import(&mut game, 15, &[output, base + 0x3000, start, 0, 0, end, 1]);
+            assert_eq!(fraction(&mut game), ((40.0f32 - 0.03125) / 100.0).to_bits());
+            assert_eq!(result_entity(&mut game), base + 0x3000);
+            // A nonworld clip excludes that query-world brush entirely.
+            invoke_import(
+                &mut game,
+                15,
+                &[output, entity_address, start, 0, 0, end, 1],
+            );
+            assert_eq!(fraction(&mut game), 1.0f32.to_bits());
+            assert_eq!(result_entity(&mut game), entity_address);
+            set_fields(&mut game, 0, 0, 0);
             // A miss still returns the specified target, unlike an ordinary trace.
             invoke_import(
                 &mut game,
@@ -4986,6 +5110,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         }
         if let Some(entity) = owned_entity {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            services.native_geometry = Some(geometry);
             (qa_compat::services::ENGINE_CALLS.free)(&mut services, context, entity).unwrap();
             assert!(!services.server.navigation.contains(entity));
             assert!(services.server.entities.resolve(entity).is_none());

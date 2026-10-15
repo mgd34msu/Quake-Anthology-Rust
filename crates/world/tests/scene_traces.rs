@@ -809,7 +809,6 @@ fn live_native_flags_keep_common_players_and_replace_stale_native_classes() {
             cached: NativeTraceTarget,
             _: bool,
             _: &CollisionStore,
-            _: GeometryId,
             _: Option<&dyn NativeModelNames>,
         ) -> Option<NativeTraceTarget> {
             Some(cached)
@@ -916,7 +915,6 @@ fn owner_views_select_each_namespace_and_never_fall_back_after_a_supported_read(
             cached: NativeTraceTarget,
             _: bool,
             _: &CollisionStore,
-            _: GeometryId,
             _: Option<&dyn NativeModelNames>,
         ) -> Option<NativeTraceTarget> {
             assert_eq!(native.module, self.module);

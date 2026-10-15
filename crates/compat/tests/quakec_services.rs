@@ -1200,6 +1200,79 @@ fn precache_empty_overflow_and_failed_native_load_have_original_side_effects() {
 }
 
 #[test]
+fn qc_inline_precache_setmodel_and_publication_use_owner_geometry_without_a_query_world() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let owner = calls.services.native_geometry.unwrap();
+            calls.services.world = None;
+            let mut vm = seeded_vm(calls, 8);
+            let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let id = entity(calls, &vm, value);
+            let model = vm.insert_string(b"*1").unwrap() as u32;
+            parameters(&mut vm, &[&[model]]);
+            calls.call(&mut vm, 20, 1).unwrap();
+            write(&mut vm, value, b"solid", &[4.0_f32.to_bits()]);
+            parameters(&mut vm, &[&[value], &[model]]);
+            calls.call(&mut vm, 3, 2).unwrap();
+            let bounds = calls.services.geometry.model_bounds(owner, 1).unwrap();
+            assert_eq!(
+                read(&vm, value, b"mins", 3),
+                bounds.mins.0.map(f32::to_bits)
+            );
+            assert_eq!(
+                read(&vm, value, b"maxs", 3),
+                bounds.maxs.0.map(f32::to_bits)
+            );
+            vm.project_entities(calls.services, calls.context).unwrap();
+            assert_eq!(
+                calls.services.server.entities.columns.collision_shape[id.slot as usize],
+                CollisionShape::Model {
+                    geometry: owner,
+                    index: 1
+                }
+            );
+
+            calls.services.native_geometry = None;
+            let missing = vm.insert_string(b"*2").unwrap() as u32;
+            parameters(&mut vm, &[&[missing]]);
+            assert_eq!(
+                calls.call(&mut vm, 20, 1),
+                if rules == RuleSetId::QuakeWorld {
+                    Ok(())
+                } else {
+                    Err(Trap::Builtin)
+                }
+            );
+            let models = calls
+                .services
+                .storage
+                .resources(calls.context.module)
+                .unwrap()[0];
+            assert_eq!(
+                calls
+                    .services
+                    .storage
+                    .configstring(calls.context.module, models.get(2).unwrap())
+                    .unwrap()
+                    .0,
+                b"*2"
+            );
+            parameters(&mut vm, &[&[value], &[missing]]);
+            assert_eq!(calls.call(&mut vm, 3, 2), Err(Trap::Builtin));
+            assert_eq!(read(&vm, value, b"model", 1), [missing]);
+            assert_eq!(read(&vm, value, b"modelindex", 1), [2.0_f32.to_bits()]);
+            assert_eq!(
+                calls.services.server.entities.columns.collision_shape[id.slot as usize],
+                CollisionShape::Model {
+                    geometry: owner,
+                    index: 1
+                }
+            );
+        });
+    }
+}
+
+#[test]
 fn setmodel_only_uses_precached_ordinals_and_native_bounds_policy() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         let mut models = Models::default();
@@ -1629,7 +1702,7 @@ fn qc_trace_targets_validate_models_lazily_in_their_owners_geometry_namespace() 
             slot: vm.entity_number(value).unwrap() as i32,
         };
         let columns = &calls.services.server.entities.columns;
-        let cached = NativeTraceTarget {
+        let mut cached = NativeTraceTarget {
             body: columns.body(id.slot as usize),
             angles: Vec3::default(),
             shape: CollisionShape::Box,
@@ -1665,6 +1738,10 @@ fn qc_trace_targets_validate_models_lazily_in_their_owners_geometry_namespace() 
             },
         );
         assert_ne!(query_geometry, owner_geometry);
+        cached.shape = CollisionShape::Model {
+            geometry: query_geometry,
+            index: 1,
+        };
         write(&mut vm, value, b"model", &[u32::MAX]);
         write(&mut vm, value, b"solid", &[0]);
         assert!(
@@ -1676,7 +1753,7 @@ fn qc_trace_targets_validate_models_lazily_in_their_owners_geometry_namespace() 
         write(&mut vm, value, b"solid", &[2.0_f32.to_bits()]);
         let target = vm
             .with_trace_view(calls.context, value, None, |view, _| {
-                Ok(view.target(native, cached, false, &store, query_geometry, None))
+                Ok(view.target(native, cached, false, &store, None))
             })
             .unwrap()
             .unwrap();
@@ -1690,7 +1767,7 @@ fn qc_trace_targets_validate_models_lazily_in_their_owners_geometry_namespace() 
         );
         assert!(matches!(
             vm.with_trace_view(calls.context, value, Some(owner_geometry), |view, _| {
-                Ok(view.target(native, cached, false, &store, query_geometry, None))
+                Ok(view.target(native, cached, false, &store, None))
             }),
             Err(CallError::Memory)
         ));
@@ -1698,7 +1775,7 @@ fn qc_trace_targets_validate_models_lazily_in_their_owners_geometry_namespace() 
         write(&mut vm, value, b"model", &[inline]);
         assert!(matches!(
             vm.with_trace_view(calls.context, value, None, |view, _| {
-                Ok(view.target(native, cached, false, &store, query_geometry, None))
+                Ok(view.target(native, cached, false, &store, None))
             }),
             Err(CallError::Geometry)
         ));
@@ -1716,7 +1793,7 @@ fn qc_trace_targets_validate_models_lazily_in_their_owners_geometry_namespace() 
                     )
                     .is_none()
                 );
-                Ok(view.target(native, cached, false, &store, query_geometry, None))
+                Ok(view.target(native, cached, false, &store, None))
             })
             .unwrap()
             .unwrap();

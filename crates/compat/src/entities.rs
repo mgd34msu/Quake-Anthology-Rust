@@ -127,6 +127,7 @@ pub struct NativeTraceView<'a, 'memory> {
     layout: EntityLayout,
     models: qa_core::primitives::IndexSpan,
     model_handles: &'a [Cell<Option<CachedModel>>],
+    geometry: Option<qa_core::primitives::GeometryId>,
     error: TraceError,
 }
 impl NativeTraceView<'_, '_> {
@@ -220,7 +221,6 @@ impl NativeTraceView<'_, '_> {
         point_contents: bool,
         direct: bool,
         store: &CollisionStore,
-        geometry: Option<qa_core::primitives::GeometryId>,
         names: Option<&dyn NativeModelNames>,
     ) -> Result<NativeTraceTarget, CallError> {
         let solid = field(self.memory, address, self.layout.solid)?;
@@ -234,7 +234,7 @@ impl NativeTraceView<'_, '_> {
                 self.memory,
                 address,
                 store,
-                geometry.ok_or(CallError::Geometry)?,
+                self.geometry.ok_or(CallError::Geometry)?,
                 names,
                 None,
             )
@@ -382,7 +382,6 @@ impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
         _cached: NativeTraceTarget,
         point_contents: bool,
         store: &CollisionStore,
-        geometry: qa_core::primitives::GeometryId,
         names: Option<&dyn NativeModelNames>,
     ) -> Option<NativeTraceTarget> {
         if !self.supports(native.module) {
@@ -391,7 +390,7 @@ impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
         let slot = native.slot;
         self.error.capture(|| {
             let address = self.address_at(slot)?;
-            self.target_at(address, point_contents, false, store, Some(geometry), names)
+            self.target_at(address, point_contents, false, store, names)
         })
     }
 }
@@ -722,9 +721,10 @@ impl EntityProjection {
         &'a self,
         memory: &'a ModuleMemory<'memory>,
         context: CallContext,
+        geometry: Option<qa_core::primitives::GeometryId>,
     ) -> Result<Option<NativeTraceView<'a, 'memory>>, CallError> {
         if self.ready() {
-            self.trace_view(memory, context).map(Some)
+            self.trace_view(memory, context, geometry).map(Some)
         } else {
             Ok(None)
         }
@@ -733,6 +733,7 @@ impl EntityProjection {
         &'a self,
         memory: &'a ModuleMemory<'memory>,
         context: CallContext,
+        geometry: Option<qa_core::primitives::GeometryId>,
     ) -> Result<NativeTraceView<'a, 'memory>, CallError> {
         Ok(NativeTraceView {
             memory,
@@ -741,6 +742,7 @@ impl EntityProjection {
             layout: self.native_layout()?,
             models: self.models,
             model_handles: &self.model_handles,
+            geometry,
             error: TraceError::default(),
         })
     }
@@ -1333,7 +1335,7 @@ impl EntityProjection {
         context: CallContext,
         address: u64,
     ) -> Result<(CollisionShape, Bounds), CallError> {
-        let geometry = services.world.ok_or(CallError::Geometry)?.0;
+        let geometry = services.native_geometry.ok_or(CallError::Geometry)?;
         resolve_model(
             self.native_layout()?,
             self.models,
@@ -1354,7 +1356,7 @@ impl EntityProjection {
         model: u32,
         name: Option<&[u8]>,
     ) -> Result<(CollisionShape, Bounds), CallError> {
-        let geometry = services.world.ok_or(CallError::Geometry)?.0;
+        let geometry = services.native_geometry.ok_or(CallError::Geometry)?;
         cache_model(
             self.models,
             &self.model_handles,
@@ -1378,13 +1380,12 @@ impl EntityProjection {
         if identity.slot == 0 && self.native_layout()?.world_zero {
             return Ok(ClipTarget::World);
         }
-        let view = self.trace_view(memory, context)?;
+        let view = self.trace_view(memory, context, services.native_geometry)?;
         let target = view.target_at(
             address,
             false,
             true,
             services.geometry,
-            services.world.map(|world| world.0),
             Some(services.storage),
         )?;
         Ok(ClipTarget::Body {
@@ -1406,7 +1407,7 @@ impl EntityProjection {
         let layout = self.native_layout()?;
         let name = memory.cstring(name)?;
         if let Some(contents) = layout.contents {
-            let geometry = services.world.ok_or(CallError::Geometry)?.0;
+            let geometry = services.native_geometry.ok_or(CallError::Geometry)?;
             let model = qa_core::text::inline_model_index(name).ok_or(CallError::Geometry)?;
             let bounds = services
                 .geometry
