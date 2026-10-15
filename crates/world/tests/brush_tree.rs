@@ -24,6 +24,7 @@ fn load_tree(
     let geometry = store.load_brushes(
         planes,
         brushes,
+        Vec::new(),
         qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
         tree,
         bounds,
@@ -73,6 +74,7 @@ fn query(rules: TraceRules, start: [f32; 3], end: [f32; 3]) -> TraceQuery<'stati
 
 fn leaf(contents: Option<Contents>, first: u32, count: u32) -> CollisionLeaf {
     CollisionLeaf {
+        patches: Default::default(),
         stored_contents: contents,
         brushes: qa_core::primitives::IndexSpan {
             first: first,
@@ -176,6 +178,7 @@ fn native_negative_axial_tree_keeps_its_original_coordinate_descent_and_front_ti
         vec![],
         vec![],
         BrushTree {
+            leaf_patches: Default::default(),
             planes: vec![Plane {
                 encoding: Some([0, 1]),
                 normal: Vec3([-1.0, 0.0, 0.0]),
@@ -234,6 +237,7 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
         ],
         vec![SurfaceFlags(11), SurfaceFlags(22), SurfaceFlags(33)],
         BrushTree {
+            leaf_patches: Default::default(),
             planes: vec![x_split(0.0)],
             nodes: vec![ClipNode {
                 plane: 0,
@@ -378,6 +382,7 @@ fn ordered_leaf_references_preserve_ties_and_each_query_has_its_own_stamps() {
         ],
         vec![SurfaceFlags(11), SurfaceFlags(22)],
         BrushTree {
+            leaf_patches: Default::default(),
             planes: vec![],
             nodes: vec![],
             leaves: vec![leaf(None, 0, 3)],
@@ -435,6 +440,7 @@ fn near_first_and_front_first_position_order_keep_the_native_first_contact() {
         ],
         vec![SurfaceFlags(11), SurfaceFlags(22)],
         BrushTree {
+            leaf_patches: Default::default(),
             planes: vec![x_split(0.0)],
             nodes: vec![ClipNode {
                 plane: 0,
@@ -490,6 +496,7 @@ fn brush_clipping_uses_the_original_full_segment_after_tree_splitting() {
         }],
         vec![SurfaceFlags(7)],
         BrushTree {
+            leaf_patches: Default::default(),
             planes: vec![x_split(0.0)],
             nodes: vec![ClipNode {
                 plane: 0,
@@ -533,6 +540,7 @@ fn q2_leaf_gate_precedes_stamp_and_q3_ignores_that_gate_on_the_same_tree() {
         }],
         vec![SurfaceFlags(7)],
         BrushTree {
+            leaf_patches: Default::default(),
             planes: vec![x_split(0.0)],
             nodes: vec![ClipNode {
                 plane: 0,
@@ -595,6 +603,7 @@ fn stationary_leaf_truncation_is_compatibility_data_and_can_be_extended_cold() {
         }],
         vec![SurfaceFlags::default()],
         BrushTree {
+            leaf_patches: Default::default(),
             planes: vec![x_split(0.0)],
             nodes,
             leaves: vec![
@@ -824,6 +833,7 @@ fn caller_side_margin_and_nonaxial_offset_select_visitation_on_one_graph() {
             }],
             vec![SurfaceFlags::default()],
             BrushTree {
+                leaf_patches: Default::default(),
                 planes: vec![split],
                 nodes: vec![ClipNode {
                     plane: 0,
@@ -886,6 +896,7 @@ fn centered_min_only_tree_point_classification_does_not_remove_brush_support() {
         }],
         vec![SurfaceFlags::default()],
         BrushTree {
+            leaf_patches: Default::default(),
             planes: vec![plane([1.0, 0.0, 0.0], origin - 8.0)],
             nodes: vec![ClipNode {
                 plane: 0,
@@ -921,6 +932,7 @@ fn centered_min_only_tree_point_classification_does_not_remove_brush_support() {
 
 fn minimal_tree() -> BrushTree {
     BrushTree {
+        leaf_patches: Default::default(),
         planes: vec![x_split(0.0)],
         nodes: vec![ClipNode {
             plane: 0,

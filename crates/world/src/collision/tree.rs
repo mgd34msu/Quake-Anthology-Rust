@@ -1,4 +1,5 @@
 use super::brushes::{Brush, BrushMap, BrushWork, GeometryError, clip_brush, position_brush};
+use super::patches::{Patch, PointRelation};
 use super::{Contents, LeafGate, NonAxialOffset, Trace, TraceError, TraceQuery};
 use qa_core::primitives::{
     Bounds, ClipNode, Plane, PointLeafRules, Vec3, child_from_leaf, leaf_from_child,
@@ -9,6 +10,7 @@ use qa_core::stamps::StampSet;
 pub struct CollisionLeaf {
     pub stored_contents: Option<Contents>,
     pub brushes: qa_core::primitives::IndexSpan,
+    pub patches: qa_core::primitives::IndexSpan,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +26,7 @@ pub struct BrushTree {
     pub nodes: Vec<ClipNode>,
     pub leaves: Vec<CollisionLeaf>,
     pub leaf_brushes: Vec<u32>,
+    pub leaf_patches: Vec<u32>,
     pub models: Vec<ModelRoot>,
 }
 
@@ -41,8 +44,10 @@ impl BrushTree {
                     first: 0,
                     count: count,
                 },
+                patches: Default::default(),
             }],
             leaf_brushes: (0..count).collect(),
+            leaf_patches: Vec::new(),
             models: vec![ModelRoot::Leaf(0)],
         })
     }
@@ -53,6 +58,7 @@ pub(super) struct Topology {
     nodes: Box<[ClipNode]>,
     leaves: Box<[CollisionLeaf]>,
     leaf_brushes: Box<[u32]>,
+    leaf_patches: Box<[u32]>,
     leaf_contents: Box<[Contents]>,
     max_depth: usize,
 }
@@ -72,15 +78,22 @@ pub(super) struct BrushScratch {
     leaf_walk: crate::leaves::LeafScratch,
     stamps: StampSet,
     position_leaves: Box<[u32]>,
+    patch_planes: Box<[PointRelation]>,
 }
 
 impl BrushScratch {
-    pub(crate) fn new(depth: usize, brushes: usize, position_capacity: usize) -> Self {
+    pub(crate) fn new(
+        depth: usize,
+        brushes: usize,
+        position_capacity: usize,
+        patch_planes: usize,
+    ) -> Self {
         Self {
             frames: vec![Frame::default(); depth].into_boxed_slice(),
             leaf_walk: crate::leaves::LeafScratch::new(depth),
             stamps: StampSet::new(brushes),
             position_leaves: vec![0; position_capacity].into_boxed_slice(),
+            patch_planes: vec![PointRelation::default(); patch_planes].into_boxed_slice(),
         }
     }
 }
@@ -100,10 +113,15 @@ impl Topology {
     pub(super) fn load(
         tree: BrushTree,
         brushes: &[Brush],
+        patches: &[Patch],
     ) -> Result<(Self, Vec<ModelRoot>), GeometryError> {
         if tree.nodes.len() > i32::MAX as usize
             || tree.leaves.len() > i32::MAX as usize + 1
             || brushes.len() > u32::MAX as usize
+            || brushes
+                .len()
+                .checked_add(patches.len())
+                .is_none_or(|count| count > u32::MAX as usize)
         {
             return Err(GeometryError::Capacity);
         }
@@ -137,14 +155,18 @@ impl Topology {
                 ModelRoot::Tree(child) => !valid_child(child),
                 ModelRoot::Leaf(leaf) => leaf as usize >= tree.leaves.len(),
             })
-            || tree
-                .leaves
-                .iter()
-                .any(|leaf| !leaf.brushes.fits(tree.leaf_brushes.len()))
+            || tree.leaves.iter().any(|leaf| {
+                !leaf.brushes.fits(tree.leaf_brushes.len())
+                    || !leaf.patches.fits(tree.leaf_patches.len())
+            })
             || tree
                 .leaf_brushes
                 .iter()
                 .any(|&id| id as usize >= brushes.len())
+            || tree
+                .leaf_patches
+                .iter()
+                .any(|&id| id as usize >= patches.len())
         {
             return Err(GeometryError::TreeRange);
         }
@@ -176,10 +198,15 @@ impl Topology {
             .iter()
             .map(|leaf| {
                 leaf.stored_contents.unwrap_or_else(|| {
-                    tree.leaf_brushes[leaf.brushes.range()]
+                    let contents = tree.leaf_brushes[leaf.brushes.range()]
                         .iter()
                         .fold(Contents::EMPTY, |contents, &id| {
                             contents | brushes[id as usize].contents
+                        });
+                    tree.leaf_patches[leaf.patches.range()]
+                        .iter()
+                        .fold(contents, |contents, &id| {
+                            contents | patches[id as usize].contents
                         })
                 })
             })
@@ -191,6 +218,7 @@ impl Topology {
                 nodes: tree.nodes.into_boxed_slice(),
                 leaves: tree.leaves.into_boxed_slice(),
                 leaf_brushes: tree.leaf_brushes.into_boxed_slice(),
+                leaf_patches: tree.leaf_patches.into_boxed_slice(),
                 leaf_contents,
                 max_depth,
             },
@@ -224,7 +252,10 @@ impl Topology {
         scratch: &mut BrushScratch,
     ) -> Result<Trace, TraceError> {
         let mut trace = Trace::clear(query.end);
-        if scratch.frames.len() < self.max_depth || scratch.stamps.len() < map.brushes.len() {
+        if scratch.frames.len() < self.max_depth
+            || scratch.stamps.len() < map.brushes.len() + map.patches.len()
+            || map.patch_plane_count > scratch.patch_planes.len()
+        {
             return Err(TraceError::Scratch);
         }
         let work = BrushWork::new(query);
@@ -291,6 +322,29 @@ impl Topology {
             } else {
                 clip_brush(work, &map.planes, brush, map.surfaces.borrow(), trace);
             }
+            if trace.fraction == 0.0 {
+                return;
+            }
+        }
+        if !work.query.rules.patches.enabled() {
+            return;
+        }
+        let leaf = &self.leaves[leaf as usize];
+        for &id in &self.leaf_patches[leaf.patches.range()] {
+            let patch = &map.patches[id as usize];
+            if scratch.stamps.test_and_set(map.brushes.len() + id as usize)
+                || !patch.contents.intersects(work.query.mask)
+            {
+                continue;
+            }
+            patch.trace(
+                work,
+                &map.planes,
+                map.surfaces.borrow(),
+                position,
+                trace,
+                &mut scratch.patch_planes,
+            );
             if trace.fraction == 0.0 {
                 return;
             }
@@ -458,6 +512,7 @@ mod tests {
                     sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                     contents: Contents::SOLID,
                 }],
+                Vec::new(),
                 crate::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),
                 BrushTree::direct(1).map_err(|_| "brush tree")?,
                 vec![Bounds {

@@ -102,6 +102,7 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
             qa_world::collision::brushes::BrushTree::direct(0).unwrap(),
             vec![qa_core::primitives::Bounds {

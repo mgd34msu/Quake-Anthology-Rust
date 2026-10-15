@@ -192,6 +192,7 @@ impl Fixture {
             .load_brushes(
                 vec![],
                 vec![],
+                Vec::new(),
                 qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
                 qa_world::collision::brushes::BrushTree::direct(0).unwrap(),
                 vec![qa_core::primitives::Bounds {
@@ -228,6 +229,7 @@ impl Fixture {
                     sides: IndexSpan { first: 0, count: 6 },
                     contents: Contents::SOLID,
                 }],
+                Vec::new(),
                 SurfaceTable::flags(vec![SurfaceFlags::from_q3(0x2002); 6]),
                 BrushTree {
                     planes: vec![],
@@ -236,14 +238,17 @@ impl Fixture {
                         CollisionLeaf {
                             stored_contents: None,
                             brushes: IndexSpan::default(),
+                            patches: Default::default(),
                         },
                         CollisionLeaf {
                             stored_contents: None,
                             brushes: IndexSpan { first: 0, count: 1 },
+                            patches: Default::default(),
                         },
                     ],
                     leaf_brushes: vec![0],
                     models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
+                    leaf_patches: Vec::new(),
                 },
                 vec![
                     Bounds {
@@ -1167,4 +1172,157 @@ fn export_without_imports_binds_the_projection_owner_before_execution() {
     assert_eq!(f.vm.hooks.instructions, 3);
     assert_eq!(f.export(context()), Ok(83));
     assert_eq!(f.vm.hooks.instructions, 6);
+}
+
+#[test]
+fn qvm_patch_traces_use_shared_curve_controls_with_independent_trace_rules() {
+    use qa_core::primitives::{Bounds, IndexSpan, PatchClip, SurfaceFlags};
+    use qa_formats::program::qvm::Opcode::*;
+    use qa_world::collision::{
+        Contents, TraceQuery,
+        brushes::BrushTree,
+        patches::PatchInput,
+        surfaces::{SurfaceInput, SurfaceTable},
+    };
+    let mut f = Fixture::new();
+    let mut tree = BrushTree::direct(0).unwrap();
+    tree.leaf_patches = vec![0];
+    tree.leaves[0].patches = IndexSpan { first: 0, count: 1 };
+    let geometry = f
+        .runtime
+        .geometry
+        .load_brushes(
+            Vec::new(),
+            Vec::new(),
+            vec![PatchInput {
+                dimensions: [3, 3],
+                control_points: [-64.0, 0.0, 64.0]
+                    .into_iter()
+                    .flat_map(|y| {
+                        [-64.0, 0.0, 64.0]
+                            .into_iter()
+                            .map(move |x| Vec3([x, y, 0.0]))
+                    })
+                    .collect(),
+                contents: Contents::SOLID,
+                surface: 0,
+            }],
+            SurfaceTable {
+                records: vec![SurfaceInput::unnamed(SurfaceFlags::from_q3(0x80000002))],
+                sides: Vec::new(),
+            },
+            tree,
+            vec![Bounds {
+                mins: Vec3([-128.0; 3]),
+                maxs: Vec3([128.0; 3]),
+            }],
+        )
+        .unwrap();
+    let collision = f.runtime.collision.as_mut().unwrap();
+    collision.geometry = geometry;
+    collision.scratch = f.runtime.geometry.scratch();
+    let controls = qa_console::collision::CollisionHandles::bind(&f.console.cvars).unwrap();
+    let disabled = f
+        .console
+        .cvars
+        .bind("cm_noCurves", Context::default())
+        .unwrap();
+    let points = f
+        .console
+        .cvars
+        .bind("cm_playerCurveClip", Context::default())
+        .unwrap();
+    let start = Vec3([0.0, 0.0, 8.0]);
+    let end = Vec3([0.0, 0.0, -8.0]);
+    for ordinal in [24, 43] {
+        f.vm = service_program::program(
+            &[
+                (Enter, 64),
+                (Const, 512),
+                (Arg, 8),
+                (Const, 600),
+                (Arg, 12),
+                (Const, 632),
+                (Arg, 16),
+                (Const, 648),
+                (Arg, 20),
+                (Const, 616),
+                (Arg, 24),
+                (Const, 1023),
+                (Arg, 28),
+                (Const, -1),
+                (Arg, 32),
+                (Const, -1 - ordinal),
+                (Call, 0),
+                (Leave, 64),
+            ],
+            &[],
+        );
+        f.vm.configure_q3_game(Q3StatLayout::BASE);
+        f.vector(600, start);
+        f.vector(616, end);
+        for trace_rules in [RuleSetId::Quake, RuleSetId::Quake3] {
+            for volume in [false, true] {
+                let mins = if volume {
+                    Vec3([-1.0; 3])
+                } else {
+                    Vec3::default()
+                };
+                let maxs = -mins;
+                f.vector(632, mins);
+                f.vector(648, maxs);
+                for (no_curves, point_curves, policy) in [
+                    ("0", "1", PatchClip::All),
+                    ("0", "0", PatchClip::Volumes),
+                    ("1", "1", PatchClip::Disabled),
+                ] {
+                    f.console.cvars.force_write(disabled, no_curves).unwrap();
+                    f.console.cvars.force_write(points, point_curves).unwrap();
+                    assert_eq!(controls.resolve(&f.console.cvars), policy);
+                    let (mut rules, entities) = qa_world::collision::trace_policy(trace_rules);
+                    rules.patches = policy;
+                    let mut query = TraceQuery {
+                        mins,
+                        maxs,
+                        ..TraceQuery::point(start, end, rules, entities)
+                    };
+                    if ordinal == 43 {
+                        query = query.with_capsule();
+                    }
+                    let expected = f
+                        .runtime
+                        .geometry
+                        .trace_model(geometry, 0, query, &mut f.runtime.geometry.scratch())
+                        .unwrap();
+                    assert_eq!(
+                        expected.fraction < 1.0,
+                        policy.enabled() && (volume || policy.points())
+                    );
+                    f.vm.memory.read_mut(512, 64).unwrap().fill(0xa5);
+                    assert_eq!(
+                        f.export(CallContext {
+                            trace_rules,
+                            ..context()
+                        }),
+                        Ok(0)
+                    );
+                    assert_eq!(
+                        f.vm.memory.read_word(520).unwrap() as u32,
+                        expected.fraction.to_bits()
+                    );
+                    assert_eq!(f.vm.memory.read_vec3(524).unwrap(), expected.end);
+                    assert_eq!(f.vm.memory.read_vec3(536).unwrap(), expected.plane.normal);
+                    assert_eq!(
+                        f.vm.memory.read_word(548).unwrap() as u32,
+                        expected.plane.distance.to_bits()
+                    );
+                    assert_eq!(
+                        f.vm.memory.read_word(556).unwrap() as u32,
+                        expected.surface.to_q3()
+                    );
+                    assert_eq!(f.vm.memory.read(568, 8).unwrap(), [0xa5; 8]);
+                }
+            }
+        }
+    }
 }

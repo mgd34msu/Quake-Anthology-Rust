@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod collision;
 pub mod command_buffer;
 pub mod command_text;
 pub mod commands;

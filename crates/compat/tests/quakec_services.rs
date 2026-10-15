@@ -869,6 +869,7 @@ fn with_collision_services(
         .load_brushes(
             planes,
             brushes,
+            Vec::new(),
             SurfaceTable::flags(vec![SurfaceFlags::default(); world_boxes.len() * 6]),
             tree,
             vec![
@@ -1958,6 +1959,7 @@ fn qc_trace_targets_validate_models_lazily_in_their_owners_geometry_namespace() 
             tree.models.push(ModelRoot::Leaf(0));
             store
                 .load_brushes(
+                    Vec::new(),
                     Vec::new(),
                     Vec::new(),
                     SurfaceTable::flags(Vec::new()),

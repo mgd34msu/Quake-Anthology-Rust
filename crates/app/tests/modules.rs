@@ -998,6 +998,7 @@ fn quakec_pointcontents_uses_module_rules_over_all_collision_topologies() {
                                     sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                                     contents,
                                 }],
+                                Vec::new(),
                                 SurfaceTable::flags(vec![SurfaceFlags::default()]),
                                 BrushTree {
                                     planes: vec![plane],
@@ -1013,6 +1014,7 @@ fn quakec_pointcontents_uses_module_rules_over_all_collision_topologies() {
                                                 first: 0,
                                                 count: 0,
                                             },
+                                            patches: Default::default(),
                                         },
                                         CollisionLeaf {
                                             stored_contents: (topology == 1).then_some(contents),
@@ -1020,10 +1022,12 @@ fn quakec_pointcontents_uses_module_rules_over_all_collision_topologies() {
                                                 first: 0,
                                                 count: 1,
                                             },
+                                            patches: Default::default(),
                                         },
                                     ],
                                     leaf_brushes: vec![0],
                                     models: vec![ModelRoot::Tree(0)],
+                                    leaf_patches: Vec::new(),
                                 },
                                 vec![bounds],
                             )

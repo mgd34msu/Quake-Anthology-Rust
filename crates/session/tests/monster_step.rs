@@ -88,6 +88,7 @@ impl Host {
             .load_brushes(
                 planes,
                 brushes,
+                Vec::new(),
                 SurfaceTable::flags(vec![SurfaceFlags::default(); boxes.len() * 6]),
                 BrushTree::direct(boxes.len()).unwrap(),
                 vec![Bounds {

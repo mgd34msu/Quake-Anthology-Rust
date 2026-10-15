@@ -348,7 +348,7 @@ fn waiting_client_collision_honors_angle_prediction_without_changing_position() 
             host.runtime.client_collision[client.0 as usize]
                 .as_mut()
                 .unwrap()
-                .trace(&host.runtime.geometry),
+                .trace(&host.runtime.geometry, qa_core::primitives::PatchClip::All),
             Err(qa_app::client_collision::ClientCollisionError::Waiting)
         ));
     }

@@ -81,6 +81,7 @@ fn scene(store: &mut CollisionStore) -> Result<GeometryId, String> {
         .load_brushes(
             planes,
             brushes,
+            Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
             tree,
             vec![Bounds {
@@ -209,6 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             geometry,
             0,
             &mut scratch,
+            qa_core::primitives::PatchClip::All,
             None,
             None,
             |_, error| {

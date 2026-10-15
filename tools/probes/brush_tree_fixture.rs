@@ -151,6 +151,7 @@ pub fn load(
                     first: word(&mut data)?,
                     count: word(&mut data)?,
                 },
+                patches: Default::default(),
             });
         }
         let refs = count(&mut data, 0, 512)?;
@@ -177,12 +178,14 @@ pub fn load(
                 .load_brushes(
                     side_planes,
                     brushes,
+                    Vec::new(),
                     qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
                     BrushTree {
                         planes,
                         nodes,
                         leaves,
                         leaf_brushes,
+                        leaf_patches: Vec::new(),
                         models,
                     },
                     vec![

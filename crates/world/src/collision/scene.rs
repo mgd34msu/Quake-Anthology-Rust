@@ -1,8 +1,8 @@
 use super::EntityTraceFlags;
 use super::store::BodyTraceMode;
 use super::{
-    CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, Trace, TraceError, TraceQuery,
-    TraceScope, TraceScratch, WorldEntityRule,
+    CollisionStore, Contents, EntityTracePolicy, PatchClip, QuakeTraceKind, Trace, TraceError,
+    TraceQuery, TraceScope, TraceScratch, WorldEntityRule,
 };
 use crate::{area::AreaGrid, entities::EntityTable};
 use qa_core::primitives::{
@@ -70,6 +70,7 @@ pub struct WorldTrace<'a> {
     foreign_entities: Option<&'a dyn NativeTraceEntities>,
     native_models: Option<&'a dyn NativeModelNames>,
     candidates: Option<&'a [EntityId]>,
+    patch_clip: Option<PatchClip>,
 }
 
 impl<'a> WorldTrace<'a> {
@@ -94,11 +95,17 @@ impl<'a> WorldTrace<'a> {
             foreign_entities: None,
             native_models: None,
             candidates: None,
+            patch_clip: None,
         }
     }
 
     pub fn with_pass(mut self, pass: CollisionOwner) -> Self {
         self.pass = pass;
+        self
+    }
+
+    pub fn with_patch_clip(mut self, patch_clip: PatchClip) -> Self {
+        self.patch_clip = Some(patch_clip);
         self
     }
 
@@ -122,7 +129,10 @@ impl<'a> WorldTrace<'a> {
         self
     }
 
-    pub fn trace(&mut self, query: TraceQuery) -> Result<Trace, TraceError> {
+    pub fn trace(&mut self, mut query: TraceQuery) -> Result<Trace, TraceError> {
+        if let Some(patch_clip) = self.patch_clip {
+            query.rules.patches = patch_clip;
+        }
         let result = self.trace_inner(query);
         self.finish_query(result)
     }

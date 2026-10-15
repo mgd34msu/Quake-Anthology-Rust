@@ -502,6 +502,7 @@ fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
                             sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                             contents: Contents::WATER,
                         }],
+                        Vec::new(),
                         SurfaceTable::flags(vec![SurfaceFlags::default()]),
                         BrushTree {
                             planes: vec![],
@@ -509,9 +510,11 @@ fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
                             leaves: vec![CollisionLeaf {
                                 stored_contents: Some(Contents::SOLID),
                                 brushes: qa_core::primitives::IndexSpan { first: 0, count: 1 },
+                                patches: Default::default(),
                             }],
                             leaf_brushes: vec![0],
                             models: vec![ModelRoot::Leaf(0)],
+                            leaf_patches: Vec::new(),
                         },
                         vec![bounds],
                     )

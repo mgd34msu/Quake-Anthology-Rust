@@ -74,6 +74,7 @@ fn map(store: &mut CollisionStore, boxes: &[Bounds]) -> GeometryId {
         .load_brushes(
             planes,
             brushes,
+            Vec::new(),
             SurfaceTable::flags(vec![SurfaceFlags::default(); boxes.len() * 6]),
             BrushTree::direct(boxes.len()).unwrap(),
             vec![Bounds {

@@ -614,6 +614,7 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
+        patches: qa_core::primitives::PatchClip,
         native: Option<&dyn NativeTraceEntities>,
         foreign: Option<&dyn NativeTraceEntities>,
     ) -> Result<u32, TraceError> {
@@ -631,6 +632,7 @@ impl Server {
             geometry,
             index,
             scratch,
+            patches,
             native,
             foreign,
             Default::default(),
@@ -660,6 +662,7 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
+        patches: qa_core::primitives::PatchClip,
         native: Option<&dyn NativeTraceEntities>,
         foreign: Option<&dyn NativeTraceEntities>,
         options: qa_movement::MoveOptions,
@@ -679,6 +682,7 @@ impl Server {
             scratch,
             CollisionOwner::Lifetime(client.entity),
         )
+        .with_patch_clip(patches)
         .with_native_entities(native)
         .with_foreign_entities(foreign);
         qa_movement::pmove(
@@ -699,6 +703,7 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
+        patches: qa_core::primitives::PatchClip,
         native: Option<&dyn NativeTraceEntities>,
         foreign: Option<&dyn NativeTraceEntities>,
         mut rejected: impl FnMut(ClientId, TraceError),
@@ -706,7 +711,9 @@ impl Server {
         let mut steps = 0;
         for client_index in 0..self.clients.len() {
             let id = ClientId(client_index as u32);
-            match self.move_pending_client(id, store, geometry, index, scratch, native, foreign) {
+            match self.move_pending_client(
+                id, store, geometry, index, scratch, patches, native, foreign,
+            ) {
                 Ok(count) => steps += count,
                 Err(error) => rejected(id, error),
             }

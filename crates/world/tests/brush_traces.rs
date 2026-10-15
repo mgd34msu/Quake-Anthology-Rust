@@ -18,6 +18,7 @@ fn load(planes: Vec<Plane>, brushes: Vec<Brush>) -> Result<Case, &'static str> {
         .load_brushes(
             planes,
             brushes,
+            Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
             tree,
             vec![Bounds {
@@ -365,11 +366,14 @@ fn rerelease_uses_brush_contents_instead_of_stale_native_leaf_contents() {
                 sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
+            Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),
             BrushTree {
+                leaf_patches: Default::default(),
                 planes: vec![],
                 nodes: vec![],
                 leaves: vec![CollisionLeaf {
+                    patches: Default::default(),
                     stored_contents: Some(Contents::EMPTY),
                     brushes: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 }],

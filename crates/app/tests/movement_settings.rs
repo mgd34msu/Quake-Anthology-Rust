@@ -25,6 +25,7 @@ fn host() -> (FrameHost, ClientId) {
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable::flags(vec![]),
             BrushTree::direct(0).unwrap(),
             vec![Bounds {
@@ -247,7 +248,7 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
         host.runtime.client_collision[id.0 as usize]
             .as_mut()
             .unwrap()
-            .trace(&host.runtime.geometry)
+            .trace(&host.runtime.geometry, qa_core::primitives::PatchClip::All)
             .is_ok()
     );
 }

@@ -7,7 +7,7 @@ use qa_content::{
 use qa_core::primitives::{Bounds, ClipNode, GeometryId, RuleSetId, SurfaceFlags, Vec3};
 use qa_formats::{
     archive::ArchiveReader,
-    bsp::{Bsp, BspFormat, Lump, Map},
+    bsp::{Bsp, BspFormat, Lump, Map, SurfaceKind},
     entities::{EntityLump, EntitySyntax, level_string},
 };
 use qa_render::{
@@ -21,6 +21,7 @@ use qa_world::collision::{
     CollisionStore, Contents,
     brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
     hulls::HullModel,
+    patches::PatchInput,
     surfaces::{SurfaceInput, SurfaceTable},
 };
 use std::borrow::Cow;
@@ -502,6 +503,27 @@ fn spawns(
     ))
 }
 
+fn patch_membership(
+    output: &mut Vec<u32>,
+    surfaces: impl IntoIterator<Item = u32>,
+    patch_for_surface: &[Option<u32>],
+) -> Result<qa_core::primitives::IndexSpan, String> {
+    let first = u32::try_from(output.len()).map_err(|_| "leaf patch count")?;
+    for surface in surfaces {
+        if let Some(patch) = patch_for_surface
+            .get(surface as usize)
+            .ok_or("patch surface reference")?
+        {
+            output.push(*patch);
+        }
+    }
+    let end = u32::try_from(output.len()).map_err(|_| "leaf patch count")?;
+    Ok(qa_core::primitives::IndexSpan {
+        first,
+        count: end - first,
+    })
+}
+
 /// Dedicated servers use the same conversion without registering visual assets.
 pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryId, usize), String> {
     map.models.first().ok_or("missing world model")?;
@@ -628,15 +650,94 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
             },
         });
     }
+    let mut patches = Vec::new();
+    let mut patch_for_surface = vec![None; map.surfaces.len()];
+    for (index, source) in map.surfaces.iter().enumerate() {
+        if source.kind != SurfaceKind::Patch {
+            continue;
+        }
+        let (surface, contents) = if let Some(shader) = source.shader {
+            let row = map.shaders.get(shader as usize).ok_or("patch shader")?;
+            (
+                shader.checked_add(1).ok_or("collision surface count")?,
+                Contents::from_q3(row.content_flags as u32),
+            )
+        } else if early {
+            let side = u32::try_from(source.brush_side).ok();
+            let flags = side
+                .and_then(|side| map.brush_sides.get(side as usize))
+                .map_or(0, |side| side.flags);
+            // IBSP44 carries flags on the referenced side and contents on
+            // its containing brush. An unassociated patch has no contents.
+            let contents = side
+                .and_then(|side| {
+                    map.brushes
+                        .iter()
+                        .rev()
+                        .find(|brush| brush.sides.contains(side as usize))
+                })
+                .map_or(Contents::EMPTY, |brush| {
+                    Contents::from_q3(brush.contents as u32)
+                });
+            let surface =
+                u32::try_from(surfaces.records.len()).map_err(|_| "collision surface count")?;
+            surfaces.records.push(SurfaceInput {
+                name: source.shader_name,
+                material: b"",
+                flags: SurfaceFlags::from_q3(flags as u32),
+                value: 0,
+                source_index: 0,
+            });
+            (surface, contents)
+        } else {
+            return Err("patch shader".into());
+        };
+        let dimensions = source.patch.map(|value| u32::try_from(value));
+        let dimensions = [
+            dimensions[0].map_err(|_| "patch width")?,
+            dimensions[1].map_err(|_| "patch height")?,
+        ];
+        let control_points = map
+            .vertices
+            .get(source.vertices.range())
+            .ok_or("patch vertices")?
+            .iter()
+            .map(|vertex| vertex.position)
+            .collect();
+        patch_for_surface[index] =
+            Some(u32::try_from(patches.len()).map_err(|_| "collision patch count")?);
+        patches.push(PatchInput {
+            dimensions,
+            control_points,
+            contents,
+            surface,
+        });
+    }
+    let mut leaf_patches = Vec::new();
     let mut leaves: Vec<_> = map
         .leaves
         .iter()
-        .map(|leaf| CollisionLeaf {
-            stored_contents: matches!(map.bsp.format.rule_set(), RuleSetId::Quake2)
-                .then(|| Contents::from_q2(leaf.contents as u32)),
-            brushes: leaf.brushes,
+        .map(|leaf| {
+            let patches = if q2 {
+                qa_core::primitives::IndexSpan::default()
+            } else {
+                patch_membership(
+                    &mut leaf_patches,
+                    map.leaf_faces
+                        .get(leaf.faces.range())
+                        .ok_or("leaf surface range")?
+                        .iter()
+                        .copied(),
+                    &patch_for_surface,
+                )?
+            };
+            Ok(CollisionLeaf {
+                stored_contents: q2.then(|| Contents::from_q2(leaf.contents as u32)),
+                brushes: leaf.brushes,
+                patches,
+            })
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     let mut leaf_brushes = map.leaf_brushes.clone();
     let mut models = Vec::with_capacity(map.models.len());
     for (index, source) in map.models.iter().enumerate() {
@@ -656,6 +757,11 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
                         first: first_brush,
                         count: source.brushes.count,
                     },
+                    patches: patch_membership(
+                        &mut leaf_patches,
+                        source.faces.range().map(|surface| surface as u32),
+                        &patch_for_surface,
+                    )?,
                 });
                 models.push(ModelRoot::Leaf(leaf));
             }
@@ -676,11 +782,12 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
             .collect(),
         leaves,
         leaf_brushes,
+        leaf_patches,
         models,
     };
     let count = brushes.len();
     let geometry = store
-        .load_brushes(planes, brushes, surfaces, tree, bounds)
+        .load_brushes(planes, brushes, patches, surfaces, tree, bounds)
         .map_err(|e| format!("brush collision: {e:?}"))?;
     Ok((geometry, count))
 }

@@ -545,6 +545,7 @@ impl FrameHost {
                     world.geometry,
                     world.index,
                     &mut world.scratch,
+                    self.collision_handles.resolve(&self.console.cvars),
                     None,
                     foreign.map(|read| read.view),
                 )

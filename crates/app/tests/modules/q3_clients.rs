@@ -217,6 +217,7 @@ fn fixture_extra(
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable::flags(vec![]),
             BrushTree {
                 planes: vec![],
@@ -224,9 +225,11 @@ fn fixture_extra(
                 leaves: vec![CollisionLeaf {
                     stored_contents: None,
                     brushes: IndexSpan { first: 0, count: 0 },
+                    patches: Default::default(),
                 }],
                 leaf_brushes: vec![],
                 models: vec![ModelRoot::Leaf(0)],
+                leaf_patches: Vec::new(),
             },
             vec![Bounds {
                 mins: Vec3([-512.0; 3]),
@@ -448,6 +451,7 @@ fn q3_queued_commands_use_native_zero_once_and_import_the_module_pose() {
             geometry,
             0,
             &mut world.scratch,
+            qa_core::primitives::PatchClip::All,
             None,
             None,
             |_, error| panic!("{error:?}")

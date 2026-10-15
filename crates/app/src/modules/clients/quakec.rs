@@ -378,6 +378,7 @@ fn move_frame_client(
                 )?;
                 let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
                 let foreign = services.foreign_trace;
+                let patches = services.patch_clip();
                 let current =
                     super::super::trace::TraceView::current(vm, context, services.native_geometry);
                 let moved = services.server.move_client(
@@ -387,6 +388,7 @@ fn move_frame_client(
                     geometry,
                     index,
                     services.scratch,
+                    patches,
                     Some(&current),
                     foreign.map(|read| read.view),
                     options,
@@ -611,6 +613,7 @@ pub(super) fn command(
                 |vm, services, context| {
                     let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
                     let foreign = services.foreign_trace;
+                    let patches = services.patch_clip();
                     vm.with_trace_view(context, offset, services.native_geometry, |view, _| {
                         let moved = services
                             .server
@@ -621,6 +624,7 @@ pub(super) fn command(
                                 geometry,
                                 index,
                                 services.scratch,
+                                patches,
                                 Some(view),
                                 foreign.map(|read| read.view),
                                 Default::default(),

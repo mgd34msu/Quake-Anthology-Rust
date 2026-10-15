@@ -109,6 +109,7 @@ fn load(
                 .load_brushes(
                     planes,
                     brushes,
+                    Vec::new(),
                     qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
                     tree,
                     vec![Bounds {

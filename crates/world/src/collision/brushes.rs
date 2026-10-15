@@ -1,3 +1,4 @@
+use super::patches::{Patch, PatchInput};
 use super::surfaces::{SurfaceRows, SurfaceStorage, SurfaceTable};
 use super::tree::BrushScratch;
 use super::tree::Topology;
@@ -23,11 +24,14 @@ pub enum GeometryError {
     TreeRange,
     TreeCycle,
     Capacity,
+    PatchGrid,
 }
 
 pub(super) struct BrushMap {
     pub(super) planes: Box<[Plane]>,
     pub(super) brushes: Box<[Brush]>,
+    pub(super) patches: Box<[Patch]>,
+    pub(super) patch_plane_count: usize,
     pub(super) surfaces: SurfaceStorage,
     pub(super) topology: Topology,
     pub(super) axial_bounds: Box<[Option<Bounds>]>,
@@ -38,7 +42,8 @@ impl BrushMap {
     pub(crate) fn load_tree(
         mut planes: Vec<Plane>,
         brushes: Vec<Brush>,
-        surfaces: SurfaceTable<'_>,
+        patches: Vec<PatchInput>,
+        mut surfaces: SurfaceTable<'_>,
         tree: BrushTree,
     ) -> Result<(Self, Vec<ModelRoot>), GeometryError> {
         if planes.iter().any(|plane| !plane.is_valid()) {
@@ -56,11 +61,33 @@ impl BrushMap {
                 plane.axis = None;
             }
         }
-        let surfaces = SurfaceStorage::load(surfaces, planes.len())?;
         if brushes.iter().any(|brush| !brush.sides.fits(planes.len())) {
             return Err(GeometryError::BrushRange);
         }
-        let (topology, models) = Topology::load(tree, &brushes)?;
+        if surfaces.sides.len() != planes.len()
+            || patches
+                .iter()
+                .any(|patch| patch.surface as usize >= surfaces.records.len())
+        {
+            return Err(GeometryError::Surface);
+        }
+        let mut generated = Vec::new();
+        generated
+            .try_reserve(patches.len())
+            .map_err(|_| GeometryError::Capacity)?;
+        for patch in patches {
+            generated.push(super::patches::generate(
+                patch,
+                &mut planes,
+                &mut surfaces.sides,
+            )?);
+        }
+        if generated.iter().any(|patch| !patch.bounds.is_valid()) {
+            return Err(GeometryError::PatchGrid);
+        }
+        let patch_plane_count = generated.iter().map(Patch::plane_count).max().unwrap_or(0);
+        let surfaces = SurfaceStorage::load(surfaces, planes.len())?;
+        let (topology, models) = Topology::load(tree, &brushes, &generated)?;
         let axial_bounds = brushes
             .iter()
             .map(|brush| axial_prefix(&planes[brush.sides.range()]))
@@ -70,6 +97,8 @@ impl BrushMap {
             Self {
                 planes: planes.into_boxed_slice(),
                 brushes: brushes.into_boxed_slice(),
+                patches: generated.into_boxed_slice(),
+                patch_plane_count,
                 surfaces,
                 topology,
                 axial_bounds,
@@ -78,8 +107,12 @@ impl BrushMap {
         ))
     }
 
-    pub(crate) fn scratch_capacity(&self) -> (usize, usize) {
-        (self.topology.scratch_capacity(), self.brushes.len())
+    pub(crate) fn scratch_capacity(&self) -> (usize, usize, usize) {
+        (
+            self.topology.scratch_capacity(),
+            self.brushes.len() + self.patches.len(),
+            self.patch_plane_count,
+        )
     }
 
     pub(crate) fn trace_root(
@@ -205,7 +238,7 @@ impl<'a> BrushWork<'a> {
         }
     }
 
-    fn distance(&self, plane: Plane, point_shortcut: bool) -> f32 {
+    pub(super) fn distance(&self, plane: Plane, point_shortcut: bool) -> f32 {
         if point_shortcut && self.support_point {
             return plane.distance;
         }
@@ -273,10 +306,10 @@ pub(super) fn position_brush(
     trace.contents = brush.contents;
 }
 
-struct ConvexInterval {
-    enter: f32,
-    leave: f32,
-    contact: usize,
+pub(super) struct ConvexInterval {
+    pub enter: f32,
+    pub leave: f32,
+    pub contact: usize,
     secondary_contact: Option<usize>,
     start_out: bool,
     end_out: bool,
@@ -284,7 +317,7 @@ struct ConvexInterval {
 
 /// The side reducer owns selection and ordering; the caller supplies distances
 /// in its native arithmetic order and retains the side's geometry and surface.
-fn convex_interval(
+pub(super) fn convex_interval(
     rules: TraceRules,
     side_count: usize,
     mut distances: impl FnMut(usize) -> (f32, f32),

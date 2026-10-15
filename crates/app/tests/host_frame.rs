@@ -499,6 +499,7 @@ fn untransmitted_server_attachments_do_not_modify_client_prediction() {
                 sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
+            Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags(0)]),
             BrushTree::direct(1).unwrap(),
             vec![Bounds {
@@ -588,7 +589,7 @@ fn untransmitted_server_attachments_do_not_modify_client_prediction() {
                 host.runtime.client_collision[id.0 as usize]
                     .as_mut()
                     .unwrap()
-                    .trace(&host.runtime.geometry),
+                    .trace(&host.runtime.geometry, qa_core::primitives::PatchClip::All),
                 Err(qa_app::client_collision::ClientCollisionError::Waiting)
             ));
         }
@@ -617,6 +618,7 @@ fn server_set_angles_survive_native_and_independent_input_prediction() {
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable::flags(vec![]),
             BrushTree::direct(0).unwrap(),
             vec![Bounds {
@@ -768,7 +770,7 @@ fn server_set_angles_survive_native_and_independent_input_prediction() {
         host.runtime.client_collision[client.0 as usize]
             .as_mut()
             .unwrap()
-            .trace(&host.runtime.geometry),
+            .trace(&host.runtime.geometry, qa_core::primitives::PatchClip::All),
         Err(qa_app::client_collision::ClientCollisionError::Waiting)
     ));
     assert_eq!(

@@ -35,6 +35,7 @@ impl Fixture {
                     sides: IndexSpan { first: 0, count: 1 },
                     contents: Contents::SOLID,
                 }],
+                Vec::new(),
                 qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),
                 BrushTree::direct(1).unwrap(),
                 vec![bounds],

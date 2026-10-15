@@ -347,6 +347,7 @@ pub struct ServiceStorage {
     zombie_time: CvarHandle,
     doppler: CvarHandle,
     movement: qa_console::movement::MovementHandles,
+    collision: qa_console::collision::CollisionHandles,
     qw_phs: CvarHandle,
 }
 
@@ -501,6 +502,8 @@ impl ServiceStorage {
             zombie_time: cvars.find("sv_zombietime").ok_or(CallError::Cvar)?,
             doppler: cvars.find("s_doppler").ok_or(CallError::Cvar)?,
             movement: qa_console::movement::MovementHandles::bind(cvars)
+                .map_err(|_| CallError::Cvar)?,
+            collision: qa_console::collision::CollisionHandles::bind(cvars)
                 .map_err(|_| CallError::Cvar)?,
             qw_phs: cvars.find("sv_phs").ok_or(CallError::Cvar)?,
         })
@@ -1375,6 +1378,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .map_err(|_| CallError::Geometry)
     },
     client_collision_trace: |s, query, (shape, bounds), origin, angles, mode| {
+        let query = s.collision_query(query);
         s.geometry
             .trace_body(
                 query,
@@ -1698,6 +1702,9 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
 };
 
 impl EngineServices<'_> {
+    pub fn patch_clip(&self) -> qa_core::primitives::PatchClip {
+        self.storage.collision.resolve(self.cvars)
+    }
     fn client_collision_load(&mut self, name: &[u8]) -> Result<(), CallError> {
         let geometry = self
             .models()
@@ -1798,6 +1805,7 @@ impl EngineServices<'_> {
         native: Option<&'a dyn NativeTraceEntities>,
     ) -> Result<(WorldTrace<'a>, &'a mut [qa_session::clients::Client]), CallError> {
         let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
+        let patches = self.patch_clip();
         Ok((
             WorldTrace::new(
                 self.geometry,
@@ -1808,6 +1816,7 @@ impl EngineServices<'_> {
                 self.scratch,
                 pass,
             )
+            .with_patch_clip(patches)
             .with_native_entities(native)
             .with_foreign_entities(self.foreign_trace.map(|read| read.view))
             .with_native_models(Some(self.storage)),
@@ -2061,7 +2070,12 @@ impl EngineServices<'_> {
         })();
         ForeignTraceRead::complete(foreign, result)
     }
+    fn collision_query<'a>(&self, mut query: TraceQuery<'a>) -> TraceQuery<'a> {
+        query.rules.patches = self.patch_clip();
+        query
+    }
     pub fn clip(&mut self, query: TraceQuery<'_>, target: ClipTarget) -> Result<Trace, CallError> {
+        let query = self.collision_query(query);
         match target {
             ClipTarget::World => {
                 let (geometry, index) = self.world.ok_or(CallError::Geometry)?;

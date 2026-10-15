@@ -115,6 +115,7 @@ fn host_for_map(
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable::flags(vec![]),
             BrushTree {
                 planes: vec![],
@@ -122,9 +123,11 @@ fn host_for_map(
                 leaves: vec![CollisionLeaf {
                     stored_contents: Some(Contents::EMPTY),
                     brushes: IndexSpan::default(),
+                    patches: Default::default(),
                 }],
                 leaf_brushes: vec![],
                 models: vec![ModelRoot::Leaf(0); 2],
+                leaf_patches: Vec::new(),
             },
             vec![bounds; 2],
         )

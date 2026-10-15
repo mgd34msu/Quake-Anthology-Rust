@@ -25,11 +25,14 @@ fn brush_world(planes: Vec<Plane>, brushes: Vec<Brush>) -> FixtureWorld {
         .load_brushes(
             planes,
             brushes,
+            Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
             BrushTree {
+                leaf_patches: Default::default(),
                 planes: Vec::new(),
                 nodes: Vec::new(),
                 leaves: vec![CollisionLeaf {
+                    patches: Default::default(),
                     stored_contents: None,
                     brushes: qa_core::primitives::IndexSpan {
                         first: 0,
@@ -1112,6 +1115,7 @@ fn stale_linked_geometry_rejects_the_whole_query_instead_of_a_partial_hit() {
     let stale = world
         .store
         .load_brushes(
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(Vec::new()),

@@ -102,6 +102,7 @@ fn check<const WIDE: bool>() {
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable {
                 records: vec![SurfaceInput::unnamed(SurfaceFlags::from_q2(0x83)); 2],
                 sides: vec![],
