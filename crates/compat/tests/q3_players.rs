@@ -583,7 +583,7 @@ fn verify(f: &Fixture) {
     );
     assert_eq!(p.body.mins, Vec3([-15.0, -15.0, -24.0]));
     assert_eq!(p.body.maxs, Vec3([15.0, 15.0, 32.0]));
-    assert_eq!(p.view_offset.0[2], -71.0);
+    assert_eq!(p.eye_offset().0[2], -71.0);
     assert_eq!(p.movement.mode, MovementMode::Spectator);
     assert_eq!(
         (p.movement_rules, p.trace_rules),

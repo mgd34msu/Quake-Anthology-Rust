@@ -34,6 +34,9 @@ pub enum PreparePoint {
 pub struct CpuBackend {
     frame: Framebuffer,
     material_frame: Framebuffer,
+    warp_frame: Framebuffer,
+    warp_material_frame: Framebuffer,
+    warp_sine: Box<[u8]>,
     world: Option<world::WorldRaster>,
     evaluator: StageEvaluator,
     presentation: CpuPresentation,
@@ -50,6 +53,12 @@ struct Framebuffer {
     palettes: Box<[u32]>,
 }
 impl Framebuffer {
+    fn clear(&mut self, color: [u8; 4]) {
+        self.pixels.fill(u32::from_le_bytes(color));
+        self.inverse_depth.fill(0.0);
+        self.depth_ranks.fill(0);
+        self.palettes.fill(u32::MAX);
+    }
     fn load(width: u32, height: u32) -> Result<Self, &'static str> {
         let count = (width as usize)
             .checked_mul(height as usize)
@@ -132,6 +141,7 @@ impl Framebuffer {
     fn buffers(&mut self) -> world::Buffers<'_> {
         world::Buffers {
             first_row: 0,
+            frame_width: self.width,
             frame_height: self.height,
             pixels: &mut self.pixels,
             inverse_depth: &mut self.inverse_depth,
@@ -418,6 +428,11 @@ impl CpuBackend {
         Ok(Self {
             frame: Framebuffer::load(width, height)?,
             material_frame: Framebuffer::load(width, height)?,
+            warp_frame: Framebuffer::load(320, 240)?,
+            warp_material_frame: Framebuffer::load(320, 240)?,
+            warp_sine: (0..width.max(height) as usize + 128)
+                .map(|i| (3.0 + (i as f64 * 3.14159 * 2.0 / 128.0).sin() * 3.0) as u8)
+                .collect(),
             world: None,
             evaluator: StageEvaluator::load(),
             presentation: CpuPresentation::Rgb,
@@ -533,19 +548,36 @@ impl CpuBackend {
             match *command {
                 Command::Empty => {}
                 Command::Clear(color) => {
-                    self.frame.pixels.fill(u32::from_le_bytes(color));
-                    self.frame.inverse_depth.fill(0.0);
-                    self.frame.depth_ranks.fill(0);
-                    self.frame.palettes.fill(u32::MAX);
+                    self.frame.clear(color);
+                    self.warp_frame.clear(color);
                     self.presentation = CpuPresentation::Rgb;
                 }
                 Command::View(view) => {
-                    let Some(camera) =
-                        Camera::load(view.refdef, self.frame.width, self.frame.height)
-                    else {
+                    if view.refdef.validate(self.frame.width, self.frame.height).is_none() {
+                        stats.rejected = stats.rejected.saturating_add(1);
+                        continue;
+                    }
+                    let warped = view.refdef.flags.contains(qa_core::primitives::PlayerViewFlags::UNDERWATER)
+                        && !view.refdef.hyperspace;
+                    let mut raster = view.refdef;
+                    if warped {
+                        raster.viewport = Viewport {
+                            width: view.refdef.viewport.width.min(320),
+                            height: view.refdef.viewport.height.min(240),
+                            ..Viewport::default()
+                        };
+                        raster.blend_viewport = None;
+                    }
+                    let (width, height) = if warped { (320, 240) } else { (self.frame.width, self.frame.height) };
+                    let Some(camera) = Camera::load(raster, width, height) else {
                         stats.rejected = stats.rejected.saturating_add(1);
                         continue;
                     };
+                    if warped {
+                        std::mem::swap(&mut self.frame, &mut self.warp_frame);
+                        std::mem::swap(&mut self.material_frame, &mut self.warp_material_frame);
+                    }
+                    let result = (|| -> Result<(), E> {
                     stats.views = stats.views.saturating_add(1);
                     stats.pending_lights =
                         stats.pending_lights.saturating_add(view.scene.lights.count);
@@ -566,7 +598,7 @@ impl CpuBackend {
                                 }
                             }
                         }
-                        continue;
+                        return Ok(());
                     }
                     if let Some(world) = &mut self.world {
                         observe(PreparePoint::Begin);
@@ -639,8 +671,19 @@ impl CpuBackend {
                         self.frame.buffers(),
                         &mut stats,
                     );
-                    if camera.refdef.blend_phase == BlendPhase::AfterView {
-                        self.view_blend(&camera.refdef, false, assets);
+                        Ok(())
+                    })();
+                    if warped {
+                        std::mem::swap(&mut self.frame, &mut self.warp_frame);
+                        std::mem::swap(&mut self.material_frame, &mut self.warp_material_frame);
+                        if result.is_ok() { self.resolve_water(&view.refdef); }
+                    }
+                    result?;
+                    if !view.refdef.hyperspace {
+                        if view.refdef.blend_phase == BlendPhase::AfterView {
+                            self.view_blend(&view.refdef, false, assets);
+                        }
+                        self.damage_vignette(&view.refdef, assets);
                     }
                 }
                 Command::Draw2d(draw) => {
@@ -671,6 +714,28 @@ impl CpuBackend {
                 let start = buffers.offset(width, viewport.x, y);
                 buffers.inverse_depth[start..start + viewport.width as usize].fill(far_depth);
                 buffers.depth_ranks[start..start + viewport.width as usize].fill(0);
+            }
+        }
+    }
+
+    fn resolve_water(&mut self, view: &Refdef) {
+        let viewport = view.viewport;
+        let phase = qa_core::math::native_integer(f64::from(view.time_seconds() * 20.0)) as usize & 127;
+        let width = viewport.width.min(320);
+        let height = viewport.height.min(240);
+        for y in 0..viewport.height {
+            for x in 0..viewport.width {
+                let source_x = ((x + u32::from(self.warp_sine[phase + y as usize])) as f32
+                    / (viewport.width + 6) as f32 * width as f32) as usize;
+                let source_y = ((y + u32::from(self.warp_sine[phase + x as usize])) as f32
+                    / (viewport.height + 6) as f32 * height as f32) as usize;
+                let source = source_y * 320 + source_x;
+                let destination = ((viewport.y + y) * self.frame.width + viewport.x + x) as usize;
+                self.frame.pixels[destination] = self.warp_frame.pixels[source];
+                self.frame.indices[destination] = self.warp_frame.indices[source];
+                self.frame.palettes[destination] = self.warp_frame.palettes[source];
+                self.frame.inverse_depth[destination] = self.warp_frame.inverse_depth[source];
+                self.frame.depth_ranks[destination] = self.warp_frame.depth_ranks[source];
             }
         }
     }
@@ -1261,6 +1326,34 @@ impl CpuBackend {
                     *pixel = composite(*pixel, source, Some(StageBlend::ALPHA));
                     if preserve_alpha {
                         *pixel = (*pixel & 0x00ff_ffff) | alpha;
+                    }
+                }
+            }
+        }
+    }
+
+    fn damage_vignette(&mut self, refdef: &Refdef, assets: &Assets) {
+        let Some(vignette) = crate::scene::DamageVignette::load(refdef) else { return };
+        let viewport = refdef.viewport;
+        let palette = match refdef.cpu_presentation {
+            CpuPresentation::Indexed { palette, .. } => assets.palette(palette).map(|resource| (palette, resource)),
+            CpuPresentation::Rgb => None,
+        };
+        let width = self.frame.width;
+        let mut buffers = self.frame.buffers();
+        if let Some(rows) = buffers.rows(width, viewport) {
+            for y in rows {
+                for x in viewport.x..viewport.x + viewport.width {
+                    let color = vignette.color_at(viewport, x, y);
+                    if color[3] == 0.0 { continue; }
+                    let index = buffers.offset(width, x, y);
+                    let pixel = composite(buffers.pixels[index], color, Some(StageBlend::ALPHA));
+                    if let Some((palette, resource)) = palette {
+                        let [r, g, b, _] = pixel.to_le_bytes();
+                        let color = resource.nearest_index([r, g, b], None);
+                        buffers.write_indexed(index, color, resource, palette.0, None);
+                    } else {
+                        buffers.write_rgba(index, pixel, None);
                     }
                 }
             }

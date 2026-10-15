@@ -20,6 +20,9 @@ pub struct ClientView {
     pub origin: qa_core::primitives::Vec3,
     pub angles: qa_core::primitives::Vec3,
     pub fov_x: f32,
+    pub screen_blend: [f32; 4],
+    pub damage_blend: [f32; 4],
+    pub flags: qa_core::primitives::PlayerViewFlags,
     pub time_ms: u64,
     pub lighting_scales: [f32; 2],
 }
@@ -786,7 +789,10 @@ impl FrameHost {
                 presentation: self.local_presentations[seat],
                 origin: player.eye(),
                 angles: self.client_angles(client, row, player),
-                fov_x: self.console.cvars.value(self.fov),
+                fov_x: player.view.fov_x.unwrap_or_else(|| self.console.cvars.value(self.fov)),
+                screen_blend: player.view.screen_blend,
+                damage_blend: player.view.damage_blend,
+                flags: player.view.flags,
                 time_ms: self.time.milliseconds(),
                 lighting_scales: self
                     .lighting_scales

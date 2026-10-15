@@ -264,7 +264,7 @@ fn appearance_for_abi(rerelease: bool) {
     assert_eq!(player.view_weapon.rate, if rerelease { 60 } else { 0 });
     assert_eq!(player.view_angles, Vec3([10., 20., 30.]));
     assert_eq!(
-        player.view_offset,
+        player.view.effective_offset(player.movement.view_height),
         Vec3([1., 2., if rerelease { 23. } else { 3. }])
     );
     assert_eq!(player.punch_angles, Vec3([-1., -2., -3.]));

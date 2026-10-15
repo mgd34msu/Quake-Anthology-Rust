@@ -428,7 +428,6 @@ struct WorldPrepare {
 }
 
 struct WorldBand {
-    width: u32,
     catalog: Arc<WorldCatalog>,
     edges: Edges,
     cache: SurfaceCache,
@@ -446,6 +445,7 @@ pub(super) struct WorldRaster {
 
 pub(super) struct Buffers<'a> {
     pub first_row: u32,
+    pub frame_width: u32,
     pub frame_height: u32,
     pub pixels: &'a mut [u32],
     pub inverse_depth: &'a mut [f32],
@@ -518,6 +518,7 @@ impl<'a> Buffers<'a> {
     fn reborrow(&mut self) -> Buffers<'_> {
         Buffers {
             first_row: self.first_row,
+            frame_width: self.frame_width,
             frame_height: self.frame_height,
             pixels: &mut *self.pixels,
             inverse_depth: &mut *self.inverse_depth,
@@ -527,8 +528,8 @@ impl<'a> Buffers<'a> {
         }
     }
 
-    fn split_rows(self, width: u32, rows: u32) -> (Self, Self) {
-        let count = width as usize * rows as usize;
+    fn split_rows(self, rows: u32) -> (Self, Self) {
+        let count = self.frame_width as usize * rows as usize;
         let (pixels, remaining_pixels) = self.pixels.split_at_mut(count);
         let (depth, remaining_depth) = self.inverse_depth.split_at_mut(count);
         let (ranks, remaining_ranks) = self.depth_ranks.split_at_mut(count);
@@ -537,6 +538,7 @@ impl<'a> Buffers<'a> {
         (
             Self {
                 first_row: self.first_row,
+                frame_width: self.frame_width,
                 frame_height: self.frame_height,
                 pixels,
                 inverse_depth: depth,
@@ -546,6 +548,7 @@ impl<'a> Buffers<'a> {
             },
             Self {
                 first_row: self.first_row + rows,
+                frame_width: self.frame_width,
                 frame_height: self.frame_height,
                 pixels: remaining_pixels,
                 inverse_depth: remaining_depth,

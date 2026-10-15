@@ -161,6 +161,7 @@ impl Pmove {
         }
         if self.layout.wide {
             player.movement.ladder = self.words[PM_FLAGS_WORD] & 128 != 0;
+            player.movement.view_height = f32::from(memory.read_field(address + 48, Byte)? as i8);
         }
         Ok(())
     }
@@ -194,7 +195,7 @@ impl Pmove {
             memory.write_field(
                 address + 48,
                 Byte,
-                player.view_offset.0[2] as i8 as u8 as u32,
+                player.movement.view_height as i8 as u8 as u32,
             )?;
         }
         for (&word, &(offset, width)) in self.words.iter().zip(&self.layout.state) {

@@ -142,7 +142,7 @@ fn copy_motion(source: &PlayerState, target: &mut PlayerState) {
     target.native = source.native;
     target.prediction = source.prediction;
     target.view_angles = source.view_angles;
-    target.view_offset = source.view_offset;
+    target.view = source.view;
     target.ideal_pitch = source.ideal_pitch;
     target.native_clock = source.native_clock;
 }

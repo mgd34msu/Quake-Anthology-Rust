@@ -1882,7 +1882,7 @@ fn pushed_client_pose_refresh_preserves_selected_bounds_and_rejects_old_lifetime
             player.movement.water_level = 3;
             player.movement.tuning.gravity_multiplier = 1.75;
             player.view_angles = Vec3([11.0, 22.0, 33.0]);
-            player.view_offset = Vec3([1.0, 2.0, 3.0]);
+            player.view.accept_offset(Vec3([1.0, 2.0, 3.0]), None);
 
             vm.refresh_client_pose(calls.services, calls.context, value, captured)
                 .unwrap();
@@ -1904,7 +1904,10 @@ fn pushed_client_pose_refresh_preserves_selected_bounds_and_rejects_old_lifetime
             assert_eq!(player.movement.water_level, 3);
             assert_eq!(player.movement.tuning.gravity_multiplier, 1.75);
             assert_eq!(player.view_angles, Vec3([11.0, 22.0, 33.0]));
-            assert_eq!(player.view_offset, Vec3([1.0, 2.0, 3.0]));
+            assert_eq!(
+                player.view.raw_offset(),
+                Some((Vec3([1.0, 2.0, 3.0]), None))
+            );
 
             let before = body_bits(player.body);
             calls.services.server.clients[client.0 as usize].module = ModuleId(17);

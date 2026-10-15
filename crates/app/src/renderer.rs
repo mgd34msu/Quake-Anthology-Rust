@@ -280,6 +280,9 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
         origin: client.origin,
         axes: basis.axes(),
         fov,
+        blend: client.screen_blend,
+        damage_blend: client.damage_blend,
+        flags: client.flags,
         time_ms: client.time_ms as i64,
         ..Refdef::default()
     };

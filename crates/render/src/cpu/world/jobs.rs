@@ -242,7 +242,7 @@ impl WorldRaster {
             let range = super::partition(id, count, height as usize);
             let first = range.start as u32;
             let end = range.end as u32;
-            let (buffers, tail) = remainder.split_rows(band.width, end - first);
+            let (buffers, tail) = remainder.split_rows(end - first);
             remainder = tail;
             *slot = CpuJob {
                 band_id: id,

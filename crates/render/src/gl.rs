@@ -939,6 +939,7 @@ impl GlBackend {
                     if view.refdef.blend_phase == BlendPhase::AfterView {
                         self.tint(view.refdef.viewport, view.refdef.blend, &mut stats);
                     }
+                    self.damage_vignette(&view.refdef, &mut stats);
                 }
                 Command::Draw2d(draw) => {
                     self.viewport(
@@ -1765,6 +1766,30 @@ impl GlBackend {
             (self.gl.uniform_integer)(self.uniforms.alpha_gen, 0);
         }
         unsafe { (self.gl.draw_arrays)(TRIANGLE_FAN, first as i32, 4) };
+    }
+
+    fn damage_vignette(&mut self, view: &crate::scene::Refdef, stats: &mut BackendStats) {
+        let Some(vignette) = crate::scene::DamageVignette::load(view) else { return };
+        let (vertices, count) = vignette.triangles(view.viewport);
+        let Some(first) = self.upload(&vertices[..count]) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        self.viewport(Viewport { width: self.width, height: self.height, ..Viewport::default() }, false);
+        self.bind_vao(self.dynamic.vao);
+        self.set_depth_hack(false);
+        let stage = Stage {
+            rgb_gen: RgbGen::Vertex,
+            alpha_gen: AlphaGen::Vertex,
+            blend: Some(StageBlend::ALPHA),
+            ..Stage::default()
+        };
+        let projection = orthographic(self.width, self.height);
+        if !self.stage(stage, MaterialSettings { cull: Cull::None, ..MaterialSettings::default() }, DrawInputs::default(), &projection, false, false) {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
+        unsafe { (self.gl.draw_arrays)(TRIANGLES, first as i32, count as i32) };
     }
 
     #[allow(clippy::too_many_arguments)]

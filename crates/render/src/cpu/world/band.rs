@@ -25,7 +25,6 @@ impl WorldBand {
             return Err("CPU band cache cannot hold a mandatory surface");
         }
         Ok(Self {
-            width,
             edges: super::Edges::load(
                 width,
                 height,
@@ -55,13 +54,13 @@ impl WorldBand {
         mut buffers: Buffers<'_>,
         stats: &mut crate::BackendStats,
     ) {
-        if buffers.rows(self.width, camera.refdef.viewport).is_none() {
+        if buffers.rows(buffers.frame_width, camera.refdef.viewport).is_none() {
             return;
         }
         let before = self.stats.rejected;
         if let Some(source) = prepared.background {
             super::super::sky::background(
-                self.width,
+                buffers.frame_width,
                 source,
                 camera,
                 assets,
@@ -211,7 +210,7 @@ impl WorldBand {
         if indices.is_empty() {
             return;
         }
-        let Some(rows) = buffers.rows(self.width, camera.refdef.viewport) else {
+        let Some(rows) = buffers.rows(buffers.frame_width, camera.refdef.viewport) else {
             return;
         };
         let old_rejected = self.stats.rejected;
@@ -232,7 +231,7 @@ impl WorldBand {
                     primitive.winding,
                 );
             }
-            let width = self.width;
+            let width = buffers.frame_width;
             let cache = &mut self.cache;
             let counters = &mut self.stats;
             let catalog = &self.catalog;

@@ -1017,6 +1017,116 @@ pub struct PlayerPresentation {
     pub jump_pad_entity: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerViewFlags(u32);
+impl PlayerViewFlags {
+    pub const UNDERWATER: Self = Self(1 << 0);
+    pub const NO_WORLD_MODEL: Self = Self(1 << 1);
+    pub const INFRARED: Self = Self(1 << 2);
+    pub const ULTRAVIOLET: Self = Self(1 << 3);
+    pub const NO_WEAPON_LERP: Self = Self(1 << 4);
+    pub const TELEPORT: Self = Self(1 << 5);
+
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+    pub fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+impl std::ops::BitOr for PlayerViewFlags {
+    type Output = Self;
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+/// Loaded flag meanings, independent of movement, geometry and source ids.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewFlagLayout {
+    native: [u32; 6],
+}
+impl ViewFlagLayout {
+    pub const CLASSIC: Self = Self {
+        native: [1, 2, 4, 8, 0, 0],
+    };
+    pub const KEX: Self = Self {
+        native: [1, 2, 4, 8, 16, 0],
+    };
+    pub const REPRO: Self = Self {
+        native: [1, 2, 4, 8, 0, 16],
+    };
+
+    pub fn decode(self, raw: u32) -> PlayerViewFlags {
+        let mut flags = PlayerViewFlags::default();
+        for (bit, mask) in self.native.into_iter().enumerate() {
+            if raw & mask != 0 {
+                flags.0 |= 1 << bit;
+            }
+        }
+        flags
+    }
+    pub fn encode(self, flags: PlayerViewFlags, residual: Option<NativeViewFlags>) -> u32 {
+        let mask = self.native.into_iter().fold(0, |mask, bit| mask | bit);
+        let mut raw = residual
+            .filter(|value| value.layout == self)
+            .map_or(0, |value| value.raw & !mask);
+        for (bit, mask) in self.native.into_iter().enumerate() {
+            if flags.0 & (1 << bit) != 0 {
+                raw |= mask;
+            }
+        }
+        raw
+    }
+}
+
+/// Residual flag bits retain the enclosing native tail's owner and layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeViewFlags {
+    pub layout: ViewFlagLayout,
+    pub raw: u32,
+}
+
+/// Authored camera offsets remain independent of physical stance outputs.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlayerView {
+    authored_offset: Option<(Vec3, Option<f32>)>,
+    pub fov_x: Option<f32>,
+    pub screen_blend: [f32; 4],
+    pub damage_blend: [f32; 4],
+    pub flags: PlayerViewFlags,
+}
+impl PlayerView {
+    pub fn accept_offset(&mut self, raw: Vec3, height: Option<f32>) {
+        self.authored_offset = Some((raw, height));
+    }
+    pub fn clear_offset(&mut self) {
+        self.authored_offset = None;
+    }
+    pub fn raw_offset(self) -> Option<(Vec3, Option<f32>)> {
+        self.authored_offset
+    }
+    pub fn effective_offset(self, movement_height: f32) -> Vec3 {
+        let Some((mut offset, height)) = self.authored_offset else {
+            return Vec3([0.0, 0.0, movement_height]);
+        };
+        if let Some(height) = height {
+            offset.0[2] += height;
+        }
+        offset
+    }
+    pub fn eye(self, origin: Vec3, movement_height: f32) -> Vec3 {
+        let Some((offset, height)) = self.authored_offset else {
+            return origin + self.effective_offset(movement_height);
+        };
+        let mut eye = origin + offset;
+        if let Some(height) = height {
+            eye.0[2] += height;
+        }
+        eye
+    }
+}
+
 /// Native player metadata retains source widths independently of movement and
 /// connection identity. Hot movement fields overlay only their mapped flags.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1031,6 +1141,7 @@ pub struct NativePlayerTail {
     pub speed: Option<i32>,
     pub signals: Option<PlayerSignals>,
     pub presentation: Option<PlayerPresentation>,
+    pub view_flags: Option<NativeViewFlags>,
 }
 impl NativePlayerTail {
     pub const fn new(source: RuleSetId, namespace: ResourceNamespace) -> Self {
@@ -1045,6 +1156,7 @@ impl NativePlayerTail {
             speed: None,
             signals: None,
             presentation: None,
+            view_flags: None,
         }
     }
 }
@@ -1088,7 +1200,7 @@ pub struct PlayerState {
     pub armor_type: ItemId,
     pub pending_weapon: Option<WeaponId>,
     pub inventory: Inventory,
-    pub view_offset: Vec3,
+    pub view: PlayerView,
     pub punch_angles: Vec3,
     pub view_weapon: ViewWeapon,
     /// Player presentation can carry a loop when its native entity is omitted
@@ -1539,6 +1651,7 @@ impl AngleOffsets {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MovementState {
     pub mode: MovementMode,
+    pub view_height: f32,
     pub grounded: bool,
     pub ground: Option<EntityId>,
     pub ground_normal: Vec3,
@@ -1728,7 +1841,10 @@ impl PlayerState {
     }
 
     pub fn eye(&self) -> Vec3 {
-        self.body.position + self.view_offset
+        self.view.eye(self.body.position, self.movement.view_height)
+    }
+    pub fn eye_offset(&self) -> Vec3 {
+        self.view.effective_offset(self.movement.view_height)
     }
 
     pub fn with_capacity(items: usize, powerups: usize, values: usize) -> Self {

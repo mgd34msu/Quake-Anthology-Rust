@@ -91,7 +91,7 @@ impl<const N: usize> Rows<N> {
                 .and_then(|native| native.client_number)
                 .unwrap_or(self_number)
         });
-        let origin = player.body.position + player.view_offset;
+        let origin = player.eye();
         visibility.begin(source, protocol, origin)?;
         for id in source.entities.active() {
             let slot = id.slot as usize;

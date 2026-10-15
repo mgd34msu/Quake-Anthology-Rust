@@ -10,6 +10,7 @@ pub struct AppearanceCapabilities {
     pub weapon_model: bool,
     pub depth_hack: bool,
     pub fullbright: bool,
+    pub infrared_visible: bool,
     /// Use the current origin/old_origin frame path instead of interpolating
     /// origins: Q2 RF_FRAMELERP and rerelease RF_NO_ORIGIN_LERP.
     pub frame_lerp: bool,
@@ -41,6 +42,7 @@ struct NativeRules {
     weapon: u32,
     depth: u32,
     fullbright: u32,
+    infrared_visible: u32,
     translucent: u32,
     inline_translucent_alpha: Option<f32>,
     frame_lerp: u32,
@@ -75,6 +77,7 @@ const NEUTRAL: NativeRules = NativeRules {
     weapon: 0,
     depth: 0,
     fullbright: 0,
+    infrared_visible: 0,
     translucent: 0,
     inline_translucent_alpha: None,
     frame_lerp: 0,
@@ -110,6 +113,7 @@ const Q2: NativeRules = NativeRules {
     viewer: 2,
     weapon: 4,
     fullbright: 8,
+    infrared_visible: 0x8000,
     depth: 16,
     translucent: 32,
     inline_translucent_alpha: Some(0.25),
@@ -375,6 +379,7 @@ impl AppearancePolicy {
             | rules.weapon
             | rules.depth
             | rules.fullbright
+            | rules.infrared_visible
             | rules.translucent
             | rules.frame_lerp
             | rules.old_frame;
@@ -389,6 +394,7 @@ impl AppearancePolicy {
             weapon_model: flags & rules.weapon != 0,
             depth_hack: flags & rules.depth != 0,
             fullbright: flags & rules.fullbright != 0,
+            infrared_visible: flags & rules.infrared_visible != 0,
             frame_lerp: flags & rules.frame_lerp != 0,
             alias_motion: flags & rules.frame_lerp != 0 && rules.alias_motion,
             beam_radius: (flags & rules.beam != 0).then(|| {

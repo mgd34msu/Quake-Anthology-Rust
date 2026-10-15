@@ -2214,7 +2214,7 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
         ..Default::default()
     };
     source.body.velocity.0[0] = -32.;
-    source.view_offset.0[2] = 22.;
+    source.view.accept_offset(Vec3([0., 0., 22.]), None);
     let mut context = native_player_context();
     let mut player = [0; states::NQ_PLAYER_WORDS];
     assert!(projection.reduce(

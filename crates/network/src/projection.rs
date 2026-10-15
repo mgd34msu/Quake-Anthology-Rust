@@ -5,9 +5,10 @@ use qa_core::{
     math::{AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
         AngleOffset, CollisionTags, EntityAppearance, EntityId, ModelRef, MovementMagnitude,
-        MovementMode, MovementTimer, NativeClientRef, NativePlayerTail, PlayerPresentation,
-        PlayerSignals, PlayerState, PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef,
-        ValueBinding, ValueWidth, Vec3, ViewWeapon, WeaponReadiness, WeaponState,
+        MovementMode, MovementTimer, NativeClientRef, NativePlayerTail, NativeViewFlags,
+        PlayerPresentation, PlayerSignals, PlayerState, PlayerValueBindings, Q3StatLayout,
+        ResourceNamespace, SoundRef, ValueBinding, ValueWidth, Vec3, ViewFlagLayout, ViewWeapon,
+        WeaponReadiness, WeaponState,
     },
 };
 
@@ -52,6 +53,12 @@ enum Source {
     Velocity(usize),
     View(usize),
     ViewOffset(usize),
+    MovementViewHeight,
+    ViewHeight,
+    FieldOfView,
+    ScreenBlend(usize),
+    DamageBlend(usize),
+    ViewFlags,
     Punch(usize),
     DeltaAngle(usize),
     CommandTime,
@@ -214,18 +221,30 @@ const Q2: &[Field] = &[
     f(27, WeaponAngle(0), Bits),
     f(28, WeaponAngle(1), Bits),
     f(29, WeaponAngle(2), Bits),
+    f(30, ScreenBlend(0), Bits),
+    f(31, ScreenBlend(1), Bits),
+    f(32, ScreenBlend(2), Bits),
+    f(33, ScreenBlend(3), Bits),
+    f(34, FieldOfView, Bits),
+    f(35, ViewFlags, Bits),
     f(37, Health, Bits),
     f(41, Armor, Bits),
     f(50, Frags, Bits),
 ];
-const fn q2_repro_fields() -> [Field; Q2.len() + 2] {
-    let mut fields = [f(0, Mode, Bits); Q2.len() + 2];
+const fn q2_repro_fields() -> [Field; Q2.len() + 7] {
+    let mut fields = [f(0, Mode, Bits); Q2.len() + 7];
     let mut i = 0;
     while i < Q2.len() {
         let mut field = Q2[i];
         field.convert = match field.source {
             Position(_) | Velocity(_) | DeltaAngle(_) => Bits,
             ViewOffset(_) => ScaledShort(16),
+            ScreenBlend(_) => ScaledByte {
+                scale: 255,
+                nonzero: false,
+                implicit: 0,
+            },
+            FieldOfView => FloatInteger,
             Punch(_) => ScaledShort(1024),
             View(_) => ShortAngle,
             WeaponOffset(_) => ScaledShort(512),
@@ -241,6 +260,43 @@ const fn q2_repro_fields() -> [Field; Q2.len() + 2] {
     }
     fields[Q2.len()] = f(42, Client, Bits);
     fields[Q2.len() + 1] = f(40, WeaponRate, Bits);
+    fields[Q2.len() + 2] = f(41, ViewHeight, FloatInteger);
+    fields[Q2.len() + 3] = f(
+        36,
+        DamageBlend(0),
+        ScaledByte {
+            scale: 255,
+            nonzero: false,
+            implicit: 0,
+        },
+    );
+    fields[Q2.len() + 4] = f(
+        37,
+        DamageBlend(1),
+        ScaledByte {
+            scale: 255,
+            nonzero: false,
+            implicit: 0,
+        },
+    );
+    fields[Q2.len() + 5] = f(
+        38,
+        DamageBlend(2),
+        ScaledByte {
+            scale: 255,
+            nonzero: false,
+            implicit: 0,
+        },
+    );
+    fields[Q2.len() + 6] = f(
+        39,
+        DamageBlend(3),
+        ScaledByte {
+            scale: 255,
+            nonzero: false,
+            implicit: 0,
+        },
+    );
     fields
 }
 static Q2_REPRO: &[Field] = &q2_repro_fields();
@@ -273,7 +329,7 @@ static Q3: &[Field] = &[
     f(25, Speed, FloatInteger),
     f(26, DeltaAngle(1), UnsignedShortAngle),
     f(27, ExternalParameter, Bits),
-    f(28, ViewOffset(2), FloatInteger),
+    f(28, MovementViewHeight, FloatInteger),
     f(29, DamageSequence, Bits),
     f(30, DamageYaw, Bits),
     f(31, DamagePitch, Bits),
@@ -369,6 +425,8 @@ pub struct PlayerProjection {
     flags: [u32; 10],
     flag_mask: u32,
     prediction_masks: [u32; 2],
+    view_flags: Option<ViewFlagLayout>,
+    movement_view: bool,
     stats_only: bool,
     movement_only: bool,
     layout_valid: bool,
@@ -596,6 +654,12 @@ impl PlayerProjection {
                 Protocol::Quake3_68 => [4096; 2],
                 _ => [0; 2],
             },
+            view_flags: match protocol {
+                Protocol::Quake2_34 => Some(ViewFlagLayout::CLASSIC),
+                Protocol::Quake2Repro1038 => Some(ViewFlagLayout::REPRO),
+                _ => None,
+            },
+            movement_view: protocol == Protocol::Quake3_68,
             stats_only,
             movement_only: false,
             layout_valid,
@@ -766,6 +830,9 @@ impl PlayerProjection {
                         }
                         Weapon => tail.weapon_number,
                         Presentation(part) => tail.presentation.map(|value| part.value(value)),
+                        ViewFlags => self
+                            .view_flags
+                            .map(|layout| layout.encode(player.view.flags, tail.view_flags) & 255),
                         _ => tail
                             .signals
                             .and_then(|signals| field.source.signal_value(signals)),
@@ -852,6 +919,16 @@ impl PlayerProjection {
             return false;
         }
         let mut native = NativePlayerTail::new(self.protocol.rule_set(), namespace);
+        let mut offset = if self.protocol == Protocol::Quake2Repro1038 {
+            player
+                .view
+                .raw_offset()
+                .map_or(Vec3::default(), |(offset, _)| offset)
+        } else {
+            player.eye_offset()
+        };
+        let mut height = None;
+        let mut has_offset = false;
         if !stats_only {
             context.namespace = Some(namespace);
             player.prediction = Default::default();
@@ -859,6 +936,15 @@ impl PlayerProjection {
             // Protocols without this flag cannot retain an earlier Q3 lock.
             player.movement.respawned = false;
             player.movement.ignore_player_collision = false;
+            if !self.movement_only {
+                if self.movement_view {
+                    player.view.clear_offset();
+                }
+                player.view.fov_x = None;
+                player.view.screen_blend = [0.0; 4];
+                player.view.damage_blend = [0.0; 4];
+                player.view.flags = Default::default();
+            }
         }
         for field in &self.fields {
             if stats_only && !matches!(field.source, Health | Armor | Score | Frags | WeaponTime) {
@@ -874,7 +960,21 @@ impl PlayerProjection {
                 Position(i) => player.body.position.0[i] = f32::from_bits(value),
                 Velocity(i) => player.body.velocity.0[i] = f32::from_bits(value),
                 View(i) => player.view_angles.0[i] = f32::from_bits(value),
-                ViewOffset(i) => player.view_offset.0[i] = f32::from_bits(value),
+                ViewOffset(i) => {
+                    offset.0[i] = f32::from_bits(value);
+                    has_offset = true;
+                }
+                MovementViewHeight => player.movement.view_height = f32::from_bits(value),
+                ViewHeight => height = Some(f32::from_bits(value)),
+                FieldOfView => player.view.fov_x = Some(f32::from_bits(value)),
+                ScreenBlend(i) => player.view.screen_blend[i] = f32::from_bits(value),
+                DamageBlend(i) => player.view.damage_blend[i] = f32::from_bits(value),
+                ViewFlags => {
+                    if let Some(layout) = self.view_flags {
+                        player.view.flags = layout.decode(word);
+                        native.view_flags = Some(NativeViewFlags { layout, raw: word });
+                    }
+                }
                 Punch(i) => player.punch_angles.0[i] = f32::from_bits(value),
                 DeltaAngle(i) => {
                     player.movement.delta_angles.0[i] = field.convert.import_angle(word)
@@ -1016,6 +1116,10 @@ impl PlayerProjection {
                 BodyYaw | NativeValue => {}
             }
         }
+        if has_offset {
+            player.movement.view_height = height.unwrap_or(offset.0[2]);
+            player.view.accept_offset(offset, height);
+        }
         if !stats_only && !self.movement_only {
             player.native = Some(native);
         }
@@ -1053,7 +1157,28 @@ impl PlayerProjection {
             Position(i) => p.body.position.0[i].to_bits(),
             Velocity(i) => p.body.velocity.0[i].to_bits(),
             View(i) => p.view_angles.0[i].to_bits(),
-            ViewOffset(i) => p.view_offset.0[i].to_bits(),
+            ViewOffset(i) => {
+                let offset = if self.protocol == Protocol::Quake2Repro1038 {
+                    p.view
+                        .raw_offset()
+                        .map_or(Vec3::default(), |(offset, _)| offset)
+                } else {
+                    p.eye_offset()
+                };
+                offset.0[i].to_bits()
+            }
+            MovementViewHeight => p.movement.view_height.to_bits(),
+            ViewHeight => p
+                .view
+                .raw_offset()
+                .map_or(p.movement.view_height, |(_, height)| height.unwrap_or(0.0))
+                .to_bits(),
+            FieldOfView => p.view.fov_x.unwrap_or(90.0).to_bits(),
+            ScreenBlend(i) => p.view.screen_blend[i].to_bits(),
+            DamageBlend(i) => p.view.damage_blend[i].to_bits(),
+            ViewFlags => self
+                .view_flags
+                .map_or(0, |layout| layout.encode(p.view.flags, None) & 255),
             Punch(i) => p.punch_angles.0[i].to_bits(),
             DeltaAngle(i) => p.movement.delta_angles.0[i].degrees().to_bits(),
             CommandTime => p.movement.command_time_ms as u32,

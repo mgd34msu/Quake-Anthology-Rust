@@ -2288,7 +2288,7 @@ fn native_player_values_views_and_fractional_alive_state_use_one_client() {
         assert_eq!(player.movement.mode, MovementMode::Walk);
         assert_eq!(player.movement_rules, RuleSetId::Quake3);
         assert_eq!(player.trace_rules, RuleSetId::Quake2);
-        assert_eq!(player.view_offset, Vec3([0.0, 0.0, 22.0]));
+        assert_eq!(player.eye_offset(), Vec3([0.0, 0.0, 22.0]));
         assert_eq!(player.punch_angles, Vec3([1.0, 2.0, 3.0]));
         assert_eq!(
             player.view_weapon.model,
@@ -2781,7 +2781,7 @@ fn nq_published_players_use_raw_clientdata_items_without_reusing_stat_fifteen() 
                 ModelRef::native(ResourceNamespace::Module(context.module), model)
             );
             assert_eq!(player.view_weapon.frame, 5);
-            assert_eq!(player.view_offset, Vec3([0.0, 0.0, 22.0]));
+            assert_eq!(player.eye_offset(), Vec3([0.0, 0.0, 22.0]));
             assert_eq!(player.punch_angles, Vec3([1.0, 2.0, 3.0]));
             assert_eq!(player.body.position, old_body.position);
             assert_eq!(player.body.velocity, old_body.velocity);

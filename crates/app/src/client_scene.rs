@@ -848,7 +848,11 @@ impl ClientSceneInput<'_> {
             counts.missing_models += 1;
             return;
         };
-        let animation_policy = self.appearance.weapon_interpolation();
+        let animation_policy = if self.player.view.flags.contains(qa_core::primitives::PlayerViewFlags::NO_WEAPON_LERP) {
+            WeaponInterpolation::None
+        } else {
+            self.appearance.weapon_interpolation()
+        };
         let previous = if animation_policy != WeaponInterpolation::None {
             self.previous
                 .filter(|old| {

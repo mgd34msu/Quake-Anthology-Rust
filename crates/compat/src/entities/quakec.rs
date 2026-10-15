@@ -1716,11 +1716,7 @@ impl EntityProjection {
             .transpose()?;
         self.quakec_publish(services, memory, strings, context, value)?;
         let player = &mut services.server.clients[client.0 as usize].player;
-        let view_offset = player.view_offset;
         qa_movement::set_bounds(player);
-        if layout.client.view_offset.is_some() {
-            player.view_offset = view_offset;
-        }
         let offset = apply_client_pose(player, origin, velocity, Some(mins));
         player.view_angles = view;
         if player.movement.mode != qa_core::primitives::MovementMode::Spectator {
@@ -3306,7 +3302,8 @@ impl EntityProjection {
             player.armor_energy_absorption = value;
         }
         if let Some(view) = view_offset {
-            player.view_offset = view;
+            player.view.accept_offset(view, None);
+            player.movement.view_height = view.0[2];
         }
         if let Some(punch) = punch {
             player.punch_angles = punch;

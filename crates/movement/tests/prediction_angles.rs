@@ -459,7 +459,7 @@ fn angle_only_uses_the_classic_unclamped_sum_and_changes_no_other_hot_state() {
         state.movement.delta_angles = AngleOffsets(native.map(AngleOffset::Units));
         let body = body_bits(state.body);
         let movement = state.movement;
-        let view_offset = state.view_offset;
+        let view_offset = state.eye_offset();
         let command = UserCmd {
             units: qa_gameplay::rules::command_units(rules),
             duration_ms: 250,
@@ -481,7 +481,7 @@ fn angle_only_uses_the_classic_unclamped_sum_and_changes_no_other_hot_state() {
         assert_eq!(body_bits(state.body), body);
         assert_eq!(state.movement, movement);
         assert_eq!(
-            state.view_offset.0.map(f32::to_bits),
+            state.eye_offset().0.map(f32::to_bits),
             view_offset.0.map(f32::to_bits)
         );
         assert_eq!(state.movement_rules, rules);

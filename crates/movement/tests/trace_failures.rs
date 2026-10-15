@@ -60,7 +60,7 @@ fn player(rules: RuleSetId) -> PlayerState {
     state.body.position = Vec3([0.13, 0.17, 64.13]);
     state.body.velocity = Vec3([101.17, 2.31, -0.0]);
     state.view_angles = Vec3([12.0, 34.0, 56.0]);
-    state.view_offset = Vec3([1.0, 2.0, 3.0]);
+    state.view.accept_offset(Vec3([1.0, 2.0, 3.0]), None);
     state.inventory.item_counts[1] = 7;
     state.inventory.collectibles = 13;
     state
@@ -91,7 +91,7 @@ impl HotState {
             body: body_bits(player.body),
             movement: player.movement,
             view: player.view_angles.0.map(f32::to_bits),
-            offset: player.view_offset.0.map(f32::to_bits),
+            offset: player.eye_offset().0.map(f32::to_bits),
             inventory: player.inventory.item_counts.as_ptr(),
         }
     }
@@ -99,7 +99,7 @@ impl HotState {
         assert_eq!(body_bits(player.body), self.body);
         assert_eq!(player.movement, self.movement);
         assert_eq!(player.view_angles.0.map(f32::to_bits), self.view);
-        assert_eq!(player.view_offset.0.map(f32::to_bits), self.offset);
+        assert_eq!(player.eye_offset().0.map(f32::to_bits), self.offset);
         assert_eq!(player.inventory.item_counts.as_ptr(), self.inventory);
         assert_eq!(player.inventory.item_counts[1], 7);
         assert_eq!(player.inventory.collectibles, 13);

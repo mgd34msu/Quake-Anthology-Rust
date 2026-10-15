@@ -8,7 +8,8 @@ use qa_core::{
 };
 use qa_gameplay::rules::movement::{
     FreeAcceleration, FreeFinish, FreeFriction, FreeModes, FreeMotion, FreeMovePolicy, FreeWish,
-    LandingPolicy, ProbePhase, SpecialMovement, StancePolicy, ViewAnglePolicy, capabilities,
+    LandingPolicy, ProbePhase, SpecialMovement, StancePolicy, ViewAnglePolicy, WaterHeight,
+    capabilities,
 };
 use qa_world::collision::{
     Contents, EntityTraceFlags, EntityTracePolicy, Trace, TraceError, TraceQuery, TraceRules,
@@ -204,22 +205,12 @@ fn with_rollback<E>(
     phase: MovePhase,
     run: impl FnOnce(&mut PlayerState) -> Result<MovementResult, E>,
 ) -> Result<MovementResult, E> {
-    let saved = (
-        player.body,
-        player.movement,
-        player.view_angles,
-        player.view_offset,
-    );
+    let saved = (player.body, player.movement, player.view_angles);
     let result = run(player);
     // A staged native boundary already committed its admitted scalar prefix.
     // Restoring only Rust state would diverge from the surviving native row.
     if result.is_err() && matches!(phase, MovePhase::Complete) {
-        (
-            player.body,
-            player.movement,
-            player.view_angles,
-            player.view_offset,
-        ) = saved;
+        (player.body, player.movement, player.view_angles) = saved;
     }
     result
 }
@@ -287,7 +278,7 @@ pub fn set_bounds(player: &mut PlayerState) {
     let radius = parameters.radius;
     player.body.mins = Vec3([-radius, -radius, -24.0]);
     player.body.maxs = Vec3([radius, radius, 32.0]);
-    player.view_offset = Vec3([0.0, 0.0, parameters.view_height]);
+    player.movement.view_height = parameters.view_height;
 }
 #[derive(Clone, Copy)]
 enum FrictionContext {
@@ -553,10 +544,15 @@ impl Step<'_> {
             return Ok((0, 0));
         }
         let mut level = 1;
-        let middle = if self.nq() || self.qw() {
+        let height = match self.parameters.special.water_height {
+            WaterHeight::Camera => self.player.eye_offset().0[2],
+            WaterHeight::Movement => self.player.movement.view_height,
+            WaterHeight::Fixed(height) => height,
+        };
+        let middle = if self.parameters.special.water_bounds_midpoint {
             qa_core::math::midpoint(body.mins, body.maxs).0[2]
         } else {
-            body.mins.0[2] + ((self.player.view_offset.0[2] - body.mins.0[2]) as i32 / 2) as f32
+            body.mins.0[2] + ((height - body.mins.0[2]) as i32 / 2) as f32
         };
         point.0[2] = upper_origin.0[2] + middle;
         if self
@@ -565,7 +561,7 @@ impl Step<'_> {
             .intersects(Contents::FLUID)
         {
             level = 2;
-            point.0[2] = upper_origin.0[2] + self.player.view_offset.0[2];
+            point.0[2] = upper_origin.0[2] + height;
             if self
                 .world
                 .point_contents(point, self.parameters.entity_rules)?
@@ -715,6 +711,7 @@ impl Step<'_> {
     }
     fn dimensions(&mut self) {
         if self.nq() || self.qw() {
+            self.player.movement.view_height = self.parameters.view_height;
             return;
         }
         for axis in 0..2 {
@@ -724,7 +721,7 @@ impl Step<'_> {
         if self.parameters.stance.gib_bounds && self.player.movement.mode == MovementMode::Gib {
             self.player.body.mins.0[2] = 0.0;
             self.player.body.maxs.0[2] = 16.0;
-            self.player.view_offset.0[2] = 8.0;
+            self.player.movement.view_height = 8.0;
             return;
         }
         self.player.body.mins.0[2] = -24.0;
@@ -742,7 +739,7 @@ impl Step<'_> {
         } else {
             32.0
         };
-        self.player.view_offset.0[2] = if dead {
+        self.player.movement.view_height = if dead {
             -16.0
         } else if self.player.movement.ducked
             || self.parameters.stance.dead_duck && self.player.movement.mode == MovementMode::Dead
@@ -1469,7 +1466,7 @@ impl Step<'_> {
         if policy.stance {
             self.stance()?;
         } else {
-            self.player.view_offset.0[2] =
+            self.player.movement.view_height =
                 policy.view_height.unwrap_or(self.parameters.view_height);
         }
         if matches!(policy.finish, FreeFinish::Environment) {
