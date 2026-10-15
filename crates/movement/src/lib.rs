@@ -14,6 +14,30 @@ use qa_core::{
 };
 pub use slide::{SweepExit, SweepHost, SweepResult, clip_backoff, sweep};
 
+/// Native bounded yaw turn. An equal quantized angle performs no scalar store.
+pub fn change_yaw(current: f32, ideal: f32, speed: f32) -> Option<f32> {
+    let current = qa_core::math::anglemod(current);
+    if current == ideal {
+        return None;
+    }
+    let mut movement = ideal - current;
+    if ideal > current {
+        if movement >= 180.0 {
+            movement -= 360.0;
+        }
+    } else if movement <= -180.0 {
+        movement += 360.0;
+    }
+    if movement > 0.0 {
+        if movement > speed {
+            movement = speed;
+        }
+    } else if movement < -speed {
+        movement = -speed;
+    }
+    Some(qa_core::math::anglemod(current + movement))
+}
+
 /// Apply simulation time admission, never client command construction rules.
 /// Keep the absolute server time: Q3's outer Pmove subdivides its interval.
 pub fn prepare_command(rules: RuleSetId, mut command: UserCmd) -> UserCmd {

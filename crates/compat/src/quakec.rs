@@ -459,6 +459,34 @@ impl Vm {
         }
         Ok(0)
     }
+    /// Change only the native self yaw, using the same dirty-row tracking as a
+    /// bytecode scalar store. Unlinked and freed native backing stays addressable.
+    pub fn change_yaw(&mut self) -> Result<(), crate::services::CallError> {
+        let global = self
+            .call_fields
+            .self_global
+            .ok_or(crate::services::CallError::Memory)?;
+        let native = self.image.globals[global];
+        if let Some((address, value)) = self.projection.quakec_yaw_change(&self.entities, native)? {
+            self.store_entity_word(address, value.to_bits())
+                .map_err(|_| crate::services::CallError::Memory)?;
+        }
+        Ok(())
+    }
+    pub fn check_bottom(
+        &self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        native: u32,
+    ) -> Result<bool, crate::services::CallError> {
+        self.projection.quakec_check_bottom(
+            services,
+            &self.entities,
+            &self.strings,
+            context,
+            native,
+        )
+    }
     /// Native droptofloor reads the current self row and uses the shared
     /// caller-selected trace and explicit no-touch entity link service.
     pub fn drop_to_floor(

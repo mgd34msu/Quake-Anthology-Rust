@@ -787,6 +787,7 @@ const fn quakec() -> CallTable {
     t.entries[36] = scalar!(rint, Some(scalar));
     t.entries[37] = scalar!(floor::<false>, Some(scalar));
     t.entries[38] = scalar!(ceil::<false>, Some(scalar));
+    t.entries[40] = qc!(qc_check_bottom, 1, 0, true);
     t.entries[41] = qc!(qc_point_contents, 1, 1, true);
     t.entries[43] = scalar!(absolute::<false>, Some(scalar));
     t.entries[45] = scalar!(cvar_number::<false>, Some(strings));
@@ -802,6 +803,7 @@ const fn quakec() -> CallTable {
             false,
         ))
     );
+    t.entries[49] = qc!(qc_change_yaw, 0, 0, false);
     t.entries[51] = value!(vector_angles, vector);
     t.entries[68] = Some(CallEntry {
         handler: Handler::QuakeC(qc_precache_file),
@@ -1002,6 +1004,28 @@ fn qc_set_origin(
         qc_vector(arguments, 1)?,
     )?;
     Ok(CallValue::Word(0))
+}
+fn qc_change_yaw(
+    _: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    _: &[u64],
+) -> Result<CallValue, CallError> {
+    vm.change_yaw()?;
+    Ok(CallValue::Word(0))
+}
+fn qc_check_bottom(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    Ok(CallValue::Word(u64::from(
+        f32::from(u8::from(vm.check_bottom(
+            c.services,
+            c.context,
+            qc_word(arguments, 0)?,
+        )?))
+        .to_bits(),
+    )))
 }
 fn qc_drop_to_floor(
     c: &mut QuakeCCalls<'_, '_>,

@@ -82,6 +82,8 @@ struct MotionFields {
     water_type: Option<usize>,
     ground_entity: Option<usize>,
     touch: Option<usize>,
+    ideal_yaw: Option<usize>,
+    yaw_speed: Option<usize>,
 }
 impl MotionFields {
     fn load(field: impl Fn(&[u8], u16) -> Option<usize>) -> Self {
@@ -91,7 +93,38 @@ impl MotionFields {
             water_type: field(b"watertype", 2),
             ground_entity: field(b"groundentity", 4),
             touch: field(b"touch", 6),
+            ideal_yaw: field(b"ideal_yaw", 2),
+            yaw_speed: field(b"yaw_speed", 2),
         }
+    }
+}
+
+struct QuakeCSupport<'a, 'engine> {
+    services: &'a mut EngineServices<'engine>,
+    view: &'a dyn qa_world::collision::NativeTraceEntities,
+    pass: CollisionOwner,
+    rules: qa_world::collision::TraceRules,
+    entities: qa_world::collision::EntityTracePolicy,
+}
+impl qa_session::physics::SupportQueries for QuakeCSupport<'_, '_> {
+    type Error = CallError;
+
+    fn solid(&mut self, point: Vec3) -> Result<bool, CallError> {
+        Ok((ENGINE_CALLS.point_contents)(
+            self.services,
+            point,
+            self.entities,
+            self.pass,
+            Some(self.view),
+        )?
+        .to_q1()
+            == -2)
+    }
+    fn trace(&mut self, start: Vec3, end: Vec3) -> Result<qa_world::collision::Trace, CallError> {
+        let mut query =
+            qa_world::collision::TraceQuery::point(start, end, self.rules, self.entities);
+        query.pass = self.pass;
+        (ENGINE_CALLS.trace)(self.services, query, Some(self.view))
     }
 }
 
@@ -1496,6 +1529,54 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         layout.write_vector(memory, value as u64, layout.origin, origin)?;
         self.quakec_link(services, memory, strings, context, value)
+    }
+    pub(crate) fn quakec_yaw_change(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<Option<(u64, f32)>, CallError> {
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
+        let yaw = layout.angles.ok_or(CallError::Memory)? + 4;
+        let current = layout.number(memory, address, Some(yaw))?;
+        let ideal = layout.number(memory, address, layout.motion.ideal_yaw)?;
+        let speed = layout.number(memory, address, layout.motion.yaw_speed)?;
+        Ok(qa_movement::change_yaw(current, ideal, speed)
+            .map(|value| (address + yaw as u64, value)))
+    }
+    pub(crate) fn quakec_check_bottom(
+        &self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<bool, CallError> {
+        use qa_world::collision::{QuakeTraceKind, trace_policy};
+        self.quakec_identity(memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        let address = u64::from(value);
+        let origin = layout.vector(memory, address, layout.origin)?;
+        let bounds = Bounds {
+            mins: layout.vector(memory, address, layout.mins)?,
+            maxs: layout.vector(memory, address, layout.maxs)?,
+        };
+        let (rules, entity_rules) = trace_policy(context.trace_rules);
+        let (view, pass) = self.quakec_trace_view(memory, strings, context, value)?;
+        let result = qa_session::physics::check_bottom(
+            &mut QuakeCSupport {
+                services,
+                view: &view,
+                pass,
+                rules,
+                entities: entity_rules.with_quake_kind(Some(QuakeTraceKind::IgnoreBoxes)),
+            },
+            origin,
+            bounds,
+            18.0,
+        );
+        view.finish()?;
+        result
     }
     pub(crate) fn quakec_drop_to_floor(
         &mut self,

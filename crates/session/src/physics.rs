@@ -9,8 +9,10 @@ use qa_world::collision::TraceError;
 use qa_world::entities::EntityTable;
 
 mod step;
+mod support;
 mod toss;
 pub use step::step_fall;
+pub use support::{SupportQueries, check_bottom};
 pub use toss::{
     MotionFrame, MotionHost, MotionState, MotionTrace, WaterTransition, toss, water_transition,
 };

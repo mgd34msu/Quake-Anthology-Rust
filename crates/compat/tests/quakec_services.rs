@@ -164,6 +164,400 @@ fn with_services(rules: RuleSetId, run: impl FnOnce(&mut QuakeCCalls<'_, '_>)) {
     with_model_services(rules, None, run);
 }
 
+fn support_vm(
+    builtin: i32,
+    operations: &[(Opcode, i16, i16, i16)],
+    fields: &[(u16, u16, &[u8])],
+) -> Vm {
+    let bytes = quakec_program::program_with_definitions(
+        operations,
+        &[0, 1, -builtin, operations.len() as i32],
+        &[(4, 34, b"self")],
+        fields,
+        fields
+            .iter()
+            .map(|(kind, offset, _)| usize::from(*offset) + if *kind == 3 { 3 } else { 1 })
+            .max()
+            .unwrap_or(1),
+        96,
+    );
+    let mut vm = Vm::load(
+        Image::parse(&bytes, Some(5927)).unwrap(),
+        Layout {
+            entities: 64,
+            header_bytes: 16,
+            extra_string_bytes: 128,
+            state_step: 0.1,
+            random_seed: 1,
+        },
+    )
+    .unwrap();
+    vm.image.globals[32] = 2;
+    vm.image.globals[34] = 0;
+    vm
+}
+
+#[test]
+fn changeyaw_executes_native_ties_clamps_and_only_the_yaw_scalar_without_body_requirements() {
+    let fields = [
+        (3, 0, b"angles".as_slice()),
+        (2, 3, b"ideal_yaw"),
+        (2, 4, b"yaw_speed"),
+    ];
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(source, |calls| {
+            for (current, ideal, speed, expected) in [
+                (0.0f32, 180.0f32, 90.0f32, 270.0f32),
+                (180.0, 0.0, 90.0, 270.0),
+                (0.0, 90.0, 30.0, 29.998_169),
+                (0.0, 90.0, -10.0, 350.002_44),
+                (-0.0, 0.0, f32::NAN, -0.0),
+            ] {
+                let mut vm = support_vm(
+                    49,
+                    &[(Opcode::Call0, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+                    &fields,
+                );
+                let native = vm.stride as u32 * 3;
+                vm.image.globals[34] = native;
+                write(
+                    &mut vm,
+                    native,
+                    b"angles",
+                    &[0x7fc1_2345, current.to_bits(), 0x8000_0000],
+                );
+                write(&mut vm, native, b"ideal_yaw", &[ideal.to_bits()]);
+                write(&mut vm, native, b"yaw_speed", &[speed.to_bits()]);
+                vm.image.globals[1..4].copy_from_slice(&[0xdead_beef, 0x1234_5678, 0x7fc2_3456]);
+                let before = vm.entities.read(0, vm.entities.len()).unwrap().to_vec();
+                assert_eq!(
+                    vm.call(calls, 1, 32, false),
+                    Ok([0xdead_beef, 0x1234_5678, 0x7fc2_3456])
+                );
+                let yaw = vm.field_address(native, 1, 1).unwrap() as usize;
+                let mut expected_bytes = before;
+                expected_bytes[yaw..yaw + 4].copy_from_slice(&expected.to_bits().to_le_bytes());
+                assert_eq!(
+                    vm.entities.read(0, vm.entities.len()).unwrap(),
+                    expected_bytes
+                );
+                assert!(solid_order(calls).is_empty());
+            }
+        });
+    }
+}
+
+#[test]
+fn changeyaw_reads_overlapping_fields_before_store_and_rejects_only_executed_bad_operands() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(source, |calls| {
+            let fields = [
+                (3, 0, b"angles".as_slice()),
+                (2, 2, b"ideal_yaw"), // aliases roll
+                (2, 1, b"yaw_speed"), // aliases current yaw
+            ];
+            let mut vm = support_vm(
+                49,
+                &[(Opcode::Call0, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+                &fields,
+            );
+            write(
+                &mut vm,
+                0,
+                b"angles",
+                &[11.0f32.to_bits(), 90.0f32.to_bits(), 180.0f32.to_bits()],
+            );
+            vm.call(calls, 1, 32, false).unwrap();
+            assert_eq!(
+                read(&vm, 0, b"angles", 3),
+                [11.0f32.to_bits(), 180.0f32.to_bits(), 180.0f32.to_bits()]
+            );
+            vm.image.globals[34] = 1; // raw byte offsets must name a whole edict
+            assert_eq!(vm.call(calls, 1, 32, false), Err(Trap::Builtin));
+            let mut missing = support_vm(
+                49,
+                &[(Opcode::Call0, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+                &fields[..2],
+            );
+            missing.image.globals[1] = 73.0f32.to_bits();
+            assert_eq!(
+                missing.call(calls, 3, 32, false).unwrap()[0],
+                73.0f32.to_bits()
+            );
+            assert_eq!(missing.call(calls, 1, 32, false), Err(Trap::Builtin));
+            assert_eq!(missing.image.globals[1], 73.0f32.to_bits());
+            // Bad argc is checked before even the missing entity fields execute.
+            let mut argc = support_vm(
+                49,
+                &[(Opcode::Call1, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+                &[],
+            );
+            assert_eq!(argc.call(calls, 1, 32, false), Err(Trap::Builtin));
+        });
+    }
+}
+
+#[test]
+fn changeyaw_reaches_the_existing_common_entity_publication_without_relinking() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut fields = FIELDS.to_vec();
+        fields.extend([(2, 37, b"ideal_yaw".as_slice()), (2, 38, b"yaw_speed")]);
+        let raw = support_vm(
+            49,
+            &[(Opcode::Call0, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+            &fields,
+        );
+        let mut vm = seed_vm(calls, raw);
+        calls.call(&mut vm, 14, 0).unwrap();
+        let native = vm.image.globals[1];
+        let id = entity(calls, &vm, native);
+        vm.image.globals[34] = native;
+        write(&mut vm, native, b"ideal_yaw", &[90.0f32.to_bits()]);
+        write(&mut vm, native, b"yaw_speed", &[90.0f32.to_bits()]);
+        vm.call(calls, 1, 32, false).unwrap();
+        assert_eq!(
+            calls.services.server.entities.columns.angles[id.slot as usize],
+            Vec3::default()
+        );
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
+        assert_eq!(
+            calls.services.server.entities.columns.angles[id.slot as usize],
+            Vec3([0.0, 90.0, 0.0])
+        );
+        assert!(solid_order(calls).is_empty());
+    });
+}
+
+#[test]
+fn checkbottom_requires_only_its_executed_pose_fields_and_fixed_entity_argument() {
+    let floor = Bounds {
+        mins: Vec3([-100.0, -100.0, -64.0]),
+        maxs: Vec3([100.0, 100.0, 0.0]),
+    };
+    let fields = [
+        (3, 0, b"origin".as_slice()),
+        (3, 3, b"mins"),
+        (3, 6, b"maxs"),
+    ];
+    for complete in [true, false] {
+        with_collision_services(RuleSetId::Quake, None, &[floor], |calls| {
+            let raw = support_vm(
+                40,
+                &[(Opcode::Call1, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+                if complete { &fields } else { &fields[..2] },
+            );
+            let mut vm = seed_vm(calls, raw);
+            vm.image.globals[1] = 73.0f32.to_bits();
+            assert_eq!(vm.call(calls, 3, 32, false).unwrap()[0], 73.0f32.to_bits());
+            parameters(&mut vm, &[&[0]]);
+            if complete {
+                write(&mut vm, 0, b"mins", &[0; 3]);
+                write(&mut vm, 0, b"maxs", &[1.0f32.to_bits(); 3]);
+                assert_eq!(vm.call(calls, 1, 32, false).unwrap()[0], 1.0f32.to_bits());
+                // Above the floor, the slow path traces only world geometry.
+                // Missing owner fields remain dormant without a linked target.
+                write(&mut vm, 0, b"origin", &[0, 0, 4.0f32.to_bits()]);
+                assert_eq!(vm.call(calls, 1, 32, false).unwrap()[0], 1.0f32.to_bits());
+            } else {
+                assert_eq!(vm.call(calls, 1, 32, false), Err(Trap::Builtin));
+                assert_eq!(vm.image.globals[1], 73.0f32.to_bits());
+            }
+        });
+    }
+}
+
+#[test]
+fn checkbottom_runs_real_world_support_probes_without_mutating_native_or_link_state() {
+    let floor = Bounds {
+        mins: Vec3([-100.0, -100.0, -64.0]),
+        maxs: Vec3([100.0, 100.0, 0.0]),
+    };
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for z in [0.0f32, 4.0] {
+            // first is the contents fast path; second requires traces
+            with_collision_services(source, None, &[floor], |calls| {
+                let raw = support_vm(
+                    40,
+                    &[(Opcode::Call1, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+                    FIELDS,
+                );
+                let mut vm = seed_vm(calls, raw);
+                let native = vm.stride as u32 * 5; // valid unlinked native backing
+                write(&mut vm, native, b"origin", &[0, 0, z.to_bits()]);
+                write(
+                    &mut vm,
+                    native,
+                    b"mins",
+                    &[(-2.0f32).to_bits(), (-2.0f32).to_bits(), 0],
+                );
+                write(
+                    &mut vm,
+                    native,
+                    b"maxs",
+                    &[2.0f32.to_bits(), 2.0f32.to_bits(), 4.0f32.to_bits()],
+                );
+                parameters(&mut vm, &[&[native]]);
+                vm.image.globals[1..4].copy_from_slice(&[0xdead_beef, 0x1234_5678, 0x7fc2_3456]);
+                vm.image.globals[60..73].fill(0xabcdef01);
+                let raw_before = vm.entities.read(0, vm.entities.len()).unwrap().to_vec();
+                let entities_before = calls.services.server.entities.active().count();
+                assert_eq!(
+                    vm.call(calls, 1, 64, false),
+                    Ok([1.0f32.to_bits(), 0x1234_5678, 0x7fc2_3456])
+                );
+                assert_eq!(vm.entities.read(0, vm.entities.len()).unwrap(), raw_before);
+                assert_eq!(&vm.image.globals[60..73], &[0xabcdef01; 13]);
+                assert_eq!(
+                    calls.services.server.entities.active().count(),
+                    entities_before
+                );
+                assert!(solid_order(calls).is_empty());
+                for bad in [1, (vm.stride * 64) as u32] {
+                    parameters(&mut vm, &[&[bad]]);
+                    vm.image.globals[1] = 73.0f32.to_bits();
+                    assert_eq!(vm.call(calls, 1, 64, false), Err(Trap::Builtin));
+                    assert_eq!(vm.image.globals[1], 73.0f32.to_bits());
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn checkbottom_detects_a_native_step_ledge_and_missing_floor_through_shared_collision() {
+    for lower in [-18.0f32, -18.125] {
+        let floors = [
+            Bounds {
+                mins: Vec3([-100.0, -100.0, -64.0]),
+                maxs: Vec3([0.0, 100.0, 0.0]),
+            },
+            Bounds {
+                mins: Vec3([0.0, -100.0, -64.0]),
+                maxs: Vec3([100.0, 100.0, lower]),
+            },
+        ];
+        with_collision_services(RuleSetId::Quake, None, &floors, |calls| {
+            let raw = support_vm(
+                40,
+                &[(Opcode::Call1, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+                FIELDS,
+            );
+            let mut vm = seed_vm(calls, raw);
+            write(&mut vm, 0, b"origin", &[0, 0, 4.0f32.to_bits()]);
+            write(
+                &mut vm,
+                0,
+                b"mins",
+                &[(-2.0f32).to_bits(), (-2.0f32).to_bits(), 0],
+            );
+            write(
+                &mut vm,
+                0,
+                b"maxs",
+                &[2.0f32.to_bits(), 2.0f32.to_bits(), 4.0f32.to_bits()],
+            );
+            parameters(&mut vm, &[&[0]]); // world0 is an admissible raw argument
+            let expected = if lower == -18.0 { 1.0f32 } else { 0.0f32 };
+            assert_eq!(vm.call(calls, 1, 64, false).unwrap()[0], expected.to_bits());
+        });
+    }
+    with_services(RuleSetId::Quake, |calls| {
+        let raw = support_vm(
+            40,
+            &[(Opcode::Call1, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+            FIELDS,
+        );
+        let mut vm = seed_vm(calls, raw);
+        parameters(&mut vm, &[&[0]]);
+        assert_eq!(vm.call(calls, 1, 64, false).unwrap()[0], 0.0f32.to_bits());
+    });
+}
+
+#[test]
+fn checkbottom_keeps_foreign_trace_selection_and_does_not_flush_unrelated_dirty_rows() {
+    with_services(RuleSetId::Quake, |calls| {
+        let raw = support_vm(
+            40,
+            &[
+                (Opcode::StorePV, 28, 31, 0),
+                (Opcode::Call1, 32, 0, 0),
+                (Opcode::Return, 1, 0, 0),
+            ],
+            FIELDS,
+        );
+        let mut vm = seed_vm(calls, raw);
+        calls.call(&mut vm, 14, 0).unwrap();
+        let obstacle = vm.image.globals[1];
+        write(&mut vm, obstacle, b"solid", &[2.0f32.to_bits()]);
+        parameters(
+            &mut vm,
+            &[
+                &[obstacle],
+                &[(-4.0f32).to_bits(); 3],
+                &[4.0f32.to_bits(), 4.0f32.to_bits(), 0],
+            ],
+        );
+        calls.call(&mut vm, 4, 3).unwrap();
+        calls.call(&mut vm, 14, 0).unwrap();
+        let unrelated = vm.image.globals[1];
+        let id = entity(calls, &vm, unrelated);
+        let body_before = body_bits(
+            calls
+                .services
+                .server
+                .entities
+                .columns
+                .body(id.slot as usize),
+        );
+        vm.image.globals[28..31].copy_from_slice(&[9.0f32.to_bits(); 3]);
+        vm.image.globals[31] = vm
+            .field_address(unrelated, vm.image.field(b"mins").unwrap() as u32, 3)
+            .unwrap() as u32;
+        write(
+            &mut vm,
+            0,
+            b"mins",
+            &[(-2.0f32).to_bits(), (-2.0f32).to_bits(), 0],
+        );
+        write(
+            &mut vm,
+            0,
+            b"maxs",
+            &[2.0f32.to_bits(), 2.0f32.to_bits(), 4.0f32.to_bits()],
+        );
+        parameters(&mut vm, &[&[0]]);
+        let order = solid_order(calls);
+        assert_eq!(vm.call(calls, 1, 64, false).unwrap()[0], 0.0f32.to_bits());
+        calls.context.trace_rules = RuleSetId::Quake2;
+        // The chosen policy visits linked contents, but a bbox contributes
+        // BODY, not the SOLID contents required by the native support test.
+        assert_eq!(vm.call(calls, 1, 64, false).unwrap()[0], 0.0f32.to_bits());
+        // Candidate-local bounds are now executed only by the foreign linked
+        // contents policy. Q1 world contents and IgnoreBoxes never read them.
+        write(&mut vm, obstacle, b"mins", &[9.0f32.to_bits(); 3]);
+        calls.context.trace_rules = RuleSetId::Quake;
+        assert_eq!(vm.call(calls, 1, 64, false).unwrap()[0], 0.0f32.to_bits());
+        calls.context.trace_rules = RuleSetId::Quake2;
+        vm.image.globals[1] = 73.0f32.to_bits();
+        assert_eq!(vm.call(calls, 1, 64, false), Err(Trap::Builtin));
+        assert_eq!(vm.image.globals[1], 73.0f32.to_bits());
+        assert_eq!(
+            body_bits(
+                calls
+                    .services
+                    .server
+                    .entities
+                    .columns
+                    .body(id.slot as usize)
+            ),
+            body_before
+        );
+        assert_eq!(read(&vm, unrelated, b"mins", 3), [9.0f32.to_bits(); 3]);
+        assert_eq!(solid_order(calls), order);
+    });
+}
+
 fn random_vm(random_seed: u32) -> Vm {
     let bytes = quakec_program::program(
         &[

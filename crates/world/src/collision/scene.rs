@@ -147,7 +147,7 @@ impl<'a> WorldTrace<'a> {
             ..query
         }
         .swept_bounds(1.0);
-        let pass_owner = self.owner(query.pass).unwrap_or(CollisionOwner::None);
+        let mut pass_owner = None;
         let role = query.entity_rules.link_role;
         for linked in self
             .area
@@ -226,6 +226,8 @@ impl<'a> WorldTrace<'a> {
                 if self.same_owner(owner, query.pass) {
                     continue;
                 }
+                let pass_owner = *pass_owner
+                    .get_or_insert_with(|| self.owner(query.pass).unwrap_or(CollisionOwner::None));
                 if query
                     .entity_rules
                     .filtering
