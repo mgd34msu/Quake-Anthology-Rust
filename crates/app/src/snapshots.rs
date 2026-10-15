@@ -269,6 +269,7 @@ impl SnapshotBinding {
         channel: &Channel,
         resources: &crate::client_resources::ResourceState,
         alias_roll: qa_gameplay::rules::appearance::AliasRoll,
+        smooth_clients: bool,
         budget: &mut usize,
     ) {
         let projection = self.entities.projection();
@@ -289,7 +290,7 @@ impl SnapshotBinding {
                 current: channel.current_snapshot(),
                 previous: channel.previous_snapshot(),
                 projection,
-                appearance: presentation.appearance,
+                appearance: presentation.appearance.with_smooth_clients(smooth_clients),
                 alias_roll,
                 interpolation: presentation.clock.sample(),
             },

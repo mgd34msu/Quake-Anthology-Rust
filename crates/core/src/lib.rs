@@ -17,6 +17,7 @@ pub mod presentation;
 pub mod primitives;
 pub mod random;
 pub mod rle;
+pub mod solids;
 pub mod stamps;
 pub mod sys_events;
 pub mod text;

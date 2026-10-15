@@ -471,11 +471,11 @@ impl ResourceState {
     pub fn sound_policy(&self) -> SpatialPolicy {
         self.sound_policy
     }
-    /// Sound presentation is selected at connection/profile load, independently
-    /// of the legacy protocol's resource and message layout.
-    pub fn set_sound_policy(&mut self, policy: SpatialPolicy) {
+    /// Ordinary and entity-loop presentation are selected at connection/profile
+    /// load, independently of the legacy protocol's resource and message layout.
+    pub fn set_sound_policy(&mut self, policy: SpatialPolicy, entity_loop: SpatialPolicy) {
         self.sound_policy = policy;
-        self.loop_spatial = policy;
+        self.loop_spatial = entity_loop;
     }
     pub fn loop_spatial_policy(&self) -> SpatialPolicy {
         self.loop_spatial

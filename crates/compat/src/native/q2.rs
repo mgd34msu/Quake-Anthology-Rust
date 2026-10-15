@@ -126,6 +126,7 @@ const CLASSIC: Layout = Layout {
         area2: Some(196),
         clusters: Some((120, 124, 188)),
         network_solid: 72,
+        solid_codec: qa_core::solids::SolidCodec::QUAKE2,
         appearance: AppearanceImport::Fields(AppearanceLayout {
             models: [Some(40), Some(44), Some(48), Some(52)],
             frame: 56,
@@ -182,6 +183,7 @@ const RERELEASE: Layout = Layout {
         area2: Some(1388),
         clusters: None,
         network_solid: 76,
+        solid_codec: qa_core::solids::SolidCodec::QUAKE2_RERELEASE,
         appearance: AppearanceImport::Fields(AppearanceLayout {
             models: [Some(40), Some(44), Some(48), Some(52)],
             frame: 56,

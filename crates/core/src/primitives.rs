@@ -1818,18 +1818,63 @@ pub struct SoundPlayback {
     pub channels: Option<SoundChannels>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttenuationPrecision {
+    F32,
+    F64,
+}
+
+/// Distance attenuation order and coefficient rounding, selected at load.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DistanceAttenuation {
+    Linear(f32),
+    Product {
+        ordinary: f64,
+        match_value: f32,
+        matched: f64,
+        precision: AttenuationPrecision,
+    },
+}
+impl DistanceAttenuation {
+    /// Attenuated distance and whether distance panning is disabled. Linear
+    /// preserves distance-first multiplication; Product rounds the channel's
+    /// attenuation coefficient before multiplying distance.
+    pub fn apply(self, distance: f32, attenuation: f32) -> (f32, bool) {
+        match self {
+            Self::Linear(scale) => (distance * attenuation * scale, scale == 0.0),
+            Self::Product {
+                ordinary,
+                match_value,
+                matched,
+                precision,
+            } => {
+                let scale = if attenuation == match_value {
+                    matched
+                } else {
+                    ordinary
+                };
+                let coefficient = match precision {
+                    AttenuationPrecision::F32 => attenuation * scale as f32,
+                    AttenuationPrecision::F64 => (f64::from(attenuation) * scale) as f32,
+                };
+                (distance * coefficient, coefficient == 0.0)
+            }
+        }
+    }
+}
+
 /// Spatial capability parameters selected at the emitting role's boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpatialPolicy {
     pub distance_offset: f32,
-    pub distance_scale: f32,
+    pub attenuation: DistanceAttenuation,
     pub separation: f32,
 }
 impl Default for SpatialPolicy {
     fn default() -> Self {
         Self {
             distance_offset: 0.0,
-            distance_scale: 0.0,
+            attenuation: DistanceAttenuation::Linear(0.0),
             separation: 1.0,
         }
     }

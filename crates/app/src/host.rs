@@ -257,6 +257,7 @@ pub struct FrameHost {
     roll_angle: CvarHandle,
     roll_speed: CvarHandle,
     kick_angles: CvarHandle,
+    smooth_clients: CvarHandle,
     input_handles: qa_console::input_settings::InputHandles,
     pub(crate) movement_handles: qa_console::movement::MovementHandles,
     notify_time: CvarHandle,
@@ -439,6 +440,10 @@ impl FrameHost {
             .cvars
             .find("cl_kickangles")
             .ok_or("missing cl_kickangles")?;
+        let smooth_clients = console
+            .cvars
+            .find("cg_smoothClients")
+            .ok_or("missing cg_smoothClients")?;
         let input_handles = qa_console::input_settings::InputHandles::load(&console.cvars)?;
         let movement_handles = qa_console::movement::MovementHandles::bind(&console.cvars)?;
         let notify_time = console
@@ -497,6 +502,7 @@ impl FrameHost {
             roll_angle,
             roll_speed,
             kick_angles,
+            smooth_clients,
             input_handles,
             movement_handles,
             notify_time,
@@ -822,6 +828,10 @@ impl FrameHost {
         );
     }
 
+    pub(crate) fn smooth_clients(&self) -> bool {
+        self.console.cvars.integer(self.smooth_clients) != 0
+    }
+
     pub(crate) fn alias_roll(&self) -> qa_gameplay::rules::appearance::AliasRoll {
         qa_gameplay::rules::appearance::AliasRoll {
             angle: self
@@ -854,7 +864,9 @@ impl FrameHost {
                 current: channel.current_snapshot(),
                 previous: channel.previous_snapshot(),
                 projection: snapshot.entity_projection(),
-                appearance: snapshot.appearance_policy()?,
+                appearance: snapshot
+                    .appearance_policy()?
+                    .with_smooth_clients(self.smooth_clients()),
                 alias_roll,
                 interpolation: snapshot.interpolation()?,
             })
@@ -965,6 +977,7 @@ impl FrameHost {
     /// once per seat/view. No native guest or SERVER entity pose is observed.
     pub fn publish_client_loops(&mut self) {
         let alias_roll = self.alias_roll();
+        let smooth_clients = self.smooth_clients();
         let runtime = &mut self.runtime;
         let server = &mut runtime.server;
         let mut budget = (server.events.capacity() / 4).max(1);
@@ -1014,6 +1027,7 @@ impl FrameHost {
                 &connection.channel,
                 &resources.state,
                 alias_roll,
+                smooth_clients,
                 &mut budget,
             );
             if budget == 0 {

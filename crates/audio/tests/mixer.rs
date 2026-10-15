@@ -64,8 +64,8 @@ fn shared_native_spatial_policies_preserve_channel_side_and_full_volume_self() {
     for (rules, right) in [
         (RuleSetId::Quake, 1224),
         (RuleSetId::QuakeWorld, 1224),
-        (RuleSetId::Quake2, 692),
-        (RuleSetId::Quake2Rerelease, 692),
+        (RuleSetId::Quake2, 856),
+        (RuleSetId::Quake2Rerelease, 856),
         (RuleSetId::Quake3, 740),
     ] {
         let mut m = mixer(vec![1024], None, 2);
@@ -90,6 +90,34 @@ fn shared_native_spatial_policies_preserve_channel_side_and_full_volume_self() {
 }
 
 #[test]
+fn q2_one_shots_use_native_channel_coefficients_for_every_wire_attenuation() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        for byte in 0..=u8::MAX {
+            let mut m = mixer(vec![1024], None, 1);
+            m.listen(&[listener(0, Vec3::default())], 1.0);
+            let mut e = event(&m);
+            e.spatial = qa_gameplay::rules::sound_policy(rules);
+            e.position = Vec3([400.0, 0.0, 0.0]);
+            e.attenuation = f32::from(byte) / 64.0;
+            assert!(m.sound(e));
+            let mut pcm = [0; 2];
+            assert!(m.paint(&mut pcm));
+            // qsrc S_IssuePlaysound then S_SpatializeOrigin, with a right-side
+            // source: native rscale=1, lscale=0, and distance=400-80.
+            let coefficient = match (rules, byte == 192) {
+                (RuleSetId::Quake2, true) => (f64::from(e.attenuation) * 0.001) as f32,
+                (RuleSetId::Quake2, false) => (f64::from(e.attenuation) * 0.0005) as f32,
+                (_, true) => e.attenuation * 0.001f32,
+                (_, false) => e.attenuation * 0.0005f32,
+            };
+            let gain = (255.0f32 * (1.0 - 320.0 * coefficient)).max(0.0) as i16;
+            let expected = if byte == 0 { [1020; 2] } else { [0, gain * 4] };
+            assert_eq!(pcm, expected, "{rules:?} attenuation byte {byte}");
+        }
+    }
+}
+
+#[test]
 fn one_precached_pcm_supports_independent_spatial_policies_on_simultaneous_voices() {
     let mut m = mixer(vec![1024; 2], None, 2);
     m.listen(&[listener(0, Vec3::default())], 1.0);
@@ -102,7 +130,7 @@ fn one_precached_pcm_supports_independent_spatial_policies_on_simultaneous_voice
     }
     let mut pcm = [0; 2];
     assert!(m.paint(&mut pcm));
-    assert_eq!(pcm, [0, 1224 + 692]);
+    assert_eq!(pcm, [0, 1224 + 856]);
     assert_eq!(m.counts.started, 2);
     assert_eq!(m.counts.invalid, 0);
 }
@@ -127,7 +155,7 @@ fn updating_loop_spatial_policy_preserves_its_pcm_cursor() {
     e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
     assert!(m.sound(e));
     assert!(m.paint(&mut pcm));
-    assert_eq!(pcm, [0, 2 * 692]);
+    assert_eq!(pcm, [0, 2 * 856]);
     assert_eq!(m.counts.started, 1);
     assert_eq!(m.counts.replaced, 0);
 }
@@ -139,7 +167,7 @@ fn spatialization_uses_capability_data_without_a_game_selector() {
     let mut e = event(&m);
     e.spatial = SpatialPolicy {
         distance_offset: 80.0,
-        distance_scale: 0.001,
+        attenuation: DistanceAttenuation::Linear(0.001),
         separation: 0.25,
     };
     e.position = Vec3([400.0, 0.0, 0.0]);
@@ -414,7 +442,7 @@ fn native_self_relative_gain_uses_the_client_voice_namespace() {
         e.entity = Some(emitter);
         assert!(m.sound(e));
         assert!(m.paint(&mut pcm));
-        assert_eq!(pcm, [0, 692]);
+        assert_eq!(pcm, [0, 856]);
     }
 }
 
@@ -434,23 +462,23 @@ fn native_client_voice_tracks_without_restarting_and_retains_missing_pose() {
     assert!(m.sound(e));
     let mut pcm = [0; 2];
     assert!(m.paint(&mut pcm));
-    assert_eq!(pcm, [0, 692]);
+    assert_eq!(pcm, [0, 856]);
     m.respatialize(|client, number, origin| {
         assert_eq!(origin, None);
         assert_eq!((client, number), (ClientId(7), 19));
         Some(Vec3([-400.0, 0.0, 0.0]))
     });
     assert!(m.paint(&mut pcm));
-    assert_eq!(pcm, [692, 0]);
+    assert_eq!(pcm, [856, 0]);
     assert_eq!(m.counts.started, 1);
     assert_eq!(m.counts.respatialized, 1);
     m.respatialize(|_, _, _| None);
     assert!(m.paint(&mut pcm));
-    assert_eq!(pcm, [692, 0]);
+    assert_eq!(pcm, [856, 0]);
     assert_eq!(m.counts.missing_origins, 1);
     m.respatialize(|_, _, _| Some(Vec3([f32::NAN, 0.0, 0.0])));
     assert!(m.paint(&mut pcm));
-    assert_eq!(pcm, [692, 0]);
+    assert_eq!(pcm, [856, 0]);
     assert_eq!(m.counts.missing_origins, 2);
 }
 
@@ -492,7 +520,7 @@ fn fixed_and_non_client_emitters_never_resolve_client_poses() {
         m.respatialize(|_, _, _| panic!("fixed/non-client origin queried"));
         let mut pcm = [0; 2];
         assert!(m.paint(&mut pcm));
-        assert_eq!(pcm, [0, 692]);
+        assert_eq!(pcm, [0, 856]);
         assert_eq!(m.counts.respatialized, 0);
         assert_eq!(m.counts.missing_origins, 0);
     }
@@ -531,7 +559,7 @@ fn moving_voices_keep_native_connection_namespace() {
     assert_eq!(queried, [true; 2]);
     let mut pcm = [0; 2];
     assert!(m.paint(&mut pcm));
-    assert_eq!(pcm, [692, 692]);
+    assert_eq!(pcm, [856, 856]);
     assert_eq!(m.counts.respatialized, 2);
 }
 

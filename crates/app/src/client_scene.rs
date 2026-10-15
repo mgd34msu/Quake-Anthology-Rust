@@ -270,7 +270,7 @@ impl ClientEntities<'_> {
         record: EntityRecord,
         qw_player: bool,
         interpolate: bool,
-    ) -> PresentedEntity {
+    ) -> Option<PresentedEntity> {
         let capabilities = self.appearance.project(&record.appearance);
         let previous = self
             .previous
@@ -292,30 +292,91 @@ impl ClientEntities<'_> {
                 )
             });
         let fraction = self.interpolation.fraction;
-        let origin = if capabilities.frame_lerp
-            || (capabilities.beam_radius.is_some() && !capabilities.beam_interpolate)
-        {
-            record.position
+        let (origin, angles) = if let (Some(rules), Some(published)) = (
+            self.projection.trajectory_rules(),
+            record.appearance.presentation,
+        ) {
+            use qa_gameplay::rules::entities::TrajectorySample::Value;
+            let mut position = published.trajectories.position;
+            position.curve =
+                rules.position_curve(position.curve, number, self.appearance.smooth_clients());
+            if rules.interpolates(position.curve, number)
+                && let Some(previous) = previous
+                && let Some(old) = previous.appearance.presentation
+            {
+                let mut old_position = old.trajectories.position;
+                old_position.curve = rules.position_curve(
+                    old_position.curve,
+                    number,
+                    self.appearance.smooth_clients(),
+                );
+                let old_time = self.previous?.time();
+                let current_time = self.current?.time();
+                let origin = rules
+                    .sample(&old_position, old_time, Value)?
+                    .lerp(rules.sample(&position, current_time, Value)?, fraction);
+                let old_angles = rules.sample(&old.trajectories.angles, old_time, Value)?;
+                let current_angles =
+                    rules.sample(&published.trajectories.angles, current_time, Value)?;
+                let angles = Vec3(std::array::from_fn(|axis| {
+                    lerp_angle(old_angles.0[axis], current_angles.0[axis], fraction)
+                }));
+                (origin, angles)
+            } else {
+                let mut origin = rules.sample(&position, self.interpolation.time, Value)?;
+                let angles = rules.sample(
+                    &published.trajectories.angles,
+                    self.interpolation.time,
+                    Value,
+                )?;
+                if let Some(ground) = published
+                    .ground
+                    .filter(|ground| ground.namespace == ResourceNamespace::Client(self.client))
+                    && let Some((words, _)) = Self::row(self.current?, ground.ordinal)
+                    && let Some(mover) = self.decode(words)
+                    && rules.is_mover(ground.ordinal, mover.appearance.native.entity_type)
+                    && let Some(mover) = mover.appearance.presentation
+                {
+                    let before =
+                        rules.sample(&mover.trajectories.position, self.current?.time(), Value)?;
+                    let after = rules.sample(
+                        &mover.trajectories.position,
+                        self.interpolation.time,
+                        Value,
+                    )?;
+                    // Original cgame evaluates angular deltas but applies only
+                    // mover translation. Both views borrow accepted CLIENT rows.
+                    origin = origin + (after - before);
+                }
+                (origin, angles)
+            }
         } else {
-            previous.map_or(record.position, |old| {
-                old.position.lerp(record.position, fraction)
-            })
+            let origin = if capabilities.frame_lerp
+                || (capabilities.beam_radius.is_some() && !capabilities.beam_interpolate)
+            {
+                record.position
+            } else {
+                previous.map_or(record.position, |old| {
+                    old.position.lerp(record.position, fraction)
+                })
+            };
+            let angles = previous.map_or(record.angles, |old| {
+                Vec3(std::array::from_fn(|axis| {
+                    lerp_angle(old.angles.0[axis], record.angles.0[axis], fraction)
+                }))
+            });
+            (origin, angles)
         };
-        let angles = previous.map_or(record.angles, |old| {
-            Vec3(std::array::from_fn(|axis| {
-                lerp_angle(old.angles.0[axis], record.angles.0[axis], fraction)
-            }))
-        });
         let angles =
             self.appearance
                 .body_angles(angles, record.velocity, qw_player, self.alias_roll);
-        PresentedEntity {
+        Some(PresentedEntity {
             record,
             previous,
             origin,
             angles,
             capabilities,
-        }
+        })
     }
 
     /// Walk the sole accepted frame in its native entity order. A malformed
@@ -375,7 +436,7 @@ impl ClientEntities<'_> {
                     supplement.filter(|(number, _)| *number < row.number)
                 {
                     supplement = None;
-                    visit(number, Some(entities.present(number, record, false, false)));
+                    visit(number, entities.present(number, record, false, false));
                 }
                 let predicted = supplement
                     .filter(|(number, _)| *number == row.number)
@@ -385,7 +446,7 @@ impl ClientEntities<'_> {
                 }
                 visit(
                     row.number,
-                    entities.decode(&row.words).map(|mut record| {
+                    entities.decode(&row.words).and_then(|mut record| {
                         if record.appearance.loop_sound.is_none()
                             && let Some(predicted) = predicted
                         {
@@ -396,7 +457,7 @@ impl ClientEntities<'_> {
                 );
             }
             if let Some((number, record)) = supplement {
-                visit(number, Some(entities.present(number, record, false, false)));
+                visit(number, entities.present(number, record, false, false));
             }
         }
         match self.current {
@@ -413,11 +474,11 @@ impl ClientEntities<'_> {
     /// discontinuity and interpolation path as the copied scene entities.
     pub fn get(&self, number: u32) -> Option<PresentedEntity> {
         if let Some((words, qw_player)) = Self::row(self.current?, number) {
-            return Some(self.present(number, self.decode(words)?, qw_player, true));
+            return self.present(number, self.decode(words)?, qw_player, true);
         }
         self.player_record()
             .filter(|(native, _)| *native == number)
-            .map(|(_, record)| self.present(number, record, false, false))
+            .and_then(|(_, record)| self.present(number, record, false, false))
     }
 
     /// NQ/QW/Q2 reserve ordinal zero for the world and never receive a pose

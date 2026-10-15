@@ -360,7 +360,10 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
             .as_mut()
             .unwrap()
             .state
-            .set_sound_policy(qa_gameplay::rules::sound_policy(RuleSetId::Quake));
+            .set_sound_policy(
+                qa_gameplay::rules::sound_policy(RuleSetId::Quake),
+                qa_gameplay::rules::loop_spatial_policy(RuleSetId::Quake),
+            );
         let (mut request, _) = request(
             &mut runtime,
             module,

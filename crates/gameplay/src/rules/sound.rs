@@ -1,35 +1,50 @@
 use qa_core::primitives::{
-    EntityAppearance, LoopDoppler, LoopGain, LoopLifetime, LoopOrigin, LoopPhase, LoopPlayback,
-    NativeAppearanceTail, RuleSetId, SoundChannels, SoundPlayback, SpatialPolicy, Vec3,
+    AttenuationPrecision, DistanceAttenuation, EntityAppearance, LoopDoppler, LoopGain,
+    LoopLifetime, LoopOrigin, LoopPhase, LoopPlayback, NativeAppearanceTail, RuleSetId,
+    SoundChannels, SoundPlayback, SpatialPolicy, Vec3,
 };
 
 const Q1: SpatialPolicy = SpatialPolicy {
     distance_offset: 0.0,
-    distance_scale: 0.001,
+    attenuation: DistanceAttenuation::Linear(0.001),
     separation: 1.0,
 };
 const Q2: SpatialPolicy = SpatialPolicy {
     distance_offset: 80.0,
-    distance_scale: 0.001,
+    attenuation: q2_attenuation(AttenuationPrecision::F64),
     separation: 0.5,
 };
+const RR: SpatialPolicy = SpatialPolicy {
+    attenuation: q2_attenuation(AttenuationPrecision::F32),
+    ..Q2
+};
+// Classic S_IssuePlaysound uses double literals before its float channel store;
+// q2repro uses float literals. ATTN_STATIC selects the stronger coefficient.
+const fn q2_attenuation(precision: AttenuationPrecision) -> DistanceAttenuation {
+    DistanceAttenuation::Product {
+        ordinary: 0.0005,
+        match_value: 3.0,
+        matched: 0.001,
+        precision,
+    }
+}
 const Q3: SpatialPolicy = SpatialPolicy {
     distance_offset: 80.0,
-    distance_scale: 1.0 / (1250.0 - 80.0),
+    attenuation: DistanceAttenuation::Linear(1.0 / (1250.0 - 80.0)),
     separation: 0.5,
 };
-const POLICIES: [SpatialPolicy; 5] = [Q1, Q1, Q2, Q2, Q3];
+const POLICIES: [SpatialPolicy; 5] = [Q1, Q1, Q2, RR, Q3];
 
 pub const fn sound_policy(rules: RuleSetId) -> SpatialPolicy {
     POLICIES[rules as usize]
 }
 
 const Q2_LOOP_SPATIAL: SpatialPolicy = SpatialPolicy {
-    distance_scale: 0.003,
+    attenuation: DistanceAttenuation::Linear(0.003),
     ..Q2
 };
 const Q3_LOOP_SPATIAL: SpatialPolicy = SpatialPolicy {
-    distance_scale: 0.0008,
+    attenuation: DistanceAttenuation::Linear(0.0008),
     ..Q3
 };
 const Q3_PLAYBACK: SoundPlayback = SoundPlayback {
@@ -49,7 +64,7 @@ pub const fn native_sound_playback(rules: RuleSetId) -> Option<SoundPlayback> {
     [None, None, None, None, Some(Q3_PLAYBACK)][rules as usize]
 }
 pub const fn native_sound_spatial(rules: RuleSetId) -> SpatialPolicy {
-    [Q1, Q1, Q2, Q2, Q3_LOOP_SPATIAL][rules as usize]
+    [Q1, Q1, Q2, RR, Q3_LOOP_SPATIAL][rules as usize]
 }
 const LOOP_SPATIAL: [SpatialPolicy; 5] =
     [Q1, Q1, Q2_LOOP_SPATIAL, Q2_LOOP_SPATIAL, Q3_LOOP_SPATIAL];
@@ -216,9 +231,9 @@ fn keep_spatial(_: f32, spatial: SpatialPolicy) -> SpatialPolicy {
 }
 fn loop_attenuation(value: f32, mut spatial: SpatialPolicy) -> SpatialPolicy {
     if value == -1.0 {
-        spatial.distance_scale = 0.0;
+        spatial.attenuation = DistanceAttenuation::Linear(0.0);
     } else if value > 0.0 && value != 3.0 {
-        spatial.distance_scale = value * 0.0006;
+        spatial.attenuation = DistanceAttenuation::Linear(value * 0.0006);
     }
     spatial
 }

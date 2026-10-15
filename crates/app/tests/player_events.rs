@@ -345,7 +345,10 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>) {
         .state;
     assert_eq!(resources.sound(1), bank.find("sound/one.wav"));
     assert_eq!(resources.sound(2), bank.find("sound/two.wav"));
-    resources.set_sound_policy(qa_gameplay::rules::sound_policy(RuleSetId::Quake));
+    resources.set_sound_policy(
+        qa_gameplay::rules::sound_policy(RuleSetId::Quake),
+        qa_gameplay::rules::loop_spatial_policy(RuleSetId::Quake),
+    );
     write(&mut host, 101, &[(108, 0), (128, 0)]);
     transmit(&mut host, client, &mut source, 101);
     due(&mut host, client, 101);
@@ -827,7 +830,7 @@ fn fixed_native_media_cross_the_queued_channel_and_mixer_with_independent_sound_
             .as_mut()
             .unwrap()
             .state
-            .set_sound_policy(spatial);
+            .set_sound_policy(spatial, qa_gameplay::rules::loop_spatial_policy(sound_role));
         for (index, (code, path, expected_channel)) in recipes.into_iter().enumerate() {
             let milliseconds = 300 + index as u64 * 100;
             // Fixed recipes ignore eventParm, even when it is not a sound ordinal.

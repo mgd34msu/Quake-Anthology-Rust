@@ -74,6 +74,7 @@ pub(super) const LAYOUT: EntityLayout = EntityLayout {
     area2: None,
     clusters: None,
     network_solid: crate::players::q3_entity_offset(27),
+    solid_codec: SolidCodec::QUAKE3,
     appearance: AppearanceImport::Projected(&APPEARANCE),
     model_rules: ModelRules {
         rotation: qa_core::primitives::ModelRotation::TransposeBasis,
@@ -126,11 +127,4 @@ impl EntityProjection {
         self.memory = EntityMemory::Registered(Some(data));
         Ok(())
     }
-}
-
-pub(super) fn pack_solid(bounds: Bounds) -> u32 {
-    let x = (bounds.maxs.0[0] as i32).clamp(1, 255);
-    let down = ((-bounds.mins.0[2]) as i32).clamp(1, 255);
-    let up = ((bounds.maxs.0[2] + 32.0) as i32).clamp(1, 255);
-    (up << 16 | down << 8 | x) as u32
 }

@@ -110,16 +110,41 @@ pub enum TrajectorySample {
 pub struct TrajectoryRules {
     binary32: bool,
     gravity: f32,
+    client_limit: u32,
+    mover_kind: u32,
+    world_number: u32,
 }
 impl TrajectoryRules {
     pub const Q3_NATIVE: Self = Self {
         binary32: false,
         gravity: 800.0,
+        client_limit: 64,
+        mover_kind: 4,
+        world_number: 1022,
     };
     pub const Q3_QVM: Self = Self {
         binary32: true,
-        gravity: 800.0,
+        ..Self::Q3_NATIVE
     };
+    pub fn position_curve(
+        self,
+        curve: TrajectoryCurve,
+        number: u32,
+        smooth_clients: bool,
+    ) -> TrajectoryCurve {
+        if number < self.client_limit && !smooth_clients {
+            TrajectoryCurve::Interpolate
+        } else {
+            curve
+        }
+    }
+    pub fn interpolates(self, curve: TrajectoryCurve, number: u32) -> bool {
+        curve == TrajectoryCurve::Interpolate
+            || curve == TrajectoryCurve::LinearStop && number < self.client_limit
+    }
+    pub fn is_mover(self, number: u32, kind: u32) -> bool {
+        number > 0 && number < self.world_number && kind == self.mover_kind
+    }
 
     /// Source clocks stay signed32. Queued or shader clocks never supply a
     /// native trajectory time without the caller's accepted clock projection.

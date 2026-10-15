@@ -1,7 +1,7 @@
 use qa_core::primitives::{
-    ClientId, EntityAppearance, EntityClientData, EntityModelData, EntityParameter, ModelRef,
-    ModuleId, NativeAppearanceTail, NativeClientRef, NativeEntityRef, NativeReference,
-    ResourceNamespace, SoundRef, ThinkTime, TrajectoryCurve, Vec3,
+    ClientId, EntityAppearance, EntityClientData, EntityModelData, EntityParameter,
+    EntityPresentation, ModelRef, ModuleId, NativeAppearanceTail, NativeClientRef, NativeEntityRef,
+    NativeReference, ResourceNamespace, SoundRef, ThinkTime, TrajectoryCurve, Vec3,
 };
 use qa_network::{
     commands::packet::Protocol,
@@ -44,7 +44,12 @@ fn source(protocol: Protocol) -> EntityRecord {
                 event: 7,
                 entity_type: 7,
                 other_entity: Some(NativeEntityRef::entity(MODULE, 17)),
-                solid: 1234,
+                solid: match protocol {
+                    Protocol::Quake2_34 => 0x2062,
+                    Protocol::Quake2Repro1038 => 0x4018_1810,
+                    Protocol::Quake3_68 => 0x0040_1810,
+                    _ => 0,
+                },
                 colormap: 4,
                 loop_volume: 0.5,
                 loop_attenuation: -1.,
@@ -541,6 +546,7 @@ fn q3_speaker_entity_type_has_the_original_literal_delta_encoding() -> Result<()
     let mut record = EntityRecord::default();
     record.appearance.source = Protocol::Quake3_68.rule_set();
     record.appearance.native.entity_type = 7;
+    record.appearance.presentation = Some(EntityPresentation::new(MODULE));
     let mut words = [0; states::ENTITY_WORDS];
     assert!(projection.reduce(
         &record,
@@ -885,4 +891,218 @@ fn q3_reference_resolver_retains_client_domain_and_native_zero_and_sentinels() {
     assert_eq!(out[13], 0);
     assert_eq!(out[18], 1023);
     assert!(!projection.reduce(&record, &mut out, |_| None, |_| None, |_| Some(256)));
+}
+
+#[test]
+fn packed_box_solids_cross_protocol_boundaries_in_native_units() -> Result<(), Error> {
+    // Independent SV_LinkEdict/LinkEntity oracles for min[-16,-24,-24],
+    // max[16,24,32]. Classic and Q3 intentionally make Y symmetric with X.
+    for (source_protocol, source_word, target_protocol, target_word) in [
+        (
+            Protocol::Quake2_34,
+            0x2062,
+            Protocol::Quake2Repro1038,
+            0x4018_1010,
+        ),
+        (
+            Protocol::Quake2Repro1038,
+            0x4018_1810,
+            Protocol::Quake2_34,
+            0x2062,
+        ),
+        (
+            Protocol::Quake2Repro1038,
+            0x4018_1810,
+            Protocol::Quake3_68,
+            0x0040_1810,
+        ),
+        (
+            Protocol::Quake3_68,
+            0x0040_1810,
+            Protocol::Quake2Repro1038,
+            0x4018_1010,
+        ),
+        (
+            Protocol::Quake2_34,
+            0x2062,
+            Protocol::Quake3_68,
+            0x0040_1810,
+        ),
+        (
+            Protocol::Quake3_68,
+            0x0040_1810,
+            Protocol::Quake2_34,
+            0x2062,
+        ),
+    ] {
+        let mut record = source(source_protocol);
+        record.appearance.native.solid = source_word;
+        let target = EntityProjection::load(target_protocol);
+        let mut words = vec![0; target.words()];
+        assert!(target.reduce(
+            &record,
+            &mut words,
+            |m| Some(m.ordinal),
+            |s| Some(s.ordinal),
+            |r| Some(r.ordinal())
+        ));
+        let mut imported = EntityRecord::default();
+        assert!(target.apply(&wire(target_protocol, &words)?, &mut imported, CLIENT));
+        assert_eq!(
+            imported.appearance.native.solid, target_word,
+            "{source_protocol:?} -> {target_protocol:?}"
+        );
+        assert_eq!(record.appearance.native.solid, source_word);
+    }
+    Ok(())
+}
+
+#[test]
+fn brush_solids_require_one_resolved_primary_model_before_wire_emission() -> Result<(), Error> {
+    let protocols = [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ];
+    for publishing in protocols {
+        let mut record = source(publishing);
+        record.appearance.native.solid = if publishing == Protocol::Quake3_68 {
+            0x00ff_ffff
+        } else {
+            31
+        };
+        for receiving in protocols {
+            let projection = EntityProjection::load(receiving);
+            let mut words = vec![0; projection.words()];
+            let mut resolutions = [0; 4];
+            assert!(projection.reduce(
+                &record,
+                &mut words,
+                |model| {
+                    resolutions[(model.ordinal - 8) as usize] += 1;
+                    Some(model.ordinal + 2)
+                },
+                |s| Some(s.ordinal),
+                |r| Some(r.ordinal())
+            ));
+            assert_eq!(
+                resolutions,
+                if receiving == Protocol::Quake3_68 {
+                    [1, 1, 0, 0]
+                } else {
+                    [1; 4]
+                }
+            );
+            let mut imported = EntityRecord::default();
+            assert!(projection.apply(&wire(receiving, &words)?, &mut imported, CLIENT));
+            assert_eq!(imported.appearance.models[0], ModelRef::native(CLIENT, 10));
+            assert_eq!(
+                imported.appearance.native.solid,
+                if receiving == Protocol::Quake3_68 {
+                    0x00ff_ffff
+                } else {
+                    31
+                }
+            );
+            for missing in [None, Some(0), Some(65536)] {
+                assert!(!projection.reduce(
+                    &record,
+                    &mut words,
+                    |model| {
+                        if model.ordinal == 8 {
+                            missing
+                        } else {
+                            Some(model.ordinal)
+                        }
+                    },
+                    |s| Some(s.ordinal),
+                    |r| Some(r.ordinal())
+                ));
+            }
+            let mut absent = record;
+            absent.appearance.models[0] = None;
+            assert!(!projection.reduce(
+                &absent,
+                &mut words,
+                |m| Some(m.ordinal),
+                |s| Some(s.ordinal),
+                |r| Some(r.ordinal())
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn native_public_solid_words_remain_exact_without_a_client_model_catalog() {
+    let projection = EntityProjection::load_native_q3();
+    let mut words = [0; states::ENTITY_WORDS];
+    words[27] = 0x00ff_ffff;
+    let mut record = EntityRecord::default();
+    assert!(projection.apply(&words, &mut record, MODULE));
+    let mut out = [0; states::ENTITY_WORDS];
+    assert!(projection.reduce(&record, &mut out, |_| None, |_| None, |r| Some(r.ordinal())));
+    assert_eq!(out, words);
+    words[27] = 0x8123_4567;
+    assert!(projection.apply(&words, &mut record, MODULE));
+    assert!(projection.reduce(&record, &mut out, |_| None, |_| None, |r| Some(r.ordinal())));
+    assert_eq!(out, words);
+}
+
+#[test]
+fn malformed_foreign_bounds_and_box_to_brush_collisions_reject_only_the_record() {
+    let projection = EntityProjection::load(Protocol::Quake3_68);
+    let mut record = source(Protocol::Quake2Repro1038);
+    for raw in [0x0000_0101, u32::MAX] {
+        record.appearance.native.solid = raw;
+        let mut words = [0; states::ENTITY_WORDS];
+        assert!(!projection.reduce(
+            &record,
+            &mut words,
+            |m| Some(m.ordinal),
+            |s| Some(s.ordinal),
+            |r| Some(r.ordinal())
+        ));
+        assert_eq!(record.appearance.native.solid, raw);
+    }
+    record.appearance.native.solid = 0;
+    let mut words = [0; states::ENTITY_WORDS];
+    assert!(projection.reduce(
+        &record,
+        &mut words,
+        |m| Some(m.ordinal),
+        |s| Some(s.ordinal),
+        |r| Some(r.ordinal())
+    ));
+    assert_eq!(words[27], 0);
+}
+
+#[test]
+fn synthetic_q3_pose_uses_load_selected_interpolation_without_changing_native_trajectories() {
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+    ] {
+        assert!(
+            EntityProjection::load(protocol)
+                .trajectory_rules()
+                .is_none()
+        );
+    }
+    let projection = EntityProjection::load(Protocol::Quake3_68);
+    assert!(projection.trajectory_rules().is_some());
+    let mut record = EntityRecord::default();
+    record.position = Vec3([11., 12., 13.]);
+    record.angles = Vec3([14., 15., 16.]);
+    record.appearance.source = Protocol::Quake3_68.rule_set();
+    let mut words = [0; states::ENTITY_WORDS];
+    assert!(projection.reduce(&record, &mut words, |_| None, |_| None, |_| None));
+    assert_eq!((words[16], words[23]), (1, 1));
+    assert_eq!(f32::from_bits(words[1]), 11.);
+    assert_eq!(f32::from_bits(words[6]), 15.);
+    record.appearance.presentation = Some(EntityPresentation::new(MODULE));
+    assert!(projection.reduce(&record, &mut words, |_| None, |_| None, |_| None));
+    assert_eq!((words[16], words[23]), (0, 0));
 }

@@ -8,6 +8,7 @@ use qa_core::primitives::{
     ModelRef, ModelRules, ModuleId, NativeAppearanceTail, NativeEntity, ResourceNamespace,
     RuleSetId, SoundRef, ThinkTime, Vec3,
 };
+use qa_core::solids::SolidCodec;
 use qa_world::area::LinkFlags;
 use qa_world::collision::{
     CollisionStore, Contents, NativeModelNames, NativeTraceFields, NativeTraceTarget,
@@ -61,6 +62,7 @@ pub(crate) struct EntityLayout {
     pub area2: Option<usize>,
     pub clusters: Option<(usize, usize, usize)>,
     pub network_solid: usize,
+    pub solid_codec: SolidCodec,
     pub appearance: AppearanceImport,
     pub model_rules: ModelRules,
 }
@@ -1134,18 +1136,18 @@ impl EntityProjection {
                 layout.network_solid,
                 if layout.contents.is_some() {
                     if native_solid != 0 {
-                        0x00ff_ffff
+                        layout.solid_codec.bsp()
                     } else if contents.is_some_and(|contents| {
                         contents.intersects(Contents::SOLID | Contents::BODY)
                     }) {
-                        q3::pack_solid(bounds)
+                        layout.solid_codec.pack_bounds(bounds)
                     } else {
                         0
                     }
                 } else if solid == 3 {
-                    31
+                    layout.solid_codec.bsp()
                 } else if solid == 2 && flags & 2 == 0 {
-                    pack_solid(bounds, layout.linked.is_some())
+                    layout.solid_codec.pack_bounds(bounds)
                 } else {
                     0
                 },
@@ -1368,32 +1370,6 @@ fn field(
         if byte { Width::Byte } else { Width::Word },
     )?)
 }
-fn pack_solid(bounds: Bounds, wide: bool) -> u32 {
-    if !wide {
-        let x = (bounds.maxs.0[0] / 8.0) as i32;
-        let down = (-bounds.mins.0[2] / 8.0) as i32;
-        let up = ((bounds.maxs.0[2] + 32.0) / 8.0) as i32;
-        return (x.clamp(1, 31) | down.clamp(1, 31) << 5 | up.clamp(1, 63) << 10) as u32;
-    }
-    if bounds.mins == bounds.maxs {
-        return 0;
-    }
-    let byte = |value: f32, min: u32| {
-        if value <= min as f32 {
-            min
-        } else if value >= 255.0 {
-            255
-        } else {
-            value as u32
-        }
-    };
-    let packed = byte(bounds.maxs.0[0], 1)
-        | byte(bounds.maxs.0[1], 1) << 8
-        | byte(-bounds.mins.0[2], 0) << 16
-        | byte(bounds.maxs.0[2] + 32.0, 0) << 24;
-    if packed == 31 { 0 } else { packed }
-}
-
 fn write_field(
     memory: &mut ModuleMemory<'_>,
     address: u64,

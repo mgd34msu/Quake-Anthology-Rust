@@ -841,6 +841,68 @@ fn qvm_native_snapshot_exclusion_is_published_without_narrowing_raw_flags() {
 }
 
 #[test]
+fn qvm_link_packs_native_solids_without_changing_physical_bounds() {
+    use qa_core::primitives::{Bounds, CollisionShape};
+    let mut f = Fixture::new();
+    f.row(ENTITIES, 0, 1);
+    f.register(ENTITIES, 1).unwrap();
+    for (index, (bounds, expected)) in [
+        (
+            Bounds {
+                mins: Vec3([-16., -24., -24.]),
+                maxs: Vec3([16., 24., 32.]),
+            },
+            0x0040_1810u32,
+        ),
+        (
+            Bounds {
+                mins: Vec3([-16.75, -24.5, -24.25]),
+                maxs: Vec3([16.75, 24.5, 40.75]),
+            },
+            0x0048_1810,
+        ),
+        (Bounds::default(), 0x0020_0101),
+        (
+            Bounds {
+                mins: Vec3([-300.; 3]),
+                maxs: Vec3([300.; 3]),
+            },
+            0x00ff_ffff,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        f.vm.memory.write_vec3(ENTITIES + 436, bounds.mins).unwrap();
+        f.vm.memory.write_vec3(ENTITIES + 448, bounds.maxs).unwrap();
+        // Q3 flag2 must not inherit Q2's dead-monster packing suppression.
+        f.vm.memory.write_word(ENTITIES + 424, 2).unwrap();
+        f.call(30, &[0, ENTITIES as i32]).unwrap();
+        assert_eq!(
+            f.vm.memory.read_word(ENTITIES + 176).unwrap() as u32,
+            expected
+        );
+        assert_eq!(
+            f.vm.memory.read_word(ENTITIES + 420).unwrap(),
+            index as i32 + 1
+        );
+        let entity = f.binding(0);
+        let columns = &f.runtime.server.entities.columns;
+        assert_eq!(columns.mins[entity.slot as usize], bounds.mins);
+        assert_eq!(columns.maxs[entity.slot as usize], bounds.maxs);
+        assert_eq!(
+            columns.collision_shape[entity.slot as usize],
+            CollisionShape::Box
+        );
+    }
+    for contents in [0x20, 0x4000_0000] {
+        f.vm.memory.write_word(ENTITIES + 460, contents).unwrap();
+        f.call(30, &[0, ENTITIES as i32]).unwrap();
+        assert_eq!(f.vm.memory.read_word(ENTITIES + 176).unwrap(), 0);
+    }
+}
+
+#[test]
 fn qvm_registered_entity_zero_links_with_word_flags_and_reuses_owned_lifetimes() {
     let mut f = Fixture::new();
     f.row(ENTITIES, 0, 1);

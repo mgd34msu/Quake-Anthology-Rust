@@ -1305,13 +1305,14 @@ fn gains(event: SoundEvent, listener: &Listener) -> Gain {
     let distance = math::normalize(&mut direction);
     let dot = listener.right.dot(direction);
     let dot = if listener.negate_dot { -dot } else { dot };
-    let distance = (distance - event.spatial.distance_offset).max(0.0)
-        * event.attenuation
-        * event.spatial.distance_scale;
+    let (distance, no_distance_panning) = event.spatial.attenuation.apply(
+        (distance - event.spatial.distance_offset).max(0.0),
+        event.attenuation,
+    );
     let pan = [1.0 - dot, 1.0 + dot];
     if let Some(playback) = event.looping {
         let pan = pan.map(|pan| {
-            let pan = if !playback.panning || event.spatial.distance_scale == 0.0 {
+            let pan = if !playback.panning || no_distance_panning {
                 1.0
             } else {
                 event.spatial.separation * pan

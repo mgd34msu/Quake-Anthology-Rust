@@ -3548,6 +3548,24 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 assert_eq!(memory.read_vec3(entity_address + 28).unwrap(), origin);
                 assert_eq!(
                     memory
+                        .read_word(entity_address + if rr { 76 } else { 72 })
+                        .unwrap() as u32,
+                    if memory
+                        .read_word(entity_address + if rr { 1392 } else { 200 })
+                        .unwrap()
+                        & 2
+                        != 0
+                    {
+                        0
+                    } else if rr {
+                        0x4018_1010
+                    } else {
+                        0x2062
+                    },
+                    "native LinkEntity selects the ABI's packed-solid codec",
+                );
+                assert_eq!(
+                    memory
                         .read_word(entity_address + if rr { 1384 } else { 192 })
                         .unwrap(),
                     7

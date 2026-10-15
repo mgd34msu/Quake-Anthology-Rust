@@ -170,13 +170,22 @@ const RULES: [NativeRules; 5] = [
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AppearancePolicy {
     rules: NativeRules,
+    smooth_clients: bool,
 }
 pub fn policy(source: RuleSetId) -> AppearancePolicy {
     AppearancePolicy {
         rules: RULES[source as usize],
+        smooth_clients: false,
     }
 }
 impl AppearancePolicy {
+    pub fn with_smooth_clients(mut self, enabled: bool) -> Self {
+        self.smooth_clients = enabled;
+        self
+    }
+    pub fn smooth_clients(self) -> bool {
+        self.smooth_clients
+    }
     /// Standalone temporary events need no model, sound or ordinary event word.
     /// Empty module anchors still do not become received entity poses.
     pub fn snapshot_present(self, appearance: &EntityAppearance) -> bool {

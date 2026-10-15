@@ -63,9 +63,16 @@ impl FrameHost {
             current,
             previous: None,
             projection: snapshot.entity_projection(),
-            appearance: snapshot.appearance_policy()?,
+            appearance: snapshot
+                .appearance_policy()?
+                .with_smooth_clients(self.smooth_clients()),
             alias_roll: self.alias_roll(),
-            interpolation: crate::snapshots::Interpolation::default(),
+            interpolation: crate::snapshots::Interpolation {
+                time: current.map_or(qa_core::primitives::ThinkTime::Milliseconds(0), |frame| {
+                    frame.time()
+                }),
+                ..Default::default()
+            },
         }
         .sound_origin(u32::from(slot), None)
     }

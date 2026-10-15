@@ -194,7 +194,10 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
             .as_mut()
             .unwrap()
             .state
-            .set_sound_policy(spatial);
+            .set_sound_policy(
+                spatial,
+                qa_gameplay::rules::loop_spatial_policy(RuleSetId::Quake2Rerelease),
+            );
         let observer = host
             .runtime
             .server
@@ -211,7 +214,7 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
                 client,
                 entity: None,
                 origin: Vec3::default(),
-                right: Vec3([0.0, 1.0, 0.0]),
+                right: Vec3([1.0, 0.0, 0.0]),
                 negate_dot: false,
             })],
             1.0,
@@ -276,6 +279,73 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
         assert_eq!(audio.mixer.counts.started, 1);
         assert_eq!(dispatch(&mut host, &mut audio).sounds, 0);
         assert_eq!(audio.plays, 1);
+        for presentation in [
+            RuleSetId::Quake,
+            RuleSetId::Quake2,
+            RuleSetId::Quake2Rerelease,
+        ] {
+            let ordinary = qa_gameplay::rules::sound_policy(presentation);
+            let entity_loop = qa_gameplay::rules::loop_spatial_policy(presentation);
+            let resources = &mut host.runtime.client_resources[client.0 as usize]
+                .as_mut()
+                .unwrap()
+                .state;
+            resources.set_sound_policy(ordinary, entity_loop);
+            assert_eq!(resources.loop_spatial_policy(), entity_loop);
+            for attenuation_byte in [64, 192] {
+                // Explicit volume, attenuation and world0: source at [400,0,0].
+                let bytes = if protocol == Protocol::NetQuake15 {
+                    [6, 3, 255, attenuation_byte, 2, 0, 1, 128, 12, 0, 0, 0, 0]
+                } else {
+                    [6, 2, 192, 255, attenuation_byte, 1, 128, 12, 0, 0, 0, 0, 0]
+                };
+                let body = &bytes[..if protocol == Protocol::NetQuake15 {
+                    13
+                } else {
+                    12
+                }];
+                send(&mut host, client, body, time);
+                let submitted = dispatch(&mut host, &mut audio);
+                assert_eq!((submitted.sounds, submitted.unhandled_sounds), (1, 0));
+                let event = audio.last.unwrap();
+                assert_eq!(event.spatial, ordinary);
+                assert_eq!(event.native_fields.unwrap().attenuation, attenuation_byte);
+                let mut encoded = [0; 16];
+                let length =
+                    outputs::sound(protocol, event, 1, Some(0), true, &mut encoded).unwrap();
+                assert_eq!(&encoded[..length], body);
+                let attenuation = f32::from(attenuation_byte) / 64.0;
+                // Source equations, independent of DistanceAttenuation::apply.
+                let distance = match presentation {
+                    RuleSetId::Quake => 400.0 * attenuation * 0.001,
+                    RuleSetId::Quake2 => {
+                        let coefficient = if attenuation_byte == 192 {
+                            (f64::from(attenuation) * 0.001) as f32
+                        } else {
+                            (f64::from(attenuation) * 0.0005) as f32
+                        };
+                        320.0 * coefficient
+                    }
+                    _ => {
+                        let coefficient = if attenuation_byte == 192 {
+                            attenuation * 0.001f32
+                        } else {
+                            attenuation * 0.0005f32
+                        };
+                        320.0 * coefficient
+                    }
+                };
+                let gain = (255.0 * (1.0 - distance) * 2.0 * ordinary.separation).max(0.0) as i64;
+                let mut pcm = [0; 2];
+                assert!(audio.mixer.paint(&mut pcm));
+                assert_eq!(
+                    pcm,
+                    [0, ((6000 * gain) >> 8) as i16],
+                    "{protocol:?} {presentation:?} {attenuation_byte}"
+                );
+            }
+        }
+        assert_eq!(audio.plays, 7);
         assert_eq!(
             (
                 host.runtime.network.command_errors,

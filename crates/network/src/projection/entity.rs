@@ -8,7 +8,10 @@ use qa_core::primitives::{
     ResourceNamespace, RuleSetId, SoundRef, ThinkTime, Trajectory as PublishedTrajectory,
     TrajectoryCurve,
 };
-use qa_gameplay::rules::entities::{EntityRoles, ModelCellRole, ParameterRole, entity_roles};
+use qa_core::solids::{PackedSolid, SolidCodec};
+use qa_gameplay::rules::entities::{
+    EntityRoles, ModelCellRole, ParameterRole, TrajectoryRules, entity_roles,
+};
 
 #[derive(Clone, Copy)]
 enum TrajectoryField {
@@ -224,6 +227,9 @@ pub struct EntityProjection {
     sound_limit: u32,
     roles: EntityRoles,
     native32: bool,
+    models: usize,
+    solid: Option<SolidCodec>,
+    trajectory: Option<TrajectoryRules>,
 }
 impl EntityProjection {
     pub const fn load(protocol: Protocol) -> Self {
@@ -234,6 +240,16 @@ impl EntityProjection {
             Protocol::Quake2Repro1038 => (RR, states::Q2_RERELEASE_ENTITY_WORDS),
             Protocol::Quake3_68 => (Q3, states::ENTITY_WORDS),
         };
+        let mut models = 0;
+        let mut i = 0;
+        while i < fields.len() {
+            if let Model(index) = fields[i].source {
+                if index + 1 > models {
+                    models = index + 1;
+                }
+            }
+            i += 1;
+        }
         Self {
             protocol,
             fields,
@@ -250,6 +266,12 @@ impl EntityProjection {
             },
             roles: entity_roles(protocol.rule_set()),
             native32: false,
+            models,
+            solid: SolidCodec::load(protocol.rule_set()),
+            trajectory: match protocol {
+                Protocol::Quake3_68 => Some(TrajectoryRules::Q3_NATIVE),
+                _ => None,
+            },
         }
     }
     /// Public game-memory values retain all 32 bits; the wire instance applies
@@ -266,6 +288,9 @@ impl EntityProjection {
     }
     pub fn words(&self) -> usize {
         self.words
+    }
+    pub fn trajectory_rules(&self) -> Option<TrajectoryRules> {
+        self.trajectory
     }
     /// The resolvers map publishing resource namespaces into this connection's
     /// precaches. Missing/unrepresentable resources become native ordinal zero.
@@ -294,22 +319,29 @@ impl EntityProjection {
             );
         let q1_pair = matches!(a.source, RuleSetId::Quake | RuleSetId::QuakeWorld)
             && matches!(self.protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28);
+        let model_data = presentation.filter(|_| same).map(|p| p.model_data);
+        let mut models = [0; 4];
+        for (i, model) in models.iter_mut().enumerate().take(self.models) {
+            *model = match model_data {
+                Some(EntityModelData::Item { index, secondary }) => {
+                    [index, secondary].get(i).copied().unwrap_or(0) as u32
+                }
+                Some(EntityModelData::Team { team, health }) => {
+                    [team, health].get(i).copied().unwrap_or(0) as u32
+                }
+                _ => a.models[i]
+                    .and_then(&mut resolve_model)
+                    .filter(|&n| n <= self.resource_limit)
+                    .unwrap_or(0),
+            };
+        }
         for field in self.fields {
             let value = match field.source {
                 Position(i) => record.position.0[i].to_bits(),
                 Velocity(i) => record.velocity.0[i].to_bits(),
                 Angle(i) => record.angles.0[i].to_bits(),
                 OldOrigin(i) => a.old_origin.0[i].to_bits(),
-                Model(i) => match presentation.filter(|_| same).map(|p| p.model_data) {
-                    Some(EntityModelData::Item { index, secondary }) => {
-                        [index, secondary][i] as u32
-                    }
-                    Some(EntityModelData::Team { team, health }) => [team, health][i] as u32,
-                    _ => a.models[i]
-                        .and_then(&mut resolve_model)
-                        .filter(|&n| n <= self.resource_limit)
-                        .unwrap_or(0),
-                },
+                Model(i) => models[i],
                 Frame => a.frame as u32,
                 Skin => a.skin as u32,
                 Colormap => {
@@ -385,10 +417,23 @@ impl EntityProjection {
                     .filter(|&n| n <= self.sound_limit)
                     .unwrap_or(0),
                 Solid => {
-                    if same || q2_pair {
+                    if self.native32 && same {
                         a.native.solid
                     } else {
-                        0
+                        match (SolidCodec::load(a.source), self.solid) {
+                            (Some(source), Some(target)) => {
+                                if matches!(source.decode(a.native.solid), PackedSolid::Brush)
+                                    && (models[0] == 0 || a.models[0].is_none())
+                                {
+                                    return false;
+                                }
+                                let Some(word) = target.transcode(source, a.native.solid) else {
+                                    return false;
+                                };
+                                word
+                            }
+                            _ => 0,
+                        }
                     }
                 }
                 Alpha => a.alpha.to_bits(),
@@ -703,6 +748,7 @@ fn trajectory_value(
     part: TrajectoryField,
 ) -> Option<u32> {
     let fallback = PublishedTrajectory {
+        curve: TrajectoryCurve::Interpolate,
         base: if angular {
             record.angles
         } else {

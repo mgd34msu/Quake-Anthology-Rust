@@ -279,11 +279,19 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         .unwrap()
         .state
         .sound_policy();
+    let prior_loop_policy = host.runtime.client_resources[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .loop_spatial_policy();
     host.runtime.client_resources[client.0 as usize]
         .as_mut()
         .unwrap()
         .state
-        .set_sound_policy(qa_gameplay::rules::sound_policy(RuleSetId::Quake3));
+        .set_sound_policy(
+            qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
+            qa_gameplay::rules::loop_spatial_policy(RuleSetId::Quake3),
+        );
     let mut audio = Audio {
         mixer: qa_audio::Mixer::load(bank, 8, 1),
         client,
@@ -380,7 +388,7 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         .as_mut()
         .unwrap()
         .state
-        .set_sound_policy(prior_sound_policy);
+        .set_sound_policy(prior_sound_policy, prior_loop_policy);
     host.runtime.server.entities.columns.position[entity.slot as usize] = server_origin;
     host.runtime.server.clients[client.0 as usize]
         .player
@@ -488,11 +496,19 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         .unwrap()
         .state
         .sound_policy();
+    let prior_loop_policy = host.runtime.client_resources[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .loop_spatial_policy();
     host.runtime.client_resources[client.0 as usize]
         .as_mut()
         .unwrap()
         .state
-        .set_sound_policy(qa_gameplay::rules::sound_policy(RuleSetId::Quake3));
+        .set_sound_policy(
+            qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
+            qa_gameplay::rules::loop_spatial_policy(RuleSetId::Quake3),
+        );
     let mut audio = MuzzleAudio {
         audio: Audio {
             mixer: qa_audio::Mixer::load(std::sync::Arc::clone(&bank), 64, 1),
@@ -712,7 +728,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         .as_mut()
         .unwrap()
         .state
-        .set_sound_policy(prior_sound_policy);
+        .set_sound_policy(prior_sound_policy, prior_loop_policy);
     host.runtime.server.entities.columns.position[entity.slot as usize] = server_origin;
     host.runtime.server.clients[client.0 as usize]
         .player

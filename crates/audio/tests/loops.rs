@@ -301,15 +301,15 @@ fn independent_presentation_and_rerelease_overrides_are_cached_capability_data()
     let target = loop_spatial_policy(RuleSetId::Quake3);
     let (_, spatial) = source.admit(&appearance, target).unwrap();
     assert_eq!(spatial, target);
-    for (attenuation, scale) in [
-        (-1.0, 0.0),
-        (0.0, target.distance_scale),
-        (3.0, target.distance_scale),
-        (2.0, 2.0 * 0.0006),
+    for (attenuation, distance) in [
+        (-1.0, DistanceAttenuation::Linear(0.0)),
+        (0.0, target.attenuation),
+        (3.0, target.attenuation),
+        (2.0, DistanceAttenuation::Linear(2.0 * 0.0006)),
     ] {
         appearance.native.loop_attenuation = attenuation;
         let (_, spatial) = source.admit(&appearance, target).unwrap();
-        assert_eq!(spatial.distance_scale.to_bits(), scale.to_bits());
+        assert_eq!(spatial.attenuation, distance);
     }
     appearance.native.loop_volume = 0.0;
     assert_eq!(
