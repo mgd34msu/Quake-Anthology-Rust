@@ -14,7 +14,7 @@ use qa_core::primitives::{
     CallbackId, ClientId, ModuleId, NativeEntity, NumericValue, RuleSetId, ThinkTime, Vec3,
 };
 use qa_formats::program::native::{Image, LoadRole};
-use qa_platform::native::{NativeAbi, NativeScalar};
+use qa_platform::native::{NativeAbi, NativeAction, NativeRequest, NativeScalar};
 use qa_session::timing::TickRate;
 use std::path::PathBuf;
 
@@ -204,7 +204,7 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
     let mut arguments = [0; 13];
     arguments[0] = vm.import_callback();
     vm.process
-        .invoke(entry, arguments, |_, _, _| {
+        .invoke::<()>(entry, arguments, |_, _, _| {
             panic!("dllEntry must only store the callback")
         })
         .unwrap();
@@ -215,11 +215,14 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
     let mut calls = 0;
     let result = vm
         .process
-        .invoke(probe, [0; 13], |call, _, _| {
+        .invoke::<()>(probe, [0; 13], |request, _, _| {
+            let NativeRequest::Import(call) = request else {
+                panic!("scalar fixture unexpectedly resumed a callback")
+            };
             calls += 1;
             assert_eq!(call.number, 205);
             assert_eq!(call.arguments[0] as u32, (-1.25_f32).to_bits());
-            Ok(0x31415926)
+            Ok(NativeAction::Return(0x31415926))
         })
         .unwrap();
     assert_eq!(calls, 1);

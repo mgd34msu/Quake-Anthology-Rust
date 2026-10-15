@@ -10,7 +10,9 @@ use crate::{
 use qa_core::{names::NameTable, primitives::PrintKind, sys_events::EventTime, text::FixedText};
 use std::fmt::Write;
 
+mod callbacks;
 mod client_sound;
+pub use callbacks::{CallbackRequest, ImportContinuation, ImportStep};
 
 #[derive(Clone, Copy)]
 pub enum Addresses {
@@ -180,6 +182,7 @@ fn renderer_lerp_tag<const RETURN_RESULT: bool>(
 
 enum CallValue {
     Word(u64),
+    Callback(CallbackRequest, ImportContinuation),
     TemporaryString(u32, u8),
     Vector(qa_core::primitives::Vec3),
     Basis(qa_core::math::AngleBasis),
@@ -411,9 +414,13 @@ impl CallTable {
         number: u32,
         call: &mut Invocation<'_, '_, '_>,
         unknown: &mut UnknownCalls,
-    ) -> Result<u64, CallError> {
+    ) -> Result<ImportStep, CallError> {
         match self.invoke_value(number, call, unknown)? {
-            CallValue::Word(value) => Ok(value),
+            CallValue::Word(value) => Ok(ImportStep::Return(value)),
+            CallValue::Callback(request, continuation) => Ok(ImportStep::Call {
+                request,
+                continuation,
+            }),
             CallValue::Vector(_) | CallValue::Basis(_) | CallValue::TemporaryString(..) => {
                 Err(CallError::Memory)
             }
@@ -473,6 +480,10 @@ const fn server() -> CallTable {
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command);
     t.entries[15] = scalar!(q3_locate_game_data);
+    t.entries[16] = Some(CallEntry {
+        handler: Handler::Shared(|call, _| callbacks::drop_client(call)),
+        quakec: None,
+    });
     t.entries[17] = scalar!(q3_send_server_command);
     t.entries[30] = scalar!(native_link);
     t.entries[31] = scalar!(native_unlink);
@@ -914,6 +925,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
                 }
             }
             CallValue::Basis(basis) => vm.write_basis(basis)?,
+            CallValue::Callback(..) => return Err(quakec::Trap::Builtin),
         }
         Ok(())
     }
@@ -1476,6 +1488,54 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
         for (to, &from) in native.iter_mut().zip(args) {
             *to = u64::from(from as u32);
         }
+        let mut step = self
+            .step(vm, number, &native[..args.len()], None)
+            .map_err(|_| qvm::Trap::Syscall)?;
+        loop {
+            match step {
+                ImportStep::Return(value) => return Ok(value as i32),
+                ImportStep::Call {
+                    request,
+                    continuation,
+                } => {
+                    request
+                        .validate(self.services, self.context.module)
+                        .map_err(|_| qvm::Trap::Syscall)?;
+                    let (time, words, _) = request.words().map_err(|_| qvm::Trap::Syscall)?;
+                    let saved_context = self.context;
+                    self.context.clock = time;
+                    let mut arguments = [0; 10];
+                    arguments[0] = request.target.entry() as i32;
+                    for (to, word) in arguments[1..].iter_mut().zip(words) {
+                        *to = word as u32 as i32;
+                    }
+                    let result = vm.call_nested(self, arguments);
+                    self.context = saved_context;
+                    let returned = match result {
+                        Ok(value) => value as u32 as u64,
+                        Err(error) => {
+                            self.services
+                                .storage
+                                .abort_client_callbacks(self.context.module);
+                            return Err(error);
+                        }
+                    };
+                    step = self
+                        .step(vm, number, &[], Some((continuation, returned)))
+                        .map_err(|_| qvm::Trap::Syscall)?;
+                }
+            }
+        }
+    }
+}
+impl QvmCalls<'_, '_> {
+    fn step(
+        &mut self,
+        vm: &mut qvm::Vm,
+        number: u32,
+        arguments: &[u64],
+        returned: Option<(ImportContinuation, u64)>,
+    ) -> Result<ImportStep, CallError> {
         let mask = vm.memory.len() as u32 - 1;
         let mut call = Invocation {
             services: self.services,
@@ -1492,12 +1552,18 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
             platform_time: self.platform_time,
             command: self.command,
             addresses: Addresses::Qvm { mask },
-            arguments: &native[..args.len()],
+            arguments,
         };
-        self.table
-            .invoke(number, &mut call, self.unknown)
-            .map(|r| r as i32)
-            .map_err(|_| qvm::Trap::Syscall)
+        let result = match returned {
+            None => self.table.invoke(number, &mut call, self.unknown),
+            Some((continuation, value)) => continuation.resume(&mut call, value),
+        };
+        if result.is_err() {
+            call.services
+                .storage
+                .abort_client_callbacks(call.context.module);
+        }
+        result
     }
 }
 

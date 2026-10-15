@@ -3,6 +3,7 @@ use crate::native::{
     NativeAbi, NativeError, NativeImport, NativeProcess, NativeRegion, NativeScalar,
     runtime::{FIRST, FUNCTIONS, RuntimeConfig},
 };
+use crate::native::{NativeAction, NativeRequest};
 use std::time::Duration;
 
 fn runtime_child() -> NativeProcess {
@@ -94,11 +95,15 @@ fn call(process: &mut NativeProcess, trace: &mut Vec<i32>, number: u32, args: &[
     let mut words = [0; 13];
     words[..args.len()].copy_from_slice(args);
     process
-        .invoke(entry, words, |request, _, _| {
+        .invoke::<()>(entry, words, |request, _, _| {
+            let NativeRequest::Import(request) = request else {
+                panic!("scalar callback cannot reenter")
+            };
+
             assert_eq!(request.number, 777);
             let tag = request.arguments[0] as i32;
             trace.push(tag);
-            Ok(if tag == 7 { 7 } else { 0 })
+            Ok(NativeAction::<()>::Return(if tag == 7 { 7 } else { 0 }))
         })
         .unwrap()
 }
@@ -130,7 +135,7 @@ fn native_empty_copy_accepts_null_without_accessing_memory() {
     let mut words = [0; 13];
     words[..3].copy_from_slice(&[BASE + 6400, 0, 1]);
     assert!(matches!(
-        process.invoke(entry, words, |_, _, _| panic!("child-local copy")),
+        process.invoke::<()>(entry, words, |_, _, _| panic!("child-local copy")),
         Err(NativeError::RuntimeImport("memcpy"))
     ));
 }
@@ -198,7 +203,7 @@ fn windows_thread_storage_has_real_stack_bounds_and_child_local_gs() {
         let mut args = [0; 13];
         args[0] = offset;
         first
-            .invoke(entry, args, |_, _, _| panic!("no engine import"))
+            .invoke::<()>(entry, args, |_, _, _| panic!("no engine import"))
             .unwrap()
     };
     assert_eq!(read_gs(0), u64::MAX);
@@ -214,7 +219,7 @@ fn windows_thread_storage_has_real_stack_bounds_and_child_local_gs() {
         .bind(BASE + 32, NativeAbi::Microsoft, &[], NativeScalar::Word)
         .unwrap();
     let rsp = first
-        .invoke(stack, [0; 13], |_, _, _| panic!("no engine import"))
+        .invoke::<()>(stack, [0; 13], |_, _, _| panic!("no engine import"))
         .unwrap();
     assert!(bottom < rsp && rsp < top);
     assert_eq!(top - bottom, 8 * 1024 * 1024);
@@ -252,7 +257,7 @@ fn rejected_child_runtime_calls_keep_the_import_name_and_isolate_the_child() {
         .unwrap();
     let mut arguments = [0; 13];
     arguments[0] = 3;
-    let result = failed.invoke(entry, arguments, |_, _, _| {
+    let result = failed.invoke::<()>(entry, arguments, |_, _, _| {
         panic!("runtime rejection must not dispatch an engine import")
     });
     assert!(

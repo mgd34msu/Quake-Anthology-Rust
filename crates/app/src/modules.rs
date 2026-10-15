@@ -267,6 +267,14 @@ struct Module {
     collision_role: qa_compat::services::ClientCollision,
 }
 impl Module {
+    fn retain_active_batch(batch: &mut Option<ClientId>, server: &qa_session::clients::Server) {
+        *batch = batch.filter(|id| {
+            server
+                .clients
+                .get(id.0 as usize)
+                .is_some_and(|client| client.is_active())
+        });
+    }
     fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
         if self.request.phase == Phase::Server && self.clock.accumulate {
             self.request.context.clock
@@ -927,7 +935,7 @@ impl FrameHost {
                 let Some(output) = client.output else {
                     continue;
                 };
-                if client.connection.is_none()
+                if !client.is_active()
                     || client.connection == Some(qa_session::clients::Connection::Bot)
                     || self.runtime.server.events.needs_resync(output)
                     || self
@@ -974,6 +982,9 @@ impl FrameHost {
         let client = self.runtime.server.clients.get(id.0 as usize)?;
         if client.connection.is_none()
             || client.entity != lifetime
+            || self.runtime.snapshots[id.0 as usize]
+                .as_ref()
+                .is_some_and(|binding| binding.presentation_closed())
             || self.runtime.server.entities.resolve(lifetime).is_none()
         {
             return None;
@@ -1257,6 +1268,9 @@ impl FrameHost {
                         .get(id.0 as usize)
                         .filter(|client| {
                             client.connection.is_some()
+                                && !self.runtime.snapshots[id.0 as usize]
+                                    .as_ref()
+                                    .is_some_and(|binding| binding.presentation_closed())
                                 && client.entity == lifetime
                                 && self.runtime.server.entities.resolve(lifetime).is_some()
                         })
@@ -1312,12 +1326,12 @@ impl FrameHost {
                 self.runtime.client_connection_parts(id, lifetime)
             {
                 let _ = view.consume_configuration(server, team_chats_only);
-                view.disconnected
+                view.termination
             } else {
-                false
+                None
             };
-            if disconnected {
-                self.disconnect_client(id);
+            if let Some(termination) = disconnected {
+                self.finish_client_termination(id, termination);
             }
         }
     }
@@ -1573,6 +1587,10 @@ fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
 }
 fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall<'_>) -> bool {
     let platform_time = host.runtime.input_time;
+    let functions = host
+        .modules
+        .as_ref()
+        .map(|modules| Arc::clone(&modules.functions));
     let (time, words, native_player, command) = match call {
         CallbackCall::Think { time, .. } => {
             let mut arguments = [0; 9];
@@ -1617,6 +1635,9 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 .clients
                 .get(id.0 as usize)
                 .is_none_or(|client| client.connection.is_none() || client.entity != lifetime)
+            || host.runtime.snapshots[id.0 as usize]
+                .as_ref()
+                .is_some_and(|binding| binding.presentation_closed())
             || host.runtime.server.entities.resolve(lifetime).is_none())
     {
         return false;
@@ -1636,6 +1657,12 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         client_connection
             .map(|(client, lifetime)| qa_render::effects::EffectClient { client, lifetime }),
     );
+    services.callbacks = functions
+        .as_deref()
+        .map(|table| table as &dyn qa_session::dispatch::CallbackResolver);
+    services.client_disconnect = row
+        .client_lifecycle
+        .and_then(|table| table.disconnect_callback);
     services.scene = Some(&mut scene);
     services.client_collision = Some(&mut row.collision_role);
     // A live connection can lack this protocol's configstring/command view.
@@ -1707,13 +1734,14 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         Program::QuakeC(_) => return false,
     };
     let accepted = row.counts.record(result);
-    let disconnected = services
+    Module::retain_active_batch(&mut row.client_batch, services.server);
+    let termination = services
         .client_connection
         .as_deref()
-        .is_some_and(|commands| commands.disconnected());
+        .and_then(|commands| commands.disconnected());
     drop(services);
-    if disconnected && let Some((id, _)) = client_connection {
-        host.disconnect_client(id);
+    if let (Some(termination), Some((id, _))) = (termination, client_connection) {
+        host.finish_client_termination(id, termination);
     }
     accepted
 }

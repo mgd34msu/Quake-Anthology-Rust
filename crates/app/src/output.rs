@@ -84,7 +84,8 @@ pub fn dispatch(
     // Teardown must finish before borrowing SERVER state for the output pass.
     for slot in 0..runtime.server.clients.len() {
         let client = &runtime.server.clients[slot];
-        if client.connection == Some(Connection::Remote)
+        if client.is_active()
+            && client.connection == Some(Connection::Remote)
             && let Some(output) = client.output
             && runtime.server.events.needs_resync(output)
         {
@@ -262,7 +263,7 @@ pub fn dispatch(
                 server
                     .clients
                     .iter()
-                    .filter(|client| client.connection.is_some())
+                    .filter(|client| client.is_active())
                     .map(|client| client.entity),
             );
         }
@@ -315,6 +316,17 @@ pub fn dispatch(
             &mut server.events,
             id,
             &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
+                if !client.is_active()
+                    && !matches!(
+                        record.event,
+                        FrameEvent::ServerCommand { .. }
+                            | FrameEvent::ConfigString { .. }
+                            | FrameEvent::GameState { .. }
+                    )
+                {
+                    counts.native_unsupported += 1;
+                    return OutputSubmission::BestEffort;
+                }
                 // Resource-dependent services keep their source order while
                 // allowing later configstrings to publish their prerequisites.
                 if waiting_resources && !matches!(record.event, FrameEvent::ConfigString { .. }) {
@@ -367,14 +379,39 @@ pub fn dispatch(
                         counts.native_unsupported += 1;
                         return OutputSubmission::BestEffort;
                     };
-                    if source != qa_core::primitives::RuleSetId::Quake3
-                        || connection.commands.as_ref().is_none_or(|commands| {
-                            commands.protocol != qa_network::commands::packet::Protocol::Quake3_68
-                        })
-                    {
+                    let Some(protocol) = connection
+                        .commands
+                        .as_ref()
+                        .map(|commands| commands.protocol)
+                    else {
+                        counts.native_unsupported += 1;
+                        return OutputSubmission::BestEffort;
+                    };
+                    let final_close = matches!(
+                        client.phase,
+                        qa_session::clients::ClientPhase::Closing(closing)
+                            if closing.final_output == Some((id, record.sequence))
+                    );
+                    if source != qa_core::primitives::RuleSetId::Quake3 {
                         counts.native_unsupported += 1;
                         OutputSubmission::BestEffort
                     } else {
+                        let text = if protocol == qa_network::commands::packet::Protocol::Quake3_68
+                        {
+                            text
+                        } else if final_close {
+                            let Ok(length) = qa_network::outputs::disconnect(
+                                protocol,
+                                &mut runtime.output_native_bytes,
+                            ) else {
+                                counts.native_unsupported += 1;
+                                return OutputSubmission::BestEffort;
+                            };
+                            &runtime.output_native_bytes[..length]
+                        } else {
+                            counts.native_unsupported += 1;
+                            return OutputSubmission::BestEffort;
+                        };
                         match native::reliable(&mut connection.channel, text) {
                             Ok(submission) => submission,
                             Err(()) => {
@@ -716,7 +753,7 @@ pub fn dispatch(
             },
             || stopped.get(),
         );
-        if is_local {
+        if is_local && client.is_active() {
             qa_ui::hud::expire_messages(&mut client.hud, &mut server.events.texts, now);
         }
         if (client.connection == Some(Connection::Remote) || is_local)
@@ -750,6 +787,7 @@ pub fn dispatch(
             counts.add_native(&submitted);
         }
         if is_local
+            && client.is_active()
             && server.events.needs_resync(id)
             && runtime
                 .network

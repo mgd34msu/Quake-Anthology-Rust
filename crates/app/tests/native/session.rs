@@ -936,14 +936,14 @@ fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
     words[1] = 123;
     assert_eq!(
         vm.process
-            .invoke(entry, words, |_, _, _| Err(
+            .invoke::<()>(entry, words, |_, _, _| Err(
                 qa_platform::native::NativeError::Callback
             ))
             .unwrap(),
         123
     );
     words[0] = base + 0x4100;
-    let result = vm.process.invoke(entry, words, |_, _, _| {
+    let result = vm.process.invoke::<()>(entry, words, |_, _, _| {
         Err(qa_platform::native::NativeError::Callback)
     });
     assert!(
@@ -5775,7 +5775,7 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
             .unwrap();
         assert_eq!(
             vm.process
-                .invoke(entry, [0; 13], |_, _, _| panic!("no engine import"))
+                .invoke::<()>(entry, [0; 13], |_, _, _| panic!("no engine import"))
                 .unwrap(),
             if file_bytes == 0 {
                 0

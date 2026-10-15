@@ -272,6 +272,39 @@ pub(super) fn initialize(
         .map_err(|_| NativeError::Protocol)
 }
 
+/// The sole foreign execution gate serves outer exports, host-requested reentry
+/// and child-local CRT callbacks. Only mapping metadata survives this call.
+pub(super) fn foreign_call(
+    address: u64,
+    abi: u8,
+    words: &[u64; 13],
+    floats: &[u64; 8],
+    control: u64,
+    top: Option<u64>,
+) -> Result<u64, NativeError> {
+    let runtime = CHILD.get().ok_or(NativeError::Protocol)?;
+    if abi > 1 || size_of::<usize>() == 4 && abi != 0 || control & !0xff03 != 0 || control >> 8 > 8
+    {
+        return Err(NativeError::Protocol);
+    }
+    runtime.memory.range(address, 1, 4)?;
+    // SAFETY: hardware captured the suspended guest's stack in private import
+    // state. Reentry uses untouched stack below it, preserving its red zone.
+    let top = top.unwrap_or_else(|| unsafe { super::hardware::callback_top() });
+    runtime
+        .memory
+        .range(top.checked_sub(112).ok_or(NativeError::Extent)?, 112, 3)?;
+    // SAFETY: the target and bounded guest stack are checked, the ABI/control
+    // descriptor is validated, and no guest bytes or heap locks are borrowed.
+    // Both hardware widths preserve the outer controller/import and FP state.
+    let value =
+        unsafe { super::hardware::call(address, u64::from(abi), words, top, floats, control) };
+    if let Some((ordinal, address)) = super::child_trap() {
+        return Err(NativeError::ImportTrap { ordinal, address });
+    }
+    Ok(value)
+}
+
 pub(super) fn invoke(
     ordinal: usize,
     words: [u64; 13],
@@ -476,7 +509,6 @@ impl Runtime {
         result: crate::native::NativeScalar,
         arguments: &[u64],
     ) -> Result<u64, NativeError> {
-        self.memory.range(address, 1, 4)?;
         let entry = NativeEntry::bind(address, abi, size_of::<usize>() as u8, kinds, result)?;
         if arguments.len() != entry.argument_count() {
             return Err(NativeError::Protocol);
@@ -484,21 +516,8 @@ impl Runtime {
         let mut words = [0; 13];
         words[..arguments.len()].copy_from_slice(arguments);
         let (words, floats) = entry.pack(words);
-        // SAFETY: the hardware gate captures the current shared guest RSP.
-        // A nested call uses untouched stack below it, preserving the red zone.
-        let top = unsafe { super::hardware::callback_top() };
-        self.memory
-            .range(top.checked_sub(112).ok_or(NativeError::Extent)?, 112, 3)?;
-        // SAFETY: checked executable target and load-selected scalar ABI. All
-        // mapped-byte accessors and heap locks have ended before foreign code;
-        // the gate saves/restores its private frame and outer import state.
-        let value = entry.result(unsafe {
-            super::hardware::call(address, abi as u64, &words, top, &floats, entry.control)
-        });
-        if let Some((ordinal, address)) = super::child_trap() {
-            return Err(NativeError::ImportTrap { ordinal, address });
-        }
-        Ok(value)
+        foreign_call(address, abi as u8, &words, &floats, entry.control, None)
+            .map(|value| entry.result(value))
     }
     fn call(
         &self,

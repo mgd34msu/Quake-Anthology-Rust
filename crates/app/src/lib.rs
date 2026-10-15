@@ -233,6 +233,8 @@ impl Runtime {
         };
         let services = qa_compat::services::EngineServices {
             server: &mut self.server,
+            callbacks: None,
+            client_disconnect: None,
             input: &mut self.input,
             cvars,
             commands,
@@ -447,23 +449,71 @@ impl Runtime {
         result
     }
 
-    /// Tear down one connection; audio retains only its canonical CLIENT lifetime.
-    pub fn disconnect_client(&mut self, id: ClientId) -> bool {
+    fn retire_client_audio(&mut self, id: ClientId) {
         let slot = id.0 as usize;
-        let Some(client) = self.server.clients.get_mut(slot) else {
-            return false;
-        };
-        if client.connection.is_none() {
-            return false;
-        }
-        if self.client_resources[slot].is_some() {
-            debug_assert!(client.audio_retirement.is_none());
+        if self.client_resources.get(slot).is_some_and(Option::is_some)
+            && let Some(client) = self.server.clients.get_mut(slot)
+        {
             client
                 .audio_retirement
                 .get_or_insert(qa_session::clients::AudioRetirement {
                     lifetime: client.entity,
                     publication: None,
                 });
+        }
+    }
+
+    /// Stop CLIENT presentation while its channel sends the native final ACK.
+    pub(crate) fn close_client_presentation(&mut self, id: ClientId) -> bool {
+        let slot = id.0 as usize;
+        if self
+            .server
+            .clients
+            .get(slot)
+            .is_none_or(|client| client.connection.is_none())
+            || self
+                .snapshots
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_none_or(|binding| binding.presentation_closed())
+        {
+            return false;
+        }
+        self.retire_client_audio(id);
+        if let Some(binding) = self.snapshots[slot].as_mut() {
+            binding.close_presentation();
+        }
+        if let Some(collision) = self.client_collision[slot].as_mut() {
+            collision.invalidate();
+        }
+        if let Some(connection) = self
+            .network
+            .get_mut(id, qa_core::loopback::Endpoint::Client)
+            && let Some(commands) = connection.commands.as_mut()
+        {
+            commands.reset_history(true);
+        }
+        true
+    }
+
+    /// Tear down one connection; audio retains only its canonical CLIENT lifetime.
+    pub fn disconnect_client(&mut self, id: ClientId) -> bool {
+        let slot = id.0 as usize;
+        if self
+            .server
+            .clients
+            .get(slot)
+            .is_none_or(|client| client.connection.is_none())
+        {
+            return false;
+        }
+        if self
+            .snapshots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .is_none_or(|binding| !binding.presentation_closed())
+        {
+            self.retire_client_audio(id);
         }
         self.output_duplicates.reset_client(id);
         self.server.disconnect(id);

@@ -53,6 +53,8 @@ impl Fixture {
     fn services(&mut self) -> EngineServices<'_> {
         EngineServices {
             server: &mut self.server,
+            callbacks: None,
+            client_disconnect: None,
             input: &mut self.input,
             editor: None,
             cvars: &mut self.cvars,

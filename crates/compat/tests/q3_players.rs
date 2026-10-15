@@ -177,6 +177,8 @@ impl Fixture {
     fn engine(&mut self) -> EngineServices<'_> {
         EngineServices {
             server: &mut self.server,
+            callbacks: None,
+            client_disconnect: None,
             input: &mut self.input,
             editor: None,
             cvars: &mut self.cvars,
@@ -2166,10 +2168,14 @@ fn owned_pe64_shader_imports_borrow_only_the_parked_child_and_share_cold_dispatc
     assert_eq!(unknown.calls, 0);
 }
 
+#[path = "support/drop_client.rs"]
+mod drop_client;
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    drop_client::run();
     qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin();
     qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning();
     qvm_export_relocation_zero_address_and_stale_bindings();

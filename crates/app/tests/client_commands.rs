@@ -8,6 +8,8 @@ mod music;
 
 #[path = "client_commands/collision.rs"]
 mod collision;
+#[path = "client_commands/drop_client.rs"]
+mod drop_client;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "../../formats/tests/support/native_image.rs"]
 #[allow(dead_code)]
@@ -823,7 +825,14 @@ fn disconnect_and_slot_reuse_do_not_lend_a_new_connection() {
         )
         .is_err()
     );
-    assert!(host.runtime.server.clients[0].connection.is_none());
+    assert!(host.runtime.server.clients[0].connection.is_some());
+    assert!(
+        host.runtime.snapshots[0]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    assert!(host.runtime.network.get(ids[0], Endpoint::Client).is_some());
     assert!(host.runtime.server.clients[1].connection.is_some());
     // Audio retirement is completed by the real Presentation consumer.
     struct Sink;
@@ -843,6 +852,10 @@ fn disconnect_and_slot_reuse_do_not_lend_a_new_connection() {
             true
         }
     }
+    // Retain the transport until an ordinary frame submits its final control.
+    host.frame(&mut Sink, true);
+    assert!(host.runtime.server.clients[0].connection.is_none());
+    assert!(host.runtime.server.clients[1].connection.is_some());
     qa_app::output::dispatch(
         &mut host.runtime,
         &mut Sink,
@@ -1330,6 +1343,8 @@ fn main() {
     scene::entities(false, false);
     scene::entities(false, true);
     collision::selection(false);
+    drop_client::qvm_drop_client_is_synchronous_and_lifetime_checked();
+    drop_client::drop_during_client_think_releases_the_implicit_command_batch();
     server::qvm_import_uses_module_native_clients_and_source_string_storage();
     server::broadcast_backpressure_uses_each_real_ack_and_drops_foreign_protocols();
     server::command_width_and_reconnect_boundaries_do_not_stall_later_commands();
@@ -1346,6 +1361,7 @@ fn main() {
         scene::entities(true, false);
         scene::entities(true, true);
         collision::selection(true);
+        drop_client::owned_native_drop_client_uses_the_same_nested_callback_path();
         server::owned_native_import_uses_the_same_service_and_integer_width();
     }
     bcs_rescans_and_failed_cs_preserve_rows();

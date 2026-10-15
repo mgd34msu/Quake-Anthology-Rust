@@ -294,6 +294,8 @@ fn with_native_client(
     let mut scratch = geometry.scratch();
     let mut services = EngineServices {
         server: &mut server,
+        callbacks: None,
+        client_disconnect: None,
         input: &mut input,
         editor: None,
         cvars: &mut cvars,

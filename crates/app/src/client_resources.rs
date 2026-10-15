@@ -1,5 +1,6 @@
 //! Connection-owned configuration and derived numeric presentation bindings.
 use crate::{client_scene::ClientModelBindings, model_assets::ModelCatalog};
+use qa_compat::services::ClientTermination;
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     primitives::{
@@ -120,7 +121,7 @@ pub(crate) struct ClientConnectionView<'a> {
     resources: &'a mut ClientResources,
     catalog: Option<&'a ModelCatalog>,
     bank: Option<&'a qa_audio::Bank>,
-    pub(crate) disconnected: bool,
+    pub(crate) termination: Option<ClientTermination>,
 }
 pub(crate) fn connection_view<'a>(
     client: ClientId,
@@ -156,7 +157,7 @@ impl<'a> ClientConnectionView<'a> {
             resources,
             catalog,
             bank,
-            disconnected: false,
+            termination: None,
         }
     }
     fn reject<T>(
@@ -164,7 +165,7 @@ impl<'a> ClientConnectionView<'a> {
         error: qa_compat::services::CallError,
     ) -> Result<T, qa_compat::services::CallError> {
         self.resources.state.rejected += 1;
-        self.disconnected = true;
+        self.termination = Some(ClientTermination::Rejected);
         Err(error)
     }
     fn validate(
@@ -287,8 +288,8 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
         // window, even when no command has been produced for that slot.
         Ok(Some(history.get(age).copied().unwrap_or_default()))
     }
-    fn disconnected(&self) -> bool {
-        self.disconnected
+    fn disconnected(&self) -> Option<ClientTermination> {
+        self.termination
     }
 
     fn arguments(&self) -> qa_console::command_text::Arguments<'_> {
@@ -327,7 +328,7 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
             Ok(snapshot) => Ok(snapshot),
             Err(_) => {
                 self.resources.state.rejected += 1;
-                self.disconnected = true;
+                self.termination = Some(ClientTermination::Rejected);
                 Err(qa_compat::services::CallError::Memory)
             }
         }
@@ -378,7 +379,7 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
             let arguments = self.resources.selected.arguments();
             match arguments.get_bytes(0) {
                 b"disconnect" => {
-                    self.disconnected = true;
+                    self.termination = Some(ClientTermination::ServerDisconnect);
                     return Err(CallError::Aborted);
                 }
                 b"cs" => {
@@ -397,7 +398,7 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
                         self.catalog,
                         self.bank,
                     ) {
-                        self.disconnected = true;
+                        self.termination = Some(ClientTermination::Rejected);
                         return Err(CallError::ConfigString);
                     }
                     if index == ConfigLayout::Q3_SYSTEM_INFO {

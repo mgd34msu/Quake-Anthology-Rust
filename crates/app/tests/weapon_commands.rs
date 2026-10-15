@@ -1,3 +1,5 @@
+#[path = "support/scalar_import.rs"]
+mod scalar_import;
 use qa_app::{
     Runtime,
     client_policy::ClientPolicy,
@@ -119,42 +121,44 @@ fn abi_call(
         .runtime
         .engine_services(&mut host.console, &mut storage, &mut scratch);
     assert_eq!(
-        table.invoke(
-            number,
-            &mut Invocation {
-                services: &mut services,
-                memory: &mut memory,
-                native_cvars: None,
-                native_resources: None,
-                native_entities: None,
-                native_surfaces: None,
-                native_command: None,
-                native_configs: None,
-                native_pmove: None,
-                native_player: None,
-                context: CallContext {
-                    native_rules: qa_core::primitives::RuleSetId::Quake3,
-                    trace_rules: qa_core::primitives::RuleSetId::Quake3,
-                    sound_policy: qa_gameplay::rules::sound_policy(
-                        qa_core::primitives::RuleSetId::Quake3
-                    ),
-                    module: ModuleId(7),
-                    clock: ThinkTime::Milliseconds(0),
-                    server_frame: 0,
-                    console: Context {
-                        seat,
-                        ..Context::default()
+        table
+            .invoke(
+                number,
+                &mut Invocation {
+                    services: &mut services,
+                    memory: &mut memory,
+                    native_cvars: None,
+                    native_resources: None,
+                    native_entities: None,
+                    native_surfaces: None,
+                    native_command: None,
+                    native_configs: None,
+                    native_pmove: None,
+                    native_player: None,
+                    context: CallContext {
+                        native_rules: qa_core::primitives::RuleSetId::Quake3,
+                        trace_rules: qa_core::primitives::RuleSetId::Quake3,
+                        sound_policy: qa_gameplay::rules::sound_policy(
+                            qa_core::primitives::RuleSetId::Quake3
+                        ),
+                        module: ModuleId(7),
+                        clock: ThinkTime::Milliseconds(0),
+                        server_frame: 0,
+                        console: Context {
+                            seat,
+                            ..Context::default()
+                        },
+                        allocation: AllocationPolicy::EDICT,
+                        link_order: LinkOrder::Head,
                     },
-                    allocation: AllocationPolicy::EDICT,
-                    link_order: LinkOrder::Head,
+                    platform_time: host.time,
+                    command: &[],
+                    addresses,
+                    arguments: &args,
                 },
-                platform_time: host.time,
-                command: &[],
-                addresses,
-                arguments: &args,
-            },
-            &mut unknown
-        ),
+                &mut unknown
+            )
+            .map(scalar_import::word),
         Ok(0)
     );
     assert_eq!(unknown.calls, 0);

@@ -29,7 +29,9 @@ use qa_world::{
     entities::AllocationPolicy,
 };
 
+mod drop_client;
 mod input;
+pub use drop_client::DropClientTarget;
 mod native_message;
 mod signon;
 pub use signon::{AmbientSound, SIGNON_BYTES, SignonCursor};
@@ -197,6 +199,13 @@ pub trait SoundRegistrar {
     fn bank(&self) -> &qa_audio::Bank;
 }
 
+/// A native disconnect retains transport; a rejected request terminates it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientTermination {
+    ServerDisconnect,
+    Rejected,
+}
+
 /// Accepted CLIENT snapshots and current command argv borrow the same
 /// connection for one synchronous module call, without reading SERVER state.
 pub trait ClientConnection {
@@ -205,7 +214,7 @@ pub trait ClientConnection {
     fn usercmd(&mut self, number: i32, server: &Server) -> Result<Option<UserCmd>, CallError>;
     fn select(&mut self, number: i32, server: &mut Server) -> Result<bool, CallError>;
     fn arguments(&self) -> qa_console::command_text::Arguments<'_>;
-    fn disconnected(&self) -> bool;
+    fn disconnected(&self) -> Option<ClientTermination>;
     fn configstrings(&self, server: &Server) -> Result<&ConfigStrings, CallError>;
     fn snapshot_number(&self, server: &Server) -> Result<(u32, ThinkTime), CallError>;
     fn snapshot(
@@ -259,11 +268,17 @@ struct OpenFile {
     reference: FileRef,
     cursor: u64,
 }
+#[derive(Clone, Copy)]
+struct FreeClientClosing {
+    started: qa_core::sys_events::EventTime,
+    in_callback: bool,
+}
 struct ConfigRange {
     module: ModuleId,
     lifetime: Option<EntityId>,
     native_rules: RuleSetId,
     client_capacity: Option<u32>,
+    free_closing: Box<[Option<FreeClientClosing>]>,
     client_first: i32,
     info: InfoRules,
     info_scratch: Box<[u8]>,
@@ -329,6 +344,7 @@ pub struct ServiceStorage {
     reader: qa_formats::archive::ArchiveReader,
     no_areas: CvarHandle,
     max_clients: CvarHandle,
+    zombie_time: CvarHandle,
     doppler: CvarHandle,
     movement: qa_console::movement::MovementHandles,
     qw_phs: CvarHandle,
@@ -439,6 +455,7 @@ impl ServiceStorage {
                 lifetime: None,
                 native_rules: source,
                 client_capacity: None,
+                free_closing: Box::default(),
                 client_first: i32::from(source != RuleSetId::Quake3),
                 info,
                 info_scratch: vec![0; info.bytes].into_boxed_slice(),
@@ -481,6 +498,7 @@ impl ServiceStorage {
             reader: qa_formats::archive::ArchiveReader::default(),
             no_areas: cvars.find("cm_noAreas").ok_or(CallError::Cvar)?,
             max_clients: cvars.find("sv_maxclients").ok_or(CallError::Cvar)?,
+            zombie_time: cvars.find("sv_zombietime").ok_or(CallError::Cvar)?,
             doppler: cvars.find("s_doppler").ok_or(CallError::Cvar)?,
             movement: qa_console::movement::MovementHandles::bind(cvars)
                 .map_err(|_| CallError::Cvar)?,
@@ -524,11 +542,28 @@ impl ServiceStorage {
         if range.client_capacity.is_some_and(|old| old != capacity) {
             return Err(CallError::Capacity);
         }
+        if range.client_capacity.is_none() {
+            range.free_closing = vec![None; capacity as usize].into_boxed_slice();
+        }
         range.client_capacity = Some(capacity);
         Ok(())
     }
     pub fn client_capacity(&self, module: ModuleId) -> Option<u32> {
         self.range(module)?.client_capacity
+    }
+    /// A new native admission ends the free slot's prior close lifetime.
+    pub fn reset_native_close(&mut self, native: NativeEntity) -> Result<(), CallError> {
+        let range = self.range_mut(native.module).ok_or(CallError::Entity)?;
+        let ordinal = native
+            .slot
+            .checked_sub(range.client_first)
+            .and_then(|ordinal| usize::try_from(ordinal).ok())
+            .ok_or(CallError::Entity)?;
+        *range
+            .free_closing
+            .get_mut(ordinal)
+            .ok_or(CallError::Entity)? = None;
+        Ok(())
     }
     fn client_info(&self, native: NativeEntity) -> Result<&ConfigRange, CallError> {
         let range = self.range(native.module).ok_or(CallError::Entity)?;
@@ -621,9 +656,22 @@ impl ServiceStorage {
         let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
         if range.lifetime.is_some_and(|old| old != lifetime) {
             range.signon.reset();
+            range.free_closing.fill(None);
         }
         range.lifetime = Some(lifetime);
         Ok(())
+    }
+    pub fn module_lifetime(&self, module: ModuleId) -> Option<EntityId> {
+        self.range(module)?.lifetime
+    }
+    /// An interrupted synchronous export cannot leave a FREE callback active.
+    /// Its original closing timestamp still governs the next independent call.
+    pub fn abort_client_callbacks(&mut self, module: ModuleId) {
+        if let Some(range) = self.range_mut(module) {
+            for closing in range.free_closing.iter_mut().flatten() {
+                closing.in_callback = false;
+            }
+        }
     }
     pub fn emission(&self, context: CallContext) -> Option<qa_core::primitives::NativeEmission> {
         Some(qa_core::primitives::NativeEmission {
@@ -935,6 +983,8 @@ impl ServiceStorage {
 /// buffer, VFS, geometry and output ring remain their existing single owners.
 pub struct EngineServices<'a> {
     pub server: &'a mut Server,
+    pub callbacks: Option<&'a dyn qa_session::dispatch::CallbackResolver>,
+    pub client_disconnect: Option<qa_core::primitives::CallbackId>,
     pub input: &'a mut qa_input::Input,
     pub editor: Option<&'a mut qa_console::editor::Editor>,
     pub cvars: &'a mut Cvars,
@@ -1085,6 +1135,19 @@ pub struct EngineCallTable {
         Option<NativeEntity>,
         &[u8],
     ) -> Result<(), CallError>,
+    pub drop_client_target: fn(
+        &mut EngineServices<'_>,
+        NativeEntity,
+        qa_core::sys_events::EventTime,
+    ) -> Result<Option<DropClientTarget>, CallError>,
+    pub begin_drop_client: fn(
+        &mut EngineServices<'_>,
+        DropClientTarget,
+        &[u8],
+        qa_core::sys_events::EventTime,
+    ) -> Result<(), CallError>,
+    pub finish_drop_client:
+        fn(&mut EngineServices<'_>, DropClientTarget, &[u8]) -> Result<(), CallError>,
     pub server_command: fn(&mut EngineServices<'_>, i32) -> Result<bool, CallError>,
     pub client_configstrings: ClientConfigStringsCall,
     pub renderer: for<'a> fn(
@@ -1376,12 +1439,12 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
                 Some(client)
             }
         };
-        s.server
-            .events
-            .server_command(client, module, source, text)
+        s.publish_server_command(client, module, source, text)
             .map(|_| ())
-            .map_err(|_| CallError::Capacity)
     },
+    drop_client_target: |s, native, time| s.drop_client_target(native, time),
+    begin_drop_client: |s, target, reason, time| s.begin_drop_client(target, reason, time),
+    finish_drop_client: |s, target, reason| s.finish_drop_client(target, reason),
     server_command: |s, number| {
         s.client_connection
             .as_deref_mut()

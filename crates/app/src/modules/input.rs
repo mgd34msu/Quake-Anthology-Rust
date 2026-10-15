@@ -83,7 +83,7 @@ impl FrameHost {
         }
         let time = if let Some((client, lifetime)) = row.client_connection {
             let connected = self.runtime.server.clients.get(client.0 as usize)?;
-            if connected.connection.is_none() || connected.entity != lifetime {
+            if !connected.is_active() || connected.entity != lifetime {
                 return None;
             }
             self.runtime

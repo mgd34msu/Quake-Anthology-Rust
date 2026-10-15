@@ -152,6 +152,8 @@ impl Fixture {
             };
         EngineServices {
             server: &mut self.server,
+            callbacks: None,
+            client_disconnect: None,
             input: &mut self.input,
             editor: None,
             cvars: &mut self.cvars,
@@ -277,7 +279,10 @@ fn invoke_call(
     let mut unknown = UnknownCalls::load(1).unwrap();
     let result = table.invoke(number, &mut call, &mut unknown);
     assert_eq!(unknown.calls, 0);
-    result
+    result.map(|step| match step {
+        qa_compat::abi::ImportStep::Return(value) => value,
+        qa_compat::abi::ImportStep::Call { .. } => panic!("unexpected nested callback"),
+    })
 }
 
 #[test]
@@ -804,6 +809,8 @@ fn cold_native_config_sound_uses_the_existing_numeric_cache_then_rebinds_frozen_
         };
         let mut services = EngineServices {
             server: &mut fixture.server,
+            callbacks: None,
+            client_disconnect: None,
             input: &mut fixture.input,
             editor: None,
             cvars: &mut fixture.cvars,

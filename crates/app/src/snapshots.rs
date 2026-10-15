@@ -81,6 +81,8 @@ pub struct SnapshotBinding {
     pub protocol: Protocol,
     pub applied: u64,
     pub rejected: u64,
+    presentation_closed: bool,
+    pub(crate) close_control_pending: bool,
     native_client: u32,
     projection: PlayerProjection,
     player_stats: Q3StatLayout,
@@ -121,7 +123,15 @@ impl SnapshotBinding {
         ))
     }
     pub fn seat(&self) -> Option<SeatId> {
-        self.presentation.as_ref().map(|client| client.seat)
+        (!self.presentation_closed)
+            .then(|| self.presentation.as_ref().map(|client| client.seat))
+            .flatten()
+    }
+    pub fn presentation_closed(&self) -> bool {
+        self.presentation_closed
+    }
+    pub(crate) fn close_presentation(&mut self) -> bool {
+        !std::mem::replace(&mut self.presentation_closed, true)
     }
     pub fn native_client(&self) -> u32 {
         self.native_client
@@ -408,6 +418,8 @@ impl SnapshotBinding {
             protocol,
             applied: 0,
             rejected: 0,
+            presentation_closed: false,
+            close_control_pending: false,
             native_client,
             projection: PlayerProjection::load_values(
                 protocol,
@@ -664,6 +676,9 @@ impl SnapshotBinding {
         registry: &qa_gameplay::registry::Registry,
         time: qa_core::sys_events::EventTime,
     ) -> bool {
+        if self.presentation_closed {
+            return false;
+        }
         let Some(client) = self.presentation.as_mut() else {
             return false;
         };

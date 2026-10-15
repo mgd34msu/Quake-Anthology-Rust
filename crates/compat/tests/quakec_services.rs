@@ -350,6 +350,8 @@ fn with_collision_services(
     let mut unknown = UnknownCalls::load(1).unwrap();
     let mut services = EngineServices {
         server: &mut server,
+        callbacks: None,
+        client_disconnect: None,
         input: &mut input,
         editor: None,
         cvars: &mut cvars,

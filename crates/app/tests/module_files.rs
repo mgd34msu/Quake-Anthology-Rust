@@ -1,3 +1,5 @@
+#[path = "support/scalar_import.rs"]
+mod scalar_import;
 use qa_app::Runtime;
 use qa_compat::{
     abi::{Addresses, Invocation, Q3_CLIENT, Q3_SERVER, Q3_UI, UnknownCalls},
@@ -106,7 +108,9 @@ fn q3_file_imports_seek_shared_handles_with_native_long_widths_and_eof() {
                         addresses,
                         arguments,
                     };
-                    table.invoke($ordinal, &mut call, &mut unknown)
+                    table
+                        .invoke($ordinal, &mut call, &mut unknown)
+                        .map(scalar_import::word)
                 }};
             }
             // A null output handle asks for existence; an opened handle below

@@ -1,3 +1,5 @@
+#[path = "support/scalar_import.rs"]
+mod scalar_import;
 use qa_app::Runtime;
 use qa_compat::{
     abi::{Addresses, Invocation, Q3_CLIENT, Q3_SERVER, UnknownCalls},
@@ -178,27 +180,29 @@ fn invoke(
     addresses: Addresses,
     unknown: &mut UnknownCalls,
 ) -> Result<u64, CallError> {
-    table.invoke(
-        ordinal,
-        &mut Invocation {
-            services,
-            memory,
-            native_cvars: None,
-            native_resources: None,
-            native_entities: None,
-            native_surfaces: None,
-            native_command: None,
-            native_configs: None,
-            native_pmove: None,
-            native_player: None,
-            context,
-            platform_time: EventTime(0),
-            command: &[],
-            addresses,
-            arguments,
-        },
-        unknown,
-    )
+    table
+        .invoke(
+            ordinal,
+            &mut Invocation {
+                services,
+                memory,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                native_pmove: None,
+                native_player: None,
+                context,
+                platform_time: EventTime(0),
+                command: &[],
+                addresses,
+                arguments,
+            },
+            unknown,
+        )
+        .map(scalar_import::word)
 }
 
 #[path = "support/service_program.rs"]

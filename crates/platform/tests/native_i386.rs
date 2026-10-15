@@ -4,6 +4,7 @@
 use qa_platform::native::{
     NativeAbi, NativeError, NativeImage, NativeImport, NativeProcess, NativeRegion, NativeScalar,
 };
+use qa_platform::native::{NativeAction, NativeRequest};
 use std::{path::PathBuf, time::Duration};
 
 const BASE: u64 = 0x2000_0000;
@@ -25,6 +26,76 @@ fn helper() -> Option<PathBuf> {
         eprintln!("i386 backend fixture skipped: QA_NATIVE_I386_HELPER is not configured");
     }
     helper
+}
+
+#[test]
+fn cdecl_nested_exports_resume_the_suspended_import_in_the_same_owned_child() {
+    let Some(helper) = helper() else { return };
+    let imports: [NativeImport<'static>; 2] = std::array::from_fn(|index| NativeImport {
+        trap: false,
+        number: 10 + index as u32,
+        abi: NativeAbi::SystemV,
+        parameters: &[],
+        result: NativeScalar::Word,
+        filter: None,
+        format: None,
+    });
+    let mut bytes = [0; 8192];
+    let outer_import = NativeProcess::import_address(BASE, bytes.len(), 0).unwrap() as u32;
+    let nested_import = NativeProcess::import_address(BASE, bytes.len(), 1).unwrap() as u32;
+    let function = |import: u32, after: &[u8]| {
+        let mut code = vec![0x53, 0x83, 0xec, 112, 0xbb];
+        code.extend(0x1122_3344u32.to_le_bytes());
+        code.push(0xb8);
+        code.extend(import.to_le_bytes());
+        code.extend([0xff, 0xd0]);
+        code.extend(after);
+        code.extend([0x83, 0xc4, 112, 0x5b, 0xc3]);
+        code
+    };
+    let mut after = vec![0xa3]; // mov [DATA],eax; mov eax,ebx
+    after.extend((BASE as u32 + 4096).to_le_bytes());
+    after.extend([0x89, 0xd8]);
+    let outer_code = function(outer_import, &after);
+    let nested_code = function(nested_import, &[0x83, 0xc0, 1]);
+    bytes[..outer_code.len()].copy_from_slice(&outer_code);
+    bytes[256..256 + nested_code.len()].copy_from_slice(&nested_code);
+    let mut child = load(&helper, &bytes, &imports);
+    let outer = child
+        .bind(BASE, NativeAbi::SystemV, &[], NativeScalar::Word)
+        .unwrap();
+    let nested = child
+        .bind(BASE + 256, NativeAbi::SystemV, &[], NativeScalar::Word)
+        .unwrap();
+    let mut order = vec![];
+    let result = child
+        .invoke(outer, [0; 13], |request, _, _| match request {
+            NativeRequest::Import(call) if call.number == 10 => {
+                order.push(10);
+                Ok(NativeAction::Call {
+                    entry: nested,
+                    arguments: [0; 13],
+                    continuation: (),
+                })
+            }
+            NativeRequest::Import(call) => {
+                assert_eq!(call.number, 11);
+                order.push(11);
+                Ok(NativeAction::Return(40))
+            }
+            NativeRequest::Returned {
+                continuation: (),
+                value,
+            } => {
+                order.push(101);
+                assert_eq!(value, 41);
+                Ok(NativeAction::Return(42))
+            }
+        })
+        .unwrap();
+    assert_eq!(result, 0x1122_3344);
+    assert_eq!(order, [10, 11, 101]);
+    assert_eq!(&child.memory().unwrap()[4096..4100], &42u32.to_le_bytes());
 }
 fn load(helper: &std::path::Path, bytes: &[u8], imports: &[NativeImport<'_>]) -> NativeProcess {
     NativeProcess::load_with_helper(
@@ -90,7 +161,7 @@ fn cdecl_scalar_cells_and_word_width_are_selected_by_the_child() {
             };
             assert_eq!(
                 child
-                    .invoke(entry, values, |_, _, _| Err(NativeError::Callback))
+                    .invoke::<()>(entry, values, |_, _, _| Err(NativeError::Callback))
                     .unwrap(),
                 wanted
             );
@@ -157,14 +228,18 @@ fn typed_imports_decode_packed_cdecl_and_return_through_x87() {
             .unwrap();
         let mut calls = 0;
         let returned = child
-            .invoke(entry, arguments, |call, base, memory| {
+            .invoke::<()>(entry, arguments, |call, base, memory| {
+                let NativeRequest::Import(call) = call else {
+                    panic!("scalar callback cannot reenter")
+                };
+
                 calls += 1;
                 assert_eq!(call.number, 137);
                 assert!(call.function);
                 assert_eq!(&call.arguments[..5], &expected);
                 assert_eq!(base, BASE);
                 memory[4096] = 0x5a;
-                Ok(value)
+                Ok(NativeAction::<()>::Return(value))
             })
             .unwrap();
         assert_eq!(
@@ -211,7 +286,11 @@ fn raw_syscalls_use_i386_words_and_the_same_notification_slot() {
     let mut calls = 0;
     assert_eq!(
         child
-            .invoke(entry, arguments, |call, _, _| {
+            .invoke::<()>(entry, arguments, |call, _, _| {
+                let NativeRequest::Import(call) = call else {
+                    panic!("scalar callback cannot reenter")
+                };
+
                 calls += 1;
                 assert_eq!(call.number, 173);
                 assert!(!call.function);
@@ -219,7 +298,7 @@ fn raw_syscalls_use_i386_words_and_the_same_notification_slot() {
                     assert_eq!(call.arguments[i], (i + 1) as u64);
                 }
                 assert_eq!(call.arguments[12], 0);
-                Ok(0xabcd_ef01_9876_5432)
+                Ok(NativeAction::<()>::Return(0xabcd_ef01_9876_5432))
             })
             .unwrap(),
         0x9876_5432
@@ -257,13 +336,13 @@ fn trap_teardown_and_address_limits_remain_owned() {
         .bind(BASE, NativeAbi::SystemV, &[], NativeScalar::Word)
         .unwrap();
     assert!(matches!(
-        child.invoke(trap, [0; 13], |_, _, _| Err(NativeError::Callback)),
+        child.invoke::<()>(trap, [0; 13], |_, _, _| Err(NativeError::Callback)),
         Err(NativeError::ImportTrap { ordinal: 0, .. })
     ));
     assert_eq!(child.pid(), pid);
     assert_eq!(
         child
-            .invoke(healthy, [0; 13], |_, _, _| Err(NativeError::Callback))
+            .invoke::<()>(healthy, [0; 13], |_, _, _| Err(NativeError::Callback))
             .unwrap(),
         77
     );
@@ -337,7 +416,11 @@ fn child_local_callbacks_reenter_the_same_gate_and_restore_outer_cdecl_state() {
         let mut comparisons = 0;
         assert_eq!(
             child
-                .invoke(entry, arguments, |call, base, memory| {
+                .invoke::<()>(entry, arguments, |call, base, memory| {
+                    let NativeRequest::Import(call) = call else {
+                        panic!("scalar callback cannot reenter")
+                    };
+
                     comparisons += 1;
                     assert_eq!(call.number, 200);
                     assert!(call.function);
@@ -345,7 +428,9 @@ fn child_local_callbacks_reenter_the_same_gate_and_restore_outer_cdecl_state() {
                         let at = (address - base) as usize;
                         i32::from_le_bytes(memory[at..at + 4].try_into().unwrap())
                     };
-                    Ok((value(call.arguments[0]) - value(call.arguments[1])) as i64 as u64)
+                    Ok(NativeAction::<()>::Return(
+                        (value(call.arguments[0]) - value(call.arguments[1])) as i64 as u64,
+                    ))
                 })
                 .unwrap(),
             0
@@ -374,7 +459,7 @@ fn i386_notifications_deny_clone_and_timeout_reaps_only_the_owned_child() {
         .unwrap();
     assert_eq!(
         child
-            .invoke(entry, [0; 13], |_, _, _| Err(NativeError::Callback))
+            .invoke::<()>(entry, [0; 13], |_, _, _| Err(NativeError::Callback))
             .unwrap(),
         u64::MAX
     );
@@ -383,7 +468,7 @@ fn i386_notifications_deny_clone_and_timeout_reaps_only_the_owned_child() {
     // handler. Its parked bytes remain inspectable only after the reap.
     child.memory_mut().unwrap()[..2].copy_from_slice(&[0x0f, 0x0b]);
     assert!(
-        matches!(child.invoke(entry,[0;13],|_,_,_|Err(NativeError::Callback)),Err(NativeError::Exited(status)) if status.signal()==Some(4))
+        matches!(child.invoke::<()>(entry,[0;13],|_,_,_|Err(NativeError::Callback)),Err(NativeError::Exited(status)) if status.signal()==Some(4))
     );
     assert_eq!(child.pid(), 0);
     assert!(child.memory_mut().is_ok());
@@ -407,7 +492,7 @@ fn i386_notifications_deny_clone_and_timeout_reaps_only_the_owned_child() {
         .bind(BASE, NativeAbi::SystemV, &[], NativeScalar::Word)
         .unwrap();
     assert!(matches!(
-        child.invoke(entry, [0; 13], |_, _, _| Err(NativeError::Callback)),
+        child.invoke::<()>(entry, [0; 13], |_, _, _| Err(NativeError::Callback)),
         Err(NativeError::Timeout)
     ));
     assert_eq!(child.pid(), 0);
@@ -444,7 +529,7 @@ fn all_thirteen_double_arguments_and_x87_results_keep_the_full_stack_extent() {
         words[12] = value.to_bits();
         assert_eq!(
             child
-                .invoke(entry, words, |_, _, _| Err(NativeError::Callback))
+                .invoke::<()>(entry, words, |_, _, _| Err(NativeError::Callback))
                 .unwrap(),
             value.to_bits()
         );
@@ -509,7 +594,11 @@ fn pointer_list_filters_use_four_byte_banks_and_native_callbacks() {
     child.memory_mut().unwrap()[4096..4112].fill(0xcc);
     assert_eq!(
         child
-            .invoke(entry, arguments, |call, base, memory| {
+            .invoke::<()>(entry, arguments, |call, base, memory| {
+                let NativeRequest::Import(call) = call else {
+                    panic!("scalar callback cannot reenter")
+                };
+
                 if call.number == 23 {
                     assert_eq!(call.arguments[2], filter.buffer);
                     assert_eq!(call.arguments[3], 3);
@@ -519,12 +608,14 @@ fn pointer_list_filters_use_four_byte_banks_and_native_callbacks() {
                         memory[at + index * 4..at + index * 4 + 4]
                             .copy_from_slice(&value.to_le_bytes());
                     }
-                    Ok(3)
+                    Ok(NativeAction::<()>::Return(3))
                 } else {
                     assert_eq!(call.number, 777);
                     assert_eq!(call.arguments[1], 0x1234_5678);
                     visited.push(call.arguments[0]);
-                    Ok(u64::from(call.arguments[0] == 202))
+                    Ok(NativeAction::<()>::Return(u64::from(
+                        call.arguments[0] == 202,
+                    )))
                 }
             })
             .unwrap(),
@@ -590,7 +681,11 @@ fn cdecl_formatted_imports_read_promoted_doubles_and_long_long_once() {
     let mut calls = 0;
     assert_eq!(
         child
-            .invoke(entry, [0; 13], |call, base, memory| {
+            .invoke::<()>(entry, [0; 13], |call, base, memory| {
+                let NativeRequest::Import(call) = call else {
+                    panic!("scalar callback cannot reenter")
+                };
+
                 calls += 1;
                 assert_eq!(call.number, 24);
                 assert_eq!(call.arguments[0], 2);
@@ -601,7 +696,7 @@ fn cdecl_formatted_imports_read_promoted_doubles_and_long_long_once() {
                     &memory[at..at + end],
                     b"v=1311768467463790320 f=2.75 p=0x12345678"
                 );
-                Ok(0)
+                Ok(NativeAction::<()>::Return(0))
             })
             .unwrap(),
         0
@@ -695,7 +790,7 @@ fn atoll_requires_a_64_bit_integer_gate_while_atoi_remains_admitted() {
             arguments[0] = BASE + 4096;
             assert_eq!(
                 child
-                    .invoke(entry, arguments, |_, _, _| Err(NativeError::Callback))
+                    .invoke::<()>(entry, arguments, |_, _, _| Err(NativeError::Callback))
                     .unwrap(),
                 (-123i32) as i64 as u64
             );

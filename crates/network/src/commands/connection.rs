@@ -228,6 +228,21 @@ impl Commands {
             |writer| channel.write_command_records(writer),
         )
     }
+    /// Send the existing native ACK/command envelope without producing user input.
+    pub fn encode_control(
+        &self,
+        channel: &Channel,
+        out: &mut [u8],
+    ) -> Result<usize, packet::Error> {
+        let key = if self.protocol == Protocol::Quake3_68 {
+            channel.command_key(None)?
+        } else {
+            Key::default()
+        };
+        packet::write_control(out, self.protocol, key, |writer| {
+            channel.write_command_records(writer)
+        })
+    }
     /// Copies the native payload into the connection's fixed decode scratch.
     pub fn stage(&mut self, bytes: &[u8]) -> Result<usize, packet::Error> {
         self.scratch

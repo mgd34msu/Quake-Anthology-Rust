@@ -46,8 +46,33 @@ pub struct AudioRetirement {
     pub publication: Option<(OutputConsumerId, u64)>,
 }
 
+/// Q3 SV_CheckTimeouts compares integer millisecond clocks with a strict
+/// greater-than against sv_zombietime's native integer view.
+pub fn close_timeout_expired(started: EventTime, now: EventTime, seconds: i32) -> bool {
+    if now < started {
+        return false;
+    }
+    seconds < 0 || now.milliseconds() - started.milliseconds() > seconds as u64 * 1000
+}
+
+/// Closing retains the canonical lifetime and native transport until delivery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientClosing {
+    pub started: EventTime,
+    pub final_output: Option<(OutputConsumerId, u64)>,
+    pub acknowledged: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClientPhase {
+    #[default]
+    Active,
+    Closing(ClientClosing),
+}
+
 pub struct Client {
     pub connection: Option<Connection>,
+    pub phase: ClientPhase,
     pub entity: EntityId,
     pub module: ModuleId,
     /// Selected client policy; the built-in gate does not imply a guest load.
@@ -73,8 +98,13 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn is_active(&self) -> bool {
+        self.connection.is_some() && self.phase == ClientPhase::Active
+    }
+
     // audio_retirement is completed by Presentation, never by a state reset.
     fn reset(&mut self, texts: &mut qa_core::events::TextStore, module: ModuleId) {
+        self.phase = ClientPhase::Active;
         self.player.reset();
         self.hud.reset(texts);
         self.hud_publication.reset();
@@ -176,6 +206,7 @@ impl Server {
         let clients = (0..max_clients)
             .map(|slot| Client {
                 connection: None,
+                phase: ClientPhase::Active,
                 entity: EntityId {
                     slot: slot as u32 + 1,
                     generation: 1,
@@ -346,7 +377,7 @@ impl Server {
     /// routes movement through ClientThink instead of the engine mover.
     pub fn module_moves(&self, id: ClientId) -> Option<NativeEntity> {
         let client = self.clients.get(id.0 as usize)?;
-        if client.connection.is_none() || !client.module_movement {
+        if !client.is_active() || !client.module_movement {
             return None;
         }
         let slot = self.entities.resolve(client.entity)?;
@@ -387,6 +418,73 @@ impl Server {
         true
     }
 
+    /// Claim the current admitted lifetime before a synchronous Disconnect
+    /// callback. Its public state and output ownership remain available to it.
+    pub fn begin_close(&mut self, id: ClientId, lifetime: EntityId, now: EventTime) -> bool {
+        let Some(client) = self.clients.get_mut(id.0 as usize) else {
+            return false;
+        };
+        if !client.is_active()
+            || client.entity != lifetime
+            || self.entities.resolve(lifetime).is_none()
+        {
+            return false;
+        }
+        client.phase = ClientPhase::Closing(ClientClosing {
+            started: now,
+            final_output: None,
+            acknowledged: false,
+        });
+        true
+    }
+
+    /// The ring owns the command and text. Retain only its delivery identity.
+    pub fn finish_close(&mut self, id: ClientId, lifetime: EntityId, sequence: u64) -> bool {
+        let Some(client) = self.clients.get_mut(id.0 as usize) else {
+            return false;
+        };
+        if client.connection.is_none()
+            || client.entity != lifetime
+            || self.entities.resolve(lifetime).is_none()
+        {
+            return false;
+        }
+        let (ClientPhase::Closing(closing), Some(output)) = (&mut client.phase, client.output)
+        else {
+            return false;
+        };
+        if closing.final_output.is_some() {
+            return false;
+        }
+        closing.final_output = Some((output, sequence));
+        self.area.unlink(lifetime);
+        true
+    }
+
+    /// Called only for a record retired by an actual native receipt.
+    pub fn acknowledge_close(
+        &mut self,
+        id: ClientId,
+        output: OutputConsumerId,
+        sequence: u64,
+    ) -> bool {
+        let Some(client) = self.clients.get_mut(id.0 as usize) else {
+            return false;
+        };
+        let ClientPhase::Closing(closing) = &mut client.phase else {
+            return false;
+        };
+        if client.connection.is_none()
+            || client.output != Some(output)
+            || closing.final_output != Some((output, sequence))
+            || closing.acknowledged
+        {
+            return false;
+        }
+        closing.acknowledged = true;
+        true
+    }
+
     pub fn disconnect(&mut self, id: ClientId) -> bool {
         let Some(client) = self
             .clients
@@ -416,7 +514,9 @@ impl Server {
     ) {
         let duration = EventTime(end.since(start));
         for slot in 0..self.clients.len() {
-            if self.clients[slot].connection != Some(Connection::Bot) {
+            if self.clients[slot].connection != Some(Connection::Bot)
+                || !self.clients[slot].is_active()
+            {
                 continue;
             }
             let module_moves = self.module_moves(ClientId(slot as u32)).is_some();
@@ -438,7 +538,7 @@ impl Server {
         }
     }
 
-    /// Ingress submits a command once. There is no recorded input history.
+    /// Ingress admits each command once; connection history is retained separately.
     pub fn submit_command(
         &mut self,
         id: ClientId,
@@ -449,7 +549,7 @@ impl Server {
         let Some(client) = self
             .clients
             .get_mut(id.0 as usize)
-            .filter(|client| client.connection.is_some())
+            .filter(|client| client.is_active())
         else {
             return;
         };
@@ -488,7 +588,7 @@ impl Server {
         id: ClientId,
     ) -> Option<(UserCmd, Option<SnapshotObservation>)> {
         let client = self.clients.get_mut(id.0 as usize)?;
-        if client.connection.is_none() || !client.command_pending {
+        if !client.is_active() || !client.command_pending {
             return None;
         }
         client.command_pending = false;
@@ -603,8 +703,7 @@ impl Server {
         let result = self.area.transport_attachments(&mut self.entities);
         if result.moved != 0 {
             for client in self.clients.iter_mut() {
-                if client.connection.is_some() && self.entities.attachment(client.entity).is_some()
-                {
+                if client.is_active() && self.entities.attachment(client.entity).is_some() {
                     client.player.body = self.entities.columns.body(client.entity.slot as usize);
                 }
             }

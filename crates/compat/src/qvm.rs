@@ -35,6 +35,8 @@ pub struct Vm {
     program_stack: usize,
     stack_bottom: usize,
     mask: u32,
+    remaining: u64,
+    hooks_enabled: bool,
 }
 impl Vm {
     pub fn load(image: Image) -> Result<Self, Trap> {
@@ -46,6 +48,8 @@ impl Vm {
             image,
             hooks: Hooks::load(program_stack),
             projection: None,
+            remaining: 0,
+            hooks_enabled: false,
             program_stack,
             stack_bottom: program_stack.saturating_sub(65536),
         })
@@ -110,13 +114,28 @@ impl Vm {
         budget: u64,
         hooks: bool,
     ) -> Result<i32, Trap> {
-        calls.begin_call(self)?;
+        let saved = (self.remaining, self.hooks_enabled);
+        self.remaining = budget;
+        self.hooks_enabled = hooks;
+        let result = calls
+            .begin_call(self)
+            .and_then(|()| self.call_nested(calls, arguments));
+        (self.remaining, self.hooks_enabled) = saved;
+        result
+    }
+    /// Enter the same interpreter below its suspended syscall frame. The
+    /// outer entry already seeded the live guest projection.
+    pub(crate) fn call_nested(
+        &mut self,
+        calls: &mut impl SystemCalls,
+        arguments: [i32; 10],
+    ) -> Result<i32, Trap> {
         // Selection happens once. Const specialization removes every hook from
         // the ordinary loop, without maintaining a second opcode implementation.
-        if hooks {
-            self.enter::<true>(calls, arguments, budget)
+        if self.hooks_enabled {
+            self.enter::<true>(calls, arguments, self.remaining)
         } else {
-            self.enter::<false>(calls, arguments, budget)
+            self.enter::<false>(calls, arguments, self.remaining)
         }
     }
     fn enter<const HOOKS: bool>(
@@ -153,6 +172,7 @@ impl Vm {
                 .write_word((program_stack + 8 + index * 4) as u64, arg)?;
         }
         for _ in 0..budget {
+            self.remaining = self.remaining.checked_sub(1).ok_or(Trap::Budget)?;
             let instruction = *self.image.instructions.get(pc).ok_or(Trap::Target)?;
             pc += 1;
             let op = instruction.opcode;

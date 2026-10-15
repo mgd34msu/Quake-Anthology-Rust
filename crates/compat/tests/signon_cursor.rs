@@ -73,6 +73,8 @@ fn with_services(run: impl FnOnce(&mut EngineServices<'_>, CallContext, u32)) {
     let mut scratch = geometry.scratch();
     let mut services = EngineServices {
         server: &mut server,
+        callbacks: None,
+        client_disconnect: None,
         input: &mut input,
         editor: None,
         cvars: &mut cvars,

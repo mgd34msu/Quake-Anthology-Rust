@@ -90,7 +90,7 @@ impl FrameHost {
             let Some(output) = client.output else {
                 continue;
             };
-            if client.connection.is_none() || runtime.server.events.needs_resync(output) {
+            if !client.is_active() || runtime.server.events.needs_resync(output) {
                 continue;
             }
             let Some(row) = modules.row(client.module).filter(|row| {
@@ -349,7 +349,7 @@ impl FrameHost {
             let Some(output) = client.output else {
                 continue;
             };
-            if client.connection.is_none() || runtime.server.events.needs_resync(output) {
+            if !client.is_active() || runtime.server.events.needs_resync(output) {
                 continue;
             }
             let Some(protocol) = runtime
@@ -374,7 +374,7 @@ impl FrameHost {
                     .server
                     .clients
                     .iter()
-                    .filter(|client| client.connection.is_some())
+                    .filter(|client| client.is_active())
                     .map(|client| client.entity),
             );
             if publish_limits && let Some(destination) = target.max_clients() {

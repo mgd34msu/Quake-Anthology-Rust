@@ -14,6 +14,37 @@ pub struct FunctionTable<C> {
     functions: Box<[ResolvedFunction<C>]>,
 }
 
+/// A checked callback in the immutable loaded table. Guest adapters consume
+/// its numeric entry after ending their current memory borrow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedCall {
+    entity: EntityId,
+    module: ModuleId,
+    path: u32,
+    entry: u32,
+}
+impl ResolvedCall {
+    pub fn entity(self) -> EntityId {
+        self.entity
+    }
+    pub fn module(self) -> ModuleId {
+        self.module
+    }
+    pub fn entry(self) -> u32 {
+        self.entry
+    }
+}
+
+pub trait CallbackResolver {
+    fn resolve_callback(
+        &self,
+        entities: &EntityTable,
+        module: ModuleId,
+        callback: CallbackId,
+        entity: EntityId,
+    ) -> Result<ResolvedCall, CallError>;
+}
+
 struct ResolvedFunction<C> {
     function: FunctionBinding<C>,
     module: ModuleId,
@@ -228,27 +259,56 @@ impl<C: ThinkWorld> FunctionTable<C> {
         true
     }
 
+    pub fn resolve(
+        &self,
+        entities: &EntityTable,
+        callback: CallbackId,
+        entity: EntityId,
+    ) -> Result<ResolvedCall, CallError> {
+        let slot = entities.resolve(entity).ok_or(CallError::StaleEntity)?;
+        let module = entities.columns.owner[slot];
+        let binding = self.binding(module).ok_or(CallError::MissingModule)?;
+        if callback.0 >= binding.count {
+            return Err(CallError::MissingFunction);
+        }
+        let path = binding.first + callback.0;
+        Ok(ResolvedCall {
+            entity,
+            module,
+            path,
+            entry: self.functions[path as usize].function.entry,
+        })
+    }
+
     pub fn invoke(
         &self,
         world: &mut C,
         callback: CallbackId,
         call: CallbackCall,
     ) -> Result<(), CallError> {
-        let entities = world.entities();
-        let slot = entities
-            .resolve(call.entity())
-            .ok_or(CallError::StaleEntity)?;
-        let module = entities.columns.owner[slot];
-        let binding = self.binding(module).ok_or(CallError::MissingModule)?;
-        if callback.0 >= binding.count {
-            return Err(CallError::MissingFunction);
-        }
-        let function = &self.functions[(binding.first + callback.0) as usize].function;
-        if (function.call)(world, module, function.entry, call) {
+        let resolved = self.resolve(world.entities(), callback, call.entity())?;
+        let function = &self.functions[resolved.path as usize].function;
+        if (function.call)(world, resolved.module, resolved.entry, call) {
             Ok(())
         } else {
             Err(CallError::Rejected)
         }
+    }
+}
+
+impl<C: ThinkWorld> CallbackResolver for FunctionTable<C> {
+    fn resolve_callback(
+        &self,
+        entities: &EntityTable,
+        module: ModuleId,
+        callback: CallbackId,
+        entity: EntityId,
+    ) -> Result<ResolvedCall, CallError> {
+        let resolved = self.resolve(entities, callback, entity)?;
+        if resolved.module != module {
+            return Err(CallError::MissingModule);
+        }
+        Ok(resolved)
     }
 }
 

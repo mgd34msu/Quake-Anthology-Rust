@@ -329,10 +329,48 @@ pub fn write_with_commands(
     key: Key<'_>,
     reliable: impl FnOnce(&mut Writer<'_>) -> Result<(), Error>,
 ) -> Result<usize, Error> {
-    let mut w = Writer::new(out, movement.protocol().encoding());
+    write_client_packet(
+        out,
+        movement.protocol(),
+        Some(movement),
+        sequence,
+        key,
+        reliable,
+    )
+}
+
+/// Native client ACK/reliable-command envelope without another movement command.
+pub fn write_control(
+    out: &mut [u8],
+    protocol: Protocol,
+    key: Key<'_>,
+    reliable: impl FnOnce(&mut Writer<'_>) -> Result<(), Error>,
+) -> Result<usize, Error> {
+    write_client_packet(out, protocol, None, 0, key, reliable)
+}
+
+fn write_client_packet(
+    out: &mut [u8],
+    protocol: Protocol,
+    movement: Option<&Move>,
+    sequence: u32,
+    key: Key<'_>,
+    reliable: impl FnOnce(&mut Writer<'_>) -> Result<(), Error>,
+) -> Result<usize, Error> {
+    let mut w = Writer::new(out, protocol.encoding());
+    if protocol == Protocol::Quake3_68 {
+        for word in [
+            key.acknowledgements.server_id,
+            key.acknowledgements.message,
+            key.acknowledgements.reliable,
+        ] {
+            w.write_bits(word as u32, 32)?;
+        }
+        reliable(&mut w)?;
+    }
     let mut qw_move_end = 0;
     match movement {
-        Move::NetQuake { timestamp, command } => {
+        Some(Move::NetQuake { timestamp, command }) => {
             w.write_bits(3, 8)?;
             w.write_float(*timestamp)?;
             for angle in command.view_angles.0 {
@@ -348,11 +386,11 @@ pub fn write_with_commands(
             w.write_bits(command.buttons.into(), 8)?;
             w.write_bits(command.impulse.into(), 8)?;
         }
-        Move::QuakeWorld {
+        Some(Move::QuakeWorld {
             loss,
             commands,
             delta_request,
-        } => {
+        }) => {
             w.write_bits(3, 8)?;
             w.write_bits(0, 8)?;
             w.write_bits((*loss).into(), 8)?;
@@ -364,39 +402,31 @@ pub fn write_with_commands(
                 w.write_bits((*request).into(), 8)?;
             }
         }
-        Move::Quake2 {
+        Some(Move::Quake2 {
             last_frame,
             commands,
-        } => {
+        }) => {
             w.write_bits(2, 8)?;
             w.write_bits(0, 8)?;
             w.write_bits(*last_frame as u32, 32)?;
             write_series(&mut w, commands, ZERO_Q2, delta::write_q2)?;
         }
-        Move::Quake2Repro {
+        Some(Move::Quake2Repro {
             last_frame,
             commands,
-        } => {
+        }) => {
             w.write_bits(2, 8)?;
             w.write_bits(*last_frame as u32, 32)?;
             write_series(&mut w, commands, ZERO_Q2_RR, delta::write_q2_repro)?;
         }
-        Move::Quake3 {
+        Some(Move::Quake3 {
             commands,
             count,
             delta: delta_snapshot,
-        } => {
+        }) => {
             if !(1..=Q3_COMMANDS as u8).contains(count) {
                 return Err(Error::Count);
             }
-            for word in [
-                key.acknowledgements.server_id,
-                key.acknowledgements.message,
-                key.acknowledgements.reliable,
-            ] {
-                w.write_bits(word as u32, 32)?;
-            }
-            reliable(&mut w)?;
             w.write_bits(if *delta_snapshot { 2 } else { 3 }, 8)?;
             w.write_bits((*count).into(), 8)?;
             let command_key = key.checksum_feed
@@ -408,15 +438,20 @@ pub fn write_with_commands(
                 ZERO_Q3,
                 |writer, old, command| delta::write_q3(writer, old, command, command_key),
             )?;
-            w.write_bits(5, 8)?;
         }
+        None => {}
+    }
+    if protocol == Protocol::Quake3_68 {
+        w.write_bits(5, 8)?;
     }
     let n = w.size();
-    match movement.protocol() {
-        Protocol::QuakeWorld28 => {
+    match protocol {
+        Protocol::QuakeWorld28 if movement.is_some() => {
             out[1] = checksum::qw_sequence_crc(&out[2..qw_move_end], sequence);
         }
-        Protocol::Quake2_34 => out[1] = checksum::q2_sequence_crc(&out[2..n], sequence),
+        Protocol::Quake2_34 if movement.is_some() => {
+            out[1] = checksum::q2_sequence_crc(&out[2..n], sequence)
+        }
         Protocol::Quake3_68 => xor(
             &mut out[..n],
             12,

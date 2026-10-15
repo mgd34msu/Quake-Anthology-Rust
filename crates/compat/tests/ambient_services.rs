@@ -63,6 +63,8 @@ fn with_services(run: impl FnOnce(&mut EngineServices<'_>, [CallContext; 2])) {
     run(
         &mut EngineServices {
             server: &mut server,
+            callbacks: None,
+            client_disconnect: None,
             input: &mut input,
             editor: None,
             cvars: &mut cvars,

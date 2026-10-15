@@ -125,6 +125,22 @@ pub struct NativeCall {
     pub function: bool,
 }
 
+/// A synchronous import may suspend until another export has returned. The
+/// continuation owns controller values, never a borrow of the child mapping.
+pub enum NativeAction<C> {
+    Return(u64),
+    Call {
+        entry: NativeEntry,
+        arguments: [u64; 13],
+        continuation: C,
+    },
+}
+
+pub enum NativeRequest<C> {
+    Import(NativeCall),
+    Returned { continuation: C, value: u64 },
+}
+
 #[derive(Debug)]
 pub enum NativeError {
     Unsupported,

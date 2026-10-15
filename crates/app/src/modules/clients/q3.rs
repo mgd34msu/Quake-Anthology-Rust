@@ -49,7 +49,13 @@ fn callback(
     let export = match event {
         ClientCallback::Begin => 3,
         ClientCallback::UserinfoChanged => 4,
-        ClientCallback::Disconnect => 5,
+        ClientCallback::Disconnect => {
+            host.module_row(module)
+                .and_then(|row| row.client_lifecycle)
+                .and_then(|table| table.disconnect_callback)
+                .ok_or(ClientCommandError::Unsupported)?
+                .0
+        }
         ClientCallback::Command => 6,
         ClientCallback::BeforeMove => 7,
         _ => return Err(ClientCommandError::Unsupported),
@@ -151,6 +157,12 @@ pub(super) fn connect(
     }
     let entity = host.runtime.server.clients[id.0 as usize].entity;
     let result = (|| {
+        host.modules
+            .as_mut()
+            .ok_or("missing client module")?
+            .storage
+            .reset_native_close(native)
+            .map_err(|e| format!("native client close reset: {e:?}"))?;
         let row = host
             .modules
             .as_mut()

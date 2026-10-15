@@ -98,6 +98,8 @@ fn static_code_errors_are_load_errors_and_runtime_faults_abort_only_that_call() 
 
 struct Reentry {
     depth: usize,
+    budget: u64,
+    hooks: bool,
 }
 impl SystemCalls for Reentry {
     fn call(&mut self, vm: &mut Vm, number: u32, args: &[i32]) -> Result<i32, Trap> {
@@ -107,7 +109,8 @@ impl SystemCalls for Reentry {
         self.depth += 1;
         let mut nested = [0; 10];
         nested[0] = 9;
-        let result = vm.call(self, nested, 100, false);
+        let (budget, hooks) = (self.budget, self.hooks);
+        let result = vm.call(self, nested, budget, hooks);
         self.depth -= 1;
         result
     }
@@ -130,10 +133,22 @@ fn syscall_reentry_uses_private_operand_stack_and_restores_parent_native_stack()
         (Leave, 64),
     ]);
     let mut vm = Vm::load(Image::parse(&bytes).unwrap()).unwrap();
-    let mut host = Reentry { depth: 0 };
+    let mut host = Reentry {
+        depth: 0,
+        budget: 100,
+        hooks: false,
+    };
     for _ in 0..3 {
         assert_eq!(vm.call(&mut host, [0; 10], 100, false), Ok(93));
     }
+    // A public nested call owns its own budget/hooks. Its exact seven-op
+    // budget must not exhaust the suspended caller or change its hook mode.
+    host.budget = 7;
+    host.hooks = true;
+    assert_eq!(vm.call(&mut host, [0; 10], 100, false), Ok(93));
+    assert_eq!(vm.hooks.instructions, 7);
+    assert_eq!(vm.call(&mut host, [0; 10], 100, true), Ok(93));
+    assert_eq!(vm.hooks.instructions, 24);
 }
 
 #[test]

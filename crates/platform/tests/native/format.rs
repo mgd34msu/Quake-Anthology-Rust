@@ -4,6 +4,7 @@ use crate::native::{
     NativeAbi, NativeError, NativeFormat, NativeImport, NativeProcess, NativeScalar,
     runtime::{FIRST, FUNCTIONS},
 };
+use crate::native::{NativeAction, NativeRequest};
 use std::time::Duration;
 
 #[derive(Clone, Copy)]
@@ -85,12 +86,12 @@ fn run(
     abi: NativeAbi,
     ordinal: usize,
     values: &[Value],
-    callback: impl FnMut(crate::native::NativeCall, u64, &mut [u8]) -> Result<u64, NativeError>,
+    callback: impl FnMut(NativeRequest<()>, u64, &mut [u8]) -> Result<NativeAction<()>, NativeError>,
 ) -> Result<u64, NativeError> {
     let code = call_code(abi, process.import_pointer(ordinal).unwrap(), values);
     process.memory_mut().unwrap()[..code.len()].copy_from_slice(&code);
     let entry = process.bind(BASE, abi, &[], NativeScalar::I32).unwrap();
-    process.invoke(entry, [0; 13], callback)
+    process.invoke::<()>(entry, [0; 13], callback)
 }
 fn store(process: &mut NativeProcess, offset: usize, bytes: &[u8]) -> u64 {
     process.memory_mut().unwrap()[offset..offset + bytes.len()].copy_from_slice(bytes);
@@ -157,6 +158,10 @@ fn classic_print_adapters_capture_raw_text_promoted_doubles_and_named_arguments(
             };
             let mut callbacks = 0;
             run(&mut process, abi, 0, &values, |call, base, memory| {
+                let NativeRequest::Import(call) = call else {
+                    panic!("scalar callback cannot reenter")
+                };
+
                 callbacks += 1;
                 assert_eq!(call.number, number);
                 assert_eq!(call.arguments[format_index], base + 6144);
@@ -167,7 +172,7 @@ fn classic_print_adapters_capture_raw_text_promoted_doubles_and_named_arguments(
                 if number == 2 {
                     assert_eq!(call.arguments[..2], [BASE + 7000, 3]);
                 }
-                Ok(0)
+                Ok(NativeAction::<()>::Return(0))
             })
             .unwrap();
             assert_eq!(callbacks, 1, "{abi:?} ordinal {number}");
@@ -198,7 +203,10 @@ fn format_arguments_continue_beyond_the_thirteen_word_packet_and_eight_fp_regist
         );
         let mut values = vec![Value::Word(format)];
         values.extend((1..=15).map(Value::Word));
-        run(&mut process, abi, 0, &values, |_, _, _| Ok(0)).unwrap();
+        run(&mut process, abi, 0, &values, |_, _, _| {
+            Ok(NativeAction::<()>::Return(0))
+        })
+        .unwrap();
         assert_eq!(
             output(&process, 6144),
             b"1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
@@ -211,7 +219,10 @@ fn format_arguments_continue_beyond_the_thirteen_word_packet_and_eight_fp_regist
         let mut values = vec![Value::Word(format)];
         values.extend((1..=9).map(|v| Value::Double(v as f64 + 0.5)));
         values.push(Value::Word(19));
-        run(&mut process, abi, 0, &values, |_, _, _| Ok(0)).unwrap();
+        run(&mut process, abi, 0, &values, |_, _, _| {
+            Ok(NativeAction::<()>::Return(0))
+        })
+        .unwrap();
         assert_eq!(
             output(&process, 6144),
             b"1.5 2.5 3.5 4.5 5.5 6.5 7.5 8.5 9.5 19"
@@ -251,7 +262,7 @@ fn format_output_is_bounded_and_bad_guest_reads_trap_before_publication() {
                 &[Value::Word(pointer), argument],
                 |_, _, _| {
                     calls += 1;
-                    Ok(0)
+                    Ok(NativeAction::<()>::Return(0))
                 },
             );
             assert!(

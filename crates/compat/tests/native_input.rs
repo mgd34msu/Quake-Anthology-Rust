@@ -84,6 +84,8 @@ impl Fixture {
         let (cvars, commands, editor) = self.console.module_parts();
         EngineServices {
             server: &mut self.server,
+            callbacks: None,
+            client_disconnect: None,
             input: &mut self.host.input,
             editor: Some(editor),
             cvars,
@@ -158,7 +160,10 @@ impl Fixture {
             &mut unknown,
         );
         assert_eq!(unknown.calls, 0);
-        result
+        result.map(|step| match step {
+            qa_compat::abi::ImportStep::Return(value) => value,
+            qa_compat::abi::ImportStep::Call { .. } => panic!("unexpected nested callback"),
+        })
     }
     fn key(&mut self, device: DeviceId, control: u16, down: bool) {
         let (_, commands, _) = self.console.module_parts();

@@ -1,3 +1,5 @@
+#[path = "support/scalar_import.rs"]
+mod scalar_import;
 use qa_app::Runtime;
 use qa_compat::{
     abi::{Addresses, CallTable, Invocation, Q3_CLIENT, Q3_SERVER, Q3_UI, UnknownCalls},
@@ -335,7 +337,9 @@ fn invoke(
         addresses: call.addresses,
         arguments,
     };
-    table.invoke(ordinal, &mut invocation, unknown)
+    table
+        .invoke(ordinal, &mut invocation, unknown)
+        .map(scalar_import::word)
 }
 #[path = "support/service_program.rs"]
 #[allow(dead_code)]

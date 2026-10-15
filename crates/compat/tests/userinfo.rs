@@ -83,6 +83,8 @@ impl Fixture {
     fn engine(&mut self) -> EngineServices<'_> {
         EngineServices {
             server: &mut self.server,
+            callbacks: None,
+            client_disconnect: None,
             input: &mut self.input,
             editor: None,
             cvars: &mut self.cvars,
@@ -152,7 +154,10 @@ impl Fixture {
             &mut unknown,
         );
         assert_eq!(unknown.calls, 0, "imports must use real CallTable entries");
-        result
+        result.map(|step| match step {
+            qa_compat::abi::ImportStep::Return(value) => value,
+            qa_compat::abi::ImportStep::Call { .. } => panic!("unexpected nested callback"),
+        })
     }
 }
 fn modes() -> [(Addresses, u64); 4] {

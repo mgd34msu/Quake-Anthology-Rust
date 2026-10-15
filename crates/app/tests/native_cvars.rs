@@ -1,3 +1,5 @@
+#[path = "support/scalar_import.rs"]
+mod scalar_import;
 use qa_app::Runtime;
 use qa_compat::{
     abi::{Addresses, Invocation, Q2_CLASSIC, Q2_RERELEASE, UnknownCalls},
@@ -84,6 +86,7 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
                     },
                     &mut unknown,
                 )
+                .map(scalar_import::word)
                 .unwrap()
         };
         let cvar = invoke(

@@ -21,6 +21,7 @@ pub struct ClientLifecycleInfo {
 #[derive(Clone, Copy)]
 pub(super) struct ClientLifecycle {
     pub(super) info: ClientLifecycleInfo,
+    pub(super) disconnect_callback: Option<CallbackId>,
     frame_commands: bool,
     q2: Option<Q2Clients>,
     connect: fn(&mut FrameHost, ModuleId, ClientId, &[u8]) -> Result<u32, String>,
@@ -42,6 +43,7 @@ impl ClientLifecycle {
                 clients,
                 separate_values: false,
             },
+            disconnect_callback: Some(CallbackId(5)),
             frame_commands: false,
             q2: None,
             connect: q3::connect,
@@ -63,6 +65,7 @@ impl ClientLifecycle {
                 clients,
                 separate_values: true,
             },
+            disconnect_callback: None,
             frame_commands: frame_client,
             q2: None,
             connect: quakec::connect,
@@ -91,6 +94,7 @@ impl ClientLifecycle {
                 clients,
                 separate_values: false,
             },
+            disconnect_callback: Some(api.disconnect),
             frame_commands: false,
             q2: Some(api),
             connect: q2_connect,
@@ -392,7 +396,10 @@ impl FrameHost {
             .server
             .clients
             .get(id.0 as usize)
-            .filter(|client| client.connection.is_some())
+            .filter(|client| {
+                client.connection.is_some()
+                    && (client.is_active() || event == ClientCallback::Disconnect)
+            })
             .ok_or(ClientCommandError::Inactive)?;
         let entity = client.entity;
         let mut arguments = [0; 9];
@@ -949,13 +956,28 @@ impl FrameHost {
                 .and_then(|row| row.client_lifecycle)
         {
             let _ = (table.disconnect)(self, native.module, id);
-            if let Some(row) = self.module_row_mut(native.module) {
-                if row.client_batch == Some(id) {
-                    row.client_batch = None;
-                }
+        }
+        self.retire_client(id);
+    }
+    pub(crate) fn finish_client_termination(
+        &mut self,
+        id: ClientId,
+        termination: qa_compat::services::ClientTermination,
+    ) {
+        match termination {
+            qa_compat::services::ClientTermination::ServerDisconnect => {
+                self.received_client_disconnect(id)
+            }
+            qa_compat::services::ClientTermination::Rejected => self.disconnect_client(id),
+        }
+    }
+    pub(crate) fn retire_client(&mut self, id: ClientId) {
+        self.runtime.disconnect_client(id);
+        if let Some(modules) = self.modules.as_mut() {
+            for row in modules.rows.iter_mut().flatten() {
+                super::Module::retain_active_batch(&mut row.client_batch, &self.runtime.server);
             }
         }
-        self.runtime.disconnect_client(id);
         for local in &mut self.local_clients {
             if *local == Some(id) {
                 *local = None;

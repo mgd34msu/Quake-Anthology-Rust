@@ -1,3 +1,5 @@
+#[path = "support/scalar_import.rs"]
+mod scalar_import;
 use qa_app::Runtime;
 use qa_compat::{
     abi::{Addresses, Invocation, Q2_RERELEASE, UnknownCalls},
@@ -41,45 +43,47 @@ fn localized_native_prints_share_ring_routing_and_checked_argument_memory() {
             let result = {
                 let mut services =
                     runtime.engine_services(&mut console, &mut storage, &mut scratch);
-                Q2_RERELEASE.invoke(
-                    53,
-                    &mut Invocation {
-                        services: &mut services,
-                        memory: &mut memory,
-                        native_cvars: None,
-                        native_resources: None,
-                        native_entities: None,
-                        native_surfaces: None,
-                        native_command: None,
-                        native_configs: None,
-                        native_pmove: None,
-                        native_player: None,
-                        context: CallContext {
-                            native_rules: RuleSetId::Quake2Rerelease,
-                            trace_rules: RuleSetId::Quake2Rerelease,
-                            sound_policy: qa_gameplay::rules::sound_policy(
-                                RuleSetId::Quake2Rerelease,
-                            ),
-                            server_frame: 0,
-                            module: ModuleId(1),
-                            clock: ThinkTime::Milliseconds(0),
-                            console: Context {
-                                source: RuleSetId::Quake2Rerelease,
-                                ..Context::default()
+                Q2_RERELEASE
+                    .invoke(
+                        53,
+                        &mut Invocation {
+                            services: &mut services,
+                            memory: &mut memory,
+                            native_cvars: None,
+                            native_resources: None,
+                            native_entities: None,
+                            native_surfaces: None,
+                            native_command: None,
+                            native_configs: None,
+                            native_pmove: None,
+                            native_player: None,
+                            context: CallContext {
+                                native_rules: RuleSetId::Quake2Rerelease,
+                                trace_rules: RuleSetId::Quake2Rerelease,
+                                sound_policy: qa_gameplay::rules::sound_policy(
+                                    RuleSetId::Quake2Rerelease,
+                                ),
+                                server_frame: 0,
+                                module: ModuleId(1),
+                                clock: ThinkTime::Milliseconds(0),
+                                console: Context {
+                                    source: RuleSetId::Quake2Rerelease,
+                                    ..Context::default()
+                                },
+                                allocation: AllocationPolicy::EDICT,
+                                link_order: LinkOrder::Head,
                             },
-                            allocation: AllocationPolicy::EDICT,
-                            link_order: LinkOrder::Head,
+                            platform_time: EventTime(0),
+                            command: &[],
+                            addresses: Addresses::Native {
+                                pointer_bytes: 8,
+                                abi,
+                            },
+                            arguments: &args,
                         },
-                        platform_time: EventTime(0),
-                        command: &[],
-                        addresses: Addresses::Native {
-                            pointer_bytes: 8,
-                            abi,
-                        },
-                        arguments: &args,
-                    },
-                    &mut unknown,
-                )
+                        &mut unknown,
+                    )
+                    .map(scalar_import::word)
             };
             if !valid {
                 assert_eq!(result, Err(CallError::Memory));

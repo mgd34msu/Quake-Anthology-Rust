@@ -167,7 +167,7 @@ fn engine_parent() {
         let entry = process
             .bind(BASE, NativeAbi::SystemV, &[], NativeScalar::Void)
             .unwrap();
-        let _ = process.invoke(entry, [0; 13], |_, _, _| Err(NativeError::Callback));
+        let _ = process.invoke::<()>(entry, [0; 13], |_, _, _| Err(NativeError::Callback));
         panic!("the fixture must terminate its engine parent");
     }
     loop {

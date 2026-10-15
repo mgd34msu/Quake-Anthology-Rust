@@ -240,6 +240,10 @@ pub struct FrameHost {
     pub time: EventTime,
     pub key_downs: u64,
     pub key_repeats: u64,
+    pub close_acknowledged: u64,
+    pub close_timed_out: u64,
+    pub close_aborted: u64,
+    pub close_without_transport: u64,
     pub developer: CvarHandle,
     pub local_clients: [Option<ClientId>; SeatId::COUNT],
     /// A seat's world/presentation choice is independent of its physics rules.
@@ -249,6 +253,7 @@ pub struct FrameHost {
     )>; SeatId::COUNT],
     pub local_presentations: [qa_render::material::world_load::PresentationDefaults; SeatId::COUNT],
     maxfps: CvarHandle,
+    zombie_time: CvarHandle,
     fov: CvarHandle,
     lighting_scales: [CvarHandle; 2],
     style_interpolation: CvarHandle,
@@ -453,6 +458,10 @@ impl FrameHost {
             .cvars
             .find("com_maxfps")
             .ok_or("missing com_maxfps")?;
+        let zombie_time = console
+            .cvars
+            .find("sv_zombietime")
+            .ok_or("missing sv_zombietime")?;
         let fov = console.cvars.find("cg_fov").ok_or("missing cg_fov")?;
         let lighting_scales =
             ["r_ambientScale", "r_directedScale"].map(|name| console.cvars.find(name));
@@ -532,11 +541,16 @@ impl FrameHost {
             time: EventTime::default(),
             key_downs: 0,
             key_repeats: 0,
+            close_acknowledged: 0,
+            close_timed_out: 0,
+            close_aborted: 0,
+            close_without_transport: 0,
             developer,
             local_clients: [None; SeatId::COUNT],
             local_worlds: [None; SeatId::COUNT],
             local_presentations: [Default::default(); SeatId::COUNT],
             maxfps,
+            zombie_time,
             fov,
             lighting_scales,
             style_interpolation,
@@ -599,6 +613,7 @@ impl FrameHost {
         source.request_mouse_capture(self.mouse_capture_requested());
         self.intake(source);
         self.drain(&mut result);
+        self.retire_closing_clients();
         self.retire_stale_modules();
         self.update_console_policy(true);
         self.console.execute_frame(&mut self.runtime);
@@ -672,6 +687,7 @@ impl FrameHost {
         source.request_mouse_capture(self.mouse_capture_requested());
         self.intake(source);
         self.drain(&mut result);
+        self.retire_closing_clients();
         self.previous = Some(server_time);
         self.retire_stale_modules();
         self.update_console_policy(true);
@@ -693,6 +709,7 @@ impl FrameHost {
                 .map(|sample| sample.time)
         });
         self.advance_client_presentation();
+        self.flush_closing_client_controls();
         result.commands = self.client_frame(command_times);
         let native_owners = std::array::from_fn(|seat| {
             self.local_clients[seat]
@@ -1027,6 +1044,9 @@ impl FrameHost {
         };
         for slot in 0..self.runtime.snapshots.len() {
             let failed = self.runtime.snapshots[slot].as_mut().and_then(|snapshot| {
+                if snapshot.presentation_closed() {
+                    return None;
+                }
                 let connection = self
                     .runtime
                     .network
@@ -1064,7 +1084,10 @@ impl FrameHost {
             let Some(client) = server.clients.get(snapshot.client.0 as usize) else {
                 continue;
             };
-            if client.connection.is_none() || server.entities.resolve(client.entity).is_none() {
+            if client.connection.is_none()
+                || snapshot.presentation_closed()
+                || server.entities.resolve(client.entity).is_none()
+            {
                 continue;
             }
             if snapshot.owns_client_audio() {
@@ -1122,6 +1145,15 @@ impl FrameHost {
         let client = self.local_clients.get(seat).copied().flatten()?;
         let row = self.runtime.server.clients.get(client.0 as usize)?;
         row.connection?;
+        if self
+            .runtime
+            .snapshots
+            .get(client.0 as usize)?
+            .as_ref()?
+            .presentation_closed()
+        {
+            return None;
+        }
         Some((client, row, &self.runtime.prediction.get(seat)?.player))
     }
 
@@ -1178,6 +1210,7 @@ impl FrameHost {
             f64::from(self.console.cvars.value(self.center_time)),
         );
         result.output_drains += 1;
+        self.retire_closing_clients();
         // Feedback has reached the HUD cursor before camera/listener sampling.
         if result.output.view_feedback != 0 {
             source.listeners(
@@ -1229,6 +1262,151 @@ impl FrameHost {
         })
     }
 
+    pub(crate) fn received_client_disconnect(&mut self, id: ClientId) {
+        // The network may be temporarily moved into receive_packet. Retire
+        // presentation here; transport completion is observed after restoration.
+        self.runtime.close_client_presentation(id);
+    }
+
+    fn retire_closing_clients(&mut self) {
+        use qa_session::clients::ClientPhase;
+        let seconds = self.console.cvars.integer(self.zombie_time);
+        for slot in 0..self.runtime.server.clients.len() {
+            let client = &self.runtime.server.clients[slot];
+            let ClientPhase::Closing(closing) = client.phase else {
+                continue;
+            };
+            if client.connection.is_none() {
+                continue;
+            }
+            let id = ClientId(slot as u32);
+            if closing.acknowledged {
+                self.close_acknowledged += 1;
+            } else if client.output.is_none() {
+                self.close_without_transport += 1;
+            } else if self
+                .runtime
+                .network
+                .get(id, qa_core::loopback::Endpoint::Server)
+                .is_none()
+                || client
+                    .output
+                    .is_some_and(|output| self.runtime.server.events.needs_resync(output))
+                || closing.final_output.is_some_and(|(output, sequence)| {
+                    client.output != Some(output)
+                        || !self.runtime.server.events.retained_for(output, sequence)
+                })
+            {
+                self.close_aborted += 1;
+            } else if qa_session::clients::close_timeout_expired(
+                closing.started,
+                self.time,
+                seconds,
+            ) {
+                self.close_timed_out += 1;
+            } else {
+                continue;
+            }
+            self.retire_client(id);
+        }
+    }
+
+    fn flush_closing_client_controls(&mut self) {
+        use qa_core::loopback::Endpoint;
+        use qa_session::clients::ClientPhase;
+        for slot in 0..self.runtime.server.clients.len() {
+            let id = ClientId(slot as u32);
+            let closing = matches!(
+                self.runtime.server.clients[slot].phase,
+                ClientPhase::Closing(_)
+            );
+            let closed = self.runtime.snapshots[slot]
+                .as_ref()
+                .is_some_and(|binding| binding.presentation_closed());
+            if !closing && !closed {
+                continue;
+            }
+            let Some(connection) = self.runtime.network.get_mut(id, Endpoint::Client) else {
+                if closed && !closing {
+                    self.disconnect_client(id);
+                }
+                continue;
+            };
+            let Some(binding) = self.runtime.snapshots[slot].as_mut() else {
+                continue;
+            };
+            let mut complete = false;
+            if connection.channel.pending_packet().is_some()
+                || connection.channel.pending_fragments()
+            {
+                let submitted = crate::transport::send(
+                    &mut connection.channel,
+                    self.time,
+                    &mut (),
+                    |channel, ()| {
+                        channel
+                            .prepare(None, self.time)
+                            .is_ok_and(|packet| packet.is_some())
+                    },
+                    |bytes| {
+                        self.runtime
+                            .loopback
+                            .send(Endpoint::Client, id, bytes)
+                            .is_ok()
+                    },
+                    |channel, (), _| !channel.pending_fragments(),
+                );
+                if !submitted.complete {
+                    continue;
+                }
+                complete = binding.close_control_pending;
+                binding.close_control_pending = false;
+            }
+            if !complete {
+                let Some(commands) = connection.commands.as_ref() else {
+                    continue;
+                };
+                let Ok(maximum) = connection.channel.native_payload_capacity() else {
+                    continue;
+                };
+                let Some(bytes) = self.runtime.output_native_bytes.get_mut(..maximum) else {
+                    continue;
+                };
+                let Ok(length) = commands.encode_control(&connection.channel, bytes) else {
+                    continue;
+                };
+                let mut included = length == 0;
+                let submitted = crate::transport::send(
+                    &mut connection.channel,
+                    self.time,
+                    &mut included,
+                    |channel, _| {
+                        channel
+                            .prepare_move(&bytes[..length], self.time, None, None)
+                            .is_ok_and(|packet| packet.is_some())
+                    },
+                    |bytes| {
+                        self.runtime
+                            .loopback
+                            .send(Endpoint::Client, id, bytes)
+                            .is_ok()
+                    },
+                    |channel, included, disposition| {
+                        *included |= disposition == qa_network::channel::Unreliable::Included;
+                        *included && !channel.pending_fragments()
+                    },
+                );
+                complete = submitted.complete;
+                binding.close_control_pending = !complete
+                    && (connection.channel.pending_packet().is_some()
+                        || connection.channel.pending_fragments());
+            }
+            if complete && closed && !closing {
+                self.disconnect_client(id);
+            }
+        }
+    }
+
     fn receive_packet(
         &mut self,
         socket: u16,
@@ -1243,14 +1421,17 @@ impl FrameHost {
             qa_network::ingress::Connections::load(0),
         );
         let mut disconnected = None;
+        let mut completed_close = None;
         network.receive(socket, from, bytes, time, |id, endpoint, incoming| {
             use qa_network::ingress::Incoming;
             match endpoint {
                 qa_core::loopback::Endpoint::Client => {
                     if matches!(incoming, Incoming::Disconnect { .. }) {
-                        self.disconnect_client(id);
-                        disconnected = Some(id);
+                        self.received_client_disconnect(id);
                         return std::ops::ControlFlow::Break(());
+                    }
+                    if self.runtime.snapshots[id.0 as usize].as_ref().is_some_and(|binding| binding.presentation_closed()) {
+                        return std::ops::ControlFlow::Continue(());
                     }
                     if let Incoming::Snapshot(frame) = incoming {
                         self.runtime.synchronize_client_collision(id, frame);
@@ -1385,7 +1566,13 @@ impl FrameHost {
                         }
                     }
                 }
-                qa_core::loopback::Endpoint::Server => match incoming {
+                qa_core::loopback::Endpoint::Server => {
+                    if !self.runtime.server.clients[id.0 as usize].is_active()
+                        && !matches!(&incoming, Incoming::Acknowledged { .. })
+                    {
+                        return std::ops::ControlFlow::Continue(());
+                    }
+                    match incoming {
                     Incoming::MoveBegin => self.begin_command_batch(id),
                     Incoming::MoveEnd => self.end_command_batch(id),
                     Incoming::CommandString {
@@ -1455,13 +1642,22 @@ impl FrameHost {
                         output: Some(output),
                     } => {
                         if self.runtime.server.clients[id.0 as usize].output == Some(output) {
+                            let final_sequence = match self.runtime.server.clients[id.0 as usize].phase {
+                                qa_session::clients::ClientPhase::Closing(closing) => closing.final_output.filter(|(owner, _)| *owner == output).map(|(_, sequence)| sequence),
+                                _ => None,
+                            };
+                            let mut acknowledged_close = None;
                             let publication = &mut self.runtime.config_publications[id.0 as usize];
                             let duplicates = &mut self.runtime.output_duplicates;
                             duplicates.acknowledged(output, receipt);
                             self.runtime.server.events.acknowledge_with(
                                 output,
                                 receipt,
-                                |record| match record.event {
+                                |record| {
+                                    if final_sequence == Some(record.sequence) {
+                                        acknowledged_close = Some(record.sequence);
+                                    }
+                                    match record.event {
                                     qa_core::events::FrameEvent::ConfigString {
                                         destination_index,
                                         ..
@@ -1471,11 +1667,18 @@ impl FrameHost {
                                         publication.acknowledge_game_state(record.sequence);
                                     }
                                     _ => {}
+                                    }
                                 },
                             );
+                            if let Some(sequence) = acknowledged_close
+                                && self.runtime.server.acknowledge_close(id, output, sequence)
+                            {
+                                completed_close = Some(id);
+                            }
                         }
                     }
                     _ => {}
+                    }
                 },
             }
             if self.runtime.server.clients[id.0 as usize]
@@ -1492,6 +1695,10 @@ impl FrameHost {
             network.unbind(id);
         }
         self.runtime.network = network;
+        if let Some(id) = completed_close {
+            self.close_acknowledged += 1;
+            self.retire_client(id);
+        }
     }
 
     pub fn drain(&mut self, result: &mut FrameResult) {
@@ -1646,6 +1853,15 @@ impl FrameHost {
             .input
             .build_frame_with_policy(self.time, &policies);
         for (seat, command) in commands.iter_mut().enumerate() {
+            if self.local_clients[seat].is_some_and(|id| {
+                !self.runtime.server.clients[id.0 as usize].is_active()
+                    || self.runtime.snapshots[id.0 as usize]
+                        .as_ref()
+                        .is_some_and(|binding| binding.presentation_closed())
+            }) {
+                *command = UserCmd::default();
+                continue;
+            }
             *command = qa_movement::prepare_command(rules[seat], *command);
             if self.local_clients[seat]
                 .and_then(|id| self.runtime.snapshots[id.0 as usize].as_ref())
@@ -1659,6 +1875,13 @@ impl FrameHost {
         }
         for (seat, id) in self.local_clients.iter().enumerate() {
             if let Some(id) = id {
+                if !self.runtime.server.clients[id.0 as usize].is_active()
+                    || self.runtime.snapshots[id.0 as usize]
+                        .as_ref()
+                        .is_some_and(|binding| binding.presentation_closed())
+                {
+                    continue;
+                }
                 if let Some(commands) = self
                     .runtime
                     .network
@@ -1764,7 +1987,9 @@ impl FrameHost {
             let Some(client) = self.runtime.server.clients.get_mut(id.0 as usize) else {
                 continue;
             };
-            if client.connection != Some(qa_session::clients::Connection::Local) {
+            if !client.is_active()
+                || client.connection != Some(qa_session::clients::Connection::Local)
+            {
                 continue;
             }
             let player = &self.runtime.prediction[seat].player;

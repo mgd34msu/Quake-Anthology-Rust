@@ -1,3 +1,5 @@
+#[path = "support/scalar_import.rs"]
+mod scalar_import;
 use qa_core::primitives::IndexSpan;
 #[path = "model_assets/support.rs"]
 #[allow(dead_code)]
@@ -74,9 +76,16 @@ fn cgame_world_and_model_registration_keep_distinct_native_ordinals() {
             addresses,
             arguments: &[0],
         };
-        assert_eq!(Q3_CLIENT.invoke(37, &mut invocation, &mut unknown), Ok(0));
         assert_eq!(
-            Q3_CLIENT.invoke(36, &mut invocation, &mut unknown),
+            Q3_CLIENT
+                .invoke(37, &mut invocation, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
+        assert_eq!(
+            Q3_CLIENT
+                .invoke(36, &mut invocation, &mut unknown)
+                .map(scalar_import::word),
             Err(CallError::Memory)
         );
     }
@@ -144,13 +153,28 @@ fn model_tag_calls_keep_ui_void_result_and_ignore_names_without_tag_storage() {
             addresses,
             arguments: &[64, handle as u64, 0, 1, 0.25f32.to_bits() as u64, 16],
         };
-        assert_eq!(Q3_CLIENT.invoke(48, &mut invocation, &mut unknown), Ok(1));
+        assert_eq!(
+            Q3_CLIENT
+                .invoke(48, &mut invocation, &mut unknown)
+                .map(scalar_import::word),
+            Ok(1)
+        );
         assert_eq!(orientation(invocation.memory), expected);
-        assert_eq!(Q3_UI.invoke(29, &mut invocation, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_UI
+                .invoke(29, &mut invocation, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         assert_eq!(orientation(invocation.memory), expected);
         // No tags: original R_LerpTag never consumes name, frames or fraction.
         invocation.arguments = &[64, 0, 0, 0, 0, 250];
-        assert_eq!(Q3_CLIENT.invoke(48, &mut invocation, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_CLIENT
+                .invoke(48, &mut invocation, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         assert_eq!(orientation(invocation.memory), Default::default());
     }
 }
@@ -241,11 +265,15 @@ fn q3_visibility_imports_use_compiled_pvs_and_native_portal_policy() {
                     arguments: &arguments,
                 };
                 assert_eq!(
-                    Q3_SERVER.invoke(26, &mut call, &mut unknown),
+                    Q3_SERVER
+                        .invoke(26, &mut call, &mut unknown)
+                        .map(scalar_import::word),
                     Ok(u64::from(expected))
                 );
                 assert_eq!(
-                    Q3_SERVER.invoke(27, &mut call, &mut unknown),
+                    Q3_SERVER
+                        .invoke(27, &mut call, &mut unknown)
+                        .map(scalar_import::word),
                     Ok(u64::from(same_leaf || visible))
                 );
             }
@@ -370,7 +398,12 @@ fn q3_area_connection_keeps_native_bounds_and_integer_override() {
                 addresses,
                 arguments: &arguments,
             };
-            assert_eq!(Q3_SERVER.invoke(29, &mut call, &mut unknown), expected);
+            assert_eq!(
+                Q3_SERVER
+                    .invoke(29, &mut call, &mut unknown)
+                    .map(scalar_import::word),
+                expected
+            );
             if matches!(addresses, Addresses::Qvm { .. }) {
                 let mut vm = service_program::program(
                     &[
@@ -533,30 +566,32 @@ fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
                 let mut services =
                     runtime.engine_services(&mut console, &mut storage, &mut scratch);
                 assert_eq!(
-                    Q3_SERVER.invoke(
-                        25,
-                        &mut Invocation {
-                            services: &mut services,
-                            memory: &mut memory,
-                            native_cvars: None,
-                            native_resources: None,
-                            native_entities: None,
-                            native_surfaces: None,
-                            native_command: None,
-                            native_configs: None,
-                            native_pmove: None,
-                            native_player: None,
-                            context: CallContext {
-                                module: ModuleId(7),
-                                ..context()
+                    Q3_SERVER
+                        .invoke(
+                            25,
+                            &mut Invocation {
+                                services: &mut services,
+                                memory: &mut memory,
+                                native_cvars: None,
+                                native_resources: None,
+                                native_entities: None,
+                                native_surfaces: None,
+                                native_command: None,
+                                native_configs: None,
+                                native_pmove: None,
+                                native_player: None,
+                                context: CallContext {
+                                    module: ModuleId(7),
+                                    ..context()
+                                },
+                                platform_time: EventTime(0),
+                                command: &[],
+                                addresses,
+                                arguments: &arguments,
                             },
-                            platform_time: EventTime(0),
-                            command: &[],
-                            addresses,
-                            arguments: &arguments,
-                        },
-                        &mut unknown
-                    ),
+                            &mut unknown
+                        )
+                        .map(scalar_import::word),
                     Ok(u64::from(expected))
                 );
             }
@@ -656,30 +691,32 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
                 let mut services =
                     runtime.engine_services(&mut console, &mut storage, &mut scratch);
                 assert_eq!(
-                    Q3_SERVER.invoke(
-                        36,
-                        &mut Invocation {
-                            services: &mut services,
-                            memory: &mut memory,
-                            native_cvars: None,
-                            native_resources: None,
-                            native_entities: None,
-                            native_surfaces: None,
-                            native_command: None,
-                            native_configs: None,
-                            native_pmove: None,
-                            native_player: None,
-                            context: CallContext {
-                                module: ModuleId(7),
-                                ..context()
+                    Q3_SERVER
+                        .invoke(
+                            36,
+                            &mut Invocation {
+                                services: &mut services,
+                                memory: &mut memory,
+                                native_cvars: None,
+                                native_resources: None,
+                                native_entities: None,
+                                native_surfaces: None,
+                                native_command: None,
+                                native_configs: None,
+                                native_pmove: None,
+                                native_player: None,
+                                context: CallContext {
+                                    module: ModuleId(7),
+                                    ..context()
+                                },
+                                platform_time: EventTime(0),
+                                command: &[],
+                                addresses,
+                                arguments: &arguments,
                             },
-                            platform_time: EventTime(0),
-                            command: &[],
-                            addresses,
-                            arguments: &arguments,
-                        },
-                        &mut unknown
-                    ),
+                            &mut unknown
+                        )
+                        .map(scalar_import::word),
                     Ok(0)
                 );
             }
@@ -702,30 +739,32 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
             let arguments = [slot, address];
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             assert_eq!(
-                Q3_SERVER.invoke(
-                    36,
-                    &mut Invocation {
-                        services: &mut services,
-                        memory: &mut memory,
-                        native_cvars: None,
-                        native_resources: None,
-                        native_entities: None,
-                        native_surfaces: None,
-                        native_command: None,
-                        native_configs: None,
-                        native_pmove: None,
-                        native_player: None,
-                        context: CallContext {
-                            module: ModuleId(7),
-                            ..context()
+                Q3_SERVER
+                    .invoke(
+                        36,
+                        &mut Invocation {
+                            services: &mut services,
+                            memory: &mut memory,
+                            native_cvars: None,
+                            native_resources: None,
+                            native_entities: None,
+                            native_surfaces: None,
+                            native_command: None,
+                            native_configs: None,
+                            native_pmove: None,
+                            native_player: None,
+                            context: CallContext {
+                                module: ModuleId(7),
+                                ..context()
+                            },
+                            platform_time: EventTime(0),
+                            command: &[],
+                            addresses,
+                            arguments: &arguments,
                         },
-                        platform_time: EventTime(0),
-                        command: &[],
-                        addresses,
-                        arguments: &arguments,
-                    },
-                    &mut unknown
-                ),
+                        &mut unknown
+                    )
+                    .map(scalar_import::word),
                 expected
             );
             if expected.is_ok() {
@@ -833,27 +872,29 @@ fn module_console_prints_do_not_wait_for_client_consumers() {
                 let mut services =
                     runtime.engine_services(&mut console, &mut storage, &mut scratch);
                 assert_eq!(
-                    table.invoke(
-                        ordinal,
-                        &mut Invocation {
-                            services: &mut services,
-                            memory: &mut memory,
-                            native_cvars: None,
-                            native_resources: None,
-                            native_entities: None,
-                            native_surfaces: None,
-                            native_command: None,
-                            native_configs: None,
-                            native_pmove: None,
-                            native_player: None,
-                            context: context(),
-                            platform_time: EventTime(0),
-                            command: &[],
-                            addresses,
-                            arguments: &arguments[..if null_client { 3 } else { 1 }],
-                        },
-                        &mut unknown
-                    ),
+                    table
+                        .invoke(
+                            ordinal,
+                            &mut Invocation {
+                                services: &mut services,
+                                memory: &mut memory,
+                                native_cvars: None,
+                                native_resources: None,
+                                native_entities: None,
+                                native_surfaces: None,
+                                native_command: None,
+                                native_configs: None,
+                                native_pmove: None,
+                                native_player: None,
+                                context: context(),
+                                platform_time: EventTime(0),
+                                command: &[],
+                                addresses,
+                                arguments: &arguments[..if null_client { 3 } else { 1 }],
+                            },
+                            &mut unknown
+                        )
+                        .map(scalar_import::word),
                     Ok(0)
                 );
             }
@@ -901,30 +942,32 @@ fn local_native_and_received_priority_prints_have_identical_hud_effects() {
                 let mut services =
                     runtime.engine_services(&mut console, &mut storage, &mut scratch);
                 assert_eq!(
-                    Q2_RERELEASE.invoke(
-                        0,
-                        &mut Invocation {
-                            services: &mut services,
-                            memory: &mut memory,
-                            native_cvars: None,
-                            native_resources: None,
-                            native_entities: None,
-                            native_surfaces: None,
-                            native_command: None,
-                            native_configs: None,
-                            native_pmove: None,
-                            native_player: None,
-                            context: context(),
-                            platform_time: EventTime(0),
-                            command: &[],
-                            addresses: Addresses::Native {
-                                pointer_bytes: 8,
-                                abi
+                    Q2_RERELEASE
+                        .invoke(
+                            0,
+                            &mut Invocation {
+                                services: &mut services,
+                                memory: &mut memory,
+                                native_cvars: None,
+                                native_resources: None,
+                                native_entities: None,
+                                native_surfaces: None,
+                                native_command: None,
+                                native_configs: None,
+                                native_pmove: None,
+                                native_player: None,
+                                context: context(),
+                                platform_time: EventTime(0),
+                                command: &[],
+                                addresses: Addresses::Native {
+                                    pointer_bytes: 8,
+                                    abi
+                                },
+                                arguments: &[u64::from(level), base + 16],
                             },
-                            arguments: &[u64::from(level), base + 16],
-                        },
-                        &mut unknown
-                    ),
+                            &mut unknown
+                        )
+                        .map(scalar_import::word),
                     Ok(0)
                 );
             }
@@ -1059,23 +1102,37 @@ fn q3_game_and_ui_commands_insert_and_append_in_the_one_buffer() {
             call.memory
                 .write_string(base + 16, 64, b"sensitivity 3\n")
                 .unwrap();
-            assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+            assert_eq!(
+                table
+                    .invoke(ordinal, &mut call, &mut unknown)
+                    .map(scalar_import::word),
+                Ok(0)
+            );
             let insert = [0xffff_ffff_0000_0001, base + 16];
             call.arguments = &insert;
             call.memory
                 .write_string(base + 16, 64, b"sensitivity 2")
                 .unwrap();
-            assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+            assert_eq!(
+                table
+                    .invoke(ordinal, &mut call, &mut unknown)
+                    .map(scalar_import::word),
+                Ok(0)
+            );
             let now = [0, base + 16];
             call.arguments = &now;
             assert_eq!(
-                table.invoke(ordinal, &mut call, &mut unknown),
+                table
+                    .invoke(ordinal, &mut call, &mut unknown)
+                    .map(scalar_import::word),
                 Err(CallError::Text)
             );
             let invalid = [3, base + 16];
             call.arguments = &invalid;
             assert_eq!(
-                table.invoke(ordinal, &mut call, &mut unknown),
+                table
+                    .invoke(ordinal, &mut call, &mut unknown)
+                    .map(scalar_import::word),
                 Err(CallError::Text)
             );
             let mut line = FixedText::<64>::default();
@@ -1098,7 +1155,9 @@ fn q3_game_and_ui_commands_insert_and_append_in_the_one_buffer() {
                 .unwrap();
             call.arguments = &insert;
             assert_eq!(
-                table.invoke(ordinal, &mut call, &mut unknown),
+                table
+                    .invoke(ordinal, &mut call, &mut unknown)
+                    .map(scalar_import::word),
                 Err(CallError::Text)
             );
             let mut full = FixedText::<{ qa_console::command_buffer::CAPACITY }>::default();
@@ -1180,13 +1239,23 @@ fn q3_spawn_tokens_have_independent_module_cursors_and_bounded_raw_output() {
         ] {
             for module in [ModuleId(1), ModuleId(2)] {
                 call.context.module = module;
-                assert_eq!(Q3_SERVER.invoke(37, &mut call, &mut unknown), Ok(1));
+                assert_eq!(
+                    Q3_SERVER
+                        .invoke(37, &mut call, &mut unknown)
+                        .map(scalar_import::word),
+                    Ok(1)
+                );
                 assert_eq!(call.memory.cstring(base + 16).unwrap(), expected);
             }
         }
         for module in [ModuleId(1), ModuleId(2), ModuleId(3)] {
             call.context.module = module;
-            assert_eq!(Q3_SERVER.invoke(37, &mut call, &mut unknown), Ok(0));
+            assert_eq!(
+                Q3_SERVER
+                    .invoke(37, &mut call, &mut unknown)
+                    .map(scalar_import::word),
+                Ok(0)
+            );
             assert_eq!(call.memory.cstring(base + 16).unwrap(), b"");
         }
         call.services
@@ -1196,22 +1265,36 @@ fn q3_spawn_tokens_have_independent_module_cursors_and_bounded_raw_output() {
         call.context.module = ModuleId(1);
         let short = [base + 16, 1];
         call.arguments = &short;
-        assert_eq!(Q3_SERVER.invoke(37, &mut call, &mut unknown), Ok(1));
+        assert_eq!(
+            Q3_SERVER
+                .invoke(37, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(1)
+        );
         assert_eq!(call.memory.cstring(base + 16).unwrap(), b"");
         let invalid = [base + 510, 64];
         call.arguments = &invalid;
         assert_eq!(
-            Q3_SERVER.invoke(37, &mut call, &mut unknown),
+            Q3_SERVER
+                .invoke(37, &mut call, &mut unknown)
+                .map(scalar_import::word),
             Err(CallError::Memory)
         );
         let zero = [base + 16, 0];
         call.arguments = &zero;
         assert_eq!(
-            Q3_SERVER.invoke(37, &mut call, &mut unknown),
+            Q3_SERVER
+                .invoke(37, &mut call, &mut unknown)
+                .map(scalar_import::word),
             Err(CallError::Text)
         );
         call.arguments = &arguments;
-        assert_eq!(Q3_SERVER.invoke(37, &mut call, &mut unknown), Ok(1));
+        assert_eq!(
+            Q3_SERVER
+                .invoke(37, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(1)
+        );
         assert_eq!(call.memory.cstring(base + 16).unwrap(), b"classname");
         assert_eq!(unknown.calls, 0);
     }
@@ -1280,11 +1363,15 @@ fn numeric_cvar_imports_share_views_and_keep_signed_native_results() {
                 arguments: &arguments,
             };
             assert_eq!(
-                Q3_SERVER.invoke(6, &mut call, &mut unknown),
+                Q3_SERVER
+                    .invoke(6, &mut call, &mut unknown)
+                    .map(scalar_import::word),
                 Ok(integer as i64 as u64)
             );
             assert_eq!(
-                Q3_UI.invoke(4, &mut call, &mut unknown),
+                Q3_UI
+                    .invoke(4, &mut call, &mut unknown)
+                    .map(scalar_import::word),
                 Ok(u64::from(float.to_bits()))
             );
             if base == 0 {
@@ -1332,7 +1419,12 @@ fn numeric_cvar_imports_share_views_and_keep_signed_native_results() {
             addresses,
             arguments: &arguments,
         };
-        assert_eq!(Q3_SERVER.invoke(6, &mut call, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_SERVER
+                .invoke(6, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         assert!(
             services
                 .cvars
@@ -1425,7 +1517,12 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
                     addresses,
                     arguments: &arguments,
                 };
-                assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+                assert_eq!(
+                    table
+                        .invoke(ordinal, &mut call, &mut unknown)
+                        .map(scalar_import::word),
+                    Ok(0)
+                );
                 let view = services.cvars.bind(lookup, ctx).unwrap();
                 assert_eq!(services.cvars.read(view).unwrap().as_str(), value);
             }
@@ -1503,7 +1600,12 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
                     addresses,
                     arguments: &arguments,
                 };
-                assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+                assert_eq!(
+                    table
+                        .invoke(ordinal, &mut call, &mut unknown)
+                        .map(scalar_import::word),
+                    Ok(0)
+                );
                 let actual = services
                     .cvars
                     .bind(name, ctx)
@@ -1538,7 +1640,12 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
                 addresses,
                 arguments: &arguments,
             };
-            assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+            assert_eq!(
+                table
+                    .invoke(ordinal, &mut call, &mut unknown)
+                    .map(scalar_import::word),
+                Ok(0)
+            );
             assert_eq!(
                 services.cvars.latched(latched).unwrap().unwrap().as_str(),
                 "2"
@@ -1564,7 +1671,12 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
                     addresses,
                     arguments: &arguments,
                 };
-                assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+                assert_eq!(
+                    table
+                        .invoke(ordinal, &mut call, &mut unknown)
+                        .map(scalar_import::word),
+                    Ok(0)
+                );
                 assert_eq!(services.cvars.read(sensitivity).unwrap().as_str(), "7");
             }
         }
@@ -1625,7 +1737,12 @@ fn q3_ui_create_and_reset_preserve_native_flags_protection_and_latches() {
                 addresses,
                 arguments: &arguments,
             };
-            assert_eq!(Q3_UI.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+            assert_eq!(
+                Q3_UI
+                    .invoke(ordinal, &mut call, &mut unknown)
+                    .map(scalar_import::word),
+                Ok(0)
+            );
         };
         let before = services.cvars.entries().count();
         invoke(&mut services, 7, "_qa_ui_missing", None, 0);
@@ -1766,7 +1883,12 @@ fn q3_ui_numeric_setter_preserves_native_formatting_and_forced_writes() {
                 addresses,
                 arguments: &arguments,
             };
-            assert_eq!(Q3_UI.invoke(6, &mut call, &mut unknown), Ok(0));
+            assert_eq!(
+                Q3_UI
+                    .invoke(6, &mut call, &mut unknown)
+                    .map(scalar_import::word),
+                Ok(0)
+            );
             let view = services.cvars.bind(name, ctx.console).unwrap();
             assert_eq!(services.cvars.read(view).unwrap().as_str(), expected);
         }
@@ -1817,10 +1939,17 @@ fn native_syscall_memory_width_stays_separate_from_child_runtime_imports() {
         },
         arguments: &[base + 32, base + 16, (1u64 << 32) + 1],
     };
-    assert_eq!(Q3_SERVER.invoke(101, &mut call, &mut unknown), Ok(0));
+    assert_eq!(
+        Q3_SERVER
+            .invoke(101, &mut call, &mut unknown)
+            .map(scalar_import::word),
+        Ok(0)
+    );
     assert_eq!(call.memory.read(base + 32, 1).unwrap(), b"\xff");
     assert_eq!(
-        Q3_SERVER.invoke(qa_platform::native::runtime::FIRST, &mut call, &mut unknown),
+        Q3_SERVER
+            .invoke(qa_platform::native::runtime::FIRST, &mut call, &mut unknown)
+            .map(scalar_import::word),
         Ok(0)
     );
     assert_eq!(unknown.calls, 1);
@@ -1854,7 +1983,9 @@ fn original_float_syscalls_keep_their_declared_bits() {
             addresses,
             arguments,
         };
-        table.invoke(number, &mut call, &mut unknown)
+        table
+            .invoke(number, &mut call, &mut unknown)
+            .map(scalar_import::word)
     };
     let functions: [(u32, &qa_compat::abi::CallTable, u32, fn(f64, f64) -> f64); 7] = [
         (6, &Q3_SERVER, 103, |x, _| x.sin()),
@@ -1946,37 +2077,91 @@ fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_
             },
             arguments: &[base + 16, base + 32],
         };
-        assert_eq!(Q3_SERVER.invoke(5, &mut call, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_SERVER
+                .invoke(5, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         let args1 = [base + 16];
         call.arguments = &args1;
         // atoi is not a float-to-integer cast: the same text has value 1000.
-        assert_eq!(Q3_SERVER.invoke(6, &mut call, &mut unknown), Ok(1));
         assert_eq!(
-            Q3_UI.invoke(4, &mut call, &mut unknown),
+            Q3_SERVER
+                .invoke(6, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(1)
+        );
+        assert_eq!(
+            Q3_UI
+                .invoke(4, &mut call, &mut unknown)
+                .map(scalar_import::word),
             Ok(1000.0f32.to_bits() as u64)
         );
-        assert_eq!(Q3_SERVER.invoke(2, &mut call, &mut unknown), Ok(7));
+        assert_eq!(
+            Q3_SERVER
+                .invoke(2, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(7)
+        );
         let args2 = [3, base + 48];
         call.arguments = &args2;
-        assert_eq!(Q3_SERVER.invoke(18, &mut call, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_SERVER
+                .invoke(18, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         let args3 = [3, base + 80, 4];
         call.arguments = &args3;
-        assert_eq!(Q3_SERVER.invoke(19, &mut call, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_SERVER
+                .invoke(19, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         assert_eq!(call.memory.read(base + 80, 4).unwrap(), b"\x82na\0");
         let args4 = [u32::MAX as u64, base + 80, 4];
         call.arguments = &args4;
-        assert_eq!(Q3_UI.invoke(11, &mut call, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_UI
+                .invoke(11, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         assert_eq!(call.memory.read(base + 80, 1).unwrap(), b"\0");
         let args5 = [base + 48];
         call.arguments = &args5;
-        assert_eq!(Q3_UI.invoke(1, &mut call, &mut unknown), Ok(0));
         assert_eq!(
-            Q3_UI.invoke(0, &mut call, &mut unknown),
+            Q3_UI
+                .invoke(1, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
+        assert_eq!(
+            Q3_UI
+                .invoke(0, &mut call, &mut unknown)
+                .map(scalar_import::word),
             Err(CallError::Aborted)
         );
-        assert_eq!(Q3_SERVER.invoke(1234, &mut call, &mut unknown), Ok(0));
-        assert_eq!(Q3_SERVER.invoke(1234, &mut call, &mut unknown), Ok(0));
-        assert_eq!(Q3_SERVER.invoke(1235, &mut call, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_SERVER
+                .invoke(1234, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
+        assert_eq!(
+            Q3_SERVER
+                .invoke(1234, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
+        assert_eq!(
+            Q3_SERVER
+                .invoke(1235, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         assert_eq!((unknown.calls, unknown.capacity_drops), (3, 1));
         assert_eq!(unknown.last, Some(1235));
         let mut batch = services
@@ -2070,24 +2255,40 @@ fn server_and_client_console_imports_keep_their_different_arguments() {
             addresses: Addresses::Qvm { mask: 127 },
             arguments: &[1],
         };
-        assert_eq!(Q3_CLIENT.invoke(14, &mut call, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_CLIENT
+                .invoke(14, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         let args6 = [2, 1];
         call.arguments = &args6;
-        assert_eq!(Q3_SERVER.invoke(14, &mut call, &mut unknown), Ok(0));
+        assert_eq!(
+            Q3_SERVER
+                .invoke(14, &mut call, &mut unknown)
+                .map(scalar_import::word),
+            Ok(0)
+        );
         let args7 = [0, 1];
         call.arguments = &args7;
         assert_eq!(
-            Q3_SERVER.invoke(14, &mut call, &mut unknown),
+            Q3_SERVER
+                .invoke(14, &mut call, &mut unknown)
+                .map(scalar_import::word),
             Err(CallError::Text)
         );
         let args8 = [1.25f32.to_bits() as u64];
         call.arguments = &args8;
         assert_eq!(
-            Q3_SERVER.invoke(110, &mut call, &mut unknown),
+            Q3_SERVER
+                .invoke(110, &mut call, &mut unknown)
+                .map(scalar_import::word),
             Ok(1.0f32.to_bits() as u64)
         );
         assert_eq!(
-            Q3_CLIENT.invoke(107, &mut call, &mut unknown),
+            Q3_CLIENT
+                .invoke(107, &mut call, &mut unknown)
+                .map(scalar_import::word),
             Ok(1.0f32.to_bits() as u64)
         );
     }

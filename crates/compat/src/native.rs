@@ -1,14 +1,14 @@
 //! Native module exports and imports over the one owned-child backend.
 use crate::{
-    abi::{Addresses, CallTable, Invocation, UnknownCalls},
+    abi::{Addresses, CallTable, ImportContinuation, ImportStep, Invocation, UnknownCalls},
     memory::{ModuleMemory, ProcessMemoryError, process_memory},
     services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
 };
 use qa_core::{names::NameTable, sys_events::EventTime, text::FixedText};
 use qa_formats::program::native::{Encoding, Image};
 use qa_platform::native::{
-    NativeAbi, NativeEntry, NativeError, NativeImage, NativeImport, NativeProcess, NativeRegion,
-    NativeScalar, PAGE_BYTES,
+    NativeAbi, NativeAction, NativeEntry, NativeError, NativeImage, NativeImport, NativeProcess,
+    NativeRegion, NativeRequest, NativeScalar, PAGE_BYTES,
 };
 use std::{fmt::Write, time::Duration};
 
@@ -117,6 +117,11 @@ pub struct NativeCalls<'a, 'engine> {
     pub raw_args: &'a [u8],
     pub unknown: &'a mut UnknownCalls,
     pub native_player: Option<qa_core::primitives::ClientId>,
+}
+struct NativeContinuation {
+    suspended_context: CallContext,
+    suspended_player: Option<qa_core::primitives::ClientId>,
+    resume: ImportContinuation,
 }
 impl Vm {
     pub fn configure_q3_game(&mut self, layout: qa_core::primitives::Q3StatLayout) {
@@ -451,39 +456,66 @@ impl Vm {
         let pmove = &mut self.pmove;
         let abi = self.abi;
         let pointer_bytes = self.pointer_bytes;
+        let exports = &self.exports;
+        let client_think = self.client_think;
+        let mut active_context = calls.context;
+        let mut active_player = native_player;
         self.process
             .set_event_time(calls.platform_time)
             .map_err(Error::Process)?;
         let result = self
             .process
-            .invoke(export.entry, words, |call, base, bytes| {
-                let mut memory =
-                    ModuleMemory::borrow(base, bytes).map_err(|_| NativeError::Callback)?;
-                let mut invocation = Invocation {
-                    services: calls.services,
-                    memory: &mut memory,
-                    native_cvars: cvars.as_mut(),
-                    native_resources: resources,
-                    native_entities: entities.as_deref_mut(),
-                    native_surfaces: surfaces,
-                    native_command,
-                    native_configs: native_configs.as_mut(),
-                    native_pmove: pmove.as_mut(),
-                    native_player,
-                    context: calls.context,
-                    platform_time: calls.platform_time,
-                    command: calls.command,
-                    addresses: if call.function {
-                        Addresses::NativeFunction { abi, pointer_bytes }
-                    } else {
-                        Addresses::Native { abi, pointer_bytes }
-                    },
-                    arguments: &call.arguments,
-                };
-                let result = calls
-                    .table
-                    .invoke(call.number, &mut invocation, calls.unknown);
-                let result = result.and_then(|value| {
+            .invoke(export.entry, words, |request, base, bytes| {
+                let result = (|| {
+                    let (call, returned) = match request {
+                        NativeRequest::Import(call) => (Some(call), None),
+                        NativeRequest::Returned {
+                            continuation,
+                            value,
+                        } => {
+                            let NativeContinuation {
+                                suspended_context,
+                                suspended_player,
+                                resume,
+                            } = continuation;
+                            active_context = suspended_context;
+                            active_player = suspended_player;
+                            (None, Some((resume, value)))
+                        }
+                    };
+                    // This borrow ends when the action is returned to the
+                    // owned-child pump, before any nested foreign execution.
+                    let mut memory =
+                        ModuleMemory::borrow(base, bytes).map_err(|_| CallError::Memory)?;
+                    let mut invocation = Invocation {
+                        services: calls.services,
+                        memory: &mut memory,
+                        native_cvars: cvars.as_mut(),
+                        native_resources: resources,
+                        native_entities: entities.as_deref_mut(),
+                        native_surfaces: surfaces,
+                        native_command,
+                        native_configs: native_configs.as_mut(),
+                        native_pmove: pmove.as_mut(),
+                        native_player: active_player,
+                        context: active_context,
+                        platform_time: calls.platform_time,
+                        command: calls.command,
+                        addresses: if call.as_ref().is_some_and(|call| call.function) {
+                            Addresses::NativeFunction { abi, pointer_bytes }
+                        } else {
+                            Addresses::Native { abi, pointer_bytes }
+                        },
+                        arguments: call.as_ref().map_or(&[], |call| call.arguments.as_slice()),
+                    };
+                    let step = match returned {
+                        Some((resume, value)) => resume.resume(&mut invocation, value)?,
+                        None => calls.table.invoke(
+                            call.as_ref().ok_or(CallError::Memory)?.number,
+                            &mut invocation,
+                            calls.unknown,
+                        )?,
+                    };
                     if let Some(configs) = &mut invocation.native_configs {
                         configs.refresh(
                             invocation.services.storage,
@@ -491,13 +523,55 @@ impl Vm {
                             invocation.memory,
                         )?;
                     }
-                    Ok(value)
-                });
+                    match step {
+                        ImportStep::Return(value) => Ok(NativeAction::Return(value)),
+                        ImportStep::Call {
+                            request,
+                            continuation,
+                        } => {
+                            request.validate(invocation.services, calls.context.module)?;
+                            let nested = exports
+                                .get(request.target.entry() as usize)
+                                .copied()
+                                .flatten()
+                                .ok_or(CallError::Unsupported)?;
+                            let (time, arguments, client) = request.words()?;
+                            let first = usize::from(nested.command.is_some());
+                            let mut words = [0; 13];
+                            if let Some(command) = nested.command {
+                                words[0] = u64::from(command);
+                            }
+                            words[first..first + arguments.len()].copy_from_slice(&arguments);
+                            let continuation = NativeContinuation {
+                                suspended_context: active_context,
+                                suspended_player: active_player,
+                                resume: continuation,
+                            };
+                            active_context.clock = time;
+                            active_player = if client_think == Some(request.target.entry()) {
+                                Some(client.ok_or(CallError::Entity)?)
+                            } else {
+                                None
+                            };
+                            Ok(NativeAction::Call {
+                                entry: nested.entry,
+                                arguments: words,
+                                continuation,
+                            })
+                        }
+                    }
+                })();
                 result.map_err(|error| {
                     rejected = Some(error);
                     NativeError::Callback
                 })
             });
+        if result.is_err() {
+            calls
+                .services
+                .storage
+                .abort_client_callbacks(calls.context.module);
+        }
         if let Err(NativeError::ImportTrap { ordinal, address }) = &result {
             if let Some(trap) = self.traps.iter_mut().find(|trap| trap.ordinal == *ordinal) {
                 let first = trap.calls == 0;

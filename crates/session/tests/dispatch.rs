@@ -98,6 +98,164 @@ fn table(timing: RuleSetId) -> FunctionTable<World> {
 }
 
 #[test]
+fn callback_resolver_returns_bound_entry_without_invoking_and_invoke_uses_that_entry() {
+    fn call(world: &mut World, module: ModuleId, entry: u32, event: CallbackCall) -> bool {
+        world.calls.push((
+            event.entity().slot,
+            module.0,
+            entry,
+            ThinkTime::Seconds(0.0),
+        ));
+        entry == 70_003
+    }
+    let mut world = world(4);
+    let id = entity(&mut world, 2);
+    let table = FunctionTable::load([(
+        ModuleId(2),
+        RuleSetId::Quake3,
+        vec![
+            FunctionBinding { entry: 91, call },
+            FunctionBinding {
+                entry: 70_003,
+                call,
+            },
+        ],
+    )])
+    .unwrap();
+    let resolved = table
+        .resolve_callback(&world.entities, ModuleId(2), CallbackId(1), id)
+        .unwrap();
+    assert_eq!(resolved.entity(), id);
+    assert_eq!(resolved.module(), ModuleId(2));
+    assert_eq!(resolved.entry(), 70_003);
+    assert_ne!(resolved.entry(), 1);
+    assert_eq!(
+        table.resolve(&world.entities, CallbackId(1), id),
+        Ok(resolved)
+    );
+    assert!(world.calls.is_empty());
+
+    let event = CallbackCall::Use {
+        entity: id,
+        activator: id,
+    };
+    assert_eq!(table.invoke(&mut world, CallbackId(1), event), Ok(()));
+    assert_eq!(
+        world.calls,
+        [(id.slot, 2, resolved.entry(), ThinkTime::Seconds(0.0))]
+    );
+    assert_eq!(
+        table.invoke(&mut world, CallbackId(0), event),
+        Err(CallError::Rejected)
+    );
+    assert_eq!(world.calls[1].2, 91);
+}
+
+#[test]
+fn callback_resolver_checks_current_lifetime_owner_module_and_function_bounds() {
+    let mut world = world(5);
+    let id = entity(&mut world, 1);
+    let unknown_owner = entity(&mut world, 7);
+    let table = table(RuleSetId::Quake);
+    for callback in [CallbackId(1), CallbackId(u32::MAX)] {
+        assert_eq!(
+            table.resolve_callback(&world.entities, ModuleId(1), callback, id),
+            Err(CallError::MissingFunction)
+        );
+    }
+    for requested in [ModuleId(0), ModuleId(2), ModuleId(7)] {
+        assert_eq!(
+            table.resolve_callback(&world.entities, requested, CallbackId(0), id),
+            Err(CallError::MissingModule)
+        );
+    }
+    assert_eq!(
+        table.resolve_callback(&world.entities, ModuleId(7), CallbackId(0), unknown_owner),
+        Err(CallError::MissingModule)
+    );
+    let wrong_generation = EntityId {
+        generation: id.generation.wrapping_add(1),
+        ..id
+    };
+    assert_eq!(
+        table.resolve_callback(
+            &world.entities,
+            ModuleId(1),
+            CallbackId(0),
+            wrong_generation
+        ),
+        Err(CallError::StaleEntity)
+    );
+    let out_of_range = EntityId {
+        slot: u32::MAX,
+        ..id
+    };
+    assert_eq!(
+        table.resolve_callback(&world.entities, ModuleId(1), CallbackId(0), out_of_range),
+        Err(CallError::StaleEntity)
+    );
+    assert!(world.calls.is_empty());
+}
+
+#[test]
+fn callback_resolver_rereads_owner_and_rejects_reused_entity_generation() {
+    let mut world = world(2);
+    let old = entity(&mut world, 1);
+    let table = FunctionTable::load([
+        (
+            ModuleId(1),
+            RuleSetId::Quake,
+            vec![FunctionBinding {
+                entry: 11,
+                call: record,
+            }],
+        ),
+        (
+            ModuleId(2),
+            RuleSetId::Quake2,
+            vec![FunctionBinding {
+                entry: 82_009,
+                call: record,
+            }],
+        ),
+    ])
+    .unwrap();
+    assert_eq!(
+        table
+            .resolve_callback(&world.entities, ModuleId(1), CallbackId(0), old)
+            .unwrap()
+            .entry(),
+        11
+    );
+    world.entities.columns.owner[old.slot as usize] = ModuleId(2);
+    assert_eq!(
+        table.resolve_callback(&world.entities, ModuleId(1), CallbackId(0), old),
+        Err(CallError::MissingModule)
+    );
+    assert_eq!(
+        table
+            .resolve_callback(&world.entities, ModuleId(2), CallbackId(0), old)
+            .unwrap()
+            .entry(),
+        82_009
+    );
+    assert!(world.entities.release(old, ThinkTime::Seconds(0.0)));
+    let replacement = entity(&mut world, 2);
+    assert_eq!(replacement.slot, old.slot);
+    assert_ne!(replacement.generation, old.generation);
+    assert_eq!(
+        table.resolve_callback(&world.entities, ModuleId(2), CallbackId(0), old),
+        Err(CallError::StaleEntity)
+    );
+    let resolved = table
+        .resolve_callback(&world.entities, ModuleId(2), CallbackId(0), replacement)
+        .unwrap();
+    assert_eq!(resolved.entity(), replacement);
+    assert_eq!(resolved.entry(), 82_009);
+    assert!(world.calls.is_empty());
+}
+
+#[test]
 fn slot_order_clear_before_callback_clamped_time_and_removed_lifetimes() {
     let mut world = world(16);
     let ids: Vec<_> = (1..=3).map(|module| entity(&mut world, module)).collect();
