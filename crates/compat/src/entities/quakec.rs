@@ -649,6 +649,9 @@ impl QuakeCTraceView<'_, '_> {
     }
 }
 impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
+    fn failed(&self) -> bool {
+        self.error.failed()
+    }
     fn supports(&self, module: ModuleId) -> bool {
         self.module == module
     }
@@ -2513,8 +2516,9 @@ impl EntityProjection {
         let (view, pass) =
             self.quakec_trace_view(memory, strings, context, value, services.native_geometry)?;
         query.pass = pass;
-        let trace = (ENGINE_CALLS.trace)(services, query, Some(&view))?;
+        let trace = (ENGINE_CALLS.trace)(services, query, Some(&view));
         view.finish()?;
+        let trace = trace?;
         if trace.fraction == 1.0 || trace.all_solid {
             return Ok(false);
         }

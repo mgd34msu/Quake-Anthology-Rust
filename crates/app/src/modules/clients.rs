@@ -524,18 +524,30 @@ impl FrameHost {
                 }
             }
         } else if let Some(world) = &mut self.runtime.collision {
+            let traces = self
+                .modules
+                .as_ref()
+                .map(|modules| super::trace::TraceView::all(&modules.rows));
+            let foreign = traces.as_ref().map(|traces| traces.borrow());
             let player = &mut self.runtime.server.clients[id.0 as usize].player;
             let base = player.movement.tuning;
             player.movement.tuning =
                 self.movement_handles
                     .resolve(&self.console.cvars, player.movement_rules, base);
-            let result = self.runtime.server.move_pending_client(
-                id,
-                &self.runtime.geometry,
-                world.geometry,
-                world.index,
-                &mut world.scratch,
-            );
+            let result = self
+                .runtime
+                .server
+                .move_pending_client(
+                    id,
+                    &self.runtime.geometry,
+                    world.geometry,
+                    world.index,
+                    &mut world.scratch,
+                    None,
+                    foreign.map(|read| read.view),
+                )
+                .map_err(|_| qa_compat::services::CallError::Geometry);
+            let result = qa_compat::services::ForeignTraceRead::complete(foreign, result);
             self.runtime.server.clients[id.0 as usize]
                 .player
                 .movement

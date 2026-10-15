@@ -505,6 +505,8 @@ pub(super) fn commands_move_a_native_client_once() {
                     world.geometry,
                     0,
                     &mut world.scratch,
+                    None,
+                    None,
                     |_, error| panic!("movement failed: {error:?}"),
                 ),
                 0
@@ -553,6 +555,8 @@ pub(super) fn commands_move_a_native_client_once() {
                 world.geometry,
                 0,
                 &mut world.scratch,
+                None,
+                None,
                 |_, error| panic!("movement failed: {error:?}"),
             ),
             0

@@ -147,7 +147,7 @@ fn fixture() -> (
     GeometryId,
     qa_core::primitives::EntityId,
 ) {
-    let mut runtime = Runtime::load(1, []).unwrap();
+    let mut runtime = Runtime::load(2, []).unwrap();
     let owner_geometry = geometry(&mut runtime, [2.0, 6.0]);
     let query_geometry = geometry(&mut runtime, [8.0, 10.0]);
     runtime.collision = Some(WorldCollision::new(&runtime.geometry, owner_geometry, 0));
@@ -364,4 +364,93 @@ fn pending_foreign_qc_remains_readable_but_retired_owner_anchor_uses_cached_body
             .free_entity(anchor, ThinkTime::Seconds(3.0))
     );
     assert_eq!(call(&mut host, B, 2)[0], expected(&host, owner, 1));
+}
+
+#[test]
+fn engine_client_rejects_live_foreign_target_before_commit_and_next_client_still_moves() {
+    use crate::{client_policy::ClientPolicy, map::SpawnAnchor};
+    use qa_core::{
+        primitives::UserCmd,
+        sys_events::{EventTime, SeatId},
+    };
+    use qa_network::commands::packet::{CommandExecution, Protocol};
+    let (mut host, _, _, _) = fixture();
+    solid(&mut host, 0.0);
+    model(&mut host, b"*999");
+    solid(&mut host, 4.0);
+    let mut clients = Vec::new();
+    for (seat, y) in [(SeatId::ALL[0], 0.0), (SeatId::ALL[1], 100.0)] {
+        clients.push(
+            host.runtime
+                .connect_local(
+                    seat,
+                    SpawnAnchor {
+                        position: Vec3([0.0, y, 0.0]),
+                        angles: Vec3::default(),
+                        entity: 0,
+                        fixture_fallback: false,
+                    },
+                    ClientPolicy {
+                        input: RuleSetId::Quake3,
+                        client: RuleSetId::Quake3,
+                        movement: RuleSetId::Quake3,
+                        trace: RuleSetId::Quake3,
+                    },
+                    Protocol::Quake3_68,
+                    seat.index() as u32,
+                )
+                .unwrap(),
+        );
+    }
+    let bad = clients[0];
+    let entity = host.runtime.server.clients[bad.0 as usize].entity;
+    let body = host.runtime.server.clients[bad.0 as usize].player.body;
+    let tuning = host.runtime.server.clients[bad.0 as usize]
+        .player
+        .movement
+        .tuning;
+    let common = host
+        .runtime
+        .server
+        .entities
+        .columns
+        .body(entity.slot as usize);
+    let bounds = host.runtime.server.area.bounds(entity);
+    let links = host.runtime.server.area.relinks;
+    for id in &clients {
+        host.received_command(
+            *id,
+            UserCmd {
+                movement: [127.0, 0.0, 0.0],
+                units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
+                ..Default::default()
+            },
+            CommandExecution::FrameLatest,
+            None,
+        );
+    }
+    host.time = EventTime::from_milliseconds(50);
+    host.run_pending_commands(EventTime::from_milliseconds(50));
+    let client = &host.runtime.server.clients[bad.0 as usize];
+    assert!(client.is_active());
+    assert_eq!(client.player.body.position, body.position);
+    assert_eq!(client.player.body.velocity, body.velocity);
+    assert_eq!(client.player.movement.command_time_ms, 0);
+    assert_eq!(client.player.movement.tuning, tuning);
+    assert!(host.runtime.server.take_pending_command(bad).is_none());
+    let current = host
+        .runtime
+        .server
+        .entities
+        .columns
+        .body(entity.slot as usize);
+    assert_eq!(current.position, common.position);
+    assert_eq!(current.velocity, common.velocity);
+    assert_eq!(host.runtime.server.area.bounds(entity), bounds);
+    let healthy = &host.runtime.server.clients[clients[1].0 as usize];
+    assert!(healthy.is_active());
+    assert!(healthy.player.body.position.0[0] > 0.0);
+    assert_eq!(healthy.player.movement.command_time_ms, 50);
+    assert_eq!(host.runtime.server.area.relinks, links + 1);
+    assert_eq!(call(&mut host, B, 1), [0; 3]);
 }

@@ -101,7 +101,7 @@ fn shared_server_movement_transports_attached_clients_before_snapshot_copy() {
         None,
     );
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
+        server.move_pending_clients(&store, geometry, 0, &mut scratch, None, None, reject_move),
         1
     );
     let origin = server.clients[0].player.body.position;
@@ -185,7 +185,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
         handles.policy(&cvars, rules)
     });
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
+        server.move_pending_clients(&store, geometry, 0, &mut scratch, None, None, reject_move),
         15
     );
     for (client, prediction) in server.clients[..15].iter().zip(&mut predictions) {
@@ -221,7 +221,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
         );
     }
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
+        server.move_pending_clients(&store, geometry, 0, &mut scratch, None, None, reject_move),
         0
     );
 }
@@ -287,7 +287,7 @@ fn q2_bot_input_uses_the_human_builder_and_q3_movement_on_independent_trace_rule
     assert_eq!(bot.server_time_ms, command.server_time_ms);
     assert_eq!(bot.view_angles, command.view_angles);
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
+        server.move_pending_clients(&store, geometry, 0, &mut scratch, None, None, reject_move),
         1
     );
     let mut trace = WorldTrace::new(
@@ -399,7 +399,9 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
         qa_core::primitives::CommandExecution::PerCommand,
         None,
     );
-    assert!(server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move) > 0);
+    assert!(
+        server.move_pending_clients(&store, geometry, 0, &mut scratch, None, None, reject_move) > 0
+    );
     let moved = server.clients[moving.0 as usize].player.body.position;
     assert!(moved.0[0] > 0.0 && moved.0[0] < 18.0);
     assert_eq!(
@@ -557,7 +559,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         None,
     );
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 1, &mut scratch, reject_move),
+        server.move_pending_clients(&store, geometry, 1, &mut scratch, None, None, reject_move),
         1
     );
     let mut trace = WorldTrace::new(
@@ -636,7 +638,7 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
             None,
         );
         assert_eq!(
-            server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
+            server.move_pending_clients(&store, geometry, 0, &mut scratch, None, None, reject_move),
             1
         );
         let mut trace = WorldTrace::new(
@@ -751,7 +753,15 @@ fn q3_respawn_gate_matches_server_and_prediction_replay_for_humans_and_bots() {
             let command = server.clients[id.0 as usize].command;
             history.append(command);
             assert_eq!(
-                server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
+                server.move_pending_clients(
+                    &store,
+                    geometry,
+                    0,
+                    &mut scratch,
+                    None,
+                    None,
+                    reject_move
+                ),
                 1
             );
             let mut trace = WorldTrace::new(

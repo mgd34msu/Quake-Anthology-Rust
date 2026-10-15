@@ -883,6 +883,9 @@ fn owner_views_select_each_namespace_and_never_fall_back_after_a_supported_read(
         reads: Cell<usize>,
     }
     impl NativeTraceEntities for View {
+        fn failed(&self) -> bool {
+            self.enabled.is_none() && self.reads.get() != 0
+        }
         fn supports(&self, module: ModuleId) -> bool {
             module == self.module
         }
@@ -995,9 +998,61 @@ fn owner_views_select_each_namespace_and_never_fall_back_after_a_supported_read(
         .with_native_entities(Some(&local))
         .with_foreign_entities(Some(&foreign))
         .with_candidates(&candidates)
-        .trace(query(rules))
-        .unwrap();
-        assert_eq!(trace.entity, None);
+        .trace(query(rules));
+        if enabled.is_none() {
+            assert!(matches!(
+                trace,
+                Err(qa_world::collision::TraceError::Entity)
+            ));
+            let invalid_world = WorldTrace::new(
+                &world.store,
+                world.geometry,
+                u32::MAX,
+                &table,
+                &area,
+                &mut scratch,
+                CollisionOwner::None,
+            )
+            .with_native_entities(Some(&local));
+            assert_eq!(
+                invalid_world.point_contents(Vec3::default(), rules, &[]),
+                Err(qa_world::collision::TraceError::Entity)
+            );
+            let mut invalid_world = invalid_world;
+            assert!(matches!(
+                invalid_world.trace(query(rules)),
+                Err(qa_world::collision::TraceError::Entity)
+            ));
+            let foreign_failure = View {
+                module: ModuleId(2),
+                enabled: None,
+                anchor: None,
+                reads: Cell::new(0),
+            };
+            let mut foreign_trace = WorldTrace::new(
+                &world.store,
+                world.geometry,
+                0,
+                &table,
+                &area,
+                &mut scratch,
+                CollisionOwner::None,
+            )
+            .with_foreign_entities(Some(&foreign_failure))
+            .with_candidates(&candidates);
+            assert!(matches!(
+                foreign_trace.trace(query(rules)),
+                Err(qa_world::collision::TraceError::Entity)
+            ));
+            assert_eq!(
+                foreign_trace.point_contents(Vec3([-20.0, 0.0, 0.0]), rules, &[]),
+                Err(qa_world::collision::TraceError::Entity)
+            );
+        } else {
+            let trace = trace.unwrap();
+            assert_eq!(trace.fraction, 1.0);
+            assert_eq!(trace.entity, table.id_at(0));
+        }
         assert_eq!(foreign.reads.get(), 0);
     }
 

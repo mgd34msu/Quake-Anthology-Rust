@@ -448,6 +448,8 @@ fn q3_queued_commands_use_native_zero_once_and_import_the_module_pose() {
             geometry,
             0,
             &mut world.scratch,
+            None,
+            None,
             |_, error| panic!("{error:?}")
         ),
         0

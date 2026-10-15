@@ -305,6 +305,9 @@ pub(crate) fn native_slot(
     (slot < native.capacity).then_some(slot)
 }
 impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
+    fn failed(&self) -> bool {
+        self.error.failed()
+    }
     fn supports(&self, module: ModuleId) -> bool {
         self.module == module
     }
@@ -1624,6 +1627,9 @@ pub(crate) fn inline_model(
 #[derive(Default)]
 pub struct TraceError(Cell<Option<CallError>>);
 impl TraceError {
+    pub fn failed(&self) -> bool {
+        self.0.get().is_some()
+    }
     pub fn finish(&self) -> Result<(), CallError> {
         self.0.get().map_or(Ok(()), Err)
     }

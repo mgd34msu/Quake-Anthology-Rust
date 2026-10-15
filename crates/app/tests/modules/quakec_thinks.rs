@@ -3987,6 +3987,8 @@ fn qw_client_lifecycle_uses_canonical_slot_shared_movement_and_packet_postthink_
             geometry,
             0,
             &mut world.scratch,
+            None,
+            None,
             |_, error| panic!("{error:?}")
         ),
         0
@@ -4165,6 +4167,8 @@ fn netquake_queued_client_runs_none_phases_and_shared_think_at_native_frame_time
             geometry,
             0,
             &mut world.scratch,
+            None,
+            None,
             |_, error| panic!("{error:?}")
         ),
         0
@@ -4939,6 +4943,8 @@ fn netquake_noclip_control_precedes_frame_and_integrates_think_velocity_once() {
             geometry,
             0,
             &mut world.scratch,
+            None,
+            None,
             |_, error| panic!("{error:?}")
         ),
         0
@@ -5158,6 +5164,8 @@ fn netquake_foreign_noclip_preserves_substeps_and_final_native_snap() {
                 geometry,
                 0,
                 &mut world.scratch,
+                None,
+                None,
                 |_, error| panic!("{error:?}")
             ),
             0

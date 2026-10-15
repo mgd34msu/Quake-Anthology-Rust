@@ -37,6 +37,9 @@ pub trait NativeModelNames {
 /// narrow-phase clipping remain in this shared trace implementation.
 pub trait NativeTraceEntities {
     fn supports(&self, module: ModuleId) -> bool;
+    fn failed(&self) -> bool {
+        false
+    }
     fn anchor(&self, _module: ModuleId) -> Option<EntityId> {
         None
     }
@@ -120,7 +123,12 @@ impl<'a> WorldTrace<'a> {
         self
     }
 
-    pub fn trace(&mut self, mut query: TraceQuery) -> Result<Trace, TraceError> {
+    pub fn trace(&mut self, query: TraceQuery) -> Result<Trace, TraceError> {
+        let result = self.trace_inner(query);
+        self.finish_query(result)
+    }
+
+    fn trace_inner(&mut self, mut query: TraceQuery) -> Result<Trace, TraceError> {
         if query.pass == CollisionOwner::None {
             query.pass = self.pass;
         }
@@ -284,6 +292,25 @@ impl<'a> WorldTrace<'a> {
     }
 
     pub fn point_contents(
+        &self,
+        point: Vec3,
+        rules: EntityTracePolicy,
+        excluded: &[EntityId],
+    ) -> Result<Contents, TraceError> {
+        self.finish_query(self.point_contents_inner(point, rules, excluded))
+    }
+
+    fn finish_query<T>(&self, result: Result<T, TraceError>) -> Result<T, TraceError> {
+        if self.native_entities.is_some_and(|view| view.failed())
+            || self.foreign_entities.is_some_and(|view| view.failed())
+        {
+            Err(TraceError::Entity)
+        } else {
+            result
+        }
+    }
+
+    fn point_contents_inner(
         &self,
         point: Vec3,
         rules: EntityTracePolicy,

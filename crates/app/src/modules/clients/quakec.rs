@@ -348,6 +348,8 @@ fn move_frame_client(
             )?;
             let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
             let foreign = services.foreign_trace;
+            let current =
+                super::super::trace::TraceView::current(vm, context, services.native_geometry);
             let moved = services.server.move_client(
                 id,
                 command,
@@ -355,14 +357,21 @@ fn move_frame_client(
                 geometry,
                 index,
                 services.scratch,
-                None,
+                Some(&current),
                 foreign.map(|read| read.view),
                 options,
                 |entities, player, write| {
-                    vm.write_frame_scalar(entities, context, offset, captured, player, write)
+                    current.edit(|vm| {
+                        vm.write_frame_scalar(entities, context, offset, captured, player, write)
+                    })
                 },
             );
-            let moved = ForeignTraceRead::complete(foreign, moved)?;
+            let moved = ForeignTraceRead::complete(
+                Some(current.borrow()),
+                ForeignTraceRead::complete(foreign, moved),
+            );
+            drop(current);
+            let moved = moved?;
             vm.finish_frame_client(services, context, offset)?;
             Ok(moved)
         })

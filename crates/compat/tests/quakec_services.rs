@@ -1742,11 +1742,13 @@ fn shared_foreign_trace_errors_keep_the_first_failure_until_the_operation_drains
                 view,
                 error: &error,
             });
+            assert!(!error.failed());
             assert_eq!(error.capture(|| Err::<(), _>(CallError::Memory)), None);
             assert_eq!(
                 error.capture(|| panic!("later reads stop after the first error")),
                 None::<()>
             );
+            assert!(error.failed());
             assert_eq!(error.finish(), Err(CallError::Memory));
             assert_eq!(error.finish(), Err(CallError::Memory));
             assert_eq!(
@@ -1754,6 +1756,7 @@ fn shared_foreign_trace_errors_keep_the_first_failure_until_the_operation_drains
                 Err(CallError::Memory)
             );
             assert_eq!(error.finish(), Ok(()));
+            assert!(!error.failed());
             assert_eq!(
                 ForeignTraceRead::complete(read, Err::<(), _>(CallError::Geometry)),
                 Err(CallError::Geometry)

@@ -370,13 +370,13 @@ impl Modules {
     fn trace_parts_mut(
         &mut self,
         id: ModuleId,
-    ) -> Option<(&mut Module, &mut ServiceStorage, trace::RowsView<'_>)> {
+    ) -> Option<(&mut Module, &mut ServiceStorage, trace::TraceView<'_>)> {
         let (before, current) = self.rows.split_at_mut_checked(id.0 as usize)?;
         let (current, after) = current.split_first_mut()?;
         Some((
             current.as_mut()?,
             &mut self.storage,
-            trace::RowsView::new(before, after),
+            trace::TraceView::rows(before, after),
         ))
     }
 }

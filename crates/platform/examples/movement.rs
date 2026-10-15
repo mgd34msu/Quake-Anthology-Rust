@@ -204,9 +204,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         server.build_bot_commands(start, end, |rules| policies[rules as usize]);
         let mut rejected = None;
-        let count = server.move_pending_clients(&store, geometry, 0, &mut scratch, |_, error| {
-            rejected = Some(error);
-        });
+        let count = server.move_pending_clients(
+            &store,
+            geometry,
+            0,
+            &mut scratch,
+            None,
+            None,
+            |_, error| {
+                rejected = Some(error);
+            },
+        );
         if let Some(error) = rejected {
             return Err(error.into());
         }
