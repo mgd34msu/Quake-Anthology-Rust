@@ -481,16 +481,13 @@ impl PushHost for Host<'_> {
     }
 
     fn ground_owner(&mut self, owner: CollisionOwner) -> Result<CollisionOwner, Self::Error> {
-        let ground = self.edit_owner(owner, |vm, _, context, native| {
+        self.edit_owner(owner, |vm, _, context, native| {
             vm.push_ground(context, native)
-        })?;
-        let ResourceNamespace::Module(module) = ground.namespace else {
-            return Err(ClientCommandError::DifferentModule);
-        };
-        Ok(CollisionOwner::Native(NativeEntity {
-            module,
-            slot: i32::try_from(ground.ordinal).map_err(|_| ClientCommandError::InvalidSlot)?,
-        }))
+        })
+    }
+
+    fn same_owner(&self, left: CollisionOwner, right: CollisionOwner) -> bool {
+        self.host.runtime.server.entities.same_owner(left, right)
     }
 
     fn test_position(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error> {

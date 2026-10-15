@@ -1,9 +1,7 @@
 //! Weak native PUSH fields use the existing checked edict scalar boundary.
 use super::{Scalar, Vm};
 use crate::services::{CallContext, CallError, ENGINE_CALLS, EngineServices};
-use qa_core::primitives::{
-    NativeEntity, NativeEntityRef, ResourceNamespace, ThinkBinding, ThinkTime,
-};
+use qa_core::primitives::{CollisionOwner, NativeEntity, ThinkBinding, ThinkTime};
 use qa_session::physics::PushNumber;
 use qa_world::{
     collision::{QuakeTraceKind, TraceQuery, trace_policy},
@@ -94,17 +92,15 @@ impl Vm {
         &self,
         context: CallContext,
         value: u32,
-    ) -> Result<NativeEntityRef, CallError> {
+    ) -> Result<CollisionOwner, CallError> {
         self.projection.quakec_validate_owner(context.module)?;
         let address = self
             .projection
             .quakec_scalar_store(&self.entities, value, Scalar::Ground)?;
-        let native = self.entities.read_word(address)? as u32;
-        let ordinal = self.entity_number(native).map_err(|_| CallError::Memory)?;
-        Ok(NativeEntityRef::entity(
-            ResourceNamespace::Module(context.module),
-            ordinal,
-        ))
+        let value = self.entities.read_word(address)? as u32;
+        self.projection
+            .quakec_entity_owner(&self.entities, context.module, value)
+            .map_err(|_| CallError::Memory)
     }
     pub fn push_test_position(
         &self,

@@ -157,7 +157,9 @@ impl<'a> WorldTrace<'a> {
                 break;
             }
             let id = linked.id;
-            if self.same_owner(query.pass, CollisionOwner::Lifetime(id))
+            if self
+                .entities
+                .same_owner(query.pass, CollisionOwner::Lifetime(id))
                 || query.excluded.contains(&id)
             {
                 continue;
@@ -223,7 +225,7 @@ impl<'a> WorldTrace<'a> {
                 let Some(owner) = self.owner(CollisionOwner::Lifetime(id)) else {
                     continue;
                 };
-                if self.same_owner(owner, query.pass) {
+                if self.entities.same_owner(owner, query.pass) {
                     continue;
                 }
                 let pass_owner = *pass_owner
@@ -234,10 +236,13 @@ impl<'a> WorldTrace<'a> {
                     .contains(EntityTraceFlags::SHARED_OWNER)
                 {
                     let pass_owner = self.arena_pass_owner(query.pass, pass_owner);
-                    if self.same_owner(owner, pass_owner) {
+                    if self.entities.same_owner(owner, pass_owner) {
                         continue;
                     }
-                } else if self.same_owner(pass_owner, CollisionOwner::Lifetime(id)) {
+                } else if self
+                    .entities
+                    .same_owner(pass_owner, CollisionOwner::Lifetime(id))
+                {
                     continue;
                 }
             }
@@ -294,7 +299,9 @@ impl<'a> WorldTrace<'a> {
             if rules
                 .filtering
                 .contains(EntityTraceFlags::EXCLUDE_CONTENTS_PASS)
-                && self.same_owner(CollisionOwner::Lifetime(linked.id), self.pass)
+                && self
+                    .entities
+                    .same_owner(CollisionOwner::Lifetime(linked.id), self.pass)
                 || excluded.contains(&linked.id)
             {
                 continue;
@@ -448,35 +455,13 @@ impl<'a> WorldTrace<'a> {
         }
     }
 
-    fn native_owner(&self, owner: CollisionOwner) -> Option<NativeEntity> {
-        match owner {
-            CollisionOwner::None => None,
-            CollisionOwner::Native(native) => Some(native),
-            CollisionOwner::Lifetime(id) => self
-                .entities
-                .resolve(id)
-                .and_then(|slot| self.entities.columns.native_entity[slot]),
-        }
-    }
-
-    fn same_owner(&self, left: CollisionOwner, right: CollisionOwner) -> bool {
-        match (left, right) {
-            (CollisionOwner::Lifetime(left), CollisionOwner::Lifetime(right)) if left == right => {
-                self.entities.resolve(left).is_some()
-            }
-            _ => self
-                .native_owner(left)
-                .is_some_and(|left| Some(left) == self.native_owner(right)),
-        }
-    }
-
     fn arena_pass_owner(&self, pass: CollisionOwner, owner: CollisionOwner) -> CollisionOwner {
         match owner {
             CollisionOwner::Native(NativeEntity { module, slot: 1023 }) => {
                 CollisionOwner::Native(NativeEntity { module, slot: -1 })
             }
             CollisionOwner::None => CollisionOwner::Native(NativeEntity {
-                module: self.native_owner(pass).map_or_else(
+                module: self.entities.native_owner(pass).map_or_else(
                     || match pass {
                         CollisionOwner::Lifetime(id) => {
                             self.entities.columns.owner[id.slot as usize]

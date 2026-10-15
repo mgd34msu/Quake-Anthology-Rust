@@ -514,6 +514,29 @@ impl EntityTable {
         })
     }
 
+    /// Read a weak native owner directly, or from a live canonical lifetime.
+    pub fn native_owner(&self, owner: CollisionOwner) -> Option<NativeEntity> {
+        match owner {
+            CollisionOwner::None => None,
+            CollisionOwner::Native(native) => Some(native),
+            CollisionOwner::Lifetime(id) => self
+                .resolve(id)
+                .and_then(|slot| self.columns.native_entity[slot]),
+        }
+    }
+
+    /// Compare live canonical lifetimes and weak native identities.
+    pub fn same_owner(&self, left: CollisionOwner, right: CollisionOwner) -> bool {
+        match (left, right) {
+            (CollisionOwner::Lifetime(left), CollisionOwner::Lifetime(right)) if left == right => {
+                self.resolve(left).is_some()
+            }
+            _ => self
+                .native_owner(left)
+                .is_some_and(|left| Some(left) == self.native_owner(right)),
+        }
+    }
+
     /// Native ordinals resolve only through live common lifetimes, in slot order.
     pub fn find_native(&self, native: NativeEntity, exclude: Option<EntityId>) -> Option<EntityId> {
         self.active().find(|id| {

@@ -41,6 +41,7 @@ pub trait PushHost {
     fn flags(&mut self, owner: CollisionOwner) -> Result<u32, Self::Error>;
     fn store_flags(&mut self, owner: CollisionOwner, value: u32) -> Result<(), Self::Error>;
     fn ground_owner(&mut self, owner: CollisionOwner) -> Result<CollisionOwner, Self::Error>;
+    fn same_owner(&self, left: CollisionOwner, right: CollisionOwner) -> bool;
     fn test_position(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error>;
     fn link(&mut self, owner: CollisionOwner, touch: bool) -> Result<(), Self::Error>;
     fn push_entity(&mut self, owner: CollisionOwner, displacement: Vec3)
@@ -268,8 +269,10 @@ fn displace<H: PushHost>(
         {
             continue;
         }
-        let standing = host.flags(candidate)? & rules.ground_flag != 0
-            && host.ground_owner(candidate)? == pusher;
+        let standing = host.flags(candidate)? & rules.ground_flag != 0 && {
+            let ground = host.ground_owner(candidate)?;
+            host.same_owner(ground, pusher)
+        };
         if !standing {
             let mut separated = false;
             for axis in 0..3 {
