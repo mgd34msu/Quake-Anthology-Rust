@@ -2866,7 +2866,9 @@ fn quakec_step_contacts_ground_before_touch_then_relinks_sounds_thinks_and_reuse
     assert_eq!(
         host.module_counts(ModuleId(1)).unwrap().last_result,
         Some(ModuleResult::QuakeC([
-            (-1.0f32).to_bits(),
+            // Native SV_CheckWaterTransition stores non-water contents in
+            // waterlevel. The foreign linked BODY now projects to SOLID.
+            (-2.0f32).to_bits(),
             (-1.0f32).to_bits(),
             0,
         ]))

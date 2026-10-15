@@ -46,6 +46,17 @@ pub(super) enum Failure {
     Budget,
     Arithmetic,
     Scratch,
+    Media,
+}
+
+impl Failure {
+    pub(super) fn query_error(self) -> super::TraceError {
+        if self == Self::Scratch {
+            super::TraceError::Scratch
+        } else {
+            super::TraceError::Query
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -96,7 +107,7 @@ fn cost(rows: &[Row], indices: &[usize], weights: &[Int; 4]) -> Result<Cost, Fai
 }
 
 #[derive(Clone, Copy)]
-struct Fraction {
+pub(super) struct Fraction {
     numerator: Int,
     denominator: Int,
 }
@@ -149,13 +160,15 @@ impl Cost {
 }
 
 #[derive(Clone, Copy)]
-struct Interval<T = Fraction> {
-    first: T,
-    last: T,
-    isolated: bool,
+pub(super) struct Interval<T = Fraction> {
+    pub(super) first: T,
+    pub(super) last: T,
+    pub(super) isolated: bool,
+    pub(super) first_closed: bool,
+    pub(super) last_closed: bool,
 }
 
-trait Parameter: Copy {
+pub(super) trait Parameter: Copy {
     const ZERO: Self;
     const ONE: Self;
     fn order(self, other: Self, work: &mut Work) -> Result<Ordering, Failure>;
@@ -170,7 +183,7 @@ impl Parameter for Fraction {
 }
 
 impl<T: Parameter> Interval<T> {
-    fn contains(self, parameter: T, work: &mut Work) -> Result<bool, Failure> {
+    pub(super) fn contains(self, parameter: T, work: &mut Work) -> Result<bool, Failure> {
         Ok(self.first.order(parameter, work)? != Ordering::Greater
             && self.last.order(parameter, work)? != Ordering::Less)
     }
@@ -217,15 +230,19 @@ fn component<T: Parameter>(
         hit: None,
         all_solid: false,
     };
+    let span = Interval {
+        first: T::ZERO,
+        last: T::ONE,
+        isolated: false,
+        first_closed: true,
+        last_closed: true,
+    };
+    let mut frontier = Some((T::ZERO, true));
     intervals(work, &mut |interval, contents, work| {
         if interval.contains(T::ZERO, work)? && result.start_contents.is_none() {
             result.start_contents = Some(contents);
         }
-        if interval.contains(result.reach, work)?
-            && interval.last.order(result.reach, work)? == Ordering::Greater
-        {
-            result.reach = interval.last;
-        }
+        super::media::extend(span, &mut frontier, interval, work)?;
         if (!interval.isolated || include_isolated)
             && (result.hit.is_none()
                 || interval
@@ -240,23 +257,9 @@ fn component<T: Parameter>(
     if result.start_contents.is_none() {
         return Ok(result);
     }
-    for _ in 0..=cells {
-        if result.reach.order(T::ONE, work)? != Ordering::Less {
-            break;
-        }
-        let old = result.reach;
-        intervals(work, &mut |interval, _, work| {
-            if interval.contains(result.reach, work)?
-                && interval.last.order(result.reach, work)? == Ordering::Greater
-            {
-                result.reach = interval.last;
-            }
-            Ok(())
-        })?;
-        if result.reach.order(old, work)? == Ordering::Equal {
-            break;
-        }
-    }
+    result.reach = super::media::union_reach(span, cells, frontier, work, &mut intervals)?
+        .ok_or(Failure::Arithmetic)?
+        .0;
     result.all_solid = result.reach.order(T::ONE, work)? != Ordering::Less;
     if result.all_solid {
         return Ok(result);
@@ -281,27 +284,43 @@ fn component<T: Parameter>(
 /// The existing certificate stream eliminates the point variables once. Its
 /// affine costs clip parameter space, including unbounded/degenerate cells.
 fn interval(rows: &[Row], work: &mut Work) -> Result<Option<Interval>, Failure> {
+    interval_mode(rows, false, work)
+}
+
+fn interval_mode(rows: &[Row], strict: bool, work: &mut Work) -> Result<Option<Interval>, Failure> {
     let (mut lower, mut upper) = (None::<Fraction>, None::<Fraction>);
+    let (mut lower_closed, mut upper_closed) = (true, true);
     let mut empty = false;
     visit_certificates(rows, work, |indices, weights, _| {
         let cost = cost(rows, indices, weights)?;
+        let closed = !strict || !cost.strict;
         if cost.beta.is_zero() {
-            empty = cost.alpha.negative();
+            empty = cost.alpha.negative() || cost.alpha.is_zero() && !closed;
         } else {
             let bound = Fraction::new(cost.alpha.neg(), cost.beta);
             if cost.beta.negative() {
-                upper = Some(match upper {
-                    Some(old) if bound.compare(old)? != Ordering::Less => old,
-                    _ => bound,
-                });
+                match upper.map(|old| bound.compare(old)).transpose()? {
+                    None | Some(Ordering::Less) => {
+                        upper = Some(bound);
+                        upper_closed = closed;
+                    }
+                    Some(Ordering::Equal) => upper_closed &= closed,
+                    _ => {}
+                }
             } else {
-                lower = Some(match lower {
-                    Some(old) if bound.compare(old)? != Ordering::Greater => old,
-                    _ => bound,
-                });
+                match lower.map(|old| bound.compare(old)).transpose()? {
+                    None | Some(Ordering::Greater) => {
+                        lower = Some(bound);
+                        lower_closed = closed;
+                    }
+                    Some(Ordering::Equal) => lower_closed &= closed,
+                    _ => {}
+                }
             }
             if let (Some(lower), Some(upper)) = (lower, upper) {
-                empty = lower.compare(upper)? == Ordering::Greater;
+                let order = lower.compare(upper)?;
+                empty = order == Ordering::Greater
+                    || order == Ordering::Equal && (!lower_closed || !upper_closed);
             }
         }
         Ok(!empty)
@@ -314,19 +333,29 @@ fn interval(rows: &[Row], work: &mut Work) -> Result<Option<Interval>, Failure> 
         _ => false,
     };
     let first = match lower {
-        Some(lower) if lower.compare(Fraction::ZERO)? == Ordering::Greater => lower,
-        _ => Fraction::ZERO,
+        Some(lower) if lower.compare(Fraction::ZERO)? != Ordering::Less => lower,
+        _ => {
+            lower_closed = true;
+            Fraction::ZERO
+        }
     };
     let last = match upper {
-        Some(upper) if upper.compare(Fraction::ONE)? == Ordering::Less => upper,
-        _ => Fraction::ONE,
+        Some(upper) if upper.compare(Fraction::ONE)? != Ordering::Greater => upper,
+        _ => {
+            upper_closed = true;
+            Fraction::ONE
+        }
     };
+    let order = first.compare(last)?;
     Ok(
-        (first.compare(last)? != Ordering::Greater).then_some(Interval {
-            first,
-            last,
-            isolated,
-        }),
+        (order == Ordering::Less || order == Ordering::Equal && lower_closed && upper_closed)
+            .then_some(Interval {
+                first,
+                last,
+                isolated,
+                first_closed: lower_closed,
+                last_closed: upper_closed,
+            }),
     )
 }
 
@@ -661,13 +690,19 @@ impl Scratch {
     }
 }
 
-struct Work {
+pub(super) struct Work {
     remaining: usize,
 }
 
 impl Work {
-    fn item(&mut self) -> Result<(), Failure> {
-        self.remaining = self.remaining.checked_sub(1).ok_or(Failure::Budget)?;
+    pub(super) fn new(remaining: usize) -> Self {
+        Self { remaining }
+    }
+    pub(super) fn item(&mut self) -> Result<(), Failure> {
+        self.items(1)
+    }
+    pub(super) fn items(&mut self, count: usize) -> Result<(), Failure> {
+        self.remaining = self.remaining.checked_sub(count).ok_or(Failure::Budget)?;
         Ok(())
     }
 }
@@ -1383,6 +1418,7 @@ fn extrude_rows(
     rows: &mut [Row],
     source_count: usize,
     offset: &[Int; 3],
+    strict: bool,
     work: &mut Work,
 ) -> Result<usize, Failure> {
     for row in &mut rows[..source_count] {
@@ -1409,6 +1445,7 @@ fn extrude_rows(
                 distance: negative
                     .mul(&rows[i].distance)?
                     .add(&positive.mul(&rows[j].distance)?)?,
+                strict: strict && (rows[i].strict || rows[j].strict),
                 ..Row::default()
             };
             for axis in 0..3 {
@@ -1417,7 +1454,7 @@ fn extrude_rows(
                     .add(&positive.mul(&rows[j].normal[axis])?)?;
             }
             if zero(&row.normal) {
-                if row.distance.negative() {
+                if row.distance.negative() || row.distance.is_zero() && row.strict {
                     return Err(Failure::Arithmetic);
                 }
                 continue;
@@ -1448,6 +1485,7 @@ trait CapsuleCells {
         index: usize,
         offset: &[Int; 3],
         rows: &'a mut [Row],
+        strict: bool,
         work: &mut Work,
     ) -> Result<&'a [Row], Failure>;
     fn target_radius(&self) -> Option<f32> {
@@ -1480,6 +1518,7 @@ impl CapsuleCells for PairCapsules {
         _: usize,
         offset: &[Int; 3],
         rows: &'a mut [Row],
+        strict: bool,
         work: &mut Work,
     ) -> Result<&'a [Row], Failure> {
         if rows.len() < CAPSULE_PAIR_ROWS {
@@ -1497,8 +1536,8 @@ impl CapsuleCells for PairCapsules {
                 rows[axis * 2 + side] = row;
             }
         }
-        let count = extrude_rows(rows, 6, &self.offset, work)?;
-        let count = extrude_rows(rows, count, offset, work)?;
+        let count = extrude_rows(rows, 6, &self.offset, strict, work)?;
+        let count = extrude_rows(rows, count, offset, strict, work)?;
         Ok(&rows[..count])
     }
     fn target_radius(&self) -> Option<f32> {
@@ -1506,7 +1545,7 @@ impl CapsuleCells for PairCapsules {
     }
 }
 
-fn validate_query(query: TraceQuery) -> Result<(), Failure> {
+pub(super) fn validate_query(query: TraceQuery) -> Result<(), Failure> {
     if !query.start.is_finite()
         || !query.end.is_finite()
         || !(Bounds {
@@ -1521,12 +1560,12 @@ fn validate_query(query: TraceQuery) -> Result<(), Failure> {
     }
 }
 
-pub(super) fn trace_capsule_pair(
-    query: TraceQuery,
+fn capsule_pair<'a>(
+    query: TraceQuery<'a>,
     center: Vec3,
     target: Capsule,
-    scratch: &mut Scratch,
-) -> Result<Trace, Failure> {
+    scratch: &Scratch,
+) -> Result<(TraceQuery<'a>, Capsule, PairCapsules), Failure> {
     validate_query(query)?;
     // Direct target clipping already selected this body. Scene filtering
     // remains outside this adapter, as in the original capsule kernel.
@@ -1550,15 +1589,56 @@ pub(super) fn trace_capsule_pair(
         offset: vector(target.offset)?,
         radius: target.radius,
     };
-    let mut work = Work {
-        remaining: HullPositionLimits::default().query_work,
-    };
-    trace_rounded(
-        &source,
-        query,
-        Capsule { radius, ..moving },
-        scratch,
-        &mut work,
+    Ok((query, Capsule { radius, ..moving }, source))
+}
+
+pub(super) fn trace_capsule_pair(
+    query: TraceQuery,
+    center: Vec3,
+    target: Capsule,
+    scratch: &mut Scratch,
+) -> Result<Trace, Failure> {
+    let (query, moving, source) = capsule_pair(query, center, target, scratch)?;
+    let mut work = Work::new(HullPositionLimits::default().query_work);
+    trace_rounded(&source, query, moving, scratch, &mut work)
+}
+
+pub(super) fn capsule_pair_media(
+    query: TraceQuery,
+    center: Vec3,
+    target: Capsule,
+    fraction: f32,
+    scratch: &mut Scratch,
+) -> Result<super::media::TraceMedia, Failure> {
+    let (query, moving, source) = capsule_pair(query, center, target, scratch)?;
+    let mut work = Work::new(HullPositionLimits::default().query_work);
+    rounded_media(&source, query, moving, fraction, scratch, &mut work)
+}
+
+fn rounded_media(
+    source: &impl CapsuleCells,
+    query: TraceQuery,
+    capsule: Capsule,
+    fraction: f32,
+    scratch: &mut Scratch,
+    work: &mut Work,
+) -> Result<super::media::TraceMedia, Failure> {
+    let path = CapsulePath::new(query, capsule)?;
+    super::media::reached(
+        sphere::Bound::Rational(Fraction::binary32(fraction)?),
+        source.len(),
+        work,
+        |work, visit| {
+            capsule_intervals(
+                source,
+                Contents(u64::MAX),
+                &path,
+                &mut scratch.rows,
+                true,
+                work,
+                |interval, contents, _, work| visit(interval, contents, work),
+            )
+        },
     )
 }
 
@@ -1579,6 +1659,7 @@ mod pair_tests {
             0,
             &vector(Vec3([1.0, 2.0, 3.0]))?,
             &mut scratch.rows,
+            false,
             &mut work,
         )?;
         assert_eq!(rows.len(), CAPSULE_PAIR_ROWS);
@@ -1588,6 +1669,7 @@ mod pair_tests {
                 0,
                 &vector(Vec3::axis(0, 1.0))?,
                 &mut scratch.rows,
+                false,
                 &mut work
             ),
             Err(Failure::Budget)
@@ -1629,6 +1711,7 @@ impl CapsuleCells for CellCapsules<'_> {
         index: usize,
         offset: &[Int; 3],
         rows: &'a mut [Row],
+        strict: bool,
         work: &mut Work,
     ) -> Result<&'a [Row], Failure> {
         self.data.fill_capsule_rows(
@@ -1637,6 +1720,7 @@ impl CapsuleCells for CellCapsules<'_> {
             offset,
             self.pose,
             rows,
+            strict,
             work,
         )
     }
@@ -1658,7 +1742,7 @@ fn capsule_occupancy(
         if !contents.intersects(query.mask) {
             continue;
         }
-        let rows = source.fill(index, &offset, rows, work)?;
+        let rows = source.fill(index, &offset, rows, false, work)?;
         if sphere::occupancy(rows, &center, radius, work)? {
             return Ok(Some(contents));
         }
@@ -1671,6 +1755,7 @@ fn capsule_intervals(
     mask: Contents,
     path: &CapsulePath,
     rows: &mut [Row],
+    strict: bool,
     work: &mut Work,
     mut visit: impl FnMut(sphere::SweepInterval, Contents, usize, &mut Work) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
@@ -1680,9 +1765,13 @@ fn capsule_intervals(
         if !contents.intersects(mask) {
             continue;
         }
-        let rows = source.fill(index, &path.offset, rows, work)?;
-        if let Some(interval) = sphere::interval(rows, &path.start, &path.delta, path.radius, work)?
-        {
+        let rows = source.fill(index, &path.offset, rows, strict, work)?;
+        let interval = if strict {
+            sphere::media_interval(rows, &path.start, &path.delta, path.radius, work)?
+        } else {
+            sphere::interval(rows, &path.start, &path.delta, path.radius, work)?
+        };
+        if let Some(interval) = interval {
             visit(interval, contents, index, work)?;
         }
     }
@@ -1710,6 +1799,7 @@ fn moving_capsule(
                 query.mask,
                 &path,
                 &mut scratch.rows,
+                false,
                 work,
                 |interval, contents, _, work| visit(interval, contents, work),
             )
@@ -1737,6 +1827,7 @@ fn moving_capsule(
         query.mask,
         &path,
         &mut scratch.rows,
+        false,
         work,
         |interval, _, index, work| {
             if selected.is_none() && interval.first.compare(parameter, work)? == Ordering::Equal {
@@ -1746,7 +1837,7 @@ fn moving_capsule(
         },
     )?;
     let selected = selected.ok_or(Failure::Arithmetic)?;
-    let rows = source.fill(selected, &path.offset, &mut scratch.rows, work)?;
+    let rows = source.fill(selected, &path.offset, &mut scratch.rows, false, work)?;
     let padded = (f64::from(capsule.radius) + query.rules.contact_epsilon) as f32;
     if !padded.is_finite() {
         return Err(Failure::Input);
@@ -1775,7 +1866,7 @@ fn moving_capsule(
         };
         if capsule_occupancy(source, endpoint, capsule, &mut scratch.rows, work)?.is_none() {
             let center = end + math::midpoint(query.mins, query.maxs);
-            let rows = source.fill(selected, &path.offset, &mut scratch.rows, work)?;
+            let rows = source.fill(selected, &path.offset, &mut scratch.rows, false, work)?;
             let nearest = sphere::closest(rows, &vector(center)?, work)?;
             let shift = nearest.denominator.bit_length();
             let denominator = nearest.denominator.scaled_f64(shift);
@@ -1890,12 +1981,14 @@ impl Data {
         cell: Cell,
         pose: &Pose,
         rows: &'a mut [Row],
+        strict: bool,
     ) -> Result<&'a mut [Row], Failure> {
         let rows = &mut rows[..cell.sides.count as usize];
         for (row, &side) in rows.iter_mut().zip(&self.sides[cell.sides.range()]) {
             let source = source_row(planes, side)?;
             let mut transformed = Row {
                 distance: source.distance.shift(298)?,
+                strict: strict && source.strict,
                 ..Row::default()
             };
             for component in 0..3 {
@@ -1919,8 +2012,9 @@ impl Data {
         path: &BoxPath,
         pose: &Pose,
         rows: &'a mut [Row],
+        strict: bool,
     ) -> Result<&'a [Row], Failure> {
-        self.fill_source_rows(planes, cell, pose, rows)?;
+        self.fill_source_rows(planes, cell, pose, rows, strict)?;
         let rows = &mut rows[..cell.sides.count as usize + 6];
         for axis in 0..3 {
             for side in 0..2 {
@@ -1945,10 +2039,11 @@ impl Data {
         offset: &[Int; 3],
         pose: &Pose,
         rows: &'a mut [Row],
+        strict: bool,
         work: &mut Work,
     ) -> Result<&'a [Row], Failure> {
-        self.fill_source_rows(planes, cell, pose, rows)?;
-        let count = extrude_rows(rows, cell.sides.count as usize, offset, work)?;
+        self.fill_source_rows(planes, cell, pose, rows, strict)?;
+        let count = extrude_rows(rows, cell.sides.count as usize, offset, strict, work)?;
         Ok(&rows[..count])
     }
 
@@ -1967,7 +2062,7 @@ impl Data {
             if !cell.contents.intersects(mask) {
                 continue;
             }
-            let rows = self.fill_rows(planes, cell, path, pose, rows)?;
+            let rows = self.fill_rows(planes, cell, path, pose, rows, false)?;
             if feasible(rows, 149, work)? {
                 return Ok(Some(cell.contents));
             }
@@ -1983,6 +2078,7 @@ impl Data {
         path: &BoxPath,
         pose: &Pose,
         rows: &mut [Row],
+        strict: bool,
         work: &mut Work,
         mut visit: impl FnMut(Interval, Contents, &mut Work) -> Result<(), Failure>,
     ) -> Result<(), Failure> {
@@ -1991,8 +2087,8 @@ impl Data {
             if !cell.contents.intersects(mask) {
                 continue;
             }
-            let rows = self.fill_rows(planes, cell, path, pose, rows)?;
-            if let Some(interval) = interval(rows, work)? {
+            let rows = self.fill_rows(planes, cell, path, pose, rows, strict)?;
+            if let Some(interval) = interval_mode(rows, strict, work)? {
                 visit(interval, cell.contents, work)?;
             }
         }
@@ -2017,7 +2113,7 @@ impl Data {
             if !cell.contents.intersects(mask) {
                 continue;
             }
-            let rows = self.fill_rows(planes, cell, path, pose, &mut scratch.rows)?;
+            let rows = self.fill_rows(planes, cell, path, pose, &mut scratch.rows, false)?;
             let Some(interval) = interval(rows, work)? else {
                 continue;
             };
@@ -2088,6 +2184,7 @@ impl Data {
                 path,
                 pose,
                 &mut scratch.rows,
+                false,
                 work,
                 visit,
             )
@@ -2230,11 +2327,11 @@ impl Data {
         if determinant(&matrix, 3, &mut work)?.is_zero() {
             return Err(Failure::Input);
         }
-        if let Some(capsule) = query.capsule {
+        let mut trace = if let Some(capsule) = query.capsule {
             if !capsule.is_valid() {
                 return Err(Failure::Input);
             }
-            return trace_rounded(
+            trace_rounded(
                 &CellCapsules {
                     data: self,
                     planes,
@@ -2245,27 +2342,72 @@ impl Data {
                 capsule,
                 scratch,
                 &mut work,
-            );
-        }
-        if moving {
-            return self.moving(planes, cells, query, &path, &pose, scratch, &mut work);
-        }
-        if let Some(contents) = self.occupancy(
-            planes,
-            cells,
-            query.mask,
-            &path,
-            &pose,
-            &mut scratch.rows,
-            &mut work,
-        )? {
+            )?
+        } else if moving {
+            self.moving(planes, cells, query, &path, &pose, scratch, &mut work)?
+        } else {
             let mut trace = Trace::clear(query.end);
-            trace.start_solid = true;
-            trace.all_solid = true;
-            trace.fraction = 0.0;
-            trace.contents = contents;
-            return Ok(trace);
+            if let Some(contents) = self.occupancy(
+                planes,
+                cells,
+                query.mask,
+                &path,
+                &pose,
+                &mut scratch.rows,
+                &mut work,
+            )? {
+                trace.start_solid = true;
+                trace.all_solid = true;
+                trace.fraction = 0.0;
+                trace.contents = contents;
+            }
+            trace
+        };
+        if query.rules.reached_media {
+            let media = if let Some(capsule) = query.capsule {
+                rounded_media(
+                    &CellCapsules {
+                        data: self,
+                        planes,
+                        cells,
+                        pose: &pose,
+                    },
+                    query,
+                    capsule,
+                    trace.fraction,
+                    scratch,
+                    &mut work,
+                )
+            } else {
+                super::media::reached(
+                    Fraction::binary32(trace.fraction)?,
+                    cells.count,
+                    &mut work,
+                    |work, visit| {
+                        self.intervals(
+                            planes,
+                            cells,
+                            Contents(u64::MAX),
+                            &path,
+                            &pose,
+                            &mut scratch.rows,
+                            true,
+                            work,
+                            visit,
+                        )
+                    },
+                )
+            };
+            media
+                .map_err(|failure| {
+                    if failure == Failure::Scratch {
+                        failure
+                    } else {
+                        Failure::Media
+                    }
+                })?
+                .apply(&mut trace);
         }
-        Ok(Trace::clear(query.end))
+        Ok(trace)
     }
 }

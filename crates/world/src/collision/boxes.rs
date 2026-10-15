@@ -2,7 +2,7 @@ use super::EntityTraceFlags;
 use super::store::BodyTraceMode;
 use super::surfaces::{SurfaceRecord, SurfaceRows};
 use super::{
-    Contents, Trace, TraceQuery,
+    Contents, Trace, TraceError, TraceQuery,
     brushes::{Brush, BrushWork, trace_brushes},
     hulls::{ClipNode, Frame, Hull},
 };
@@ -28,7 +28,7 @@ pub fn trace_box(
     body: &Body,
     entity: Option<EntityId>,
     mode: BodyTraceMode,
-) -> Trace {
+) -> Result<Trace, TraceError> {
     if query.entity_rules.quake_kind().is_none() || query.capsule.is_some() {
         return trace_convex_box(query, body, entity, mode, None);
     }
@@ -79,7 +79,7 @@ pub fn trace_box(
         trace.entity = entity;
     }
     trace.brush_solid = false;
-    trace
+    Ok(trace)
 }
 
 pub(super) fn trace_convex_box(
@@ -88,7 +88,7 @@ pub(super) fn trace_convex_box(
     entity: Option<EntityId>,
     mode: BodyTraceMode,
     culling_bounds: Option<qa_core::primitives::Bounds>,
-) -> Trace {
+) -> Result<Trace, TraceError> {
     let original = query;
     let mut query = query;
     if mode == BodyTraceMode::Transformed
@@ -162,11 +162,11 @@ pub(super) fn trace_convex_box(
             sides: &[0; 6],
             geometry: None,
         },
-    );
+    )?;
     trace.end = mode.end_position(original.start, original.end, trace.fraction);
     if trace.fraction < 1.0 || trace.start_solid {
         trace.entity = entity;
     }
     trace.brush_solid = false;
-    trace
+    Ok(trace)
 }

@@ -291,6 +291,58 @@ impl Topology {
             self.sweep(map, root_child(root), &work, &mut trace, scratch);
         }
         trace.end = work.end_position(trace.fraction);
+        if query.rules.reached_media {
+            super::position::validate_query(query)
+                .map_err(super::position::Failure::query_error)?;
+            let end = work.start.lerp(work.end, trace.fraction);
+            let bounds = if let Some(capsule) = query.capsule {
+                capsule.swept_bounds(work.start, end, 1.0)
+            } else {
+                Bounds::swept(work.start, end, work.mins, work.maxs, 1.0)
+            };
+            if !bounds.is_valid() {
+                return Err(TraceError::Query);
+            }
+            let mut budget =
+                super::position::Work::new(super::HullPositionLimits::default().query_work);
+            super::media::reached(
+                trace.fraction,
+                map.brushes.len() as u32,
+                &mut budget,
+                |budget, visit| {
+                    scratch.stamps.begin();
+                    let stamps = &mut scratch.stamps;
+                    scratch
+                        .leaf_walk
+                        .visit(
+                            root_child(root),
+                            bounds,
+                            crate::bsp::node_view(&self.planes, &self.nodes),
+                            |leaf| {
+                                budget.item()?;
+                                for &id in self.members(&self.leaves[leaf as usize]) {
+                                    budget.item()?;
+                                    if stamps.test_and_set(id as usize) {
+                                        continue;
+                                    }
+                                    let brush = map.brushes[id as usize];
+                                    if brush.contents.to_q1() != -1
+                                        && let Some(interval) =
+                                            work.media_interval(&map.planes, brush, budget)?
+                                    {
+                                        visit(interval, brush.contents, budget)?;
+                                    }
+                                }
+                                Ok(true)
+                            },
+                        )?
+                        .ok_or(super::position::Failure::Scratch)?;
+                    Ok(())
+                },
+            )
+            .map_err(super::position::Failure::query_error)?
+            .apply(&mut trace);
+        }
         Ok(trace)
     }
 

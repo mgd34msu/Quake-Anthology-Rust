@@ -36,8 +36,32 @@ fn quake_point_contents_keeps_native_values_and_strips_currents() {
     assert_eq!((Contents::SKY | Contents::SOLID).to_q1(), -2);
     assert_eq!(
         (Contents::BODY | Contents::LADDER | Contents::AUX).to_q1(),
-        -1
+        -2
     );
+    for solid in [
+        Contents::SOLID,
+        Contents::WINDOW,
+        Contents::BODY,
+        Contents::CORPSE,
+        Contents::PLAYER,
+        Contents::PROJECTILE,
+    ] {
+        assert_eq!(solid.to_q1(), -2);
+        assert_eq!(
+            (solid | Contents::SKY | Contents::LAVA | Contents::SLIME | Contents::WATER).to_q1(),
+            -2
+        );
+    }
+    for dropped in [
+        Contents::LADDER,
+        Contents::AUX,
+        Contents::PLAYER_CLIP,
+        Contents::MONSTER_CLIP,
+        Contents::VOLUME_CLIP,
+    ] {
+        assert_eq!(dropped.to_q1(), -1);
+        assert_eq!((dropped | Contents::WATER).to_q1(), -3);
+    }
 }
 
 #[test]

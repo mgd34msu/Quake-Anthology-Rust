@@ -653,7 +653,8 @@ fn intentional_none_and_box_shapes_do_not_require_geometry_or_scratch() {
         &body,
         None,
         qa_world::collision::store::BodyTraceMode::Transformed,
-    );
+    )
+    .expect("valid fixture box trace");
     let boxed = store
         .trace_body(
             query,

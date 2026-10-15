@@ -62,7 +62,15 @@ impl Contents {
     /// overlapping combined-game volumes resolve solid, sky, then fluids.
     pub fn to_q1(self) -> i32 {
         [
-            (Self::SOLID, -2),
+            (
+                Self::SOLID
+                    | Self::WINDOW
+                    | Self::BODY
+                    | Self::CORPSE
+                    | Self::PLAYER
+                    | Self::PROJECTILE,
+                -2,
+            ),
             (Self::SKY, -6),
             (Self::LAVA, -5),
             (Self::SLIME, -4),

@@ -3,6 +3,7 @@ pub mod brushes;
 pub mod capsules;
 pub mod contents;
 pub mod hulls;
+mod media;
 pub mod patches;
 mod position;
 pub mod scene;
@@ -221,6 +222,7 @@ pub enum HullShape {
 /// These are engine query values, not fields of any legacy wire protocol.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TraceRules {
+    pub reached_media: bool,
     pub patches: PatchClip,
     pub hull_shape: HullShape,
     /// Plane distances and stored fractions stay f32; the native epsilon
@@ -246,6 +248,7 @@ impl TraceRules {
     /// Q1/QW hull contact and Q2 convex clipping use the same contact epsilon.
     /// Convex brushes are a shared extension for Q1 callers, not Q1 topology.
     pub const LEGACY: Self = Self {
+        reached_media: true,
         patches: PatchClip::All,
         hull_shape: HullShape::CompiledWidth,
         contact_epsilon: 0.03125,
@@ -263,6 +266,7 @@ impl TraceRules {
         secondary_contact: false,
     };
     pub const ARENA: Self = Self {
+        reached_media: false,
         patches: PatchClip::All,
         hull_shape: HullShape::ExactBox,
         contact_epsilon: 0.125,
@@ -280,6 +284,7 @@ impl TraceRules {
         secondary_contact: false,
     };
     pub const RERELEASE: Self = Self {
+        reached_media: false,
         fraction_binary32: true,
         outside_brush: OutsideBrush::EndBeyondEpsilon,
         fraction_clamp: FractionClamp::PerPlane,
@@ -356,6 +361,7 @@ pub const fn trace_policy(rules: RuleSetId) -> (TraceRules, EntityTracePolicy) {
         ),
         RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => (
             TraceRules {
+                reached_media: false,
                 hull_shape: HullShape::ExactBox,
                 ..if matches!(rules, RuleSetId::Quake2Rerelease) {
                     TraceRules::RERELEASE

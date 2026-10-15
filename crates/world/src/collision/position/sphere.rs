@@ -71,12 +71,15 @@ impl Feature {
         indices: &[usize],
         start: &[Int; 3],
         delta: Option<&[Int; 3]>,
+        strict: bool,
         work: &mut Work,
     ) -> Result<Option<Interval>, Failure> {
         let mut region = Interval {
             first: Fraction::ZERO,
             last: Fraction::ONE,
             isolated: false,
+            first_closed: true,
+            last_closed: true,
         };
         for &weight in &self.weights[..indices.len()] {
             if !clip(&mut region, weight)? {
@@ -86,6 +89,9 @@ impl Feature {
         for (index, row) in rows.iter().enumerate() {
             work.item()?;
             if indices.contains(&index) {
+                if strict && row.strict {
+                    return Ok(None);
+                }
                 continue;
             }
             let error = row.distance.add(&dot(&row.normal, start)?.neg())?;
@@ -103,7 +109,7 @@ impl Feature {
                 Cost {
                     alpha,
                     beta,
-                    strict: false,
+                    strict: strict && row.strict,
                 },
             )? {
                 return Ok(None);
@@ -125,17 +131,31 @@ impl Feature {
 
 fn clip(interval: &mut Interval, cost: Cost) -> Result<bool, Failure> {
     if cost.beta.is_zero() {
-        return Ok(!cost.alpha.negative());
+        return Ok(!cost.alpha.negative() && !(cost.strict && cost.alpha.is_zero()));
     }
     let bound = Fraction::new(cost.alpha.neg(), cost.beta);
     if cost.beta.negative() {
-        if bound.compare(interval.last)? == Ordering::Less {
-            interval.last = bound;
+        match bound.compare(interval.last)? {
+            Ordering::Less => {
+                interval.last = bound;
+                interval.last_closed = !cost.strict;
+            }
+            Ordering::Equal => interval.last_closed &= !cost.strict,
+            _ => {}
         }
-    } else if bound.compare(interval.first)? == Ordering::Greater {
-        interval.first = bound;
+    } else {
+        match bound.compare(interval.first)? {
+            Ordering::Greater => {
+                interval.first = bound;
+                interval.first_closed = !cost.strict;
+            }
+            Ordering::Equal => interval.first_closed &= !cost.strict,
+            _ => {}
+        }
     }
-    Ok(interval.first.compare(interval.last)? != Ordering::Greater)
+    let order = interval.first.compare(interval.last)?;
+    Ok(order == Ordering::Less
+        || order == Ordering::Equal && interval.first_closed && interval.last_closed)
 }
 
 /// KKT distance projection. Admission proves that every retained cell is
@@ -157,7 +177,10 @@ pub(super) fn closest(
             let Some(feature) = Feature::fit(rows, indices, center, None, work)? else {
                 return Ok(true);
             };
-            if feature.region(rows, indices, center, None, work)?.is_none() {
+            if feature
+                .region(rows, indices, center, None, false, work)?
+                .is_none()
+            {
                 return Ok(true);
             }
             answer = Some(Projection {
@@ -283,6 +306,8 @@ impl Polynomial {
                 first: minimum,
                 last: minimum,
                 isolated: true,
+                first_closed: true,
+                last_closed: true,
             }))),
             Ordering::Less => Ok(Some(SweepInterval {
                 first: if self.at(region.first)?.compare(&Int::ZERO) == Ordering::Greater {
@@ -302,6 +327,10 @@ impl Polynomial {
                     Bound::Rational(region.last)
                 },
                 isolated: false,
+                first_closed: self.at(region.first)?.compare(&Int::ZERO) == Ordering::Greater
+                    || region.first_closed,
+                last_closed: self.at(region.last)?.compare(&Int::ZERO) == Ordering::Greater
+                    || region.last_closed,
             })),
         }
     }
@@ -420,6 +449,8 @@ impl SweepInterval {
             first: Bound::Rational(interval.first),
             last: Bound::Rational(interval.last),
             isolated: interval.isolated,
+            first_closed: interval.first_closed,
+            last_closed: interval.last_closed,
         }
     }
 }
@@ -439,6 +470,70 @@ pub(super) fn interval(
     radius: Int,
     work: &mut Work,
 ) -> Result<Option<SweepInterval>, Failure> {
+    interval_mode(rows, start, delta, radius, false, work)
+}
+
+pub(super) fn media_interval(
+    rows: &[Row],
+    start: &[Int; 3],
+    delta: &[Int; 3],
+    radius: Int,
+    work: &mut Work,
+) -> Result<Option<SweepInterval>, Failure> {
+    interval_mode(rows, start, delta, radius, true, work)
+}
+
+fn strict_piece(
+    feature: &Feature,
+    rows: &[Row],
+    indices: &[usize],
+    start: &[Int; 3],
+    delta: &[Int; 3],
+    polynomial: Polynomial,
+    mut piece: SweepInterval,
+    work: &mut Work,
+) -> Result<Option<SweepInterval>, Failure> {
+    let region = feature.region(rows, indices, start, Some(delta), true, work)?;
+    if polynomial
+        .coefficients
+        .iter()
+        .all(|coefficient| coefficient.is_zero())
+    {
+        return match region {
+            None => Ok(None),
+            Some(region) => polynomial.intersect(region),
+        };
+    }
+    let mut included = |bound: Bound| -> Result<bool, Failure> {
+        if let Bound::Rational(parameter) = bound
+            && polynomial.at(parameter)?.negative()
+        {
+            return Ok(true);
+        }
+        let Some(region) = region else {
+            return Ok(false);
+        };
+        let first = bound.compare(Bound::Rational(region.first), work)?;
+        let last = bound.compare(Bound::Rational(region.last), work)?;
+        Ok(
+            (first == Ordering::Greater || first == Ordering::Equal && region.first_closed)
+                && (last == Ordering::Less || last == Ordering::Equal && region.last_closed),
+        )
+    };
+    piece.first_closed &= included(piece.first)?;
+    piece.last_closed &= included(piece.last)?;
+    let equal = piece.first.compare(piece.last, work)? == Ordering::Equal;
+    Ok((!equal || piece.first_closed && piece.last_closed).then_some(piece))
+}
+
+fn interval_mode(
+    rows: &[Row],
+    start: &[Int; 3],
+    delta: &[Int; 3],
+    radius: Int,
+    strict: bool,
+    work: &mut Work,
+) -> Result<Option<SweepInterval>, Failure> {
     if separated(rows, start, Some(delta), radius, work)? {
         return Ok(None);
     }
@@ -449,20 +544,41 @@ pub(super) fn interval(
             let Some(feature) = Feature::fit(rows, indices, start, Some(delta), work)? else {
                 return Ok(true);
             };
-            let Some(region) = feature.region(rows, indices, start, Some(delta), work)? else {
+            let Some(region) = feature.region(rows, indices, start, Some(delta), false, work)?
+            else {
                 return Ok(true);
             };
-            let Some(piece) = feature.polynomial(radius)?.intersect(region)? else {
+            let polynomial = feature.polynomial(radius)?;
+            let Some(mut piece) = polynomial.intersect(region)? else {
                 return Ok(true);
             };
+            if strict {
+                let Some(included) = strict_piece(
+                    &feature, rows, indices, start, delta, polynomial, piece, work,
+                )?
+                else {
+                    return Ok(true);
+                };
+                piece = included;
+            }
             match &mut answer {
                 None => answer = Some(piece),
                 Some(old) => {
-                    if piece.first.compare(old.first, work)? == Ordering::Less {
-                        old.first = piece.first;
+                    match piece.first.compare(old.first, work)? {
+                        Ordering::Less => {
+                            old.first = piece.first;
+                            old.first_closed = piece.first_closed;
+                        }
+                        Ordering::Equal => old.first_closed |= piece.first_closed,
+                        _ => {}
                     }
-                    if piece.last.compare(old.last, work)? == Ordering::Greater {
-                        old.last = piece.last;
+                    match piece.last.compare(old.last, work)? {
+                        Ordering::Greater => {
+                            old.last = piece.last;
+                            old.last_closed = piece.last_closed;
+                        }
+                        Ordering::Equal => old.last_closed |= piece.last_closed,
+                        _ => {}
                     }
                     old.isolated = old.first.compare(old.last, work)? == Ordering::Equal;
                 }
@@ -479,6 +595,8 @@ pub(super) fn interval(
         if let Some(interval) = answer
             && interval.first.compare(Bound::ZERO, work)? == Ordering::Equal
             && interval.last.compare(Bound::ONE, work)? == Ordering::Equal
+            && interval.first_closed
+            && interval.last_closed
         {
             return Ok(answer);
         }

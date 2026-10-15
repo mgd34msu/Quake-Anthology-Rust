@@ -1,4 +1,5 @@
 use super::patches::{Patch, PatchInput};
+use super::position::{Failure, Interval, Work};
 use super::surfaces::{SurfaceRows, SurfaceStorage, SurfaceTable};
 use super::tree::BrushScratch;
 use super::tree::Topology;
@@ -263,6 +264,46 @@ impl<'a> BrushWork<'a> {
         )
     }
 
+    pub(super) fn media_interval(
+        &self,
+        planes: &[Plane],
+        brush: Brush,
+        work: &mut Work,
+    ) -> Result<Option<Interval<f32>>, Failure> {
+        if brush.sides.count == 0 {
+            return Ok(None);
+        }
+        work.items(brush.sides.count as usize)?;
+        let planes = &planes[brush.sides.range()];
+        let mut invalid = false;
+        let rules = TraceRules {
+            contact_epsilon: 0.0,
+            outside_brush: OutsideBrush::MovingAway,
+            fraction_clamp: FractionClamp::AfterSelection,
+            secondary_contact: false,
+            ..self.query.rules
+        };
+        let interval = convex_interval(rules, planes.len(), |index| {
+            let distances = self.distances(planes[index], true);
+            invalid |= !distances.0.is_finite() || !distances.1.is_finite();
+            distances
+        });
+        if invalid {
+            return Err(Failure::Input);
+        }
+        Ok(interval.and_then(|interval| {
+            let first = interval.enter.max(0.0);
+            let last = interval.leave.min(1.0);
+            (first <= last).then_some(Interval {
+                first,
+                last,
+                isolated: first == last,
+                first_closed: true,
+                last_closed: true,
+            })
+        }))
+    }
+
     pub fn end_position(&self, fraction: f32) -> Vec3 {
         if self.query.start == self.query.end
             && self.query.rules.position_endpoint == PositionEndpoint::Start
@@ -423,7 +464,7 @@ pub(super) fn trace_brushes(
     planes: &[Plane],
     brushes: &[Brush],
     surfaces: SurfaceRows<'_>,
-) -> Trace {
+) -> Result<Trace, TraceError> {
     let query = work.query;
     let mut trace = Trace::clear(query.end);
     for &brush in brushes {
@@ -441,5 +482,26 @@ pub(super) fn trace_brushes(
         }
     }
     trace.end = work.end_position(trace.fraction);
-    trace
+    if query.rules.reached_media {
+        let mut budget = Work::new(super::HullPositionLimits::default().query_work);
+        super::media::reached(
+            trace.fraction,
+            brushes.len() as u32,
+            &mut budget,
+            |budget, visit| {
+                for &brush in brushes {
+                    budget.item()?;
+                    if brush.contents.to_q1() != -1
+                        && let Some(interval) = work.media_interval(planes, brush, budget)?
+                    {
+                        visit(interval, brush.contents, budget)?;
+                    }
+                }
+                Ok(())
+            },
+        )
+        .map_err(Failure::query_error)?
+        .apply(&mut trace);
+    }
+    Ok(trace)
 }

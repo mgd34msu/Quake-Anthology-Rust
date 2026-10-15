@@ -445,7 +445,7 @@ impl CollisionStore {
         scratch: &mut TraceScratch,
     ) -> Result<Trace, TraceError> {
         match shape {
-            CollisionShape::Box => Ok(super::boxes::trace_box(query, body, entity, mode)),
+            CollisionShape::Box => super::boxes::trace_box(query, body, entity, mode),
             CollisionShape::Capsule => {
                 let mut local = query;
                 let (origin, matrix) = if mode == BodyTraceMode::Transformed {
@@ -822,6 +822,7 @@ fn trace_position(
         .trace_position(cells.ok_or(unsupported)?, query, origin, axes, scratch)
         .map_err(|error| match error {
             position::Failure::Scratch => TraceError::Scratch,
+            position::Failure::Media => TraceError::Query,
             _ => unsupported,
         })
 }
