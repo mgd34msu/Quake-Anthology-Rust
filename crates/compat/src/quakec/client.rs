@@ -269,6 +269,36 @@ impl Vm {
         self.projection
             .quakec_client_phase(&self.entities, context, native)
     }
+    pub fn client_view_angles(&self, native: u32) -> Result<Vec3, CallError> {
+        self.client_globals.require()?;
+        self.projection
+            .quakec_client_view_angles(&self.entities, native)
+    }
+    pub fn client_view_height(&self, native: u32) -> Result<f32, CallError> {
+        self.client_globals.require()?;
+        self.projection
+            .quakec_client_view_height(&self.entities, native)
+    }
+    pub fn client_water_level(&self, native: u32) -> Result<f32, CallError> {
+        self.client_globals.require()?;
+        self.projection
+            .quakec_client_water_level(&self.entities, native)
+    }
+    pub fn client_old_origin(&self, native: u32, axis: usize) -> Result<f32, CallError> {
+        self.client_globals.require()?;
+        self.projection
+            .quakec_client_old_origin(&self.entities, native, axis)
+    }
+    pub fn client_teleport_time(&self, native: u32) -> Result<f32, CallError> {
+        self.client_globals.require()?;
+        self.projection
+            .quakec_client_teleport_time(&self.entities, native)
+    }
+    pub fn client_move_direction(&self, native: u32, axis: usize) -> Result<f32, CallError> {
+        self.client_globals.require()?;
+        self.projection
+            .quakec_client_move_direction(&self.entities, native, axis)
+    }
     pub fn max_velocity(&self, vars: &qa_console::cvars::Cvars) -> Result<f32, CallError> {
         let source = self.client_globals.require()?;
         let settings = self.client_globals.settings.ok_or(CallError::Cvar)?;
@@ -331,7 +361,7 @@ impl Vm {
         context: CallContext,
         native: u32,
         seconds: f64,
-    ) -> Result<Option<qa_movement::MoveOptions>, CallError> {
+    ) -> Result<Option<qa_movement::ControlStart>, CallError> {
         self.client_globals.require_frame_movement(context)?;
         let settings = self.client_globals.settings.ok_or(CallError::Cvar)?;
         let number = |handle| {
@@ -347,20 +377,6 @@ impl Vm {
         self.with_entity_stores(|projection, memory, _, store| {
             projection.quakec_prepare_control(memory, context, native, seconds, roll, store)
         })
-        .map(|angles| {
-            angles.map(|body_angles| qa_movement::MoveOptions {
-                phase: qa_movement::MovePhase::Control {
-                    body_angles,
-                    clock: context.clock,
-                },
-                ..Default::default()
-            })
-        })
-    }
-    pub fn client_noclip(&self, context: CallContext, native: u32) -> Result<(), CallError> {
-        self.client_globals.require_frame_movement(context)?;
-        self.projection
-            .quakec_client_noclip(&self.entities, context, native)
     }
     pub fn read_frame_client(
         &self,
@@ -368,6 +384,7 @@ impl Vm {
         context: CallContext,
         native: u32,
         entity: EntityId,
+        phase: qa_core::primitives::Motion,
         player: &mut qa_core::primitives::PlayerState,
     ) -> Result<(), CallError> {
         self.client_globals.require_frame_movement(context)?;
@@ -377,6 +394,7 @@ impl Vm {
             context,
             native,
             entity,
+            phase,
             player,
         )
     }
@@ -394,6 +412,17 @@ impl Vm {
             projection.quakec_write_frame_scalar(
                 entities, memory, context, native, entity, player, stage, store,
             )
+        })
+    }
+    pub fn finish_frame_client(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        native: u32,
+    ) -> Result<(), CallError> {
+        self.client_globals.require_frame_movement(context)?;
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_finish_frame_client(services, memory, context, native, store)
         })
     }
     pub(super) fn sync_client_globals(&mut self) -> Result<(), CallError> {

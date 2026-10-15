@@ -125,6 +125,8 @@ pub enum MotionField {
     Ground(qa_core::primitives::NativeEntityRef),
     WaterType(f32),
     WaterLevel(f32),
+    OldOrigin { axis: usize, value: f32 },
+    TeleportTime(f32),
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Scalar {

@@ -1,5 +1,37 @@
 //! Nonclient motion policy, selected by the entity's owning module at load.
+use super::sweep::{LegacySweepRules, entity_sweep};
 use qa_core::primitives::RuleSetId;
+
+/// Native client motion policies; movement and trace roles remain independent.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientMotionRules {
+    pub sweep: LegacySweepRules,
+    pub toss: TossRules,
+    pub step: StepRules,
+    pub allow_step: bool,
+    pub allow_missile: bool,
+    pub water_jump_flag: u32,
+    pub walk_move_type: f32,
+    pub noclip_move_type: f32,
+    pub bsp_solid: f32,
+}
+
+pub const fn client_motion_rules(rules: RuleSetId) -> Option<ClientMotionRules> {
+    match (entity_sweep(rules), toss_rules(rules), step_rules(rules)) {
+        (Some(sweep), Some(toss), Some(step)) => Some(ClientMotionRules {
+            sweep,
+            toss,
+            step,
+            allow_step: true,
+            allow_missile: true,
+            water_jump_flag: 1 << 11,
+            walk_move_type: 3.0,
+            noclip_move_type: 8.0,
+            bsp_solid: 4.0,
+        }),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct GravityRules {

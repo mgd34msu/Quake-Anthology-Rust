@@ -7,6 +7,8 @@ pub struct MovementHandles {
     speed: CvarHandle,
     gravity: CvarHandle,
     friction: CvarHandle,
+    edge_friction: CvarHandle,
+    no_step: CvarHandle,
     stop_speed: CvarHandle,
     accelerate: CvarHandle,
     air_accelerate: CvarHandle,
@@ -24,6 +26,8 @@ impl MovementHandles {
             speed: bind("g_speed")?,
             gravity: bind("g_gravity")?,
             friction: bind("sv_friction")?,
+            edge_friction: bind("edgefriction")?,
+            no_step: bind("sv_nostep")?,
             stop_speed: bind("sv_stopspeed")?,
             accelerate: bind("sv_accelerate")?,
             air_accelerate: bind("sv_airaccelerate")?,
@@ -43,6 +47,13 @@ impl MovementHandles {
         tuning.max_speed = magnitude(vars, self.speed, rules, base.max_speed);
         tuning.gravity = magnitude(vars, self.gravity, rules, base.gravity);
         tuning.friction = number(vars, self.friction, rules, base.friction);
+        tuning.edge_friction = number(vars, self.edge_friction, rules, base.edge_friction);
+        if rules == RuleSetId::Quake {
+            tuning.no_step = base.no_step
+                || vars
+                    .native_number(self.no_step, rules)
+                    .is_some_and(|value| value != 0.0);
+        }
         tuning.stop_speed = number(vars, self.stop_speed, rules, base.stop_speed);
         tuning.accelerate = number(vars, self.accelerate, rules, base.accelerate);
         tuning.air_accelerate = number(vars, self.air_accelerate, rules, base.air_accelerate);

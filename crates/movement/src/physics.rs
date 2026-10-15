@@ -250,6 +250,13 @@ fn copy_body<E, B>(
 where
     B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
 {
+    if let Some((position, velocity)) = baseline {
+        // Simulation results stay in the copied arguments until each scalar
+        // reaches its native boundary. A failed first store must not expose
+        // the rest of the speculative body.
+        player.body.position = position;
+        player.body.velocity = velocity;
+    }
     for (origin, values) in [(false, Some(velocity)), (true, position)] {
         let Some(values) = values else { continue };
         for axis in 0..3 {
@@ -353,7 +360,7 @@ pub(crate) struct Parameters {
     dead_friction: Option<f32>,
 }
 impl Parameters {
-    fn load(rules: RuleSetId, player: &PlayerState) -> Self {
+    pub(crate) fn load(rules: RuleSetId, player: &PlayerState) -> Self {
         let t = player.movement.tuning;
         let legacy = matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld);
         let arena = rules == RuleSetId::Quake3;
@@ -413,11 +420,7 @@ struct Wish {
 }
 impl Wish {
     fn immediate_velocity(self) -> Vec3 {
-        if self.length > self.maximum {
-            self.raw * (self.maximum / self.length)
-        } else {
-            self.raw
-        }
+        super::control::cap_velocity(self.raw, self.length, self.maximum)
     }
 }
 pub(crate) struct Step<'a> {
@@ -509,18 +512,25 @@ impl Step<'_> {
         {
             return false;
         }
+        if self.nq() {
+            let Some(amount) = super::control::acceleration(
+                self.player.body.velocity.dot(direction),
+                speed,
+                accel,
+                self.exact_dt,
+                air_cap,
+            ) else {
+                return false;
+            };
+            self.player.body.velocity = self.player.body.velocity + direction * amount;
+            return true;
+        }
         let target = if air_cap { speed.min(30.0) } else { speed };
         let add = target - self.player.body.velocity.dot(direction);
         if add <= 0.0 {
             return false;
         }
-        let amount = if self.nq() {
-            if air_cap {
-                (f64::from(accel * speed) * self.exact_dt) as f32
-            } else {
-                (f64::from(accel) * self.exact_dt * f64::from(speed)) as f32
-            }
-        } else if air_cap {
+        let amount = if air_cap {
             accel * speed * self.dt
         } else {
             accel * self.dt * speed
@@ -877,7 +887,11 @@ impl Step<'_> {
                 },
             )?;
             if tr.fraction == 1.0 {
-                friction *= 2.0;
+                friction *= if self.nq() {
+                    self.player.movement.tuning.edge_friction.unwrap_or(2.0)
+                } else {
+                    2.0
+                };
             }
         }
         let ground = self.player.movement.grounded
@@ -902,10 +916,13 @@ impl Step<'_> {
         }
         let water = self.player.movement.water_level;
         if environment && self.nq() {
-            let new_speed = (f64::from(speed)
-                - self.exact_dt * f64::from(speed.max(self.parameters.stop)) * f64::from(friction))
-                as f32;
-            self.player.body.velocity = self.player.body.velocity * (new_speed.max(0.0) / speed);
+            self.player.body.velocity = self.player.body.velocity
+                * super::control::friction_scale(
+                    speed,
+                    self.parameters.stop,
+                    friction,
+                    self.exact_dt,
+                );
             return Ok(());
         } else if environment && self.qw() && water >= 2 {
             drop = speed * self.parameters.water_friction * f32::from(water) * self.dt;
@@ -989,16 +1006,34 @@ impl Step<'_> {
     fn wish(&mut self, water: bool, free: Option<FreeMovePolicy>) -> Result<Wish, TraceError> {
         let native_control =
             free.is_some_and(|policy| matches!(policy.wish, FreeWish::NativeControl));
+        if native_control {
+            let (angles, clock) =
+                if let MovePhase::Control { body_angles, clock } = self.options.phase {
+                    (body_angles, clock.seconds())
+                } else {
+                    (
+                        self.player.view_angles,
+                        f64::from(self.command.server_time_ms) * 0.001,
+                    )
+                };
+            let wish = super::control::air_wish(
+                angles,
+                self.command,
+                false,
+                clock < self.player.movement.teleport_hold_until,
+                self.parameters.speed,
+            );
+            return Ok(Wish {
+                direction: wish.direction,
+                speed: wish.speed,
+                vertical: wish.velocity.0[2],
+                raw: wish.velocity,
+                length: wish.speed,
+                maximum: self.parameters.speed,
+            });
+        }
         let full_basis = free.is_some_and(|policy| !matches!(policy.wish, FreeWish::Existing));
-        let mut angles = if native_control {
-            if let MovePhase::Control { body_angles, .. } = self.options.phase {
-                body_angles
-            } else {
-                self.player.view_angles
-            }
-        } else {
-            self.player.view_angles
-        };
+        let mut angles = self.player.view_angles;
         if !full_basis && self.nq() && !water {
             angles.0[0] = -angles.0[0] / 3.0;
             angles.0[2] = 0.0;
@@ -1006,11 +1041,7 @@ impl Step<'_> {
             angles.0[0] = math::wrap_above_180(angles.0[0]);
             angles.0[0] /= 3.0;
         }
-        let mut basis = if native_control {
-            math::angle_vectors(angles)
-        } else {
-            self.view_basis(angles)
-        };
+        let mut basis = self.view_basis(angles);
         if !full_basis && (self.qw() || self.arena()) && !water {
             basis.forward.0[2] = 0.0;
             basis.right.0[2] = 0.0;
@@ -1028,15 +1059,7 @@ impl Step<'_> {
             math::normalize(&mut basis.right);
         }
         let mut move_axes = self.command.movement;
-        let clock = if native_control {
-            if let MovePhase::Control { clock, .. } = self.options.phase {
-                clock.seconds()
-            } else {
-                f64::from(self.command.server_time_ms) * 0.001
-            }
-        } else {
-            f64::from(self.command.server_time_ms) * 0.001
-        };
+        let clock = f64::from(self.command.server_time_ms) * 0.001;
         if self.nq() && clock < self.player.movement.teleport_hold_until && move_axes[0] < 0.0 {
             move_axes[0] = 0.0;
         }
@@ -1045,18 +1068,10 @@ impl Step<'_> {
         if button_vertical || swim_buttons {
             move_axes[2] = 0.0;
         }
-        if !native_control
-            && !button_vertical
-            && !swim_buttons
-            && self.command.buttons & buttons::JUMP != 0
-        {
+        if !button_vertical && !swim_buttons && self.command.buttons & buttons::JUMP != 0 {
             move_axes[2] = move_axes[2].max(if self.arena() { 127.0 } else { 200.0 });
         }
-        if !native_control
-            && !button_vertical
-            && !swim_buttons
-            && self.command.buttons & buttons::CROUCH != 0
-        {
+        if !button_vertical && !swim_buttons && self.command.buttons & buttons::CROUCH != 0 {
             move_axes[2] = move_axes[2].min(if self.arena() { -127.0 } else { -200.0 });
         }
         let total = math::length(Vec3(move_axes));
@@ -1077,10 +1092,8 @@ impl Step<'_> {
             basis.right = basis.right * scale;
             move_axes[2] *= scale;
         }
-        let mut wish = basis.forward * move_axes[0] + basis.right * move_axes[1];
-        if native_control {
-            wish.0[2] = move_axes[2];
-        } else if water
+        let mut wish = super::control::wish_velocity(basis.forward, basis.right, move_axes);
+        if water
             || matches!(
                 self.player.movement.mode,
                 MovementMode::Noclip | MovementMode::Fly | MovementMode::Spectator
@@ -1121,7 +1134,6 @@ impl Step<'_> {
         }
         let raw = wish;
         let vertical = wish.0[2];
-        let length = math::normalize(&mut wish);
         let max = if self.player.movement.ducked
             && !full_basis
             && !(water && self.parameters.special.water_standing_cap)
@@ -1136,7 +1148,14 @@ impl Step<'_> {
         } else {
             self.parameters.speed
         };
-        let mut speed = length.min(max);
+        let (length, mut speed) = if self.nq() {
+            let capped = super::control::capped_wish(wish, max);
+            wish = capped.direction;
+            (capped.length, capped.speed)
+        } else {
+            let length = math::normalize(&mut wish);
+            (length, length.min(max))
+        };
         if self.arena() {
             speed = if scaled_basis {
                 length
@@ -1149,7 +1168,11 @@ impl Step<'_> {
             };
         }
         if water && !self.arena() {
-            speed *= if self.nq() || self.qw() { 0.7 } else { 0.5 };
+            speed = if self.nq() {
+                super::control::water_speed(speed)
+            } else {
+                speed * if self.qw() { 0.7 } else { 0.5 }
+            };
         }
         if water
             && self.player.movement.ducked
@@ -1308,17 +1331,22 @@ impl Step<'_> {
         let new_speed = if speed == 0.0 {
             0.0
         } else {
-            let next = (f64::from(speed)
-                - self.exact_dt * f64::from(speed) * f64::from(self.parameters.friction))
-                as f32;
-            let next = next.max(0.0);
+            let next = super::control::friction_speed(
+                speed,
+                speed,
+                self.parameters.friction,
+                self.exact_dt,
+            );
             self.player.body.velocity = self.player.body.velocity * (next / speed);
             next
         };
-        let add = wish_speed - new_speed;
-        if add > 0.0 {
-            let amount = (f64::from(self.parameters.accel * wish_speed) * self.exact_dt) as f32;
-            self.player.body.velocity = self.player.body.velocity + direction * amount.min(add);
+        if let Some(amount) = super::control::water_acceleration(
+            wish_speed,
+            new_speed,
+            self.parameters.accel,
+            self.exact_dt,
+        ) {
+            self.player.body.velocity = self.player.body.velocity + direction * amount;
         }
         Ok(())
     }
@@ -1507,6 +1535,7 @@ impl Step<'_> {
         E: From<TraceError>,
         B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
     {
+        let baseline = (self.player.body.position, self.player.body.velocity);
         self.result.steps += 1;
         if let Some(held) = self.parameters.special.respawn_release
             && self.player.health > 0
@@ -1596,7 +1625,15 @@ impl Step<'_> {
         }
         self.snap(previous, true)?;
         self.player.movement.previous_position = previous;
-        Ok(())
+        let position = self.player.body.position;
+        let velocity = self.player.body.velocity;
+        copy_body(
+            self.player,
+            Some(position),
+            velocity,
+            Some(baseline),
+            boundary,
+        )
     }
 }
 fn run_step<E, B>(

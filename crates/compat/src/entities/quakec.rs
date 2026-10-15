@@ -23,6 +23,8 @@ struct ClientFields {
     view_angles: Option<usize>,
     fix_angle: Option<usize>,
     water_jump: Option<usize>,
+    old_origin: Option<usize>,
+    move_direction: Option<usize>,
     button_attack: Option<usize>,
     button_jump: Option<usize>,
     impulse: Option<usize>,
@@ -60,6 +62,8 @@ impl ClientFields {
             view_angles: field(b"v_angle", 3),
             fix_angle: field(b"fixangle", 2),
             water_jump: field(b"teleport_time", 2),
+            old_origin: field(b"oldorigin", 3),
+            move_direction: field(b"movedir", 3),
             button_attack: field(b"button0", 2),
             button_jump: field(b"button2", 2),
             impulse: field(b"impulse", 2),
@@ -71,6 +75,41 @@ impl ClientFields {
             extra_stats: [None; 4],
             server_flags: 0,
             player_stats: None,
+        }
+    }
+}
+
+struct ClientEnvironment {
+    flags: Option<u32>,
+    ground: Option<EntityId>,
+    water_level: Option<u8>,
+    water_contents: Option<u64>,
+}
+struct ClientEnvironmentWrite {
+    water_level: u8,
+    water_type: i32,
+    flags: Option<u32>,
+    ground: Option<u32>,
+}
+fn apply_client_mode(player: &mut PlayerState, mode: Option<qa_core::primitives::MovementMode>) {
+    if player.movement.mode != qa_core::primitives::MovementMode::Spectator
+        && let Some(mode) = mode
+    {
+        player.movement.mode = mode;
+    }
+}
+impl ClientEnvironment {
+    fn apply(self, player: &mut PlayerState) {
+        if let Some(level) = self.water_level {
+            player.movement.water_level = level;
+        }
+        if let Some(contents) = self.water_contents {
+            player.movement.water_contents = contents;
+        }
+        if let Some(flags) = self.flags {
+            player.flags = flags;
+            player.movement.grounded = flags & 512 != 0;
+            player.movement.ground = self.ground;
         }
     }
 }
@@ -193,6 +232,15 @@ fn motion(value: f32) -> Motion {
 
 fn integer_motion(value: f32) -> Motion {
     motion(qa_core::math::native_integer(f64::from(value)) as f32)
+}
+
+fn client_motion(value: f32) -> Motion {
+    let value = qa_core::math::native_integer(value);
+    if value == 3 {
+        Motion::Walk
+    } else {
+        motion(value as f32)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -373,6 +421,8 @@ impl QuakeCLayout {
             (self.origin, &mut entities.columns.position[slot]),
             (self.velocity, &mut entities.columns.velocity[slot]),
             (self.angles, &mut entities.columns.angles[slot]),
+            (self.mins, &mut entities.columns.mins[slot]),
+            (self.maxs, &mut entities.columns.maxs[slot]),
         ] {
             if let Some(field) = field {
                 *target = self.vector(memory, address, Some(field))?;
@@ -438,13 +488,57 @@ impl QuakeCLayout {
         player.body.velocity = velocity;
         Ok(())
     }
-    fn client_noclip(self, memory: &ModuleMemory<'_>, address: u64) -> Result<(), CallError> {
-        if self.number(memory, address, self.move_type)? != 8.0
-            || self.flags(memory, address)? & (1 << 11) != 0
+    fn store_client_environment(
+        self,
+        memory: &mut ModuleMemory<'_>,
+        address: u64,
+        value: ClientEnvironmentWrite,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<(), CallError> {
+        for (field, value) in [
+            (self.motion.water_level, f32::from(value.water_level)),
+            (self.motion.water_type, value.water_type as f32),
+        ] {
+            if let Some(field) = field {
+                self.store_number(memory, address, Some(field), value, store)?;
+            }
+        }
+        if let Some(flags) = value.flags {
+            self.store_number(memory, address, self.flags, flags as i32 as f32, store)?;
+        }
+        if let Some(ground) = value.ground
+            && let Some(field) = self.motion.ground_entity
         {
-            return Err(CallError::Unsupported);
+            store(memory, address + field as u64, ground)?;
         }
         Ok(())
+    }
+    fn client_mode(
+        self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+        phase: Motion,
+    ) -> Result<Option<qa_core::primitives::MovementMode>, CallError> {
+        use qa_core::primitives::MovementMode;
+        Ok(Some(match phase {
+            Motion::None => MovementMode::Frozen,
+            Motion::Noclip => MovementMode::Noclip,
+            Motion::Fly | Motion::FlyMissile => MovementMode::Fly,
+            Motion::Walk | Motion::Step | Motion::Toss | Motion::Bounce => {
+                if self
+                    .client
+                    .health
+                    .map(|field| self.number(memory, address, Some(field)))
+                    .transpose()?
+                    .is_some_and(|health| health <= 0.0)
+                {
+                    MovementMode::Dead
+                } else {
+                    MovementMode::Walk
+                }
+            }
+            _ => return Ok(None),
+        }))
     }
     fn removal_words(self) -> [Option<usize>; 7] {
         [
@@ -946,19 +1040,85 @@ impl EntityProjection {
         self.quakec_identity(memory, context, value)?;
         let layout = self.quakec_layout()?;
         let address = self.quakec_client_address(memory, value)?;
-        Ok(motion(
-            qa_core::math::native_integer(layout.number(memory, address, layout.move_type)?) as f32,
-        ))
+        Ok(client_motion(layout.number(
+            memory,
+            address,
+            layout.move_type,
+        )?))
     }
-    pub(crate) fn quakec_client_noclip(
+    pub(crate) fn quakec_client_view_angles(
         &self,
         memory: &ModuleMemory<'_>,
-        context: CallContext,
         value: u32,
-    ) -> Result<(), CallError> {
-        self.quakec_identity(memory, context, value)?;
+    ) -> Result<Vec3, CallError> {
         let address = self.quakec_client_address(memory, value)?;
-        self.quakec_layout()?.client_noclip(memory, address)
+        let layout = self.quakec_layout()?;
+        layout.vector(memory, address, layout.client.view_angles)
+    }
+    pub(crate) fn quakec_client_view_height(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<f32, CallError> {
+        let address = self.quakec_client_address(memory, value)?;
+        let layout = self.quakec_layout()?;
+        layout.number(
+            memory,
+            address,
+            layout.client.view_offset.map(|field| field + 8),
+        )
+    }
+    pub(crate) fn quakec_client_water_level(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<f32, CallError> {
+        let address = self.quakec_client_address(memory, value)?;
+        let layout = self.quakec_layout()?;
+        layout.number(memory, address, layout.motion.water_level)
+    }
+    pub(crate) fn quakec_client_old_origin(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+        axis: usize,
+    ) -> Result<f32, CallError> {
+        if axis >= 3 {
+            return Err(CallError::Memory);
+        }
+        let address = self.quakec_client_address(memory, value)?;
+        let layout = self.quakec_layout()?;
+        layout.number(
+            memory,
+            address,
+            layout.client.old_origin.map(|field| field + axis * 4),
+        )
+    }
+    pub(crate) fn quakec_client_teleport_time(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<f32, CallError> {
+        let address = self.quakec_client_address(memory, value)?;
+        let layout = self.quakec_layout()?;
+        layout.number(memory, address, layout.client.water_jump)
+    }
+    pub(crate) fn quakec_client_move_direction(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+        axis: usize,
+    ) -> Result<f32, CallError> {
+        if axis >= 3 {
+            return Err(CallError::Memory);
+        }
+        let address = self.quakec_client_address(memory, value)?;
+        let layout = self.quakec_layout()?;
+        layout.number(
+            memory,
+            address,
+            layout.client.move_direction.map(|field| field + axis * 4),
+        )
     }
     pub(crate) fn quakec_prepare_control(
         &self,
@@ -968,13 +1128,14 @@ impl EntityProjection {
         seconds: f64,
         roll: qa_gameplay::rules::appearance::AliasRoll,
         store: &mut crate::quakec::EntityStore<'_>,
-    ) -> Result<Option<Vec3>, CallError> {
+    ) -> Result<Option<qa_movement::ControlStart>, CallError> {
         self.quakec_identity(memory, context, value)?;
         let address = self.quakec_client_address(memory, value)?;
         let layout = self.quakec_layout()?;
         if layout.number(memory, address, layout.move_type)? == 0.0 {
             return Ok(None);
         }
+        let on_ground = layout.flags(memory, address)? & 512 != 0;
         let mut punch = layout.vector(memory, address, layout.client.punch)?;
         let length = qa_core::math::normalize(&mut punch);
         layout.store_vector(memory, address, layout.client.punch, punch, store)?;
@@ -1011,8 +1172,10 @@ impl EntityProjection {
                 store,
             )?;
         }
-        layout.client_noclip(memory, address)?;
-        Ok(Some(layout.vector(memory, address, layout.angles)?))
+        Ok(Some(qa_movement::ControlStart {
+            on_ground,
+            body_angles: layout.vector(memory, address, layout.angles)?,
+        }))
     }
     fn quakec_client_lifetime(
         &self,
@@ -1028,6 +1191,74 @@ impl EntityProjection {
         }
         self.quakec_client_address(memory, value)
     }
+    fn quakec_client_environment(
+        &self,
+        entities: &EntityTable,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        address: u64,
+    ) -> Result<ClientEnvironment, CallError> {
+        let layout = self.quakec_layout()?;
+        let integer = |field: Option<usize>| {
+            field
+                .map(|at| layout.number(memory, address, Some(at)))
+                .transpose()
+                .map(|value| value.map(qa_core::math::native_integer))
+        };
+        let water_level = integer(layout.motion.water_level)?
+            .map(|level| if level < 0 { 0 } else { level as u8 });
+        let water_contents =
+            integer(layout.motion.water_type)?.map(|contents| Contents::from_q1(contents).0);
+        let flags = layout
+            .flags
+            .map(|_| layout.flags(memory, address))
+            .transpose()?;
+        let ground = if flags.is_some_and(|flags| flags & 512 != 0)
+            && layout.motion.ground_entity.is_some()
+        {
+            let word = layout.word(memory, address, layout.motion.ground_entity)?;
+            let native = layout.identity(memory, context.module, word)?;
+            self.binding(entities, native)?
+        } else {
+            None
+        };
+        Ok(ClientEnvironment {
+            flags,
+            ground,
+            water_level,
+            water_contents,
+        })
+    }
+    fn quakec_client_environment_write(
+        &self,
+        services: &EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+        client: qa_core::primitives::ClientId,
+    ) -> Result<ClientEnvironmentWrite, CallError> {
+        let layout = self.quakec_layout()?;
+        let player = &services.server.clients[client.0 as usize].player;
+        let flags = layout
+            .flags
+            .map(|_| layout.flags(memory, address))
+            .transpose()?
+            .map(|flags| {
+                if player.movement.grounded {
+                    flags | 512
+                } else {
+                    flags & !512
+                }
+            });
+        Ok(ClientEnvironmentWrite {
+            water_level: player.movement.water_level,
+            water_type: Contents(player.movement.water_contents).to_q1(),
+            flags,
+            ground: player
+                .movement
+                .grounded
+                .then(|| self.quakec_hit(services, player.movement.ground)),
+        })
+    }
     pub(crate) fn quakec_read_frame_client(
         &self,
         entities: &EntityTable,
@@ -1035,14 +1266,41 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
         entity: EntityId,
+        phase: Motion,
         player: &mut PlayerState,
     ) -> Result<(), CallError> {
         let address = self.quakec_client_lifetime(entities, memory, context, value, entity)?;
         let layout = self.quakec_layout()?;
         let deadline = layout.number(memory, address, layout.client.water_jump)?;
+        let environment = self.quakec_client_environment(entities, memory, context, address)?;
+        let movement_mode = layout
+            .client_mode(memory, address, phase)?
+            .ok_or(CallError::Unsupported)?;
         layout.read_client_pose(memory, address, player)?;
-        player.movement.mode = qa_core::primitives::MovementMode::Noclip;
+        apply_client_mode(player, Some(movement_mode));
+        environment.apply(player);
         player.movement.teleport_hold_until = f64::from(deadline);
+        Ok(())
+    }
+    pub(crate) fn quakec_finish_frame_client(
+        &self,
+        services: &EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<(), CallError> {
+        let (address, client) = self.quakec_client(services, memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        let view = services.server.clients[client.0 as usize]
+            .player
+            .view_angles;
+        let environment =
+            self.quakec_client_environment_write(services, memory, address, client)?;
+        layout.store_client_environment(memory, address, environment, store)?;
+        if let Some(field) = layout.client.view_angles {
+            layout.store_vector(memory, address, Some(field), view, store)?;
+        }
         Ok(())
     }
     pub(crate) fn quakec_write_frame_scalar(
@@ -1187,43 +1445,13 @@ impl EntityProjection {
         }
         let player = &services.server.clients[client.0 as usize].player;
         let water_jump = player.movement.water_jump_seconds;
-        let level = player.movement.water_level;
-        let contents = Contents(player.movement.water_contents).to_q1();
-        let grounded = player.movement.grounded;
-        let ground = self.quakec_hit(services, player.movement.ground);
         let origin = player.body.position - offset;
         let velocity = player.body.velocity;
         let view = player.view_angles;
-        let flags = layout.flags(memory, address)?;
+        let environment =
+            self.quakec_client_environment_write(services, memory, address, client)?;
         layout.store_number(memory, address, layout.client.water_jump, water_jump, store)?;
-        layout.store_number(
-            memory,
-            address,
-            layout.motion.water_level,
-            f32::from(level),
-            store,
-        )?;
-        layout.store_number(
-            memory,
-            address,
-            layout.motion.water_type,
-            contents as f32,
-            store,
-        )?;
-        layout.store_number(
-            memory,
-            address,
-            layout.flags,
-            (if grounded { flags | 512 } else { flags & !512 }) as i32 as f32,
-            store,
-        )?;
-        if grounded {
-            store(
-                memory,
-                address + layout.motion.ground_entity.ok_or(CallError::Memory)? as u64,
-                ground,
-            )?;
-        }
+        layout.store_client_environment(memory, address, environment, store)?;
         layout.store_vector(memory, address, layout.origin, origin, store)?;
         layout.store_vector(memory, address, layout.velocity, velocity, store)?;
         layout.store_vector(memory, address, layout.client.view_angles, view, store)?;
@@ -2162,6 +2390,21 @@ impl EntityProjection {
             MotionField::WaterLevel(value) => {
                 layout.store_number(memory, address, layout.motion.water_level, value, store)?
             }
+            MotionField::OldOrigin { axis, value } => {
+                if axis >= 3 {
+                    return Err(CallError::Memory);
+                }
+                layout.store_number(
+                    memory,
+                    address,
+                    layout.client.old_origin.map(|field| field + axis * 4),
+                    value,
+                    store,
+                )?;
+            }
+            MotionField::TeleportTime(value) => {
+                layout.store_number(memory, address, layout.client.water_jump, value, store)?;
+            }
         }
         layout.refresh_motion(memory, address, entities, entity)
     }
@@ -2285,7 +2528,15 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         let address = u64::from(value);
         let slot = entity.slot as usize;
+        let client = services.server.client_for_native(native);
+        let provider_motion = context.native_rules == RuleSetId::Quake
+            && client.is_some_and(|client| services.server.module_moves(client) == Some(native));
         let (motion, angular_velocity) = layout.motion_state(memory, address)?;
+        let motion = if provider_motion {
+            client_motion(layout.number(memory, address, layout.move_type)?)
+        } else {
+            motion
+        };
         let weapon_state = layout
             .attack_finished
             .map(|field| {
@@ -2367,9 +2618,7 @@ impl EntityProjection {
             appearance.native.effects = u64::from(number(layout.effects)? as u32);
         }
         self.quakec_publish_client(services, memory, strings, context, address, native)?;
-        if let Some(client) = services.server.client_for_native(native) {
-            let provider_motion = context.native_rules == RuleSetId::Quake
-                && services.server.module_moves(client) == Some(native);
+        if let Some(client) = client {
             let client = &mut services.server.clients[client.0 as usize];
             if client.module == context.module {
                 client.player.weapon_state = weapon_state;
@@ -2493,18 +2742,19 @@ impl EntityProjection {
             .view_angles
             .map(|field| layout.vector(memory, address, Some(field)))
             .transpose()?;
-        let water_level = integer(layout.motion.water_level)?;
-        let water_type = integer(layout.motion.water_type)?;
-        let ground_flags = layout
-            .flags
-            .map(|_| layout.flags(memory, address))
-            .transpose()?;
-        let ground = if ground_flags.is_some_and(|flags| flags & 512 != 0)
-            && layout.motion.ground_entity.is_some()
+        let environment =
+            self.quakec_client_environment(&services.server.entities, memory, context, address)?;
+        let mode = if context.native_rules == RuleSetId::Quake
+            && services.server.module_moves(id) == Some(native)
         {
-            let word = layout.word(memory, address, layout.motion.ground_entity)?;
-            let ground = layout.identity(memory, context.module, word)?;
-            self.binding(&services.server.entities, ground)?
+            layout
+                .move_type
+                .map(|field| {
+                    let phase = client_motion(layout.number(memory, address, Some(field))?);
+                    layout.client_mode(memory, address, phase)
+                })
+                .transpose()?
+                .flatten()
         } else {
             None
         };
@@ -2601,17 +2851,8 @@ impl EntityProjection {
         if let Some(view) = view {
             player.view_angles = view;
         }
-        if let Some(level) = water_level {
-            player.movement.water_level = level as u8;
-        }
-        if let Some(contents) = water_type {
-            player.movement.water_contents = Contents::from_q1(contents).0;
-        }
-        if let Some(flags) = ground_flags {
-            player.flags = flags;
-            player.movement.grounded = flags & 512 != 0;
-            player.movement.ground = ground;
-        }
+        environment.apply(player);
+        apply_client_mode(player, mode);
         Ok(())
     }
     pub(crate) fn quakec_project(

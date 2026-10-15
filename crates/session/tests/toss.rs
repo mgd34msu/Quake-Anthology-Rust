@@ -1,14 +1,14 @@
 use qa_core::primitives::{
-    BodyAttachment, BodyFollow, Bounds, EntityId, LinkOrder, ModuleId, NativeEntityRef,
-    ResourceNamespace, RuleSetId, ThinkTime, Vec3,
+    BodyAttachment, BodyFollow, Bounds, EntityId, LinkOrder, ModuleId, Motion, NativeEntityRef,
+    ResourceNamespace, RuleSetId, ThinkTime, UserCmd, Vec3,
 };
 use qa_gameplay::rules::{
-    motion::{step_rules, toss_rules},
+    motion::{client_motion_rules, step_rules, toss_rules},
     sweep::entity_sweep,
 };
 use qa_session::physics::{
-    MotionFrame, MotionHost, MotionState, MotionTrace, MotionWrite, PhysicsError, check_velocity,
-    step_fall, toss, water_transition,
+    ClientHost, MotionFrame, MotionHost, MotionState, MotionTrace, MotionWrite, PhysicsError,
+    check_velocity, client_move, step_fall, sweep_motion, toss, water_transition,
 };
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent},
@@ -30,6 +30,11 @@ enum Event {
     Ground(Option<NativeEntityRef>),
     Water,
     Sound,
+    WaterLevel(f32),
+    WaterType(f32),
+    OldOrigin(usize, f32),
+    Contents(Vec3),
+    Diagnostic,
 }
 
 struct Host {
@@ -50,6 +55,12 @@ struct Host {
     remove_on_impact: bool,
     reuse_on_impact: bool,
     clear_ground_on_link: bool,
+    client_water_level: f32,
+    client_water_type: f32,
+    old_origin: Vec3,
+    contents: VecDeque<i32>,
+    old_origin_alias: bool,
+    client_teleport_time: f32,
 }
 
 impl Host {
@@ -86,6 +97,12 @@ impl Host {
             remove_on_impact: false,
             reuse_on_impact: false,
             clear_ground_on_link: false,
+            client_water_level: 0.0,
+            client_water_type: -1.0,
+            old_origin: Vec3::default(),
+            contents: VecDeque::new(),
+            old_origin_alias: false,
+            client_teleport_time: 0.0,
         }
     }
 
@@ -285,11 +302,470 @@ impl MotionHost for Host {
     }
 }
 
+impl ClientHost for Host {
+    fn command(&mut self, _: EntityId) -> Result<UserCmd, Self::Error> {
+        Ok(UserCmd::default())
+    }
+    fn view_angles(&mut self, _: EntityId) -> Result<Vec3, Self::Error> {
+        Ok(Vec3::default())
+    }
+    fn view_height(&mut self, _: EntityId) -> Result<f32, Self::Error> {
+        Ok(22.0)
+    }
+    fn water_level(&mut self, _: EntityId) -> Result<f32, Self::Error> {
+        Ok(self.client_water_level)
+    }
+    fn write_water_level(&mut self, _: EntityId, value: f32) -> Result<(), Self::Error> {
+        self.client_water_level = value;
+        self.events.push(Event::WaterLevel(value));
+        Ok(())
+    }
+    fn write_water_type(&mut self, _: EntityId, value: f32) -> Result<(), Self::Error> {
+        self.client_water_type = value;
+        self.events.push(Event::WaterType(value));
+        Ok(())
+    }
+    fn old_origin(&mut self, _: EntityId, axis: usize) -> Result<f32, Self::Error> {
+        Ok(self.old_origin.0[axis])
+    }
+    fn write_old_origin(
+        &mut self,
+        entity: EntityId,
+        axis: usize,
+        value: f32,
+    ) -> Result<(), Self::Error> {
+        self.old_origin.0[axis] = value;
+        if self.old_origin_alias && axis == 0 {
+            self.entities.columns.position[entity.slot as usize].0[1] = value;
+        }
+        self.events.push(Event::OldOrigin(axis, value));
+        Ok(())
+    }
+    fn teleport_time(&mut self, _: EntityId) -> Result<f32, Self::Error> {
+        Ok(self.client_teleport_time)
+    }
+    fn write_teleport_time(&mut self, _: EntityId, value: f32) -> Result<(), Self::Error> {
+        self.client_teleport_time = value;
+        Ok(())
+    }
+    fn move_direction(&mut self, _: EntityId, _: usize) -> Result<f32, Self::Error> {
+        Ok(0.0)
+    }
+    fn point_contents(&mut self, _: EntityId, point: Vec3) -> Result<i32, Self::Error> {
+        self.events.push(Event::Contents(point));
+        Ok(self.contents.pop_front().unwrap_or(-1))
+    }
+    fn trace_point(&mut self, entity: EntityId, _: Vec3, end: Vec3) -> Result<Trace, Self::Error> {
+        MotionHost::trace(self, entity, end, QuakeTraceKind::IgnoreBoxes).map(|trace| trace.trace)
+    }
+    fn tuning(&mut self, _: EntityId) -> Result<qa_movement::ControlTuning, Self::Error> {
+        Ok(qa_movement::ControlTuning {
+            max_speed: 320.0,
+            stop_speed: 100.0,
+            friction: 4.0,
+            accelerate: 10.0,
+            edge_friction: 2.0,
+            no_step: false,
+        })
+    }
+    fn diagnostic(&mut self, _: &'static [u8]) -> Result<(), Self::Error> {
+        self.events.push(Event::Diagnostic);
+        Ok(())
+    }
+    fn current(&mut self) -> Result<Option<EntityId>, Self::Error> {
+        Ok(self.entities.resolve(self.entity).map(|_| self.entity))
+    }
+}
+
 const FRAME: MotionFrame = MotionFrame {
     elapsed: 0.013271937412,
     gravity: 800.0,
     max_velocity: 2000.0,
 };
+
+const CLIENT_FRAME: MotionFrame = MotionFrame {
+    elapsed: 0.1,
+    ..FRAME
+};
+
+fn clear_motion(end: Vec3) -> MotionTrace {
+    MotionTrace {
+        trace: Trace::clear(end),
+        ground: None,
+    }
+}
+
+#[test]
+fn client_noclip_moves_only_origin_without_internal_link_or_angles() {
+    let mut host = Host::new(8.0);
+    let entity = host.entity;
+    let slot = entity.slot as usize;
+    host.entities.columns.position[slot] = Vec3([1.0, 2.0, 3.0]);
+    host.entities.columns.velocity[slot] = Vec3([4.0, 5.0, 6.0]);
+    host.entities.columns.angles[slot] = Vec3([7.0, 8.0, 9.0]);
+    host.entities.columns.angular_velocity[slot] = Some(Vec3([11.0, 12.0, 13.0]));
+    client_move(
+        &mut host,
+        entity,
+        Motion::Noclip,
+        MotionFrame {
+            elapsed: 0.25,
+            ..CLIENT_FRAME
+        },
+        &client_motion_rules(RuleSetId::Quake).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(host.entities.columns.position[slot], Vec3([2.0, 3.25, 4.5]));
+    assert_eq!(host.entities.columns.angles[slot], Vec3([7.0, 8.0, 9.0]));
+    assert!(!host.events.contains(&Event::Link));
+    assert!(
+        !host
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Water | Event::Impact(_)))
+    );
+}
+
+#[test]
+fn motion_sweep_retains_wall_plane_before_an_immediate_removal() {
+    let mut host = Host::new(5.0);
+    let entity = host.entity;
+    host.entities.columns.velocity[entity.slot as usize] = Vec3([20.0, 0.0, 0.0]);
+    host.collision(Vec3([-1.0, 0.0, 0.0]), Vec3([1.0, 0.0, 0.0]));
+    host.remove_on_impact = true;
+    let result = sweep_motion(
+        &mut host,
+        entity,
+        0.1,
+        &entity_sweep(RuleSetId::Quake).unwrap(),
+        512,
+    )
+    .unwrap();
+    assert_eq!(result.current, None);
+    assert_eq!(result.result.blocked, 2);
+    assert_eq!(
+        result.wall.unwrap().trace.plane.normal,
+        Vec3([-1.0, 0.0, 0.0])
+    );
+    assert_eq!(host.events.last(), Some(&Event::Impact(Some(entity))));
+    assert!(!host.events.contains(&Event::Link));
+}
+
+#[test]
+fn client_walk_samples_native_water_then_copies_live_recovery_origin() {
+    let mut host = Host::new(3.0);
+    let entity = host.entity;
+    let slot = entity.slot as usize;
+    host.state.flags = Some(512);
+    host.entities.columns.position[slot] = Vec3([3.0, 4.0, 24.0]);
+    host.entities.columns.velocity[slot] = Vec3([10.0, 0.0, 0.0]);
+    host.entities.columns.mins[slot] = Vec3([-16.0, -16.0, -24.0]);
+    host.entities.columns.maxs[slot] = Vec3([16.0, 16.0, 32.0]);
+    host.contents.extend([-3, -3, -3]);
+    host.old_origin_alias = true;
+    client_move(
+        &mut host,
+        entity,
+        Motion::Walk,
+        CLIENT_FRAME,
+        &client_motion_rules(RuleSetId::Quake).unwrap(),
+    )
+    .unwrap();
+    let samples = host
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Contents(point) => Some(*point),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        samples,
+        [
+            Vec3([3.0, 4.0, 1.0]),
+            Vec3([3.0, 4.0, 28.0]),
+            Vec3([3.0, 4.0, 46.0])
+        ]
+    );
+    assert_eq!(host.client_water_level, 3.0);
+    assert_eq!(host.client_water_type, -3.0);
+    assert_eq!(host.old_origin, Vec3([3.0, 3.0, 24.0]));
+    assert_eq!(host.entities.columns.position[slot], Vec3([4.0, 3.0, 24.0]));
+    assert_eq!(host.entities.columns.velocity[slot].0[2], 0.0);
+    assert!(!host.events.contains(&Event::Link));
+    assert!(!host.events.contains(&Event::Gravity));
+}
+
+#[test]
+fn client_stuck_recovery_stops_after_a_trigger_removes_its_connection_body() {
+    let mut host = Host::new(3.0);
+    let entity = host.entity;
+    host.entities.columns.position[entity.slot as usize] = Vec3([3.0, 4.0, 5.0]);
+    host.old_origin = Vec3([-1.0, -2.0, -3.0]);
+    let mut stuck = Trace::clear(Vec3([3.0, 4.0, 5.0]));
+    stuck.start_solid = true;
+    host.traces.push_back(MotionTrace {
+        trace: stuck,
+        ground: None,
+    });
+    host.traces.push_back(clear_motion(host.old_origin));
+    host.remove_on_link = true;
+    client_move(
+        &mut host,
+        entity,
+        Motion::Walk,
+        CLIENT_FRAME,
+        &client_motion_rules(RuleSetId::Quake).unwrap(),
+    )
+    .unwrap();
+    assert!(host.entities.resolve(entity).is_none());
+    assert_eq!(host.events.last(), Some(&Event::Link));
+    assert_eq!(
+        host.events
+            .iter()
+            .filter(|event| matches!(event, Event::Trace(..)))
+            .count(),
+        2
+    );
+    let gravity = host
+        .events
+        .iter()
+        .position(|event| *event == Event::Write(MotionWrite::Velocity(2), -80.0))
+        .unwrap();
+    let recovery = host
+        .events
+        .iter()
+        .position(|event| matches!(event, Event::Write(MotionWrite::Origin(0), -1.0)))
+        .unwrap();
+    assert!(gravity < recovery);
+}
+
+#[test]
+fn client_stuck_search_preserves_native_z_then_x_then_y_order() {
+    let mut host = Host::new(3.0);
+    let entity = host.entity;
+    host.entities.columns.position[entity.slot as usize] = Vec3([10.0, 20.0, 30.0]);
+    let mut stuck = Trace::clear(Vec3::default());
+    stuck.start_solid = true;
+    host.traces.extend([
+        MotionTrace {
+            trace: stuck,
+            ground: None,
+        },
+        MotionTrace {
+            trace: stuck,
+            ground: None,
+        },
+        MotionTrace {
+            trace: stuck,
+            ground: None,
+        },
+        clear_motion(Vec3([9.0, 20.0, 30.0])),
+    ]);
+    client_move(
+        &mut host,
+        entity,
+        Motion::Walk,
+        MotionFrame {
+            gravity: 0.0,
+            ..CLIENT_FRAME
+        },
+        &client_motion_rules(RuleSetId::Quake).unwrap(),
+    )
+    .unwrap();
+    let probes = host
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Trace(_, end) => Some(*end),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        probes,
+        [
+            Vec3([10.0, 20.0, 30.0]),
+            Vec3::default(),
+            Vec3([9.0, 19.0, 30.0]),
+            Vec3([9.0, 20.0, 30.0])
+        ]
+    );
+    assert_eq!(
+        host.entities.columns.position[entity.slot as usize],
+        Vec3([9.0, 20.0, 30.0])
+    );
+    assert_eq!(
+        host.events
+            .iter()
+            .filter(|event| **event == Event::Link)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn client_stairs_touch_on_lift_and_drop_and_use_the_players_own_bsp_solid() {
+    for good_floor in [false, true] {
+        for bsp in [false, true] {
+            let mut host = Host::new(3.0);
+            let entity = host.entity;
+            let slot = entity.slot as usize;
+            host.state.flags = Some(512);
+            host.state.solid = Some(if bsp { 4.0 } else { 2.0 });
+            host.entities.columns.velocity[slot] = Vec3([100.0, 20.0, 0.0]);
+            host.shifted_clip = true;
+            host.collision(Vec3([-1.0, 0.0, 0.0]), Vec3::default());
+            let mut wall = host.trace.take().unwrap();
+            wall.trace.fraction = 0.0;
+            let mut second = wall;
+            second.trace.fraction = 0.5;
+            second.trace.end = Vec3([2.0, 0.0, 18.0]);
+            let mut down = wall;
+            down.trace.fraction = 0.5;
+            down.trace.end = Vec3([2.0, 1.0, 0.0]);
+            down.trace.plane.normal = Vec3([0.0, 0.0, if good_floor { 1.0 } else { 0.5 }]);
+            host.traces.extend([
+                clear_motion(Vec3::default()),
+                wall,
+                clear_motion(Vec3([0.0, 2.0, 0.0])),
+                clear_motion(Vec3([0.0, 0.0, 18.0])),
+                second,
+                clear_motion(Vec3([2.0, 1.0, 18.0])),
+                down,
+            ]);
+            client_move(
+                &mut host,
+                entity,
+                Motion::Walk,
+                MotionFrame {
+                    gravity: 0.0,
+                    ..CLIENT_FRAME
+                },
+                &client_motion_rules(RuleSetId::Quake).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                host.entities.columns.position[slot],
+                if good_floor {
+                    Vec3([2.0, 1.0, 0.0])
+                } else {
+                    Vec3([0.0, 2.0, 0.0])
+                }
+            );
+            assert_eq!(
+                host.entities.columns.velocity[slot],
+                Vec3([0.0, if good_floor { 10.0 } else { 20.0 }, 0.0])
+            );
+            assert_eq!(
+                host.state.flags,
+                Some(if bsp && good_floor { 512 } else { 0 })
+            );
+            let links = host
+                .events
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| (*e == Event::Link).then_some(i))
+                .collect::<Vec<_>>();
+            let impacts = host
+                .events
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| matches!(e, Event::Impact(_)).then_some(i))
+                .collect::<Vec<_>>();
+            assert_eq!((links.len(), impacts.len()), (2, 3));
+            assert!(
+                impacts[0] < links[0]
+                    && links[0] < impacts[1]
+                    && impacts[1] < links[1]
+                    && links[1] < impacts[2]
+            );
+            assert_eq!(
+                host.events
+                    .iter()
+                    .filter(|event| matches!(event, Event::Ground(_)))
+                    .count(),
+                usize::from(bsp && good_floor)
+            );
+        }
+    }
+}
+
+#[test]
+fn client_unstick_tries_all_eight_native_directions_before_the_final_drop() {
+    let mut host = Host::new(3.0);
+    let entity = host.entity;
+    host.state.flags = Some(512);
+    host.entities.columns.velocity[entity.slot as usize] = Vec3([100.0, 0.0, 0.0]);
+    host.collision(Vec3([-1.0, 0.0, 0.0]), Vec3::default());
+    let mut wall = host.trace.take().unwrap();
+    wall.trace.fraction = 0.0;
+    host.traces.extend([
+        clear_motion(Vec3::default()),
+        wall,
+        clear_motion(Vec3([0.0, 0.0, 18.0])),
+        wall,
+    ]);
+    let directions = [
+        [2.0, 0.0],
+        [0.0, 2.0],
+        [-2.0, 0.0],
+        [0.0, -2.0],
+        [2.0, 2.0],
+        [-2.0, 2.0],
+        [2.0, -2.0],
+        [-2.0, -2.0],
+    ];
+    for [x, y] in directions {
+        host.traces.push_back(clear_motion(Vec3([x, y, 18.0])));
+        host.traces.push_back(wall);
+    }
+    host.traces.push_back(clear_motion(Vec3::default()));
+    client_move(
+        &mut host,
+        entity,
+        Motion::Walk,
+        MotionFrame {
+            gravity: 0.0,
+            ..CLIENT_FRAME
+        },
+        &client_motion_rules(RuleSetId::Quake).unwrap(),
+    )
+    .unwrap();
+    let ends = host
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Trace(_, end) => Some(*end),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut expected = vec![
+        Vec3::default(),
+        Vec3([10.0, 0.0, 0.0]),
+        Vec3([0.0, 0.0, 18.0]),
+        Vec3([10.0, 0.0, 18.0]),
+    ];
+    for [x, y] in directions {
+        expected.extend([Vec3([x, y, 18.0]), Vec3([x + 10.0, y, 18.0])]);
+    }
+    expected.push(Vec3::default());
+    assert_eq!(ends, expected);
+    assert_eq!(
+        host.events
+            .iter()
+            .filter(|event| **event == Event::Link)
+            .count(),
+        10
+    );
+    assert_eq!(
+        host.entities.columns.position[entity.slot as usize],
+        Vec3::default()
+    );
+    assert_eq!(
+        host.entities.columns.velocity[entity.slot as usize],
+        Vec3::default()
+    );
+}
 
 #[test]
 fn toss_narrows_only_native_stores_and_vector_arguments() {

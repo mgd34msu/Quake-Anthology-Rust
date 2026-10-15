@@ -1,8 +1,10 @@
 //! One movement entry per player rule set, over shared geometry and player state.
+pub mod control;
 mod physics;
 mod recovery;
 mod slide;
 mod special;
+pub use control::{ControlStart, ControlTuning, control_tuning};
 pub use physics::{
     EffectiveTuning, MoveEntry, MoveOptions, MovePhase, MovementResult, TraceServices,
     ViewAngleAdmission, effective_tuning, entry, no_boundary, pmove, predict_pitch_drift,

@@ -1,7 +1,7 @@
 use super::{MotionFrame, MotionHost, MotionTrace, MotionWrite, PhysicsError};
 use qa_core::primitives::{Body, EntityId, NativeEntityRef, Vec3};
 use qa_gameplay::rules::{motion::StepRules, sweep::LegacySweepRules};
-use qa_movement::SweepHost;
+use qa_movement::{SweepHost, SweepResult};
 use qa_world::collision::{QuakeTraceKind, Trace};
 
 /// STEP falls before its native think phase. The provider runs the existing
@@ -26,38 +26,71 @@ pub fn step_fall<H: MotionHost>(
     let hit_sound = rules.landing_sound(entities.columns.velocity[slot].0[2], frame.gravity);
     super::add_gravity(host, entity, frame, &rules.gravity)?;
     host.check_velocity(entity, frame.max_velocity)?;
-    let mut falling = Falling {
+    let swept = sweep_motion(
         host,
-        current: Some(entity),
-        rules,
-    };
-    qa_movement::sweep(&mut falling, frame.elapsed as f32, sweep_rules)?;
-    let Some(entity) = falling.current else {
+        entity,
+        frame.elapsed as f32,
+        sweep_rules,
+        rules.ground_flag,
+    )?;
+    let Some(entity) = swept.current else {
         return Ok(None);
     };
-    let current = falling.host.relink(entity)?;
+    let current = host.relink(entity)?;
     if let Some(entity) = current
         && hit_sound
-        && falling
-            .host
+        && host
             .state(entity)?
             .flags
             .ok_or(PhysicsError::MissingField)?
             & rules.ground_flag
             != 0
     {
-        falling.host.sound(entity, b"demon/dland2.wav")?;
+        host.sound(entity, b"demon/dland2.wav")?;
     }
     Ok(current)
 }
 
-struct Falling<'a, H> {
-    host: &'a mut H,
-    current: Option<EntityId>,
-    rules: &'a StepRules,
+/// Owned sweep output, including the wall plane captured before callbacks.
+#[derive(Clone, Copy, Debug)]
+pub struct MotionSweep {
+    pub current: Option<EntityId>,
+    pub result: SweepResult,
+    pub wall: Option<MotionTrace>,
 }
 
-impl<H: MotionHost> SweepHost for Falling<'_, H> {
+/// Native FlyMove over the same four-bump/five-plane movement solver.
+pub fn sweep_motion<H: MotionHost>(
+    host: &mut H,
+    entity: EntityId,
+    seconds: f32,
+    rules: &LegacySweepRules,
+    ground_flag: u32,
+) -> Result<MotionSweep, H::Error> {
+    let mut moving = MotionSweepHost {
+        host,
+        current: Some(entity),
+        ground_flag,
+        ground_on_brush: rules.ground_on_brush,
+        wall: None,
+    };
+    let result = qa_movement::sweep(&mut moving, seconds, rules)?;
+    Ok(MotionSweep {
+        current: moving.current,
+        result,
+        wall: moving.wall,
+    })
+}
+
+struct MotionSweepHost<'a, H> {
+    host: &'a mut H,
+    current: Option<EntityId>,
+    ground_flag: u32,
+    ground_on_brush: bool,
+    wall: Option<MotionTrace>,
+}
+
+impl<H: MotionHost> SweepHost for MotionSweepHost<'_, H> {
     type Error = H::Error;
     type Hit = Option<NativeEntityRef>;
 
@@ -92,20 +125,22 @@ impl<H: MotionHost> SweepHost for Falling<'_, H> {
         if trace.entity.is_none() || ground.is_none() {
             return Err(PhysicsError::Entity.into());
         }
-        if hit_bits & 1 != 0 && trace.brush_solid {
+        if self.ground_on_brush && hit_bits & 1 != 0 && trace.brush_solid {
             let flags = self
                 .host
                 .state(entity)?
                 .flags
                 .ok_or(PhysicsError::MissingField)?;
-            self.host
-                .write_flags(entity, flags | self.rules.ground_flag)?;
+            self.host.write_flags(entity, flags | self.ground_flag)?;
             self.host.ground(entity, ground)?;
         }
         let trace = MotionTrace {
             trace: *trace,
             ground,
         };
+        if hit_bits & 2 != 0 {
+            self.wall = Some(trace);
+        }
         self.current = self.host.impact(Some(entity), &trace)?;
         Ok(())
     }

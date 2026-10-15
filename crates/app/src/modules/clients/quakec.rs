@@ -1,7 +1,7 @@
 //! QuakeC native client phases over the common lifetime and movement services.
 use super::*;
 use qa_compat::services::CallError as ServiceError;
-use qa_core::primitives::{Motion, MovementMode};
+use qa_core::primitives::{EntityId, Motion, MovementMode};
 use qa_session::dispatch::{ThinkFrame, run_think_with_rebind};
 use std::sync::Arc;
 
@@ -24,6 +24,29 @@ fn native(host: &FrameHost, module: ModuleId, id: ClientId) -> Result<u32, Clien
     };
     super::super::native_self(&host.runtime, client.entity, module, &qc.vm)
         .ok_or(ClientCommandError::InvalidSlot)
+}
+
+pub(in crate::modules) fn same_client(
+    host: &FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    captured: EntityId,
+) -> bool {
+    host.runtime
+        .server
+        .clients
+        .get(id.0 as usize)
+        .is_some_and(|client| {
+            client.connection.is_some()
+                && client.module == module
+                && client.entity == captured
+                && host.runtime.server.entities.resolve(captured).is_some()
+                && host
+                    .runtime
+                    .server
+                    .module_moves(id)
+                    .is_some_and(|native| native.module == module)
+        })
 }
 
 /// Native client edicts remain allocated after their connection retires.
@@ -203,6 +226,9 @@ pub(super) fn connect(
         callback(host, module, id, ClientCallback::Begin)?;
         // The native module becomes movement owner only after Begin succeeds.
         host.runtime.server.clients[id.0 as usize].module_movement = true;
+        edit(host, module, |vm, services, context| {
+            vm.project_entity(services, context, offset)
+        })?;
         host.runtime.native_numbers[id.0 as usize].set_native_clients(info.clients as u32, 1);
         Ok(())
     })();
@@ -234,7 +260,7 @@ fn think(
     id: ClientId,
     time: ThinkTime,
     step: f64,
-) -> Result<(), ClientCommandError> {
+) -> Result<Option<EntityId>, ClientCommandError> {
     let entity = host.runtime.server.clients[id.0 as usize].entity;
     let functions = Arc::clone(
         &host
@@ -254,6 +280,9 @@ fn think(
             })
         },
         |host, _| {
+            if !same_client(host, module, id, entity) {
+                return None;
+            }
             let row = host.module_row(module)?;
             let Program::QuakeC(qc) = &row.request.program else {
                 return None;
@@ -267,10 +296,13 @@ fn think(
                 .flatten()
         },
     );
-    if result.rejected != 0 || result.current_entity != Some(entity) {
+    if result.rejected != 0 {
         return Err(ClientCommandError::Inactive);
     }
-    Ok(())
+    Ok(
+        (result.current_entity == Some(entity) && same_client(host, module, id, entity))
+            .then_some(entity),
+    )
 }
 
 /// Resolve movement-role tuning for the duration of one native phase.
@@ -279,16 +311,18 @@ fn with_tuning<R>(
     id: ClientId,
     call: impl FnOnce(&mut FrameHost) -> Result<R, ClientCommandError>,
 ) -> Result<R, ClientCommandError> {
+    let captured = host.runtime.server.clients[id.0 as usize].entity;
     let player = &mut host.runtime.server.clients[id.0 as usize].player;
     let base = player.movement.tuning;
     player.movement.tuning =
         host.movement_handles
             .resolve(&host.console.cvars, player.movement_rules, base);
     let result = call(host);
-    host.runtime.server.clients[id.0 as usize]
-        .player
-        .movement
-        .tuning = base;
+    if let Some(client) = host.runtime.server.clients.get_mut(id.0 as usize)
+        && client.entity == captured
+    {
+        client.player.movement.tuning = base;
+    }
     result
 }
 
@@ -297,6 +331,7 @@ fn move_frame_client(
     module: ModuleId,
     id: ClientId,
     offset: u32,
+    phase: Motion,
     options: qa_movement::MoveOptions,
 ) -> Result<qa_movement::MovementResult, ClientCommandError> {
     let captured = host.runtime.server.clients[id.0 as usize].entity;
@@ -308,10 +343,11 @@ fn move_frame_client(
                 context,
                 offset,
                 captured,
+                phase,
                 &mut services.server.clients[id.0 as usize].player,
             )?;
             let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
-            services.server.move_client(
+            let moved = services.server.move_client(
                 id,
                 command,
                 services.geometry,
@@ -322,7 +358,9 @@ fn move_frame_client(
                 |entities, player, write| {
                     vm.write_frame_scalar(entities, context, offset, captured, player, write)
                 },
-            )
+            )?;
+            vm.finish_frame_client(services, context, offset)?;
+            Ok(moved)
         })
     })
 }
@@ -345,11 +383,22 @@ pub(super) fn controls(host: &mut FrameHost, module: ModuleId, seconds: f64) {
         }
         let result = (|| {
             let offset = native(host, module, id)?;
-            let options = edit(host, module, |vm, services, context| {
+            let start = edit(host, module, |vm, services, context| {
                 vm.prepare_control(services, context, offset, seconds)
             })?;
-            if let Some(options) = options {
-                move_frame_client(host, module, id, offset, options)?;
+            if let Some(start) = start
+                && host.runtime.server.clients[id.0 as usize]
+                    .player
+                    .movement_rules
+                    == RuleSetId::Quake
+            {
+                let time = host
+                    .module_row(module)
+                    .ok_or(ClientCommandError::MissingModule)?
+                    .time(host.time);
+                with_tuning(host, id, |host| {
+                    super::super::motion::client_control(host, module, id, start, time, seconds)
+                })?;
             }
             Ok::<(), ClientCommandError>(())
         })();
@@ -373,7 +422,8 @@ pub(super) fn controls(host: &mut FrameHost, module: ModuleId, seconds: f64) {
 }
 
 /// Reserved NQ clients execute at their native ordinal in the provider pass.
-/// NONE and exact NOCLIP are admitted; other motion remains counted.
+/// Each admitted native mode uses the shared physical operations. Independently
+/// selected movement consumes the provider span through its ordinary pmove.
 pub(in crate::modules) fn frame(
     host: &mut FrameHost,
     module: ModuleId,
@@ -381,46 +431,62 @@ pub(in crate::modules) fn frame(
     time: ThinkTime,
     step: f64,
 ) -> Result<bool, ClientCommandError> {
+    let captured = host.runtime.server.clients[id.0 as usize].entity;
     callback(host, module, id, ClientCallback::BeforeMove)?;
+    if !same_client(host, module, id, captured) {
+        return Ok(true);
+    }
     let offset = native(host, module, id)?;
     let phase = edit(host, module, |vm, _, context| {
         vm.client_phase(context, offset)
     })?;
     match phase {
-        Motion::None => {}
-        Motion::Noclip => {
-            let admitted = edit(host, module, |vm, _, context| {
-                vm.client_noclip(context, offset)
-            });
-            if matches!(
-                admitted,
-                Err(ClientCommandError::Usercmd(ServiceError::Unsupported))
-            ) {
-                return Ok(false);
-            }
-            admitted?;
-        }
+        Motion::None
+        | Motion::Noclip
+        | Motion::Walk
+        | Motion::Step
+        | Motion::Fly
+        | Motion::FlyMissile
+        | Motion::Toss
+        | Motion::Bounce => {}
         _ => return Ok(false),
     }
-    think(host, module, id, time, step)?;
+    if think(host, module, id, time, step)?.is_none() {
+        return Ok(true);
+    }
     let offset = native(host, module, id)?;
-    if phase == Motion::Noclip {
+    if host.runtime.server.clients[id.0 as usize]
+        .player
+        .movement_rules
+        == RuleSetId::Quake
+    {
+        with_tuning(host, id, |host| {
+            super::super::motion::client_move(host, module, id, phase, time, step)
+        })?;
+    } else if phase != Motion::None {
         move_frame_client(
             host,
             module,
             id,
             offset,
+            phase,
             qa_movement::MoveOptions {
                 phase: qa_movement::MovePhase::Integrate { seconds: step },
                 ..Default::default()
             },
         )?;
     }
+    if !same_client(host, module, id, captured) {
+        return Ok(true);
+    }
     edit(host, module, |vm, services, context| {
         vm.relink_entity(services, context, offset)
     })?;
     let entity = host.runtime.server.clients[id.0 as usize].entity;
     super::super::contacts::triggers(host, module, entity, time)?;
+    if !same_client(host, module, id, captured) {
+        return Ok(true);
+    }
     native(host, module, id)?;
     callback(host, module, id, ClientCallback::AfterMove)?;
     Ok(true)
@@ -433,17 +499,26 @@ pub(super) fn command(
     command: &UserCmd,
     _frame: u32,
 ) -> Result<(), ClientCommandError> {
+    let captured = host.runtime.server.clients[id.0 as usize].entity;
     for mut command in qa_movement::quakeworld_steps(*command) {
+        if !same_client(host, module, id, captured) {
+            return Ok(());
+        }
         let offset = native(host, module, id)?;
         let step = edit(host, module, |vm, services, context| {
             vm.prepare_client_command(services, context, offset, &command)
         })?;
         callback(host, module, id, ClientCallback::BeforeMove)?;
+        if !same_client(host, module, id, captured) {
+            return Ok(());
+        }
         let time = host
             .module_row(module)
             .ok_or(ClientCommandError::MissingModule)?
             .time(host.time);
-        think(host, module, id, time, step)?;
+        if think(host, module, id, time, step)?.is_none() {
+            return Ok(());
+        }
         let offset = native(host, module, id)?;
         let origin_offset = edit(host, module, |vm, services, context| {
             vm.read_client(services, context, offset)
@@ -489,6 +564,9 @@ pub(super) fn command(
             super::super::contacts::triggers(host, module, entity, time)?;
             let other_ref = super::super::contacts::reference(host, entity)?;
             for contact in moved.contacts[..moved.contact_count].iter().flatten() {
+                if !same_client(host, module, id, captured) {
+                    return Ok(());
+                }
                 if let Some(other) = contact.entity {
                     super::super::contacts::touch(
                         host, module, other, other_ref, None, true, false,

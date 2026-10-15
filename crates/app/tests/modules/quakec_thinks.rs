@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "quakec_client_physics.rs"]
+mod client_physics;
+
 #[path = "../model_assets/support.rs"]
 mod model_support;
 
@@ -3549,6 +3552,9 @@ fn qc_client_vm() -> Vm {
         (4, 56, b"groundentity"),
         (6, 57, b"touch"),
         (3, 58, b"punchangle"),
+        (3, 61, b"view_ofs"),
+        (3, 64, b"oldorigin"),
+        (3, 67, b"movedir"),
     ]);
     let mut globals = GLOBALS.to_vec();
     let names = [
@@ -3622,7 +3628,7 @@ fn qc_client_vm() -> Vm {
         &code.functions,
         &globals,
         &fields,
-        64,
+        70,
         192,
     );
     let mut vm = Vm::load(

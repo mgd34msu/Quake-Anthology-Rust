@@ -270,13 +270,14 @@ pub(super) fn touch(
 pub(super) fn impact(
     host: &mut FrameHost,
     module: ModuleId,
+    mover_entity: Option<EntityId>,
     mover: NativeEntityRef,
     obstacle: NativeEntityRef,
     time: ThinkTime,
 ) -> Result<(), ClientCommandError> {
     let restore = super::edit_quakec(host, module, |vm, _, _| vm.prepare_impact(time))?;
     let execution = (|| {
-        if let Some(entity) = current(host, mover)? {
+        if let Some(entity) = mover_entity {
             touch(host, module, entity, obstacle, None, false, false)?;
         }
         if let Some(entity) = current(host, obstacle)? {

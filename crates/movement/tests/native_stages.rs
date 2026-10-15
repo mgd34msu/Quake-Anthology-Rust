@@ -592,3 +592,177 @@ fn slide_motion_publishes_its_finished_native_body_through_the_same_boundary() {
     assert!(writes.contains(&MotionWrite::Velocity(0)));
     assert!(writes.contains(&MotionWrite::Origin(0)));
 }
+
+#[test]
+fn normal_foreign_movement_publishes_each_changed_pose_through_the_same_boundary() {
+    for rules in [
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        let mut expected = player(rules);
+        expected.movement.mode = MovementMode::Walk;
+        expected.movement.timer = MovementTimer::default();
+        expected.movement.remaining_ms = 0;
+        let mut actual = player(rules);
+        actual.movement.mode = MovementMode::Walk;
+        actual.movement.timer = MovementTimer::default();
+        actual.movement.remaining_ms = 0;
+        let command = UserCmd {
+            movement: [137.0, -27.0, 15.0],
+            units: qa_gameplay::rules::command_units(rules),
+            server_time_ms: 20,
+            duration_ms: 20,
+            duration_ns: 20_000_000,
+            ..Default::default()
+        };
+        pmove(
+            command,
+            &mut expected,
+            &mut ClearTrace,
+            Default::default(),
+            no_boundary,
+        )
+        .unwrap();
+        let mut native_position = actual.body.position;
+        let mut native_velocity = actual.body.velocity;
+        let mut writes = 0;
+        pmove(
+            UserCmd {
+                server_time_ms: 0,
+                duration_ms: 0,
+                duration_ns: 0,
+                ..command
+            },
+            &mut actual,
+            &mut ClearTrace,
+            integrate(0.02),
+            |player: &mut PlayerState, field| {
+                match field {
+                    MotionWrite::Origin(axis) => {
+                        native_position.0[axis] = player.body.position.0[axis]
+                    }
+                    MotionWrite::Velocity(axis) => {
+                        native_velocity.0[axis] = player.body.velocity.0[axis]
+                    }
+                    _ => panic!("player movement does not publish angular motion"),
+                }
+                player.body.position = native_position;
+                player.body.velocity = native_velocity;
+                writes += 1;
+                Ok::<_, TraceError>(())
+            },
+        )
+        .unwrap();
+        assert!(writes > 0, "{rules:?}");
+        assert_eq!(
+            actual.body.position.0.map(f32::to_bits),
+            expected.body.position.0.map(f32::to_bits),
+            "{rules:?}"
+        );
+        assert_eq!(
+            actual.body.velocity.0.map(f32::to_bits),
+            expected.body.velocity.0.map(f32::to_bits),
+            "{rules:?}"
+        );
+        assert_eq!(
+            native_position.0.map(f32::to_bits),
+            expected.body.position.0.map(f32::to_bits),
+            "{rules:?}"
+        );
+        assert_eq!(
+            native_velocity.0.map(f32::to_bits),
+            expected.body.velocity.0.map(f32::to_bits),
+            "{rules:?}"
+        );
+    }
+}
+
+fn reject_normal_foreign_publication_after(admitted_limit: usize) {
+    let mut mismatches = Vec::new();
+    for rules in [
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        let mut actual = player(rules);
+        actual.movement.mode = MovementMode::Walk;
+        actual.movement.timer = MovementTimer::default();
+        actual.movement.remaining_ms = 0;
+        let initial = (actual.body.position, actual.body.velocity);
+        let (mut native_position, mut native_velocity) = initial;
+        let (mut attempted_position, mut attempted_velocity) = initial;
+        let mut attempts = 0;
+        let mut admitted = 0;
+        let error = pmove(
+            UserCmd {
+                movement: [137.0, -27.0, 15.0],
+                units: qa_gameplay::rules::command_units(rules),
+                ..Default::default()
+            },
+            &mut actual,
+            &mut ClearTrace,
+            integrate(0.02),
+            |player: &mut PlayerState, field| {
+                attempts += 1;
+                match field {
+                    MotionWrite::Origin(axis) => {
+                        attempted_position.0[axis] = player.body.position.0[axis]
+                    }
+                    MotionWrite::Velocity(axis) => {
+                        attempted_velocity.0[axis] = player.body.velocity.0[axis]
+                    }
+                    _ => panic!("player movement does not publish angular motion"),
+                }
+                if admitted == admitted_limit {
+                    return Err(Failure::Boundary);
+                }
+                match field {
+                    MotionWrite::Origin(axis) => {
+                        native_position.0[axis] = player.body.position.0[axis]
+                    }
+                    MotionWrite::Velocity(axis) => {
+                        native_velocity.0[axis] = player.body.velocity.0[axis]
+                    }
+                    _ => panic!("player movement does not publish angular motion"),
+                }
+                admitted += 1;
+                player.body.position = native_position;
+                player.body.velocity = native_velocity;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, Failure::Boundary, "{rules:?}");
+        assert_eq!(attempts, admitted_limit + 1, "{rules:?}");
+        assert_eq!(admitted, admitted_limit, "{rules:?}");
+        if admitted_limit == 0 {
+            assert_eq!((native_position, native_velocity), initial, "{rules:?}");
+        } else {
+            assert_ne!((native_position, native_velocity), initial, "{rules:?}");
+        }
+        let actual_bits =
+            [actual.body.position, actual.body.velocity].map(|v| v.0.map(f32::to_bits));
+        let attempted_bits =
+            [attempted_position, attempted_velocity].map(|v| v.0.map(f32::to_bits));
+        if actual_bits != attempted_bits {
+            mismatches.push((rules, actual_bits, attempted_bits));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "surviving body contains unwritten speculation after {admitted_limit} successful stores and one rejected attempt: {mismatches:?}"
+    );
+}
+
+#[test]
+fn rejected_first_normal_foreign_store_keeps_only_the_attempted_scalar() {
+    reject_normal_foreign_publication_after(0);
+}
+
+#[test]
+fn rejected_later_normal_foreign_store_keeps_only_the_attempted_prefix() {
+    reject_normal_foreign_publication_after(1);
+}

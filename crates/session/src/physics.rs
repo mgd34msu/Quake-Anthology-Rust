@@ -8,16 +8,18 @@ use qa_core::{
 use qa_world::collision::TraceError;
 use qa_world::entities::EntityTable;
 
+mod client;
 mod monster;
 mod push;
 mod step;
 mod support;
 mod toss;
+pub use client::{ClientHost, client_control, client_move};
 pub use monster::{
     GoalCursor, GoalHost, GoalStep, MonsterHost, StepMove, StepPost, finish_step, move_step,
 };
 pub use push::{PushFrame, PushHost, PushNumber, PushUndo, push_frame};
-pub use step::step_fall;
+pub use step::{MotionSweep, step_fall, sweep_motion};
 pub use support::{SupportQueries, check_bottom};
 pub use toss::{
     MotionFrame, MotionHost, MotionState, MotionTrace, WaterTransition, push_entity, toss,

@@ -5,13 +5,13 @@ use qa_compat::{
     services::{CallContext, CallError, EngineServices},
 };
 use qa_core::primitives::{
-    CallbackCall, CollisionOwner, EntityId, ModuleId, NativeEntity, NativeEntityRef,
-    ResourceNamespace, ThinkTime, Vec3,
+    CallbackCall, ClientId, CollisionOwner, EntityId, ModuleId, Motion, NativeEntity,
+    NativeEntityRef, ResourceNamespace, RuleSetId, ThinkTime, UserCmd, Vec3,
 };
 use qa_session::dispatch::{CallOutcome, call_think_once};
 use qa_session::physics::{
-    self, MotionFrame, MotionHost, MotionState, MotionTrace, MotionWrite, PhysicsError, PushFrame,
-    PushHost, PushNumber,
+    self, ClientHost, MotionFrame, MotionHost, MotionState, MotionTrace, MotionWrite, PhysicsError,
+    PushFrame, PushHost, PushNumber,
 };
 use qa_world::{
     collision::{QuakeTraceKind, TraceQuery, trace_policy},
@@ -215,12 +215,46 @@ pub(super) fn water_transition(
     Host::new(host, module, entity, time)?.water_transition(entity)
 }
 
+pub(super) fn client_control(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    start: qa_movement::ControlStart,
+    time: ThinkTime,
+    elapsed: f64,
+) -> Result<(), ClientCommandError> {
+    let mut host = Host::client(host, module, id, time)?;
+    let entity = host.client_entity().ok_or(ClientCommandError::Inactive)?;
+    let rules = qa_gameplay::rules::motion::client_motion_rules(RuleSetId::Quake)
+        .ok_or(ClientCommandError::Unsupported)?;
+    let frame = host.frame(elapsed)?;
+    physics::client_control(&mut host, entity, start, frame, time, &rules)
+}
+
+pub(super) fn client_move(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    phase: Motion,
+    time: ThinkTime,
+    elapsed: f64,
+) -> Result<(), ClientCommandError> {
+    let mut host = Host::client(host, module, id, time)?;
+    let entity = host.client_entity().ok_or(ClientCommandError::Inactive)?;
+    let rules = qa_gameplay::rules::motion::client_motion_rules(RuleSetId::Quake)
+        .ok_or(ClientCommandError::Unsupported)?;
+    let frame = host.frame(elapsed)?;
+    physics::client_move(&mut host, entity, phase, frame, &rules)
+}
+
 struct Host<'a> {
     host: &'a mut FrameHost,
     module: ModuleId,
     native: u32,
     mover: NativeEntityRef,
     time: ThinkTime,
+    client: Option<(ClientId, EntityId)>,
+    trace_rules: Option<RuleSetId>,
 }
 impl<'a> Host<'a> {
     fn new(
@@ -237,18 +271,58 @@ impl<'a> Host<'a> {
             native,
             mover,
             time,
+            client: None,
+            trace_rules: None,
         })
     }
+    fn client(
+        host: &'a mut FrameHost,
+        module: ModuleId,
+        id: ClientId,
+        time: ThinkTime,
+    ) -> Result<Self, ClientCommandError> {
+        let client = host
+            .runtime
+            .server
+            .clients
+            .get(id.0 as usize)
+            .filter(|client| client.connection.is_some() && client.module == module)
+            .ok_or(ClientCommandError::Inactive)?;
+        let entity = client.entity;
+        let trace_rules = client.player.trace_rules;
+        let mut result = Self::new(host, module, entity, time)?;
+        result.client = Some((id, entity));
+        result.trace_rules = Some(trace_rules);
+        result.client_entity().ok_or(ClientCommandError::Inactive)?;
+        Ok(result)
+    }
+    fn client_entity(&self) -> Option<EntityId> {
+        let (id, captured) = self.client?;
+        super::clients::quakec::same_client(self.host, self.module, id, captured)
+            .then_some(captured)
+    }
+
     fn frame(&mut self, elapsed: f64) -> Result<MotionFrame, ClientCommandError> {
-        edit_quakec(self.host, self.module, |vm, services, _| {
+        let mut frame = edit_quakec(self.host, self.module, |vm, services, _| {
             Ok(MotionFrame {
                 elapsed,
                 gravity: vm.motion_world_gravity(services.cvars)?,
                 max_velocity: vm.max_velocity(services.cvars)?,
             })
-        })
+        })?;
+        if let Some((id, _)) = self.client {
+            self.client_entity().ok_or(ClientCommandError::Inactive)?;
+            let player = &self.host.runtime.server.clients[id.0 as usize].player;
+            frame.gravity =
+                qa_movement::effective_tuning(player.movement_rules, player.movement.tuning)
+                    .gravity;
+        }
+        Ok(frame)
     }
     fn current(&self) -> Result<Option<EntityId>, ClientCommandError> {
+        if self.client.is_some() {
+            return Ok(self.client_entity());
+        }
         contacts::current(self.host, self.mover)
     }
     fn edit<R>(
@@ -256,13 +330,69 @@ impl<'a> Host<'a> {
         entity: EntityId,
         call: impl FnOnce(&mut Vm, &mut EngineServices<'_>, CallContext, u32) -> Result<R, CallError>,
     ) -> Result<R, ClientCommandError> {
+        if self.client.is_some() && self.client_entity() != Some(entity) {
+            return Err(ClientCommandError::Inactive);
+        }
         let native = native_offset(self.host, self.module, entity)?;
         if native != self.native {
             return Err(ClientCommandError::InvalidSlot);
         }
-        edit_quakec(self.host, self.module, |vm, services, context| {
+        let trace_rules = self.trace_rules;
+        edit_quakec(self.host, self.module, |vm, services, mut context| {
+            if let Some(rules) = trace_rules {
+                context.trace_rules = rules;
+            }
             call(vm, services, context, native)
         })
+    }
+
+    fn write_field(
+        &mut self,
+        entity: EntityId,
+        field: MotionField,
+    ) -> Result<(), ClientCommandError> {
+        self.edit(entity, |vm, services, context, native| {
+            vm.write_motion_field(&mut services.server.entities, context, native, field)
+        })
+    }
+
+    fn trace_between(
+        &mut self,
+        entity: EntityId,
+        start: Vec3,
+        end: Vec3,
+        bounds: Option<(Vec3, Vec3)>,
+        kind: QuakeTraceKind,
+    ) -> Result<MotionTrace, ClientCommandError> {
+        let anchor = self
+            .host
+            .module_row(self.module)
+            .ok_or(ClientCommandError::MissingModule)?
+            .request
+            .anchor;
+        let mut trace = self.edit(entity, |vm, services, context, native| {
+            let (rules, entity_rules) = trace_policy(context.trace_rules);
+            let mut query =
+                TraceQuery::point(start, end, rules, entity_rules.with_quake_kind(Some(kind)));
+            if let Some((mins, maxs)) = bounds {
+                query.mins = mins;
+                query.maxs = maxs;
+            }
+            vm.with_trace_view(context, native, |view, pass| {
+                query.pass = pass;
+                services.trace(query, Some(view))
+            })
+        })?;
+        // A native world pointer names this module's explicit world binding,
+        // independently of common reservation slots or the loaded map family.
+        if trace.entity.is_some() && trace.entity == self.host.runtime.server.entities.id_at(0) {
+            trace.entity = Some(anchor);
+        }
+        let ground = trace
+            .entity
+            .map(|hit| contacts::reference(self.host, hit))
+            .transpose()?;
+        Ok(MotionTrace { trace, ground })
     }
 
     fn reference(&self, owner: CollisionOwner) -> Result<NativeEntityRef, ClientCommandError> {
@@ -511,14 +641,7 @@ impl MotionHost for Host<'_> {
         })
     }
     fn write_flags(&mut self, entity: EntityId, flags: u32) -> Result<(), Self::Error> {
-        self.edit(entity, |vm, services, context, native| {
-            vm.write_motion_field(
-                &mut services.server.entities,
-                context,
-                native,
-                MotionField::Flags(flags),
-            )
-        })
+        self.write_field(entity, MotionField::Flags(flags))
     }
     fn gravity_scale(&mut self, entity: EntityId) -> Result<Option<f32>, Self::Error> {
         self.edit(entity, |vm, _, context, native| {
@@ -531,43 +654,18 @@ impl MotionHost for Host<'_> {
         end: Vec3,
         kind: QuakeTraceKind,
     ) -> Result<MotionTrace, Self::Error> {
-        let anchor = self
-            .host
-            .module_row(self.module)
-            .ok_or(ClientCommandError::MissingModule)?
-            .request
-            .anchor;
-        let mut trace = self.edit(entity, |vm, services, context, native| {
-            let slot = services
-                .server
-                .entities
-                .resolve(entity)
-                .ok_or(CallError::Entity)?;
-            let body = services.server.entities.columns.body(slot);
-            let (rules, entity_rules) = trace_policy(context.trace_rules);
-            let mut query = TraceQuery::point(
-                body.position,
-                end,
-                rules,
-                entity_rules.with_quake_kind(Some(kind)),
-            );
-            query.mins = body.mins;
-            query.maxs = body.maxs;
-            vm.with_trace_view(context, native, |view, pass| {
-                query.pass = pass;
-                services.trace(query, Some(view))
-            })
-        })?;
-        // A native world pointer names this module's explicit world binding,
-        // independently of common reservation slots or the loaded map family.
-        if trace.entity.is_some() && trace.entity == self.host.runtime.server.entities.id_at(0) {
-            trace.entity = Some(anchor);
-        }
-        let ground = trace
-            .entity
-            .map(|hit| contacts::reference(self.host, hit))
-            .transpose()?;
-        Ok(MotionTrace { trace, ground })
+        let entities = &self.host.runtime.server.entities;
+        let slot = entities
+            .resolve(entity)
+            .ok_or(ClientCommandError::Inactive)?;
+        let body = entities.columns.body(slot);
+        self.trace_between(
+            entity,
+            body.position,
+            end,
+            Some((body.mins, body.maxs)),
+            kind,
+        )
     }
     fn relink(&mut self, entity: EntityId) -> Result<Option<EntityId>, Self::Error> {
         self.edit(entity, |vm, services, context, native| {
@@ -583,7 +681,15 @@ impl MotionHost for Host<'_> {
         trace: &MotionTrace,
     ) -> Result<Option<EntityId>, Self::Error> {
         let native = trace.ground.ok_or(ClientCommandError::InvalidSlot)?;
-        contacts::impact(self.host, self.module, self.mover, native, self.time)?;
+        let mover_entity = self.current()?;
+        contacts::impact(
+            self.host,
+            self.module,
+            mover_entity,
+            self.mover,
+            native,
+            self.time,
+        )?;
         self.current()
     }
     fn ground(
@@ -592,54 +698,123 @@ impl MotionHost for Host<'_> {
         ground: Option<NativeEntityRef>,
     ) -> Result<(), Self::Error> {
         let ground = ground.ok_or(ClientCommandError::InvalidSlot)?;
-        self.edit(entity, |vm, services, context, native| {
-            vm.write_motion_field(
-                &mut services.server.entities,
-                context,
-                native,
-                MotionField::Ground(ground),
-            )
-        })
+        self.write_field(entity, MotionField::Ground(ground))
     }
     fn water_transition(&mut self, entity: EntityId) -> Result<(), Self::Error> {
-        let transition = self.edit(entity, |vm, services, context, native| {
-            let slot = services
-                .server
-                .entities
-                .resolve(entity)
-                .ok_or(CallError::Entity)?;
-            let origin = services.server.entities.columns.position[slot];
-            let (_, rules) = trace_policy(context.trace_rules);
-            let contents = vm
-                .with_trace_view(context, native, |view, pass| {
-                    services.point_contents(origin, rules, pass, Some(view))
-                })?
-                .to_q1();
-            let old = vm.motion_water_type(context, native)?;
-            Ok(physics::water_transition(old, contents))
+        let slot = self
+            .host
+            .runtime
+            .server
+            .entities
+            .resolve(entity)
+            .ok_or(ClientCommandError::Inactive)?;
+        let origin = self.host.runtime.server.entities.columns.position[slot];
+        let contents = ClientHost::point_contents(self, entity, origin)?;
+        let previous = self.edit(entity, |vm, _, context, native| {
+            vm.motion_water_type(context, native)
         })?;
+        let transition = physics::water_transition(previous, contents);
         if transition.splash {
             self.sound(entity, b"misc/h2ohit1.wav")?;
         }
-        self.edit(entity, |vm, services, context, native| {
-            vm.write_motion_field(
-                &mut services.server.entities,
-                context,
-                native,
-                MotionField::WaterType(transition.water_type),
-            )?;
-            vm.write_motion_field(
-                &mut services.server.entities,
-                context,
-                native,
-                MotionField::WaterLevel(transition.water_level),
-            )
-        })
+        self.write_field(entity, MotionField::WaterType(transition.water_type))?;
+        self.write_field(entity, MotionField::WaterLevel(transition.water_level))
     }
     fn sound(&mut self, entity: EntityId, name: &[u8]) -> Result<(), Self::Error> {
         let queued = self.host.runtime.input_time;
         self.edit(entity, |vm, services, context, native| {
             vm.start_sound(services, context, queued, native, name, 0, 255, 1.0)
         })
+    }
+}
+
+impl ClientHost for Host<'_> {
+    fn command(&mut self, entity: EntityId) -> Result<UserCmd, Self::Error> {
+        if self.client_entity() != Some(entity) {
+            return Err(ClientCommandError::Inactive);
+        }
+        let (id, _) = self.client.ok_or(ClientCommandError::Inactive)?;
+        Ok(self.host.runtime.server.clients[id.0 as usize].command)
+    }
+    fn view_angles(&mut self, entity: EntityId) -> Result<Vec3, Self::Error> {
+        self.edit(entity, |vm, _, _, native| vm.client_view_angles(native))
+    }
+    fn view_height(&mut self, entity: EntityId) -> Result<f32, Self::Error> {
+        self.edit(entity, |vm, _, _, native| vm.client_view_height(native))
+    }
+    fn water_level(&mut self, entity: EntityId) -> Result<f32, Self::Error> {
+        self.edit(entity, |vm, _, _, native| vm.client_water_level(native))
+    }
+    fn write_water_level(&mut self, entity: EntityId, value: f32) -> Result<(), Self::Error> {
+        self.write_field(entity, MotionField::WaterLevel(value))
+    }
+    fn write_water_type(&mut self, entity: EntityId, value: f32) -> Result<(), Self::Error> {
+        self.write_field(entity, MotionField::WaterType(value))
+    }
+    fn old_origin(&mut self, entity: EntityId, axis: usize) -> Result<f32, Self::Error> {
+        self.edit(entity, |vm, _, _, native| {
+            vm.client_old_origin(native, axis)
+        })
+    }
+    fn write_old_origin(
+        &mut self,
+        entity: EntityId,
+        axis: usize,
+        value: f32,
+    ) -> Result<(), Self::Error> {
+        self.write_field(entity, MotionField::OldOrigin { axis, value })
+    }
+    fn teleport_time(&mut self, entity: EntityId) -> Result<f32, Self::Error> {
+        self.edit(entity, |vm, _, _, native| vm.client_teleport_time(native))
+    }
+    fn write_teleport_time(&mut self, entity: EntityId, value: f32) -> Result<(), Self::Error> {
+        self.write_field(entity, MotionField::TeleportTime(value))
+    }
+    fn move_direction(&mut self, entity: EntityId, axis: usize) -> Result<f32, Self::Error> {
+        self.edit(entity, |vm, _, _, native| {
+            vm.client_move_direction(native, axis)
+        })
+    }
+    fn point_contents(&mut self, entity: EntityId, point: Vec3) -> Result<i32, Self::Error> {
+        self.edit(entity, |vm, services, context, native| {
+            let (_, rules) = trace_policy(context.trace_rules);
+            vm.with_trace_view(context, native, |view, pass| {
+                services.point_contents(point, rules, pass, Some(view))
+            })
+            .map(|contents| contents.to_q1())
+        })
+    }
+    fn trace_point(
+        &mut self,
+        entity: EntityId,
+        start: Vec3,
+        end: Vec3,
+    ) -> Result<qa_world::collision::Trace, Self::Error> {
+        self.trace_between(entity, start, end, None, QuakeTraceKind::IgnoreBoxes)
+            .map(|result| result.trace)
+    }
+    fn tuning(&mut self, entity: EntityId) -> Result<qa_movement::ControlTuning, Self::Error> {
+        if self.client_entity() != Some(entity) {
+            return Err(ClientCommandError::Inactive);
+        }
+        let (id, _) = self.client.ok_or(ClientCommandError::Inactive)?;
+        Ok(qa_movement::control_tuning(
+            &self.host.runtime.server.clients[id.0 as usize].player,
+        ))
+    }
+    fn diagnostic(&mut self, text: &'static [u8]) -> Result<(), Self::Error> {
+        if self
+            .host
+            .console
+            .cvars
+            .value_in(self.host.developer, RuleSetId::Quake)
+            != 0.0
+        {
+            let _ = self.host.runtime.server.events.console_bytes(text);
+        }
+        Ok(())
+    }
+    fn current(&mut self) -> Result<Option<EntityId>, Self::Error> {
+        Host::current(self)
     }
 }

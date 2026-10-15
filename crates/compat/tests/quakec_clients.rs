@@ -131,6 +131,22 @@ fn vm(mutate: impl FnOnce(&mut Image)) -> Vm {
     )
     .unwrap()
 }
+fn client_vectors(mutate: impl FnOnce(&mut Image)) -> Vm {
+    vm(|image| {
+        image.names.reserve(2, 32).unwrap();
+        let mut fields = image.fielddefs.to_vec();
+        for (offset, name) in [(72, b"oldorigin".as_slice()), (75, b"movedir".as_slice())] {
+            fields.push(qa_formats::program::quakec::Definition {
+                value_type: 3,
+                offset,
+                name: image.names.intern(name).unwrap(),
+            });
+        }
+        image.fielddefs = fields.into_boxed_slice();
+        image.entityfields = 78;
+        mutate(image);
+    })
+}
 fn read(vm: &Vm, native: u32, name: &[u8]) -> u32 {
     let field = vm.image.field(name).unwrap();
     vm.entities
@@ -614,7 +630,7 @@ fn native_client_command_retains_successful_dirty_prefix_when_later_button_field
 }
 
 #[test]
-fn control_and_command_angles_publish_origin_aliases_after_success_or_late_rejection() {
+fn control_and_command_angles_publish_origin_aliases_for_admitted_native_modes() {
     for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         for rejected in [false, true] {
             if source == RuleSetId::QuakeWorld && rejected {
@@ -635,11 +651,7 @@ fn control_and_command_angles_publish_origin_aliases_after_success_or_late_rejec
                 vm.project_entities(services, context).unwrap();
                 if source == RuleSetId::Quake {
                     let result = vm.prepare_control(services, context, native, 0.1);
-                    if rejected {
-                        assert!(matches!(result, Err(CallError::Unsupported)));
-                    } else {
-                        assert!(result.unwrap().is_some());
-                    }
+                    assert!(result.unwrap().is_some());
                 } else {
                     vm.prepare_client_command(
                         services,
@@ -753,6 +765,274 @@ fn native_motion_fields_and_frame_scalars_publish_nonphysical_aliases() {
                 42.0
             );
             assert_eq!(services.server.area.bounds(entity), None);
+        },
+    );
+}
+
+#[test]
+fn native_client_getters_keep_raw_words_and_require_only_the_executed_typed_fields() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = client_vectors(|_| {});
+        with_native_client(&mut vm, source, |vm, _, _, native, _| {
+            vector(vm, native, b"v_angle", Vec3([12.0, 34.0, 56.0]));
+            vector(vm, native, b"view_ofs", Vec3([99.0, 88.0, 22.25]));
+            number(vm, native, b"waterlevel", 257.5);
+            number(vm, native, b"teleport_time", 16_777_216.0);
+            write(
+                vm,
+                native,
+                b"oldorigin",
+                &[0x7fc1_2345, (-0.0f32).to_bits(), 3.0f32.to_bits()],
+            );
+            vector(vm, native, b"movedir", Vec3([-50.0, 20.0, 0.0]));
+            assert_eq!(vm.client_view_angles(native), Ok(Vec3([12.0, 34.0, 56.0])));
+            assert_eq!(vm.client_view_height(native), Ok(22.25));
+            assert_eq!(vm.client_water_level(native), Ok(257.5));
+            assert_eq!(vm.client_teleport_time(native), Ok(16_777_216.0));
+            assert_eq!(
+                vm.client_old_origin(native, 0).unwrap().to_bits(),
+                0x7fc1_2345
+            );
+            assert_eq!(
+                vm.client_old_origin(native, 1).unwrap().to_bits(),
+                (-0.0f32).to_bits()
+            );
+            assert_eq!(vm.client_move_direction(native, 0), Ok(-50.0));
+            assert_eq!(vm.client_move_direction(native, 1), Ok(20.0));
+            assert_eq!(vm.client_old_origin(native, 3), Err(CallError::Memory));
+            assert_eq!(
+                vm.client_move_direction(native, usize::MAX),
+                Err(CallError::Memory)
+            );
+            assert_eq!(vm.client_water_level(0), Err(CallError::Entity));
+            assert_eq!(vm.client_view_height(native + 1), Err(CallError::Entity));
+            // A raw source definition edit does not change the load-cached ABI.
+            for field in vm.image.fielddefs.iter_mut() {
+                if vm.image.names.get(field.name) == Some(b"oldorigin".as_slice()) {
+                    field.offset = 0;
+                }
+            }
+            assert_eq!(vm.client_old_origin(native, 2), Ok(3.0));
+        });
+        let mut absent = self::vm(|_| {});
+        with_native_client(&mut absent, source, |vm, _, _, native, _| {
+            assert_eq!(vm.client_old_origin(native, 0), Err(CallError::Memory));
+            assert_eq!(vm.client_move_direction(native, 0), Err(CallError::Memory));
+            assert_eq!(vm.client_view_height(native), Ok(0.0));
+            assert_eq!(vm.client_water_level(native), Ok(0.0));
+        });
+    }
+}
+
+#[test]
+fn native_client_oldorigin_and_teleport_stores_refresh_bounds_aliases_without_full_projection() {
+    use qa_compat::quakec::MotionField;
+    let mut vm = client_vectors(|image| {
+        for field in image.fielddefs.iter_mut() {
+            match image.names.get(field.name).unwrap() {
+                b"oldorigin" => field.offset = 9,
+                b"teleport_time" => field.offset = 12,
+                _ => {}
+            }
+        }
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, client| {
+            let entity = services.server.clients[client.0 as usize].entity;
+            vector(vm, native, b"mins", Vec3([-1.0; 3]));
+            vector(vm, native, b"maxs", Vec3([1.0; 3]));
+            vm.prepare_motion(&mut services.server.entities, context, native)
+                .unwrap();
+            write(vm, native, b"classname", &[u32::MAX]);
+            vm.write_motion_field(
+                &mut services.server.entities,
+                context,
+                native,
+                MotionField::OldOrigin {
+                    axis: 0,
+                    value: -7.0,
+                },
+            )
+            .unwrap();
+            assert_eq!(vm.client_old_origin(native, 0), Ok(-7.0));
+            assert_eq!(
+                services.server.entities.columns.mins[entity.slot as usize],
+                Vec3([-7.0, -1.0, -1.0])
+            );
+            vm.write_motion_field(
+                &mut services.server.entities,
+                context,
+                native,
+                MotionField::TeleportTime(9.0),
+            )
+            .unwrap();
+            assert_eq!(vm.client_teleport_time(native), Ok(9.0));
+            assert_eq!(
+                services.server.entities.columns.maxs[entity.slot as usize],
+                Vec3([9.0, 1.0, 1.0])
+            );
+            let before = vm
+                .entities
+                .read(u64::from(native), vm.stride)
+                .unwrap()
+                .to_vec();
+            assert_eq!(
+                vm.write_motion_field(
+                    &mut services.server.entities,
+                    context,
+                    native,
+                    MotionField::OldOrigin {
+                        axis: 3,
+                        value: 11.0
+                    }
+                ),
+                Err(CallError::Memory)
+            );
+            assert_eq!(
+                vm.entities.read(u64::from(native), vm.stride).unwrap(),
+                before
+            );
+            assert_eq!(services.server.area.bounds(entity), None);
+            write(vm, native, b"classname", &[0]);
+            number(vm, native, b"frame", 29.0);
+            vm.project_dirty_entities(services, context).unwrap();
+            assert_eq!(
+                services.server.entities.columns.appearance[entity.slot as usize].frame,
+                29
+            );
+        },
+    );
+}
+
+#[test]
+fn native_control_captures_ground_before_aliased_punch_stores() {
+    let mut vm = vm(|image| {
+        for field in image.fielddefs.iter_mut() {
+            if image.names.get(field.name) == Some(b"flags".as_slice()) {
+                field.offset = 42;
+            }
+        }
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, _| {
+            number(vm, native, b"movetype", 3.0);
+            number(vm, native, b"health", 100.0);
+            vector(vm, native, b"punchangle", Vec3([512.0, 0.0, 0.0]));
+            let start = vm
+                .prepare_control(services, context, native, 0.1)
+                .unwrap()
+                .unwrap();
+            assert!(start.on_ground);
+            assert_eq!(read(vm, native, b"flags"), 511.0f32.to_bits());
+            assert_eq!(start.body_angles, read_vector(vm, native, b"angles"));
+        },
+    );
+}
+
+#[test]
+fn native_frame_import_maps_foreign_mode_water_and_ground_without_changing_roles_or_bounds() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, client| {
+            let entity = services.server.clients[client.0 as usize].entity;
+            let ground = services
+                .server
+                .entities
+                .active()
+                .find(|id| {
+                    services.server.entities.columns.native_entity[id.slot as usize]
+                        == Some(NativeEntity {
+                            module: context.module,
+                            slot: 0,
+                        })
+                })
+                .unwrap();
+            vector(vm, native, b"origin", Vec3([100.0, 200.0, 300.0]));
+            vector(vm, native, b"velocity", Vec3([7.0, 8.0, 9.0]));
+            vector(vm, native, b"mins", Vec3([-80.0; 3]));
+            number(vm, native, b"health", 100.0);
+            number(vm, native, b"flags", 512.0);
+            write(vm, native, b"groundentity", &[0]);
+            number(vm, native, b"waterlevel", 257.5);
+            number(vm, native, b"watertype", -4.0);
+            number(vm, native, b"teleport_time", 10.25);
+            let player = &mut services.server.clients[client.0 as usize].player;
+            let bounds = (player.body.mins, player.body.maxs);
+            player.movement.water_jump_seconds = 7.0;
+            for rules in [
+                RuleSetId::QuakeWorld,
+                RuleSetId::Quake2,
+                RuleSetId::Quake2Rerelease,
+                RuleSetId::Quake3,
+            ] {
+                player.movement_rules = rules;
+                for (mode, phase, expected) in [
+                    (0.0, Motion::None, MovementMode::Frozen),
+                    (3.0, Motion::Walk, MovementMode::Walk),
+                    (4.0, Motion::Step, MovementMode::Walk),
+                    (5.0, Motion::Fly, MovementMode::Fly),
+                    (6.0, Motion::Toss, MovementMode::Walk),
+                    (8.0, Motion::Noclip, MovementMode::Noclip),
+                    (9.0, Motion::FlyMissile, MovementMode::Fly),
+                    (10.0, Motion::Bounce, MovementMode::Walk),
+                ] {
+                    number(vm, native, b"movetype", mode);
+                    vm.read_frame_client(
+                        &services.server.entities,
+                        context,
+                        native,
+                        entity,
+                        phase,
+                        player,
+                    )
+                    .unwrap();
+                    assert_eq!(player.movement.mode, expected);
+                    assert_eq!(player.body.position, Vec3([100.0, 200.0, 300.0]));
+                    assert_eq!((player.body.mins, player.body.maxs), bounds);
+                    assert_eq!(
+                        (player.movement_rules, player.trace_rules),
+                        (rules, RuleSetId::Quake2)
+                    );
+                    assert_eq!(player.flags, 512);
+                    assert!(player.movement.grounded);
+                    assert_eq!(player.movement.ground, Some(ground));
+                    assert_eq!(player.movement.water_level, 1);
+                    assert_eq!(player.movement.water_contents, Contents::from_q1(-4).0);
+                    assert_eq!(player.movement.teleport_hold_until, 10.25);
+                    assert_eq!(player.movement.water_jump_seconds, 7.0);
+                }
+            }
+            number(vm, native, b"movetype", 3.0);
+            number(vm, native, b"health", -1.0);
+            vm.read_frame_client(
+                &services.server.entities,
+                context,
+                native,
+                entity,
+                Motion::Walk,
+                player,
+            )
+            .unwrap();
+            assert_eq!(player.movement.mode, MovementMode::Dead);
+            number(vm, native, b"movetype", 11.0);
+            assert_eq!(
+                vm.read_frame_client(
+                    &services.server.entities,
+                    context,
+                    native,
+                    entity,
+                    Motion::Unsupported,
+                    player,
+                ),
+                Err(CallError::Unsupported)
+            );
+            assert_eq!(player.movement.mode, MovementMode::Dead);
         },
     );
 }
@@ -1192,7 +1472,13 @@ fn native_client_phase_uses_integer_motion_without_admitting_packet_movement() {
             for (value, phase) in [
                 (0.75, Motion::None),
                 (8.75, Motion::Noclip),
-                (3.0, Motion::Unsupported),
+                (3.75, Motion::Walk),
+                (4.75, Motion::Step),
+                (5.75, Motion::Fly),
+                (6.75, Motion::Toss),
+                (9.75, Motion::FlyMissile),
+                (10.75, Motion::Bounce),
+                (11.0, Motion::Unsupported),
                 (f32::NAN, Motion::Unsupported),
             ] {
                 number(vm, native, b"movetype", value);
@@ -1455,13 +1741,8 @@ fn nq_control_decays_punch_before_raw_fractional_health_and_uses_prior_roll() {
                 read_vector(vm, native, b"angles").0.map(f32::to_bits),
                 expected.0.map(f32::to_bits)
             );
-            match options.phase {
-                qa_movement::MovePhase::Control { body_angles, clock } => {
-                    assert_eq!(body_angles, expected);
-                    assert_eq!(clock, context.clock);
-                }
-                _ => panic!("native control phase required"),
-            }
+            assert_eq!(options.body_angles, expected);
+            assert!(!options.on_ground);
         },
     );
 }
@@ -1581,27 +1862,236 @@ fn nq_control_captures_view_before_scalar_angles_and_rereads_fixangle_after_roll
 }
 
 #[test]
-fn nq_exact_noclip_admission_rejects_waterjump_and_fractional_alternatives() {
+fn nq_control_preparation_leaves_mode_and_waterjump_admission_to_shared_physics() {
     let mut vm = vm(|_| {});
     with_native_client(
         &mut vm,
         RuleSetId::Quake,
         |vm, services, context, native, _| {
             number(vm, native, b"health", 1.0);
-            for (mode, flags, accepted) in [
-                (8.0, 0.0, true),
-                (8.5, 0.0, false),
-                (8.0, 2048.0, false),
-                (3.0, 0.0, false),
+            for (mode, flags) in [
+                (8.0, 0.0),
+                (8.5, 0.0),
+                (8.0, 2048.0),
+                (3.0, 0.0),
+                (5.0, 0.0),
+                (6.0, 0.0),
+                (10.0, 0.0),
             ] {
                 number(vm, native, b"movetype", mode);
                 number(vm, native, b"flags", flags);
-                assert_eq!(vm.client_noclip(context, native).is_ok(), accepted);
-                assert_eq!(
-                    vm.prepare_control(services, context, native, 0.1).is_ok(),
-                    accepted
+                assert!(
+                    vm.prepare_control(services, context, native, 0.1)
+                        .unwrap()
+                        .is_some()
                 );
             }
+        },
+    );
+}
+
+#[test]
+fn negative_native_water_depth_imports_dry_without_changing_the_raw_word() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|_| {});
+        with_native_client(&mut vm, source, |vm, services, context, native, id| {
+            number(vm, native, b"movetype", 6.0);
+            number(vm, native, b"waterlevel", -1.0);
+            services.server.clients[id.0 as usize]
+                .player
+                .movement
+                .water_level = 2;
+            vm.project_entity(services, context, native).unwrap();
+            assert_eq!(
+                services.server.clients[id.0 as usize]
+                    .player
+                    .movement
+                    .water_level,
+                0
+            );
+            assert_eq!(read(vm, native, b"waterlevel"), (-1.0f32).to_bits());
+            if source == RuleSetId::Quake {
+                let entity = services.server.clients[id.0 as usize].entity;
+                let player = &mut services.server.clients[id.0 as usize].player;
+                vm.read_frame_client(
+                    &services.server.entities,
+                    context,
+                    native,
+                    entity,
+                    Motion::Toss,
+                    player,
+                )
+                .unwrap();
+                assert_eq!(player.movement.water_level, 0);
+                assert_eq!(read(vm, native, b"waterlevel"), (-1.0f32).to_bits());
+            }
+        });
+    }
+}
+
+#[test]
+fn nq_frame_finish_roundtrips_environment_and_view_without_changing_absolute_teleport() {
+    let mut vm = vm(|_| {});
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            let entity = services.server.clients[id.0 as usize].entity;
+            let ground = services
+                .server
+                .entities
+                .find_native(
+                    NativeEntity {
+                        module: context.module,
+                        slot: 0,
+                    },
+                    None,
+                )
+                .unwrap();
+            number(vm, native, b"movetype", 3.0);
+            number(vm, native, b"health", 100.0);
+            number(vm, native, b"flags", 2561.0);
+            number(vm, native, b"teleport_time", 13.75);
+            write(vm, native, b"groundentity", &[native]);
+            let player = &mut services.server.clients[id.0 as usize].player;
+            player.movement.water_level = 2;
+            player.movement.water_contents = Contents::SLIME.0;
+            player.movement.grounded = false;
+            player.movement.ground = None;
+            player.movement.water_jump_seconds = 7.0;
+            player.view_angles = Vec3([12.0, 34.0, 56.0]);
+            vm.finish_frame_client(services, context, native).unwrap();
+            assert_eq!(read(vm, native, b"waterlevel"), 2.0f32.to_bits());
+            assert_eq!(read(vm, native, b"watertype"), (-4.0f32).to_bits());
+            assert_eq!(read(vm, native, b"flags"), 2049.0f32.to_bits());
+            assert_eq!(read(vm, native, b"groundentity"), native);
+            assert_eq!(read(vm, native, b"teleport_time"), 13.75f32.to_bits());
+            assert_eq!(
+                read_vector(vm, native, b"v_angle"),
+                Vec3([12.0, 34.0, 56.0])
+            );
+            assert_eq!(services.server.area.bounds(entity), None);
+            let player = &mut services.server.clients[id.0 as usize].player;
+            player.movement.grounded = true;
+            player.movement.ground = Some(ground);
+            player.view_angles = Vec3([7.0, 8.0, 9.0]);
+            vm.finish_frame_client(services, context, native).unwrap();
+            assert_eq!(read(vm, native, b"groundentity"), 0);
+            assert_eq!(read(vm, native, b"flags"), 2561.0f32.to_bits());
+            let player = &mut services.server.clients[id.0 as usize].player;
+            player.movement.water_level = 0;
+            player.movement.water_contents = 0;
+            player.movement.grounded = false;
+            player.movement.ground = None;
+            player.view_angles = Vec3::default();
+            vm.project_dirty_entities(services, context).unwrap();
+            let player = &services.server.clients[id.0 as usize].player;
+            assert_eq!(player.movement.water_level, 2);
+            assert_eq!(player.movement.water_contents, Contents::SLIME.0);
+            assert!(player.movement.grounded);
+            assert_eq!(player.movement.ground, Some(ground));
+            assert_eq!(player.view_angles, Vec3([7.0, 8.0, 9.0]));
+            assert_eq!(read(vm, native, b"teleport_time"), 13.75f32.to_bits());
+            assert_eq!(services.server.area.bounds(entity), None);
+        },
+    );
+}
+
+#[test]
+fn packet_and_frame_environment_writes_keep_cached_flags_and_the_view_store_last() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|image| {
+            for field in image.fielddefs.iter_mut() {
+                field.offset = match image.names.get(field.name).unwrap() {
+                    b"waterlevel" | b"flags" | b"teleport_time" => 62,
+                    b"watertype" => 1,
+                    b"groundentity" => 2,
+                    b"v_angle" => 0,
+                    _ => field.offset,
+                };
+            }
+        });
+        with_native_client(&mut vm, source, |vm, services, context, native, id| {
+            let entity = services.server.clients[id.0 as usize].entity;
+            number(vm, native, b"flags", 513.0);
+            let player = &mut services.server.clients[id.0 as usize].player;
+            player.movement.water_level = 3;
+            player.movement.water_contents = Contents::SLIME.0;
+            player.movement.grounded = false;
+            player.movement.water_jump_seconds = 7.0;
+            player.view_angles = Vec3([7.0, 8.0, 9.0]);
+            if source == RuleSetId::Quake {
+                vm.finish_frame_client(services, context, native).unwrap();
+                assert_eq!(
+                    services.server.entities.columns.appearance[entity.slot as usize].frame,
+                    0
+                );
+                vm.project_dirty_entities(services, context).unwrap();
+            } else {
+                vm.write_client(services, context, native, Vec3::default())
+                    .unwrap();
+            }
+            assert_eq!(read(vm, native, b"flags"), 1.0f32.to_bits());
+            assert_eq!(read_vector(vm, native, b"origin"), Vec3([7.0, 8.0, 9.0]));
+            assert_eq!(
+                services.server.entities.columns.appearance[entity.slot as usize].frame,
+                1
+            );
+        });
+    }
+}
+
+#[test]
+fn foreign_noclip_frame_import_preserves_missing_optional_environment_fields() {
+    let mut vm = vm(|image| {
+        image.fielddefs = image
+            .fielddefs
+            .iter()
+            .copied()
+            .filter(|field| {
+                ![
+                    b"flags".as_slice(),
+                    b"groundentity",
+                    b"waterlevel",
+                    b"watertype",
+                    b"health",
+                ]
+                .contains(&image.names.get(field.name).unwrap_or_default())
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            let entity = services.server.clients[id.0 as usize].entity;
+            let player = &mut services.server.clients[id.0 as usize].player;
+            player.flags = 513;
+            player.movement.grounded = true;
+            player.movement.ground = Some(entity);
+            player.movement.water_level = 2;
+            player.movement.water_contents = Contents::SLIME.0;
+            vm.read_frame_client(
+                &services.server.entities,
+                context,
+                native,
+                entity,
+                Motion::Noclip,
+                player,
+            )
+            .unwrap();
+            assert_eq!(player.movement.mode, MovementMode::Noclip);
+            assert_eq!(player.flags, 513);
+            assert!(player.movement.grounded);
+            assert_eq!(player.movement.ground, Some(entity));
+            assert_eq!(player.movement.water_level, 2);
+            assert_eq!(player.movement.water_contents, Contents::SLIME.0);
+            vm.finish_frame_client(services, context, native).unwrap();
+            let player = &services.server.clients[id.0 as usize].player;
+            assert_eq!(player.flags, 513);
+            assert_eq!(player.movement.water_level, 2);
+            assert_eq!(player.movement.water_contents, Contents::SLIME.0);
         },
     );
 }
@@ -1614,7 +2104,6 @@ fn nq_frame_pose_keeps_native_origin_absolute_time_and_captured_phase() {
         RuleSetId::Quake,
         |vm, services, context, native, id| {
             number(vm, native, b"movetype", 8.0);
-            vm.client_noclip(context, native).unwrap();
             number(vm, native, b"movetype", 0.0);
             number(vm, native, b"teleport_time", 10.25);
             vector(vm, native, b"origin", Vec3([100.0, 200.0, 300.0]));
@@ -1624,8 +2113,15 @@ fn nq_frame_pose_keeps_native_origin_absolute_time_and_captured_phase() {
             let player = &mut services.server.clients[id.0 as usize].player;
             let bounds = (player.body.mins, player.body.maxs);
             player.movement.water_jump_seconds = 7.0;
-            vm.read_frame_client(&services.server.entities, context, native, entity, player)
-                .unwrap();
+            vm.read_frame_client(
+                &services.server.entities,
+                context,
+                native,
+                entity,
+                Motion::Noclip,
+                player,
+            )
+            .unwrap();
             assert_eq!(player.body.position, Vec3([100.0, 200.0, 300.0]));
             assert_eq!(player.body.velocity, Vec3([3.0, -2.0, 6.0]));
             assert_eq!((player.body.mins, player.body.maxs), bounds);
@@ -1654,13 +2150,21 @@ fn nq_frame_scalar_integration_rereads_shifted_native_aliases_without_table_muta
         &mut vm,
         RuleSetId::Quake,
         |vm, services, context, native, id| {
+            number(vm, native, b"movetype", 8.0);
             vector(vm, native, b"origin", Vec3([10.0, 20.0, 30.0]));
             vector(vm, native, b"velocity", Vec3([2.0, 3.0, 4.0]));
             let entity = services.server.clients[id.0 as usize].entity;
             let player = &mut services.server.clients[id.0 as usize].player;
             player.movement_rules = RuleSetId::Quake;
-            vm.read_frame_client(&services.server.entities, context, native, entity, player)
-                .unwrap();
+            vm.read_frame_client(
+                &services.server.entities,
+                context,
+                native,
+                entity,
+                Motion::Noclip,
+                player,
+            )
+            .unwrap();
             let common_origin = services.server.entities.columns.position[entity.slot as usize];
             let result = qa_movement::pmove(
                 UserCmd::default(),
