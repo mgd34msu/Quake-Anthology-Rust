@@ -45,11 +45,21 @@ impl ParsedCommand {
         self.tokens.raw = 0..0;
     }
     pub fn parse(&mut self, text: &[u8], source: RuleSetId) -> Result<(), TextError> {
-        self.clear();
-        self.line
-            .append_bytes(text)
-            .map_err(|_| TextError::TooLong)?;
+        self.set_raw(text)?;
         tokenize_bytes(self.line.as_bytes(), source, &mut self.tokens)?;
+        Ok(())
+    }
+    /// Capture one command without applying command-buffer separators.
+    pub fn set_raw(&mut self, text: &[u8]) -> Result<(), TextError> {
+        self.clear();
+        if text.contains(&0) {
+            return Err(TextError::Nul);
+        }
+        self.line.append_bytes(text).map_err(|_| TextError::TooLong)
+    }
+    pub fn parse_engine(&mut self, text: &[u8], source: RuleSetId) -> Result<(), TextError> {
+        self.set_raw(text)?;
+        tokenize_engine_bytes(self.line.as_bytes(), source, &mut self.tokens)?;
         Ok(())
     }
     pub fn arguments(&self) -> Arguments<'_> {

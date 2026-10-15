@@ -81,6 +81,78 @@ struct Alias {
     next_same_name: Option<usize>,
     text: FixedText<1024>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandStep {
+    Continue,
+    Fallback,
+    Done,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandReply {
+    Handled,
+    Unhandled,
+}
+#[derive(Clone, Copy)]
+enum CommandMode {
+    Single,
+    Drain,
+}
+#[derive(Clone, Copy)]
+enum CommandPhase {
+    Read,
+    AwaitFallback,
+    Replied(CommandReply),
+    Done,
+}
+/// Owned progress; the caller retains its parsed scratch across fallback calls.
+pub struct CommandRun {
+    mode: CommandMode,
+    phase: CommandPhase,
+    context: Context,
+    executed: u32,
+    aliases: u32,
+}
+impl CommandRun {
+    pub fn single(context: Context) -> Self {
+        Self {
+            mode: CommandMode::Single,
+            phase: CommandPhase::Read,
+            context,
+            executed: 0,
+            aliases: 0,
+        }
+    }
+    pub fn drain() -> Self {
+        Self {
+            mode: CommandMode::Drain,
+            ..Self::single(Context::default())
+        }
+    }
+    pub fn context(&self) -> Context {
+        self.context
+    }
+    /// Accept exactly one reply to the outstanding fallback request.
+    pub fn reply(&mut self, reply: CommandReply) -> bool {
+        if !matches!(self.phase, CommandPhase::AwaitFallback) {
+            return false;
+        }
+        self.phase = CommandPhase::Replied(reply);
+        true
+    }
+    fn complete_command(&mut self) -> CommandStep {
+        match self.mode {
+            CommandMode::Single => {
+                self.phase = CommandPhase::Done;
+                CommandStep::Done
+            }
+            CommandMode::Drain => {
+                self.phase = CommandPhase::Read;
+                CommandStep::Continue
+            }
+        }
+    }
+}
 pub struct Console<H> {
     pub cvars: Cvars,
     pub editor: crate::editor::Editor,
@@ -329,15 +401,58 @@ impl<H: Host> Console<H> {
         self.buffer.is_empty()
     }
     pub fn execute_frame(&mut self, host: &mut H) {
-        // Move only the scratch pointer. Commands may mutate/insert into the
-        // buffer while argv continues borrowing this console's loaded parser.
         let Some(mut parser) = self.parser.take() else {
             host.print(format_args!("Console execution already active\n"));
             return;
         };
-        let mut executed = 0;
-        let mut aliases = 0;
-        while !self.buffer.is_empty() {
+        let mut run = CommandRun::drain();
+        loop {
+            match self.step(host, &mut run, &mut parser) {
+                CommandStep::Continue => {}
+                CommandStep::Fallback => {
+                    run.reply(CommandReply::Unhandled);
+                }
+                CommandStep::Done => break,
+            }
+        }
+        self.parser = Some(parser);
+    }
+
+    /// Run one shared dispatch boundary, ending all console borrows on fallback.
+    pub fn step(
+        &mut self,
+        host: &mut H,
+        run: &mut CommandRun,
+        parser: &mut ParsedCommand,
+    ) -> CommandStep {
+        if matches!(
+            run.phase,
+            CommandPhase::AwaitFallback | CommandPhase::Replied(_)
+        ) && let Some(producer) = run.context.producer
+            && !host.command_producer_live(producer)
+        {
+            let _ = self.discard_producer(host, producer);
+            return run.complete_command();
+        }
+        match run.phase {
+            CommandPhase::Done => return CommandStep::Done,
+            CommandPhase::AwaitFallback => return CommandStep::Fallback,
+            CommandPhase::Replied(reply) => {
+                if reply == CommandReply::Unhandled {
+                    host.print(format_args!(
+                        "Unknown command \"{}\"\n",
+                        parser.arguments().get(0)
+                    ));
+                }
+                return run.complete_command();
+            }
+            CommandPhase::Read => {}
+        }
+        let context = if matches!(run.mode, CommandMode::Drain) {
+            if self.buffer.is_empty() {
+                run.phase = CommandPhase::Done;
+                return CommandStep::Done;
+            }
             if let Some(producer) = self
                 .buffer
                 .wait_context()
@@ -345,122 +460,134 @@ impl<H: Host> Console<H> {
                 && !host.command_producer_live(producer)
             {
                 let _ = self.discard_producer(host, producer);
-                continue;
+                return CommandStep::Continue;
             }
             if !self.buffer.ready() {
-                break;
+                run.phase = CommandPhase::Done;
+                return CommandStep::Done;
             }
-            if executed >= 4096 {
+            if run.executed >= 4096 {
                 host.print(format_args!("Command frame limit\n"));
-                break;
+                run.phase = CommandPhase::Done;
+                return CommandStep::Done;
             }
+            parser.clear();
             let Some((context, result)) = self.buffer.next_line(&mut parser.line) else {
-                break;
+                run.phase = CommandPhase::Done;
+                return CommandStep::Done;
             };
-            executed += 1;
+            run.executed += 1;
+            run.context = context;
             if let Some(producer) = context.producer
                 && !host.command_producer_live(producer)
             {
                 let _ = self.discard_producer(host, producer);
-                continue;
+                return CommandStep::Continue;
             }
             if let Err(error) = result {
                 self.reject_expansion(error, context, host);
                 host.print(format_args!("Command rejected: {error:?}\n"));
-                continue;
+                return CommandStep::Continue;
             }
-            if matches!(
-                context.source,
-                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-            ) {
-                let raw = parser.line.as_bytes();
-                let expanded = if raw.contains(&b'$') {
-                    command_text::expand_engine_bytes(
-                        &mut parser.line,
-                        &mut parser.tokens,
-                        |name| self.cvars.macro_value(name, context),
-                    )
-                } else if raw.len() >= crate::text::MAX_TEXT {
-                    Err(TextError::TooLong)
-                } else if raw.iter().filter(|&&b| b == b'"').count() & 1 != 0 {
-                    Err(TextError::UnmatchedQuote)
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = expanded {
-                    self.reject_expansion(error, context, host);
-                    host.print(format_args!("Command rejected: {error:?}\n"));
-                    continue;
-                }
+            context
+        } else {
+            run.executed += 1;
+            if let Some(producer) = run.context.producer
+                && !host.command_producer_live(producer)
+            {
+                let _ = self.discard_producer(host, producer);
+                return run.complete_command();
             }
-            let args = match command_text::tokenize_engine_bytes(
-                parser.line.as_bytes(),
-                context.source,
-                &mut parser.tokens,
-            ) {
-                Ok(args) => args,
-                Err(error) => {
-                    self.reject_expansion(error, context, host);
-                    host.print(format_args!("Command rejected: {error:?}\n"));
-                    continue;
-                }
+            run.context
+        };
+        if matches!(
+            context.source,
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+        ) {
+            let raw = parser.line.as_bytes();
+            let expanded = if raw.contains(&b'$') {
+                command_text::expand_engine_bytes(&mut parser.line, &mut parser.tokens, |name| {
+                    self.cvars.macro_value(name, context)
+                })
+            } else if raw.len() >= crate::text::MAX_TEXT {
+                Err(TextError::TooLong)
+            } else if raw.iter().filter(|&&b| b == b'"').count() & 1 != 0 {
+                Err(TextError::UnmatchedQuote)
+            } else {
+                Ok(())
             };
-            let Ok(name) = std::str::from_utf8(args.get_bytes(0)) else {
-                host.print(format_args!("Command name is not UTF-8\n"));
-                continue;
-            };
-            if name.is_empty() {
-                continue;
-            }
-            let id = self.cvars.lookup_name(name);
-            let result =
-                if let Some(command) = id.and_then(|id| self.command_by_name[id.0 as usize]) {
-                    match command {
-                        Command::Function(function) => function(self, host, &args, context),
-                        Command::Button(action) => self.button(host, &args, context, action),
-                    }
-                } else if let Some(view) = id.and_then(|id| self.cvars.bind_id(id, context)) {
-                    if args.len() == 1 {
-                        match self.cvars.read(view) {
-                            Ok(value) => {
-                                if self.cvars.private(view) {
-                                    host.print(format_args!("{name} is private\n"));
-                                } else {
-                                    host.print(format_args!("{name} = \"{}\"\n", value.as_str()));
-                                }
-                                Ok(())
-                            }
-                            Err(error) => Err(CommandError::Cvar(WriteError::Conversion(error))),
-                        }
-                    } else {
-                        match std::str::from_utf8(args.get_bytes(1)) {
-                            Ok(value) => self.cvars.write(view, value).map_err(Into::into),
-                            Err(_) => Err(CommandError::Usage),
-                        }
-                    }
-                } else if let Some(alias) = id
-                    .and_then(|id| self.alias_index(id, context.producer))
-                    .map(|index| &self.aliases[index])
-                {
-                    aliases += 1;
-                    if aliases > 16 {
-                        host.print(format_args!("Alias expansion limit\n"));
-                        continue;
-                    }
-                    let result = self.buffer.insert_bytes(alias.text.as_bytes(), context);
-                    if let Err(error) = result {
-                        self.reject_expansion(error, context, host);
-                    }
-                    result.map_err(Into::into)
-                } else {
-                    host.print(format_args!("Unknown command \"{name}\"\n"));
-                    Ok(())
-                };
-            if let Err(error) = result {
-                host.print(format_args!("Command {name} rejected: {error:?}\n"));
+            if let Err(error) = expanded {
+                self.reject_expansion(error, context, host);
+                host.print(format_args!("Command rejected: {error:?}\n"));
+                return run.complete_command();
             }
         }
-        self.parser = Some(parser);
+        let args = match command_text::tokenize_engine_bytes(
+            parser.line.as_bytes(),
+            context.source,
+            &mut parser.tokens,
+        ) {
+            Ok(args) => args,
+            Err(error) => {
+                self.reject_expansion(error, context, host);
+                host.print(format_args!("Command rejected: {error:?}\n"));
+                return run.complete_command();
+            }
+        };
+        let Ok(name) = std::str::from_utf8(args.get_bytes(0)) else {
+            host.print(format_args!("Command name is not UTF-8\n"));
+            return run.complete_command();
+        };
+        if name.is_empty() {
+            return run.complete_command();
+        }
+        let id = self.cvars.lookup_name(name);
+        let result = if let Some(command) = id.and_then(|id| self.command_by_name[id.0 as usize]) {
+            match command {
+                Command::Function(function) => function(self, host, &args, context),
+                Command::Button(action) => self.button(host, &args, context, action),
+            }
+        } else if let Some(view) = id.and_then(|id| self.cvars.bind_id(id, context)) {
+            if args.len() == 1 {
+                match self.cvars.read(view) {
+                    Ok(value) => {
+                        if self.cvars.private(view) {
+                            host.print(format_args!("{name} is private\n"));
+                        } else {
+                            host.print(format_args!("{name} = \"{}\"\n", value.as_str()));
+                        }
+                        Ok(())
+                    }
+                    Err(error) => Err(CommandError::Cvar(WriteError::Conversion(error))),
+                }
+            } else {
+                match std::str::from_utf8(args.get_bytes(1)) {
+                    Ok(value) => self.cvars.write(view, value).map_err(Into::into),
+                    Err(_) => Err(CommandError::Usage),
+                }
+            }
+        } else if let Some(alias) = id
+            .and_then(|id| self.alias_index(id, context.producer))
+            .map(|index| &self.aliases[index])
+        {
+            run.aliases += 1;
+            if run.aliases > 16 {
+                host.print(format_args!("Alias expansion limit\n"));
+                return run.complete_command();
+            }
+            let result = self.buffer.insert_bytes(alias.text.as_bytes(), context);
+            if let Err(error) = result {
+                self.reject_expansion(error, context, host);
+            }
+            result.map_err(Into::into)
+        } else {
+            run.phase = CommandPhase::AwaitFallback;
+            return CommandStep::Fallback;
+        };
+        if let Err(error) = result {
+            host.print(format_args!("Command {name} rejected: {error:?}\n"));
+        }
+        run.complete_command()
     }
     fn echo(&mut self, host: &mut H, args: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
         let mut argument = FixedText::<{ crate::text::MAX_TEXT + 1 }>::default();
