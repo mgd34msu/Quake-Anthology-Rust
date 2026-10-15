@@ -79,9 +79,21 @@ impl UserCmdBuilder {
                 buttons |= buttons::WALK;
             }
         }
+        // Native CL_FinishMove runs after input sampling and construction. Its
+        // long-frame fallback never changes a received SERVER/PMove command.
+        let mut duration_ms = duration.milliseconds().min(u64::from(u16::MAX)) as u16;
+        if let Some((maximum, fallback)) = rules.finish_duration
+            && duration_ms > maximum
+        {
+            duration_ms = fallback;
+        }
         UserCmd {
-            duration_ms: duration.milliseconds().min(u64::from(u16::MAX)) as u16,
-            duration_ns: duration.0,
+            duration_ms,
+            duration_ns: if rules.finish_duration.is_some() {
+                EventTime::from_milliseconds(u64::from(duration_ms)).0
+            } else {
+                duration.0
+            },
             server_time_ms: time.milliseconds() as i32,
             view_angles: intent.view_angles,
             movement,

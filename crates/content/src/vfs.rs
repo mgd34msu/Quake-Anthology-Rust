@@ -359,8 +359,16 @@ impl Vfs {
         self.winners.fill(None);
         if let Some(names) = &self.names {
             for &reference in &self.listing {
-                if let Some(id) = names.find(&self.entries[reference.entry as usize].name) {
-                    self.winners[id.0 as usize].get_or_insert(reference);
+                let entry = &self.entries[reference.entry as usize];
+                if let Some(id) = names.find(&entry.name) {
+                    let winner = &mut self.winners[id.0 as usize];
+                    if winner.is_none_or(|current| {
+                        let current = &self.entries[current.entry as usize];
+                        current.mount == entry.mount
+                            && self.mounts[entry.mount].kind == MountKind::Pk3
+                    }) {
+                        *winner = Some(reference);
+                    }
                 }
             }
         }

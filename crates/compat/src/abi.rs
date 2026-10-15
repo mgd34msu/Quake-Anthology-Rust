@@ -2441,8 +2441,8 @@ fn file_open(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     }
     if c.null_pointer(1)? {
         return match (ENGINE_CALLS.file_length)(c.services, c.memory.cstring(c.pointer(0)?)?) {
-            Ok(length) => Ok(length as u32 as u64),
-            Err(CallError::File) => Ok(u32::MAX as u64),
+            Ok(_) => Ok(1),
+            Err(CallError::File) => Ok(0),
             Err(error) => Err(error),
         };
     }

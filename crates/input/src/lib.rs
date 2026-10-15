@@ -248,6 +248,7 @@ pub(crate) struct CommandRules {
     drift_uses_ideal_pitch: bool,
     integer_frame_time: bool,
     caught_buttons: u32,
+    finish_duration: Option<(u16, u16)>,
 }
 /// Native setting semantics; values and defaults come from the console catalog.
 #[derive(Clone, Copy)]
@@ -283,6 +284,7 @@ const Q1_INPUT: CommandRules = CommandRules {
     drift_uses_ideal_pitch: true,
     integer_frame_time: false,
     caught_buttons: 0,
+    finish_duration: None,
 };
 const Q2_INPUT: CommandRules = CommandRules {
     settings: SettingsRules {
@@ -304,6 +306,7 @@ const INPUT_RULES: [CommandRules; 5] = [
     Q1_INPUT,
     CommandRules {
         accumulation: Accumulation::Short,
+        finish_duration: Some((250, 100)),
         noclip_disables_drift: false,
         drift_threshold: Some(200.0),
         drift_uses_ideal_pitch: false,
@@ -311,6 +314,7 @@ const INPUT_RULES: [CommandRules; 5] = [
     },
     CommandRules {
         accumulation: Accumulation::Short,
+        finish_duration: Some((250, 100)),
         ..Q2_INPUT
     },
     Q2_INPUT,

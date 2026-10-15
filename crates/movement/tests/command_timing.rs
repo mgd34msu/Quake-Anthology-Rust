@@ -5,15 +5,16 @@ use qa_core::{
 use qa_movement::{prepare_command, quakeworld_steps};
 
 #[test]
-fn original_duration_rules_keep_server_time_and_command_fields() {
-    // qsrc Q1 Host_FilterTime, QW/Q2 CL_FinishMove, Q3 PmoveSingle.
+fn simulation_duration_rules_keep_server_time_and_command_fields() {
+    // qsrc Q1 Host_FilterTime, QW SV_RunCmd, Q2 Pmove and Q3 PmoveSingle.
     for (raw, expected) in [
         (0, [1, 0, 0, 0, 1]),
         (50, [50; 5]),
         (200, [100, 200, 200, 200, 200]),
         (250, [100, 250, 250, 250, 200]),
-        (251, [100, 100, 100, 251, 200]),
-        (1000, [100, 100, 100, 255, 200]),
+        (251, [100, 251, 251, 251, 200]),
+        (255, [100, 255, 255, 255, 200]),
+        (1000, [100, 1000, 1000, 255, 200]),
     ] {
         for (rule, value) in [
             RuleSetId::Quake,
@@ -71,7 +72,7 @@ fn quakeworld_steps_discard_odd_remainders_at_each_split() {
 #[test]
 fn quakeworld_steps_keep_impulse_only_on_first_leaf_and_preserve_fields() {
     let command = UserCmd {
-        duration_ms: 203,
+        duration_ms: 255,
         duration_ns: 7,
         server_time_ms: -12345,
         view_angles: Vec3([-0.0, 217.5, -90.0]),
@@ -82,8 +83,16 @@ fn quakeworld_steps_keep_impulse_only_on_first_leaf_and_preserve_fields() {
         weapon: Some(WeaponId(23)),
     };
     let steps = quakeworld_steps(command).collect::<Vec<_>>();
-    assert_eq!(steps.len(), 4);
+    assert_eq!(steps.len(), 8);
+    assert_eq!(
+        steps
+            .iter()
+            .map(|step| u32::from(step.duration_ms))
+            .sum::<u32>(),
+        248
+    );
     for (index, step) in steps.iter().enumerate() {
+        assert_eq!(step.duration_ms, 31);
         assert_eq!(step.impulse, if index == 0 { command.impulse } else { 0 });
         assert_eq!(step.server_time_ms, command.server_time_ms);
         assert_eq!(
@@ -117,15 +126,16 @@ fn quakeworld_steps_keep_zero_and_short_commands_as_single_leaves() {
 }
 
 #[test]
-fn quakeworld_steps_apply_native_limits_before_subdivision() {
+fn quakeworld_steps_preserve_raw_duration_before_subdivision() {
     for (duration_ms, count, leaf_ms) in [
         (51, 2, 25),
         (100, 2, 50),
         (200, 4, 50),
         (250, 8, 31),
-        (251, 2, 50),
-        (255, 2, 50),
-        (u16::MAX, 2, 50),
+        (251, 8, 31),
+        (255, 8, 31),
+        (256, 8, 32),
+        (u16::MAX, 2048, 31),
     ] {
         let steps = quakeworld_steps(UserCmd {
             duration_ms,
@@ -138,8 +148,8 @@ fn quakeworld_steps_apply_native_limits_before_subdivision() {
 }
 
 #[test]
-fn quakeworld_steps_accept_every_unprepared_u16_duration_with_bounded_leaves() {
-    for duration_ms in 0..=u16::MAX {
+fn quakeworld_steps_accept_every_native_byte_duration_with_bounded_leaves() {
+    for duration_ms in 0..=u16::from(u8::MAX) {
         let mut count = 0;
         for step in quakeworld_steps(UserCmd {
             duration_ms,
@@ -154,4 +164,49 @@ fn quakeworld_steps_accept_every_unprepared_u16_duration_with_bounded_leaves() {
         }
         assert!((1..=8).contains(&count));
     }
+}
+
+struct EmptyWorld;
+impl qa_movement::TraceServices for EmptyWorld {
+    fn trace(
+        &mut self,
+        query: qa_world::collision::TraceQuery,
+    ) -> Result<qa_world::collision::Trace, qa_world::collision::TraceError> {
+        Ok(qa_world::collision::Trace::clear(query.end))
+    }
+    fn point_contents(
+        &self,
+        _: Vec3,
+        _: qa_world::collision::EntityTracePolicy,
+    ) -> Result<qa_world::collision::Contents, qa_world::collision::TraceError> {
+        Ok(qa_world::collision::Contents::EMPTY)
+    }
+}
+
+#[test]
+fn classic_pmove_consumes_raw_native_255ms_without_client_finish_move() {
+    let mut player = qa_core::primitives::PlayerState {
+        movement_rules: RuleSetId::Quake2,
+        trace_rules: RuleSetId::Quake2,
+        health: 100,
+        ..Default::default()
+    };
+    qa_movement::set_bounds(&mut player);
+    player.body.position = Vec3([0.0, 0.0, 1000.0]);
+    player.body.velocity = Vec3([100.0, 0.0, 0.0]);
+    player.movement.tuning.gravity = Some(0.0.into());
+    let result = qa_movement::pmove(
+        UserCmd {
+            duration_ms: 255,
+            ..Default::default()
+        },
+        &mut player,
+        &mut EmptyWorld,
+        Default::default(),
+        qa_movement::no_boundary,
+    )
+    .unwrap();
+    assert_eq!(result.steps, 1);
+    assert_eq!(player.body.position, Vec3([25.5, 0.0, 1000.0]));
+    assert_eq!(player.body.velocity, Vec3([100.0, 0.0, 0.0]));
 }

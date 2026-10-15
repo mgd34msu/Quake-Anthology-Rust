@@ -30,9 +30,7 @@ fn retail_kpf_package_uses_the_same_archive_reader_and_localization_catalog() {
     assert!(origin.path.ends_with("Q2Game.kpf"));
     assert_eq!(origin.kind, MountKind::Pk3);
     let mut reader = qa_formats::archive::ArchiveReader::default();
-    let bytes = vfs
-        .read_to_vec(file, 8 * 1024 * 1024, &mut reader)
-        .unwrap();
+    let bytes = vfs.read_to_vec(file, 8 * 1024 * 1024, &mut reader).unwrap();
     let catalog = qa_content::localization::Catalog::load(&bytes).unwrap();
     let mut text = qa_formats::localization::LocText::default();
     catalog
@@ -170,7 +168,7 @@ fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
 }
 
 #[test]
-fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
+fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = Fixture::new("ranges");
     let path = root.0.join("pak0.pak");
@@ -191,10 +189,72 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
         bytes.extend(directory);
         bytes
     }
+    fn stored_zip(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc = u32::MAX;
+            for &byte in bytes {
+                crc ^= u32::from(byte);
+                for _ in 0..8 {
+                    let mask = 0u32.wrapping_sub(crc & 1);
+                    crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+                }
+            }
+            !crc
+        }
+
+        let mut bytes = Vec::new();
+        let mut directory = Vec::new();
+        for &(name, data) in entries {
+            let offset = u32::try_from(bytes.len()).unwrap();
+            let name_length = u16::try_from(name.len()).unwrap();
+            let data_length = u32::try_from(data.len()).unwrap();
+            let crc = crc32(data);
+            let mut local = [0; 30];
+            local[..4].copy_from_slice(&0x0403_4b50u32.to_le_bytes());
+            local[4..6].copy_from_slice(&20u16.to_le_bytes());
+            local[14..18].copy_from_slice(&crc.to_le_bytes());
+            local[18..22].copy_from_slice(&data_length.to_le_bytes());
+            local[22..26].copy_from_slice(&data_length.to_le_bytes());
+            local[26..28].copy_from_slice(&name_length.to_le_bytes());
+            bytes.extend(local);
+            bytes.extend(name);
+            bytes.extend(data);
+
+            let mut central = [0; 46];
+            central[..4].copy_from_slice(&0x0201_4b50u32.to_le_bytes());
+            central[4..6].copy_from_slice(&20u16.to_le_bytes());
+            central[6..8].copy_from_slice(&20u16.to_le_bytes());
+            central[16..20].copy_from_slice(&crc.to_le_bytes());
+            central[20..24].copy_from_slice(&data_length.to_le_bytes());
+            central[24..28].copy_from_slice(&data_length.to_le_bytes());
+            central[28..30].copy_from_slice(&name_length.to_le_bytes());
+            central[42..46].copy_from_slice(&offset.to_le_bytes());
+            directory.extend(central);
+            directory.extend(name);
+        }
+        let directory_offset = u32::try_from(bytes.len()).unwrap();
+        let directory_length = u32::try_from(directory.len()).unwrap();
+        bytes.extend(directory);
+        let count = u16::try_from(entries.len()).unwrap();
+        let mut end = [0; 22];
+        end[..4].copy_from_slice(&0x0605_4b50u32.to_le_bytes());
+        end[8..10].copy_from_slice(&count.to_le_bytes());
+        end[10..12].copy_from_slice(&count.to_le_bytes());
+        end[12..16].copy_from_slice(&directory_length.to_le_bytes());
+        end[16..20].copy_from_slice(&directory_offset.to_le_bytes());
+        bytes.extend(end);
+        bytes
+    }
     let skin = b"models/monsters/tank/../ctank/skin.pcx";
     qa_platform::files::write(
         &path,
-        pack(&[(b"A", b"first"), (b"a", b"second"), (skin, b"skin")]),
+        pack(&[
+            (b"A", b"first"),
+            (b"a", b"second"),
+            (b"exact", b"old"),
+            (b"exact", b"new"),
+            (skin, b"skin"),
+        ]),
     )
     .unwrap();
     let file = Arc::new(ReadFile::open(&path).unwrap());
@@ -209,6 +269,14 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
         5
     );
     assert_eq!(&buffer[..5], b"first");
+    assert_eq!(vfs.origin(first).unwrap().member, b"A");
+    let exact = vfs.open(b"EXACT").unwrap();
+    assert_eq!(
+        vfs.read_range_reusing(exact, 0, &mut buffer, &mut archive_reader)
+            .unwrap(),
+        3
+    );
+    assert_eq!(&buffer[..3], b"old");
     let mut reader = qa_formats::archive::ArchiveReader::default();
     assert_eq!(vfs.read_to_vec(first, 5, &mut reader).unwrap(), b"first");
     assert_eq!(vfs.read_file(b"A", 5, &mut reader).unwrap(), b"first");
@@ -257,11 +325,125 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
     assert_eq!(&duplicates[..2], [last, first]);
     assert!(vfs.unmount(next_mount));
     assert_eq!(vfs.open(b"A"), Some(first));
-    assert_eq!(vfs.files().count(), 3);
+    assert_eq!(vfs.files().count(), 5);
     assert!(
         vfs.read_range_reusing(last, 0, &mut buffer, &mut archive_reader)
             .is_err()
     );
+
+    let zip_path = root.0.join("duplicates.kpf");
+    qa_platform::files::write(
+        &zip_path,
+        stored_zip(&[
+            (b"Case-Zip", b"case first"),
+            (b"CASE-ZIP", b"case last"),
+            (b"exact-zip", b"exact first"),
+            (b"exact-zip", b"exact last"),
+            (b"priority-zip", b"priority first"),
+            (b"PRIORITY-ZIP", b"priority last"),
+        ]),
+    )
+    .unwrap();
+    let mut zip_vfs = Vfs::default();
+    let zip_mount = zip_vfs
+        .mount_archive(
+            &zip_path,
+            1,
+            Arc::new(Archive::parse(Arc::new(ReadFile::open(&zip_path).unwrap())).unwrap()),
+        )
+        .unwrap();
+    let members: Vec<_> = zip_vfs
+        .files_in_mount(zip_mount)
+        .map(|(reference, name)| (reference, name.to_vec()))
+        .collect();
+    let case_members: Vec<_> = members
+        .iter()
+        .filter(|(_, name)| name == b"case-zip")
+        .map(|(reference, _)| *reference)
+        .collect();
+    let exact_members: Vec<_> = members
+        .iter()
+        .filter(|(_, name)| name == b"exact-zip")
+        .map(|(reference, _)| *reference)
+        .collect();
+    let priority_members: Vec<_> = members
+        .iter()
+        .filter(|(_, name)| name == b"priority-zip")
+        .map(|(reference, _)| *reference)
+        .collect();
+    assert_eq!(case_members.len(), 2);
+    assert_eq!(exact_members.len(), 2);
+    assert_eq!(priority_members.len(), 2);
+    assert_eq!(zip_vfs.origin(case_members[0]).unwrap().member, b"Case-Zip");
+    assert_eq!(zip_vfs.origin(case_members[1]).unwrap().member, b"CASE-ZIP");
+    let case_listing: Vec<_> = zip_vfs
+        .files()
+        .filter(|(_, name)| *name == b"case-zip")
+        .map(|(reference, _)| reference)
+        .collect();
+    let exact_listing: Vec<_> = zip_vfs
+        .files()
+        .filter(|(_, name)| *name == b"exact-zip")
+        .map(|(reference, _)| reference)
+        .collect();
+    assert_eq!(case_listing, case_members);
+    assert_eq!(exact_listing, exact_members);
+    assert_eq!(zip_vfs.take_lookup_count(), 0);
+    let case_winner = zip_vfs.open(b"case-zip").unwrap();
+    assert_eq!(zip_vfs.take_lookup_count(), 1);
+    assert_eq!(case_winner, case_members[1]);
+    assert_eq!(zip_vfs.origin(case_winner).unwrap().kind, MountKind::Pk3);
+    assert_eq!(zip_vfs.origin(case_winner).unwrap().member, b"CASE-ZIP");
+    let mut zip_buffer = [0; 16];
+    assert_eq!(
+        zip_vfs
+            .read_range_reusing(case_winner, 0, &mut zip_buffer, &mut archive_reader)
+            .unwrap(),
+        9
+    );
+    assert_eq!(&zip_buffer[..9], b"case last");
+    let exact_winner = zip_vfs.open(b"EXACT-ZIP").unwrap();
+    assert_eq!(exact_winner, exact_members[1]);
+    assert_eq!(
+        zip_vfs
+            .read_range_reusing(exact_winner, 0, &mut zip_buffer, &mut archive_reader)
+            .unwrap(),
+        10
+    );
+    assert_eq!(&zip_buffer[..10], b"exact last");
+
+    let higher = root.0.join("higher");
+    qa_platform::files::create_dir_all(&higher).unwrap();
+    qa_platform::files::write(higher.join("priority-zip"), b"higher").unwrap();
+    let higher_mount = zip_vfs.mount_directory(&higher, 2).unwrap();
+    let priority = zip_vfs.open(b"PRIORITY-ZIP").unwrap();
+    assert_eq!(zip_vfs.origin(priority).unwrap().mount, higher_mount);
+    assert_eq!(zip_vfs.origin(priority).unwrap().kind, MountKind::Directory);
+    assert_eq!(
+        zip_vfs
+            .read_range_reusing(priority, 0, &mut zip_buffer, &mut archive_reader)
+            .unwrap(),
+        6
+    );
+    assert_eq!(&zip_buffer[..6], b"higher");
+    let priority_listing: Vec<_> = zip_vfs
+        .files()
+        .filter(|(_, name)| *name == b"priority-zip")
+        .map(|(reference, _)| reference)
+        .collect();
+    assert_eq!(priority_listing[0], priority);
+    assert_eq!(&priority_listing[1..], priority_members);
+    assert!(zip_vfs.unmount(higher_mount));
+    let priority = zip_vfs.open(b"priority-zip").unwrap();
+    assert_eq!(priority, priority_members[1]);
+    assert_eq!(zip_vfs.origin(priority).unwrap().member, b"PRIORITY-ZIP");
+    assert_eq!(
+        zip_vfs
+            .read_range_reusing(priority, 0, &mut zip_buffer, &mut archive_reader)
+            .unwrap(),
+        13
+    );
+    assert_eq!(&zip_buffer[..13], b"priority last");
 }
 
 #[test]

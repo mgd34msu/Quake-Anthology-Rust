@@ -1,0 +1,308 @@
+use qa_compat::{
+    abi::{Addresses, CallTable, Invocation, Q3_CLIENT, Q3_SERVER, Q3_UI, QvmCalls, UnknownCalls},
+    memory::ModuleMemory,
+    services::{CallContext, CallError, EngineServices, ServiceStorage},
+};
+use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
+use qa_core::{
+    names::NameTable,
+    primitives::{ModuleId, RuleSetId, ThinkTime},
+    sys_events::EventTime,
+};
+use qa_formats::program::qvm::{Image, Opcode};
+use qa_platform::native::NativeAbi;
+use qa_world::{
+    collision::{CollisionStore, TraceScratch},
+    entities::AllocationPolicy,
+};
+
+struct Fixture {
+    root: std::path::PathBuf,
+    server: qa_session::clients::Server,
+    input: qa_input::Input,
+    cvars: Cvars,
+    commands: CommandBuffer,
+    vfs: qa_content::vfs::Vfs,
+    localization: qa_content::localization::Catalog,
+    registry: qa_gameplay::registry::Registry,
+    names: NameTable,
+    storage: ServiceStorage,
+    geometry: CollisionStore,
+    scratch: TraceScratch,
+}
+impl Fixture {
+    fn new(test: &str) -> Self {
+        let root =
+            std::env::temp_dir().join(format!("qa-compat-file-open-{test}-{}", std::process::id()));
+        qa_platform::files::create_dir_all(&root).unwrap();
+        qa_platform::files::write(root.join("empty.dat"), b"").unwrap();
+        qa_platform::files::write(root.join("data.dat"), b"abc").unwrap();
+        let mut vfs = qa_content::vfs::Vfs::default();
+        vfs.mount_directory(&root, 0).unwrap();
+        let names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
+        let registry = qa_gameplay::registry::Registry::load(&names).unwrap();
+        let cvars = Cvars::new().unwrap();
+        let storage =
+            ServiceStorage::load_native(&[(ModuleId(1), 0, RuleSetId::Quake3)], 1, &cvars).unwrap();
+        let geometry = CollisionStore::new();
+        let scratch = geometry.scratch();
+        Self {
+            root,
+            server: qa_session::clients::Server::load(1, 4, 1, 1, 1, 0).unwrap(),
+            input: qa_input::Input::load(),
+            cvars,
+            commands: CommandBuffer::new(),
+            vfs,
+            localization: Default::default(),
+            registry,
+            names,
+            storage,
+            geometry,
+            scratch,
+        }
+    }
+    fn engine(&mut self) -> EngineServices<'_> {
+        EngineServices {
+            server: &mut self.server,
+            input: &mut self.input,
+            editor: None,
+            cvars: &mut self.cvars,
+            commands: &mut self.commands,
+            client_connection: None,
+            client_collision: None,
+            client_audio: None,
+            renderer: None,
+            scene: None,
+            vfs: &self.vfs,
+            model_loader: None,
+            model_lookup: None,
+            sound_loader: None,
+            sound_bank: None,
+            localization: &self.localization,
+            registry: &self.registry,
+            names: &mut self.names,
+            storage: &mut self.storage,
+            geometry: &self.geometry,
+            world: None,
+            visibility: None,
+            portals: None,
+            scratch: &mut self.scratch,
+        }
+    }
+    fn context() -> CallContext {
+        CallContext {
+            module: ModuleId(1),
+            clock: ThinkTime::Milliseconds(9000),
+            server_frame: 0,
+            native_rules: RuleSetId::Quake3,
+            trace_rules: RuleSetId::QuakeWorld,
+            sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
+            console: Context::default(),
+            allocation: AllocationPolicy::EDICT,
+            link_order: qa_gameplay::rules::link_order(RuleSetId::Quake),
+        }
+    }
+    fn call(
+        &mut self,
+        table: &CallTable,
+        mode: Addresses,
+        memory: &mut ModuleMemory<'_>,
+        number: u32,
+        arguments: &[u64],
+    ) -> Result<u64, CallError> {
+        let mut unknown = UnknownCalls::load(2).unwrap();
+        let result = table.invoke(
+            number,
+            &mut Invocation {
+                services: &mut self.engine(),
+                memory,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                native_pmove: None,
+                native_player: None,
+                context: Self::context(),
+                platform_time: EventTime(42),
+                command: &[],
+                addresses: mode,
+                arguments,
+            },
+            &mut unknown,
+        );
+        assert_eq!(unknown.calls, 0);
+        result
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.vfs = Default::default();
+        qa_platform::files::remove_dir_all(&self.root).unwrap();
+    }
+}
+
+fn modes() -> [(Addresses, u64); 4] {
+    [
+        (Addresses::Qvm { mask: 511 }, 0),
+        (
+            Addresses::Native {
+                abi: NativeAbi::SystemV,
+                pointer_bytes: 4,
+            },
+            0x2000_0000,
+        ),
+        (
+            Addresses::Native {
+                abi: NativeAbi::SystemV,
+                pointer_bytes: 8,
+            },
+            1 << 40,
+        ),
+        (
+            Addresses::Native {
+                abi: NativeAbi::Microsoft,
+                pointer_bytes: 8,
+            },
+            1 << 40,
+        ),
+    ]
+}
+fn paths(memory: &mut ModuleMemory<'_>, base: u64) {
+    for (offset, path) in [
+        (128, b"empty.dat\0".as_slice()),
+        (160, b"data.dat\0"),
+        (192, b"missing.dat\0"),
+    ] {
+        memory.write(base + offset, path).unwrap();
+    }
+}
+
+#[test]
+fn null_output_queries_existence_without_writing_memory_or_consuming_handles() {
+    let mut f = Fixture::new("address-modes");
+    for (mode, base) in modes() {
+        for (table, open, close) in [(&Q3_SERVER, 10, 13), (&Q3_CLIENT, 10, 13), (&Q3_UI, 13, 16)] {
+            let mut bytes = [0xa5; 512];
+            let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
+            paths(&mut memory, base);
+            let before = memory.read(base, 512).unwrap().to_vec();
+            // Original files.c returns qtrue even for a zero-byte file.
+            for (offset, expected) in [(128, 1), (160, 1), (192, 0)] {
+                assert_eq!(
+                    f.call(table, mode, &mut memory, open, &[base + offset, 0, 0]),
+                    Ok(expected)
+                );
+                assert_eq!(memory.read(base, 512).unwrap(), before);
+            }
+            // The ordinary output is still a four-byte handle and the return
+            // remains file length, including zero and native -1 on failure.
+            for (offset, length, handle) in [(128, 0, 1), (160, 3, 1), (192, u32::MAX as u64, 0)] {
+                memory.write(base + 256, &[0xa5; 8]).unwrap();
+                assert_eq!(
+                    f.call(
+                        table,
+                        mode,
+                        &mut memory,
+                        open,
+                        &[base + offset, base + 256, 0]
+                    ),
+                    Ok(length)
+                );
+                assert_eq!(memory.read_word(base + 256).unwrap() as u32, handle);
+                assert_eq!(memory.read(base + 260, 4).unwrap(), &[0xa5; 4]);
+                if handle != 0 {
+                    // One file slot is already occupied: the existence path
+                    // must still succeed without attempting another open.
+                    let occupied = memory.read(base, 512).unwrap().to_vec();
+                    assert_eq!(
+                        f.call(table, mode, &mut memory, open, &[base + 160, 0, 0]),
+                        Ok(1)
+                    );
+                    assert_eq!(memory.read(base, 512).unwrap(), occupied);
+                    f.call(table, mode, &mut memory, close, &[u64::from(handle)])
+                        .unwrap();
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn nonzero_qvm_output_wrapping_to_zero_still_opens_and_writes_the_handle() {
+    let mut f = Fixture::new("masked-output");
+    let mut bytes = [0xa5; 512];
+    let mut memory = ModuleMemory::borrow(0, &mut bytes).unwrap();
+    paths(&mut memory, 0);
+    let mode = Addresses::Qvm { mask: 511 };
+    assert_eq!(
+        f.call(&Q3_SERVER, mode, &mut memory, 10, &[160, 512, 0]),
+        Ok(3)
+    );
+    assert_eq!(memory.read_word(0).unwrap(), 1);
+    assert_eq!(memory.read(4, 124).unwrap(), &[0xa5; 124]);
+    f.call(&Q3_SERVER, mode, &mut memory, 13, &[1]).unwrap();
+}
+
+#[test]
+fn executed_qvm_observes_boolean_existence_and_preserves_guest_data() {
+    use Opcode::*;
+    let mut f = Fixture::new("executed-qvm");
+    let mut operations = vec![(Enter, 64)];
+    for (path, result) in [(128, 256), (160, 260), (192, 264)] {
+        operations.push((Const, result));
+        for (index, argument) in [path, 0, 0].into_iter().enumerate() {
+            operations.extend([(Const, argument), (Arg, 8 + index as i32 * 4)]);
+        }
+        operations.extend([(Const, -11), (Call, 0), (Store4, 0)]);
+    }
+    operations.extend([(Const, 73), (Leave, 64)]);
+    let mut code = Vec::new();
+    for &(op, argument) in &operations {
+        code.push(op as u8);
+        match op.operand_bytes() {
+            1 => code.push(argument as u8),
+            4 => code.extend(argument.to_le_bytes()),
+            _ => {}
+        }
+    }
+    let mut data = [0xa5; 512];
+    paths(&mut ModuleMemory::borrow(0, &mut data).unwrap(), 0);
+    let original = data;
+    let mut bytes = Vec::new();
+    for word in [
+        0x12721444,
+        operations.len() as i32,
+        32,
+        code.len() as i32,
+        32 + code.len() as i32,
+        512,
+        0,
+        65536 - 512,
+    ] {
+        bytes.extend(word.to_le_bytes());
+    }
+    bytes.extend(code);
+    bytes.extend(data);
+    let mut vm = qa_compat::qvm::Vm::load(Image::parse(&bytes).unwrap()).unwrap();
+    let mut unknown = UnknownCalls::load(2).unwrap();
+    {
+        let mut engine = f.engine();
+        let mut calls = QvmCalls {
+            services: &mut engine,
+            table: &Q3_SERVER,
+            context: Fixture::context(),
+            platform_time: EventTime(42),
+            command: &[],
+            unknown: &mut unknown,
+        };
+        assert_eq!(vm.call(&mut calls, [0; 10], 1000, false), Ok(73));
+    }
+    assert_eq!(unknown.calls, 0);
+    for (at, expected) in [(256, 1), (260, 1), (264, 0)] {
+        assert_eq!(vm.memory.read_word(at).unwrap(), expected);
+    }
+    assert_eq!(vm.memory.read(0, 256).unwrap(), &original[..256]);
+    assert_eq!(vm.memory.read(268, 244).unwrap(), &original[268..]);
+}

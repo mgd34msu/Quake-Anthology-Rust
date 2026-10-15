@@ -14,7 +14,7 @@ pub(super) fn commands_move_a_native_client_once() {
     };
     use qa_network::commands::packet::Protocol;
     use qa_world::collision::WorldTrace;
-    for rr in [false, true] {
+    for (rr, raw_255_ms) in [(false, false), (false, true), (true, false)] {
         let rules = if rr {
             RuleSetId::Quake2Rerelease
         } else {
@@ -70,10 +70,23 @@ pub(super) fn commands_move_a_native_client_once() {
         bytes.resize(0x9000, 0);
         let at = (edict - 0x180000000) as usize + if rr { 120 } else { 88 };
         bytes[at..at + 8].copy_from_slice(&ps.to_le_bytes());
-        let mode = if rr { 2i32 } else { 1 };
+        let mode = if rr {
+            2i32
+        } else if raw_255_ms {
+            0
+        } else {
+            1
+        };
         bytes[0x7000..0x7004].copy_from_slice(&mode.to_le_bytes());
         let gravity = if rr { 32 } else { 18 };
-        bytes[0x7000 + gravity..0x7002 + gravity].copy_from_slice(&800i16.to_le_bytes());
+        bytes[0x7000 + gravity..0x7002 + gravity]
+            .copy_from_slice(&(if raw_255_ms { 0i16 } else { 800 }).to_le_bytes());
+        if raw_255_ms {
+            // Actual classic pmove_state_t: origin and velocity are signed
+            // eighth units. Stay airborne in the empty world with no gravity.
+            bytes[0x7008..0x700a].copy_from_slice(&800i16.to_le_bytes());
+            bytes[0x700a..0x700c].copy_from_slice(&800i16.to_le_bytes());
+        }
         if rr {
             bytes[0x701c..0x701e].copy_from_slice(&0x4000u16.to_le_bytes());
             bytes[0x701e..0x7020].copy_from_slice(&500u16.to_le_bytes());
@@ -81,7 +94,7 @@ pub(super) fn commands_move_a_native_client_once() {
             // the previous call left nonzero result bytes in this buffer.
             bytes[0x7000 + 3309..0x7000 + 3311].fill(0xff);
             bytes[0x7000 + 3312..0x7000 + 3316].copy_from_slice(&99.0f32.to_le_bytes());
-        } else {
+        } else if !raw_255_ms {
             // Classic spectator retains ON_GROUND in pm_flags but publishes
             // a null groundentity. The boundary must preserve both facts.
             bytes[0x7010] = 4;
@@ -234,10 +247,26 @@ pub(super) fn commands_move_a_native_client_once() {
             code.extend(3312u32.to_le_bytes());
             code.extend([0, 0x74, 2, 0x0f, 0x0b]);
         } else {
-            code.extend([0x41, 0x80, 0x7b, 16, 4, 0x74, 2, 0x0f, 0x0b]);
+            code.extend([
+                0x41,
+                0x80,
+                0x7b,
+                16,
+                if raw_255_ms { 0 } else { 4 },
+                0x74,
+                2,
+                0x0f,
+                0x0b,
+            ]);
             code.extend([0x49, 0x83, 0xbb]);
             code.extend(352u32.to_le_bytes());
             code.extend([0, 0x74, 2, 0x0f, 0x0b]);
+            if raw_255_ms {
+                // A native msec byte of 255 means 0.255 seconds to gi.Pmove.
+                // The child checks the exact native origin, independently of
+                // the engine's prepare_command function: 100 * .255 * 8=204.
+                code.extend([0x66, 0x41, 0x81, 0x7b, 4, 204, 0, 0x74, 2, 0x0f, 0x0b]);
+            }
         }
         code.extend([0x48, 0xb9]);
         code.extend(ps.to_le_bytes());
@@ -402,20 +431,31 @@ pub(super) fn commands_move_a_native_client_once() {
         expected.trace_rules = RuleSetId::Quake3;
         expected.movement.mode = if rr {
             MovementMode::Noclip
+        } else if raw_255_ms {
+            MovementMode::Walk
         } else {
             MovementMode::Spectator
         };
-        expected.movement.tuning.gravity = Some(800.0.into());
-        expected.movement.grounded = !rr;
+        expected.movement.tuning.gravity = Some((if raw_255_ms { 0.0 } else { 800.0 }).into());
+        expected.movement.grounded = !rr && !raw_255_ms;
         expected.movement.remaining_ms = if rr { 500 } else { 0 };
         expected.movement.delta_angles = Vec3([0.0, 90.0, 0.0]).into();
         let command = UserCmd {
-            duration_ms: 16,
-            movement: [200.0, 0.0, 0.0],
+            duration_ms: if raw_255_ms { 255 } else { 16 },
+            movement: if raw_255_ms {
+                [0.0; 3]
+            } else {
+                [200.0, 0.0, 0.0]
+            },
             ..Default::default()
         };
+        if raw_255_ms {
+            expected.body.position = Vec3([25.5, 0.0, 100.0]);
+            expected.body.velocity = Vec3([100.0, 0.0, 0.0]);
+            expected.view_angles = Vec3([0.0, 90.0, 0.0]);
+        }
         let initial_calls = host.module_counts(ModuleId(1)).unwrap().calls;
-        for calls in 1..=2 {
+        for calls in 1..=if raw_255_ms { 1 } else { 2 } {
             let mut scratch = host.runtime.geometry.scratch();
             let mut trace = WorldTrace::new(
                 &host.runtime.geometry,
@@ -428,14 +468,16 @@ pub(super) fn commands_move_a_native_client_once() {
                     host.runtime.server.clients[id.0 as usize].entity,
                 ),
             );
-            qa_movement::pmove(
-                qa_movement::prepare_command(rules, command),
-                &mut expected,
-                &mut trace,
-                Default::default(),
-                qa_movement::no_boundary,
-            )
-            .unwrap();
+            if !raw_255_ms {
+                qa_movement::pmove(
+                    qa_movement::prepare_command(rules, command),
+                    &mut expected,
+                    &mut trace,
+                    Default::default(),
+                    qa_movement::no_boundary,
+                )
+                .unwrap();
+            }
             assert!(host.runtime.send_local_command(
                 id,
                 &command,
@@ -450,8 +492,10 @@ pub(super) fn commands_move_a_native_client_once() {
             assert_eq!(client.player.body.velocity, expected.body.velocity);
             assert_eq!(client.player.view_angles, expected.view_angles);
             assert_eq!(client.player.view_angles.0[1], 90.0);
-            assert_eq!(client.player.body.mins, expected.body.mins);
-            assert_eq!(client.player.body.maxs, expected.body.maxs);
+            if !raw_255_ms {
+                assert_eq!(client.player.body.mins, expected.body.mins);
+                assert_eq!(client.player.body.maxs, expected.body.maxs);
+            }
             let world = host.runtime.collision.as_mut().unwrap();
             assert_eq!(
                 host.runtime.server.move_pending_clients(
@@ -474,6 +518,11 @@ pub(super) fn commands_move_a_native_client_once() {
                 host.module_counts(ModuleId(1)).unwrap().calls,
                 initial_calls + calls
             );
+        }
+        if raw_255_ms {
+            assert_eq!(host.runtime.network.commands, 1);
+            host.shutdown_modules();
+            continue;
         }
         assert_eq!(host.runtime.network.commands, 2);
         // Both packets share one event drain. Module-owned clients must consume
