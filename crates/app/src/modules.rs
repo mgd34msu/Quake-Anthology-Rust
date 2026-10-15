@@ -84,6 +84,17 @@ impl Program {
             Self::QuakeC(_) => None,
         }
     }
+    fn command_export(&self) -> Option<qa_compat::abi::CommandExport> {
+        let export = self.imports()?.command_export()?;
+        match self {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            Self::Native { vm, .. } => Some(qa_compat::abi::CommandExport {
+                entry: vm.export_for_command(export.entry)?,
+                ..export
+            }),
+            _ => Some(export),
+        }
+    }
     fn consumes_server_commands(&self) -> bool {
         self.imports()
             .is_some_and(CallTable::consumes_server_commands)
@@ -466,10 +477,7 @@ impl FrameHost {
             {
                 return Err("invalid module binding".into());
             }
-            if let Some(export) = request
-                .program
-                .imports()
-                .and_then(|table| table.command_export())
+            if let Some(export) = request.program.command_export()
                 && !request.entries.contains(&export.entry)
             {
                 request

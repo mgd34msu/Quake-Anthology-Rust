@@ -403,6 +403,17 @@ impl Vm {
     pub fn declares_export(&self, ordinal: u32) -> bool {
         (ordinal as usize) < self.exports.len()
     }
+    /// Resolve a declared vmMain selector to its bound export index at load.
+    pub fn export_for_command(&self, command: u32) -> Option<u32> {
+        self.exports
+            .iter()
+            .position(|export| {
+                export
+                    .as_ref()
+                    .is_some_and(|export| export.command == Some(command))
+            })
+            .and_then(|index| u32::try_from(index).ok())
+    }
     pub fn export_count(&self) -> usize {
         self.exports.len()
     }

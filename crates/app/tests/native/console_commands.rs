@@ -76,21 +76,29 @@ fn fixture(nested: bool) -> FrameHost {
     entry.extend((ENTRY as i32 - 0x13c0 - 5).to_le_bytes());
     let mut image = function_image(Encoding::Elf, &entry);
     image.bytes[ENTRY + SEGMENT_BIAS..ENTRY + SEGMENT_BIAS + code.len()].copy_from_slice(&code);
-    let exports: Vec<_> = (0..=10)
-        .map(|command| NamedExport {
+    let exports = [
+        NamedExport {
             parameters: &[NativeScalar::Word; 13],
             result: NativeScalar::Word,
             name: b"vmMain",
-            command: Some(command),
-        })
-        .chain(std::iter::once(NamedExport {
+            command: Some(10),
+        },
+        NamedExport {
             parameters: &[NativeScalar::Word],
             result: NativeScalar::Void,
             name: b"dllEntry",
             command: None,
-        }))
-        .collect();
+        },
+        NamedExport {
+            parameters: &[NativeScalar::Word; 13],
+            result: NativeScalar::Word,
+            name: b"vmMain",
+            command: Some(9),
+        },
+    ];
     let mut vm = Vm::map_image(image, &exports, &[], Duration::from_secs(3)).unwrap();
+    assert_eq!(vm.export_for_command(9), Some(2));
+    assert!(!vm.declares_export(9));
     let pointer = vm.import_callback();
     let memory = vm.process.memory_mut().unwrap();
     for (at, bytes) in [
@@ -122,7 +130,7 @@ fn fixture(nested: bool) -> FrameHost {
         TickRate::FrameDriven,
         vm,
     );
-    request.entries = vec![10, 11];
+    request.entries = vec![0, 1];
     request.prepare = vec![Export::words(CallbackId(1), &[pointer])];
     let mut host = FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),

@@ -201,11 +201,7 @@ pub(super) struct CommandBinding {
 }
 impl CommandBinding {
     pub(super) fn load(request: &super::ModuleRequest) -> Result<Option<Self>, String> {
-        let Some(export) = request
-            .program
-            .imports()
-            .and_then(|table| table.command_export())
-        else {
+        let Some(export) = request.program.command_export() else {
             return Ok(None);
         };
         let index = request
@@ -577,7 +573,7 @@ fn drive(host: &mut FrameHost, frame: Frame, command: CommandArgs<'_>) -> Execut
         if let Some(Frame::Guest(mut frame)) = arena[depth].frame.take() {
             let command = arguments(&arena, frame.arguments, command).unwrap_or_default();
             cancel(host, &mut frame, command);
-            finish(host, &frame, Err(()));
+            let _ = finish(host, &frame, Err(()));
         }
         arena[depth].command.clear();
     }

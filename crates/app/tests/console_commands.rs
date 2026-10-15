@@ -17,6 +17,7 @@ use qa_session::timing::TickRate;
 use qa_world::{area::LinkOrder, entities::AllocationPolicy};
 
 #[path = "support/service_program.rs"]
+#[allow(dead_code)]
 mod service_program;
 
 type Code = Vec<(Opcode, i32)>;
@@ -726,13 +727,61 @@ fn reserved_and_disconnected_seat_assignments_still_reach_unbound_ui_commands() 
     }
 }
 
+#[derive(Default)]
+struct RetirementOutput {
+    retired: Option<(ClientId, qa_core::primitives::EntityId)>,
+}
+impl qa_app::host::FrameSource for RetirementOutput {
+    fn begin_frame(&mut self) -> std::time::Duration {
+        unreachable!()
+    }
+    fn poll_events(&mut self, _: &mut qa_core::sys_events::SysEventQueue) {
+        unreachable!()
+    }
+    fn wait_time(&mut self, _: std::time::Duration) -> std::time::Duration {
+        unreachable!()
+    }
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+    fn present(&mut self) {
+        unreachable!()
+    }
+    fn sound(&mut self, event: qa_core::primitives::SoundEvent) -> bool {
+        if event.action != qa_core::primitives::SoundAction::RetireClient {
+            return false;
+        }
+        assert!(self.retired.is_none());
+        self.retired = Some((event.client.unwrap(), event.client_lifetime.unwrap()));
+        true
+    }
+}
+
 fn replace_connection(
-    _: &mut Console<Runtime>,
+    console: &mut Console<Runtime>,
     runtime: &mut Runtime,
     _: &qa_console::command_text::Arguments<'_>,
     _: Context,
 ) -> Result<(), qa_console::commands::CommandError> {
+    let old = runtime.server.clients[0].entity;
     assert!(runtime.disconnect_client(ClientId(0)));
+    // The slot is unavailable until its existing Presentation owner consumes
+    // the lifetime's retirement control, even when the fixture has no voices.
+    let mut source = RetirementOutput::default();
+    let local =
+        std::array::from_fn(|index| (index == SeatId::FIRST.index()).then_some(ClientId(0)));
+    let counts = qa_app::output::dispatch(
+        runtime,
+        &mut source,
+        &mut console.scrollback,
+        &local,
+        Default::default(),
+        3.0,
+        2.0,
+    );
+    assert_eq!(source.retired, Some((ClientId(0), old)));
+    assert_eq!(counts.unhandled_sounds, 0);
+    assert!(runtime.server.clients[0].audio_retirement.is_none());
     assert_eq!(
         connect(runtime, qa_network::commands::packet::Protocol::Quake3_68),
         ClientId(0)
