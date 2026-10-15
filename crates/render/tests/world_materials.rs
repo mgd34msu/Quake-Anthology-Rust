@@ -82,6 +82,7 @@ fn map_bytes(family: u8) -> Vec<u8> {
 
 fn empty_map(bytes: &[u8]) -> Result<Map<'_>, String> {
     Ok(Map {
+        authored_brushes: false,
         bsp: Bsp::parse(bytes).map_err(|e| format!("BSP: {e:?}"))?,
         planes: vec![],
         vertices: vec![],

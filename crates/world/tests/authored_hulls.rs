@@ -326,6 +326,20 @@ fn clip_uses_executed_size_and_preserves_explicit_point_masks_and_observation() 
                 .unwrap();
             assert!(explicit.fraction < 1.0);
             assert_eq!(explicit.contents, Contents::VOLUME_CLIP);
+            for native in [0x10000, 0x20000] {
+                for mask in [Contents::from_q2(native), Contents::from_q3(native)] {
+                    let explicit_native = store
+                        .trace_model(geometry, 0, TraceQuery { mask, ..point }, &mut scratch)
+                        .unwrap();
+                    assert!(
+                        explicit_native.fraction < 1.0,
+                        "{rules:?}, moving {moving}, mask {native:#x}"
+                    );
+                    assert_eq!(explicit_native.contents, Contents::VOLUME_CLIP);
+                    assert_eq!(explicit_native.contents.to_q2(), 0x30000);
+                    assert_eq!(explicit_native.contents.to_q3(), 0x30000);
+                }
+            }
             // Constructed as a point, then given asymmetric bounds: no cached
             // constructor classification may hide its executed shape.
             let sized = store

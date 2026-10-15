@@ -29,6 +29,7 @@ fn bsp_bytes(family: u8, lighting: &[u8]) -> Vec<u8> {
 }
 fn empty_map(bytes: &[u8]) -> Map<'_> {
     Map {
+        authored_brushes: false,
         bsp: Bsp::parse(bytes).unwrap(),
         planes: vec![],
         vertices: vec![],

@@ -425,17 +425,17 @@ pub struct TraceQuery<'a> {
 }
 
 impl TraceQuery<'_> {
-    /// Derive implicit sized clipping from the executed shape, preserving
-    /// explicitly requested contents even for a zero-size point query.
+    /// Sized solid queries and explicit native clip masks admit volume clip.
+    /// A solid-only zero-size point still ignores that capability.
     pub fn effective_mask(self) -> Contents {
         let sized = self.mins != self.maxs
             || self
                 .capsule
                 .is_some_and(|capsule| capsule.radius != 0.0 || capsule.offset != Vec3::default());
-        if sized
-            && self
-                .mask
-                .intersects(Contents::SOLID | Contents::PLAYER_CLIP | Contents::MONSTER_CLIP)
+        if self
+            .mask
+            .intersects(Contents::PLAYER_CLIP | Contents::MONSTER_CLIP)
+            || sized && self.mask.intersects(Contents::SOLID)
         {
             self.mask | Contents::VOLUME_CLIP
         } else {

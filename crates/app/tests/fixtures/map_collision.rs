@@ -1103,6 +1103,67 @@ fn parsed_bspx_clip_ladder_and_fluids_keep_native_contents_and_shape_selection()
 }
 
 #[test]
+fn parsed_bspx_sky_keeps_native_observation_and_explicit_volume_clipping() {
+    use brushlist_source::{SourceBrush, bsp, chunk};
+    use qa_core::primitives::RuleSetId;
+    let payload = chunk(0, &[SourceBrush::cube(10.0, -6)]);
+    let bytes = bsp(29, 1, true, Some(&payload));
+    let map = Map::parse(&bytes).unwrap();
+    assert_eq!(map.brushes[0].contents, -6);
+    let mut store = CollisionStore::new();
+    let (geometry, count) = collision(&map, &mut store).unwrap();
+    assert_eq!(count, 1);
+    let mut scratch = store.scratch();
+    let expected = Contents::SKY | Contents::VOLUME_CLIP;
+    for role in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        let point = authored_query(Vec3([14.0, 0.0, 0.0]), Vec3([6.0, 0.0, 0.0]), role);
+        let still = TraceQuery {
+            start: Vec3([10.0, 0.0, 0.0]),
+            end: Vec3([10.0, 0.0, 0.0]),
+            ..point
+        };
+        for query in [point, still] {
+            let clear = store.trace_model(geometry, 0, query, &mut scratch).unwrap();
+            assert_eq!(clear.fraction, 1.0);
+            assert!(!clear.start_solid && !clear.all_solid);
+        }
+        let sized = TraceQuery {
+            mins: Vec3([-0.5; 3]),
+            maxs: Vec3([0.5; 3]),
+            ..point
+        };
+        let hit = store.trace_model(geometry, 0, sized, &mut scratch).unwrap();
+        assert!(hit.fraction < 1.0);
+        assert_eq!(hit.contents, expected);
+        for mask in [Contents::PLAYER_CLIP, Contents::MONSTER_CLIP] {
+            let hit = store
+                .trace_model(geometry, 0, TraceQuery { mask, ..point }, &mut scratch)
+                .unwrap();
+            assert!(hit.fraction < 1.0);
+            assert_eq!(hit.contents, expected);
+            let inside = store
+                .trace_model(geometry, 0, TraceQuery { mask, ..still }, &mut scratch)
+                .unwrap();
+            assert!(inside.start_solid && inside.all_solid);
+            assert_eq!(inside.contents, expected);
+        }
+        let contents = store
+            .point_contents_model(geometry, 0, still.start, point.entity_rules)
+            .unwrap();
+        assert_eq!(contents, expected);
+        assert_eq!(contents.to_q1(), -6);
+        assert_eq!(contents.to_q2(), 0x0003_0001u32);
+        assert_eq!(contents.to_q3(), 0x0003_0001u32);
+    }
+}
+
+#[test]
 fn parsed_bspx_extended_contents_and_unknown_fallback_survive_load_and_queries() {
     use brushlist_source::{SourceBrush, bsp, chunk};
     use qa_core::primitives::RuleSetId;
@@ -1249,6 +1310,13 @@ fn parsed_bspx_presence_empty_and_unnamed_models_are_authoritative_for_every_que
         assert_eq!(map.authored_brushes, payload.is_some());
         let mut store = CollisionStore::new();
         let (geometry, _) = collision(&map, &mut store).unwrap();
+        let changed = store
+            .prepare_traces(
+                qa_world::collision::trace_policy(RuleSetId::Quake3).0,
+                qa_world::collision::HullPositionLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(changed, payload.is_none());
         let mut scratch = store.scratch();
         for role in [RuleSetId::Quake, RuleSetId::Quake3] {
             for model in 1..3 {

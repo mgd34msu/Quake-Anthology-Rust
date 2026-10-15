@@ -573,12 +573,16 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
                                 return Err("authored brush plane order");
                             }
                         }
+                        let mut contents = Contents::from_q1(brush.contents, Contents::SOLID);
+                        if contents.intersects(Contents::SKY) {
+                            contents |= Contents::VOLUME_CLIP;
+                        }
                         Ok(Brush {
                             sides: qa_core::primitives::IndexSpan {
                                 first,
                                 count: brush.sides.count,
                             },
-                            contents: Contents::from_q1(brush.contents, Contents::SOLID),
+                            contents,
                         })
                     })
                     .collect::<Result<Vec<_>, &str>>()

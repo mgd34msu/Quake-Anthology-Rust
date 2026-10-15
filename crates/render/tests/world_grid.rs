@@ -12,6 +12,7 @@ fn geometry(points: &[[f32; 3]], offset: [f32; 2]) -> WorldGeometry {
     }
     let count = points.len() as u32;
     let map = Map {
+        authored_brushes: false,
         bsp: Bsp::parse(&bytes).unwrap(),
         planes: vec![Plane {
             encoding: None,
