@@ -1,7 +1,10 @@
 use qa_compat::{
-    abi::{Addresses, CallTable, Invocation, Q3_CLIENT, Q3_UI, QvmCalls, UnknownCalls},
+    abi::{
+        Addresses, CallTable, HostRequest, ImportStep, Invocation, Q3_CLIENT, Q3_UI, QvmCalls,
+        UnknownCalls,
+    },
     memory::ModuleMemory,
-    services::{CallContext, CallError, EngineServices, ServiceStorage},
+    services::{CallContext, CallError, ENGINE_CALLS, EngineServices, ServiceStorage},
 };
 use qa_console::{
     command_buffer::CAPACITY,
@@ -138,32 +141,44 @@ impl Fixture {
         seat: SeatId,
     ) -> Result<u64, CallError> {
         let mut unknown = UnknownCalls::load(2).unwrap();
-        let result = table.invoke(
-            number,
-            &mut Invocation {
-                services: &mut self.engine(),
-                memory,
-                native_cvars: None,
-                native_resources: None,
-                native_entities: None,
-                native_surfaces: None,
-                native_command: None,
-                native_configs: None,
-                native_pmove: None,
-                native_player: None,
-                context: Self::context(seat),
-                platform_time: EventTime::from_milliseconds(42),
-                command: &[],
-                addresses: mode,
-                arguments,
-            },
-            &mut unknown,
-        );
+        let mut engine = self.engine();
+        let mut invocation = Invocation {
+            services: &mut engine,
+            memory,
+            native_cvars: None,
+            native_resources: None,
+            native_entities: None,
+            native_surfaces: None,
+            native_command: None,
+            native_configs: None,
+            native_pmove: None,
+            native_player: None,
+            context: Self::context(seat),
+            platform_time: EventTime::from_milliseconds(42),
+            command: &[],
+            addresses: mode,
+            arguments,
+        };
+        let mut step = table.invoke(number, &mut invocation, &mut unknown)?;
         assert_eq!(unknown.calls, 0);
-        result.map(|step| match step {
-            qa_compat::abi::ImportStep::Return(value) => value,
-            qa_compat::abi::ImportStep::Call { .. } => panic!("unexpected nested callback"),
-        })
+        loop {
+            match step {
+                ImportStep::Return(value) => return Ok(value),
+                ImportStep::Host {
+                    request:
+                        HostRequest::ClearKeys {
+                            seat,
+                            context,
+                            time,
+                        },
+                    continuation,
+                } => {
+                    (ENGINE_CALLS.clear_keys)(invocation.services, seat, context, time)?;
+                    step = continuation.resume(&mut invocation, 0)?;
+                }
+                ImportStep::Host { .. } => panic!("unexpected callback"),
+            }
+        }
     }
     fn key(&mut self, device: DeviceId, control: u16, down: bool) {
         let (_, commands, _) = self.console.module_parts();
@@ -216,6 +231,37 @@ fn modes() -> [(Addresses, u64); 4] {
 fn text(memory: &mut ModuleMemory<'_>, at: u64, bytes: &[u8]) {
     memory.write(at, bytes).unwrap();
     memory.write(at + bytes.len() as u64, &[0]).unwrap();
+}
+fn input_vm(
+    operations: &[(qa_formats::program::qvm::Opcode, i32)],
+    data: &[u8],
+) -> qa_compat::qvm::Vm {
+    let mut code = Vec::new();
+    for &(op, arg) in operations {
+        code.push(op as u8);
+        match op.operand_bytes() {
+            1 => code.push(arg as u8),
+            4 => code.extend(arg.to_le_bytes()),
+            _ => {}
+        }
+    }
+    code.resize(code.len().next_multiple_of(4), 0);
+    let mut bytes = Vec::new();
+    for word in [
+        0x12721444,
+        operations.len() as i32,
+        32,
+        code.len() as i32,
+        32 + code.len() as i32,
+        data.len() as i32,
+        0,
+        65536 - data.len() as i32,
+    ] {
+        bytes.extend(word.to_le_bytes());
+    }
+    bytes.extend(code);
+    bytes.extend(data);
+    qa_compat::qvm::Vm::load(qa_formats::program::qvm::Image::parse(&bytes).unwrap()).unwrap()
 }
 #[test]
 fn native_key_bindings_keep_exact_ordinals_raw_bytes_empty_presence_and_native_order() {
@@ -433,7 +479,7 @@ fn void_clear_under_command_pressure_cancels_the_source_without_trapping() {
 }
 #[test]
 fn qvm_executes_the_numbered_ui_imports_and_caches_input_export_capabilities() {
-    use qa_formats::program::qvm::{Image, Opcode::*};
+    use qa_formats::program::qvm::Opcode::*;
     let mut operations = vec![(Enter, 64)];
     for (number, args) in [(35, &[97, 128][..]), (38, &[17][..])] {
         for (index, &arg) in args.iter().enumerate() {
@@ -442,33 +488,9 @@ fn qvm_executes_the_numbered_ui_imports_and_caches_input_export_capabilities() {
         operations.extend([(Const, -number - 1), (Call, 0), (Pop, 0)]);
     }
     operations.extend([(Const, -38), (Call, 0), (Leave, 64)]);
-    let mut code = Vec::new();
-    for &(op, arg) in &operations {
-        code.push(op as u8);
-        match op.operand_bytes() {
-            1 => code.push(arg as u8),
-            4 => code.extend(arg.to_le_bytes()),
-            _ => {}
-        }
-    }
     let mut data = [0u8; 256];
     data[128..137].copy_from_slice(b"echo qvm\0");
-    let mut bytes = Vec::new();
-    for word in [
-        0x12721444,
-        operations.len() as i32,
-        32,
-        code.len() as i32,
-        32 + code.len() as i32,
-        256,
-        0,
-        65536 - 256,
-    ] {
-        bytes.extend(word.to_le_bytes());
-    }
-    bytes.extend(code);
-    bytes.extend(data);
-    let mut vm = qa_compat::qvm::Vm::load(Image::parse(&bytes).unwrap()).unwrap();
+    let mut vm = input_vm(&operations, &data);
     let mut f = Fixture::new();
     let mut unknown = UnknownCalls::load(2).unwrap();
     let mut engine = f.engine();
@@ -500,4 +522,185 @@ fn qvm_executes_the_numbered_ui_imports_and_caches_input_export_capabilities() {
         (8, 6, 7, false, Some(8))
     );
     assert!(qa_compat::abi::Q3_SERVER.input_exports().is_none());
+}
+
+#[test]
+fn qvm_clear_keys_yields_owned_host_work_before_changing_input() {
+    use qa_compat::qvm::Step;
+    use qa_formats::program::qvm::Opcode::*;
+    let mut f = Fixture::new();
+    let mut vm = input_vm(
+        &[
+            (Enter, 64),
+            (Const, -40), // UI_KEY_CLEARSTATES
+            (Call, 0),
+            (Pop, 0),
+            (Const, 97),
+            (Arg, 8),
+            (Const, -37), // UI_KEY_ISDOWN
+            (Call, 0),
+            (Leave, 64),
+        ],
+        &[0; 256],
+    );
+    f.key(DeviceId::Keyboard(0), 4, true);
+    assert!(f.host.input.is_down(SeatId::FIRST, 4));
+    assert!(!vm.is_active());
+    let mut run = vm.begin_root([0; 10], 100, true).unwrap();
+    assert!(vm.is_active());
+    let Step::Syscall(syscall) = vm.advance(&mut run).unwrap() else {
+        panic!("expected executed ClearStates import");
+    };
+    assert_eq!(syscall.number, 39);
+    let mut unknown = UnknownCalls::load(2).unwrap();
+    let context = Fixture::context(SeatId::FIRST);
+    let queued = EventTime::from_milliseconds(42);
+    let step = {
+        let mut engine = f.engine();
+        QvmCalls {
+            services: &mut engine,
+            table: &Q3_UI,
+            context,
+            platform_time: queued,
+            command: &[],
+            unknown: &mut unknown,
+        }
+        .import(&mut vm, &syscall)
+        .unwrap()
+    };
+    assert!(f.host.input.is_down(SeatId::FIRST, 4));
+    let ImportStep::Host {
+        request:
+            HostRequest::ClearKeys {
+                seat,
+                context: captured,
+                time,
+            },
+        continuation,
+    } = step
+    else {
+        panic!("ClearStates must return owned host work");
+    };
+    assert_eq!(seat, SeatId::FIRST);
+    assert_eq!(captured.source, RuleSetId::Quake2Rerelease);
+    assert_eq!(captured.seat, context.console.seat);
+    assert_eq!(time, queued);
+    // Neither the parked VM nor the engine is borrowed by this host request.
+    vm.memory.write_word(64, 777).unwrap();
+    let step = {
+        let mut engine = f.engine();
+        (ENGINE_CALLS.clear_keys)(&mut engine, seat, captured, time).unwrap();
+        QvmCalls {
+            services: &mut engine,
+            table: &Q3_UI,
+            context,
+            platform_time: queued,
+            command: &[],
+            unknown: &mut unknown,
+        }
+        .resume_import(&mut vm, continuation, 123)
+        .unwrap()
+    };
+    assert!(!f.host.input.is_down(SeatId::FIRST, 4));
+    let ImportStep::Return(value) = step else {
+        panic!("void ClearStates continuation must complete");
+    };
+    assert_eq!(value, 0); // A host callback's scalar cannot replace a void result.
+    let Step::Syscall(syscall) = vm.resume(&mut run, value as i32).unwrap() else {
+        panic!("guest must continue to its KeyIsDown import");
+    };
+    assert_eq!(syscall.number, 36);
+    let step = {
+        let mut engine = f.engine();
+        QvmCalls {
+            services: &mut engine,
+            table: &Q3_UI,
+            context,
+            platform_time: queued,
+            command: &[],
+            unknown: &mut unknown,
+        }
+        .import(&mut vm, &syscall)
+        .unwrap()
+    };
+    assert!(matches!(step, ImportStep::Return(0)));
+    assert_eq!(vm.resume(&mut run, 0), Ok(Step::Returned(0)));
+    assert!(!vm.is_active());
+    assert_eq!(vm.memory.read_word(64).unwrap(), 777);
+    assert_eq!(unknown.calls, 0);
+}
+
+#[test]
+fn qvm_import_uses_captured_scalar_arguments_and_current_guest_string_bytes() {
+    use qa_compat::qvm::Step;
+    use qa_formats::program::qvm::Opcode::*;
+    let mut data = [0u8; 256];
+    data[128..137].copy_from_slice(b"echo old\0");
+    let mut vm = input_vm(
+        &[
+            (Enter, 64),
+            (Const, 97),
+            (Arg, 8),
+            (Const, 128),
+            (Arg, 12),
+            (Const, -36), // UI_KEY_SETBINDING
+            (Call, 0),
+            (Leave, 64),
+        ],
+        &data,
+    );
+    let mut run = vm.begin_root([0; 10], 100, false).unwrap();
+    let Step::Syscall(syscall) = vm.advance(&mut run).unwrap() else {
+        panic!("expected executed SetBinding import");
+    };
+    assert_eq!(&syscall.arguments()[..3], &[35, 97, 128]);
+    // Native arguments were already captured; the pointed-to text stays live.
+    let frame = vm.memory.len() as u64 - 48 - 64;
+    vm.memory.write_word(frame + 8, -1).unwrap();
+    vm.memory.write_word(frame + 12, 0).unwrap();
+    vm.memory.write(128, b"echo new\0").unwrap();
+    let mut f = Fixture::new();
+    let mut unknown = UnknownCalls::load(2).unwrap();
+    let step = {
+        let mut engine = f.engine();
+        QvmCalls {
+            services: &mut engine,
+            table: &Q3_UI,
+            context: Fixture::context(SeatId::FIRST),
+            platform_time: EventTime(42),
+            command: &[],
+            unknown: &mut unknown,
+        }
+        .import(&mut vm, &syscall)
+        .unwrap()
+    };
+    assert!(matches!(step, ImportStep::Return(0)));
+    assert_eq!(f.host.input.binding(4).unwrap().bytes(), b"echo new");
+    assert_eq!(vm.resume(&mut run, 0), Ok(Step::Returned(0)));
+    assert_eq!(unknown.calls, 0);
+}
+
+#[test]
+fn synchronous_qvm_adapter_drains_the_same_clear_keys_host_request() {
+    use qa_formats::program::qvm::Opcode::*;
+    let mut vm = input_vm(
+        &[(Enter, 64), (Const, -40), (Call, 0), (Leave, 64)],
+        &[0; 256],
+    );
+    let mut f = Fixture::new();
+    f.key(DeviceId::Keyboard(0), 4, true);
+    let mut unknown = UnknownCalls::load(2).unwrap();
+    let mut engine = f.engine();
+    let mut calls = QvmCalls {
+        services: &mut engine,
+        table: &Q3_UI,
+        context: Fixture::context(SeatId::FIRST),
+        platform_time: EventTime(42),
+        command: &[],
+        unknown: &mut unknown,
+    };
+    assert_eq!(vm.call(&mut calls, [0; 10], 100, false), Ok(0));
+    assert!(!f.host.input.is_down(SeatId::FIRST, 4));
+    assert!(!vm.is_active());
+    assert_eq!(unknown.calls, 0);
 }

@@ -1,16 +1,19 @@
 //! Native module exports and imports over the one owned-child backend.
 use crate::{
-    abi::{Addresses, CallTable, ImportContinuation, ImportStep, Invocation, UnknownCalls},
+    abi::{
+        Addresses, CallTable, HostRequest, ImportContinuation, ImportStep, Invocation, UnknownCalls,
+    },
     memory::{ModuleMemory, ProcessMemoryError, process_memory},
     services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
 };
 use qa_core::{names::NameTable, sys_events::EventTime, text::FixedText};
 use qa_formats::program::native::{Encoding, Image};
 use qa_platform::native::{
-    NativeAbi, NativeAction, NativeEntry, NativeError, NativeImage, NativeImport, NativeProcess,
-    NativeRegion, NativeRequest, NativeScalar, PAGE_BYTES,
+    NATIVE_REENTRY_LIMIT, NativeAbi, NativeCall, NativeCallToken, NativeEntry, NativeError,
+    NativeImage, NativeImport, NativeImportToken, NativeProcess, NativeRegion, NativeScalar,
+    NativeStop, PAGE_BYTES,
 };
-use std::{fmt::Write, time::Duration};
+use std::{fmt::Write, sync::Arc, time::Duration};
 
 pub mod elf;
 use crate::entities::Entities;
@@ -106,6 +109,9 @@ pub struct Vm {
     client_think: Option<u32>,
     pmove_redirect: Option<(u32, usize)>,
     surfaces: Option<crate::surfaces::NativeSurfaces>,
+    run_owner: Arc<()>,
+    activation: u64,
+    active_depth: usize,
 }
 pub struct NativeCalls<'a, 'engine> {
     pub services: &'a mut EngineServices<'engine>,
@@ -118,10 +124,39 @@ pub struct NativeCalls<'a, 'engine> {
     pub unknown: &'a mut UnknownCalls,
     pub native_player: Option<qa_core::primitives::ClientId>,
 }
-struct NativeContinuation {
-    suspended_context: CallContext,
-    suspended_player: Option<qa_core::primitives::ClientId>,
-    resume: ImportContinuation,
+/// Owned high-level export state. No services, argv or guest bytes survive a
+/// host stop; the owning caller reconstructs their short views on each step.
+pub struct Run {
+    owner: Arc<()>,
+    call: Option<NativeCallToken>,
+    export: Export,
+    outer: bool,
+    context: CallContext,
+    native_player: Option<qa_core::primitives::ClientId>,
+    platform_time: EventTime,
+    activation: u64,
+    depth: usize,
+    pending: bool,
+}
+/// Owned host-stop continuation. The stopped child token and ABI continuation
+/// stay together until their owning export is resumed.
+pub struct PendingImport {
+    stopped: NativeImportToken,
+    continuation: ImportContinuation,
+    owner: Arc<()>,
+    activation: u64,
+    depth: usize,
+}
+pub enum Step {
+    Host {
+        request: HostRequest,
+        pending: PendingImport,
+    },
+    Returned(u64),
+}
+struct Suspended {
+    run: Run,
+    pending: Option<PendingImport>,
 }
 impl Vm {
     pub fn configure_q3_game(&mut self, layout: qa_core::primitives::Q3StatLayout) {
@@ -346,6 +381,9 @@ impl Vm {
             client_think: None,
             pmove_redirect: None,
             surfaces: None,
+            run_owner: Arc::new(()),
+            activation: 0,
+            active_depth: 0,
         })
     }
     pub fn unresolved_imports(&self) -> impl Iterator<Item = ImportTrapInfo<'_>> {
@@ -390,12 +428,30 @@ impl Vm {
         }
         Ok(())
     }
-    pub fn call(
+    pub fn is_active(&self) -> bool {
+        self.active_depth != 0
+    }
+    pub fn activation_capacity(&self) -> usize {
+        NATIVE_REENTRY_LIMIT + 1
+    }
+    fn owns_active_run(&self, run: &Run) -> bool {
+        Arc::ptr_eq(&self.run_owner, &run.owner)
+            && run.call.is_some()
+            && run.activation == self.activation
+            && run.depth <= self.active_depth
+    }
+    fn validate_run(&self, run: &Run) -> Result<(), Error> {
+        if !self.owns_active_run(run) || run.depth != self.active_depth {
+            return Err(Error::Export);
+        }
+        Ok(())
+    }
+    pub fn begin(
         &mut self,
         calls: &mut NativeCalls<'_, '_>,
         ordinal: u32,
         arguments: &[u64],
-    ) -> Result<u64, Error> {
+    ) -> Result<Run, Error> {
         let export = self
             .exports
             .get(ordinal as usize)
@@ -403,35 +459,8 @@ impl Vm {
             .flatten()
             .ok_or(Error::Export)?;
         let first = usize::from(export.command.is_some());
-        // Session dispatch supplies a fixed-capacity common payload. The
-        // load-selected native entry admits only its declared argument slots;
-        // unrelated payload words are dropped at this ABI boundary.
         if arguments.len() > 13 - first {
             return Err(Error::Export);
-        }
-        let mut words = [0; 13];
-        if let Some(command) = export.command {
-            words[0] = u64::from(command);
-        }
-        words[first..first + arguments.len()].copy_from_slice(arguments);
-        let mut rejected = None;
-        if self.cvars.is_some() || self.native_command.is_some() || self.native_configs.is_some() {
-            let mut memory = process_memory(&mut self.process)?;
-            if let Some(cvars) = &mut self.cvars {
-                cvars
-                    .refresh(calls.services.cvars, &mut memory)
-                    .map_err(Error::Service)?;
-            }
-            if let Some(command) = &mut self.native_command {
-                command
-                    .prepare(&mut memory, calls.command, calls.raw_args)
-                    .map_err(Error::Service)?;
-            }
-            if let Some(configs) = &mut self.native_configs {
-                configs
-                    .refresh(calls.services.storage, calls.context.module, &mut memory)
-                    .map_err(Error::Service)?;
-            }
         }
         let native_player = if self.client_think == Some(ordinal) {
             Some(
@@ -442,13 +471,83 @@ impl Vm {
         } else {
             None
         };
+        let mut words = [0; 13];
+        if let Some(command) = export.command {
+            words[0] = u64::from(command);
+        }
+        words[first..first + arguments.len()].copy_from_slice(arguments);
+        let outer = !self.is_active();
+        if outer {
+            if self.cvars.is_some()
+                || self.native_command.is_some()
+                || self.native_configs.is_some()
+            {
+                let mut memory = process_memory(&mut self.process)?;
+                if let Some(cvars) = &mut self.cvars {
+                    cvars
+                        .refresh(calls.services.cvars, &mut memory)
+                        .map_err(Error::Service)?;
+                }
+                if let Some(command) = &mut self.native_command {
+                    command
+                        .prepare(&mut memory, calls.command, calls.raw_args)
+                        .map_err(Error::Service)?;
+                }
+                if let Some(configs) = &mut self.native_configs {
+                    configs
+                        .refresh(calls.services.storage, calls.context.module, &mut memory)
+                        .map_err(Error::Service)?;
+                }
+            }
+            if let Some(projection) = &mut self.projection {
+                projection
+                    .seed(&calls.services.server.entities, calls.context.module)
+                    .map_err(Error::Service)?;
+            }
+            self.process
+                .set_event_time(calls.platform_time)
+                .map_err(Error::Process)?;
+        }
+        let call = match self.process.enter(export.entry, words) {
+            Ok(call) => call,
+            Err(error) => {
+                if self.process.pid() == 0 {
+                    self.active_depth = 0;
+                    calls
+                        .services
+                        .storage
+                        .abort_client_callbacks(calls.context.module);
+                }
+                return Err(Error::Process(error));
+            }
+        };
+        if outer {
+            self.activation = self.activation.wrapping_add(1);
+        }
+        self.active_depth += 1;
+        Ok(Run {
+            owner: Arc::clone(&self.run_owner),
+            call: Some(call),
+            export,
+            outer,
+            context: calls.context,
+            native_player,
+            platform_time: calls.platform_time,
+            activation: self.activation,
+            depth: self.active_depth,
+            pending: false,
+        })
+    }
+    fn import_step(
+        &mut self,
+        calls: &mut NativeCalls<'_, '_>,
+        run: &Run,
+        stopped: &NativeImportToken,
+        call: Option<NativeCall>,
+        returned: Option<(ImportContinuation, u64)>,
+    ) -> Result<ImportStep, Error> {
         let cvars = &mut self.cvars;
         let resources = self.resources.as_ref();
-        if let Some(projection) = &mut self.projection {
-            projection
-                .seed(&calls.services.server.entities, calls.context.module)
-                .map_err(Error::Service)?;
-        }
         let mut entities = self.projection.as_mut().map(|p| &mut p.entities);
         let surfaces = self.surfaces.as_ref();
         let native_command = self.native_command.as_ref();
@@ -456,130 +555,91 @@ impl Vm {
         let pmove = &mut self.pmove;
         let abi = self.abi;
         let pointer_bytes = self.pointer_bytes;
-        let exports = &self.exports;
-        let client_think = self.client_think;
-        let mut active_context = calls.context;
-        let mut active_player = native_player;
-        self.process
-            .set_event_time(calls.platform_time)
-            .map_err(Error::Process)?;
-        let result = self
-            .process
-            .invoke(export.entry, words, |request, base, bytes| {
-                let result = (|| {
-                    let (call, returned) = match request {
-                        NativeRequest::Import(call) => (Some(call), None),
-                        NativeRequest::Returned {
-                            continuation,
-                            value,
-                        } => {
-                            let NativeContinuation {
-                                suspended_context,
-                                suspended_player,
-                                resume,
-                            } = continuation;
-                            active_context = suspended_context;
-                            active_player = suspended_player;
-                            (None, Some((resume, value)))
-                        }
-                    };
-                    // This borrow ends when the action is returned to the
-                    // owned-child pump, before any nested foreign execution.
-                    let mut memory =
-                        ModuleMemory::borrow(base, bytes).map_err(|_| CallError::Memory)?;
-                    let mut invocation = Invocation {
-                        services: calls.services,
-                        memory: &mut memory,
-                        native_cvars: cvars.as_mut(),
-                        native_resources: resources,
-                        native_entities: entities.as_deref_mut(),
-                        native_surfaces: surfaces,
-                        native_command,
-                        native_configs: native_configs.as_mut(),
-                        native_pmove: pmove.as_mut(),
-                        native_player: active_player,
-                        context: active_context,
-                        platform_time: calls.platform_time,
-                        command: calls.command,
-                        addresses: if call.as_ref().is_some_and(|call| call.function) {
-                            Addresses::NativeFunction { abi, pointer_bytes }
-                        } else {
-                            Addresses::Native { abi, pointer_bytes }
-                        },
-                        arguments: call.as_ref().map_or(&[], |call| call.arguments.as_slice()),
-                    };
-                    let step = match returned {
-                        Some((resume, value)) => resume.resume(&mut invocation, value)?,
-                        None => calls.table.invoke(
-                            call.as_ref().ok_or(CallError::Memory)?.number,
-                            &mut invocation,
-                            calls.unknown,
-                        )?,
-                    };
-                    if let Some(configs) = &mut invocation.native_configs {
-                        configs.refresh(
-                            invocation.services.storage,
-                            invocation.context.module,
-                            invocation.memory,
-                        )?;
-                    }
-                    match step {
-                        ImportStep::Return(value) => Ok(NativeAction::Return(value)),
-                        ImportStep::Call {
-                            request,
-                            continuation,
-                        } => {
-                            request.validate(invocation.services, calls.context.module)?;
-                            let nested = exports
-                                .get(request.target.entry() as usize)
-                                .copied()
-                                .flatten()
-                                .ok_or(CallError::Unsupported)?;
-                            let (time, arguments, client) = request.words()?;
-                            let first = usize::from(nested.command.is_some());
-                            let mut words = [0; 13];
-                            if let Some(command) = nested.command {
-                                words[0] = u64::from(command);
-                            }
-                            words[first..first + arguments.len()].copy_from_slice(&arguments);
-                            let continuation = NativeContinuation {
-                                suspended_context: active_context,
-                                suspended_player: active_player,
-                                resume: continuation,
-                            };
-                            active_context.clock = time;
-                            active_player = if client_think == Some(request.target.entry()) {
-                                Some(client.ok_or(CallError::Entity)?)
-                            } else {
-                                None
-                            };
-                            Ok(NativeAction::Call {
-                                entry: nested.entry,
-                                arguments: words,
-                                continuation,
-                            })
-                        }
-                    }
-                })();
-                result.map_err(|error| {
-                    rejected = Some(error);
-                    NativeError::Callback
-                })
-            });
-        if result.is_err() {
-            calls
-                .services
-                .storage
-                .abort_client_callbacks(calls.context.module);
+        let mut rejected = None;
+        let result = self.process.with_import_memory(stopped, |base, bytes| {
+            let result = (|| {
+                let mut memory =
+                    ModuleMemory::borrow(base, bytes).map_err(|_| CallError::Memory)?;
+                let mut invocation = Invocation {
+                    services: calls.services,
+                    memory: &mut memory,
+                    native_cvars: cvars.as_mut(),
+                    native_resources: resources,
+                    native_entities: entities.as_deref_mut(),
+                    native_surfaces: surfaces,
+                    native_command,
+                    native_configs: native_configs.as_mut(),
+                    native_pmove: pmove.as_mut(),
+                    native_player: run.native_player,
+                    context: run.context,
+                    platform_time: run.platform_time,
+                    command: calls.command,
+                    addresses: if call.as_ref().is_some_and(|call| call.function) {
+                        Addresses::NativeFunction { abi, pointer_bytes }
+                    } else {
+                        Addresses::Native { abi, pointer_bytes }
+                    },
+                    arguments: call.as_ref().map_or(&[], |call| call.arguments.as_slice()),
+                };
+                let step = match returned {
+                    Some((resume, value)) => resume.resume(&mut invocation, value)?,
+                    None => calls.table.invoke(
+                        call.as_ref().ok_or(CallError::Memory)?.number,
+                        &mut invocation,
+                        calls.unknown,
+                    )?,
+                };
+                if let Some(configs) = &mut invocation.native_configs {
+                    configs.refresh(
+                        invocation.services.storage,
+                        invocation.context.module,
+                        invocation.memory,
+                    )?;
+                }
+                Ok(step)
+            })();
+            result.map_err(|error| {
+                rejected = Some(error);
+                NativeError::Callback
+            })
+        });
+        result.map_err(|error| rejected.map_or(Error::Process(error), Error::Service))
+    }
+    fn failed(&mut self, calls: &mut NativeCalls<'_, '_>, run: &mut Run, error: Error) -> Error {
+        // Raw controller-token rejection does not change the child/transaction.
+        // Preserve the valid owner so the caller may retry its correct stop.
+        if matches!(&error, Error::Process(NativeError::Protocol)) && self.process.pid() != 0 {
+            return error;
         }
-        if let Err(NativeError::ImportTrap { ordinal, address }) = &result {
+        // Only advance can produce a recoverable child trap. The raw platform
+        // has already invalidated its transaction and preserved its outer park.
+        if let Some(call) = run.call.take() {
+            if !error.recoverable() {
+                let _ = self.process.abort(call, NativeError::Callback);
+            }
+        }
+        self.active_depth = 0;
+        calls
+            .services
+            .storage
+            .abort_client_callbacks(run.context.module);
+        self.record_trap(calls, run.context, &error);
+        error
+    }
+    fn record_trap(
+        &mut self,
+        calls: &mut NativeCalls<'_, '_>,
+        context: CallContext,
+        error: &Error,
+    ) {
+        if let Error::Process(NativeError::ImportTrap { ordinal, address }) = error {
             if let Some(trap) = self.traps.iter_mut().find(|trap| trap.ordinal == *ordinal) {
                 let first = trap.calls == 0;
                 trap.calls = trap.calls.saturating_add(1);
                 if first {
                     let mut text = FixedText::<2048>::default();
                     let format = (|| {
-                        write!(text, "module {}: native import ", calls.context.module.0)?;
+                        write!(text, "module {}: native import ", context.module.0)?;
                         if let Some(provider) = trap.provider.and_then(|id| self.names.get(id)) {
                             text.append_bytes(provider)?;
                             text.append_bytes(b":")?;
@@ -601,25 +661,222 @@ impl Vm {
                 }
             }
         }
-        let value =
-            result.map_err(|error| rejected.map_or(Error::Process(error), Error::Service))?;
-        if export.reject_zero && value == 0 {
-            return Err(Error::DllAttach);
+    }
+    pub fn advance(
+        &mut self,
+        calls: &mut NativeCalls<'_, '_>,
+        run: &mut Run,
+    ) -> Result<Step, Error> {
+        self.validate_run(run)?;
+        if run.pending {
+            return Err(Error::Export);
         }
-        if let Some(projection) = &mut self.projection {
-            let mut memory = process_memory(&mut self.process)?;
-            projection
-                .publish(
-                    &mut memory,
-                    calls.services,
-                    calls.context,
-                    self.pmove.as_mut(),
-                    calls.platform_time,
-                    export.command,
-                )
-                .map_err(Error::Service)?;
+        self.drive(calls, run, None)
+    }
+    fn drive(
+        &mut self,
+        calls: &mut NativeCalls<'_, '_>,
+        run: &mut Run,
+        mut imported: Option<(NativeImportToken, ImportStep)>,
+    ) -> Result<Step, Error> {
+        loop {
+            if let Some((stopped, step)) = imported.take() {
+                match step {
+                    ImportStep::Return(value) => {
+                        run.pending = false;
+                        if let Err(error) = self.process.reply(stopped, value) {
+                            return Err(self.failed(calls, run, Error::Process(error)));
+                        }
+                    }
+                    ImportStep::Host {
+                        request,
+                        continuation,
+                    } => {
+                        run.pending = true;
+                        return Ok(Step::Host {
+                            request,
+                            pending: PendingImport {
+                                stopped,
+                                continuation,
+                                owner: Arc::clone(&self.run_owner),
+                                activation: run.activation,
+                                depth: run.depth,
+                            },
+                        });
+                    }
+                }
+            }
+            let stopped = match self
+                .process
+                .advance(run.call.as_ref().ok_or(Error::Export)?)
+            {
+                Ok(stopped) => stopped,
+                Err(error) => return Err(self.failed(calls, run, Error::Process(error))),
+            };
+            match stopped {
+                NativeStop::Returned(value) => {
+                    run.call = None;
+                    self.active_depth -= 1;
+                    if run.export.reject_zero && value == 0 {
+                        return Err(Error::DllAttach);
+                    }
+                    if run.outer {
+                        if let Some(projection) = &mut self.projection {
+                            let mut memory = process_memory(&mut self.process)?;
+                            projection
+                                .publish(
+                                    &mut memory,
+                                    calls.services,
+                                    run.context,
+                                    self.pmove.as_mut(),
+                                    run.platform_time,
+                                    run.export.command,
+                                )
+                                .map_err(Error::Service)?;
+                        }
+                    }
+                    return Ok(Step::Returned(value));
+                }
+                NativeStop::Import { call, stopped } => {
+                    let step = match self.import_step(calls, run, &stopped, Some(call), None) {
+                        Ok(step) => step,
+                        Err(error) => return Err(self.failed(calls, run, error)),
+                    };
+                    imported = Some((stopped, step));
+                }
+            }
         }
-        Ok(value)
+    }
+    pub fn resume(
+        &mut self,
+        calls: &mut NativeCalls<'_, '_>,
+        run: &mut Run,
+        pending: &mut Option<PendingImport>,
+        returned: u64,
+    ) -> Result<Step, Error> {
+        self.validate_run(run)?;
+        let authority = pending.as_ref().ok_or(Error::Export)?;
+        if !run.pending
+            || !Arc::ptr_eq(&self.run_owner, &authority.owner)
+            || authority.activation != run.activation
+            || authority.depth != run.depth
+        {
+            return Err(Error::Export);
+        }
+        let PendingImport {
+            stopped,
+            continuation,
+            ..
+        } = pending.take().ok_or(Error::Export)?;
+        let step =
+            match self.import_step(calls, run, &stopped, None, Some((continuation, returned))) {
+                Ok(step) => step,
+                Err(error) => return Err(self.failed(calls, run, error)),
+            };
+        self.drive(calls, run, Some((stopped, step)))
+    }
+    pub fn abort(
+        &mut self,
+        calls: &mut NativeCalls<'_, '_>,
+        run: &mut Run,
+        error: CallError,
+    ) -> Error {
+        if self.owns_active_run(run) {
+            return self.failed(calls, run, Error::Service(error));
+        }
+        Error::Export
+    }
+    fn unwind_synchronous(
+        &mut self,
+        calls: &mut NativeCalls<'_, '_>,
+        current: &mut Run,
+        suspended: &mut [Option<Suspended>],
+        error: Error,
+    ) -> Error {
+        if self.owns_active_run(current) {
+            return self.failed(calls, current, error);
+        }
+        // A returned nested export has consumed its token before post-return
+        // validation (notably DllAttach). Its nearest live ancestor still owns
+        // the parked transaction and must cancel it before the stack is lost.
+        for parent in suspended.iter_mut().rev().flatten() {
+            if self.owns_active_run(&parent.run) {
+                return self.failed(calls, &mut parent.run, error);
+            }
+        }
+        error
+    }
+    /// Synchronous callers drain the same resumable service path. Cross-module
+    /// host operations belong to the app's iterative FunctionTable driver.
+    pub fn call(
+        &mut self,
+        calls: &mut NativeCalls<'_, '_>,
+        ordinal: u32,
+        arguments: &[u64],
+    ) -> Result<u64, Error> {
+        let mut suspended: [Option<Suspended>; NATIVE_REENTRY_LIMIT] =
+            std::array::from_fn(|_| None);
+        let mut depth = 0;
+        let mut run = self.begin(calls, ordinal, arguments)?;
+        let result = (|| {
+            let mut step = self.advance(calls, &mut run)?;
+            loop {
+                match step {
+                    Step::Returned(value) => {
+                        if depth == 0 {
+                            return Ok(value);
+                        }
+                        depth -= 1;
+                        let mut parent = suspended[depth].take().ok_or(Error::Export)?;
+                        run = parent.run;
+                        step = self.resume(calls, &mut run, &mut parent.pending, value)?;
+                    }
+                    Step::Host { request, pending } => match request {
+                        HostRequest::Callback(request) => {
+                            if let Err(error) = request.validate(calls.services, run.context.module)
+                            {
+                                return Err(Error::Service(error));
+                            }
+                            let (time, arguments, client) = match request.words() {
+                                Ok(words) => words,
+                                Err(error) => return Err(Error::Service(error)),
+                            };
+                            if depth == NATIVE_REENTRY_LIMIT {
+                                return Err(Error::Service(CallError::Aborted));
+                            }
+                            let context = calls.context;
+                            let native_player = calls.native_player;
+                            calls.context = run.context;
+                            calls.context.clock = time;
+                            calls.native_player = client;
+                            let nested = self.begin(calls, request.target.entry(), &arguments);
+                            calls.context = context;
+                            calls.native_player = native_player;
+                            let nested = nested?;
+                            suspended[depth] = Some(Suspended {
+                                run: std::mem::replace(&mut run, nested),
+                                pending: Some(pending),
+                            });
+                            depth += 1;
+                            step = self.advance(calls, &mut run)?;
+                        }
+                        HostRequest::ClearKeys {
+                            seat,
+                            context,
+                            time,
+                        } => {
+                            if let Err(error) =
+                                (ENGINE_CALLS.clear_keys)(calls.services, seat, context, time)
+                            {
+                                return Err(Error::Service(error));
+                            }
+                            step = self.resume(calls, &mut run, &mut Some(pending), 0)?;
+                        }
+                    },
+                }
+            }
+        })();
+        result.map_err(|error| self.unwind_synchronous(calls, &mut run, &mut suspended, error))
     }
 }
 

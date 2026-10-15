@@ -2171,11 +2171,17 @@ fn owned_pe64_shader_imports_borrow_only_the_parked_child_and_share_cold_dispatc
 #[path = "support/drop_client.rs"]
 mod drop_client;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "support/native_continuation.rs"]
+mod native_continuation;
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
     drop_client::run();
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    native_continuation::run();
     qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin();
     qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning();
     qvm_export_relocation_zero_address_and_stale_bindings();

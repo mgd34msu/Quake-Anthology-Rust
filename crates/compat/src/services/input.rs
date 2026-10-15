@@ -95,7 +95,7 @@ impl EngineServices<'_> {
         Ok(())
     }
 
-    fn input_outcome(
+    pub fn input_outcome(
         &mut self,
         (count, result): (u64, Result<(), qa_console::command_text::TextError>),
     ) {

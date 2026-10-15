@@ -192,7 +192,7 @@ fn invoke(
     assert_eq!(unknown.calls, 0);
     result.map(|step| match step {
         qa_compat::abi::ImportStep::Return(value) => value,
-        qa_compat::abi::ImportStep::Call { .. } => panic!("unexpected nested callback"),
+        qa_compat::abi::ImportStep::Host { .. } => panic!("unexpected host request"),
     })
 }
 

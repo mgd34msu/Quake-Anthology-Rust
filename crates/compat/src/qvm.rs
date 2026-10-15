@@ -167,6 +167,14 @@ impl Vm {
     pub fn masked_address(&self, address: i32) -> u64 {
         u64::from(address as u32 & self.mask)
     }
+    pub fn is_active(&self) -> bool {
+        self.active_run.is_some()
+    }
+    /// Cold upper bound including the root. Every admitted activation consumes
+    /// at least its 48-byte entry frame from this same native stack budget.
+    pub fn activation_capacity(&self) -> usize {
+        self.memory.len().saturating_sub(self.stack_bottom) / 48
+    }
     /// Start an independent root, saving any suspended caller's budget/hooks.
     pub fn begin_root(
         &mut self,

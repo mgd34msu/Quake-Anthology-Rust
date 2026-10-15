@@ -8,17 +8,28 @@ pub struct CallbackRequest {
     pub call: CallbackCall<'static>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum HostRequest {
+    Callback(CallbackRequest),
+    ClearKeys {
+        seat: qa_core::sys_events::SeatId,
+        context: qa_console::views::Context,
+        time: qa_core::sys_events::EventTime,
+    },
+}
+
 #[derive(Debug)]
 pub enum ImportStep {
     Return(u64),
-    Call {
-        request: CallbackRequest,
+    Host {
+        request: HostRequest,
         continuation: ImportContinuation,
     },
 }
 
 #[derive(Debug)]
 pub enum ImportContinuation {
+    Return(u64),
     DropClient {
         target: crate::services::DropClientTarget,
         reason_address: u64,
@@ -31,6 +42,7 @@ impl ImportContinuation {
         _returned: u64,
     ) -> Result<ImportStep, CallError> {
         match self {
+            Self::Return(value) => Ok(ImportStep::Return(value)),
             Self::DropClient {
                 target,
                 reason_address,
@@ -88,11 +100,11 @@ pub(super) fn drop_client(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, C
             command: CommandArgs::default(),
         }
     };
-    Ok(CallValue::Callback(
-        CallbackRequest {
+    Ok(CallValue::Host(
+        HostRequest::Callback(CallbackRequest {
             target: resolved,
             call,
-        },
+        }),
         ImportContinuation::DropClient {
             target,
             reason_address,

@@ -12,7 +12,7 @@ use std::fmt::Write;
 
 mod callbacks;
 mod client_sound;
-pub use callbacks::{CallbackRequest, ImportContinuation, ImportStep};
+pub use callbacks::{CallbackRequest, HostRequest, ImportContinuation, ImportStep};
 
 #[derive(Clone, Copy)]
 pub enum Addresses {
@@ -182,7 +182,7 @@ fn renderer_lerp_tag<const RETURN_RESULT: bool>(
 
 enum CallValue {
     Word(u64),
-    Callback(CallbackRequest, ImportContinuation),
+    Host(HostRequest, ImportContinuation),
     TemporaryString(u32, u8),
     Vector(qa_core::primitives::Vec3),
     Basis(qa_core::math::AngleBasis),
@@ -417,7 +417,7 @@ impl CallTable {
     ) -> Result<ImportStep, CallError> {
         match self.invoke_value(number, call, unknown)? {
             CallValue::Word(value) => Ok(ImportStep::Return(value)),
-            CallValue::Callback(request, continuation) => Ok(ImportStep::Call {
+            CallValue::Host(request, continuation) => Ok(ImportStep::Host {
                 request,
                 continuation,
             }),
@@ -642,7 +642,10 @@ const fn ui() -> CallTable {
     t.entries[36] = scalar!(input::key_down);
     t.entries[37] = scalar!(input::overstrike);
     t.entries[38] = scalar!(input::set_overstrike);
-    t.entries[39] = scalar!(input::clear);
+    t.entries[39] = Some(CallEntry {
+        handler: Handler::Shared(|call, _| input::clear(call)),
+        quakec: None,
+    });
     t.entries[40] = scalar!(input::catchers);
     t.entries[41] = scalar!(input::set_catchers);
     t.entries[43] = scalar!(renderer_configuration);
@@ -926,7 +929,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
                 }
             }
             CallValue::Basis(basis) => vm.write_basis(basis)?,
-            CallValue::Callback(..) => return Err(quakec::Trap::Builtin),
+            CallValue::Host(..) => return Err(quakec::Trap::Builtin),
         }
         Ok(())
     }
@@ -1412,55 +1415,97 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
         Ok(())
     }
     fn call(&mut self, vm: &mut qvm::Vm, number: u32, arguments: &[i32]) -> Result<i32, qvm::Trap> {
-        let mut native = [0u64; 15];
-        let args = arguments.get(1..).ok_or(qvm::Trap::Syscall)?;
-        if args.len() > native.len() {
-            return Err(qvm::Trap::Syscall);
-        }
-        for (to, &from) in native.iter_mut().zip(args) {
-            *to = u64::from(from as u32);
-        }
-        let mut step = self
-            .step(vm, number, &native[..args.len()], None)
-            .map_err(|_| qvm::Trap::Syscall)?;
-        loop {
-            match step {
-                ImportStep::Return(value) => return Ok(value as i32),
-                ImportStep::Call {
-                    request,
-                    continuation,
-                } => {
-                    request
-                        .validate(self.services, self.context.module)
-                        .map_err(|_| qvm::Trap::Syscall)?;
-                    let (time, words, _) = request.words().map_err(|_| qvm::Trap::Syscall)?;
-                    let saved_context = self.context;
-                    self.context.clock = time;
-                    let mut arguments = [0; 10];
-                    arguments[0] = request.target.entry() as i32;
-                    for (to, word) in arguments[1..].iter_mut().zip(words) {
-                        *to = word as u32 as i32;
+        let result = (|| {
+            let mut step = self
+                .import_arguments(vm, number, arguments)
+                .map_err(|_| qvm::Trap::Syscall)?;
+            loop {
+                match step {
+                    ImportStep::Return(value) => return Ok(value as i32),
+                    ImportStep::Host {
+                        request,
+                        continuation,
+                    } => {
+                        let returned = match request {
+                            HostRequest::Callback(request) => {
+                                request
+                                    .validate(self.services, self.context.module)
+                                    .map_err(|_| qvm::Trap::Syscall)?;
+                                let (time, words, _) =
+                                    request.words().map_err(|_| qvm::Trap::Syscall)?;
+                                let saved_context = self.context;
+                                self.context.clock = time;
+                                let mut arguments = [0; 10];
+                                arguments[0] = request.target.entry() as i32;
+                                for (to, word) in arguments[1..].iter_mut().zip(words) {
+                                    *to = word as u32 as i32;
+                                }
+                                let result = vm.call_nested(self, arguments);
+                                self.context = saved_context;
+                                result? as u32 as u64
+                            }
+                            HostRequest::ClearKeys {
+                                seat,
+                                context,
+                                time,
+                            } => {
+                                (ENGINE_CALLS.clear_keys)(self.services, seat, context, time)
+                                    .map_err(|_| qvm::Trap::Syscall)?;
+                                0
+                            }
+                        };
+                        step = self
+                            .resume_import(vm, continuation, returned)
+                            .map_err(|_| qvm::Trap::Syscall)?;
                     }
-                    let result = vm.call_nested(self, arguments);
-                    self.context = saved_context;
-                    let returned = match result {
-                        Ok(value) => value as u32 as u64,
-                        Err(error) => {
-                            self.services
-                                .storage
-                                .abort_client_callbacks(self.context.module);
-                            return Err(error);
-                        }
-                    };
-                    step = self
-                        .step(vm, number, &[], Some((continuation, returned)))
-                        .map_err(|_| qvm::Trap::Syscall)?;
                 }
             }
+        })();
+        if result.is_err() {
+            self.services
+                .storage
+                .abort_client_callbacks(self.context.module);
         }
+        result
     }
 }
 impl QvmCalls<'_, '_> {
+    /// Convert one owned syscall snapshot into a scalar result or host work.
+    /// All guest and service borrows end before the returned step is handled.
+    pub fn import(
+        &mut self,
+        vm: &mut qvm::Vm,
+        syscall: &qvm::Syscall,
+    ) -> Result<ImportStep, CallError> {
+        self.import_arguments(vm, syscall.number, syscall.arguments())
+    }
+    /// Rebuild the invocation after host work, rereading any live guest operands.
+    pub fn resume_import(
+        &mut self,
+        vm: &mut qvm::Vm,
+        continuation: ImportContinuation,
+        returned: u64,
+    ) -> Result<ImportStep, CallError> {
+        self.step(vm, 0, &[], Some((continuation, returned)))
+    }
+    fn import_arguments(
+        &mut self,
+        vm: &mut qvm::Vm,
+        number: u32,
+        arguments: &[i32],
+    ) -> Result<ImportStep, CallError> {
+        let mut native = [0u64; 15];
+        let args = arguments.get(1..).ok_or(CallError::Memory)?;
+        if args.len() > native.len() {
+            return Err(CallError::Memory);
+        }
+        // Slot zero is the syscall number. Each remaining native word retains
+        // its exact 32 bits; pointer and signed-value handling stays in Invocation.
+        for (to, &from) in native.iter_mut().zip(args) {
+            *to = u64::from(from as u32);
+        }
+        self.step(vm, number, &native[..args.len()], None)
+    }
     fn step(
         &mut self,
         vm: &mut qvm::Vm,

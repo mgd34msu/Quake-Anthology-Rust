@@ -1,5 +1,5 @@
 //! Q3 native input imports share the existing engine services and checked memory.
-use super::{CallError, ENGINE_CALLS, Invocation};
+use super::{CallError, CallValue, ENGINE_CALLS, HostRequest, ImportContinuation, Invocation};
 
 pub(super) fn key_down(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(u64::from((ENGINE_CALLS.key_down)(
@@ -74,12 +74,13 @@ pub(super) fn set_overstrike(c: &mut Invocation<'_, '_, '_>) -> Result<u64, Call
     (ENGINE_CALLS.set_overstrike)(c.services, c.arg(0)? as u32 != 0)?;
     Ok(0)
 }
-pub(super) fn clear(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    (ENGINE_CALLS.clear_keys)(
-        c.services,
-        c.context.console.seat,
-        c.context.console,
-        c.platform_time,
-    )?;
-    Ok(0)
+pub(super) fn clear(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+    Ok(CallValue::Host(
+        HostRequest::ClearKeys {
+            seat: c.context.console.seat,
+            context: c.context.console,
+            time: c.platform_time,
+        },
+        ImportContinuation::Return(0),
+    ))
 }
