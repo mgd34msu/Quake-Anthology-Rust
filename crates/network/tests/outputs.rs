@@ -5,6 +5,49 @@ use qa_network::{
 };
 
 #[test]
+fn disconnect_is_terminal_and_keeps_each_native_service_opcode() {
+    use outputs::NativeService;
+    use qa_core::primitives::RuleSetId;
+    let protocols = [
+        (Protocol::NetQuake15, RuleSetId::Quake, 2),
+        (Protocol::QuakeWorld28, RuleSetId::QuakeWorld, 2),
+        (Protocol::Quake2_34, RuleSetId::Quake2, 7),
+        (Protocol::Quake2Repro1038, RuleSetId::Quake2Rerelease, 7),
+    ];
+    for (protocol, source, opcode) in protocols {
+        let mut bytes = [0xcc; 8];
+        assert_eq!(outputs::disconnect(protocol, &mut bytes), Ok(1));
+        assert_eq!(bytes[0], opcode);
+        assert_eq!(bytes[1], 0xcc);
+        let payload = [opcode, 255];
+        let (service, used) = outputs::read_native_service(protocol, &payload).unwrap();
+        assert!(matches!(service, NativeService::Disconnect));
+        assert_eq!(used, 1);
+        assert!(outputs::disconnect(protocol, &mut []).is_err());
+        for (destination, _, destination_opcode) in protocols {
+            bytes.fill(0xcc);
+            let encoded = outputs::native(
+                destination,
+                source,
+                &[opcode, 255],
+                &mut bytes,
+                false,
+                |_, _| panic!("a terminal control cannot resolve a cue"),
+            )
+            .unwrap();
+            assert_eq!(encoded.length, 1);
+            assert_eq!(encoded.unsupported, 0);
+            assert_eq!(bytes[0], destination_opcode);
+            assert_eq!(bytes[1], 0xcc);
+        }
+    }
+    assert_eq!(
+        outputs::disconnect(Protocol::Quake3_68, &mut [0; 8]),
+        Err(Error::Unsupported)
+    );
+}
+
+#[test]
 fn cd_track_keeps_native_widths_and_projects_without_hiding_later_services() {
     use outputs::{CdTrack, NativeService};
     use qa_core::primitives::RuleSetId;

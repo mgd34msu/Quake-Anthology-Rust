@@ -25,12 +25,14 @@ struct Source {
     time: EventTime,
     limit: Option<usize>,
     packets: Vec<Vec<u8>>,
+    polls: usize,
 }
 impl FrameSource for Source {
     fn begin_frame(&mut self) -> Duration {
         Duration::from_nanos(self.time.0)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
+        self.polls += 1;
         queue
             .push(SysEvent {
                 time: self.time,
@@ -325,6 +327,88 @@ fn entity(
         ReceivedFrame::Quake3(frame) => decode!(frame),
     }
     record
+}
+
+#[test]
+fn native_server_disconnect_retires_only_its_client_and_healthy_ticks_continue() {
+    use qa_network::headers::{self, Direction, Header};
+    for (protocol, format) in [
+        (Protocol::NetQuake15, headers::NETQUAKE),
+        (Protocol::QuakeWorld28, headers::QUAKEWORLD),
+        (Protocol::Quake2_34, headers::QUAKE2),
+        (Protocol::Quake2Repro1038, headers::q2_new(false)),
+    ] {
+        let (mut host, local, healthy, mut peer) = host(protocol);
+        let mut source = Source::default();
+        host.frame(&mut source, true);
+        source.packets.clear();
+        source.polls = 0;
+        let lifetime = host.runtime.server.clients[healthy.0 as usize].entity;
+        let time = EventTime::from_milliseconds(100);
+        let mut body = [255; 2];
+        assert_eq!(qa_network::outputs::disconnect(protocol, &mut body), Ok(1));
+        // The byte after disconnect is deliberately not a supported service.
+        // A terminal command cannot parse it or publish a later snapshot.
+        let mut bytes = [0; 1400];
+        let length = headers::encode(
+            format,
+            Direction::ToClient,
+            Header {
+                sequence: 100,
+                datagram_flags: headers::datagram::UNRELIABLE,
+                ..Header::default()
+            },
+            &body,
+            &mut bytes,
+        )
+        .unwrap();
+        host.queue
+            .push(SysEvent {
+                time,
+                kind: EventKind::Packet {
+                    socket: Endpoint::Client.socket(),
+                    from: Peer::Loopback(local),
+                    bytes: &bytes[..length],
+                },
+            })
+            .unwrap();
+        peer.queue_command(&mut host, time);
+        source.time = time;
+        let result = host.frame(&mut source, true);
+        assert_eq!(source.polls, 2);
+        assert!(result.server_ticks > 0);
+        assert_eq!(
+            host.runtime.server.clients[local.0 as usize].connection,
+            None
+        );
+        assert_eq!(host.local_clients[SeatId::FIRST.index()], None);
+        assert!(host.runtime.snapshots[local.0 as usize].is_none());
+        assert!(host.runtime.client_resources[local.0 as usize].is_none());
+        for endpoint in [Endpoint::Client, Endpoint::Server] {
+            assert!(host.runtime.network.get(local, endpoint).is_none());
+        }
+        assert_eq!(host.runtime.network.malformed, 0, "{protocol:?}");
+        assert_eq!(
+            host.runtime.server.clients[healthy.0 as usize].entity,
+            lifetime
+        );
+        assert_eq!(
+            host.runtime.server.clients[healthy.0 as usize].connection,
+            Some(Connection::Remote)
+        );
+        peer.receive(&source.packets, time);
+        assert!(peer.frame().is_some(), "healthy {protocol:?} snapshot");
+        source.time = EventTime::from_milliseconds(125);
+        source.packets.clear();
+        peer.queue_command(&mut host, source.time);
+        assert!(host.frame(&mut source, true).server_ticks > 0);
+        assert_eq!(source.polls, 4);
+        peer.receive(&source.packets, source.time);
+        assert_eq!(
+            host.runtime.server.clients[healthy.0 as usize].entity,
+            lifetime
+        );
+    }
 }
 
 #[test]

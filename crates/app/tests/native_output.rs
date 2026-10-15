@@ -14,6 +14,9 @@ use qa_network::{
 use qa_session::{clients::Connection, timing::TickRate};
 use std::time::Duration;
 
+#[path = "support/visibility_world.rs"]
+mod visibility_world;
+
 #[derive(Default)]
 struct Source {
     reject: Option<u16>,
@@ -1116,6 +1119,62 @@ fn native_multicast_uses_compiled_sight_hearing_and_portal_connectivity() {
     assert_eq!(dispatch(&mut runtime, &mut source).native_filtered, 0);
     assert_eq!(source.packets.len(), 2);
     assert!(runtime.server.events.is_empty());
+}
+
+#[test]
+fn multicast_plane_ties_follow_the_producer_role_before_destination_protocol_encoding() {
+    for (rules, visible) in [
+        (RuleSetId::Quake, false),
+        (RuleSetId::QuakeWorld, false),
+        (RuleSetId::Quake2, true),
+        (RuleSetId::Quake2Rerelease, true),
+    ] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let client = remote(&mut runtime, Protocol::Quake2_34, 2000);
+        runtime.server.clients[client.0 as usize]
+            .player
+            .body
+            .position = Vec3([1., 0., 0.]);
+        runtime.collision = Some(visibility_world::collision(
+            &runtime.geometry,
+            [Some(0), Some(1)],
+            qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![1, 2]).unwrap(),
+        ));
+        let mut bytes = [0; 32];
+        let length = qa_network::outputs::print(
+            Protocol::native(rules),
+            PrintKind::Console,
+            PrintKind::Console.default_level(),
+            b"tie",
+            None,
+            &mut bytes,
+        )
+        .unwrap();
+        runtime
+            .server
+            .events
+            .native_message(
+                NativeDelivery {
+                    module: ModuleId(7),
+                    source: rules,
+                    target: NativeTarget::Sight,
+                    origin: Vec3::default(),
+                    reliable: false,
+                    dupe_key: 0,
+                    component: 0,
+                    emission: None,
+                    check_portals: false,
+                },
+                &bytes[..length],
+            )
+            .unwrap();
+        let mut source = Source::default();
+        let counts = dispatch(&mut runtime, &mut source);
+        assert_eq!(counts.native_filtered, u64::from(!visible), "{rules:?}");
+        assert_eq!(counts.native_unsupported, 0, "{rules:?}");
+        assert_eq!(source.packets.len(), usize::from(visible), "{rules:?}");
+        assert!(runtime.server.events.is_empty());
+    }
 }
 
 #[test]

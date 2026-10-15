@@ -678,10 +678,10 @@ impl Commands {
                         self.delta_request = snapshot;
                     }
                     (Protocol::NetQuake15, 18)
-                    | (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26 | 29 | 32)
+                    | (Protocol::NetQuake15 | Protocol::QuakeWorld28, 2 | 8 | 26 | 29 | 32)
                     | (
                         Protocol::Quake2_34 | Protocol::Quake2Repro1038,
-                        1 | 2 | 4 | 9 | 10 | 15 | 32,
+                        1 | 2 | 4 | 7 | 9 | 10 | 15 | 32,
                     ) => {
                         let (service, count) =
                             crate::outputs::read_native_service(self.protocol, &scratch[at..])
@@ -702,6 +702,10 @@ impl Commands {
                                 consume(Incoming::Particle(particle))
                             }
                             crate::outputs::NativeService::Nop => {}
+                            crate::outputs::NativeService::Disconnect => {
+                                consume(Incoming::Disconnect { output: None });
+                                return Ok(None);
+                            }
                         }
                     }
                     (Protocol::QuakeWorld28, 12 | 45 | 46)

@@ -1,6 +1,8 @@
 use super::brushes::{Brush, BrushMap, BrushWork, GeometryError, clip_brush, position_brush};
 use super::{Contents, LeafGate, NonAxialOffset, Trace, TraceError, TraceQuery};
-use qa_core::primitives::{Bounds, ClipNode, Plane, Vec3, child_from_leaf, leaf_from_child};
+use qa_core::primitives::{
+    Bounds, ClipNode, Plane, PointLeafRules, Vec3, child_from_leaf, leaf_from_child,
+};
 use qa_core::stamps::StampSet;
 
 #[derive(Clone, Copy, Debug)]
@@ -208,7 +210,7 @@ impl Topology {
         let child = crate::bsp::descend(
             root_child(root),
             point,
-            false,
+            PointLeafRules::CLIP,
             crate::bsp::node_view(&self.planes, &self.nodes),
         );
         &self.leaves[leaf_from_child(child) as usize]

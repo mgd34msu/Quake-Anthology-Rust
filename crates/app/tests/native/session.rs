@@ -539,29 +539,35 @@ fn native_usercmd_uses_session_dispatch_and_native_client_identity() {
     }
 }
 
+fn native_visibility_code(encoding: Encoding, first: f32, second: f32) -> Vec<u8> {
+    let microsoft = encoding == Encoding::Pe;
+    // The export's first argument is the import ordinal. The two vectors
+    // live above Microsoft's shadow space in the owned child's stack.
+    let mut code = vec![0x48, 0x83, 0xec, 56, 0xc7, 0x44, 0x24, 32];
+    code.extend(first.to_bits().to_le_bytes());
+    code.extend([0x48, 0xc7, 0x44, 0x24, 36, 0, 0, 0, 0, 0xc7, 0x44, 0x24, 44]);
+    code.extend(second.to_bits().to_le_bytes());
+    code.extend([0x48, 0xc7, 0x44, 0x24, 48, 0, 0, 0, 0]);
+    let next = code.len() + 7;
+    code.extend([0x48, 0x8b, 0x05]);
+    code.extend((0x700i32 - next as i32).to_le_bytes());
+    code.extend([0x48, 0x8d, if microsoft { 0x54 } else { 0x74 }, 0x24, 32]);
+    code.extend([
+        if microsoft { 0x4c } else { 0x48 },
+        0x8d,
+        if microsoft { 0x44 } else { 0x54 },
+        0x24,
+        44,
+    ]);
+    code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 56, 0xc3]);
+    code
+}
+
 fn native_visibility_uses_compiled_pvs_through_session_dispatch() {
     use qa_world::visibility::PvsRows;
     for encoding in [Encoding::Elf, Encoding::Pe] {
         let microsoft = encoding == Encoding::Pe;
-        // The export's first argument is the import ordinal. The two vectors
-        // live above Microsoft's shadow space in the owned child's stack.
-        let mut code = vec![0x48, 0x83, 0xec, 56, 0xc7, 0x44, 0x24, 32];
-        code.extend(1.0f32.to_bits().to_le_bytes());
-        code.extend([0x48, 0xc7, 0x44, 0x24, 36, 0, 0, 0, 0, 0xc7, 0x44, 0x24, 44]);
-        code.extend((-1.0f32).to_bits().to_le_bytes());
-        code.extend([0x48, 0xc7, 0x44, 0x24, 48, 0, 0, 0, 0]);
-        let next = code.len() + 7;
-        code.extend([0x48, 0x8b, 0x05]);
-        code.extend((0x700i32 - next as i32).to_le_bytes());
-        code.extend([0x48, 0x8d, if microsoft { 0x54 } else { 0x74 }, 0x24, 32]);
-        code.extend([
-            if microsoft { 0x4c } else { 0x48 },
-            0x8d,
-            if microsoft { 0x44 } else { 0x54 },
-            0x24,
-            44,
-        ]);
-        code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 56, 0xc3]);
+        let code = native_visibility_code(encoding, 1.0, -1.0);
         let image = function_image(encoding, &code);
         let name = if microsoft {
             b"GetGameAPI".as_slice()
@@ -623,6 +629,126 @@ fn native_visibility_uses_compiled_pvs_through_session_dispatch() {
         }
         assert!(host.runtime.server.events.is_empty());
         assert_eq!(host.runtime.server.entities.len(), live_before);
+    }
+    native_visibility_selects_clip_leaf_rules_at_the_module_boundary();
+}
+
+fn native_visibility_selects_clip_leaf_rules_at_the_module_boundary() {
+    use qa_core::primitives::{Axis, Bounds, Plane, Vec3};
+    use qa_world::visibility::{
+        PointLeafRules, PvsRows, SurfaceSpan, VisLeaf, VisNode, VisibilityWorld,
+    };
+    for encoding in [Encoding::Elf, Encoding::Pe] {
+        for (source, table, ordinals) in [
+            (RuleSetId::Quake3, &Q3_SERVER, [26, 27]),
+            (RuleSetId::Quake2, &qa_compat::abi::Q2_CLASSIC, [14, 15]),
+            (
+                RuleSetId::Quake2Rerelease,
+                &qa_compat::abi::Q2_RERELEASE,
+                [17, 18],
+            ),
+        ] {
+            for axial in [false, true] {
+                let bounds = Bounds {
+                    mins: Vec3([-10.; 3]),
+                    maxs: Vec3([10.; 3]),
+                };
+                let world = VisibilityWorld::load(
+                    vec![Plane {
+                        normal: Vec3([if axial { -1. } else { 1. }, 0., 0.]),
+                        axis: Some(Axis::X),
+                        distance: 0.,
+                        encoding: None,
+                    }],
+                    vec![VisNode {
+                        plane: 0,
+                        children: [-1, -2],
+                        bounds,
+                        surfaces: SurfaceSpan::default(),
+                    }],
+                    (0..2)
+                        .map(|selector| VisLeaf {
+                            selector: Some(selector),
+                            area: None,
+                            solid: false,
+                            bounds,
+                            surfaces: SurfaceSpan::default(),
+                        })
+                        .collect(),
+                    vec![],
+                    0,
+                    0,
+                    if axial {
+                        PvsRows::load(vec![Some(0), Some(1)], vec![1, 0, 1]).unwrap()
+                    } else {
+                        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2]).unwrap()
+                    },
+                )
+                .unwrap();
+                let point = Vec3([if axial { 1. } else { 0. }, 0., 0.]);
+                assert_eq!(world.point_in_leaf(point, PointLeafRules::RENDER), Some(1));
+                assert_eq!(world.point_in_leaf(point, PointLeafRules::CLIP), Some(0));
+                let code = native_visibility_code(encoding, point.0[0], 1.);
+                let image = function_image(encoding, &code);
+                let name = if encoding == Encoding::Pe {
+                    b"GetGameAPI".as_slice()
+                } else {
+                    b"vmMain".as_slice()
+                };
+                let at = (image.symbol(name).unwrap().address - image.base) as usize;
+                let mut runtime = Runtime::load(1, []).unwrap();
+                runtime.collision = Some(
+                    qa_app::WorldCollision::new(
+                        &runtime.geometry,
+                        qa_core::primitives::GeometryId {
+                            slot: 0,
+                            generation: 1,
+                        },
+                        0,
+                    )
+                    .with_visibility(std::sync::Arc::new(world)),
+                );
+                let mut request = module(
+                    &mut runtime,
+                    ModuleId(7),
+                    source,
+                    TickRate::fixed(50).unwrap(),
+                    b"unused\0",
+                    encoding,
+                    &[],
+                );
+                request.context.trace_rules = RuleSetId::Quake;
+                request.context.console.source = RuleSetId::QuakeWorld;
+                request.timing_rules = RuleSetId::QuakeWorld;
+                let Program::Native { vm, imports } = &mut request.program else {
+                    panic!()
+                };
+                *imports = table;
+                vm.process.memory_mut().unwrap()[at..at + code.len()].copy_from_slice(&code);
+                let mut host = FrameHost::load_modules(
+                    Console::new(Context::default()).unwrap(),
+                    runtime,
+                    TickRate::FrameDriven,
+                    vec![request],
+                )
+                .unwrap();
+                host.initialize_modules(Phase::Server);
+                assert_eq!(host.module_state(ModuleId(7)), Some(State::Running));
+                for ordinal in ordinals {
+                    let mut export = Export::words(CallbackId(0), &[ordinal]);
+                    export.arguments[3] = Argument::Word(1); // RR's explicit portal-check operand.
+                    host.call_module_export(ModuleId(7), export, ThinkTime::Milliseconds(0))
+                        .unwrap();
+                    assert_eq!(
+                        host.module_counts(ModuleId(7)).unwrap().last_result,
+                        Some(ModuleResult::Native(1)),
+                        "{encoding:?} {source:?} axial={axial} ordinal={ordinal}"
+                    );
+                    assert_eq!(host.module_counts(ModuleId(7)).unwrap().traps, 0);
+                }
+                assert!(host.runtime.server.events.is_empty());
+            }
+        }
     }
 }
 
@@ -5695,6 +5821,11 @@ pub fn run() {
     if std::env::args().any(|arg| arg == "--snapshot-observations") {
         observations::snapshot_frames_follow_native_provider_lifetimes();
         println!("native snapshot observation checks passed");
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--visibility") {
+        native_visibility_uses_compiled_pvs_through_session_dispatch();
+        println!("native visibility boundary checks passed");
         return;
     }
     if std::env::args().any(|arg| arg == "--q2-client-commands") {

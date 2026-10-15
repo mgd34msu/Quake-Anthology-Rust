@@ -776,6 +776,7 @@ fn delivery_visible(
                 return false;
             };
             let policy = qa_world::visibility::PointVisibility {
+                leaf_rules: qa_gameplay::rules::point_leaf_rules(delivery.source),
                 channel: if target == NativeTarget::Hearing {
                     qa_world::visibility::VisibilityChannel::Hearing
                 } else {

@@ -1,5 +1,5 @@
 //! BSP operations shared by collision and visibility.
-use qa_core::primitives::{ClipNode, Plane, Vec3};
+use qa_core::primitives::{ClipNode, Plane, PointLeafRules, Vec3};
 
 pub(crate) trait SplitNode {
     fn plane(&self) -> u32;
@@ -34,13 +34,17 @@ pub(crate) fn node_view<'a, N: SplitNode>(
 pub(crate) fn descend(
     mut child: i32,
     point: Vec3,
-    back_on_tie: bool,
+    rules: PointLeafRules,
     node: impl Fn(i32) -> (Plane, [i32; 2]),
 ) -> i32 {
     while child >= 0 {
         let (plane, children) = node(child);
-        let distance = plane.signed_distance(point);
-        let back = distance < 0.0 || (back_on_tie && distance == 0.0);
+        let distance = if rules.axial_shortcut {
+            plane.signed_distance(point)
+        } else {
+            plane.geometric_distance(point)
+        };
+        let back = distance < 0.0 || (rules.back_on_tie && distance == 0.0);
         child = children[usize::from(back)];
     }
     child

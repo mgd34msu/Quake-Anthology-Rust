@@ -1,7 +1,7 @@
 use qa_core::primitives::{Bounds, Plane, Vec3};
 use qa_world::visibility::{
-    PvsRows, SurfaceSpan, ViewVisibility, VisLeaf, VisNode, VisibilityError, VisibilityQueryError,
-    VisibilityWorld,
+    PointLeafRules, PvsRows, SurfaceSpan, ViewVisibility, VisLeaf, VisNode, VisibilityError,
+    VisibilityQueryError, VisibilityWorld,
 };
 
 #[test]
@@ -162,6 +162,49 @@ fn two_leaves(pvs: PvsRows) -> VisibilityWorld {
 }
 
 #[test]
+fn point_visibility_uses_the_callers_plane_tie_for_both_sight_and_hearing() {
+    use qa_world::visibility::{PointVisibility, VisibilityChannel};
+    let world = two_leaves(
+        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2, 2, 1])
+            .unwrap()
+            .with_hearing(vec![Some(2), Some(3)])
+            .unwrap(),
+    );
+    let mut row = [0];
+    for (rules, sight, hearing) in [
+        (PointLeafRules::RENDER, false, true),
+        (PointLeafRules::CLIP, true, false),
+    ] {
+        for x in [-0.0, 0.0] {
+            assert_eq!(
+                world.point_in_leaf(Vec3([x, 0.0, 0.0]), rules),
+                Some(u32::from(rules.back_on_tie)),
+            );
+            for (channel, expected) in [
+                (VisibilityChannel::Sight, sight),
+                (VisibilityChannel::Hearing, hearing),
+            ] {
+                assert_eq!(
+                    world.test_points(
+                        Vec3([x, 0.0, 0.0]),
+                        Vec3([1.0, 0.0, 0.0]),
+                        &mut row,
+                        PointVisibility {
+                            leaf_rules: rules,
+                            channel,
+                            missing_visible: false,
+                            area_zero: true,
+                        },
+                        None,
+                    ),
+                    Ok(expected),
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn box_queries_use_the_loaded_visibility_leaf_metadata() {
     let world = two_leaves(PvsRows::all_visible(2));
     let mut scratch = qa_world::leaves::LeafScratch::new(world.node_count() + 1);
@@ -303,9 +346,18 @@ fn node_owned_surfaces_keep_native_near_node_far_order() {
     view.query(&world, Vec3([-1.0; 3]), None, None, &[], &[])
         .unwrap();
     assert_eq!(view.visible_surfaces(), &[4, 1, 3, 0, 2]);
-    assert_eq!(world.point_in_leaf(Vec3([1.0; 3])), Some(0));
-    assert_eq!(world.point_in_leaf(Vec3([0.0; 3])), Some(2));
-    assert_eq!(world.point_in_leaf(Vec3([f32::NAN, 0.0, 0.0])), None);
+    assert_eq!(
+        world.point_in_leaf(Vec3([1.0; 3]), PointLeafRules::RENDER),
+        Some(0)
+    );
+    assert_eq!(
+        world.point_in_leaf(Vec3([0.0; 3]), PointLeafRules::RENDER),
+        Some(2)
+    );
+    assert_eq!(
+        world.point_in_leaf(Vec3([f32::NAN, 0.0, 0.0]), PointLeafRules::RENDER),
+        None
+    );
 }
 
 #[test]

@@ -1105,6 +1105,84 @@ fn visibility() -> VisibilityWorld {
 }
 
 #[test]
+fn snapshot_viewer_on_a_plane_uses_native_clip_ties_independently_of_movement() -> Result<(), String>
+{
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let (mut host, client) = host(protocol, 1)?;
+        let player = &mut host.runtime.server.clients[client.0 as usize].player;
+        assert_eq!(player.movement_rules, RuleSetId::QuakeWorld);
+        player.body.position = Vec3::default();
+        player.view_offset = Vec3::default();
+        let world = visibility();
+        let mut scratch = LeafScratch::new(world.node_count() + 1);
+        let mut row = vec![0; world.pvs().row_bytes()];
+        host.runtime.snapshots[client.0 as usize]
+            .as_mut()
+            .unwrap()
+            .load_visibility(&world);
+        for (number, x) in [(42, 32.0), (43, -32.0)] {
+            add(
+                &mut host,
+                Some(NativeEntity {
+                    module: MODULE,
+                    slot: number,
+                }),
+                protocol.rule_set(),
+                Vec3([x, 0.0, 0.0]),
+            );
+        }
+        let portals = AreaPortals::load(
+            3,
+            1,
+            vec![Portal {
+                number: 0,
+                first: 1,
+                second: 2,
+            }],
+        )
+        .unwrap();
+        transmit(
+            &mut host,
+            client,
+            EventTime(1_000_000_000),
+            None,
+            Some((&world, &mut scratch, &mut row)),
+            Some(&portals),
+        )?;
+        dispatch(&mut host, EventTime(1_000_000_000));
+        let rows = records(&host, client)?;
+        assert!(
+            rows.iter().any(|(number, _)| *number == 42),
+            "{protocol:?}: front entity"
+        );
+        assert!(
+            rows.iter().all(|(number, _)| *number != 43),
+            "{protocol:?}: back entity"
+        );
+        let frame = host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap();
+        let areas = match frame {
+            ReceivedFrame::Quake2(frame) => frame.areas,
+            ReceivedFrame::Quake2Repro(frame) => frame.areas,
+            ReceivedFrame::Quake3(frame) => frame.areas,
+            _ => unreachable!(),
+        };
+        assert_eq!(!areas[0] & 6, 2, "{protocol:?}: viewer front area");
+    }
+    Ok(())
+}
+
+#[test]
 fn bounding_box_pvs_and_area_bits_keep_the_protocol_visibility_contract() -> Result<(), String> {
     for protocol in [
         Protocol::Quake2_34,

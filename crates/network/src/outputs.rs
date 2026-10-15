@@ -59,6 +59,7 @@ pub enum NativeService<'a> {
     Particle(Particle),
     Print(Print<'a>),
     Nop,
+    Disconnect,
 }
 pub fn read_native_service(
     protocol: Protocol,
@@ -89,8 +90,27 @@ pub fn read_native_service(
         }
         (Protocol::NetQuake15 | Protocol::QuakeWorld28, 1)
         | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 6) => Ok((NativeService::Nop, 1)),
+        (Protocol::NetQuake15 | Protocol::QuakeWorld28, 2)
+        | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 7) => {
+            Ok((NativeService::Disconnect, 1))
+        }
         _ => Err(Error::Unsupported),
     }
+}
+
+fn control(protocol: Protocol, disconnect: bool, output: &mut [u8]) -> Result<usize, Error> {
+    let opcode = match protocol {
+        Protocol::NetQuake15 | Protocol::QuakeWorld28 => 1,
+        Protocol::Quake2_34 | Protocol::Quake2Repro1038 => 6,
+        Protocol::Quake3_68 => return Err(Error::Unsupported),
+    };
+    let mut writer = Writer::new(output, Encoding::Bytes);
+    writer.write_bits(opcode + u32::from(disconnect), 8)?;
+    Ok(writer.size())
+}
+
+pub fn disconnect(protocol: Protocol, output: &mut [u8]) -> Result<usize, Error> {
+    control(protocol, true, output)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -141,6 +161,7 @@ pub fn native(
             Err(error) => return Err(error),
         };
         remaining = &remaining[consumed..];
+        let terminal = matches!(&service, NativeService::Disconnect);
         let target = &mut output[encoded.length..];
         let result = match service {
             NativeService::CdTrack(track) => cd_track(protocol, track, target),
@@ -161,25 +182,16 @@ pub fn native(
                 }),
                 target,
             ),
-            NativeService::Nop => {
-                let mut writer = Writer::new(target, Encoding::Bytes);
-                writer
-                    .write_bits(
-                        if matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28) {
-                            1
-                        } else {
-                            6
-                        },
-                        8,
-                    )
-                    .map(|()| writer.size())
-                    .map_err(Error::from)
-            }
+            NativeService::Nop => control(protocol, false, target),
+            NativeService::Disconnect => control(protocol, true, target),
         };
         match result {
             Ok(length) => encoded.length += length,
             Err(Error::Unsupported) => encoded.unsupported += 1,
             Err(error) => return Err(error),
+        }
+        if terminal {
+            break;
         }
     }
     Ok(encoded)

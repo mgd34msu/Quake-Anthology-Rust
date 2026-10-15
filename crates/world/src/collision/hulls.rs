@@ -1,6 +1,6 @@
 use super::{AllSolid, Contents, Trace, TraceError, TraceQuery, position};
 pub use qa_core::primitives::ClipNode;
-use qa_core::primitives::{Axis, Plane, Vec3};
+use qa_core::primitives::{Axis, Plane, PointLeafRules, Vec3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct HullModel {
@@ -43,7 +43,7 @@ impl Hull<'_> {
         crate::bsp::descend(
             node,
             point,
-            false,
+            PointLeafRules::CLIP,
             crate::bsp::node_view(&self.planes, &self.nodes),
         )
     }

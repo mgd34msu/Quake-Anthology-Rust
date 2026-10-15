@@ -3106,6 +3106,7 @@ fn native_visibility<const WIDE: bool, const HEARING: bool>(
             channel,
             missing_visible: false,
             area_zero: !WIDE,
+            leaf_rules: qa_world::visibility::PointLeafRules::CLIP,
         },
         portals,
     )
@@ -3120,6 +3121,7 @@ fn q3_visibility<const IGNORE_PORTALS: bool>(
             channel: qa_world::visibility::VisibilityChannel::Sight,
             missing_visible: true,
             area_zero: true,
+            leaf_rules: qa_world::visibility::PointLeafRules::CLIP,
         },
         portals,
     )

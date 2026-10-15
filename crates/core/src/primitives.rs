@@ -134,6 +134,25 @@ pub struct Plane {
     pub encoding: Option<[u8; 2]>,
 }
 
+/// A caller's point-leaf policy; render and gameplay preserve their distinct
+/// plane arithmetic and equality ownership over the same immutable BSP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PointLeafRules {
+    pub back_on_tie: bool,
+    pub axial_shortcut: bool,
+}
+
+impl PointLeafRules {
+    pub const RENDER: Self = Self {
+        back_on_tie: true,
+        axial_shortcut: false,
+    };
+    pub const CLIP: Self = Self {
+        back_on_tie: false,
+        axial_shortcut: true,
+    };
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ClipNode {
     pub plane: u32,
@@ -195,11 +214,14 @@ impl Plane {
     }
 
     pub fn signed_distance(self, point: Vec3) -> f32 {
-        let coordinate = match self.axis {
-            Some(axis) => point.0[axis.index()],
-            None => self.normal.dot(point),
-        };
-        coordinate - self.distance
+        match self.axis {
+            Some(axis) => point.0[axis.index()] - self.distance,
+            None => self.geometric_distance(point),
+        }
+    }
+
+    pub fn geometric_distance(self, point: Vec3) -> f32 {
+        self.normal.dot(point) - self.distance
     }
 }
 

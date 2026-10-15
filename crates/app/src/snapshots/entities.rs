@@ -273,7 +273,10 @@ impl VisibilityScratch {
             return Err(Error::Count);
         }
         let viewer = world
-            .point_in_leaf(origin)
+            .point_in_leaf(
+                origin,
+                qa_gameplay::rules::point_leaf_rules(protocol.rule_set()),
+            )
             .and_then(|leaf| world.leaf(leaf))
             .ok_or(Error::Context)?;
         self.viewer_area = viewer.area;

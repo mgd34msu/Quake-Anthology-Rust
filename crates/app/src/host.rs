@@ -1158,6 +1158,11 @@ impl FrameHost {
             use qa_network::ingress::Incoming;
             match endpoint {
                 qa_core::loopback::Endpoint::Client => {
+                    if matches!(incoming, Incoming::Disconnect { .. }) {
+                        self.disconnect_client(id);
+                        disconnected = Some(id);
+                        return std::ops::ControlFlow::Break(());
+                    }
                     let server = &self.runtime.server;
                     if let Some(binding) = self.runtime.snapshots[id.0 as usize].as_ref()
                         && let Some(seat) = binding.seat()

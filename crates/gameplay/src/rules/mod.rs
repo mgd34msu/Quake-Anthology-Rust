@@ -24,6 +24,15 @@ pub fn music_playback(rules: RuleSetId) -> qa_core::primitives::MusicPlayback {
 use qa_core::primitives::{LinkOrder, RuleSetId};
 use std::num::NonZeroU32;
 
+pub const fn point_leaf_rules(rules: RuleSetId) -> qa_core::primitives::PointLeafRules {
+    match rules {
+        RuleSetId::Quake | RuleSetId::QuakeWorld => qa_core::primitives::PointLeafRules::RENDER,
+        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease | RuleSetId::Quake3 => {
+            qa_core::primitives::PointLeafRules::CLIP
+        }
+    }
+}
+
 /// Native server cadence data; the host owns the timeline and resolves cvars.
 /// Q3's below-one fallback is applied at that external settings boundary.
 pub fn tick_millis(rules: RuleSetId, sv_fps: NonZeroU32) -> Option<NonZeroU32> {

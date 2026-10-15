@@ -375,6 +375,7 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
             a,
             b,
             PointVisibility {
+                leaf_rules: qa_core::primitives::PointLeafRules::CLIP,
                 channel: Sight,
                 missing_visible: false,
                 area_zero: true
@@ -444,6 +445,7 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
             a,
             a,
             PointVisibility {
+                leaf_rules: qa_core::primitives::PointLeafRules::CLIP,
                 channel: Sight,
                 missing_visible: false,
                 area_zero: true
@@ -458,6 +460,7 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
             a,
             b,
             PointVisibility {
+                leaf_rules: qa_core::primitives::PointLeafRules::CLIP,
                 channel: Sight,
                 missing_visible: false,
                 area_zero: true
@@ -472,6 +475,7 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
             a,
             b,
             PointVisibility {
+                leaf_rules: qa_core::primitives::PointLeafRules::CLIP,
                 channel: Hearing,
                 missing_visible: false,
                 area_zero: false
@@ -486,6 +490,7 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
             a,
             b,
             PointVisibility {
+                leaf_rules: qa_core::primitives::PointLeafRules::CLIP,
                 channel: Hearing,
                 missing_visible: false,
                 area_zero: true
@@ -501,6 +506,7 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
             a,
             b,
             PointVisibility {
+                leaf_rules: qa_core::primitives::PointLeafRules::CLIP,
                 channel: Hearing,
                 missing_visible: false,
                 area_zero: true
@@ -515,6 +521,7 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
             a,
             b,
             PointVisibility {
+                leaf_rules: qa_core::primitives::PointLeafRules::CLIP,
                 channel: Hearing,
                 missing_visible: false,
                 area_zero: false
@@ -529,6 +536,7 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
             Vec3([f32::NAN; 3]),
             b,
             PointVisibility {
+                leaf_rules: qa_core::primitives::PointLeafRules::CLIP,
                 channel: Hearing,
                 missing_visible: false,
                 area_zero: false

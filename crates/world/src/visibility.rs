@@ -9,6 +9,7 @@ mod segment;
 pub use segment::SurfaceRayScratch;
 
 pub use qa_core::primitives::IndexSpan as SurfaceSpan;
+pub use qa_core::primitives::PointLeafRules;
 
 #[derive(Clone, Copy, Debug)]
 pub struct VisNode {
@@ -56,6 +57,7 @@ pub enum VisibilityQueryError {
 
 #[derive(Clone, Copy)]
 pub struct PointVisibility {
+    pub leaf_rules: PointLeafRules,
     pub channel: VisibilityChannel,
     pub missing_visible: bool,
     pub area_zero: bool,
@@ -208,11 +210,11 @@ impl VisibilityWorld {
         portals: Option<&crate::portals::AreaPortals>,
     ) -> Result<bool, VisibilityQueryError> {
         let first = self
-            .point_in_leaf(first)
+            .point_in_leaf(first, policy.leaf_rules)
             .and_then(|i| self.leaf(i))
             .ok_or(VisibilityQueryError::Origin)?;
         let second = self
-            .point_in_leaf(second)
+            .point_in_leaf(second, policy.leaf_rules)
             .and_then(|i| self.leaf(i))
             .ok_or(VisibilityQueryError::Origin)?;
         match (first.selector, second.selector) {
@@ -250,15 +252,14 @@ impl VisibilityWorld {
         )
     }
 
-    pub fn point_in_leaf(&self, point: Vec3) -> Option<u32> {
+    pub fn point_in_leaf(&self, point: Vec3, rules: PointLeafRules) -> Option<u32> {
         if !point.is_finite() {
             return None;
         }
-        // qsrc model.c Mod_PointInLeaf uses > 0, including the back-side tie.
         let child = crate::bsp::descend(
             self.root,
             point,
-            true,
+            rules,
             crate::bsp::node_view(&self.planes, &self.nodes),
         );
         Some(qa_core::primitives::leaf_from_child(child))

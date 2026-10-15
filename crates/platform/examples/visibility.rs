@@ -334,7 +334,7 @@ fn load(spec: Spec) -> Result<Loaded, Box<dyn std::error::Error>> {
     let (mut secondary_row_cases, mut union_expansion_cases) = (0, 0);
     for (index, &origin) in points.iter().enumerate() {
         let leaf = native_leaf(&map, origin);
-        if world.point_in_leaf(origin) != Some(leaf) {
+        if world.point_in_leaf(origin, qa_core::primitives::PointLeafRules::RENDER) != Some(leaf) {
             return Err(format!("{} point {index} native leaf differs", spec.map).into());
         }
         let primary = selector(&map, leaf, rows.rows.len());
@@ -470,7 +470,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for map in &mut maps {
             for slot in 0..QUERIES_PER_MAP {
                 let case = &map.cases[(frame * QUERIES_PER_MAP + slot) % map.cases.len()];
-                matched &= map.world.point_in_leaf(case.origin) == Some(case.leaf);
+                matched &= map
+                    .world
+                    .point_in_leaf(case.origin, qa_core::primitives::PointLeafRules::RENDER)
+                    == Some(case.leaf);
                 matched &= map
                     .view
                     .query(
