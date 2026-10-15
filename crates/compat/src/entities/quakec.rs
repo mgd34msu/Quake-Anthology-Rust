@@ -384,24 +384,6 @@ impl QuakeCLayout {
             .transpose()?;
         Ok(())
     }
-    fn write_number(
-        self,
-        memory: &mut ModuleMemory<'_>,
-        address: u64,
-        field: Option<usize>,
-        value: f32,
-    ) -> Result<(), CallError> {
-        self.store_number(
-            memory,
-            address,
-            field,
-            value,
-            &mut |memory, address, word| {
-                memory.write_word(address, word as i32)?;
-                Ok(())
-            },
-        )
-    }
     fn store_number(
         self,
         memory: &mut ModuleMemory<'_>,
@@ -416,24 +398,6 @@ impl QuakeCLayout {
             value.to_bits(),
         )
     }
-    fn write_vector(
-        self,
-        memory: &mut ModuleMemory<'_>,
-        address: u64,
-        field: Option<usize>,
-        value: Vec3,
-    ) -> Result<(), CallError> {
-        self.store_vector(
-            memory,
-            address,
-            field,
-            value,
-            &mut |memory, address, word| {
-                memory.write_word(address, word as i32)?;
-                Ok(())
-            },
-        )
-    }
     fn store_vector(
         self,
         memory: &mut ModuleMemory<'_>,
@@ -446,6 +410,19 @@ impl QuakeCLayout {
         memory.read(address, 12)?;
         for (axis, word) in value.0.map(f32::to_bits).into_iter().enumerate() {
             store(memory, address + axis as u64 * 4, word)?;
+        }
+        Ok(())
+    }
+    fn clear_fields(
+        self,
+        memory: &mut ModuleMemory<'_>,
+        address: u64,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<(), CallError> {
+        let address = address + self.header as u64;
+        memory.read(address, self.fields)?;
+        for offset in (0..self.fields).step_by(4) {
+            store(memory, address + offset as u64, 0)?;
         }
         Ok(())
     }
@@ -813,28 +790,29 @@ impl EntityProjection {
         name: u32,
         maxspeed: Option<f32>,
         colors: u8,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         let (address, client) = self.quakec_client(services, memory, context, value)?;
         let layout = self.quakec_layout()?;
         self.quakec_validate_client_spawn(memory, context, value)?;
-        memory
-            .read_mut(address + layout.header as u64, layout.fields)?
-            .fill(0);
-        layout.write_number(
+        layout.clear_fields(memory, address, store)?;
+        layout.store_number(
             memory,
             address,
             layout.colormap,
             (value as usize / layout.stride) as f32,
+            store,
         )?;
         let team = if context.native_rules == RuleSetId::Quake {
             f32::from((colors & 15) + 1)
         } else {
             0.0
         };
-        layout.write_number(memory, address, layout.client.team, team)?;
-        memory.write_word(
+        layout.store_number(memory, address, layout.client.team, team, store)?;
+        store(
+            memory,
             address + layout.client.net_name.ok_or(CallError::Memory)? as u64,
-            name as i32,
+            name,
         )?;
         if let Some(maxspeed) = maxspeed {
             for (field, value) in [
@@ -842,7 +820,7 @@ impl EntityProjection {
                 (layout.client.max_speed, maxspeed),
             ] {
                 if let Some(field) = field {
-                    layout.write_number(memory, address, Some(field), value)?;
+                    layout.store_number(memory, address, Some(field), value, store)?;
                 }
             }
         }
@@ -858,6 +836,7 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
         command: &qa_core::primitives::UserCmd,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         if !matches!(
             context.native_rules,
@@ -871,31 +850,35 @@ impl EntityProjection {
         if context.native_rules == RuleSetId::Quake
             || layout.number(memory, address, layout.client.fix_angle)? == 0.0
         {
-            layout.write_vector(
+            layout.store_vector(
                 memory,
                 address,
                 layout.client.view_angles,
                 command.view_angles,
+                store,
             )?;
         }
-        layout.write_number(
+        layout.store_number(
             memory,
             address,
             layout.client.button_attack,
             (command.buttons & qa_core::primitives::buttons::ATTACK) as f32,
+            store,
         )?;
-        layout.write_number(
+        layout.store_number(
             memory,
             address,
             layout.client.button_jump,
             ((command.buttons & qa_core::primitives::buttons::JUMP) >> 1) as f32,
+            store,
         )?;
         if command.impulse != 0 {
-            layout.write_number(
+            layout.store_number(
                 memory,
                 address,
                 layout.client.impulse,
                 f32::from(command.impulse),
+                store,
             )?;
         }
         Ok(())
@@ -908,11 +891,12 @@ impl EntityProjection {
         command: &qa_core::primitives::UserCmd,
         roll_angle: f32,
         roll_speed: f32,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         if context.native_rules != RuleSetId::QuakeWorld {
             return Err(CallError::Unsupported);
         }
-        self.quakec_receive_client_command(memory, context, value, command)?;
+        self.quakec_receive_client_command(memory, context, value, command, store)?;
         let layout = self.quakec_layout()?;
         let address = self.quakec_client_address(memory, value)?;
         // SV_RunCmd reads these fields after the preceding stores. QuakeC
@@ -921,13 +905,19 @@ impl EntityProjection {
         if layout.number(memory, address, layout.client.health)? > 0.0 {
             if layout.number(memory, address, layout.client.fix_angle)? == 0.0 {
                 let pitch = layout.number(memory, address, layout.client.view_angles)?;
-                layout.write_number(memory, address, layout.angles, -pitch / 3.0)?;
+                layout.store_number(memory, address, layout.angles, -pitch / 3.0, store)?;
                 let yaw = layout.number(
                     memory,
                     address,
                     layout.client.view_angles.map(|field| field + 4),
                 )?;
-                layout.write_number(memory, address, layout.angles.map(|field| field + 4), yaw)?;
+                layout.store_number(
+                    memory,
+                    address,
+                    layout.angles.map(|field| field + 4),
+                    yaw,
+                    store,
+                )?;
             }
             let angles = layout.vector(memory, address, layout.angles)?;
             let velocity = layout.vector(memory, address, layout.velocity)?;
@@ -937,7 +927,13 @@ impl EntityProjection {
             }
             .calculate(angles, velocity)
                 * 4.0;
-            layout.write_number(memory, address, layout.angles.map(|field| field + 8), roll)?;
+            layout.store_number(
+                memory,
+                address,
+                layout.angles.map(|field| field + 8),
+                roll,
+                store,
+            )?;
         }
         Ok(())
     }
@@ -971,6 +967,7 @@ impl EntityProjection {
         value: u32,
         seconds: f64,
         roll: qa_gameplay::rules::appearance::AliasRoll,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<Option<Vec3>, CallError> {
         self.quakec_identity(memory, context, value)?;
         let address = self.quakec_client_address(memory, value)?;
@@ -980,7 +977,7 @@ impl EntityProjection {
         }
         let mut punch = layout.vector(memory, address, layout.client.punch)?;
         let length = qa_core::math::normalize(&mut punch);
-        layout.write_vector(memory, address, layout.client.punch, punch)?;
+        layout.store_vector(memory, address, layout.client.punch, punch, store)?;
         let mut length = (f64::from(length) - 10.0 * seconds) as f32;
         if length < 0.0 {
             length = 0.0;
@@ -988,7 +985,7 @@ impl EntityProjection {
         for axis in 0..3 {
             let field = layout.client.punch.map(|at| at + axis * 4);
             let value = layout.number(memory, address, field)? * length;
-            layout.write_number(memory, address, field, value)?;
+            layout.store_number(memory, address, field, value, store)?;
         }
         if layout.number(memory, address, layout.client.health)? <= 0.0 {
             return Ok(None);
@@ -997,15 +994,22 @@ impl EntityProjection {
             + layout.vector(memory, address, layout.client.punch)?;
         let body_angles = layout.vector(memory, address, layout.angles)?;
         let velocity = layout.vector(memory, address, layout.velocity)?;
-        layout.write_number(
+        layout.store_number(
             memory,
             address,
             layout.angles.map(|at| at + 8),
             roll.calculate(body_angles, velocity) * 4.0,
+            store,
         )?;
         if layout.number(memory, address, layout.client.fix_angle)? == 0.0 {
-            layout.write_number(memory, address, layout.angles, -view.0[0] / 3.0)?;
-            layout.write_number(memory, address, layout.angles.map(|at| at + 4), view.0[1])?;
+            layout.store_number(memory, address, layout.angles, -view.0[0] / 3.0, store)?;
+            layout.store_number(
+                memory,
+                address,
+                layout.angles.map(|at| at + 4),
+                view.0[1],
+                store,
+            )?;
         }
         layout.client_noclip(memory, address)?;
         Ok(Some(layout.vector(memory, address, layout.angles)?))
@@ -1050,6 +1054,7 @@ impl EntityProjection {
         entity: EntityId,
         player: &mut PlayerState,
         stage: qa_core::primitives::MotionWrite,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         let address = self.quakec_client_lifetime(entities, memory, context, value, entity)?;
         let layout = self.quakec_layout()?;
@@ -1066,7 +1071,7 @@ impl EntityProjection {
             }
         };
         let value = *vector.0.get(axis).ok_or(CallError::Memory)?;
-        layout.write_number(memory, address, field.map(|at| at + axis * 4), value)?;
+        layout.store_number(memory, address, field.map(|at| at + axis * 4), value, store)?;
         layout.read_client_pose(memory, address, player)
     }
     pub(crate) fn quakec_classname<'a>(
@@ -1264,10 +1269,11 @@ impl EntityProjection {
         &self,
         memory: &mut ModuleMemory<'_>,
         value: u32,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         let layout = self.quakec_layout()?;
         let address = self.quakec_client_address(memory, value)?;
-        layout.write_number(memory, address, layout.client.fix_angle, 0.0)
+        layout.store_number(memory, address, layout.client.fix_angle, 0.0, store)
     }
     pub(crate) fn quakec_trace_view<'a, 'memory>(
         &self,
@@ -1565,6 +1571,7 @@ impl EntityProjection {
         services: &mut EngineServices<'_>,
         memory: &mut ModuleMemory<'_>,
         context: CallContext,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<u32, CallError> {
         let layout = self.quakec_layout()?;
         if self.owner != Some(context.module) {
@@ -1606,9 +1613,7 @@ impl EntityProjection {
         let address = slot.checked_mul(layout.stride).ok_or(CallError::Memory)?;
         // ED_ClearEdict clears only entvars. Boundary metadata does not inhabit
         // VM bytes and common lifetime liveness remains in EntityTable.
-        memory
-            .read_mut((address + layout.header) as u64, layout.fields)?
-            .fill(0);
+        layout.clear_fields(memory, address as u64, store)?;
         let (motion, angular_velocity) = layout.motion_state(memory, address as u64)?;
         let common_slot = entity.slot as usize;
         let columns = &mut services.server.entities.columns;
@@ -1657,9 +1662,10 @@ impl EntityProjection {
         memory: &mut ModuleMemory<'_>,
         context: CallContext,
         value: u32,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         let (native, entity) = self.quakec_removal(services, memory, context, value)?;
-        self.quakec_free_validated(services, memory, context, value, native, entity)
+        self.quakec_free_validated(services, memory, context, value, native, entity, store)
     }
 
     fn quakec_free_validated(
@@ -1670,6 +1676,7 @@ impl EntityProjection {
         value: u32,
         native: NativeEntity,
         entity: EntityId,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         let slot = native.slot as usize;
         let layout = self.quakec_layout()?;
@@ -1679,12 +1686,12 @@ impl EntityProjection {
             .ok_or(CallError::Entity)?
             .freed_at = Some(context.allocation.reuse.freetime(context.clock));
         for field in layout.removal_words() {
-            layout.write_number(memory, value as u64, field, 0.0)?;
+            layout.store_number(memory, value as u64, field, 0.0, store)?;
         }
         for field in layout.removal_vectors() {
-            layout.write_vector(memory, value as u64, field, Vec3::default())?;
+            layout.store_vector(memory, value as u64, field, Vec3::default(), store)?;
         }
-        layout.write_number(memory, value as u64, layout.next_think, -1.0)
+        layout.store_number(memory, value as u64, layout.next_think, -1.0, store)
     }
     pub(crate) fn quakec_make_static(
         &mut self,
@@ -1693,6 +1700,7 @@ impl EntityProjection {
         strings: &ModuleMemory<'_>,
         context: CallContext,
         value: u32,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         use qa_core::{
             math::{AngleByteForm, angle_to_byte, byte_to_angle, narrow_eighth},
@@ -1755,7 +1763,7 @@ impl EntityProjection {
         };
         match (ENGINE_CALLS.static_entity)(services, context, record) {
             Ok(_) | Err(CallError::Capacity) => {
-                self.quakec_free_validated(services, memory, context, value, native, entity)
+                self.quakec_free_validated(services, memory, context, value, native, entity, store)
             }
             Err(error) => Err(error),
         }
@@ -2132,6 +2140,7 @@ impl EntityProjection {
         value: u32,
         field: crate::quakec::MotionField,
         ground: Option<u32>,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         let native = self.quakec_identity(memory, context, value)?;
         let entity = self.binding(entities, native)?.ok_or(CallError::Entity)?;
@@ -2140,17 +2149,18 @@ impl EntityProjection {
         use crate::quakec::MotionField;
         match field {
             MotionField::Flags(flags) => {
-                layout.write_number(memory, address, layout.flags, flags as i32 as f32)?
+                layout.store_number(memory, address, layout.flags, flags as i32 as f32, store)?
             }
-            MotionField::Ground(_) => memory.write_word(
+            MotionField::Ground(_) => store(
+                memory,
                 address + layout.motion.ground_entity.ok_or(CallError::Memory)? as u64,
-                ground.ok_or(CallError::Entity)? as i32,
+                ground.ok_or(CallError::Entity)?,
             )?,
             MotionField::WaterType(value) => {
-                layout.write_number(memory, address, layout.motion.water_type, value)?
+                layout.store_number(memory, address, layout.motion.water_type, value, store)?
             }
             MotionField::WaterLevel(value) => {
-                layout.write_number(memory, address, layout.motion.water_level, value)?
+                layout.store_number(memory, address, layout.motion.water_level, value, store)?
             }
         }
         layout.refresh_motion(memory, address, entities, entity)

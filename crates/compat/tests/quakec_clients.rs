@@ -509,6 +509,255 @@ fn retaining_client_body_restores_borrowed_binding_on_projection_or_capacity_fai
 }
 
 #[test]
+fn native_client_spawn_and_fixangle_clear_publish_dirty_aliases_without_relinking() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|image| {
+            for field in image.fielddefs.iter_mut() {
+                if image.names.get(field.name) == Some(b"fixangle".as_slice()) {
+                    field.offset = 0;
+                }
+            }
+        });
+        with_native_client(&mut vm, source, |vm, services, context, native, client| {
+            let entity = services.server.clients[client.0 as usize].entity;
+            vector(vm, native, b"origin", Vec3([9.0, 8.0, 7.0]));
+            number(vm, native, b"frame", 13.0);
+            vm.relink_entity(services, context, native).unwrap();
+            vm.project_entities(services, context).unwrap();
+            let bounds = services.server.area.bounds(entity);
+            let relinks = services.server.area.relinks;
+            vm.entities.write(u64::from(native), &[0xa5; 16]).unwrap();
+            vm.prepare_client_spawn(services, context, native, b"", 0)
+                .unwrap();
+            assert_eq!(
+                vm.entities.read(u64::from(native), 16).unwrap(),
+                &[0xa5; 16]
+            );
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                Vec3([9.0, 8.0, 7.0])
+            );
+            vm.project_dirty_entities(services, context).unwrap();
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                Vec3::default()
+            );
+            assert_eq!(
+                services.server.entities.columns.appearance[entity.slot as usize].frame,
+                0
+            );
+            assert_eq!(services.server.area.bounds(entity), bounds);
+            assert_eq!(services.server.area.relinks, relinks);
+
+            vector(vm, native, b"origin", Vec3([77.0, 2.0, 3.0]));
+            vm.project_entities(services, context).unwrap();
+            vm.clear_client_set_angles(native).unwrap();
+            assert_eq!(read_vector(vm, native, b"origin"), Vec3([0.0, 2.0, 3.0]));
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                Vec3([77.0, 2.0, 3.0])
+            );
+            vm.project_dirty_entities(services, context).unwrap();
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                Vec3([0.0, 2.0, 3.0])
+            );
+            assert_eq!(services.server.area.bounds(entity), bounds);
+            assert_eq!(services.server.area.relinks, relinks);
+        });
+    }
+}
+
+#[test]
+fn native_client_command_retains_successful_dirty_prefix_when_later_button_field_is_absent() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|image| {
+            for field in image.fielddefs.iter_mut() {
+                match image.names.get(field.name).unwrap() {
+                    b"v_angle" => field.offset = 0,
+                    b"button0" => field.offset = 62,
+                    b"button2" => field.value_type = 1,
+                    _ => {}
+                }
+            }
+        });
+        with_native_client(&mut vm, source, |vm, services, context, native, client| {
+            vm.project_entities(services, context).unwrap();
+            let entity = services.server.clients[client.0 as usize].entity;
+            let command = UserCmd {
+                view_angles: Vec3([11.0, 22.0, 33.0]),
+                buttons: buttons::ATTACK,
+                ..UserCmd::default()
+            };
+            assert_eq!(
+                vm.receive_client_command(context, native, &command),
+                Err(CallError::Memory)
+            );
+            assert_eq!(read_vector(vm, native, b"origin"), command.view_angles);
+            assert_eq!(read(vm, native, b"frame"), 1.0f32.to_bits());
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                Vec3::default()
+            );
+            vm.project_dirty_entities(services, context).unwrap();
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                command.view_angles
+            );
+            assert_eq!(
+                services.server.entities.columns.appearance[entity.slot as usize].frame,
+                1
+            );
+            assert_eq!(services.server.area.bounds(entity), None);
+        });
+    }
+}
+
+#[test]
+fn control_and_command_angles_publish_origin_aliases_after_success_or_late_rejection() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for rejected in [false, true] {
+            if source == RuleSetId::QuakeWorld && rejected {
+                continue;
+            }
+            let mut vm = vm(|image| {
+                for field in image.fielddefs.iter_mut() {
+                    if image.names.get(field.name) == Some(b"angles".as_slice()) {
+                        field.offset = 0;
+                    }
+                }
+            });
+            with_native_client(&mut vm, source, |vm, services, context, native, client| {
+                let entity = services.server.clients[client.0 as usize].entity;
+                number(vm, native, b"health", 100.0);
+                number(vm, native, b"movetype", if rejected { 3.0 } else { 8.0 });
+                vector(vm, native, b"v_angle", Vec3([12.0, 34.0, 56.0]));
+                vm.project_entities(services, context).unwrap();
+                if source == RuleSetId::Quake {
+                    let result = vm.prepare_control(services, context, native, 0.1);
+                    if rejected {
+                        assert!(matches!(result, Err(CallError::Unsupported)));
+                    } else {
+                        assert!(result.unwrap().is_some());
+                    }
+                } else {
+                    vm.prepare_client_command(
+                        services,
+                        context,
+                        native,
+                        &UserCmd {
+                            view_angles: Vec3([12.0, 34.0, 56.0]),
+                            ..UserCmd::default()
+                        },
+                    )
+                    .unwrap();
+                }
+                assert_eq!(read_vector(vm, native, b"origin"), Vec3([-4.0, 34.0, 0.0]));
+                assert_eq!(
+                    services.server.entities.columns.position[entity.slot as usize],
+                    Vec3::default()
+                );
+                vm.project_dirty_entities(services, context).unwrap();
+                assert_eq!(
+                    services.server.entities.columns.position[entity.slot as usize],
+                    Vec3([-4.0, 34.0, 0.0])
+                );
+                assert_eq!(services.server.area.bounds(entity), None);
+            });
+        }
+    }
+}
+
+#[test]
+fn native_motion_fields_and_frame_scalars_publish_nonphysical_aliases() {
+    use qa_compat::quakec::MotionField;
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|image| {
+            for field in image.fielddefs.iter_mut() {
+                match image.names.get(field.name).unwrap() {
+                    b"flags" => field.offset = 62,
+                    b"waterlevel" => field.offset = 0,
+                    b"watertype" => field.offset = 1,
+                    b"groundentity" => field.offset = 2,
+                    _ => {}
+                }
+            }
+        });
+        with_native_client(&mut vm, source, |vm, services, context, native, client| {
+            let entity = services.server.clients[client.0 as usize].entity;
+            vm.project_entities(services, context).unwrap();
+            for field in [
+                MotionField::Flags(512),
+                MotionField::WaterLevel(3.0),
+                MotionField::WaterType(-3.0),
+                MotionField::Ground(NativeEntityRef::entity(
+                    ResourceNamespace::Module(context.module),
+                    0,
+                )),
+            ] {
+                vm.write_motion_field(&mut services.server.entities, context, native, field)
+                    .unwrap();
+            }
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize],
+                Vec3([3.0, -3.0, 0.0])
+            );
+            assert_eq!(
+                services.server.entities.columns.appearance[entity.slot as usize].frame,
+                0
+            );
+            vm.project_dirty_entities(services, context).unwrap();
+            assert_eq!(
+                services.server.entities.columns.appearance[entity.slot as usize].frame,
+                512
+            );
+            assert_eq!(services.server.area.bounds(entity), None);
+        });
+    }
+    let mut vm = vm(|image| {
+        for field in image.fielddefs.iter_mut() {
+            if image.names.get(field.name) == Some(b"origin".as_slice()) {
+                field.offset = 62;
+            }
+        }
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, client| {
+            let entity = services.server.clients[client.0 as usize].entity;
+            vm.project_entities(services, context).unwrap();
+            let mut player = PlayerState::default();
+            player.body.position.0[0] = 42.0;
+            vm.write_frame_scalar(
+                &services.server.entities,
+                context,
+                native,
+                entity,
+                &mut player,
+                MotionWrite::Origin(0),
+            )
+            .unwrap();
+            assert_eq!(player.body.position.0[0], 42.0);
+            assert_eq!(
+                services.server.entities.columns.appearance[entity.slot as usize].frame,
+                0
+            );
+            vm.project_dirty_entities(services, context).unwrap();
+            assert_eq!(
+                services.server.entities.columns.appearance[entity.slot as usize].frame,
+                42
+            );
+            assert_eq!(
+                services.server.entities.columns.position[entity.slot as usize].0[0],
+                42.0
+            );
+            assert_eq!(services.server.area.bounds(entity), None);
+        },
+    );
+}
+
+#[test]
 fn client_callbacks_use_current_native_words_and_qw_context_phases() {
     let mut vm = vm(|_| {});
     with_client(&mut vm, |vm, _, _, native, _| {

@@ -239,15 +239,11 @@ impl Vm {
         let name = qa_core::text::info_value(userinfo, b"name", false)
             .map_or(&b""[..], |range| &userinfo[range]);
         let name = self.insert_string(name).map_err(|_| CallError::Text)? as u32;
-        self.projection.quakec_client_spawn(
-            services,
-            &mut self.entities,
-            context,
-            native,
-            name,
-            maxspeed,
-            colors,
-        )
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_client_spawn(
+                services, memory, context, native, name, maxspeed, colors, store,
+            )
+        })
     }
     pub fn receive_client_command(
         &mut self,
@@ -258,8 +254,9 @@ impl Vm {
         if self.client_globals.require()? != context.native_rules {
             return Err(CallError::Unsupported);
         }
-        self.projection
-            .quakec_receive_client_command(&mut self.entities, context, native, command)
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_receive_client_command(memory, context, native, command, store)
+        })
     }
     pub fn client_phase(
         &self,
@@ -319,14 +316,11 @@ impl Vm {
         let roll_angle = number(settings[1])?;
         let roll_speed = number(settings[2])?;
         let frame_time = self.call_fields.frame_time.ok_or(CallError::Memory)?;
-        self.projection.quakec_client_command(
-            &mut self.entities,
-            context,
-            native,
-            command,
-            roll_angle,
-            roll_speed,
-        )?;
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_client_command(
+                memory, context, native, command, roll_angle, roll_speed, store,
+            )
+        })?;
         let step = (f64::from(command.duration_ms) * 0.001).min(0.1);
         self.image.globals[frame_time] = (step as f32).to_bits();
         Ok(step)
@@ -350,17 +344,18 @@ impl Vm {
             angle: number(settings[1])?,
             speed: number(settings[2])?,
         };
-        self.projection
-            .quakec_prepare_control(&mut self.entities, context, native, seconds, roll)
-            .map(|angles| {
-                angles.map(|body_angles| qa_movement::MoveOptions {
-                    phase: qa_movement::MovePhase::Control {
-                        body_angles,
-                        clock: context.clock,
-                    },
-                    ..Default::default()
-                })
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_prepare_control(memory, context, native, seconds, roll, store)
+        })
+        .map(|angles| {
+            angles.map(|body_angles| qa_movement::MoveOptions {
+                phase: qa_movement::MovePhase::Control {
+                    body_angles,
+                    clock: context.clock,
+                },
+                ..Default::default()
             })
+        })
     }
     pub fn client_noclip(&self, context: CallContext, native: u32) -> Result<(), CallError> {
         self.client_globals.require_frame_movement(context)?;
@@ -395,15 +390,11 @@ impl Vm {
         stage: qa_core::primitives::MotionWrite,
     ) -> Result<(), CallError> {
         self.client_globals.require_frame_movement(context)?;
-        self.projection.quakec_write_frame_scalar(
-            entities,
-            &mut self.entities,
-            context,
-            native,
-            entity,
-            player,
-            stage,
-        )
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_write_frame_scalar(
+                entities, memory, context, native, entity, player, stage, store,
+            )
+        })
     }
     pub(super) fn sync_client_globals(&mut self) -> Result<(), CallError> {
         let number =
@@ -454,8 +445,9 @@ impl Vm {
     }
     pub fn clear_client_set_angles(&mut self, native: u32) -> Result<(), CallError> {
         self.client_globals.require()?;
-        self.projection
-            .quakec_clear_client_fixangle(&mut self.entities, native)
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_clear_client_fixangle(memory, native, store)
+        })
     }
     fn save_touch_globals(&self) -> Result<(ClientCallRestore, [usize; 2]), CallError> {
         let self_at = self.call_fields.self_global.ok_or(CallError::Memory)?;

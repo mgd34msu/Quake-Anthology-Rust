@@ -520,8 +520,9 @@ impl Vm {
         services: &mut crate::services::EngineServices<'_>,
         context: crate::services::CallContext,
     ) -> Result<u32, crate::services::CallError> {
-        self.projection
-            .quakec_spawn(services, &mut self.entities, context)
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_spawn(services, memory, context, store)
+        })
     }
     pub fn remove_entity(
         &mut self,
@@ -529,8 +530,9 @@ impl Vm {
         context: crate::services::CallContext,
         native: u32,
     ) -> Result<(), crate::services::CallError> {
-        self.projection
-            .quakec_remove(services, &mut self.entities, context, native)
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_remove(services, memory, context, native, store)
+        })
     }
     pub fn make_static(
         &mut self,
@@ -538,13 +540,9 @@ impl Vm {
         context: crate::services::CallContext,
         native: u32,
     ) -> Result<(), crate::services::CallError> {
-        self.projection.quakec_make_static(
-            services,
-            &mut self.entities,
-            &self.strings,
-            context,
-            native,
-        )
+        self.with_entity_stores(|projection, memory, strings, store| {
+            projection.quakec_make_static(services, memory, strings, context, native, store)
+        })
     }
     pub fn resolve_entity(
         &self,
@@ -704,14 +702,10 @@ impl Vm {
         } else {
             None
         };
-        self.projection.quakec_write_motion_field(
-            entities,
-            &mut self.entities,
-            context,
-            value,
-            field,
-            ground,
-        )
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection
+                .quakec_write_motion_field(entities, memory, context, value, field, ground, store)
+        })
     }
     /// Scalar native writes retain VectorMA's read/write overlap order; all
     /// motion arithmetic stays in the shared executor over common columns.

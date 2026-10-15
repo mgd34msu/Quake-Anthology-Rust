@@ -2448,6 +2448,120 @@ fn find_validates_only_executed_native_fields_and_strings() {
 }
 
 #[test]
+fn native_spawn_clear_queues_projection_and_preserves_header_on_reused_backing() {
+    use qa_session::dispatch::{FunctionBinding, FunctionTable};
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let table = FunctionTable::<qa_session::clients::Server>::load([(
+                calls.context.module,
+                rules,
+                vec![FunctionBinding {
+                    entry: 1,
+                    call: |_, _, _, _| true,
+                }],
+            )])
+            .unwrap();
+            let module = table.module_binding(calls.context.module);
+            vm.bind_thinks(module, &[1]);
+            let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let old = entity(calls, &vm, native);
+            vm.project_dirty_entities(calls.services, calls.context)
+                .unwrap();
+            vm.entities.write(u64::from(native), &[0x5a; 16]).unwrap();
+            write(&mut vm, native, b"skin", &[23.0f32.to_bits()]);
+            vm.remove_entity(calls.services, calls.context, native)
+                .unwrap();
+            assert!(calls.services.server.entities.resolve(old).is_none());
+            vm.project_dirty_entities(calls.services, calls.context)
+                .unwrap();
+            calls.context.clock = ThinkTime::Seconds(100.0);
+            assert_eq!(vm.spawn_entity(calls.services, calls.context), Ok(native));
+            let current = entity(calls, &vm, native);
+            assert_ne!(current, old);
+            assert_eq!(
+                vm.entities.read(u64::from(native), 16).unwrap(),
+                &[0x5a; 16]
+            );
+            assert_eq!(read(&vm, native, b"skin", 1), [0]);
+            assert_eq!(
+                calls
+                    .services
+                    .server
+                    .entities
+                    .columns
+                    .think_binding(current.slot as usize)
+                    .path,
+                0
+            );
+            // Only the native clear made this row dirty. Later direct host
+            // setup proves that mark survives until ordinary publication.
+            write(&mut vm, native, b"model", &[u32::MAX]);
+            write(&mut vm, native, b"solid", &[4.0f32.to_bits()]);
+            assert_eq!(
+                vm.project_dirty_entities(calls.services, calls.context),
+                Err(CallError::Memory)
+            );
+            write(&mut vm, native, b"model", &[0]);
+            write(&mut vm, native, b"solid", &[0]);
+            write(&mut vm, native, b"skin", &[17.0f32.to_bits()]);
+            vm.project_dirty_entities(calls.services, calls.context)
+                .unwrap();
+            let columns = &calls.services.server.entities.columns;
+            assert_eq!(columns.appearance[current.slot as usize].skin, 17);
+            assert_eq!(
+                columns.think_binding(current.slot as usize),
+                ThinkBinding {
+                    callback: Some(CallbackId(0)),
+                    ..module.think(None)
+                }
+            );
+            assert_eq!(
+                columns.next_think[current.slot as usize],
+                Some(ThinkTime::Seconds(0.0))
+            );
+            assert_eq!(calls.services.server.area.bounds(current), None);
+        });
+    }
+}
+
+#[test]
+fn native_removal_keeps_deadline_last_when_it_aliases_the_cleared_origin() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let fields: Vec<_> = FIELDS
+                .iter()
+                .copied()
+                .map(|(kind, offset, name)| {
+                    (kind, if name == b"nextthink" { 0 } else { offset }, name)
+                })
+                .collect();
+            let capacity = if rules == RuleSetId::QuakeWorld {
+                40
+            } else {
+                8
+            };
+            let mut vm = seed_vm(calls, vm_with_definitions(capacity, GLOBALS, &fields));
+            let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let old = entity(calls, &vm, native);
+            write(
+                &mut vm,
+                native,
+                b"origin",
+                &[9.0f32, 8.0, 7.0].map(f32::to_bits),
+            );
+            vm.remove_entity(calls.services, calls.context, native)
+                .unwrap();
+            assert!(calls.services.server.entities.resolve(old).is_none());
+            assert_eq!(read(&vm, native, b"origin", 3), [(-1.0f32).to_bits(), 0, 0]);
+            vm.project_dirty_entities(calls.services, calls.context)
+                .unwrap();
+            assert_eq!(read(&vm, native, b"origin", 3), [(-1.0f32).to_bits(), 0, 0]);
+        });
+    }
+}
+
+#[test]
 fn spawn_remove_use_native_ordinals_and_independent_common_generations() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         with_services(rules, |calls| {
@@ -4540,6 +4654,10 @@ fn point_contents_reads_live_candidates_without_flushing_unrelated_dirty_rows() 
         // A different unlinked, untouched row is malformed but not scanned.
         calls.call(&mut vm, 14, 0).unwrap();
         let untouched = vm.image.globals[1];
+        // Spawn's entvars clear is a tracked write. Publish that valid clear
+        // before introducing the unrelated, untracked malformed host edit.
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
         write(&mut vm, untouched, b"mins", &[4.0f32.to_bits(); 3]);
         parameters(&mut vm, &[&[0; 3]]);
         vm.image.globals[28..31].copy_from_slice(&[12.0f32.to_bits(), 0, 0]);
