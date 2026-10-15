@@ -1,6 +1,7 @@
 //! One safe hot interpreter, preserving qsrc's native stack and byte-PC ABI.
 use crate::memory::ModuleMemory;
 use qa_formats::program::qvm::{Image, Opcode};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trap {
@@ -12,6 +13,7 @@ pub enum Trap {
     Budget,
     Syscall,
     Return,
+    Continuation,
 }
 impl From<crate::memory::MemoryError> for Trap {
     fn from(_: crate::memory::MemoryError) -> Self {
@@ -27,6 +29,58 @@ pub trait SystemCalls {
 }
 pub use crate::hooks::Hooks;
 
+/// One owned syscall snapshot. It never borrows guest or engine memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Syscall {
+    pub number: u32,
+    arguments: [i32; 16],
+    argument_count: usize,
+}
+impl Syscall {
+    pub fn arguments(&self) -> &[i32] {
+        &self.arguments[..self.argument_count]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Syscall(Syscall),
+    Returned(i32),
+}
+
+/// Move-only execution state, independent of a Vm or service borrow. Complete,
+/// trap, or explicitly abort each run before discarding it.
+#[must_use]
+#[derive(Debug)]
+pub struct Run {
+    owner: Arc<()>,
+    state: Option<RunState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Settings {
+    remaining: u64,
+    hooks: bool,
+}
+
+#[derive(Debug)]
+struct RunState {
+    id: u64,
+    parent: Option<u64>,
+    saved_program_stack: usize,
+    entry_base: usize,
+    saved_settings: Option<Settings>,
+    stack: [i32; 256],
+    depth: usize,
+    pc: usize,
+    program_stack: usize,
+}
+
+struct ActiveRun {
+    id: u64,
+    suspended: bool,
+}
+
 pub struct Vm {
     pub memory: ModuleMemory<'static>,
     pub image: Image,
@@ -37,6 +91,9 @@ pub struct Vm {
     mask: u32,
     remaining: u64,
     hooks_enabled: bool,
+    run_owner: Arc<()>,
+    next_run: u64,
+    active_run: Option<ActiveRun>,
 }
 impl Vm {
     pub fn load(image: Image) -> Result<Self, Trap> {
@@ -50,6 +107,9 @@ impl Vm {
             projection: None,
             remaining: 0,
             hooks_enabled: false,
+            run_owner: Arc::new(()),
+            next_run: 0,
+            active_run: None,
             program_stack,
             stack_bottom: program_stack.saturating_sub(65536),
         })
@@ -107,6 +167,170 @@ impl Vm {
     pub fn masked_address(&self, address: i32) -> u64 {
         u64::from(address as u32 & self.mask)
     }
+    /// Start an independent root, saving any suspended caller's budget/hooks.
+    pub fn begin_root(
+        &mut self,
+        arguments: [i32; 10],
+        budget: u64,
+        hooks: bool,
+    ) -> Result<Run, Trap> {
+        self.begin(
+            arguments,
+            Some(Settings {
+                remaining: budget,
+                hooks,
+            }),
+        )
+    }
+    /// A callback into an active VM shares its remaining budget and hooks.
+    /// An inactive VM starts with the supplied module settings.
+    pub fn begin_callback(
+        &mut self,
+        arguments: [i32; 10],
+        budget: u64,
+        hooks: bool,
+    ) -> Result<Run, Trap> {
+        if self.active_run.is_some() {
+            self.begin(arguments, None)
+        } else {
+            self.begin_root(arguments, budget, hooks)
+        }
+    }
+    fn can_begin(&self) -> Result<(), Trap> {
+        if self
+            .active_run
+            .as_ref()
+            .is_some_and(|active| !active.suspended)
+        {
+            return Err(Trap::Continuation);
+        }
+        Ok(())
+    }
+    fn begin(&mut self, arguments: [i32; 10], settings: Option<Settings>) -> Result<Run, Trap> {
+        self.can_begin()?;
+        let id = self.next_run.checked_add(1).ok_or(Trap::Continuation)?;
+        let saved_program_stack = self.program_stack;
+        let entry_base = saved_program_stack
+            .checked_sub(48)
+            .filter(|&position| position >= self.stack_bottom)
+            .ok_or(Trap::ProgramStack)?;
+        self.memory.read(entry_base as u64, 48)?;
+        self.memory.write_word(entry_base as u64, -1)?;
+        self.memory.write_word(entry_base as u64 + 4, 0)?;
+        for (index, arg) in arguments.into_iter().enumerate() {
+            self.memory
+                .write_word((entry_base + 8 + index * 4) as u64, arg)?;
+        }
+        let saved_settings = settings.map(|settings| {
+            let saved = self.settings();
+            self.set_settings(settings);
+            saved
+        });
+        let state = RunState {
+            id,
+            parent: self.active_run.as_ref().map(|active| active.id),
+            saved_program_stack,
+            entry_base,
+            saved_settings,
+            stack: [0; 256],
+            depth: 0,
+            pc: 0,
+            program_stack: entry_base,
+        };
+        self.next_run = id;
+        self.active_run = Some(ActiveRun {
+            id,
+            suspended: false,
+        });
+        Ok(Run {
+            owner: Arc::clone(&self.run_owner),
+            state: Some(state),
+        })
+    }
+    fn settings(&self) -> Settings {
+        Settings {
+            remaining: self.remaining,
+            hooks: self.hooks_enabled,
+        }
+    }
+    fn set_settings(&mut self, settings: Settings) {
+        self.remaining = settings.remaining;
+        self.hooks_enabled = settings.hooks;
+    }
+    fn check_run(&self, run: &Run, suspended: Option<bool>) -> Result<(), Trap> {
+        if !Arc::ptr_eq(&self.run_owner, &run.owner) {
+            return Err(Trap::Continuation);
+        }
+        let state = run.state.as_ref().ok_or(Trap::Continuation)?;
+        let active = self.active_run.as_ref().ok_or(Trap::Continuation)?;
+        if active.id != state.id || suspended.is_some_and(|waiting| waiting != active.suspended) {
+            return Err(Trap::Continuation);
+        }
+        Ok(())
+    }
+    fn finish(&mut self, run: &mut Run) -> Result<(), Trap> {
+        let state = run.state.take().ok_or(Trap::Continuation)?;
+        self.program_stack = state.saved_program_stack;
+        self.active_run = state.parent.map(|id| ActiveRun {
+            id,
+            suspended: true,
+        });
+        if let Some(settings) = state.saved_settings {
+            self.set_settings(settings);
+        }
+        Ok(())
+    }
+    /// Run the existing opcode loop until a syscall or final return.
+    pub fn advance(&mut self, run: &mut Run) -> Result<Step, Trap> {
+        self.check_run(run, Some(false))?;
+        self.advance_ready(run)
+    }
+    /// Reply to the suspended syscall, then continue the same opcode loop.
+    /// The saved native return byte-PC remains writable guest memory.
+    pub fn resume(&mut self, run: &mut Run, value: i32) -> Result<Step, Trap> {
+        self.check_run(run, Some(true))?;
+        let result = (|| {
+            let state = run.state.as_mut().ok_or(Trap::Continuation)?;
+            state.depth += 1;
+            *state.stack.get_mut(state.depth).ok_or(Trap::OperandStack)? = value;
+            let target = self.memory.read_word(state.program_stack as u64)?;
+            state.pc = self.image.instruction_at(target).ok_or(Trap::Target)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.finish(run)?;
+            return Err(error);
+        }
+        if let Some(active) = &mut self.active_run {
+            active.suspended = false;
+        }
+        self.advance_ready(run)
+    }
+    /// Abort the current activation. Wrong-owner/order attempts preserve it.
+    pub fn abort(&mut self, run: &mut Run) -> Result<(), Trap> {
+        self.check_run(run, None)?;
+        self.finish(run)
+    }
+    fn advance_ready(&mut self, run: &mut Run) -> Result<Step, Trap> {
+        let state = run.state.as_mut().ok_or(Trap::Continuation)?;
+        let result = if self.hooks_enabled {
+            self.run::<true>(state)
+        } else {
+            self.run::<false>(state)
+        };
+        match result {
+            Ok(Step::Syscall(call)) => {
+                if let Some(active) = &mut self.active_run {
+                    active.suspended = true;
+                }
+                Ok(Step::Syscall(call))
+            }
+            result => {
+                self.finish(run)?;
+                result
+            }
+        }
+    }
     pub fn call(
         &mut self,
         calls: &mut impl SystemCalls,
@@ -114,64 +338,54 @@ impl Vm {
         budget: u64,
         hooks: bool,
     ) -> Result<i32, Trap> {
-        let saved = (self.remaining, self.hooks_enabled);
-        self.remaining = budget;
-        self.hooks_enabled = hooks;
-        let result = calls
-            .begin_call(self)
-            .and_then(|()| self.call_nested(calls, arguments));
-        (self.remaining, self.hooks_enabled) = saved;
+        self.can_begin()?;
+        let saved = self.settings();
+        self.set_settings(Settings {
+            remaining: budget,
+            hooks,
+        });
+        let result = (|| {
+            calls.begin_call(self)?;
+            let mut run = self.begin(arguments, None)?;
+            self.drain(calls, &mut run)
+        })();
+        self.set_settings(saved);
         result
     }
-    /// Enter the same interpreter below its suspended syscall frame. The
-    /// outer entry already seeded the live guest projection.
+    /// Enter below the same suspended syscall without reseeding the projection.
     pub(crate) fn call_nested(
         &mut self,
         calls: &mut impl SystemCalls,
         arguments: [i32; 10],
     ) -> Result<i32, Trap> {
-        // Selection happens once. Const specialization removes every hook from
-        // the ordinary loop, without maintaining a second opcode implementation.
-        if self.hooks_enabled {
-            self.enter::<true>(calls, arguments, self.remaining)
-        } else {
-            self.enter::<false>(calls, arguments, self.remaining)
+        let mut run = self.begin(arguments, None)?;
+        self.drain(calls, &mut run)
+    }
+    fn drain(&mut self, calls: &mut impl SystemCalls, run: &mut Run) -> Result<i32, Trap> {
+        let mut step = self.advance(run)?;
+        loop {
+            match step {
+                Step::Returned(value) => return Ok(value),
+                Step::Syscall(call) => {
+                    let value = match calls.call(self, call.number, call.arguments()) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.abort(run)?;
+                            return Err(error);
+                        }
+                    };
+                    step = self.resume(run, value)?;
+                }
+            }
         }
     }
-    fn enter<const HOOKS: bool>(
-        &mut self,
-        calls: &mut impl SystemCalls,
-        arguments: [i32; 10],
-        budget: u64,
-    ) -> Result<i32, Trap> {
-        let saved_stack = self.program_stack;
-        let result = self.run::<HOOKS>(calls, arguments, budget);
-        // A failed call, including reentry, restores the native caller's stack.
-        self.program_stack = saved_stack;
-        result
-    }
-    fn run<const HOOKS: bool>(
-        &mut self,
-        calls: &mut impl SystemCalls,
-        arguments: [i32; 10],
-        budget: u64,
-    ) -> Result<i32, Trap> {
+    fn run<const HOOKS: bool>(&mut self, state: &mut RunState) -> Result<Step, Trap> {
         use Opcode::*;
-        let mut stack = [0i32; 256];
-        let mut depth = 0usize;
-        let mut pc = 0usize;
-        let mut program_stack = self
-            .program_stack
-            .checked_sub(48)
-            .filter(|&s| s >= self.stack_bottom)
-            .ok_or(Trap::ProgramStack)?;
-        self.memory.write_word(program_stack as u64, -1)?;
-        self.memory.write_word(program_stack as u64 + 4, 0)?;
-        for (index, arg) in arguments.into_iter().enumerate() {
-            self.memory
-                .write_word((program_stack + 8 + index * 4) as u64, arg)?;
-        }
-        for _ in 0..budget {
+        let stack = &mut state.stack;
+        let mut depth = state.depth;
+        let mut pc = state.pc;
+        let mut program_stack = state.program_stack;
+        loop {
             self.remaining = self.remaining.checked_sub(1).ok_or(Trap::Budget)?;
             let instruction = *self.image.instructions.get(pc).ok_or(Trap::Target)?;
             pc += 1;
@@ -191,12 +405,12 @@ impl Vm {
                 Leave => {
                     program_stack = program_stack
                         .checked_add(operand as usize)
-                        .filter(|&s| s < self.memory.len())
+                        .filter(|&s| s <= state.entry_base)
                         .ok_or(Trap::ProgramStack)?;
                     let target = self.memory.read_word(program_stack as u64)?;
                     if target == -1 {
                         return if depth == 1 {
-                            Ok(stack[1])
+                            Ok(Step::Returned(stack[1]))
                         } else {
                             Err(Trap::Return)
                         };
@@ -225,6 +439,9 @@ impl Vm {
                         if HOOKS {
                             self.hooks.calls += 1;
                         }
+                        if target < 0 && program_stack > state.entry_base {
+                            return Err(Trap::ProgramStack);
+                        }
                         self.memory
                             .write_word(program_stack as u64, instruction.next_byte_pc as i32)?;
                         if target < 0 {
@@ -244,12 +461,14 @@ impl Vm {
                             }
                             self.program_stack =
                                 program_stack.checked_sub(4).ok_or(Trap::ProgramStack)?;
-                            let result = calls.call(self, number, &arguments[..available])?;
-                            depth += 1;
-                            *stack.get_mut(depth).ok_or(Trap::OperandStack)? = result;
-                            let target = self.memory.read_word(program_stack as u64)?;
-                            pc = self.image.instruction_at(target).ok_or(Trap::Target)?;
-                            continue;
+                            state.depth = depth;
+                            state.pc = pc;
+                            state.program_stack = program_stack;
+                            return Ok(Step::Syscall(Syscall {
+                                number,
+                                arguments,
+                                argument_count: available,
+                            }));
                         }
                     }
                     pc = usize::try_from(target)
@@ -414,6 +633,5 @@ impl Vm {
                 }
             }
         }
-        Err(Trap::Budget)
     }
 }
