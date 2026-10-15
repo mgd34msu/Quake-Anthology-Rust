@@ -257,6 +257,10 @@ struct Module {
     clock: qa_gameplay::rules::FrameClock,
     physics: Option<QwPhysics>,
     toss: Option<qa_gameplay::rules::motion::TossRules>,
+    step: Option<(
+        qa_gameplay::rules::motion::StepRules,
+        qa_gameplay::rules::sweep::LegacySweepRules,
+    )>,
     duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
     signon: IndexSpan,
     client_connection: Option<(ClientId, EntityId)>,
@@ -728,6 +732,9 @@ impl FrameHost {
                     .map_err(|e| format!("module client capacity: {e:?}"))?;
             }
             let toss = qa_gameplay::rules::motion::toss_rules(request.context.native_rules);
+            let step = qa_gameplay::rules::motion::step_rules(request.context.native_rules).zip(
+                qa_gameplay::rules::sweep::entity_sweep(request.context.native_rules),
+            );
             rows[index] = Some(Module {
                 request,
                 scratch: host.runtime.geometry.scratch(),
@@ -750,6 +757,7 @@ impl FrameHost {
                 clock,
                 physics,
                 toss,
+                step,
                 duration,
                 signon: IndexSpan {
                     first: (ordinal * client_capacity) as u32,
@@ -1461,8 +1469,7 @@ fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) -> bool
 }
 
 /// Native motion belongs after StartFrame in the native edict-order pass.
-/// Step and pusher thinking belongs at their own motion phase positions,
-/// and is explicitly counted as unsupported rather than run prematurely.
+/// Each motion phase places the shared think dispatcher at its native position.
 fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, step: f64) {
     let Some(modules) = host.modules.as_ref() else {
         return;
@@ -1502,6 +1509,23 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
             continue;
         }
         match next {
+            Ok(Some(entity)) if entity.phase == Motion::Step => {
+                let execution = motion::step_fall(host, module, entity.entity, time, step)
+                    .and_then(|current| {
+                        if let Some(current) = current
+                            && let Some(current) =
+                                entity_think(host, module, &functions, &entity, current, time, step)
+                        {
+                            motion::water_transition(host, module, current, time)?;
+                        }
+                        Ok(())
+                    });
+                if execution.is_err()
+                    && let Some(row) = host.module_row_mut(module)
+                {
+                    row.counts.rejected += 1;
+                }
+            }
             Ok(Some(entity))
                 if matches!(
                     entity.phase,
@@ -1513,32 +1537,8 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
                         | Motion::FlyMissile
                 ) =>
             {
-                let result = run_think_with_rebind(
-                    host,
-                    &functions,
-                    entity.entity,
-                    |owner| {
-                        (owner == module).then_some(ThinkFrame::Seconds {
-                            now: time.seconds(),
-                            step,
-                        })
-                    },
-                    |host, _| {
-                        let row = host.module_row(module)?;
-                        let Program::QuakeC(qc) = &row.request.program else {
-                            return None;
-                        };
-                        qc.vm
-                            .bound_entity(&host.runtime.server.entities, entity.native)
-                            .ok()
-                            .flatten()
-                    },
-                );
-                if let Some(row) = host.module_row_mut(module) {
-                    row.counts.rejected += u64::from(result.rejected);
-                }
-                if result.rejected == 0
-                    && let Some(current) = result.current_entity
+                if let Some(current) =
+                    entity_think(host, module, &functions, &entity, entity.entity, time, step)
                 {
                     let execution = match entity.phase {
                         Motion::Noclip => motion::noclip(host, module, current, motion_step),
@@ -1569,6 +1569,44 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
             }
         }
     }
+}
+
+fn entity_think(
+    host: &mut FrameHost,
+    module: ModuleId,
+    functions: &FunctionTable<FrameHost>,
+    source: &quakec::PhysicsEntity,
+    current: EntityId,
+    time: ThinkTime,
+    step: f64,
+) -> Option<EntityId> {
+    let result = run_think_with_rebind(
+        host,
+        functions,
+        current,
+        |owner| {
+            (owner == module).then_some(ThinkFrame::Seconds {
+                now: time.seconds(),
+                step,
+            })
+        },
+        |host, _| {
+            let row = host.module_row(module)?;
+            let Program::QuakeC(qc) = &row.request.program else {
+                return None;
+            };
+            qc.vm
+                .bound_entity(&host.runtime.server.entities, source.native)
+                .ok()
+                .flatten()
+        },
+    );
+    if let Some(row) = host.module_row_mut(module) {
+        row.counts.rejected += u64::from(result.rejected);
+    }
+    (result.rejected == 0)
+        .then_some(result.current_entity)
+        .flatten()
 }
 
 fn edit_quakec<R>(

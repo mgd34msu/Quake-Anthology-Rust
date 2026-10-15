@@ -2,9 +2,10 @@
 use crate::physics::Step;
 use qa_core::{
     math,
-    primitives::{RuleSetId, Vec3},
+    primitives::{Body, MotionWrite, RuleSetId, Vec3},
 };
-use qa_world::collision::TraceError;
+use qa_gameplay::rules::sweep::{LegacySweepRules, player_sweep};
+use qa_world::collision::{Trace, TraceError};
 
 /// Compute the native plane response before any aliased output stores.
 /// Q3 divides nonnegative dot products; legacy overbounce always multiplies.
@@ -35,15 +36,67 @@ pub(crate) fn clip(velocity: Vec3, normal: Vec3, rules: RuleSetId) -> Vec3 {
     } else {
         1.0
     };
-    let backoff = clip_backoff(velocity, normal, overbounce, arena);
+    clip_vector(velocity, normal, overbounce, arena, (!arena).then_some(0.1))
+}
+
+fn clip_vector(
+    velocity: Vec3,
+    normal: Vec3,
+    overbounce: f32,
+    reciprocal_on_positive: bool,
+    stop_epsilon: Option<f32>,
+) -> Vec3 {
+    let backoff = clip_backoff(velocity, normal, overbounce, reciprocal_on_positive);
     Vec3(std::array::from_fn(|axis| {
-        math::clip_component(
-            velocity.0[axis],
-            normal.0[axis],
-            backoff,
-            (!arena).then_some(0.1),
-        )
+        math::clip_component(velocity.0[axis], normal.0[axis], backoff, stop_epsilon)
     }))
+}
+
+pub trait SweepHost {
+    type Error;
+    type Hit: Copy;
+
+    fn read(&mut self) -> Result<Option<Body>, Self::Error>;
+    fn write(&mut self, field: MotionWrite, value: f32) -> Result<(), Self::Error>;
+    fn trace(&mut self, start: Vec3, end: Vec3) -> Result<(Trace, Self::Hit), Self::Error>;
+    fn contact(&mut self, trace: &Trace, hit: Self::Hit, bits: u8) -> Result<(), Self::Error>;
+    fn recover_position(&mut self, position: Vec3) -> Result<Option<Vec3>, Self::Error>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SweepExit {
+    Complete,
+    Still,
+    Reversed,
+    AllSolid,
+    PlaneCapacity,
+    NoCrease,
+    Removed,
+}
+impl SweepExit {
+    pub const fn restores_timed_velocity(self) -> bool {
+        matches!(self, Self::Complete | Self::Still | Self::Reversed)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SweepResult {
+    pub blocked: u8,
+    pub exit: SweepExit,
+}
+
+fn write_vector<H: SweepHost>(
+    host: &mut H,
+    field: impl Fn(usize) -> MotionWrite,
+    value: Vec3,
+) -> Result<bool, H::Error> {
+    for axis in 0..3 {
+        host.write(field(axis), value.0[axis])?;
+        if host.read()?.is_none() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -90,132 +143,326 @@ mod clip_tests {
     }
 }
 
-fn legacy_slide(step: &mut Step<'_>) -> Result<u8, TraceError> {
-    let rules = step.parameters.rules;
-    let primal = step.player.body.velocity;
+/// One bounded sweep over the caller's current body. Native stores and
+/// callbacks may refresh aliased fields or retire the captured lifetime.
+pub fn sweep<H: SweepHost>(
+    host: &mut H,
+    dt: f32,
+    rules: &LegacySweepRules,
+) -> Result<SweepResult, H::Error> {
+    let Some(body) = host.read()? else {
+        return Ok(SweepResult {
+            blocked: 0,
+            exit: SweepExit::Removed,
+        });
+    };
+    let primal = body.velocity;
     let mut original = primal;
     let mut planes = [Vec3::default(); 5];
     let mut count = 0;
-    let mut remaining = step.dt;
+    let mut remaining = dt;
     let mut blocked = 0;
+    let mut exit = SweepExit::Complete;
     for _ in 0..4 {
-        if step.nq() && step.player.body.velocity == Vec3::default() {
+        let Some(body) = host.read()? else {
+            return Ok(SweepResult {
+                blocked,
+                exit: SweepExit::Removed,
+            });
+        };
+        if rules.stop_when_still && body.velocity == Vec3::default() {
+            exit = SweepExit::Still;
             break;
         }
-        let start = step.player.body.position;
-        let end = start + step.player.body.velocity * remaining;
-        let mut tr = step.trace(start, end)?;
-        if tr.all_solid || step.qw() && tr.start_solid {
-            if step.classic() || step.rr() {
-                step.player.body.velocity.0[2] = 0.0;
+        let start = body.position;
+        let end = if rules.time_first {
+            Vec3(std::array::from_fn(|axis| {
+                start.0[axis] + remaining * body.velocity.0[axis]
+            }))
+        } else {
+            start + body.velocity * remaining
+        };
+        let (mut tr, hit) = host.trace(start, end)?;
+        if tr.all_solid || rules.stop_start_solid && tr.start_solid {
+            let live = if rules.vertical_solid_stop {
+                host.write(MotionWrite::Velocity(2), 0.0)?;
+                host.read()?.is_some()
             } else {
-                step.player.body.velocity = Vec3::default();
+                write_vector(host, MotionWrite::Velocity, Vec3::default())?
+            };
+            if !live {
+                return Ok(SweepResult {
+                    blocked: 3,
+                    exit: SweepExit::Removed,
+                });
             }
-            if step.rr() {
-                step.contact(&tr);
+            if rules.contact_all_solid {
+                host.contact(&tr, hit, 3)?;
+                if host.read()?.is_none() {
+                    return Ok(SweepResult {
+                        blocked: 3,
+                        exit: SweepExit::Removed,
+                    });
+                }
             }
-            return Ok(3);
+            return Ok(SweepResult {
+                blocked: 3,
+                exit: SweepExit::AllSolid,
+            });
         }
-        if step.rr()
+        if rules.secondary_plane
             && let Some(secondary) = tr.secondary_plane
         {
-            let a = clip(step.player.body.velocity, tr.plane.normal, rules);
-            let b = clip(step.player.body.velocity, secondary.normal, rules);
-            // KEX selects the secondary plane if any primary-clipped
-            // component is strictly smaller; this is not a length comparison.
+            let Some(body) = host.read()? else {
+                return Ok(SweepResult {
+                    blocked,
+                    exit: SweepExit::Removed,
+                });
+            };
+            let a = clip_vector(
+                body.velocity,
+                tr.plane.normal,
+                rules.overbounce,
+                false,
+                Some(rules.stop_epsilon),
+            );
+            let b = clip_vector(
+                body.velocity,
+                secondary.normal,
+                rules.overbounce,
+                false,
+                Some(rules.stop_epsilon),
+            );
             if (0..3).any(|axis| a.0[axis].abs() < b.0[axis].abs()) {
                 tr.plane = secondary;
                 tr.surface_id = tr.secondary_surface_id;
-                // The shared collision result retains the native primary
-                // side's surface flags in both KEX contact slots.
+                // Both KEX contact slots retain the primary surface flags.
             }
         }
         if tr.fraction > 0.0 {
-            step.player.body.position = tr.end;
+            if !write_vector(host, MotionWrite::Origin, tr.end)? {
+                return Ok(SweepResult {
+                    blocked,
+                    exit: SweepExit::Removed,
+                });
+            }
             count = 0;
-            if step.nq() {
-                original = step.player.body.velocity;
+            if rules.reset_original {
+                let Some(body) = host.read()? else {
+                    return Ok(SweepResult {
+                        blocked,
+                        exit: SweepExit::Removed,
+                    });
+                };
+                original = body.velocity;
             }
         }
         if tr.fraction == 1.0 {
             break;
         }
-        step.contact(&tr);
+        let mut hit_bits = 0;
         if tr.plane.normal.0[2] > 0.7 {
-            blocked |= 1;
-            if step.nq() && tr.brush_solid {
-                step.player.movement.grounded = true;
-                step.player.movement.ground = tr.entity;
-                step.player.movement.ground_normal = tr.plane.normal;
-                step.player.movement.ground_surface = tr.surface;
-            }
+            hit_bits |= 1;
         }
         if tr.plane.normal.0[2] == 0.0 {
-            blocked |= 2;
+            hit_bits |= 2;
         }
+        blocked |= hit_bits;
+        host.contact(&tr, hit, hit_bits)?;
+        let Some(body) = host.read()? else {
+            return Ok(SweepResult {
+                blocked,
+                exit: SweepExit::Removed,
+            });
+        };
         remaining -= remaining * tr.fraction;
         if count == 5 {
-            step.player.body.velocity = Vec3::default();
-            return Ok(3);
+            let live = write_vector(host, MotionWrite::Velocity, Vec3::default())?;
+            return Ok(SweepResult {
+                blocked: 3,
+                exit: if live {
+                    SweepExit::PlaneCapacity
+                } else {
+                    SweepExit::Removed
+                },
+            });
         }
-        if step.rr()
+        if rules.duplicate_plane
             && planes[..count]
                 .iter()
                 .any(|&p| p.dot(tr.plane.normal) > 0.99)
         {
-            step.player.body.position.0[0] += tr.plane.normal.0[0] * 0.01;
-            step.player.body.position.0[1] += tr.plane.normal.0[1] * 0.01;
-            if step.parameters.special.recover_stuck
-                && let Some(position) = step.recover_position(step.player.body.position)?
+            for axis in 0..2 {
+                let Some(body) = host.read()? else {
+                    return Ok(SweepResult {
+                        blocked,
+                        exit: SweepExit::Removed,
+                    });
+                };
+                host.write(
+                    MotionWrite::Origin(axis),
+                    body.position.0[axis] + tr.plane.normal.0[axis] * 0.01,
+                )?;
+                if host.read()?.is_none() {
+                    return Ok(SweepResult {
+                        blocked,
+                        exit: SweepExit::Removed,
+                    });
+                }
+            }
+            let Some(body) = host.read()? else {
+                return Ok(SweepResult {
+                    blocked,
+                    exit: SweepExit::Removed,
+                });
+            };
+            if let Some(position) = host.recover_position(body.position)?
+                && !write_vector(host, MotionWrite::Origin, position)?
             {
-                step.player.body.position = position;
+                return Ok(SweepResult {
+                    blocked,
+                    exit: SweepExit::Removed,
+                });
             }
             continue;
         }
         planes[count] = tr.plane.normal;
         count += 1;
         let mut accepted = false;
-        let mut candidate = step.player.body.velocity;
+        let mut candidate = body.velocity;
         for i in 0..count {
-            candidate = clip(
-                if step.classic() || step.rr() {
+            candidate = clip_vector(
+                if rules.clip_current {
                     candidate
                 } else {
                     original
                 },
                 planes[i],
-                rules,
+                rules.overbounce,
+                false,
+                Some(rules.stop_epsilon),
             );
-            if (0..count).all(|j| i == j || candidate.dot(planes[j]) >= 0.0) {
+            if (0..count).all(|j| {
+                i == j || {
+                    let dot = candidate.dot(planes[j]);
+                    if rules.reject_negative_only {
+                        !(dot < 0.0)
+                    } else {
+                        dot >= 0.0
+                    }
+                }
+            }) {
                 accepted = true;
                 break;
             }
         }
         if !accepted {
             if count != 2 {
-                step.player.body.velocity = Vec3::default();
-                return Ok(7);
+                let live = write_vector(host, MotionWrite::Velocity, Vec3::default())?;
+                return Ok(SweepResult {
+                    blocked: 7,
+                    exit: if live {
+                        SweepExit::NoCrease
+                    } else {
+                        SweepExit::Removed
+                    },
+                });
             }
             let direction = math::cross(planes[0], planes[1]);
             candidate = direction
-                * direction.dot(if step.nq() {
-                    step.player.body.velocity
+                * direction.dot(if rules.crease_current {
+                    body.velocity
                 } else {
                     candidate
                 });
         }
-        step.player.body.velocity = candidate;
-        if candidate.dot(primal) <= 0.0 {
-            step.player.body.velocity = Vec3::default();
+        if !write_vector(host, MotionWrite::Velocity, candidate)? {
+            return Ok(SweepResult {
+                blocked,
+                exit: SweepExit::Removed,
+            });
+        }
+        let Some(body) = host.read()? else {
+            return Ok(SweepResult {
+                blocked,
+                exit: SweepExit::Removed,
+            });
+        };
+        if body.velocity.dot(primal) <= 0.0 {
+            if !write_vector(host, MotionWrite::Velocity, Vec3::default())? {
+                return Ok(SweepResult {
+                    blocked,
+                    exit: SweepExit::Removed,
+                });
+            }
+            exit = SweepExit::Reversed;
             break;
         }
     }
-    if step.qw() && step.player.movement.water_jump_seconds != 0.0
-        || !step.nq() && !step.qw() && step.player.movement.remaining_ms != 0
+    Ok(SweepResult { blocked, exit })
+}
+
+struct PlayerSweep<'a, 'state> {
+    step: &'a mut Step<'state>,
+    ground_on_brush: bool,
+}
+impl SweepHost for PlayerSweep<'_, '_> {
+    type Error = TraceError;
+    type Hit = ();
+
+    fn read(&mut self) -> Result<Option<Body>, TraceError> {
+        Ok(Some(self.step.player.body))
+    }
+    fn write(&mut self, field: MotionWrite, value: f32) -> Result<(), TraceError> {
+        match field {
+            MotionWrite::Origin(axis) => self.step.player.body.position.0[axis] = value,
+            MotionWrite::Velocity(axis) => self.step.player.body.velocity.0[axis] = value,
+            MotionWrite::Angles(_) | MotionWrite::AngularVelocity(_) => {
+                return Err(TraceError::Scratch);
+            }
+        }
+        Ok(())
+    }
+    fn trace(&mut self, start: Vec3, end: Vec3) -> Result<(Trace, ()), TraceError> {
+        self.step.trace(start, end).map(|trace| (trace, ()))
+    }
+    fn contact(&mut self, trace: &Trace, (): (), bits: u8) -> Result<(), TraceError> {
+        self.step.contact(trace);
+        if self.ground_on_brush && bits & 1 != 0 && trace.brush_solid {
+            self.step.player.movement.grounded = true;
+            self.step.player.movement.ground = trace.entity;
+            self.step.player.movement.ground_normal = trace.plane.normal;
+            self.step.player.movement.ground_surface = trace.surface;
+        }
+        Ok(())
+    }
+    fn recover_position(&mut self, position: Vec3) -> Result<Option<Vec3>, TraceError> {
+        if self.step.parameters.special.recover_stuck {
+            self.step.recover_position(position)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+fn legacy_slide(step: &mut Step<'_>, rules: &LegacySweepRules) -> Result<u8, TraceError> {
+    let primal = step.player.body.velocity;
+    let dt = step.dt;
+    let result = sweep(
+        &mut PlayerSweep {
+            step,
+            ground_on_brush: rules.ground_on_brush,
+        },
+        dt,
+        rules,
+    )?;
+    if result.exit.restores_timed_velocity()
+        && (step.qw() && step.player.movement.water_jump_seconds != 0.0
+            || !step.nq() && !step.qw() && step.player.movement.remaining_ms != 0)
     {
         step.player.body.velocity = primal;
     }
-    Ok(blocked)
+    Ok(result.blocked)
 }
 fn arena_slide(step: &mut Step<'_>, gravity: bool) -> Result<u8, TraceError> {
     let mut primal = step.player.body.velocity;
@@ -306,10 +553,10 @@ fn arena_slide(step: &mut Step<'_>, gravity: bool) -> Result<u8, TraceError> {
     Ok(blocked)
 }
 pub(crate) fn slide(step: &mut Step<'_>, gravity: bool) -> Result<u8, TraceError> {
-    if step.arena() {
-        arena_slide(step, gravity)
+    if let Some(rules) = player_sweep(step.parameters.rules) {
+        legacy_slide(step, &rules)
     } else {
-        legacy_slide(step)
+        arena_slide(step, gravity)
     }
 }
 fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {

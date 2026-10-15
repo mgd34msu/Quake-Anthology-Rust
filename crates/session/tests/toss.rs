@@ -2,16 +2,20 @@ use qa_core::primitives::{
     BodyAttachment, BodyFollow, Bounds, EntityId, LinkOrder, ModuleId, NativeEntityRef,
     ResourceNamespace, RuleSetId, ThinkTime, Vec3,
 };
-use qa_gameplay::rules::motion::toss_rules;
+use qa_gameplay::rules::{
+    motion::{step_rules, toss_rules},
+    sweep::entity_sweep,
+};
 use qa_session::physics::{
-    MotionState, MotionWrite, PhysicsError, TossFrame, TossHost, TossTrace, check_velocity, toss,
-    water_transition,
+    MotionFrame, MotionHost, MotionState, MotionTrace, MotionWrite, PhysicsError, check_velocity,
+    step_fall, toss, water_transition,
 };
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent},
     collision::{QuakeTraceKind, Trace},
-    entities::{AllocationPolicy, EntityTable},
+    entities::{AllocationPolicy, EntityTable, FullTable},
 };
+use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Event {
@@ -25,6 +29,7 @@ enum Event {
     Impact(Option<EntityId>),
     Ground(Option<NativeEntityRef>),
     Water,
+    Sound,
 }
 
 struct Host {
@@ -32,12 +37,19 @@ struct Host {
     entity: EntityId,
     state: MotionState,
     scale: Option<f32>,
-    trace: Option<TossTrace>,
+    trace: Option<MotionTrace>,
     events: Vec<Event>,
     remove_on_link: bool,
     bounce_on_impact: bool,
     shifted_clip: bool,
     remove_after_write: Option<MotionWrite>,
+    traces: VecDeque<MotionTrace>,
+    impact_velocities: VecDeque<Option<Vec3>>,
+    impact_flags: Vec<u32>,
+    origin_velocity: Option<Vec3>,
+    remove_on_impact: bool,
+    reuse_on_impact: bool,
+    clear_ground_on_link: bool,
 }
 
 impl Host {
@@ -67,12 +79,34 @@ impl Host {
             bounce_on_impact: false,
             shifted_clip: false,
             remove_after_write: None,
+            traces: VecDeque::new(),
+            impact_velocities: VecDeque::new(),
+            impact_flags: Vec::new(),
+            origin_velocity: None,
+            remove_on_impact: false,
+            reuse_on_impact: false,
+            clear_ground_on_link: false,
         }
     }
 
-    fn run(&mut self, rules: RuleSetId, frame: TossFrame) -> Result<(), PhysicsError> {
+    fn run(&mut self, rules: RuleSetId, frame: MotionFrame) -> Result<(), PhysicsError> {
         let entity = self.entity;
         toss(self, entity, frame, &toss_rules(rules).unwrap())
+    }
+
+    fn fall(
+        &mut self,
+        rules: RuleSetId,
+        frame: MotionFrame,
+    ) -> Result<Option<EntityId>, PhysicsError> {
+        let entity = self.entity;
+        step_fall(
+            self,
+            entity,
+            frame,
+            &step_rules(rules).unwrap(),
+            &entity_sweep(rules).unwrap(),
+        )
     }
 
     fn collision(&mut self, normal: Vec3, end: Vec3) {
@@ -89,14 +123,14 @@ impl Host {
         trace.fraction = 0.5;
         trace.plane.normal = normal;
         trace.entity = Some(target);
-        self.trace = Some(TossTrace {
+        self.trace = Some(MotionTrace {
             trace,
             ground: NativeEntityRef::native(ResourceNamespace::Module(ModuleId(3)), 2),
         });
     }
 }
 
-impl TossHost for Host {
+impl MotionHost for Host {
     type Error = PhysicsError;
     fn entities(&mut self) -> &mut EntityTable {
         &mut self.entities
@@ -140,7 +174,14 @@ impl TossHost for Host {
                     .ok_or(PhysicsError::AngularVelocity)?
                     .0[axis] = value
             }
-            MotionWrite::Origin(axis) => self.entities.columns.position[slot].0[axis] = value,
+            MotionWrite::Origin(axis) => {
+                self.entities.columns.position[slot].0[axis] = value;
+                if axis == 2
+                    && let Some(velocity) = self.origin_velocity.take()
+                {
+                    self.entities.columns.velocity[slot] = velocity;
+                }
+            }
             MotionWrite::Velocity(axis) => {
                 self.entities.columns.velocity[slot].0[axis] = value;
                 if self.shifted_clip && axis == 0 {
@@ -170,26 +211,60 @@ impl TossHost for Host {
         _: EntityId,
         end: Vec3,
         kind: QuakeTraceKind,
-    ) -> Result<TossTrace, Self::Error> {
+    ) -> Result<MotionTrace, Self::Error> {
         self.events.push(Event::Trace(kind, end));
-        Ok(self.trace.unwrap_or(TossTrace {
-            trace: Trace::clear(end),
-            ground: None,
-        }))
+        Ok(self
+            .traces
+            .pop_front()
+            .or(self.trace)
+            .unwrap_or(MotionTrace {
+                trace: Trace::clear(end),
+                ground: None,
+            }))
     }
     fn relink(&mut self, entity: EntityId) -> Result<Option<EntityId>, Self::Error> {
         self.events.push(Event::Link);
         if self.remove_on_link {
             assert!(self.entities.release(entity, ThinkTime::Seconds(1.0)));
         }
+        if self.clear_ground_on_link {
+            self.state.flags = Some(0);
+        }
         Ok(self.entities.resolve(entity).map(|_| entity))
     }
     fn impact(
         &mut self,
         entity: Option<EntityId>,
-        _: &TossTrace,
+        _: &MotionTrace,
     ) -> Result<Option<EntityId>, Self::Error> {
         self.events.push(Event::Impact(entity));
+        self.impact_flags.push(self.state.flags.unwrap_or(0));
+        if let Some(entity) = entity {
+            if self.remove_on_impact || self.reuse_on_impact {
+                assert!(self.entities.release(entity, ThinkTime::Seconds(1.0)));
+                if !self.reuse_on_impact {
+                    return Ok(None);
+                }
+                let replacement = self
+                    .entities
+                    .allocate(
+                        ThinkTime::Seconds(1.0),
+                        ModuleId(3),
+                        AllocationPolicy {
+                            full: FullTable::OverwriteOwned(entity),
+                            ..AllocationPolicy::EDICT
+                        },
+                    )
+                    .unwrap()
+                    .id;
+                self.entity = replacement;
+                self.reuse_on_impact = false;
+                return Ok(Some(replacement));
+            }
+            if let Some(Some(velocity)) = self.impact_velocities.pop_front() {
+                self.entities.columns.velocity[entity.slot as usize] = velocity;
+            }
+        }
         if self.bounce_on_impact {
             self.state.move_type = 10.0;
         }
@@ -199,13 +274,18 @@ impl TossHost for Host {
         self.events.push(Event::Ground(ground));
         Ok(())
     }
+    fn sound(&mut self, _: EntityId, name: &[u8]) -> Result<(), Self::Error> {
+        assert_eq!(name, b"demon/dland2.wav");
+        self.events.push(Event::Sound);
+        Ok(())
+    }
     fn water_transition(&mut self, _: EntityId) -> Result<(), Self::Error> {
         self.events.push(Event::Water);
         Ok(())
     }
 }
 
-const FRAME: TossFrame = TossFrame {
+const FRAME: MotionFrame = MotionFrame {
     elapsed: 0.013271937412,
     gravity: 800.0,
     max_velocity: 2000.0,
@@ -460,5 +540,254 @@ fn water_transition_preserves_spawn_and_dry_native_values() {
             (actual.splash, actual.water_type, actual.water_level),
             expected
         );
+    }
+}
+
+#[test]
+fn step_applies_gravity_before_velocity_limits_without_angular_fields() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut host = Host::new(4.0);
+        let slot = host.entity.slot as usize;
+        host.entities.columns.angular_velocity[slot] = None;
+        host.state.solid = None;
+        let frame = MotionFrame {
+            elapsed: 1.0,
+            gravity: 800.0,
+            max_velocity: 100.0,
+        };
+        assert_eq!(host.fall(rules, frame).unwrap(), Some(host.entity));
+        assert_eq!(
+            host.entities.columns.velocity[slot],
+            Vec3([0.0, 0.0, -100.0])
+        );
+        assert!(host.events.contains(&Event::Trace(
+            QuakeTraceKind::Normal,
+            Vec3([0.0, 0.0, -100.0])
+        )));
+        let gravity = host
+            .events
+            .iter()
+            .position(|event| *event == Event::Write(MotionWrite::Velocity(2), -800.0))
+            .unwrap();
+        let checking = host
+            .events
+            .iter()
+            .position(|event| *event == Event::Check)
+            .unwrap();
+        assert!(gravity < checking);
+        assert!(!host.events.contains(&Event::Prepare));
+        assert!(!host.events.contains(&Event::Water));
+        assert_eq!(host.events.last(), Some(&Event::Link));
+    }
+}
+
+#[test]
+fn step_ground_fly_and_swim_skip_only_the_falling_phase() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for flags in [512, 1, 2, 515] {
+            let mut host = Host::new(4.0);
+            host.state.flags = Some(flags);
+            host.state.solid = None;
+            host.entities.columns.angular_velocity[host.entity.slot as usize] = None;
+            assert_eq!(host.fall(rules, FRAME).unwrap(), Some(host.entity));
+            assert!(host.events.is_empty());
+        }
+    }
+}
+
+#[test]
+fn step_grounding_precedes_impact_and_landing_sound_follows_trigger_relink() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for brush in [false, true] {
+            let mut host = Host::new(4.0);
+            host.entities.columns.velocity[host.entity.slot as usize] = Vec3([0.0, 0.0, -81.0]);
+            host.collision(Vec3([0.0, 0.0, 1.0]), Vec3::default());
+            host.trace.as_mut().unwrap().trace.brush_solid = brush;
+            // One collision then a clear trace, including QW's zero-speed trace.
+            host.traces.push_back(host.trace.take().unwrap());
+            host.fall(rules, FRAME).unwrap();
+            assert_eq!(host.impact_flags, [if brush { 512 } else { 0 }]);
+            let impact = host
+                .events
+                .iter()
+                .position(|event| matches!(event, Event::Impact(_)))
+                .unwrap();
+            let relink = host
+                .events
+                .iter()
+                .position(|event| *event == Event::Link)
+                .unwrap();
+            assert!(impact < relink);
+            if brush {
+                let ground = host
+                    .events
+                    .iter()
+                    .position(|event| matches!(event, Event::Ground(_)))
+                    .unwrap();
+                assert!(ground < impact);
+                assert_eq!(&host.events[relink..], &[Event::Link, Event::Sound]);
+            } else {
+                assert!(!host.events.contains(&Event::Sound));
+                assert!(
+                    !host
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, Event::Ground(_)))
+                );
+            }
+            assert!(!host.events.contains(&Event::Water));
+        }
+    }
+}
+
+#[test]
+fn step_landing_checks_current_flags_after_triggers_and_captures_speed_before_gravity() {
+    for (speed, clear_ground, sound) in [
+        (-80.0, false, false),
+        (-81.0, true, false),
+        (-81.0, false, true),
+    ] {
+        let mut host = Host::new(4.0);
+        host.entities.columns.velocity[host.entity.slot as usize].0[2] = speed;
+        host.collision(Vec3([0.0, 0.0, 1.0]), Vec3::default());
+        host.clear_ground_on_link = clear_ground;
+        host.fall(RuleSetId::Quake, FRAME).unwrap();
+        assert_eq!(host.events.contains(&Event::Sound), sound);
+    }
+}
+
+#[test]
+fn step_qw_entity_sweep_does_not_inherit_player_startsolid_stop() {
+    use qa_gameplay::rules::sweep::player_sweep;
+    for player in [false, true] {
+        let mut host = Host::new(4.0);
+        let slot = host.entity.slot as usize;
+        let initial = Vec3([100.0, 20.0, 0.0]);
+        host.entities.columns.velocity[slot] = initial;
+        let end = Vec3([5.0, 6.0, 7.0]);
+        let mut trace = Trace::clear(end);
+        trace.start_solid = true;
+        host.trace = Some(MotionTrace {
+            trace,
+            ground: None,
+        });
+        let policy = if player {
+            player_sweep(RuleSetId::QuakeWorld)
+        } else {
+            entity_sweep(RuleSetId::QuakeWorld)
+        }
+        .unwrap();
+        let entity = host.entity;
+        step_fall(
+            &mut host,
+            entity,
+            MotionFrame {
+                gravity: 0.0,
+                ..FRAME
+            },
+            &step_rules(RuleSetId::QuakeWorld).unwrap(),
+            &policy,
+        )
+        .unwrap();
+        assert_eq!(
+            host.entities.columns.position[slot],
+            if player { Vec3::default() } else { end }
+        );
+        assert_eq!(
+            host.entities.columns.velocity[slot],
+            if player { Vec3::default() } else { initial }
+        );
+    }
+}
+
+#[test]
+fn step_refreshes_original_velocity_after_aliased_origin_stores() {
+    let mut host = Host::new(4.0);
+    let slot = host.entity.slot as usize;
+    host.entities.columns.velocity[slot] = Vec3([100.0, 200.0, 0.0]);
+    host.origin_velocity = Some(Vec3([50.0, 25.0, 0.0]));
+    host.collision(Vec3([1.0, 0.0, 0.0]), Vec3([2.0, 3.0, 4.0]));
+    host.traces.push_back(host.trace.take().unwrap());
+    host.fall(
+        RuleSetId::Quake,
+        MotionFrame {
+            gravity: 0.0,
+            ..FRAME
+        },
+    )
+    .unwrap();
+    assert_eq!(host.entities.columns.velocity[slot], Vec3([0.0, 25.0, 0.0]));
+}
+
+#[test]
+fn step_crease_uses_current_velocity_after_the_second_impact() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut host = Host::new(4.0);
+        let slot = host.entity.slot as usize;
+        host.entities.columns.velocity[slot] = Vec3([-100.0, -100.0, 30.0]);
+        host.collision(Vec3([1.0, 0.0, 0.0]), Vec3::default());
+        let first = host.trace.take().unwrap();
+        let second = MotionTrace {
+            trace: Trace {
+                fraction: 0.0,
+                plane: qa_core::primitives::Plane::oriented(Vec3([-0.6, 0.8, 0.0]), 0.0),
+                ..first.trace
+            },
+            ..first
+        };
+        host.traces.extend([first, second]);
+        host.impact_velocities
+            .extend([None, Some(Vec3([0.0, -100.0, 77.0]))]);
+        host.fall(
+            rules,
+            MotionFrame {
+                gravity: 0.0,
+                ..FRAME
+            },
+        )
+        .unwrap();
+        let direction = qa_core::math::cross(first.trace.plane.normal, second.trace.plane.normal);
+        let expected = direction * direction.dot(Vec3([0.0, -100.0, 77.0]));
+        assert_eq!(
+            host.entities.columns.velocity[slot].0.map(f32::to_bits),
+            expected.0.map(f32::to_bits)
+        );
+        assert_eq!(host.impact_flags.len(), 2);
+    }
+}
+
+#[test]
+fn step_impact_removal_stops_and_native_slot_reuse_rebinds_explicitly() {
+    for reuse in [false, true] {
+        let mut host = Host::new(4.0);
+        let original = host.entity;
+        host.entities.columns.velocity[original.slot as usize] = Vec3([-100.0, 200.0, 0.0]);
+        host.collision(Vec3([1.0, 0.0, 0.0]), Vec3::default());
+        host.traces.push_back(host.trace.take().unwrap());
+        host.remove_on_impact = true;
+        host.reuse_on_impact = reuse;
+        let current = host
+            .fall(
+                RuleSetId::Quake,
+                MotionFrame {
+                    gravity: 0.0,
+                    ..FRAME
+                },
+            )
+            .unwrap();
+        assert_eq!(host.entities.resolve(original), None);
+        if reuse {
+            let current = current.unwrap();
+            assert_eq!(current.slot, original.slot);
+            assert_ne!(current.generation, original.generation);
+            assert_eq!(
+                host.entities.columns.velocity[current.slot as usize],
+                Vec3([0.0, 200.0, 0.0])
+            );
+            assert_eq!(host.events.last(), Some(&Event::Link));
+        } else {
+            assert_eq!(current, None);
+            assert!(!host.events.contains(&Event::Link));
+        }
     }
 }

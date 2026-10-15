@@ -12,6 +12,9 @@ fn main() -> Result<(), &'static str> {
         let mut player = PlayerState {
             movement_rules: rules,
             trace_rules: rules,
+            // Match STAT_HEALTH in the native fixture. Q3 preserves dead
+            // players' view angles even while the test keeps PM_NORMAL.
+            health: 100,
             ..Default::default()
         };
         qa_movement::set_bounds(&mut player);

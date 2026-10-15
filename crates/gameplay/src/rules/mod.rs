@@ -4,6 +4,7 @@ pub mod feedback;
 mod model;
 pub mod movement;
 pub mod motion;
+pub mod sweep;
 pub use model::model_rules;
 pub mod presentation;
 pub mod q1;

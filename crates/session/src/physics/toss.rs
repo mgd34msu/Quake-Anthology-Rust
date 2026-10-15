@@ -18,7 +18,7 @@ pub struct MotionState {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct TossFrame {
+pub struct MotionFrame {
     pub elapsed: f64,
     pub gravity: f32,
     pub max_velocity: f32,
@@ -27,7 +27,7 @@ pub struct TossFrame {
 /// The weak native ground reference is captured before touch callbacks can free
 /// or reuse its common lifetime. Foreign native identities stay explicit.
 #[derive(Clone, Copy, Debug)]
-pub struct TossTrace {
+pub struct MotionTrace {
     pub trace: Trace,
     pub ground: Option<NativeEntityRef>,
 }
@@ -35,7 +35,7 @@ pub struct TossTrace {
 /// Each method ends its entity/VM borrows before returning. Relink performs
 /// trigger callbacks; impact then performs both current solid/touch checks,
 /// including the target's touch when a trigger has removed the moving entity.
-pub trait TossHost {
+pub trait MotionHost {
     type Error: From<PhysicsError>;
     fn entities(&mut self) -> &mut EntityTable;
     fn state(&mut self, entity: EntityId) -> Result<MotionState, Self::Error>;
@@ -54,18 +54,19 @@ pub trait TossHost {
         entity: EntityId,
         end: Vec3,
         kind: QuakeTraceKind,
-    ) -> Result<TossTrace, Self::Error>;
+    ) -> Result<MotionTrace, Self::Error>;
     fn relink(&mut self, entity: EntityId) -> Result<Option<EntityId>, Self::Error>;
     fn impact(
         &mut self,
         entity: Option<EntityId>,
-        trace: &TossTrace,
+        trace: &MotionTrace,
     ) -> Result<Option<EntityId>, Self::Error>;
     fn ground(
         &mut self,
         entity: EntityId,
         ground: Option<NativeEntityRef>,
     ) -> Result<(), Self::Error>;
+    fn sound(&mut self, entity: EntityId, name: &[u8]) -> Result<(), Self::Error>;
     /// Read contents at the surviving entity's current origin and apply the
     /// shared water_transition decision: sound, type store, then level store.
     fn water_transition(&mut self, entity: EntityId) -> Result<(), Self::Error>;
@@ -74,10 +75,10 @@ pub trait TossHost {
 /// The provider has already run this entity's think at its native phase and
 /// rebound its current lifetime. Motion classification remains that captured
 /// phase; raw movetype is reread for gravity, trace filtering and bounce.
-pub fn toss<H: TossHost>(
+pub fn toss<H: MotionHost>(
     host: &mut H,
     mut entity: EntityId,
-    frame: TossFrame,
+    frame: MotionFrame,
     rules: &TossRules,
 ) -> Result<(), H::Error> {
     if rules.clear_ground_on_rise {
@@ -101,20 +102,7 @@ pub fn toss<H: TossHost>(
     host.check_velocity(entity, frame.max_velocity)?;
     let mode = host.state(entity)?.move_type;
     if rules.gravity_applies(mode) {
-        let scale = if rules.entity_gravity {
-            host.gravity_scale(entity)?
-                .filter(|value| *value != 0.0)
-                .unwrap_or(1.0)
-        } else {
-            1.0
-        };
-        let entities = host.entities();
-        let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
-        let velocity = entities.columns.velocity[slot].0[2];
-        // Native entity/world gravity multiply in binary32, before the double
-        // frame duration promotes the subtraction and its final scalar store.
-        let value = (f64::from(velocity) - f64::from(scale * frame.gravity) * frame.elapsed) as f32;
-        host.write_motion(entity, MotionWrite::Velocity(2), value)?;
+        super::add_gravity(host, entity, frame, &rules.gravity)?;
     }
     host.prepare_motion(entity)?;
     math::vector_ma(
@@ -131,14 +119,9 @@ pub fn toss<H: TossHost>(
     )?;
     let entities = host.entities();
     let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
-    // AreaGrid owns attached positions. Keep their angular/velocity and native
-    // contact phases, but do not integrate a second displacement after transport.
-    let end = if entities.attachment(entity).is_some() {
-        entities.columns.position[slot]
-    } else {
-        let movement = entities.columns.velocity[slot] * frame.elapsed as f32;
-        entities.columns.position[slot] + movement
-    };
+    let movement = entities.columns.velocity[slot] * frame.elapsed as f32;
+    let end = entities.columns.position[slot] + movement;
+    let end = super::positional_end(entities, entity, end)?;
     let state = host.state(entity)?;
     let kind = if rules.is_missile(state.move_type) {
         QuakeTraceKind::Missile

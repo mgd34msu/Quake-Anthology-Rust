@@ -6,7 +6,7 @@ use qa_compat::{
 };
 use qa_core::primitives::{EntityId, ModuleId, NativeEntityRef, ThinkTime, Vec3};
 use qa_session::physics::{
-    self, MotionState, MotionWrite, PhysicsError, TossFrame, TossHost, TossTrace,
+    self, MotionFrame, MotionHost, MotionState, MotionTrace, MotionWrite, PhysicsError,
 };
 use qa_world::{
     collision::{QuakeTraceKind, TraceQuery, trace_policy},
@@ -121,31 +121,38 @@ pub(super) fn toss(
     time: ThinkTime,
     elapsed: f64,
 ) -> Result<(), ClientCommandError> {
-    let native = native_offset(host, module, entity)?;
-    let mover = contacts::reference(host, entity)?;
     let rules = host
         .module_row(module)
         .and_then(|row| row.toss)
         .ok_or(ClientCommandError::Unsupported)?;
-    let frame = edit_quakec(host, module, |vm, services, _| {
-        Ok(TossFrame {
-            elapsed,
-            gravity: vm.motion_world_gravity(services.cvars)?,
-            max_velocity: vm.max_velocity(services.cvars)?,
-        })
-    })?;
-    physics::toss(
-        &mut Host {
-            host,
-            module,
-            native,
-            mover,
-            time,
-        },
-        entity,
-        frame,
-        &rules,
-    )
+    let mut host = Host::new(host, module, entity, time)?;
+    let frame = host.frame(elapsed)?;
+    physics::toss(&mut host, entity, frame, &rules)
+}
+
+pub(super) fn step_fall(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entity: EntityId,
+    time: ThinkTime,
+    elapsed: f64,
+) -> Result<Option<EntityId>, ClientCommandError> {
+    let (rules, sweep) = host
+        .module_row(module)
+        .and_then(|row| row.step)
+        .ok_or(ClientCommandError::Unsupported)?;
+    let mut host = Host::new(host, module, entity, time)?;
+    let frame = host.frame(elapsed)?;
+    physics::step_fall(&mut host, entity, frame, &rules, &sweep)
+}
+
+pub(super) fn water_transition(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entity: EntityId,
+    time: ThinkTime,
+) -> Result<(), ClientCommandError> {
+    Host::new(host, module, entity, time)?.water_transition(entity)
 }
 
 struct Host<'a> {
@@ -155,7 +162,32 @@ struct Host<'a> {
     mover: NativeEntityRef,
     time: ThinkTime,
 }
-impl Host<'_> {
+impl<'a> Host<'a> {
+    fn new(
+        host: &'a mut FrameHost,
+        module: ModuleId,
+        entity: EntityId,
+        time: ThinkTime,
+    ) -> Result<Self, ClientCommandError> {
+        let native = native_offset(host, module, entity)?;
+        let mover = contacts::reference(host, entity)?;
+        Ok(Self {
+            host,
+            module,
+            native,
+            mover,
+            time,
+        })
+    }
+    fn frame(&mut self, elapsed: f64) -> Result<MotionFrame, ClientCommandError> {
+        edit_quakec(self.host, self.module, |vm, services, _| {
+            Ok(MotionFrame {
+                elapsed,
+                gravity: vm.motion_world_gravity(services.cvars)?,
+                max_velocity: vm.max_velocity(services.cvars)?,
+            })
+        })
+    }
     fn current(&self) -> Result<Option<EntityId>, ClientCommandError> {
         contacts::current(self.host, self.mover)
     }
@@ -174,7 +206,7 @@ impl Host<'_> {
     }
 }
 
-impl TossHost for Host<'_> {
+impl MotionHost for Host<'_> {
     type Error = ClientCommandError;
 
     fn entities(&mut self) -> &mut EntityTable {
@@ -238,7 +270,7 @@ impl TossHost for Host<'_> {
         entity: EntityId,
         end: Vec3,
         kind: QuakeTraceKind,
-    ) -> Result<TossTrace, Self::Error> {
+    ) -> Result<MotionTrace, Self::Error> {
         let anchor = self
             .host
             .module_row(self.module)
@@ -275,7 +307,7 @@ impl TossHost for Host<'_> {
             .entity
             .map(|hit| contacts::reference(self.host, hit))
             .transpose()?;
-        Ok(TossTrace { trace, ground })
+        Ok(MotionTrace { trace, ground })
     }
     fn relink(&mut self, entity: EntityId) -> Result<Option<EntityId>, Self::Error> {
         self.edit(entity, |vm, services, context, native| {
@@ -287,7 +319,7 @@ impl TossHost for Host<'_> {
     fn impact(
         &mut self,
         _: Option<EntityId>,
-        trace: &TossTrace,
+        trace: &MotionTrace,
     ) -> Result<Option<EntityId>, Self::Error> {
         let native = trace.ground.ok_or(ClientCommandError::InvalidSlot)?;
         contacts::impact(self.host, self.module, self.mover, native, self.time)?;
@@ -309,8 +341,7 @@ impl TossHost for Host<'_> {
         })
     }
     fn water_transition(&mut self, entity: EntityId) -> Result<(), Self::Error> {
-        let queued = self.host.runtime.input_time;
-        self.edit(entity, |vm, services, context, native| {
+        let transition = self.edit(entity, |vm, services, context, native| {
             let slot = services
                 .server
                 .entities
@@ -324,19 +355,12 @@ impl TossHost for Host<'_> {
                 })?
                 .to_q1();
             let old = vm.motion_water_type(context, native)?;
-            let transition = physics::water_transition(old, contents);
-            if transition.splash {
-                vm.start_sound(
-                    services,
-                    context,
-                    queued,
-                    native,
-                    b"misc/h2ohit1.wav",
-                    0,
-                    255,
-                    1.0,
-                )?;
-            }
+            Ok(physics::water_transition(old, contents))
+        })?;
+        if transition.splash {
+            self.sound(entity, b"misc/h2ohit1.wav")?;
+        }
+        self.edit(entity, |vm, services, context, native| {
             vm.write_motion_field(
                 &mut services.server.entities,
                 context,
@@ -349,6 +373,12 @@ impl TossHost for Host<'_> {
                 native,
                 MotionField::WaterLevel(transition.water_level),
             )
+        })
+    }
+    fn sound(&mut self, entity: EntityId, name: &[u8]) -> Result<(), Self::Error> {
+        let queued = self.host.runtime.input_time;
+        self.edit(entity, |vm, services, context, native| {
+            vm.start_sound(services, context, queued, native, name, 0, 255, 1.0)
         })
     }
 }

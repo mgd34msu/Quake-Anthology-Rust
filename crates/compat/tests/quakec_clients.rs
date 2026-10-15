@@ -1925,12 +1925,12 @@ fn native_nonclient_motion_decodes_loaded_phase_and_keeps_current_raw_mode() {
                 .unwrap()
                 .unwrap();
             for (raw, phase) in [
+                (4.0, Motion::Step),
                 (5.0, Motion::Fly),
                 (6.0, Motion::Toss),
                 (9.0, Motion::FlyMissile),
                 (10.0, Motion::Bounce),
                 (7.0, Motion::Unsupported),
-                (4.0, Motion::Unsupported),
             ] {
                 number(vm, native, b"movetype", raw);
                 vm.project_entities(services, context).unwrap();
@@ -1965,6 +1965,60 @@ fn native_nonclient_motion_decodes_loaded_phase_and_keeps_current_raw_mode() {
                 Motion::Toss
             );
             assert_eq!(vm.motion_state(context, native).unwrap().move_type, 10.75);
+        });
+    }
+}
+
+#[test]
+fn native_step_decoding_keeps_raw_mode_and_requires_no_angular_velocity() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|image| {
+            image.fielddefs = image
+                .fielddefs
+                .iter()
+                .copied()
+                .filter(|field| image.names.get(field.name) != Some(b"avelocity".as_slice()))
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+        });
+        with_native_client(&mut vm, source, |vm, services, context, _, _| {
+            let native = vm.spawn_entity(services, context).unwrap();
+            let entity = vm
+                .resolve_entity(&services.server.entities, context.module, native)
+                .unwrap()
+                .unwrap();
+            for (raw, expected) in [
+                (4.0, Motion::Step),
+                (
+                    4.75,
+                    if source == RuleSetId::QuakeWorld {
+                        Motion::Step
+                    } else {
+                        Motion::Unsupported
+                    },
+                ),
+                (f32::from_bits(0x7fc1_2345), Motion::Unsupported),
+            ] {
+                number(vm, native, b"movetype", raw);
+                vm.project_entities(services, context).unwrap();
+                assert_eq!(
+                    services.server.entities.columns.motion[entity.slot as usize],
+                    expected
+                );
+                assert_eq!(
+                    vm.motion_state(context, native)
+                        .unwrap()
+                        .move_type
+                        .to_bits(),
+                    raw.to_bits()
+                );
+                vm.prepare_motion(&mut services.server.entities, context, native)
+                    .unwrap();
+                assert_eq!(
+                    services.server.entities.columns.angular_velocity[entity.slot as usize],
+                    None
+                );
+            }
         });
     }
 }

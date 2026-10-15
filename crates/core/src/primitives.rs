@@ -763,6 +763,7 @@ pub enum Motion {
     #[default]
     None,
     Walk,
+    Step,
     Fly,
     FlyMissile,
     Toss,

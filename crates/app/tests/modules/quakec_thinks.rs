@@ -1278,9 +1278,8 @@ fn native_edict_order_is_independent_of_common_slots_and_other_physics_is_not_sc
         &[
             (41, 0.0, 0.05, think),
             (40, 0.0, 0.05, think),
-            (42, 4.0, 0.05, think), // STEP: think belongs after movement.
-            (43, 3.0, 0.05, think), // WALK belongs to the later STEP slice.
-            (44, 7.0, 0.05, think), // PUSH: ltime controls the due phase.
+            (43, 3.0, 0.05, think), // WALK belongs to a later motion slice.
+            (44, 7.0, 0.05, think), // PUSH: ltime controls its due phase.
         ],
     );
     let mut host = load(runtime, vec![request]);
@@ -1307,7 +1306,7 @@ fn native_edict_order_is_independent_of_common_slots_and_other_physics_is_not_sc
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
     assert_eq!(
         host.module_counts(ModuleId(1)).unwrap().unsupported_physics,
-        3
+        2
     );
 }
 
@@ -1771,7 +1770,7 @@ fn noclip_reads_think_pose_changes_and_uses_native_float_arithmetic() {
             (Address, 34, 53, 61),
             (StorePV, 89, 61, 0),
             // The selected NOCLIP phase continues even if think changes
-            // movetype. The next native pass will select STEP instead.
+            // movetype. The next native pass selects unsupported PUSH.
             (Address, 34, 57, 61),
             (StorePF, 71, 61, 0),
             (Return, 70, 0, 0),
@@ -1792,7 +1791,7 @@ fn noclip_reads_think_pose_changes_and_uses_native_float_arithmetic() {
         vm.image.globals[60] = 3; // velocity
         vm.image.globals[62] = 37; // avelocity
         vm.image.globals[65] = 6; // angles
-        vm.image.globals[71] = 4.0f32.to_bits();
+        vm.image.globals[71] = 7.0f32.to_bits();
         let mut runtime = Runtime::load(1, []).unwrap();
         runtime.server.clients[0].player.movement_rules = RuleSetId::Quake3;
         runtime.server.clients[0].player.trace_rules = RuleSetId::Quake2;
@@ -2360,6 +2359,454 @@ fn noclip_qw_motion_uses_only_accepted_accumulated_and_clamped_span() {
     );
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 2);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
+}
+
+#[test]
+fn quakec_step_falls_before_think_and_suppressed_rows_still_think_then_check_water() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 70, 0, 0)]);
+        let think = code.function(&[
+            // Copy the current flags into an inert presentation field. The
+            // falling row can observe ONGROUND only if motion ran first.
+            (LoadF, 34, 101, 70),
+            (Address, 34, 102, 61),
+            (StorePF, 70, 61, 0),
+            // The provider must run water after think and reread this native
+            // mutation rather than retaining the value from the fall phase.
+            (Address, 34, 100, 61),
+            (StorePF, 104, 61, 0),
+            (Return, 70, 0, 0),
+        ]);
+        let inspections = (0..4)
+            .map(|index| {
+                code.function(&[
+                    (LoadF, 83 + index, 103, 70),
+                    (LoadF, 83 + index, 100, 71),
+                    (LoadF, 83 + index, 102, 72),
+                    (Return, 70, 0, 0),
+                ])
+            })
+            .collect::<Vec<_>>();
+        let mut fields = FIELDS
+            .iter()
+            .copied()
+            .filter(|(_, _, name)| *name != b"avelocity")
+            .collect::<Vec<_>>();
+        fields.extend_from_slice(&[
+            (2, 40, b"gravity"),
+            (2, 41, b"waterlevel"),
+            (2, 42, b"watertype"),
+            (4, 43, b"groundentity"),
+            (6, 44, b"touch"),
+        ]);
+        let mut vm = code.vm_fields(&fields);
+        let stride = vm.stride as u32;
+        vm.image.globals[100] = vm.image.field(b"watertype").unwrap() as u32;
+        vm.image.globals[101] = vm.image.field(b"flags").unwrap() as u32;
+        vm.image.globals[102] = vm.image.field(b"frame").unwrap() as u32;
+        vm.image.globals[103] = vm.image.field(b"waterlevel").unwrap() as u32;
+        vm.image.globals[104] = (-1.0f32).to_bits();
+        for (index, (native, flags)) in [(40, 0.0f32), (41, 512.0), (42, 1.0), (43, 2.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let x = index as f32 * 10.0;
+            write_vector(&mut vm, native, b"origin", Vec3([x, 0.0, 5.0]));
+            write_vector(
+                &mut vm,
+                native,
+                b"velocity",
+                if index == 0 {
+                    Vec3::default()
+                } else {
+                    Vec3([0.0, 0.0, -123.0])
+                },
+            );
+            write_vector(&mut vm, native, b"mins", Vec3([-1.0; 3]));
+            write_vector(&mut vm, native, b"maxs", Vec3([1.0; 3]));
+            write(&mut vm, native, b"solid", 2.0f32.to_bits());
+            write(&mut vm, native, b"flags", flags.to_bits());
+            write(&mut vm, native, b"gravity", 1.0f32.to_bits());
+            write(&mut vm, native, b"waterlevel", 0.0f32.to_bits());
+            write(&mut vm, native, b"watertype", 0.0f32.to_bits());
+            vm.image.globals[83 + index] = native as u32 * stride;
+        }
+
+        let mut runtime = Runtime::load(1, []).unwrap();
+        install_motion_world(&mut runtime, true);
+        let (mut request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            (0..code.functions.len() as u32).collect(),
+            frame,
+            100,
+            &[
+                (40, 4.0, 0.05, think),
+                (41, 4.0, 0.05, think),
+                (42, 4.0, 0.05, think),
+                (43, 4.0, 0.05, think),
+            ],
+        );
+        // Native gravity/sweep rules and caller-selected clipping are
+        // independent. The arena epsilon makes that selection observable.
+        request.context.trace_rules = RuleSetId::Quake3;
+        let mut host = load(runtime, vec![request]);
+        tick(&mut host, 0);
+        tick(&mut host, 100);
+
+        let columns = &host.runtime.server.entities.columns;
+        let stopped_z = 1.0
+            + qa_world::collision::trace_policy(RuleSetId::Quake3)
+                .0
+                .contact_epsilon as f32;
+        assert_eq!(
+            columns.position[ids[0].slot as usize],
+            Vec3([0.0, 0.0, stopped_z])
+        );
+        assert_eq!(columns.velocity[ids[0].slot as usize], Vec3::default());
+        assert_eq!(columns.flags[ids[0].slot as usize], 512);
+        for (index, entity) in ids.iter().enumerate().skip(1) {
+            assert_eq!(
+                columns.position[entity.slot as usize],
+                Vec3([index as f32 * 10.0, 0.0, 5.0])
+            );
+            assert_eq!(
+                columns.velocity[entity.slot as usize],
+                Vec3([0.0, 0.0, -123.0])
+            );
+        }
+        assert!(
+            ids.iter()
+                .all(|entity| columns.angular_velocity[entity.slot as usize].is_none())
+        );
+        for (index, inspect) in inspections.into_iter().enumerate() {
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(inspect)),
+                ThinkTime::Seconds(0.1),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([
+                    (-1.0f32).to_bits(),
+                    (-1.0f32).to_bits(),
+                    [512.0f32, 512.0, 1.0, 2.0][index].to_bits(),
+                ]))
+            );
+        }
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        assert_eq!((counts.rejected, counts.unsupported_physics), (0, 0));
+    }
+}
+
+#[test]
+fn quakec_step_contacts_ground_before_touch_then_relinks_sounds_thinks_and_reuses() {
+    use qa_core::configstrings::ConfigLayout;
+    use std::{num::NonZeroU32, sync::Arc};
+
+    let mut code = Code::new();
+    let frame = code.function(&[(Return, 0, 0, 0)]);
+    let removed_touch = code.function(&[
+        (MulF, 89, 94, 126),
+        (AddF, 126, 95, 89),
+        (LoadF, 34, 71, 90),
+        (StoreEnt, 34, 4, 0),
+        (Call1, 59, 0, 0),
+        (Return, 0, 0, 0),
+    ]);
+    let healthy_touch = code.function(&[
+        (MulF, 89, 94, 126),
+        (AddF, 126, 96, 89),
+        (LoadF, 34, 71, 91),
+        (LoadF, 34, 78, 92),
+        (Return, 0, 0, 0),
+    ]);
+    let trigger_touch =
+        code.function(&[(MulF, 89, 94, 126), (AddF, 126, 97, 89), (Return, 0, 0, 0)]);
+    let removed_think = code.function(&[(StoreF, 48, 93, 0), (Return, 0, 0, 0)]);
+    let healthy_think = code.function(&[
+        (MulF, 89, 94, 126),
+        (AddF, 126, 98, 89),
+        // Water must consume the value written by the just-completed think.
+        (Address, 34, 73, 126),
+        (StorePF, 83, 126, 0),
+        (Return, 0, 0, 0),
+    ]);
+    let inspect_order = code.function(&[(Return, 89, 0, 0)]);
+    let inspect_state = code.function(&[
+        (LoadF, 64, 72, 70),
+        (LoadF, 64, 73, 71),
+        (LoadF, 64, 78, 72),
+        (Return, 70, 0, 0),
+    ]);
+    let inspect_removed_think = code.function(&[
+        (StoreF, 93, 70, 0),
+        (StoreF, 49, 71, 0),
+        (StoreF, 49, 72, 0),
+        (Return, 70, 0, 0),
+    ]);
+    let spawn = code.builtin(14);
+    let remove = code.builtin(15);
+    let setorigin = code.builtin(2);
+    let precache = code.builtin(19);
+    let reuse = code.function(&[(Call0, 58, 0, 0), (Return, 1, 0, 0)]);
+    let initialize = code.function(&[
+        (StoreS, 62, 4, 0),
+        (Call1, 61, 0, 0),
+        // Two actual QC allocations make removal and later native-row reuse
+        // exercise owned lifetimes rather than borrowed request seed rows.
+        (Call0, 58, 0, 0),
+        (StoreEnt, 1, 63, 0),
+        (Address, 63, 77, 126),
+        (StorePF, 79, 126, 0),
+        (Address, 63, 66, 126),
+        (StorePV, 99, 126, 0),
+        (Address, 63, 67, 126),
+        (StorePV, 123, 126, 0),
+        (Address, 63, 68, 126),
+        (StorePV, 108, 126, 0),
+        (Address, 63, 69, 126),
+        (StorePV, 111, 126, 0),
+        (Address, 63, 70, 126),
+        (StorePF, 80, 126, 0),
+        (Address, 63, 74, 126),
+        (StorePF, 84, 126, 0),
+        (Address, 63, 75, 126),
+        (StorePF, 82, 126, 0),
+        (Address, 63, 76, 126),
+        (StorePF, 87, 126, 0),
+        (StoreEnt, 63, 4, 0),
+        (StoreV, 99, 7, 0),
+        (Call2, 60, 0, 0),
+        (Call0, 58, 0, 0),
+        (StoreEnt, 1, 64, 0),
+        (Address, 64, 77, 126),
+        (StorePF, 79, 126, 0),
+        (Address, 64, 66, 126),
+        (StorePV, 102, 126, 0),
+        (Address, 64, 67, 126),
+        (StorePV, 105, 126, 0),
+        (Address, 64, 68, 126),
+        (StorePV, 108, 126, 0),
+        (Address, 64, 69, 126),
+        (StorePV, 111, 126, 0),
+        (Address, 64, 70, 126),
+        (StorePF, 80, 126, 0),
+        (Address, 64, 74, 126),
+        (StorePF, 85, 126, 0),
+        (Address, 64, 75, 126),
+        (StorePF, 82, 126, 0),
+        (Address, 64, 76, 126),
+        (StorePF, 88, 126, 0),
+        (StoreEnt, 64, 4, 0),
+        (StoreV, 102, 7, 0),
+        (Call2, 60, 0, 0),
+        // The landing relink overlaps this trigger. Its callback must finish
+        // before the landing sound and the subsequent think phase.
+        (Call0, 58, 0, 0),
+        (StoreEnt, 1, 65, 0),
+        (Address, 65, 66, 126),
+        (StorePV, 114, 126, 0),
+        (Address, 65, 68, 126),
+        (StorePV, 117, 126, 0),
+        (Address, 65, 69, 126),
+        (StorePV, 120, 126, 0),
+        (Address, 65, 70, 126),
+        (StorePF, 81, 126, 0),
+        (Address, 65, 74, 126),
+        (StorePF, 86, 126, 0),
+        (StoreEnt, 65, 4, 0),
+        (StoreV, 114, 7, 0),
+        (Call2, 60, 0, 0),
+        (Return, 0, 0, 0),
+    ]);
+
+    let mut vm = code.motion_vm();
+    let stride = vm.stride as u32;
+    vm.image.globals[58] = spawn;
+    vm.image.globals[59] = remove;
+    vm.image.globals[60] = setorigin;
+    vm.image.globals[61] = precache;
+    vm.image.globals[62] = vm.insert_string(b"demon/dland2.wav").unwrap() as u32;
+    for (global, field) in [
+        (66, b"origin".as_slice()),
+        (67, b"velocity"),
+        (68, b"mins"),
+        (69, b"maxs"),
+        (70, b"solid"),
+        (71, b"flags"),
+        (72, b"waterlevel"),
+        (73, b"watertype"),
+        (74, b"touch"),
+        (75, b"nextthink"),
+        (76, b"think"),
+        (77, b"movetype"),
+        (78, b"groundentity"),
+    ] {
+        vm.image.globals[global] = vm.image.field(field).unwrap() as u32;
+    }
+    vm.image.globals[79] = 4.0f32.to_bits();
+    vm.image.globals[80] = 2.0f32.to_bits();
+    vm.image.globals[81] = 1.0f32.to_bits();
+    vm.image.globals[82] = 0.05f32.to_bits();
+    vm.image.globals[83] = (-1.0f32).to_bits();
+    vm.image.globals[84] = removed_touch;
+    vm.image.globals[85] = healthy_touch;
+    vm.image.globals[86] = trigger_touch;
+    vm.image.globals[87] = removed_think;
+    vm.image.globals[88] = healthy_think;
+    vm.image.globals[94] = 10.0f32.to_bits();
+    vm.image.globals[95] = 4.0f32.to_bits();
+    vm.image.globals[96] = 1.0f32.to_bits();
+    vm.image.globals[97] = 2.0f32.to_bits();
+    vm.image.globals[98] = 3.0f32.to_bits();
+    vm.image.globals[99..102].copy_from_slice(&Vec3([0.0, 0.0, 5.0]).0.map(f32::to_bits));
+    vm.image.globals[102..105].copy_from_slice(&Vec3([20.0, 0.0, 15.0]).0.map(f32::to_bits));
+    vm.image.globals[105..108].copy_from_slice(&Vec3([0.0, 0.0, -100.0]).0.map(f32::to_bits));
+    vm.image.globals[108..111].fill((-1.0f32).to_bits());
+    vm.image.globals[111..114].fill(1.0f32.to_bits());
+    vm.image.globals[114..117].copy_from_slice(&Vec3([20.0, 0.0, 1.0]).0.map(f32::to_bits));
+    vm.image.globals[117..120].fill((-2.0f32).to_bits());
+    vm.image.globals[120..123].fill(2.0f32.to_bits());
+
+    let mut runtime = Runtime::load(1, []).unwrap();
+    install_motion_world(&mut runtime, true);
+    let (mut request, _) = request(
+        &mut runtime,
+        ModuleId(1),
+        RuleSetId::Quake,
+        vm,
+        (0..code.functions.len() as u32).collect(),
+        frame,
+        100,
+        &[],
+    );
+    request.context.trace_rules = RuleSetId::Quake3;
+    request.configstrings = ConfigLayout::for_rules(RuleSetId::Quake).count;
+    request.initialize = vec![Export::clocked(CallbackId(initialize))];
+    let mut host = load(runtime, vec![request]);
+    host.initialize_modules(Phase::Server);
+    let removed = native_entity(&host, ModuleId(1), 2);
+    let healthy = native_entity(&host, ModuleId(1), 3);
+
+    let rate = NonZeroU32::new(44_100).unwrap();
+    let bank = Arc::new(
+        qa_audio::Bank::load(
+            rate,
+            vec![(
+                "sound/demon/dland2.wav".to_owned(),
+                Pcm {
+                    rate,
+                    channels: PcmChannels::Mono,
+                    samples: vec![1000, -1000],
+                    loop_start: None,
+                    loop_end: None,
+                    loop_invalid: false,
+                },
+            )],
+        )
+        .unwrap(),
+    );
+    let landing = bank.find("sound/demon/dland2.wav").unwrap();
+    host.runtime.sound_bank = Some(Arc::clone(&bank));
+    host.bind_sounds(&bank).unwrap();
+    let observer = host
+        .runtime
+        .server
+        .events
+        .bind(qa_core::events::OutputTarget::Module(ModuleId(9)))
+        .unwrap();
+
+    tick(&mut host, 0);
+    tick(&mut host, 100);
+    assert!(host.runtime.server.entities.resolve(removed).is_none());
+    assert!(host.runtime.server.entities.resolve(healthy).is_some());
+    let healthy_slot = healthy.slot as usize;
+    let stopped_z = 1.0
+        + qa_world::collision::trace_policy(RuleSetId::Quake3)
+            .0
+            .contact_epsilon as f32;
+    assert_eq!(
+        host.runtime.server.entities.columns.position[healthy_slot],
+        Vec3([20.0, 0.0, stopped_z])
+    );
+    assert_eq!(
+        host.runtime.server.entities.columns.flags[healthy_slot],
+        512
+    );
+
+    host.call_module_export(
+        ModuleId(1),
+        Export::clocked(CallbackId(inspect_order)),
+        ThinkTime::Seconds(0.1),
+    )
+    .unwrap();
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::QuakeC([
+            4123.0f32.to_bits(),
+            512.0f32.to_bits(),
+            512.0f32.to_bits(),
+        ]))
+    );
+    host.call_module_export(
+        ModuleId(1),
+        Export::clocked(CallbackId(inspect_state)),
+        ThinkTime::Seconds(0.1),
+    )
+    .unwrap();
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::QuakeC([
+            (-1.0f32).to_bits(),
+            (-1.0f32).to_bits(),
+            0,
+        ]))
+    );
+    host.call_module_export(
+        ModuleId(1),
+        Export::clocked(CallbackId(inspect_removed_think)),
+        ThinkTime::Seconds(0.1),
+    )
+    .unwrap();
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::QuakeC([0, 0, 0]))
+    );
+
+    let events = &host.runtime.server.events;
+    let mut batch = events.batch(observer).unwrap();
+    let sounds = std::iter::from_fn(|| events.next(&mut batch))
+        .filter_map(|record| match record.event {
+            FrameEvent::Sound(event) => Some(event),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sounds.len(), 1);
+    assert_eq!(sounds[0].sound, landing);
+    assert_eq!(sounds[0].action, SoundAction::Play);
+    assert_eq!(sounds[0].source_ordinal, Some(1));
+    assert_eq!(sounds[0].entity, Some(SoundEmitter::Entity(healthy)));
+
+    tick(&mut host, 700);
+    host.call_module_export(
+        ModuleId(1),
+        Export::clocked(CallbackId(reuse)),
+        ThinkTime::Seconds(0.7),
+    )
+    .unwrap();
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::QuakeC([2 * stride, 0, 0]))
+    );
+    let replacement = native_entity(&host, ModuleId(1), 2);
+    assert_ne!(replacement, removed);
+    let counts = host.module_counts(ModuleId(1)).unwrap();
+    assert_eq!((counts.rejected, counts.unsupported_physics), (0, 0));
 }
 
 #[test]

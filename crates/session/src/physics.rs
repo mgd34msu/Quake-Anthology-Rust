@@ -8,14 +8,57 @@ use qa_core::{
 use qa_world::collision::TraceError;
 use qa_world::entities::EntityTable;
 
+mod step;
 mod toss;
-pub use toss::{MotionState, TossFrame, TossHost, TossTrace, WaterTransition, toss, water_transition};
+pub use step::step_fall;
+pub use toss::{
+    MotionFrame, MotionHost, MotionState, MotionTrace, WaterTransition, toss, water_transition,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhysicsError {
     Entity,
     AngularVelocity,
     MissingField,
+}
+
+/// Native entity phases use one gravity calculation at their own phase
+/// position. Per-entity scale is optional in NQ and never read by QW.
+fn add_gravity<H: MotionHost>(
+    host: &mut H,
+    entity: EntityId,
+    frame: MotionFrame,
+    rules: &qa_gameplay::rules::motion::GravityRules,
+) -> Result<(), H::Error> {
+    let scale = if rules.entity_scale {
+        host.gravity_scale(entity)?
+            .filter(|value| *value != 0.0)
+            .unwrap_or(1.0)
+    } else {
+        1.0
+    };
+    let entities = host.entities();
+    let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+    let velocity = entities.columns.velocity[slot].0[2];
+    // The gravity factors multiply in binary32 before double duration promotes
+    // the subtraction. The scalar store narrows only once.
+    let value = (f64::from(velocity) - f64::from(scale * frame.gravity) * frame.elapsed) as f32;
+    host.write_motion(entity, MotionWrite::Velocity(2), value)
+}
+
+/// Attachment transport owns position; source motion still owns its angular
+/// and contact phases. Returning the stored pose also preserves signed zero.
+fn positional_end(
+    entities: &EntityTable,
+    entity: EntityId,
+    end: qa_core::primitives::Vec3,
+) -> Result<qa_core::primitives::Vec3, PhysicsError> {
+    let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+    Ok(if entities.attachment(entity).is_some() {
+        entities.columns.position[slot]
+    } else {
+        end
+    })
 }
 
 /// Ordinary authoritative movement has no native scalar synchronization.

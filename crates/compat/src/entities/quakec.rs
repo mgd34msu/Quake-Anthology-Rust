@@ -125,6 +125,8 @@ fn client_edicts(
 fn motion(value: f32) -> Motion {
     if value == 0.0 {
         Motion::None
+    } else if value == 4.0 {
+        Motion::Step
     } else if value == 5.0 {
         Motion::Fly
     } else if value == 6.0 {

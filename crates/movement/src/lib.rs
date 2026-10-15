@@ -11,7 +11,7 @@ use qa_core::{
     primitives::{RuleSetId, UserCmd},
     sys_events::EventTime,
 };
-pub use slide::clip_backoff;
+pub use slide::{SweepExit, SweepHost, SweepResult, clip_backoff, sweep};
 
 /// Apply simulation time admission, never client command construction rules.
 /// Keep the absolute server time: Q3's outer Pmove subdivides its interval.
