@@ -1,5 +1,5 @@
 use crate::Action;
-use qa_core::text::FixedText;
+use qa_core::{primitives::CommandProducer, text::FixedText};
 
 pub struct ActionName {
     pub name: &'static str,
@@ -44,6 +44,7 @@ pub(crate) struct Part {
     pub button: bool,
 }
 pub struct Binding {
+    pub(crate) producer: Option<CommandProducer>,
     pub(crate) text: FixedText<1024>,
     pub(crate) parts: [Part; 512],
     pub(crate) count: usize,
@@ -51,6 +52,7 @@ pub struct Binding {
 impl Binding {
     pub fn for_action(action: Action) -> Self {
         let mut binding = Self {
+            producer: None,
             text: FixedText::default(),
             parts: [Part::default(); 512],
             count: 1,
@@ -72,6 +74,7 @@ impl Binding {
             return Err(BindError::Nul);
         }
         let mut binding = Self {
+            producer: None,
             text: FixedText::default(),
             parts: [Part::default(); 512],
             count: 0,
@@ -108,5 +111,8 @@ impl Binding {
     }
     pub fn bytes(&self) -> &[u8] {
         self.text.as_bytes()
+    }
+    pub fn producer(&self) -> Option<CommandProducer> {
+        self.producer
     }
 }

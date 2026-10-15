@@ -835,6 +835,12 @@ impl Runtime {
 }
 
 impl Host for Runtime {
+    fn command_producer_live(&self, producer: qa_console::views::CommandProducer) -> bool {
+        self.server
+            .entities
+            .resolve(producer.anchor)
+            .is_some_and(|slot| self.server.entities.columns.owner[slot] == producer.module)
+    }
     fn input(&mut self) -> &mut qa_input::Input {
         &mut self.input
     }

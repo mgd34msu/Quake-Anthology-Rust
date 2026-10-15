@@ -25,11 +25,17 @@ impl Target for Sink {
         _: SeatId,
         _: EventTime,
         _: Option<qa_core::sys_events::KeySource>,
+        _: Option<qa_core::primitives::CommandProducer>,
         _: &str,
     ) -> bool {
         true
     }
-    fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
+    fn cancel_commands(
+        &mut self,
+        _: qa_core::sys_events::KeySource,
+        _: Option<qa_core::primitives::CommandProducer>,
+    ) {
+    }
 }
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {

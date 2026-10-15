@@ -148,7 +148,7 @@ fn cancelling_source_compacts_only_its_spans_and_recovers_capacity() {
         .unwrap();
     buffer.insert("drop inserted", first).unwrap();
     buffer.append_line("keep ordinary", ordinary).unwrap();
-    buffer.discard_source(source);
+    buffer.discard_acquisition(source, None);
     let mut line = FixedText::<65536>::default();
     for (expected, origin) in [
         ("keep one", retained),
@@ -167,7 +167,7 @@ fn cancelling_source_compacts_only_its_spans_and_recovers_capacity() {
             ordinary,
         )
         .unwrap();
-    buffer.discard_source(source);
+    buffer.discard_acquisition(source, None);
     let (origin, result) = buffer.next_line(&mut line).unwrap();
     result.unwrap();
     assert_eq!(origin, ordinary);

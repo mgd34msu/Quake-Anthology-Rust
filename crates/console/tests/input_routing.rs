@@ -67,6 +67,7 @@ impl Target for Enqueue<'_> {
         seat: SeatId,
         time: EventTime,
         key_source: Option<KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
         text: &str,
     ) -> bool {
         self.0
@@ -76,13 +77,18 @@ impl Target for Enqueue<'_> {
                     seat,
                     event_time: Some(time),
                     key_source,
+                    producer,
                     ..Context::default()
                 },
             )
             .is_ok()
     }
-    fn cancel_commands(&mut self, source: KeySource) {
-        self.0.discard_source(source);
+    fn cancel_commands(
+        &mut self,
+        source: KeySource,
+        producer: Option<qa_core::primitives::CommandProducer>,
+    ) {
+        self.0.discard_acquisition(source, producer);
     }
 }
 fn key(

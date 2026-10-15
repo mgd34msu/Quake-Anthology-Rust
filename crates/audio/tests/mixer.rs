@@ -169,6 +169,7 @@ fn spatialization_uses_capability_data_without_a_game_selector() {
         distance_offset: 80.0,
         attenuation: DistanceAttenuation::Linear(0.001),
         separation: 0.25,
+        start_order: SoundStartOrder::ImmediateFifo,
     };
     e.position = Vec3([400.0, 0.0, 0.0]);
     e.attenuation = 1.0;

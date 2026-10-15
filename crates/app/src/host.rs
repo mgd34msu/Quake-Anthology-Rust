@@ -291,6 +291,19 @@ pub struct FrameResult {
 }
 
 impl FrameHost {
+    pub(crate) fn retain_command_producers(
+        &mut self,
+        retained: impl FnMut(qa_core::primitives::CommandProducer) -> bool,
+    ) {
+        if let Err(error) = self.console.retain_producers(&mut self.runtime, retained) {
+            let _ = self
+                .runtime
+                .server
+                .events
+                .console_formatted(format_args!("Module command retirement: {error:?}\n"));
+        }
+    }
+
     pub(crate) fn update_console_policy(&mut self, initialize: bool) {
         let native = self
             .modules
@@ -586,6 +599,7 @@ impl FrameHost {
         source.request_mouse_capture(self.mouse_capture_requested());
         self.intake(source);
         self.drain(&mut result);
+        self.retire_stale_modules();
         self.update_console_policy(true);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
@@ -659,6 +673,7 @@ impl FrameHost {
         self.intake(source);
         self.drain(&mut result);
         self.previous = Some(server_time);
+        self.retire_stale_modules();
         self.update_console_policy(true);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
@@ -1520,7 +1535,7 @@ impl FrameHost {
                             events: &mut self.runtime.server.events,
                             time: event.time,
                         };
-                        target.command(seat, event.time, None, text);
+                        target.command(seat, event.time, None, None, text);
                     }
                     EventKind::Packet {
                         socket,
@@ -1795,21 +1810,24 @@ impl Target for ConsoleInput<'_> {
         seat: SeatId,
         time: EventTime,
         source: Option<qa_core::sys_events::KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
         text: &str,
     ) -> bool {
-        self.command_bytes(seat, time, source, text.as_bytes())
+        self.command_bytes(seat, time, source, producer, text.as_bytes())
     }
     fn command_bytes(
         &mut self,
         seat: SeatId,
         time: EventTime,
         source: Option<qa_core::sys_events::KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
         text: &[u8],
     ) -> bool {
         let context = qa_console::views::Context {
             seat,
             event_time: Some(time),
             key_source: source,
+            producer,
             ..self.console.cvars.context()
         };
         if let Err(error) = self.console.append_line_bytes(text, context) {
@@ -1822,8 +1840,12 @@ impl Target for ConsoleInput<'_> {
             true
         }
     }
-    fn cancel_commands(&mut self, source: qa_core::sys_events::KeySource) {
-        self.console.discard_source(source);
+    fn cancel_commands(
+        &mut self,
+        source: qa_core::sys_events::KeySource,
+        producer: Option<qa_core::primitives::CommandProducer>,
+    ) {
+        self.console.discard_acquisition(source, producer);
     }
 }
 

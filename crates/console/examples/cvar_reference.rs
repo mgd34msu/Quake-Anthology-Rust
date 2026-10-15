@@ -91,6 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 event_time: None,
 
                 key_source: None,
+                producer: None,
             };
             let detail = (header[3] != 0).then_some(detail.as_str());
             response(

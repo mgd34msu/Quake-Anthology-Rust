@@ -51,7 +51,7 @@ impl EngineServices<'_> {
         };
         let mut output = BindOutput::new(self.commands, context);
         self.input
-            .bind_bytes(control, text, time, &mut output)
+            .bind_bytes_owned(control, text, context.producer, time, &mut output)
             .map_err(|_| CallError::Capacity)?;
         let outcome = output.outcome();
         self.input_outcome(outcome);

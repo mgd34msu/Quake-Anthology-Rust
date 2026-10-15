@@ -916,8 +916,15 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
                 slot: 1
             }
         ));
-        let (request, command) =
-            sound_module(&mut runtime, ModuleId(1), b"a.wav", rules, b"b.wav", 0);
+        let (request, commands) = sound_module_actions(
+            &mut runtime,
+            ModuleId(1),
+            b"a.wav",
+            rules,
+            b"b.wav",
+            0,
+            true,
+        );
         let mut host = FrameHost::load_modules(
             Console::new(Context::default()).unwrap(),
             runtime,
@@ -932,14 +939,14 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
         let bank = Arc::new(
             qa_audio::Bank::load(
                 rate,
-                ["sound/a.wav", "sound/b.wav"]
-                    .map(|name| {
+                [("sound/a.wav", 1024), ("sound/b.wav", -1024)]
+                    .map(|(name, sample)| {
                         (
                             name.to_string(),
                             Pcm {
                                 rate,
                                 channels: PcmChannels::Mono,
-                                samples: vec![1024; 2],
+                                samples: vec![sample; 2],
                                 loop_start: None,
                                 loop_end: None,
                                 loop_invalid: false,
@@ -952,7 +959,9 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
         );
         host.runtime.sound_bank = Some(Arc::clone(&bank));
         host.bind_sounds(&bank).unwrap();
-        for _ in 0..2 {
+        // The staged message publishes A first, then gi.positioned_sound
+        // publishes B on the same world-edict/nonzero-channel key.
+        for command in [commands.raw, commands.emit] {
             host.call_module_export(
                 ModuleId(1),
                 Export::words(command, &[]),
@@ -985,7 +994,23 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
             host.frame(&mut source, true);
         }
         assert_eq!(source.sounds, [2, 0]);
-        let mixer = source.mixer.as_ref().unwrap();
+        assert_eq!(
+            source.played.iter().map(|row| row.1).collect::<Vec<_>>(),
+            [
+                bank.find("sound/a.wav").unwrap(),
+                bank.find("sound/b.wav").unwrap()
+            ]
+        );
+        let mixer = source.mixer.as_mut().unwrap();
+        assert_eq!((mixer.counts.started, mixer.counts.replaced), (2, 0));
+        // Original Q2 inserts before equal begin times. Issue B then A at
+        // paint time, so A replaces B and supplies the actual PCM.
+        // Native volume 1 gives master 255. Attenuation 1 keeps stereo
+        // panning; at the listener, distance loss is zero and each side gets
+        // 0.5: trunc(255 * 0.5) is 127, so (1024 * 127) >> 8 = 508.
+        let mut pcm = [0; 4];
+        assert!(mixer.paint(&mut pcm));
+        assert_eq!(pcm, [508; 4], "{rules:?}");
         assert_eq!((mixer.counts.started, mixer.counts.replaced), (2, 1));
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     }

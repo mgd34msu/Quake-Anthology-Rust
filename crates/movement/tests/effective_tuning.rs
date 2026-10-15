@@ -7,6 +7,50 @@ use qa_core::primitives::{
 use qa_movement::{MoveOptions, MovePhase, effective_tuning, pmove};
 
 #[test]
+fn q2_air_acceleration_selects_its_native_coefficient_and_zero_branch() {
+    for (rules, air, accelerate, duration_ms, wish, expected) in [
+        (RuleSetId::Quake2, 1.0, 10.0, 100, 150.0, 30.0f32),
+        (RuleSetId::Quake2, 1.0, 0.5, 100, 150.0, 7.5),
+        (RuleSetId::Quake2Rerelease, 1.0, 10.0, 100, 150.0, 15.0),
+        (RuleSetId::Quake2Rerelease, 0.5, 10.0, 100, 150.0, 7.5),
+        (RuleSetId::Quake2Rerelease, 1.0, 0.5, 100, 150.0, 15.0),
+        (RuleSetId::Quake2, 0.0, 10.0, 200, 300.0, 60.0),
+        (RuleSetId::Quake2Rerelease, 0.0, 10.0, 200, 300.0, 60.0),
+    ] {
+        let mut state = PlayerState {
+            movement_rules: rules,
+            trace_rules: RuleSetId::Quake3,
+            health: 100,
+            ..Default::default()
+        };
+        qa_movement::set_bounds(&mut state);
+        state.body.position = Vec3([0.0, 0.0, 64.0]);
+        state.movement.tuning.gravity = Some(MovementMagnitude::Base(0.0));
+        state.movement.tuning.no_step = true;
+        state.movement.tuning.accelerate = Some(accelerate);
+        state.movement.tuning.air_accelerate = Some(air);
+        pmove(
+            UserCmd {
+                movement: [wish, 0.0, 0.0],
+                duration_ms,
+                server_time_ms: i32::from(duration_ms),
+                ..Default::default()
+            },
+            &mut state,
+            &mut support::FixtureWorld::default(),
+            MoveOptions::default(),
+            qa_movement::no_boundary,
+        )
+        .expect("air movement over a clear floor");
+        assert_eq!(
+            state.body.velocity.0[0].to_bits(),
+            expected.to_bits(),
+            "{rules:?} air={air} accelerate={accelerate} duration_ms={duration_ms} wish={wish}",
+        );
+    }
+}
+
+#[test]
 fn effective_limits_share_selected_defaults_and_existing_multiplier_order() {
     for (rules, speed, spectator) in [
         (RuleSetId::Quake, 320.0, 320.0),

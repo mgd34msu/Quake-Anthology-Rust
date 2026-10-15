@@ -20,6 +20,7 @@ pub struct Capture {
     pub last_context: Option<Context>,
     pub raw: qa_core::text::FixedText<64>,
     pub raw_calls: u32,
+    pub producers: [Option<qa_core::primitives::CommandProducer>; 2],
 }
 impl Host for Capture {
     fn input(&mut self) -> &mut Input {
@@ -33,6 +34,9 @@ impl Host for Capture {
         Err(ScriptError::Missing)
     }
     fn quit(&mut self) {}
+    fn command_producer_live(&self, producer: qa_core::primitives::CommandProducer) -> bool {
+        self.producers.contains(&Some(producer))
+    }
 }
 fn edge(
     _: &mut Console<Capture>,
@@ -75,15 +79,17 @@ impl Router {
         seat: SeatId,
         time: EventTime,
         key_source: Option<KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
         text: &str,
     ) -> bool {
-        self.command_bytes(seat, time, key_source, text.as_bytes())
+        self.command_bytes(seat, time, key_source, producer, text.as_bytes())
     }
     pub fn command_bytes(
         &mut self,
         seat: SeatId,
         time: EventTime,
         key_source: Option<KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
         text: &[u8],
     ) -> bool {
         self.console
@@ -95,6 +101,7 @@ impl Router {
                     seat,
                     event_time: Some(time),
                     key_source,
+                    producer,
                     ..Context::default()
                 },
             )
@@ -223,22 +230,31 @@ impl<T: qa_input::Target> qa_input::Target for Routing<'_, T> {
         seat: SeatId,
         time: EventTime,
         source: Option<KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
         text: &str,
     ) -> bool {
-        self.command_bytes(seat, time, source, text.as_bytes())
+        self.command_bytes(seat, time, source, producer, text.as_bytes())
     }
     fn command_bytes(
         &mut self,
         seat: SeatId,
         time: EventTime,
         source: Option<KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
         text: &[u8],
     ) -> bool {
-        self.router.command_bytes(seat, time, source, text)
-            && self.observer.command_bytes(seat, time, source, text)
+        self.router
+            .command_bytes(seat, time, source, producer, text)
+            && self
+                .observer
+                .command_bytes(seat, time, source, producer, text)
     }
-    fn cancel_commands(&mut self, source: KeySource) {
-        self.router.console.discard_source(source);
-        self.observer.cancel_commands(source);
+    fn cancel_commands(
+        &mut self,
+        source: KeySource,
+        producer: Option<qa_core::primitives::CommandProducer>,
+    ) {
+        self.router.console.discard_acquisition(source, producer);
+        self.observer.cancel_commands(source, producer);
     }
 }

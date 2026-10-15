@@ -1,6 +1,6 @@
 use crate::{
     command_text::TextError,
-    views::{Context, RuleSetId},
+    views::{CommandProducer, Context, RuleSetId},
 };
 use qa_core::sys_events::KeySource;
 use qa_core::text::FixedText;
@@ -11,11 +11,15 @@ struct Span {
     end: usize,
     context: Context,
 }
+struct Wait {
+    remaining: u32,
+    context: Context,
+}
 pub struct CommandBuffer {
     text: Box<[u8]>,
     spans: Vec<Span>,
     bytes: usize,
-    wait: u32,
+    wait: Option<Wait>,
 }
 impl Default for CommandBuffer {
     fn default() -> Self {
@@ -28,7 +32,7 @@ impl CommandBuffer {
             text: vec![0; CAPACITY].into_boxed_slice(),
             spans: Vec::with_capacity(CAPACITY),
             bytes: 0,
-            wait: 0,
+            wait: None,
         }
     }
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
@@ -106,12 +110,21 @@ impl CommandBuffer {
         }
         Ok(())
     }
-    pub fn wait(&mut self, frames: u32) {
-        self.wait = frames;
+    pub fn wait(&mut self, frames: u32, context: Context) {
+        self.wait = (frames != 0).then_some(Wait {
+            remaining: frames,
+            context,
+        });
+    }
+    pub fn wait_context(&self) -> Option<Context> {
+        self.wait.as_ref().map(|wait| wait.context)
     }
     pub fn ready(&mut self) -> bool {
-        if self.wait != 0 {
-            self.wait -= 1;
+        if let Some(wait) = &mut self.wait {
+            wait.remaining -= 1;
+            if wait.remaining == 0 {
+                self.wait = None;
+            }
             false
         } else {
             true
@@ -122,13 +135,29 @@ impl CommandBuffer {
     }
     /// Remove pending descendants of a rejected physical binding acquisition.
     /// Other command origins retain their byte order and complete Context.
-    pub fn discard_source(&mut self, source: KeySource) {
+    pub fn discard_acquisition(&mut self, source: KeySource, producer: Option<CommandProducer>) {
+        self.discard_contexts(|context| {
+            context.key_source == Some(source) && context.producer == producer
+        });
+    }
+    pub fn discard_producer(&mut self, producer: CommandProducer) {
+        self.retain_producers(|current| current != producer);
+    }
+    pub fn retain_producers(&mut self, mut retained: impl FnMut(CommandProducer) -> bool) {
+        self.discard_contexts(|context| {
+            context.producer.is_some_and(|producer| !retained(producer))
+        });
+    }
+    fn discard_contexts(&mut self, mut retired: impl FnMut(Context) -> bool) {
+        if self.wait.as_ref().is_some_and(|wait| retired(wait.context)) {
+            self.wait = None;
+        }
         let mut read = 0;
         let mut write = 0;
         let mut kept = 0;
         for index in 0..self.spans.len() {
             let span = self.spans[index];
-            if span.context.key_source != Some(source) {
+            if !retired(span.context) {
                 let length = span.end - read;
                 self.text.copy_within(read..span.end, write);
                 write += length;
@@ -146,7 +175,7 @@ impl CommandBuffer {
     pub fn clear(&mut self) {
         self.spans.clear();
         self.bytes = 0;
-        self.wait = 0;
+        self.wait = None;
     }
     pub fn next_line<const N: usize>(
         &mut self,

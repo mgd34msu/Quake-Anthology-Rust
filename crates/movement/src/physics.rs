@@ -290,6 +290,7 @@ pub(crate) struct Parameters {
     pub stop: f32,
     pub accel: f32,
     pub air: f32,
+    capped_air: bool,
     pub water_accel: f32,
     pub water_friction: f32,
     pub no_step: bool,
@@ -312,6 +313,15 @@ impl Parameters {
         let tuning = effective_tuning(rules, t);
         let capabilities = capabilities(rules);
         let (trace_rules, entity_rules) = trace_policy(player.trace_rules);
+        let accel = t.accelerate.unwrap_or(10.0);
+        let configured_air = t.air_accelerate.unwrap_or(if arena { 1.0 } else { 0.0 });
+        let (air, capped_air) = match rules {
+            RuleSetId::Quake | RuleSetId::QuakeWorld => (accel, true),
+            RuleSetId::Quake2 if configured_air != 0.0 => (accel, true),
+            RuleSetId::Quake2Rerelease if configured_air != 0.0 => (configured_air, true),
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => (1.0, false),
+            RuleSetId::Quake3 => (configured_air, false),
+        };
         Self {
             rules,
             trace_rules,
@@ -323,8 +333,9 @@ impl Parameters {
             spectator_speed: tuning.spectator_speed,
             friction: t.friction.unwrap_or(if legacy { 4.0 } else { 6.0 }),
             stop: t.stop_speed.unwrap_or(100.0),
-            accel: t.accelerate.unwrap_or(10.0),
-            air: t.air_accelerate.unwrap_or(if arena { 1.0 } else { 0.0 }),
+            accel,
+            air,
+            capped_air,
             water_accel: t.water_accelerate.unwrap_or(if arena { 4.0 } else { 10.0 }),
             water_friction: t.water_friction.unwrap_or(if arena || legacy {
                 if legacy { 4.0 } else { 1.0 }
@@ -1174,14 +1185,6 @@ impl Step<'_> {
             } else {
                 self.parameters.accel
             }
-        } else if self.qw() || self.nq() {
-            self.parameters.accel
-        } else if self.classic() || self.rr() {
-            if self.parameters.air != 0.0 {
-                self.parameters.accel
-            } else {
-                1.0
-            }
         } else {
             self.parameters.air
         };
@@ -1189,11 +1192,7 @@ impl Step<'_> {
             direction,
             speed,
             accel,
-            !ground
-                && !water
-                && (self.nq()
-                    || self.qw()
-                    || (self.classic() || self.rr()) && self.parameters.air != 0.0),
+            !ground && !water && self.parameters.capped_air,
         );
         if self.arena() && self.ground_plane {
             if ground
@@ -1298,16 +1297,25 @@ impl Step<'_> {
             self.player.body.position = base;
             return Ok(());
         }
-        let signs =
-            std::array::from_fn::<_, 3, _>(|i| if position.0[i] >= 0.0 { 1.0 } else { -1.0 });
+        let signs = std::array::from_fn::<_, 3, _>(|i| {
+            if base.0[i] == position.0[i] {
+                0.0
+            } else if position.0[i] >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
+        });
         for bits in [0, 4, 1, 2, 3, 5, 6, 7] {
             let next = Vec3(std::array::from_fn(|i| {
-                base.0[i]
-                    + if bits & (1 << i) != 0 {
-                        signs[i] * 0.125
-                    } else {
-                        0.0
-                    }
+                math::narrow_eighth(
+                    base.0[i]
+                        + if bits & (1 << i) != 0 {
+                            signs[i] * 0.125
+                        } else {
+                            0.0
+                        },
+                )
             }));
             let tr = self.trace(next, next)?;
             if !tr.all_solid {

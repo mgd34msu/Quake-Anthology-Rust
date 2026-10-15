@@ -5,7 +5,7 @@ use qa_core::{
     primitives::{
         ClientId, EntityId, LoopDoppler, LoopGain, LoopLifetime, LoopOrigin, LoopPhase,
         LoopPlayback, ModuleId, Pcm, ResourceNamespace, SoundAction, SoundBus, SoundEmitter,
-        SoundEvent, SoundId, Vec3,
+        SoundEvent, SoundId, SoundStartOrder, Vec3,
     },
     stamps::StampSet,
 };
@@ -698,7 +698,9 @@ impl Mixer {
             }
         }
         let delay = (event.time_offset * self.bank.rate.get() as f32) as u64;
-        let begin = (delay != 0).then(|| self.counts.frames.saturating_add(delay));
+        let queued = event.action == SoundAction::Play
+            && event.spatial.start_order == SoundStartOrder::QueuedNewestFirst;
+        let begin = (delay != 0 || queued).then(|| self.counts.frames.saturating_add(delay));
         let replacement = if event.looping.is_some() {
             self.voices.iter().position(|voice| {
                 voice
@@ -975,10 +977,18 @@ impl Mixer {
                 .enumerate()
                 .filter_map(|(index, voice)| {
                     let voice = voice.as_ref()?;
-                    Some((voice.begin?, voice.order, index))
+                    let order = voice.event.spatial.start_order;
+                    // Distinct scheduling capabilities have a fixed tie order;
+                    // each retains its own publication rule within that group.
+                    Some((
+                        voice.begin?,
+                        order,
+                        order.publication_key(voice.order),
+                        index,
+                    ))
                 })
                 .min();
-            let Some((begin, _, index)) = next else {
+            let Some((begin, _, _, index)) = next else {
                 self.next_start = None;
                 return;
             };

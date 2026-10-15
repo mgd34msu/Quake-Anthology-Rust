@@ -1,3 +1,10 @@
+#[path = "modules/command_lifetimes.rs"]
+mod command_lifetimes;
+#[test]
+fn quakec_localcmd_lifetime_retires_before_the_next_console_phase() {
+    command_lifetimes::quakec_localcmd_retirement(quakec_output_host);
+}
+
 #[path = "modules/q3_clients.rs"]
 mod q3_clients;
 #[path = "modules/q3_snapshot_metadata.rs"]
@@ -2241,7 +2248,12 @@ fn a_budget_trap_and_a_stale_anchor_do_not_stop_other_providers() {
     source.time = EventTime(250_000_000);
     host.frame(&mut source, true);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
-    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 5);
+    // Invalidating the lifetime retires it once before provider catch-up.
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 4);
+    assert_eq!(
+        host.module_state(ModuleId(1)),
+        Some(qa_app::modules::State::Failed)
+    );
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 2);
 }
 
@@ -2257,7 +2269,11 @@ fn a_provider_anchor_transferred_to_another_module_cannot_call_its_new_owner() {
     source.time = EventTime(150_000_000);
     host.frame(&mut source, true);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
-    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 3);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 1);
+    assert_eq!(
+        host.module_state(ModuleId(1)),
+        Some(qa_app::modules::State::Failed)
+    );
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 1);
 }
 

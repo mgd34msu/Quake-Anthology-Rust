@@ -1,18 +1,20 @@
 use qa_core::primitives::{
     AttenuationPrecision, DistanceAttenuation, EntityAppearance, LoopDoppler, LoopGain,
     LoopLifetime, LoopOrigin, LoopPhase, LoopPlayback, NativeAppearanceTail, RuleSetId,
-    SoundChannels, SoundPlayback, SpatialPolicy, Vec3,
+    SoundChannels, SoundPlayback, SoundStartOrder, SpatialPolicy, Vec3,
 };
 
 const Q1: SpatialPolicy = SpatialPolicy {
     distance_offset: 0.0,
     attenuation: DistanceAttenuation::Linear(0.001),
     separation: 1.0,
+    start_order: SoundStartOrder::ImmediateFifo,
 };
 const Q2: SpatialPolicy = SpatialPolicy {
     distance_offset: 80.0,
     attenuation: q2_attenuation(AttenuationPrecision::F64),
     separation: 0.5,
+    start_order: SoundStartOrder::QueuedNewestFirst,
 };
 const RR: SpatialPolicy = SpatialPolicy {
     attenuation: q2_attenuation(AttenuationPrecision::F32),
@@ -32,6 +34,7 @@ const Q3: SpatialPolicy = SpatialPolicy {
     distance_offset: 80.0,
     attenuation: DistanceAttenuation::Linear(1.0 / (1250.0 - 80.0)),
     separation: 0.5,
+    start_order: SoundStartOrder::ImmediateFifo,
 };
 const POLICIES: [SpatialPolicy; 5] = [Q1, Q1, Q2, RR, Q3];
 

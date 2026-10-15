@@ -347,6 +347,12 @@ pub struct NameId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModuleId(pub u16);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandProducer {
+    pub module: ModuleId,
+    pub anchor: EntityId,
+}
+
 /// Weak slot identity from a module's native entity namespace. Raw world/none
 /// sentinels stay signed and unchanged; this is not an engine lifetime handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1863,12 +1869,30 @@ impl DistanceAttenuation {
     }
 }
 
-/// Spatial capability parameters selected at the emitting role's boundary.
+/// One-shot issue order selected at the sound behavior boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SoundStartOrder {
+    #[default]
+    ImmediateFifo,
+    /// Queue even zero-offset starts and issue equal deadlines newest first.
+    QueuedNewestFirst,
+}
+impl SoundStartOrder {
+    pub const fn publication_key(self, order: u64) -> u64 {
+        match self {
+            Self::ImmediateFifo => order,
+            Self::QueuedNewestFirst => u64::MAX - order,
+        }
+    }
+}
+
+/// Sound capability parameters selected at the emitting role's boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpatialPolicy {
     pub distance_offset: f32,
     pub attenuation: DistanceAttenuation,
     pub separation: f32,
+    pub start_order: SoundStartOrder,
 }
 impl Default for SpatialPolicy {
     fn default() -> Self {
@@ -1876,6 +1900,7 @@ impl Default for SpatialPolicy {
             distance_offset: 0.0,
             attenuation: DistanceAttenuation::Linear(0.0),
             separation: 1.0,
+            start_order: SoundStartOrder::ImmediateFifo,
         }
     }
 }

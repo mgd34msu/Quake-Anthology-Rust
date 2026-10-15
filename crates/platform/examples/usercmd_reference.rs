@@ -85,11 +85,17 @@ fn heap_input() -> Result<(), Box<dyn std::error::Error>> {
             _: SeatId,
             _: EventTime,
             _: Option<qa_core::sys_events::KeySource>,
+            _: Option<qa_core::primitives::CommandProducer>,
             _: &str,
         ) -> bool {
             true
         }
-        fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
+        fn cancel_commands(
+            &mut self,
+            _: qa_core::sys_events::KeySource,
+            _: Option<qa_core::primitives::CommandProducer>,
+        ) {
+        }
     }
     let mut input = Input::load();
     input.seed(EventTime(0));
@@ -242,6 +248,7 @@ fn view(qw: bool) -> Result<(), Box<dyn std::error::Error>> {
                 device: qa_core::sys_events::DeviceId::Keyboard(0),
                 control: 1,
             }),
+            None,
             time,
         );
         input.build_frame_with_policy(time, &[policy; SeatId::COUNT]);

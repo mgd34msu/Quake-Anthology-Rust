@@ -1,6 +1,6 @@
 //! One device binding table and usercmd builder, independent of map/game rules.
 use qa_core::{
-    primitives::{ModuleId, RuleSetId, UserCmd, Vec3, WeaponId, buttons},
+    primitives::{CommandProducer, ModuleId, RuleSetId, UserCmd, Vec3, WeaponId, buttons},
     sys_events::{DeviceId, EventKind, EventTime, KeySource, MAX_INPUT_DEVICES, SeatId, SysEvent},
 };
 
@@ -61,6 +61,7 @@ pub trait Target {
         seat: SeatId,
         time: EventTime,
         source: Option<KeySource>,
+        producer: Option<CommandProducer>,
         text: &str,
     ) -> bool;
     fn command_bytes(
@@ -68,26 +69,32 @@ pub trait Target {
         seat: SeatId,
         time: EventTime,
         source: Option<KeySource>,
+        producer: Option<CommandProducer>,
         text: &[u8],
     ) -> bool {
-        std::str::from_utf8(text).is_ok_and(|text| self.command(seat, time, source, text))
+        std::str::from_utf8(text).is_ok_and(|text| self.command(seat, time, source, producer, text))
     }
     /// Cancel pending commands inherited from this physical source.
-    fn cancel_commands(&mut self, source: KeySource);
+    fn cancel_commands(&mut self, source: KeySource, producer: Option<CommandProducer>);
 }
 #[derive(Clone, Copy, Default)]
 struct Button {
-    held: [Option<KeySource>; 2],
+    held: [Option<ActionSource>; 2],
     down_at: EventTime,
     elapsed: u64,
     pressed: bool,
     released: bool,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ActionSource {
+    key: KeySource,
+    producer: Option<CommandProducer>,
+}
 impl Button {
     fn active(&self) -> bool {
         self.held.iter().any(Option::is_some)
     }
-    fn set(&mut self, source: KeySource, down: bool, time: EventTime) {
+    fn set(&mut self, source: ActionSource, down: bool, time: EventTime) {
         if down {
             // qsrc Q3 IN_KeyDown: repeated sources do not acquire another slot
             // or change downtime. Two keys may hold the same action.
@@ -339,8 +346,8 @@ impl InputPolicy {
 enum BindingHold {
     #[default]
     None,
-    Pending,
-    Acquired,
+    Pending(Option<CommandProducer>),
+    Acquired(Option<CommandProducer>),
 }
 
 #[derive(Clone, Copy)]
@@ -642,13 +649,24 @@ impl Input {
         time: EventTime,
         target: &mut impl Target,
     ) -> Result<(), BindError> {
+        self.bind_bytes_owned(control, text, None, time, target)
+    }
+    pub fn bind_bytes_owned(
+        &mut self,
+        control: u16,
+        text: &[u8],
+        producer: Option<CommandProducer>,
+        time: EventTime,
+        target: &mut impl Target,
+    ) -> Result<(), BindError> {
         if self
             .binding(control)
-            .is_some_and(|binding| binding.bytes() == text)
+            .is_some_and(|binding| binding.bytes() == text && binding.producer == producer)
         {
             return Ok(());
         }
-        let binding = Binding::parse_bytes(text)?;
+        let mut binding = Binding::parse_bytes(text)?;
+        binding.producer = producer;
         if self.bind(control, Some(binding), time, target) {
             Ok(())
         } else {
@@ -670,13 +688,7 @@ impl Input {
         // physical hold state. Repeats cannot acquire the new binding until up.
         for index in 0..self.devices.len() {
             // Only modifiers have two physical controls for one config name.
-            for physical in [
-                Some(control),
-                (224..=227).contains(&control).then_some(control + 4),
-            ]
-            .into_iter()
-            .flatten()
-            {
+            for physical in keys::physical_controls(control) {
                 if self.devices[index].held[usize::from(physical)]
                     && let Some(id) = self.devices[index].id
                 {
@@ -695,31 +707,81 @@ impl Input {
             }
         }
     }
+    /// Retired definitions release through the same executor as replacement.
+    /// Their physical holds cannot reacquire a binding before the next key-up.
+    pub fn retain_producers(
+        &mut self,
+        mut retained: impl FnMut(CommandProducer) -> bool,
+        time: EventTime,
+        target: &mut impl Target,
+    ) {
+        for control in 0..CONTROLS {
+            let remove = self.bindings[control]
+                .as_ref()
+                .and_then(Binding::producer)
+                .is_some_and(|producer| !retained(producer));
+            if !remove {
+                continue;
+            }
+            self.bind(control as u16, None, time, target);
+        }
+        // Queued releases can be pruned after their physical key is already up.
+        // Action ownership, rather than physical state, identifies these holds.
+        self.release_sources(time, |source| {
+            source.producer.is_some_and(|producer| !retained(producer))
+        });
+    }
+    pub fn retain_bindings(
+        &mut self,
+        retained: impl FnMut(CommandProducer) -> bool,
+        time: EventTime,
+        target: &mut impl Target,
+    ) {
+        self.retain_producers(retained, time, target);
+    }
+    pub fn retire_bindings(
+        &mut self,
+        producer: CommandProducer,
+        time: EventTime,
+        target: &mut impl Target,
+    ) {
+        self.retain_producers(|owner| owner != producer, time, target);
+    }
     pub fn button(
         &mut self,
         seat: SeatId,
         action: Action,
         down: bool,
         key: Option<KeySource>,
+        producer: Option<CommandProducer>,
         time: EventTime,
     ) {
         let button = &mut self.seats[seat.index()].actions[action as usize];
-        if !down && key.is_none() {
+        if !down && key.is_none() && producer.is_none() {
             button.released |= button.active();
             button.held = [None; 2];
             // Keep an impulse pressed and accumulated elapsed time this frame.
+        } else if !down && key.is_none() {
+            for source in button.held.into_iter().flatten() {
+                if source.producer == producer {
+                    button.set(source, false, time);
+                }
+            }
         } else {
             button.set(
-                key.unwrap_or(KeySource {
-                    device: DeviceId::Keyboard(0),
-                    control: u16::MAX,
-                }),
+                ActionSource {
+                    key: key.unwrap_or(KeySource {
+                        device: DeviceId::Keyboard(0),
+                        control: u16::MAX,
+                    }),
+                    producer,
+                },
                 down,
                 time,
             );
         }
     }
-    fn release_sources(&mut self, time: EventTime, matches: impl Fn(KeySource) -> bool) {
+    fn release_sources(&mut self, time: EventTime, mut matches: impl FnMut(ActionSource) -> bool) {
         for seat in &mut self.seats {
             for button in &mut seat.actions {
                 let sources = button.held;
@@ -734,18 +796,26 @@ impl Input {
         }
     }
     /// Bounded command rejection cancels this source, never its other holders.
-    pub fn cancel_source(&mut self, source: KeySource, time: EventTime) {
-        self.release_sources(time, |held| held == source);
+    pub fn cancel_source(
+        &mut self,
+        source: KeySource,
+        producer: Option<CommandProducer>,
+        time: EventTime,
+    ) {
+        self.release_sources(time, |held| held.key == source && held.producer == producer);
         if let Some(index) = self.device_index(source.device)
             && let Some(acquired) = self.devices[index]
                 .acquired
                 .get_mut(usize::from(source.control))
         {
-            *acquired = BindingHold::None;
+            if matches!(*acquired, BindingHold::Pending(owner) | BindingHold::Acquired(owner) if owner == producer)
+            {
+                *acquired = BindingHold::None;
+            }
         }
     }
     fn remove(&mut self, id: DeviceId, time: EventTime) {
-        self.release_sources(time, |source| source.device == id);
+        self.release_sources(time, |source| source.key.device == id);
         if let Some(index) = self.device_index(id) {
             self.devices[index] = Device::default();
         }

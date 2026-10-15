@@ -320,6 +320,32 @@ impl Modules {
     }
 }
 impl FrameHost {
+    pub(crate) fn retire_stale_modules(&mut self) {
+        let count = self
+            .modules
+            .as_ref()
+            .map_or(0, |modules| modules.rows.len());
+        for index in 0..count {
+            let module = ModuleId(index as u16);
+            let Some(row) = self.module_row(module).filter(|row| row.state.can_invoke()) else {
+                continue;
+            };
+            let producer = qa_core::primitives::CommandProducer {
+                module,
+                anchor: row.request.anchor,
+            };
+            if qa_console::commands::Host::command_producer_live(&self.runtime, producer) {
+                continue;
+            }
+            if let Some(row) = self.module_row_mut(module) {
+                row.state = State::Failed;
+                row.counts.rejected += 1;
+            }
+            self.disconnect_module_recipients(module);
+            self.retire_module_state(module);
+        }
+    }
+
     fn module_row(&self, id: ModuleId) -> Option<&Module> {
         self.modules.as_ref()?.row(id)
     }
@@ -445,6 +471,10 @@ impl FrameHost {
             {
                 return Err("invalid module binding".into());
             }
+            request.context.console.producer = Some(qa_console::views::CommandProducer {
+                module: request.context.module,
+                anchor: request.anchor,
+            });
             if let Program::QuakeC(qc) = &mut request.program {
                 if request
                     .entries
@@ -717,6 +747,11 @@ impl FrameHost {
             });
         }
         let input = input::recipients(&rows);
+        host.retain_command_producers(|producer| {
+            rows.get(usize::from(producer.module.0))
+                .and_then(Option::as_ref)
+                .is_some_and(|row| row.request.anchor == producer.anchor)
+        });
         host.modules = Some(Modules {
             functions: Arc::new(functions),
             rows,
@@ -769,12 +804,17 @@ impl FrameHost {
         let Some(row) = self.module_row(module) else {
             return;
         };
-        let (audio, view, connection, time) = (
+        let (audio, view, connection, time, producer) = (
             row.produces_client_audio,
             row.produces_client_view,
             row.client_connection,
             row.time(self.time),
+            qa_console::views::CommandProducer {
+                module,
+                anchor: row.request.anchor,
+            },
         );
+        self.retain_command_producers(|current| current != producer);
         if let Some(row) = self.module_row_mut(module) {
             row.collision_role.reset();
         }

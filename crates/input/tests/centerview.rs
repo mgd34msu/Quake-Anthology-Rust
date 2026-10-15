@@ -170,6 +170,7 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
                 device: qa_core::sys_events::DeviceId::Keyboard(0),
                 control: 1,
             }),
+            None,
             time,
         );
         input.center_view(SeatId::FIRST);

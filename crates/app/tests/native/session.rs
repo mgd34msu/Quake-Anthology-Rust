@@ -25,6 +25,7 @@ use std::time::Duration;
 #[allow(dead_code)]
 mod native_image;
 use native_image::*;
+mod command_lifetimes;
 mod cues;
 #[path = "../elf32_q3.rs"]
 mod registered_q3;
@@ -5795,6 +5796,10 @@ mod pmove;
 mod appearance;
 
 pub fn run() {
+    if std::env::args().any(|arg| arg == "--command-lifetimes") {
+        command_lifetimes::run();
+        return;
+    }
     if std::env::args().any(|arg| arg == "--q3-game-data") {
         for (variable, bits) in [
             ("QA_NATIVE_Q3_ELF32_FIXTURE", 32),
@@ -5852,6 +5857,7 @@ pub fn run() {
         println!("native Q2 client command checks passed");
         return;
     }
+    command_lifetimes::run();
     appearance::native_appearance_uses_common_lifetimes_and_player_state();
     pmove::commands_move_a_native_client_once();
     commands::packet_commands_keep_native_order_and_borrowed_arguments();

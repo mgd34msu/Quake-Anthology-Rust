@@ -659,6 +659,7 @@ impl Cvars {
     pub fn native_view(&mut self, mut view: View) -> Result<u32, WriteError> {
         view.context.event_time = None;
         view.context.key_source = None;
+        view.context.producer = None;
         let binding = view.binding as usize;
         let mut cursor = self.native_heads[binding];
         while let Some(index) = cursor {
@@ -958,7 +959,7 @@ impl Cvars {
         }
         DEFINITIONS[BINDINGS[view.binding as usize].row as usize].policies & 2 != 0
     }
-    pub fn macro_value(&self, name: &[u8], context: Context) -> Option<Text> {
+    pub fn macro_value(&self, name: &[u8], context: Context) -> Option<Text<'_>> {
         let view = self.bind(std::str::from_utf8(name).ok()?, context)?;
         (!self.private(view))
             .then(|| self.read(view).ok())
@@ -1413,6 +1414,7 @@ impl Cvars {
                     seat: qa_core::sys_events::SeatId::FIRST,
                     event_time: None,
                     key_source: None,
+                    producer: None,
                 };
                 let view = View {
                     handle: self.slot(binding.row as usize, binding.seat),

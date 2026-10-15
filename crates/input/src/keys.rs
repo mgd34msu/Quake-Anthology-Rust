@@ -251,6 +251,14 @@ pub fn normalize(control: u16) -> u16 {
         _ => control,
     }
 }
+pub(crate) fn physical_controls(control: u16) -> impl Iterator<Item = u16> {
+    [
+        Some(control),
+        (224..=227).contains(&control).then_some(control + 4),
+    ]
+    .into_iter()
+    .flatten()
+}
 pub fn parse(text: &str) -> Option<u16> {
     if let Some(control) = NAMES
         .iter()

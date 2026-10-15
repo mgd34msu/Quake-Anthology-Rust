@@ -1,7 +1,7 @@
 //! RuleSetId views select defaults and conversions, never a second cvar table.
 use crate::catalog::Scope;
 
-pub use qa_core::primitives::RuleSetId;
+pub use qa_core::primitives::{CommandProducer, RuleSetId};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Engine,
@@ -17,6 +17,7 @@ pub struct Context {
     pub seat: qa_core::sys_events::SeatId,
     pub event_time: Option<qa_core::sys_events::EventTime>,
     pub key_source: Option<qa_core::sys_events::KeySource>,
+    pub producer: Option<CommandProducer>,
 }
 impl Default for Context {
     fn default() -> Self {
@@ -28,6 +29,7 @@ impl Default for Context {
             seat: qa_core::sys_events::SeatId::FIRST,
             event_time: None,
             key_source: None,
+            producer: None,
         }
     }
 }

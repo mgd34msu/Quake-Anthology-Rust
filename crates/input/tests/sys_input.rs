@@ -19,11 +19,17 @@ impl Target for Sink {
         _: SeatId,
         _: EventTime,
         _: Option<qa_core::sys_events::KeySource>,
+        _: Option<qa_core::primitives::CommandProducer>,
         _: &str,
     ) -> bool {
         true
     }
-    fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
+    fn cancel_commands(
+        &mut self,
+        _: qa_core::sys_events::KeySource,
+        _: Option<qa_core::primitives::CommandProducer>,
+    ) {
+    }
 }
 fn key(input: &mut Input, sink: &mut Sink, ms: u64, code: u16, down: bool, repeat: bool) {
     device_key(input, sink, DeviceId::Keyboard(0), ms, code, down, repeat);
@@ -65,11 +71,17 @@ fn physical_holds_survive_consumption_repeats_and_duplicate_releases() {
             _: SeatId,
             _: EventTime,
             _: Option<qa_core::sys_events::KeySource>,
+            _: Option<qa_core::primitives::CommandProducer>,
             _: &str,
         ) -> bool {
             true
         }
-        fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
+        fn cancel_commands(
+            &mut self,
+            _: qa_core::sys_events::KeySource,
+            _: Option<qa_core::primitives::CommandProducer>,
+        ) {
+        }
     }
     let mut input = Input::load();
     input.seed(EventTime(0));

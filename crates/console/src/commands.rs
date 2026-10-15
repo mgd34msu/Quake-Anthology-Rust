@@ -4,7 +4,7 @@ use crate::{
     command_text::{self, Arguments, ParsedCommand, TextError},
     cvars::{Cvars, WriteError},
     text::MAX_TEXT,
-    views::{Context, RuleSetId},
+    views::{CommandProducer, Context, RuleSetId},
 };
 use qa_core::sys_events::{EventTime, KeySource, SeatId, key_catchers};
 use qa_core::text::FixedText;
@@ -38,6 +38,9 @@ pub trait Host {
     fn quit(&mut self);
     fn input(&mut self) -> &mut Input;
     fn input_time(&self) -> EventTime;
+    fn command_producer_live(&self, _producer: CommandProducer) -> bool {
+        false
+    }
 }
 #[derive(Debug)]
 pub enum CommandError {
@@ -74,6 +77,8 @@ impl<H> Clone for Command<H> {
 }
 struct Alias {
     name: Option<NameId>,
+    producer: Option<CommandProducer>,
+    next_same_name: Option<usize>,
     text: FixedText<1024>,
 }
 pub struct Console<H> {
@@ -113,6 +118,8 @@ impl<H: Host> Console<H> {
             aliases: (0..alias_capacity)
                 .map(|_| Alias {
                     name: None,
+                    producer: None,
+                    next_same_name: None,
                     text: FixedText::default(),
                 })
                 .collect(),
@@ -187,16 +194,83 @@ impl<H: Host> Console<H> {
     pub fn append_line_bytes(&mut self, text: &[u8], context: Context) -> Result<(), TextError> {
         self.buffer.append_line_bytes(text, context)
     }
-    pub fn discard_source(&mut self, source: KeySource) {
-        self.buffer.discard_source(source);
+    pub fn discard_acquisition(&mut self, source: KeySource, producer: Option<CommandProducer>) {
+        self.buffer.discard_acquisition(source, producer);
+    }
+    pub fn discard_producer(
+        &mut self,
+        host: &mut H,
+        producer: CommandProducer,
+    ) -> Result<(), CommandError> {
+        self.retain_producers(host, |current| current != producer)
+    }
+    /// Cold publication or teardown keeps only the admitted module lifetimes.
+    /// Human text and aliases have no producer and retain their order.
+    pub fn retain_producers(
+        &mut self,
+        host: &mut H,
+        mut retained: impl FnMut(CommandProducer) -> bool,
+    ) -> Result<(), CommandError> {
+        let time = host.input_time();
+        let mut output = BindOutput::new(&mut self.buffer, self.cvars.context());
+        host.input()
+            .retain_producers(&mut retained, time, &mut output);
+        let result = output.finish(host);
+        self.buffer.retain_producers(&mut retained);
+        for index in 0..self.alias_count {
+            if self.aliases[index]
+                .producer
+                .is_some_and(|producer| !retained(producer))
+            {
+                self.remove_alias(index);
+            }
+        }
+        result
+    }
+    fn alias_index(&self, name: NameId, producer: Option<CommandProducer>) -> Option<usize> {
+        let mut current = self.alias_by_name[name.0 as usize];
+        while let Some(index) = current {
+            let alias = &self.aliases[index];
+            if alias.producer == producer {
+                return Some(index);
+            }
+            current = alias.next_same_name;
+        }
+        None
+    }
+    fn remove_alias(&mut self, index: usize) {
+        let Some(name) = self.aliases[index]
+            .name
+            .and_then(|name| self.cvars.names.folded(name))
+        else {
+            return;
+        };
+        let head = &mut self.alias_by_name[name.0 as usize];
+        if *head == Some(index) {
+            *head = self.aliases[index].next_same_name;
+        } else {
+            let mut current = *head;
+            while let Some(previous) = current {
+                if self.aliases[previous].next_same_name == Some(index) {
+                    self.aliases[previous].next_same_name = self.aliases[index].next_same_name;
+                    break;
+                }
+                current = self.aliases[previous].next_same_name;
+            }
+        }
+        let alias = &mut self.aliases[index];
+        alias.name = None;
+        alias.producer = None;
+        alias.next_same_name = None;
+        alias.text.clear();
     }
     fn reject_expansion(&mut self, error: TextError, context: Context, host: &mut H) {
         if error == TextError::TooLong
             && let Some(source) = context.key_source
         {
-            self.discard_source(source);
+            self.discard_acquisition(source, context.producer);
             let time = context.event_time.unwrap_or_else(|| host.input_time());
-            host.input().cancel_source(source, time);
+            host.input().cancel_source(source, context.producer, time);
             host.reject_input(1);
         }
     }
@@ -218,6 +292,8 @@ impl<H: Host> Console<H> {
                 let context = Context {
                     seat,
                     event_time: Some(time),
+                    key_source: None,
+                    producer: None,
                     ..self.cvars.context()
                 };
                 self.buffer.append_line(self.editor.line(), context)?;
@@ -261,7 +337,19 @@ impl<H: Host> Console<H> {
         };
         let mut executed = 0;
         let mut aliases = 0;
-        while !self.buffer.is_empty() && self.buffer.ready() {
+        while !self.buffer.is_empty() {
+            if let Some(producer) = self
+                .buffer
+                .wait_context()
+                .and_then(|context| context.producer)
+                && !host.command_producer_live(producer)
+            {
+                let _ = self.discard_producer(host, producer);
+                continue;
+            }
+            if !self.buffer.ready() {
+                break;
+            }
             if executed >= 4096 {
                 host.print(format_args!("Command frame limit\n"));
                 break;
@@ -270,6 +358,12 @@ impl<H: Host> Console<H> {
                 break;
             };
             executed += 1;
+            if let Some(producer) = context.producer
+                && !host.command_producer_live(producer)
+            {
+                let _ = self.discard_producer(host, producer);
+                continue;
+            }
             if let Err(error) = result {
                 self.reject_expansion(error, context, host);
                 host.print(format_args!("Command rejected: {error:?}\n"));
@@ -345,7 +439,7 @@ impl<H: Host> Console<H> {
                         }
                     }
                 } else if let Some(alias) = id
-                    .and_then(|id| self.alias_by_name[id.0 as usize])
+                    .and_then(|id| self.alias_index(id, context.producer))
                     .map(|index| &self.aliases[index])
                 {
                     aliases += 1;
@@ -412,7 +506,13 @@ impl<H: Host> Console<H> {
             host.input().bind(control, None, time, &mut output);
         } else {
             host.input()
-                .bind_bytes(control, self.joined.as_bytes(), time, &mut output)
+                .bind_bytes_owned(
+                    control,
+                    self.joined.as_bytes(),
+                    context.producer,
+                    time,
+                    &mut output,
+                )
                 .map_err(CommandError::Bind)?;
         }
         output.finish(host)
@@ -485,8 +585,14 @@ impl<H: Host> Console<H> {
         } else {
             EventTime::from_milliseconds(crate::numbers::integer(args.get(2)) as u32 as u64)
         };
-        host.input()
-            .button(context.seat, action, name.starts_with('+'), key, time);
+        host.input().button(
+            context.seat,
+            action,
+            name.starts_with('+'),
+            key,
+            context.producer,
+            time,
+        );
         Ok(())
     }
     fn center_view(
@@ -498,24 +604,32 @@ impl<H: Host> Console<H> {
         host.input().center_view(context.seat);
         Ok(())
     }
-    fn wait(&mut self, _: &mut H, args: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
-        self.buffer.wait(if args.len() == 1 {
-            1
-        } else {
-            crate::numbers::integer(args.get(1)).max(0) as u32
-        });
+    fn wait(
+        &mut self,
+        _: &mut H,
+        args: &Arguments<'_>,
+        context: Context,
+    ) -> Result<(), CommandError> {
+        self.buffer.wait(
+            if args.len() == 1 {
+                1
+            } else {
+                crate::numbers::integer(args.get(1)).max(0) as u32
+            },
+            context,
+        );
         Ok(())
     }
     fn alias(
         &mut self,
         host: &mut H,
         args: &Arguments<'_>,
-        _: Context,
+        context: Context,
     ) -> Result<(), CommandError> {
         if args.len() == 1 {
             for alias in self.aliases[..self.alias_count]
                 .iter()
-                .filter(|a| a.name.is_some())
+                .filter(|a| a.name.is_some() && a.producer == context.producer)
             {
                 host.print(format_args!(
                     "{} : ",
@@ -542,8 +656,8 @@ impl<H: Host> Console<H> {
         args.join_bytes(2, &mut text)?;
         text.write_str("\n").map_err(|_| TextError::TooLong)?;
         let folded = self.cvars.lookup_name(name);
-        let index = folded
-            .and_then(|id| self.alias_by_name[id.0 as usize])
+        let previous = folded.and_then(|id| self.alias_index(id, context.producer));
+        let index = previous
             .or_else(|| {
                 self.aliases[..self.alias_count]
                     .iter()
@@ -565,24 +679,33 @@ impl<H: Host> Console<H> {
             .ok_or(NamesError::Capacity)
             .map_err(CommandError::Names)?;
         self.alias_count = self.alias_count.max(index + 1);
-        self.alias_by_name[folded.0 as usize] = Some(index);
+        let next_same_name = if previous.is_some() {
+            self.aliases[index].next_same_name
+        } else {
+            self.alias_by_name[folded.0 as usize]
+        };
+        if previous.is_none() {
+            self.alias_by_name[folded.0 as usize] = Some(index);
+        }
         let alias = &mut self.aliases[index];
         alias.name = Some(exact);
+        alias.producer = context.producer;
+        alias.next_same_name = next_same_name;
         alias.text = text;
         Ok(())
     }
-    fn unalias(&mut self, _: &mut H, args: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
+    fn unalias(
+        &mut self,
+        _: &mut H,
+        args: &Arguments<'_>,
+        context: Context,
+    ) -> Result<(), CommandError> {
         if args.len() != 2 {
             return Err(CommandError::Usage);
         }
         let folded = self.cvars.lookup_name(args.get(1));
-        if let Some((id, index)) =
-            folded.and_then(|id| self.alias_by_name[id.0 as usize].map(|index| (id, index)))
-        {
-            self.alias_by_name[id.0 as usize] = None;
-            let alias = &mut self.aliases[index];
-            alias.name = None;
-            alias.text.clear();
+        if let Some(index) = folded.and_then(|id| self.alias_index(id, context.producer)) {
+            self.remove_alias(index);
         }
         Ok(())
     }
@@ -752,15 +875,17 @@ impl Target for BindOutput<'_> {
         seat: SeatId,
         time: EventTime,
         key_source: Option<qa_core::sys_events::KeySource>,
+        producer: Option<CommandProducer>,
         text: &str,
     ) -> bool {
-        self.command_bytes(seat, time, key_source, text.as_bytes())
+        self.command_bytes(seat, time, key_source, producer, text.as_bytes())
     }
     fn command_bytes(
         &mut self,
         seat: SeatId,
         time: EventTime,
         key_source: Option<qa_core::sys_events::KeySource>,
+        producer: Option<CommandProducer>,
         text: &[u8],
     ) -> bool {
         let result = self.buffer.append_line_bytes(
@@ -768,6 +893,7 @@ impl Target for BindOutput<'_> {
             Context {
                 seat,
                 key_source,
+                producer,
                 event_time: Some(time),
                 ..self.context
             },
@@ -778,8 +904,8 @@ impl Target for BindOutput<'_> {
         }
         result.is_ok()
     }
-    fn cancel_commands(&mut self, source: KeySource) {
-        self.buffer.discard_source(source);
+    fn cancel_commands(&mut self, source: KeySource, producer: Option<CommandProducer>) {
+        self.buffer.discard_acquisition(source, producer);
     }
 }
 

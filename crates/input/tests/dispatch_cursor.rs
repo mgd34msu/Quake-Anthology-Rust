@@ -14,11 +14,15 @@ use qa_input::{DispatchCursor, DispatchStep, Input, InputAtom, InputCapture, Tar
 
 struct Sink {
     router: support::Router,
+    release_lines: u32,
+    last_producer: Option<qa_core::primitives::CommandProducer>,
 }
 impl Default for Sink {
     fn default() -> Self {
         Self {
             router: support::Router::default(),
+            release_lines: 0,
+            last_producer: None,
         }
     }
 }
@@ -29,21 +33,30 @@ impl Target for Sink {
         seat: SeatId,
         time: EventTime,
         source: Option<KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
         text: &str,
     ) -> bool {
-        self.command_bytes(seat, time, source, text.as_bytes())
+        self.command_bytes(seat, time, source, producer, text.as_bytes())
     }
     fn command_bytes(
         &mut self,
         seat: SeatId,
         time: EventTime,
         source: Option<KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
         text: &[u8],
     ) -> bool {
-        self.router.command_bytes(seat, time, source, text)
+        self.release_lines += u32::from(text.starts_with(b"-"));
+        self.last_producer = producer;
+        self.router
+            .command_bytes(seat, time, source, producer, text)
     }
-    fn cancel_commands(&mut self, source: KeySource) {
-        self.router.console.discard_source(source);
+    fn cancel_commands(
+        &mut self,
+        source: KeySource,
+        producer: Option<qa_core::primitives::CommandProducer>,
+    ) {
+        self.router.console.discard_acquisition(source, producer);
     }
 }
 fn event(ms: u64, kind: EventKind<'_>) -> SysEvent<'_> {
@@ -538,4 +551,388 @@ fn native_slots_round_trip_without_case_or_shifted_symbol_aliases() {
     assert_ne!(keys::from_native(33), keys::from_native(49));
     assert_eq!(keys::parse("W"), keys::parse("w"));
     assert_ne!(keys::parse("W"), keys::parse("0x57"));
+}
+
+fn producer(module: u16, generation: u32) -> qa_core::primitives::CommandProducer {
+    qa_core::primitives::CommandProducer {
+        module: ModuleId(module),
+        anchor: qa_core::primitives::EntityId {
+            slot: 3,
+            generation,
+        },
+    }
+}
+
+#[test]
+fn scoped_alias_binding_keeps_its_definition_owner_at_the_physical_press() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let owners = [producer(7, 1), producer(8, 1)];
+    sink.router.host.producers = owners.map(Some);
+    for (owner, text) in [
+        (owners[0], "alias fire +edge; bind w fire"),
+        (owners[1], "alias fire -edge; bind s fire"),
+    ] {
+        sink.router
+            .console
+            .append(
+                text,
+                Context {
+                    producer: Some(owner),
+                    ..Context::default()
+                },
+            )
+            .unwrap();
+        sink.router.execute(&mut input);
+    }
+    for (control, owner) in [(26, owners[0]), (22, owners[1])] {
+        assert_eq!(input.binding(control).unwrap().producer(), Some(owner));
+        input.dispatch(
+            key(10, DeviceId::Keyboard(0), control, true, false),
+            &mut sink,
+        );
+        assert_eq!(sink.last_producer, Some(owner));
+        sink.router.execute(&mut input);
+        assert_eq!(sink.router.host.last_context.unwrap().producer, Some(owner));
+        input.dispatch(
+            key(20, DeviceId::Keyboard(0), control, false, false),
+            &mut sink,
+        );
+    }
+    assert_eq!(
+        (sink.router.host.presses, sink.router.host.releases),
+        (1, 1)
+    );
+}
+
+#[test]
+fn identical_bytes_with_a_new_owner_release_the_acquired_old_definition_once() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let old = producer(7, 1);
+    let new = producer(7, 2);
+    sink.router.host.producers = [Some(old), Some(new)];
+    input
+        .bind_bytes_owned(26, b"+edge", Some(old), EventTime(0), &mut sink)
+        .unwrap();
+    input.dispatch(key(10, DeviceId::Keyboard(0), 26, true, false), &mut sink);
+    sink.router.execute(&mut input);
+    input
+        .bind_bytes_owned(
+            26,
+            b"+edge",
+            Some(new),
+            EventTime::from_milliseconds(20),
+            &mut sink,
+        )
+        .unwrap();
+    assert_eq!(sink.last_producer, Some(old));
+    assert_eq!(input.binding(26).unwrap().producer(), Some(new));
+    sink.router.execute(&mut input);
+    assert_eq!(sink.router.host.last_context.unwrap().producer, Some(old));
+    assert_eq!(
+        (sink.router.host.presses, sink.router.host.releases),
+        (1, 1)
+    );
+    for (ms, down, repeat) in [(21, true, true), (22, false, false), (23, true, false)] {
+        input.dispatch(key(ms, DeviceId::Keyboard(0), 26, down, repeat), &mut sink);
+    }
+    sink.router.execute(&mut input);
+    assert_eq!(sink.router.host.last_context.unwrap().producer, Some(new));
+    assert_eq!(
+        (sink.router.host.presses, sink.router.host.releases),
+        (2, 1)
+    );
+    assert_eq!(sink.release_lines, 1);
+    // A human replacement of identical bytes must also replace ownership.
+    input
+        .bind_bytes(26, b"+edge", EventTime::from_milliseconds(24), &mut sink)
+        .unwrap();
+    assert_eq!(input.binding(26).unwrap().producer(), None);
+    assert_eq!(sink.last_producer, Some(new));
+}
+
+#[test]
+fn retirement_is_exact_in_generation_and_retention_preserves_human_and_other_owner() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let old = producer(7, 1);
+    let reused = producer(7, 2);
+    let other = producer(8, 1);
+    for (control, owner) in [
+        (26, Some(old)),
+        (22, Some(reused)),
+        (10, Some(other)),
+        (11, None),
+    ] {
+        input
+            .bind_bytes_owned(control, b"+edge", owner, EventTime(0), &mut sink)
+            .unwrap();
+    }
+    input.dispatch(key(10, DeviceId::Keyboard(17), 26, true, false), &mut sink);
+    input.retire_bindings(reused, EventTime::from_milliseconds(20), &mut sink);
+    assert!(input.binding(22).is_none());
+    assert_eq!(input.binding(26).unwrap().producer(), Some(old));
+    assert_eq!(sink.release_lines, 0);
+    input.retain_bindings(
+        |owner| owner == other,
+        EventTime::from_milliseconds(30),
+        &mut sink,
+    );
+    assert!(input.binding(26).is_none());
+    assert!(input.binding(22).is_none());
+    assert_eq!(input.binding(10).unwrap().producer(), Some(other));
+    assert_eq!(input.binding(11).unwrap().producer(), None);
+    assert_eq!((sink.release_lines, sink.last_producer), (1, Some(old)));
+    assert!(input.is_down(SeatId::FIRST, 26));
+    input.dispatch(key(40, DeviceId::Keyboard(17), 26, false, false), &mut sink);
+    input.retire_bindings(old, EventTime::from_milliseconds(50), &mut sink);
+    assert_eq!(sink.release_lines, 1);
+}
+
+#[test]
+fn retirement_cancels_a_dead_owned_hold_without_clearing_a_human_holder() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let owner = producer(7, 1);
+    sink.router.host.producers = [Some(owner), None];
+    input.seed(EventTime(0));
+    input
+        .bind_bytes_owned(26, b"+forward", Some(owner), EventTime(0), &mut sink)
+        .unwrap();
+    input
+        .bind_bytes(10, b"+forward", EventTime(0), &mut sink)
+        .unwrap();
+    for (device, control) in [(DeviceId::Keyboard(17), 26), (DeviceId::Keyboard(18), 10)] {
+        input.dispatch(key(10, device, control, true, false), &mut sink);
+    }
+    sink.router.execute(&mut input);
+    let mut policy = sink.router.policy(RuleSetId::Quake2);
+    policy.speed = [100.0; 3];
+    policy.move_multiplier = 1.0;
+    input.build_frame_with_policy(EventTime::from_milliseconds(20), &[policy; SeatId::COUNT]);
+    sink.router.host.producers[0] = None;
+    input.retire_bindings(owner, EventTime::from_milliseconds(30), &mut sink);
+    sink.router.execute(&mut input);
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(40), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        100.0
+    );
+    input.dispatch(key(50, DeviceId::Keyboard(18), 10, false, false), &mut sink);
+    sink.router.execute(&mut input);
+    input.build_frame_with_policy(EventTime::from_milliseconds(60), &[policy; SeatId::COUNT]);
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(80), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        0.0
+    );
+    assert_eq!(sink.release_lines, 2);
+}
+
+#[test]
+fn retiring_one_owner_preserves_another_holder_on_the_same_physical_key() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let owner = producer(7, 1);
+    sink.router.host.producers = [Some(owner), None];
+    input.seed(EventTime(0));
+    let source = KeySource {
+        device: DeviceId::Keyboard(17),
+        control: 26,
+    };
+    for producer in [Some(owner), None] {
+        assert!(sink.router.command(
+            SeatId::FIRST,
+            EventTime(0),
+            Some(source),
+            producer,
+            "+forward"
+        ));
+    }
+    sink.router.execute(&mut input);
+    let mut policy = sink.router.policy(RuleSetId::Quake2);
+    policy.speed = [100.0; 3];
+    policy.move_multiplier = 1.0;
+    input.build_frame_with_policy(EventTime::from_milliseconds(10), &[policy; SeatId::COUNT]);
+    input.retire_bindings(owner, EventTime::from_milliseconds(20), &mut sink);
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(30), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        100.0
+    );
+    assert!(sink.router.command(
+        SeatId::FIRST,
+        EventTime::from_milliseconds(40),
+        Some(source),
+        None,
+        "-forward"
+    ));
+    sink.router.execute(&mut input);
+    input.build_frame_with_policy(EventTime::from_milliseconds(50), &[policy; SeatId::COUNT]);
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(60), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        0.0
+    );
+}
+
+#[test]
+fn retirement_clears_an_owned_action_when_key_up_release_is_still_queued() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let owner = producer(7, 1);
+    sink.router.host.producers = [Some(owner), None];
+    input.seed(EventTime(0));
+    input
+        .bind_bytes_owned(26, b"+forward", Some(owner), EventTime(0), &mut sink)
+        .unwrap();
+    input.dispatch(key(10, DeviceId::Keyboard(17), 26, true, false), &mut sink);
+    sink.router.execute(&mut input);
+    let mut policy = sink.router.policy(RuleSetId::Quake2);
+    policy.speed = [100.0; 3];
+    policy.move_multiplier = 1.0;
+    input.build_frame_with_policy(EventTime::from_milliseconds(20), &[policy; SeatId::COUNT]);
+    input.dispatch(key(30, DeviceId::Keyboard(17), 26, false, false), &mut sink);
+    assert!(!input.is_down(SeatId::FIRST, 26));
+    sink.router.host.producers[0] = None;
+    input.retain_producers(|_| false, EventTime::from_milliseconds(40), &mut sink);
+    sink.router.execute(&mut input);
+    input.build_frame_with_policy(EventTime::from_milliseconds(50), &[policy; SeatId::COUNT]);
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(60), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        0.0
+    );
+    assert_eq!(sink.release_lines, 1);
+}
+
+#[test]
+fn owned_manual_release_and_retirement_use_the_exact_module_lifetime() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let old = producer(7, 1);
+    let replacement = producer(7, 2);
+    sink.router.host.producers = [Some(old), Some(replacement)];
+    input.seed(EventTime(0));
+    for owner in [old, replacement] {
+        assert!(
+            sink.router
+                .command(SeatId::FIRST, EventTime(0), None, Some(owner), "+forward")
+        );
+    }
+    sink.router.execute(&mut input);
+    let mut policy = sink.router.policy(RuleSetId::Quake2);
+    policy.speed = [100.0; 3];
+    policy.move_multiplier = 1.0;
+    input.build_frame_with_policy(EventTime::from_milliseconds(10), &[policy; SeatId::COUNT]);
+    input.retain_producers(
+        |owner| owner == replacement,
+        EventTime::from_milliseconds(20),
+        &mut sink,
+    );
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(30), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        100.0
+    );
+    assert!(sink.router.command(
+        SeatId::FIRST,
+        EventTime::from_milliseconds(40),
+        None,
+        Some(old),
+        "-forward"
+    ));
+    sink.router.execute(&mut input);
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(50), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        100.0
+    );
+    assert!(sink.router.command(
+        SeatId::FIRST,
+        EventTime::from_milliseconds(60),
+        None,
+        Some(replacement),
+        "-forward"
+    ));
+    sink.router.execute(&mut input);
+    input.build_frame_with_policy(EventTime::from_milliseconds(70), &[policy; SeatId::COUNT]);
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(80), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        0.0
+    );
+}
+
+#[test]
+fn rejected_owned_release_preserves_a_human_holder_on_the_same_key() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let owner = producer(7, 1);
+    sink.router.host.producers = [Some(owner), None];
+    input.seed(EventTime(0));
+    input
+        .bind_bytes_owned(26, b"+forward", Some(owner), EventTime(0), &mut sink)
+        .unwrap();
+    input.dispatch(key(0, DeviceId::Keyboard(17), 26, true, false), &mut sink);
+    let source = KeySource {
+        device: DeviceId::Keyboard(17),
+        control: 26,
+    };
+    assert!(
+        sink.router
+            .command(SeatId::FIRST, EventTime(0), Some(source), None, "+forward")
+    );
+    sink.router.execute(&mut input);
+    // A different producer cannot invalidate the existing physical acquisition.
+    input.cancel_source(
+        source,
+        Some(producer(8, 1)),
+        EventTime::from_milliseconds(1),
+    );
+    let mut policy = sink.router.policy(RuleSetId::Quake2);
+    policy.speed = [100.0; 3];
+    policy.move_multiplier = 1.0;
+    input.build_frame_with_policy(EventTime::from_milliseconds(10), &[policy; SeatId::COUNT]);
+    sink.router
+        .console
+        .append(&" ".repeat(65530), Context::default())
+        .unwrap();
+    input.retire_bindings(owner, EventTime::from_milliseconds(20), &mut sink);
+    assert!(input.binding(26).is_none());
+    assert_eq!(sink.release_lines, 1);
+    assert!(input.is_down(SeatId::FIRST, 26));
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(30), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        100.0
+    );
+    sink.router.execute(&mut input);
+    assert!(sink.router.command(
+        SeatId::FIRST,
+        EventTime::from_milliseconds(40),
+        Some(source),
+        None,
+        "-forward"
+    ));
+    sink.router.execute(&mut input);
+    input.build_frame_with_policy(EventTime::from_milliseconds(50), &[policy; SeatId::COUNT]);
+    assert_eq!(
+        input.build_frame_with_policy(EventTime::from_milliseconds(60), &[policy; SeatId::COUNT])
+            [0]
+        .movement[0],
+        0.0
+    );
+    input.dispatch(key(70, DeviceId::Keyboard(17), 26, false, false), &mut sink);
+    assert_eq!(sink.release_lines, 1);
 }

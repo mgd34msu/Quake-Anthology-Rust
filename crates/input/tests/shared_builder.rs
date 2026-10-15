@@ -19,6 +19,7 @@ fn sampled_human_and_bot_intents_share_native_rule_scales() {
                 device: qa_core::sys_events::DeviceId::Keyboard(0),
                 control: 26,
             }),
+            None,
             EventTime(0),
         );
         let policy = support::catalog_policy(rules);
@@ -81,6 +82,7 @@ fn crouch_and_holster_aliases_use_the_same_action_storage() {
             device: qa_core::sys_events::DeviceId::Keyboard(0),
             control: 17,
         }),
+        None,
         EventTime(0),
     );
     input.button(
@@ -91,6 +93,7 @@ fn crouch_and_holster_aliases_use_the_same_action_storage() {
             device: qa_core::sys_events::DeviceId::Keyboard(0),
             control: 18,
         }),
+        None,
         EventTime(0),
     );
     let policy = support::catalog_policy(RuleSetId::Quake3);

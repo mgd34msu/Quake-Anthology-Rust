@@ -404,10 +404,10 @@ impl Input {
                 let hold = &mut device.acquired[usize::from(source.control)];
                 if device.id == Some(source.device)
                     && device.seat == Some(seat)
-                    && *hold == BindingHold::Pending
+                    && let BindingHold::Pending(producer) = *hold
                 {
                     if capture == InputCapture::Pass && device.held[usize::from(source.control)] {
-                        *hold = BindingHold::Acquired;
+                        *hold = BindingHold::Acquired(producer);
                         self.emit_binding(source, seat, index, true, cursor.time, commands);
                     } else {
                         *hold = BindingHold::None;
@@ -458,10 +458,14 @@ impl Input {
         };
         if transition {
             if down {
-                device.acquired[usize::from(control)] = BindingHold::Pending;
-            } else if std::mem::take(&mut device.acquired[usize::from(control)])
-                == BindingHold::Acquired
-            {
+                let producer = self.bindings[usize::from(keys::normalize(control))]
+                    .as_ref()
+                    .and_then(Binding::producer);
+                device.acquired[usize::from(control)] = BindingHold::Pending(producer);
+            } else if matches!(
+                std::mem::take(&mut device.acquired[usize::from(control)]),
+                BindingHold::Acquired(_)
+            ) {
                 self.emit_binding(source, seat, index, false, time, commands);
             }
         }
@@ -518,9 +522,10 @@ impl Input {
                 } else {
                     text
                 };
-                if !target.command_bytes(seat, time, Some(source), text) {
-                    target.cancel_commands(source);
-                    self.cancel_source(source, time);
+                if !target.command_bytes(seat, time, Some(source), binding.producer(), text) {
+                    let producer = binding.producer();
+                    target.cancel_commands(source, producer);
+                    self.cancel_source(source, producer, time);
                     return;
                 }
             }

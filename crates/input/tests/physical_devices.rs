@@ -22,11 +22,17 @@ impl Target for Sink {
         _: SeatId,
         _: EventTime,
         _: Option<qa_core::sys_events::KeySource>,
+        _: Option<qa_core::primitives::CommandProducer>,
         _: &str,
     ) -> bool {
         true
     }
-    fn cancel_commands(&mut self, _: qa_core::sys_events::KeySource) {}
+    fn cancel_commands(
+        &mut self,
+        _: qa_core::sys_events::KeySource,
+        _: Option<qa_core::primitives::CommandProducer>,
+    ) {
+    }
 }
 fn event(input: &mut Input, sink: &mut Sink, ms: u64, kind: EventKind<'_>) {
     input.dispatch(
