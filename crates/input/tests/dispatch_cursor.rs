@@ -387,6 +387,75 @@ fn native_clear_suppresses_console_key_ups_and_their_unacquired_bindings() {
 }
 
 #[test]
+fn native_clear_forces_one_canonical_binding_only_without_an_acquired_alias() {
+    for acquired in [None, Some(224), Some(228)] {
+        let mut input = Input::load();
+        let mut sink = Sink::default();
+        assert!(sink.router.console.register("raw", raw));
+        input
+            .bind_text(224, "+edge; raw tail", EventTime(0), &mut sink)
+            .unwrap();
+        for control in [224, 228] {
+            route(
+                &mut input,
+                key(10, DeviceId::Keyboard(0), control, true, false),
+                &mut sink,
+                |_, _, _| {
+                    if acquired == Some(control) {
+                        InputCapture::Pass
+                    } else {
+                        InputCapture::Caught
+                    }
+                },
+            );
+        }
+        sink.router.execute(&mut input);
+        sink.router.host.raw_calls = 0;
+        let mut callbacks = 0;
+        walk(
+            &mut input,
+            DispatchCursor::clear_seat(SeatId::FIRST, EventTime(99)),
+            &mut sink,
+            |input, atom, sink| {
+                let InputAtom::Key { source, .. } = atom else {
+                    panic!("key-up")
+                };
+                assert_eq!(keys::native_number(source.control), Some(137));
+                assert!(!input.is_down(SeatId::FIRST, 224));
+                assert_eq!(sink.release_lines, 1);
+                callbacks += 1;
+                InputCapture::Caught
+            },
+        );
+        assert_eq!(callbacks, 1);
+        sink.router.execute(&mut input);
+        assert_eq!(sink.router.host.releases, 1);
+        assert_eq!(sink.router.host.raw_calls, 1);
+        assert_eq!(sink.router.host.raw.as_bytes(), b"tail");
+    }
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    assert!(sink.router.console.register("raw", raw));
+    input
+        .bind_text(224, "+edge; raw canonical", EventTime(0), &mut sink)
+        .unwrap();
+    input
+        .bind_text(905, "+edge; raw alias", EventTime(0), &mut sink)
+        .unwrap();
+    route(
+        &mut input,
+        key(10, DeviceId::Keyboard(0), 905, true, false),
+        &mut sink,
+        |_, _, _| InputCapture::Caught,
+    );
+    input.clear_seat(SeatId::FIRST, EventTime(99), &mut sink);
+    sink.router.execute(&mut input);
+    assert_eq!(sink.router.host.releases, 1);
+    assert_eq!(sink.router.host.raw_calls, 1);
+    assert_eq!(sink.router.host.raw.as_bytes(), b"canonical");
+}
+
+#[test]
 fn unrelated_unchanged_and_rejected_binding_changes_keep_pending_press() {
     for change in 0..3 {
         let mut input = Input::load();

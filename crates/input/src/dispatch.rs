@@ -417,6 +417,7 @@ impl Input {
                         let console_key = matches!(native, b'`' | b'~');
                         let reserved = 768 + u16::from(native);
                         let mut source = None;
+                        let mut acquired = false;
                         for index in 0..self.devices.len() {
                             let device = &self.devices[index];
                             if device.seat != Some(seat) || device.held_count == 0 {
@@ -429,7 +430,7 @@ impl Input {
                                 if !self.devices[index].held[usize::from(physical)] {
                                     continue;
                                 }
-                                let acquired = matches!(
+                                acquired |= matches!(
                                     self.devices[index].acquired[usize::from(physical)],
                                     BindingHold::Acquired(_)
                                 );
@@ -446,23 +447,28 @@ impl Input {
                                     EventTime(0),
                                     commands,
                                 ) {
-                                    // Native Key_ClearStates also releases the current
-                                    // button binding when UI caught its original press.
-                                    if !acquired && !console_key {
-                                        self.emit_binding(
-                                            released,
-                                            seat,
-                                            index,
-                                            false,
-                                            EventTime(0),
-                                            commands,
-                                        );
-                                    }
-                                    source.get_or_insert(released);
+                                    source.get_or_insert((released, index));
                                 }
                             }
                         }
-                        if let Some(source) = source.filter(|_| !console_key) {
+                        if let Some((source, index)) = source.filter(|_| !console_key) {
+                            // Q3 releases the current native binding even for
+                            // caught presses. Physical holders already released
+                            // their acquisitions above; never add an orphan
+                            // release or repeat its trailing commands per alias.
+                            if !acquired {
+                                self.emit_binding(
+                                    KeySource {
+                                        device: source.device,
+                                        control,
+                                    },
+                                    seat,
+                                    index,
+                                    false,
+                                    EventTime(0),
+                                    commands,
+                                );
+                            }
                             cursor.state = State::ClearSeat { seat, next_native };
                             return cursor.atom(
                                 InputAtom::Key {
