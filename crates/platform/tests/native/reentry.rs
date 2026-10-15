@@ -14,6 +14,8 @@ use std::{
 };
 
 const DATA: u64 = BASE + 4096;
+#[path = "stops.rs"]
+mod stops;
 
 fn word(code: &mut Vec<u8>, register: &[u8], value: u64) {
     code.extend(register);

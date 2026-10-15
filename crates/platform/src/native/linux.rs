@@ -1,6 +1,6 @@
 use super::{
-    NativeAbi, NativeAction, NativeCall, NativeEntry, NativeError, NativeImage, NativeRegion,
-    NativeRequest, NativeScalar, PAGE_BYTES as PAGE,
+    NativeAbi, NativeAction, NativeCall, NativeCallToken, NativeEntry, NativeError, NativeImage,
+    NativeImportToken, NativeRegion, NativeRequest, NativeScalar, NativeStop, PAGE_BYTES as PAGE,
 };
 use crate::Stopwatch;
 use std::{
@@ -12,13 +12,14 @@ use std::{
     },
     process::{Child, Command, Stdio},
     ptr::NonNull,
-    sync::atomic::{Ordering, compiler_fence},
+    sync::atomic::{AtomicU64, Ordering, compiler_fence},
     time::Duration,
 };
 
 const LIMIT: usize = 512 * 1024 * 1024;
 const STACK: usize = 8 * 1024 * 1024;
-pub(super) const REENTRY_LIMIT: usize = 64;
+pub(super) use super::NATIVE_REENTRY_LIMIT as REENTRY_LIMIT;
+static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 #[path = "gate.rs"]
 mod gate;
 #[cfg(target_arch = "x86_64")]
@@ -340,9 +341,37 @@ impl Packet {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PendingImport {
+    id: u64,
+    result: Option<NativeEntry>,
+}
+#[derive(Clone, Copy)]
+struct CallFrame {
+    id: u64,
+    entry: NativeEntry,
+    pending: Option<PendingImport>,
+}
+struct Transaction {
+    started: Stopwatch,
+    depth: usize,
+    serial: u64,
+}
+impl Transaction {
+    fn next_id(&mut self) -> Result<u64, NativeError> {
+        self.serial = self.serial.checked_add(1).ok_or(NativeError::Protocol)?;
+        Ok(self.serial)
+    }
+}
+enum Advancement {
+    Stopped(NativeStop),
+    Trapped(NativeError),
+}
+
 /// One controller owns the child, channel and authoritative backing. Engine
 /// calls never execute a foreign pointer in the controller's process.
 pub struct NativeProcess {
+    owner: u64,
     child: Option<Child>,
     stream: UnixStream,
     memory: Mapping,
@@ -353,6 +382,8 @@ pub struct NativeProcess {
     parked: Option<gate::Parked>,
     handoff: u64,
     sequence: u64,
+    transaction: Option<Transaction>,
+    frames: Box<[Option<CallFrame>]>,
     callbacks: [u64; 4],
     imports: Box<
         [(
@@ -394,6 +425,9 @@ impl NativeProcess {
         image: NativeImage<'_>,
     ) -> Result<Self, NativeError> {
         gate::NotificationGate::check_sizes()?;
+        let owner = NEXT_OWNER
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| NativeError::Extent)?;
         if !matches!(image.pointer_bytes, 4 | 8)
             || (image.pointer_bytes == 4
                 && image.runtime.is_some_and(|runtime| runtime.teb.is_some()))
@@ -552,6 +586,7 @@ impl NativeProcess {
         }));
         let child = command.spawn()?;
         let mut owner = Self {
+            owner,
             child: Some(child),
             stream,
             memory,
@@ -562,6 +597,8 @@ impl NativeProcess {
             parked: None,
             handoff: 0,
             sequence: 0,
+            transaction: None,
+            frames: vec![None; REENTRY_LIMIT + 1].into_boxed_slice(),
             callbacks: [0; 4],
             imports,
             timeout: image.timeout,
@@ -703,10 +740,16 @@ impl NativeProcess {
             .is_some_and(|offset| executable_offset(&self.regions, offset))
     }
     pub fn memory(&self) -> Result<&[u8], NativeError> {
+        if self.transaction.is_some() {
+            return Err(NativeError::Protocol);
+        }
         self.validate_parked()?;
         Ok(self.memory.bytes())
     }
     pub fn memory_mut(&mut self) -> Result<&mut [u8], NativeError> {
+        if self.transaction.is_some() {
+            return Err(NativeError::Protocol);
+        }
         self.validate_parked()?;
         Ok(self.memory.bytes_mut())
     }
@@ -822,9 +865,260 @@ impl NativeProcess {
         }
         NativeEntry::bind(address, abi, self.pointer_bytes, parameters, result)
     }
+    fn call_frame(&self, token: &NativeCallToken, top: bool) -> Result<usize, NativeError> {
+        let transaction = self.transaction.as_ref().ok_or(NativeError::Protocol)?;
+        if token.owner != self.owner || token.transaction != self.sequence {
+            return Err(NativeError::Protocol);
+        }
+        if top {
+            let index = transaction
+                .depth
+                .checked_sub(1)
+                .ok_or(NativeError::Protocol)?;
+            return self.frames[index]
+                .filter(|frame| frame.id == token.frame)
+                .map(|_| index)
+                .ok_or(NativeError::Protocol);
+        }
+        let index = self.frames[..transaction.depth]
+            .iter()
+            .position(|frame| frame.is_some_and(|frame| frame.id == token.frame))
+            .ok_or(NativeError::Protocol)?;
+        Ok(index)
+    }
+    fn import_frame(
+        &self,
+        token: &NativeImportToken,
+    ) -> Result<(usize, PendingImport), NativeError> {
+        let transaction = self.transaction.as_ref().ok_or(NativeError::Protocol)?;
+        let index = transaction
+            .depth
+            .checked_sub(1)
+            .ok_or(NativeError::Protocol)?;
+        let frame = self.frames[index].ok_or(NativeError::Protocol)?;
+        let pending = frame.pending.ok_or(NativeError::Protocol)?;
+        if token.owner != self.owner
+            || token.transaction != self.sequence
+            || token.frame != frame.id
+            || token.import != pending.id
+        {
+            return Err(NativeError::Protocol);
+        }
+        Ok((index, pending))
+    }
+    fn active<R>(
+        &mut self,
+        operation: impl FnOnce(&mut Self, &mut Transaction) -> Result<R, NativeError>,
+    ) -> Result<R, NativeError> {
+        let mut transaction = self.transaction.take().ok_or(NativeError::Protocol)?;
+        let result = if transaction.started.elapsed() >= self.timeout {
+            Err(NativeError::Timeout)
+        } else {
+            operation(self, &mut transaction)
+        };
+        match result {
+            Ok(value) => {
+                if transaction.depth != 0 {
+                    self.transaction = Some(transaction);
+                }
+                Ok(value)
+            }
+            Err(error) => Err(self.failure(error)),
+        }
+    }
+    /// Enter a root export, or reenter below the current suspended import.
+    /// Only a root starts a new wire sequence and timeout budget.
+    pub fn enter(
+        &mut self,
+        entry: NativeEntry,
+        arguments: [u64; 13],
+    ) -> Result<NativeCallToken, NativeError> {
+        if self.parked.is_none() || self.child.is_none() {
+            return Err(NativeError::Protocol);
+        }
+        if entry.pointer_bytes != self.pointer_bytes || !self.executable(entry.address) {
+            return Err(NativeError::Extent);
+        }
+        if let Some(transaction) = &self.transaction {
+            if self.frames[transaction.depth - 1].is_none_or(|frame| frame.pending.is_none()) {
+                return Err(NativeError::Protocol);
+            }
+            if transaction.depth == self.frames.len() {
+                return Err(self.failure(NativeError::Extent));
+            }
+        } else {
+            self.sequence = self.sequence.checked_add(1).ok_or(NativeError::Protocol)?;
+            self.transaction = Some(Transaction {
+                started: Stopwatch::start(),
+                depth: 0,
+                serial: 0,
+            });
+        }
+        self.active(|process, transaction| {
+            let id = transaction.next_id()?;
+            process.frames[transaction.depth] = Some(CallFrame {
+                id,
+                entry,
+                pending: None,
+            });
+            transaction.depth += 1;
+            let mut packet = Packet::new(INVOKE, process.sequence);
+            packet.address = entry.address;
+            packet.abi = entry.abi as u8;
+            (packet.arguments, packet.floats) = entry.pack(arguments);
+            packet.value = entry.control;
+            process.reply_handoff(packet, &transaction.started)?;
+            Ok(NativeCallToken {
+                owner: process.owner,
+                transaction: process.sequence,
+                frame: id,
+            })
+        })
+    }
+    /// Run the same owned transaction to its next import or export return.
+    pub fn advance(&mut self, token: &NativeCallToken) -> Result<NativeStop, NativeError> {
+        let index = self.call_frame(token, true)?;
+        let frame = self.frames[index].ok_or(NativeError::Protocol)?;
+        if frame.pending.is_some() {
+            return Err(NativeError::Protocol);
+        }
+        let result = self.active(|process, transaction| {
+            let packet = process.receive_handoff(&transaction.started)?;
+            if packet.sequence != process.sequence {
+                return Err(NativeError::Protocol);
+            }
+            match packet.operation {
+                RETURN => {
+                    process.frames[index] = None;
+                    transaction.depth -= 1;
+                    Ok(Advancement::Stopped(NativeStop::Returned(
+                        frame.entry.result(packet.value),
+                    )))
+                }
+                CALL_TRAP => {
+                    let ordinal =
+                        usize::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
+                    let &(_, entry, trap, _, format) =
+                        process.imports.get(ordinal).ok_or(NativeError::Protocol)?;
+                    if !trap && format.is_none() {
+                        return Err(NativeError::Protocol);
+                    }
+                    let address = if process.executable(packet.value) {
+                        packet.value
+                    } else {
+                        entry.address
+                    };
+                    // The real child has unwound every nested gate to its outer
+                    // call loop. Invalidate logical tokens, retaining this new
+                    // validated park for a fresh root sequence only.
+                    transaction.depth = 0;
+                    process.frames.fill(None);
+                    Ok(Advancement::Trapped(NativeError::ImportTrap {
+                        ordinal,
+                        address,
+                    }))
+                }
+                RUNTIME_ERROR => {
+                    let ordinal =
+                        usize::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
+                    let &(number, _, _, _, _) =
+                        process.imports.get(ordinal).ok_or(NativeError::Protocol)?;
+                    let function = super::runtime::function(number).ok_or(NativeError::Protocol)?;
+                    let name =
+                        std::str::from_utf8(function.name).map_err(|_| NativeError::Protocol)?;
+                    Err(NativeError::RuntimeImport(name))
+                }
+                IMPORT => {
+                    let (number, arguments, result) = match packet.abi {
+                        0 => (
+                            u32::try_from(packet.address).map_err(|_| NativeError::Protocol)?,
+                            packet.arguments,
+                            None,
+                        ),
+                        1 => {
+                            let ordinal = usize::try_from(packet.address)
+                                .map_err(|_| NativeError::Protocol)?;
+                            let &(number, entry, _, _, _) =
+                                process.imports.get(ordinal).ok_or(NativeError::Protocol)?;
+                            (
+                                number,
+                                entry.unpack(packet.arguments, packet.floats),
+                                Some(entry),
+                            )
+                        }
+                        _ => return Err(NativeError::Protocol),
+                    };
+                    let id = transaction.next_id()?;
+                    process.frames[index] = Some(CallFrame {
+                        pending: Some(PendingImport { id, result }),
+                        ..frame
+                    });
+                    Ok(Advancement::Stopped(NativeStop::Import {
+                        call: NativeCall {
+                            number,
+                            arguments,
+                            function: packet.abi == 1,
+                        },
+                        stopped: NativeImportToken {
+                            owner: process.owner,
+                            transaction: process.sequence,
+                            frame: frame.id,
+                            import: id,
+                        },
+                    }))
+                }
+                _ => Err(NativeError::Protocol),
+            }
+        })?;
+        match result {
+            Advancement::Stopped(stop) => Ok(stop),
+            Advancement::Trapped(error) => Err(error),
+        }
+    }
+    /// Borrow only the current logical import's mapping under its current
+    /// validated kernel park, including after a nested export has returned.
+    pub fn with_import_memory<R>(
+        &mut self,
+        token: &NativeImportToken,
+        read: impl FnOnce(u64, &mut [u8]) -> Result<R, NativeError>,
+    ) -> Result<R, NativeError> {
+        self.import_frame(token)?;
+        self.active(|process, transaction| {
+            process.validate_parked()?;
+            let value = read(process.base, process.memory.bytes_mut())?;
+            if transaction.started.elapsed() >= process.timeout {
+                return Err(NativeError::Timeout);
+            }
+            Ok(value)
+        })
+    }
+    /// Resume exactly this import using its retained native scalar signature.
+    pub fn reply(&mut self, token: NativeImportToken, value: u64) -> Result<(), NativeError> {
+        let (index, pending) = self.import_frame(&token)?;
+        self.active(|process, transaction| {
+            let mut packet = Packet::new(REPLY, process.sequence);
+            packet.value = pending.result.map_or(value, |entry| entry.result(value));
+            packet.address = pending.result.map_or(0, |entry| entry.control & 3);
+            process.frames[index]
+                .as_mut()
+                .ok_or(NativeError::Protocol)?
+                .pending = None;
+            process.reply_handoff(packet, &transaction.started)
+        })
+    }
+    /// Cancel this live transaction, including every suspended ancestor. A
+    /// foreign/stale controller token never cancels another transaction.
+    pub fn abort(&mut self, token: NativeCallToken, error: NativeError) -> NativeError {
+        if let Err(invalid) = self.call_frame(&token, false) {
+            return invalid;
+        }
+        self.failure(error)
+    }
+    /// Synchronous compatibility caller: drain the same stop/reply pump. Only
+    /// caller-owned C values and logical tokens live in this adapter's stack.
     pub fn invoke<C>(
         &mut self,
-        mut entry: NativeEntry,
+        entry: NativeEntry,
         arguments: [u64; 13],
         mut callback: impl FnMut(
             NativeRequest<C>,
@@ -832,161 +1126,66 @@ impl NativeProcess {
             &mut [u8],
         ) -> Result<NativeAction<C>, NativeError>,
     ) -> Result<u64, NativeError> {
-        if self.parked.is_none() || self.child.is_none() {
-            return Err(NativeError::Protocol);
-        }
-        if entry.pointer_bytes != self.pointer_bytes || !self.executable(entry.address) {
-            return Err(NativeError::Extent);
-        }
         struct Suspended<C> {
-            entry: NativeEntry,
-            result: Option<NativeEntry>,
+            call: NativeCallToken,
+            import: NativeImportToken,
             continuation: C,
         }
         let mut suspended: [Option<Suspended<C>>; REENTRY_LIMIT] = std::array::from_fn(|_| None);
         let mut depth = 0;
-        let mut child_trapped = false;
-        let started = Stopwatch::start();
-        let run = (|| {
-            self.sequence = self.sequence.checked_add(1).ok_or(NativeError::Protocol)?;
-            let mut packet = Packet::new(INVOKE, self.sequence);
-            packet.address = entry.address;
-            packet.abi = entry.abi as u8;
-            (packet.arguments, packet.floats) = entry.pack(arguments);
-            packet.value = entry.control;
-            self.reply_handoff(packet, &started)?;
-            loop {
-                let packet = self.receive_handoff(&started)?;
-                if packet.sequence != self.sequence {
-                    return Err(NativeError::Protocol);
+        let mut call = self.enter(entry, arguments)?;
+        loop {
+            let (request, stopped) = match self.advance(&call)? {
+                NativeStop::Import {
+                    call: import,
+                    stopped,
+                } => (NativeRequest::Import(import), stopped),
+                NativeStop::Returned(value) => {
+                    if depth == 0 {
+                        return Ok(value);
+                    }
+                    depth -= 1;
+                    let parent = suspended[depth].take().ok_or(NativeError::Protocol)?;
+                    call = parent.call;
+                    (
+                        NativeRequest::Returned {
+                            continuation: parent.continuation,
+                            value,
+                        },
+                        parent.import,
+                    )
                 }
-                let (request, result_entry) = match packet.operation {
-                    RETURN => {
-                        let value = entry.result(packet.value);
-                        if depth == 0 {
-                            return Ok(value);
-                        }
-                        depth -= 1;
-                        let frame = suspended[depth].take().ok_or(NativeError::Protocol)?;
-                        entry = frame.entry;
-                        (
-                            NativeRequest::Returned {
-                                continuation: frame.continuation,
-                                value,
-                            },
-                            frame.result,
-                        )
+            };
+            let action =
+                self.with_import_memory(&stopped, |base, bytes| callback(request, base, bytes))?;
+            match action {
+                NativeAction::Return(value) => self.reply(stopped, value)?,
+                NativeAction::Call {
+                    entry,
+                    arguments,
+                    continuation,
+                } => {
+                    if depth == REENTRY_LIMIT {
+                        return Err(self.abort(call, NativeError::Extent));
                     }
-                    CALL_TRAP => {
-                        let ordinal =
-                            usize::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
-                        let &(_, entry, trap, _, format) =
-                            self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
-                        // A bounded child format conversion can reject a
-                        // live import before publishing its fixed arguments.
-                        if !trap && format.is_none() {
-                            return Err(NativeError::Protocol);
-                        }
-                        // A tail call has no native return PC. Report its
-                        // native import gateway instead of a controller PC.
-                        let address = if self.executable(packet.value) {
-                            packet.value
-                        } else {
-                            entry.address
-                        };
-                        child_trapped = true;
-                        return Err(NativeError::ImportTrap { ordinal, address });
-                    }
-                    RUNTIME_ERROR => {
-                        let ordinal =
-                            usize::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
-                        let &(number, _, _, _, _) =
-                            self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
-                        let function =
-                            super::runtime::function(number).ok_or(NativeError::Protocol)?;
-                        let name = std::str::from_utf8(function.name)
-                            .map_err(|_| NativeError::Protocol)?;
-                        return Err(NativeError::RuntimeImport(name));
-                    }
-                    IMPORT => {
-                        let (number, arguments, result) = match packet.abi {
-                            0 => (
-                                u32::try_from(packet.address).map_err(|_| NativeError::Protocol)?,
-                                packet.arguments,
-                                None,
-                            ),
-                            1 => {
-                                let ordinal = usize::try_from(packet.address)
-                                    .map_err(|_| NativeError::Protocol)?;
-                                let &(number, entry, _, _, _) =
-                                    self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
-                                (
-                                    number,
-                                    entry.unpack(packet.arguments, packet.floats),
-                                    Some(entry),
-                                )
-                            }
-                            _ => return Err(NativeError::Protocol),
-                        };
-                        (
-                            NativeRequest::Import(NativeCall {
-                                number,
-                                arguments,
-                                function: packet.abi == 1,
-                            }),
-                            result,
-                        )
-                    }
-                    _ => return Err(NativeError::Protocol),
-                };
-                self.validate_parked()?;
-                // This callback's byte borrow ends before either response
-                // unparks the sole native thread. C cannot borrow these bytes.
-                let action = callback(request, self.base, self.memory.bytes_mut())?;
-                let reply = match action {
-                    NativeAction::Return(value) => {
-                        let mut reply = Packet::new(REPLY, self.sequence);
-                        reply.value = result_entry.map_or(value, |entry| entry.result(value));
-                        reply.address = result_entry.map_or(0, |entry| entry.control & 3);
-                        reply
-                    }
-                    NativeAction::Call {
-                        entry: nested,
-                        arguments,
+                    let nested = match self.enter(entry, arguments) {
+                        Ok(nested) => nested,
+                        Err(error) => return Err(self.failure(error)),
+                    };
+                    suspended[depth] = Some(Suspended {
+                        call,
+                        import: stopped,
                         continuation,
-                    } => {
-                        if depth == REENTRY_LIMIT {
-                            return Err(NativeError::Extent);
-                        }
-                        if nested.pointer_bytes != self.pointer_bytes
-                            || !self.executable(nested.address)
-                        {
-                            return Err(NativeError::Extent);
-                        }
-                        suspended[depth] = Some(Suspended {
-                            entry,
-                            result: result_entry,
-                            continuation,
-                        });
-                        depth += 1;
-                        entry = nested;
-                        let mut reply = Packet::new(INVOKE, self.sequence);
-                        reply.address = entry.address;
-                        reply.abi = entry.abi as u8;
-                        (reply.arguments, reply.floats) = entry.pack(arguments);
-                        reply.value = entry.control;
-                        reply
-                    }
-                };
-                self.reply_handoff(reply, &started)?;
+                    });
+                    depth += 1;
+                    call = nested;
+                }
             }
-        })();
-        match run {
-            Err(error @ NativeError::ImportTrap { .. }) if child_trapped => Err(error),
-            result => result.map_err(|e| self.failure(e)),
         }
     }
     fn failure(&mut self, error: NativeError) -> NativeError {
+        self.transaction = None;
+        self.frames.fill(None);
         let Some(mut child) = self.child.take() else {
             return error;
         };

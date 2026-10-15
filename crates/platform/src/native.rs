@@ -141,6 +141,38 @@ pub enum NativeRequest<C> {
     Returned { continuation: C, value: u64 },
 }
 
+/// The existing native callback bound, also used for cold host frame sizing.
+pub const NATIVE_REENTRY_LIMIT: usize = 64;
+
+/// Owned controller authority for one live export; it borrows no native bytes.
+#[derive(Debug)]
+#[must_use]
+pub struct NativeCallToken {
+    owner: u64,
+    transaction: u64,
+    frame: u64,
+}
+
+/// Logical import identity. Kernel notification authority stays in the process
+/// and changes when a nested export returns to this suspended import.
+#[derive(Debug)]
+#[must_use]
+pub struct NativeImportToken {
+    owner: u64,
+    transaction: u64,
+    frame: u64,
+    import: u64,
+}
+
+#[derive(Debug)]
+pub enum NativeStop {
+    Import {
+        call: NativeCall,
+        stopped: NativeImportToken,
+    },
+    Returned(u64),
+}
+
 #[derive(Debug)]
 pub enum NativeError {
     Unsupported,

@@ -4,7 +4,7 @@
 use qa_platform::native::{
     NativeAbi, NativeError, NativeImage, NativeImport, NativeProcess, NativeRegion, NativeScalar,
 };
-use qa_platform::native::{NativeAction, NativeRequest};
+use qa_platform::native::{NativeAction, NativeRequest, NativeStop};
 use std::{path::PathBuf, time::Duration};
 
 const BASE: u64 = 0x2000_0000;
@@ -28,10 +28,8 @@ fn helper() -> Option<PathBuf> {
     helper
 }
 
-#[test]
-fn cdecl_nested_exports_resume_the_suspended_import_in_the_same_owned_child() {
-    let Some(helper) = helper() else { return };
-    let imports: [NativeImport<'static>; 2] = std::array::from_fn(|index| NativeImport {
+fn nested_imports() -> [NativeImport<'static>; 2] {
+    std::array::from_fn(|index| NativeImport {
         trap: false,
         number: 10 + index as u32,
         abi: NativeAbi::SystemV,
@@ -39,25 +37,32 @@ fn cdecl_nested_exports_resume_the_suspended_import_in_the_same_owned_child() {
         result: NativeScalar::Word,
         filter: None,
         format: None,
-    });
+    })
+}
+
+fn cdecl_call(import: u32, after: &[u8]) -> Vec<u8> {
+    let mut code = vec![0x53, 0x83, 0xec, 112, 0xbb];
+    code.extend(0x1122_3344u32.to_le_bytes());
+    code.push(0xb8);
+    code.extend(import.to_le_bytes());
+    code.extend([0xff, 0xd0]);
+    code.extend(after);
+    code.extend([0x83, 0xc4, 112, 0x5b, 0xc3]);
+    code
+}
+
+#[test]
+fn cdecl_nested_exports_resume_the_suspended_import_in_the_same_owned_child() {
+    let Some(helper) = helper() else { return };
+    let imports = nested_imports();
     let mut bytes = [0; 8192];
     let outer_import = NativeProcess::import_address(BASE, bytes.len(), 0).unwrap() as u32;
     let nested_import = NativeProcess::import_address(BASE, bytes.len(), 1).unwrap() as u32;
-    let function = |import: u32, after: &[u8]| {
-        let mut code = vec![0x53, 0x83, 0xec, 112, 0xbb];
-        code.extend(0x1122_3344u32.to_le_bytes());
-        code.push(0xb8);
-        code.extend(import.to_le_bytes());
-        code.extend([0xff, 0xd0]);
-        code.extend(after);
-        code.extend([0x83, 0xc4, 112, 0x5b, 0xc3]);
-        code
-    };
     let mut after = vec![0xa3]; // mov [DATA],eax; mov eax,ebx
     after.extend((BASE as u32 + 4096).to_le_bytes());
     after.extend([0x89, 0xd8]);
-    let outer_code = function(outer_import, &after);
-    let nested_code = function(nested_import, &[0x83, 0xc0, 1]);
+    let outer_code = cdecl_call(outer_import, &after);
+    let nested_code = cdecl_call(nested_import, &[0x83, 0xc0, 1]);
     bytes[..outer_code.len()].copy_from_slice(&outer_code);
     bytes[256..256 + nested_code.len()].copy_from_slice(&nested_code);
     let mut child = load(&helper, &bytes, &imports);
@@ -96,6 +101,103 @@ fn cdecl_nested_exports_resume_the_suspended_import_in_the_same_owned_child() {
     assert_eq!(result, 0x1122_3344);
     assert_eq!(order, [10, 11, 101]);
     assert_eq!(&child.memory().unwrap()[4096..4100], &42u32.to_le_bytes());
+}
+
+#[test]
+fn cdecl_raw_stops_keep_outer_import_authority_across_external_and_nested_work() {
+    let Some(helper) = helper() else { return };
+    let imports = nested_imports();
+    let mut bytes = [0; 8192];
+    let outer_import = NativeProcess::import_address(BASE, bytes.len(), 0).unwrap() as u32;
+    let nested_import = NativeProcess::import_address(BASE, bytes.len(), 1).unwrap() as u32;
+    let mut after = vec![0xa3]; // Store the narrowed outer import return.
+    after.extend((BASE as u32 + 4096).to_le_bytes());
+    after.push(0xa1); // Observe the parent's post-nested write.
+    after.extend((BASE as u32 + 4100).to_le_bytes());
+    after.push(0xa3);
+    after.extend((BASE as u32 + 4104).to_le_bytes());
+    after.extend([0x89, 0xd8]); // Return preserved EBX.
+    let outer_code = cdecl_call(outer_import, &after);
+    let mut after = vec![0xa3]; // Store the narrowed nested import return.
+    after.extend((BASE as u32 + 4116).to_le_bytes());
+    after.push(0xa1);
+    after.extend((BASE as u32 + 4112).to_le_bytes());
+    after.extend([0x83, 0xc0, 1, 0xa3]);
+    after.extend((BASE as u32 + 4120).to_le_bytes());
+    after.extend([0xb8, 41, 0, 0, 0]);
+    let nested_code = cdecl_call(nested_import, &after);
+    bytes[..outer_code.len()].copy_from_slice(&outer_code);
+    bytes[256..256 + nested_code.len()].copy_from_slice(&nested_code);
+    bytes[512..518].copy_from_slice(&[0xb8, 77, 0, 0, 0, 0xc3]);
+    let mut child = load(&helper, &bytes, &imports);
+    let mut external = load(&helper, &bytes, &imports);
+    let outer_entry = child
+        .bind(BASE, NativeAbi::SystemV, &[], NativeScalar::Word)
+        .unwrap();
+    let nested_entry = child
+        .bind(BASE + 256, NativeAbi::SystemV, &[], NativeScalar::Word)
+        .unwrap();
+    let external_entry = external
+        .bind(BASE + 512, NativeAbi::SystemV, &[], NativeScalar::Word)
+        .unwrap();
+    let outer = child.enter(outer_entry, [0; 13]).unwrap();
+    let NativeStop::Import {
+        call,
+        stopped: outer_stop,
+    } = child.advance(&outer).unwrap()
+    else {
+        panic!("outer import");
+    };
+    assert_eq!(call.number, 10);
+    assert!(call.function);
+    assert!(matches!(child.memory(), Err(NativeError::Protocol)));
+    assert!(matches!(child.memory_mut(), Err(NativeError::Protocol)));
+    child
+        .with_import_memory(&outer_stop, |base, memory| {
+            assert_eq!(base, BASE);
+            memory[4112..4116].copy_from_slice(&11u32.to_le_bytes());
+            Ok(())
+        })
+        .unwrap();
+    let host_work = external.enter(external_entry, [0; 13]).unwrap();
+    assert!(matches!(
+        external.advance(&host_work).unwrap(),
+        NativeStop::Returned(77)
+    ));
+    let nested = child.enter(nested_entry, [0; 13]).unwrap();
+    let NativeStop::Import {
+        call,
+        stopped: nested_stop,
+    } = child.advance(&nested).unwrap()
+    else {
+        panic!("nested import");
+    };
+    assert_eq!(call.number, 11);
+    assert!(call.function);
+    child.reply(nested_stop, 0xfeed_face_89ab_cdef).unwrap();
+    assert!(matches!(
+        child.advance(&nested).unwrap(),
+        NativeStop::Returned(41)
+    ));
+    // The logical outer import is current again under a newer kernel park.
+    child
+        .with_import_memory(&outer_stop, |_, memory| {
+            assert_eq!(&memory[4116..4120], &0x89ab_cdefu32.to_le_bytes());
+            assert_eq!(&memory[4120..4124], &12u32.to_le_bytes());
+            memory[4100..4104].copy_from_slice(&222u32.to_le_bytes());
+            Ok(())
+        })
+        .unwrap();
+    child.reply(outer_stop, 0xdead_beef_7654_3210).unwrap();
+    assert!(matches!(
+        child.advance(&outer).unwrap(),
+        NativeStop::Returned(0x1122_3344)
+    ));
+    let memory = child.memory().unwrap();
+    assert_eq!(&memory[4096..4100], &0x7654_3210u32.to_le_bytes());
+    assert_eq!(&memory[4104..4108], &222u32.to_le_bytes());
+    assert_eq!(&memory[4116..4120], &0x89ab_cdefu32.to_le_bytes());
+    assert_eq!(&memory[4120..4124], &12u32.to_le_bytes());
 }
 fn load(helper: &std::path::Path, bytes: &[u8], imports: &[NativeImport<'_>]) -> NativeProcess {
     NativeProcess::load_with_helper(
