@@ -1,12 +1,12 @@
 use qa_core::primitives::{
-    ClientId, EntityAppearance, EntityClientData, EntityModelData, EntityParameter,
+    ClientId, CollisionTags, EntityAppearance, EntityClientData, EntityModelData, EntityParameter,
     EntityPresentation, ModelRef, ModuleId, NativeAppearanceTail, NativeClientRef, NativeEntityRef,
-    NativeReference, ResourceNamespace, SoundRef, ThinkTime, TrajectoryCurve, Vec3,
+    NativeReference, ResourceNamespace, RuleSetId, SoundRef, ThinkTime, TrajectoryCurve, Vec3,
 };
 use qa_network::{
     commands::packet::Protocol,
     message::{Encoding, Error, Reader, Writer},
-    projection::{EntityProjection, EntityRecord},
+    projection::{EntityContext, EntityProjection, EntityRecord},
     states,
 };
 
@@ -157,6 +157,7 @@ fn all_native_entity_tables_retain_represented_fields_and_explicit_namespace() -
         let mut words = vec![0; projection.words()];
         assert!(projection.reduce(
             &src,
+            &EntityContext::default(),
             &mut words,
             |model| {
                 assert_eq!(model.namespace, MODULE);
@@ -211,6 +212,7 @@ fn all_native_entity_tables_retain_represented_fields_and_explicit_namespace() -
         }
         assert!(projection.reduce(
             &imported,
+            &EntityContext::default(),
             &mut words,
             |model| {
                 assert_eq!(model.namespace, CLIENT);
@@ -246,6 +248,7 @@ fn models_are_resolved_and_missing_or_unrepresentable_models_become_zero() -> Re
         };
         projection.reduce(
             &src,
+            &EntityContext::default(),
             &mut words,
             |_| Some(wide),
             |sound| Some(sound.ordinal),
@@ -257,6 +260,7 @@ fn models_are_resolved_and_missing_or_unrepresentable_models_become_zero() -> Re
         for ordinal in [None, Some(wide + 1)] {
             projection.reduce(
                 &src,
+                &EntityContext::default(),
                 &mut words,
                 |_| ordinal,
                 |sound| Some(sound.ordinal),
@@ -280,6 +284,7 @@ fn foreign_native_flags_are_not_reinterpreted_as_other_game_flags() {
         let mut words = vec![0; projection.words()];
         projection.reduce(
             &src,
+            &EntityContext::default(),
             &mut words,
             |model| Some(model.ordinal),
             |sound| Some(sound.ordinal),
@@ -317,6 +322,7 @@ fn short_records_do_not_change_output_or_imported_pose() {
     let mut short = [99; 3];
     assert!(!projection.reduce(
         &src,
+        &EntityContext::default(),
         &mut short,
         |_| panic!("no model resolver on short buffer"),
         |_| panic!("no sound resolver on short buffer"),
@@ -338,6 +344,7 @@ fn rerelease_zero_sentinels_and_explicit_alpha_follow_native_pack_rules() {
     record.appearance.native.loop_attenuation = 3.;
     projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut words,
         |model| Some(model.ordinal),
         |sound| Some(sound.ordinal),
@@ -348,6 +355,7 @@ fn rerelease_zero_sentinels_and_explicit_alpha_follow_native_pack_rules() {
         record.appearance.alpha = alpha;
         projection.reduce(
             &record,
+            &EntityContext::default(),
             &mut words,
             |model| Some(model.ordinal),
             |sound| Some(sound.ordinal),
@@ -373,6 +381,7 @@ fn qw_internal_peer_velocity_never_changes_native_packetentity_bytes() -> Result
     let mut from = [0; states::QW_ENTITY_WORDS];
     assert!(projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut from,
         |model| Some(model.ordinal),
         |sound| Some(sound.ordinal),
@@ -382,6 +391,7 @@ fn qw_internal_peer_velocity_never_changes_native_packetentity_bytes() -> Result
     let mut to = from;
     assert!(projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut to,
         |model| Some(model.ordinal),
         |sound| Some(sound.ordinal),
@@ -461,6 +471,7 @@ fn loop_sounds_use_the_resolved_namespace_independently_of_source_family() -> Re
             let mut resolutions = 0;
             assert!(projection.reduce(
                 &record,
+                &EntityContext::default(),
                 &mut words,
                 |model| Some(model.ordinal),
                 |sound| {
@@ -499,6 +510,7 @@ fn loop_sound_zero_missing_and_native_width_boundaries_do_not_alias_resources() 
             let mut words = vec![0; projection.words()];
             assert!(projection.reduce(
                 &record,
+                &EntityContext::default(),
                 &mut words,
                 |model| Some(model.ordinal),
                 |_| resolved,
@@ -522,6 +534,7 @@ fn loop_sound_zero_missing_and_native_width_boundaries_do_not_alias_resources() 
         let mut words = vec![0; projection.words()];
         assert!(projection.reduce(
             &empty,
+            &EntityContext::default(),
             &mut words,
             |model| Some(model.ordinal),
             |_| panic!("absent sound has no ordinal to resolve"),
@@ -550,6 +563,7 @@ fn q3_speaker_entity_type_has_the_original_literal_delta_encoding() -> Result<()
     let mut words = [0; states::ENTITY_WORDS];
     assert!(projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut words,
         |_| panic!("no model reference"),
         |_| panic!("no sound reference"),
@@ -597,6 +611,7 @@ fn q3_event_target_is_retained_only_at_its_own_native_boundary() -> Result<(), E
         let mut words = vec![0; projection.words()];
         assert!(projection.reduce(
             &record,
+            &EntityContext::default(),
             &mut words,
             |model| Some(model.ordinal),
             |sound| Some(sound.ordinal),
@@ -690,6 +705,7 @@ fn q3_native_all_51_cells_survive_named_projection_without_physical_pose_aliasin
     let mut reduced = [0; states::ENTITY_WORDS];
     assert!(projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut reduced,
         |model| {
             assert_eq!(model.namespace, MODULE);
@@ -740,6 +756,7 @@ fn q3_all_named_fields_cross_the_existing_native_delta_table() -> Result<(), Err
     let mut reduced = [0; states::ENTITY_WORDS];
     assert!(projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut reduced,
         |m| Some(m.ordinal),
         |s| Some(s.ordinal),
@@ -780,6 +797,7 @@ fn q3_item_and_team_model_cells_keep_semantic_payload_instead_of_model_handles()
         let mut reduced = [0; states::ENTITY_WORDS];
         assert!(projection.reduce(
             &record,
+            &EntityContext::default(),
             &mut reduced,
             |_| panic!("item/team payload is not a registered model"),
             |_| panic!("no sound"),
@@ -809,6 +827,7 @@ fn q3_general_sound_and_speaker_parameters_resolve_resources_without_fabricated_
         let mut reduced = [0; states::ENTITY_WORDS];
         assert!(projection.reduce(
             &record,
+            &EntityContext::default(),
             &mut reduced,
             |_| None,
             |s| {
@@ -828,6 +847,7 @@ fn q3_general_sound_and_speaker_parameters_resolve_resources_without_fabricated_
         for missing in [None, Some(256)] {
             assert!(!projection.reduce(
                 &record,
+                &EntityContext::default(),
                 &mut reduced,
                 |_| None,
                 |_| missing,
@@ -853,6 +873,7 @@ fn q3_reference_resolver_retains_client_domain_and_native_zero_and_sentinels() {
     let mut out = [0; states::ENTITY_WORDS];
     assert!(projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut out,
         |_| None,
         |_| None,
@@ -866,7 +887,14 @@ fn q3_reference_resolver_retains_client_domain_and_native_zero_and_sentinels() {
     ));
     assert_eq!(out[15], 1022);
     assert_eq!(out[20], 9);
-    assert!(!projection.reduce(&record, &mut out, |_| None, |_| None, |_| None));
+    assert!(!projection.reduce(
+        &record,
+        &EntityContext::default(),
+        &mut out,
+        |_| None,
+        |_| None,
+        |_| None
+    ));
     words[11] = 13 + 48; // EV_BULLET_HIT_FLESH eventParm is victim entity.
     words[13] = 0;
     words[18] = 1023;
@@ -877,6 +905,7 @@ fn q3_reference_resolver_retains_client_domain_and_native_zero_and_sentinels() {
     );
     assert!(projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut out,
         |_| None,
         |_| None,
@@ -890,7 +919,237 @@ fn q3_reference_resolver_retains_client_domain_and_native_zero_and_sentinels() {
     ));
     assert_eq!(out[13], 0);
     assert_eq!(out[18], 1023);
-    assert!(!projection.reduce(&record, &mut out, |_| None, |_| None, |_| Some(256)));
+    assert!(!projection.reduce(
+        &record,
+        &EntityContext::default(),
+        &mut out,
+        |_| None,
+        |_| None,
+        |_| Some(256)
+    ));
+}
+
+#[test]
+fn foreign_canonical_players_cross_q3_wire_with_destination_client_references() -> Result<(), Error>
+{
+    let projection = EntityProjection::load(Protocol::Quake3_68);
+    for rules in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+    ] {
+        let record = EntityRecord {
+            position: Vec3([12.375, -42.625, 48.125]),
+            appearance: EntityAppearance {
+                source: rules,
+                // These source-native cells must not select the target role or
+                // replace the destination connection's mapped client reference.
+                native: NativeAppearanceTail {
+                    entity_type: 7,
+                    ..Default::default()
+                },
+                presentation: Some(EntityPresentation {
+                    client: EntityClientData::Scalar(51),
+                    ..EntityPresentation::new(MODULE)
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let before = record;
+        for client in [0, 63] {
+            let context = EntityContext {
+                tags: CollisionTags::PLAYER | CollisionTags::MONSTER,
+                client: Some(NativeClientRef::client(CLIENT, client)),
+            };
+            let mut words = [0; states::ENTITY_WORDS];
+            let mut resolutions = 0;
+            assert!(projection.reduce(
+                &record,
+                &context,
+                &mut words,
+                |_| None,
+                |_| None,
+                |reference| {
+                    assert_eq!(
+                        reference,
+                        NativeReference::Client(NativeClientRef::client(CLIENT, client))
+                    );
+                    resolutions += 1;
+                    Some(client)
+                }
+            ));
+            assert_eq!(resolutions, 1);
+            // qsrc bg_public.h: ET_GENERAL=0, ET_PLAYER=1; MSG writes both
+            // eType and clientNum as eight-bit fields.
+            assert_eq!(words[11], 1);
+            assert_eq!(words[20], client);
+            let decoded = wire(Protocol::Quake3_68, &words)?;
+            let mut received = EntityRecord::default();
+            assert!(projection.apply(&decoded, &mut received, CLIENT));
+            assert_eq!(received.position, record.position);
+            assert_eq!(received.appearance.source, RuleSetId::Quake3);
+            assert_eq!(received.appearance.native.entity_type, 1);
+            assert_eq!(
+                received.appearance.presentation.unwrap().client,
+                EntityClientData::Client(NativeClientRef::client(CLIENT, client))
+            );
+        }
+        assert_eq!(record, before);
+    }
+    Ok(())
+}
+
+#[test]
+fn foreign_type_projection_requires_canonical_player_role_and_allows_absent_client() {
+    let projection = EntityProjection::load(Protocol::Quake3_68);
+    let record = EntityRecord {
+        appearance: EntityAppearance {
+            source: RuleSetId::Quake2,
+            native: NativeAppearanceTail {
+                entity_type: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for (tags, expected) in [
+        (CollisionTags::default(), 0),
+        (CollisionTags::MONSTER, 0),
+        (CollisionTags::DEAD_MONSTER, 0),
+        (CollisionTags::PROJECTILE, 0),
+        (CollisionTags::PLAYER, 1),
+    ] {
+        let mut words = [u32::MAX; states::ENTITY_WORDS];
+        assert!(projection.reduce(
+            &record,
+            &EntityContext { tags, client: None },
+            &mut words,
+            |_| None,
+            |_| None,
+            |_| panic!("an absent client reference must not resolve")
+        ));
+        assert_eq!(words[11], expected);
+        assert_eq!(words[20], 0);
+    }
+}
+
+#[test]
+fn canonical_context_never_replaces_same_source_q3_native_type_or_client_cells() -> Result<(), Error>
+{
+    let native = EntityProjection::load_native_q3();
+    let projection = EntityProjection::load(Protocol::Quake3_68);
+    let context = EntityContext {
+        tags: CollisionTags::PLAYER,
+        client: Some(NativeClientRef::client(CLIENT, 63)),
+    };
+    for (kind, client) in [(0, 0), (0x8000_0125, 0x8000_0107)] {
+        let mut original = [0; states::ENTITY_WORDS];
+        original[11] = kind;
+        original[20] = client;
+        let mut record = EntityRecord::default();
+        assert!(native.apply(&original, &mut record, MODULE));
+        let mut words = [0; states::ENTITY_WORDS];
+        for target in [&native, &projection] {
+            assert!(target.reduce(
+                &record,
+                &context,
+                &mut words,
+                |_| None,
+                |_| None,
+                |reference| match reference {
+                    NativeReference::Entity(reference) => Some(reference.ordinal),
+                    NativeReference::Client(_) => {
+                        panic!("native scalar client data must not use context resolution")
+                    }
+                }
+            ));
+            assert_eq!(words[11], kind);
+            assert_eq!(words[20], client);
+        }
+        let decoded = wire(Protocol::Quake3_68, &words)?;
+        assert_eq!(decoded[11], kind & 255);
+        assert_eq!(decoded[20], client & 255);
+    }
+
+    let mut original = [0; states::ENTITY_WORDS];
+    original[11] = 1;
+    original[20] = 2;
+    let mut record = EntityRecord::default();
+    assert!(native.apply(&original, &mut record, MODULE));
+    let mut words = [0; states::ENTITY_WORDS];
+    assert!(projection.reduce(
+        &record,
+        &context,
+        &mut words,
+        |_| None,
+        |_| None,
+        |reference| match reference {
+            NativeReference::Entity(reference) => Some(reference.ordinal),
+            NativeReference::Client(reference) => {
+                assert_eq!(reference, NativeClientRef::client(MODULE, 2));
+                Some(4)
+            }
+        }
+    ));
+    assert_eq!(words[11], 1);
+    assert_eq!(words[20], 4);
+    Ok(())
+}
+
+#[test]
+fn foreign_client_projection_reuses_checked_resolver_and_native_wire_limits() {
+    let record = EntityRecord {
+        appearance: EntityAppearance {
+            source: RuleSetId::Quake2,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let context = EntityContext {
+        tags: CollisionTags::PLAYER,
+        client: Some(NativeClientRef::client(MODULE, 0)),
+    };
+    let projection = EntityProjection::load(Protocol::Quake3_68);
+    let mut words = [0; states::ENTITY_WORDS];
+    for resolved in [None, Some(64), Some(u32::MAX)] {
+        assert!(!projection.reduce(
+            &record,
+            &context,
+            &mut words,
+            |_| None,
+            |_| None,
+            |reference| {
+                assert_eq!(
+                    reference,
+                    NativeReference::Client(NativeClientRef::client(MODULE, 0))
+                );
+                resolved
+            }
+        ));
+    }
+    assert!(!projection.reduce(
+        &record,
+        &context,
+        &mut words,
+        |_| None,
+        |_| None,
+        |reference| (reference.namespace() == CLIENT).then_some(reference.ordinal())
+    ));
+
+    let native = EntityProjection::load_native_q3();
+    assert!(native.reduce(
+        &record,
+        &context,
+        &mut words,
+        |_| None,
+        |_| None,
+        |_| Some(u32::MAX)
+    ));
+    assert_eq!(words[11], 1);
+    assert_eq!(words[20], u32::MAX);
 }
 
 #[test]
@@ -941,6 +1200,7 @@ fn packed_box_solids_cross_protocol_boundaries_in_native_units() -> Result<(), E
         let mut words = vec![0; target.words()];
         assert!(target.reduce(
             &record,
+            &EntityContext::default(),
             &mut words,
             |m| Some(m.ordinal),
             |s| Some(s.ordinal),
@@ -977,6 +1237,7 @@ fn brush_solids_require_one_resolved_primary_model_before_wire_emission() -> Res
             let mut resolutions = [0; 4];
             assert!(projection.reduce(
                 &record,
+                &EntityContext::default(),
                 &mut words,
                 |model| {
                     resolutions[(model.ordinal - 8) as usize] += 1;
@@ -1007,6 +1268,7 @@ fn brush_solids_require_one_resolved_primary_model_before_wire_emission() -> Res
             for missing in [None, Some(0), Some(65536)] {
                 assert!(!projection.reduce(
                     &record,
+                    &EntityContext::default(),
                     &mut words,
                     |model| {
                         if model.ordinal == 8 {
@@ -1023,6 +1285,7 @@ fn brush_solids_require_one_resolved_primary_model_before_wire_emission() -> Res
             absent.appearance.models[0] = None;
             assert!(!projection.reduce(
                 &absent,
+                &EntityContext::default(),
                 &mut words,
                 |m| Some(m.ordinal),
                 |s| Some(s.ordinal),
@@ -1041,11 +1304,25 @@ fn native_public_solid_words_remain_exact_without_a_client_model_catalog() {
     let mut record = EntityRecord::default();
     assert!(projection.apply(&words, &mut record, MODULE));
     let mut out = [0; states::ENTITY_WORDS];
-    assert!(projection.reduce(&record, &mut out, |_| None, |_| None, |r| Some(r.ordinal())));
+    assert!(projection.reduce(
+        &record,
+        &EntityContext::default(),
+        &mut out,
+        |_| None,
+        |_| None,
+        |r| Some(r.ordinal())
+    ));
     assert_eq!(out, words);
     words[27] = 0x8123_4567;
     assert!(projection.apply(&words, &mut record, MODULE));
-    assert!(projection.reduce(&record, &mut out, |_| None, |_| None, |r| Some(r.ordinal())));
+    assert!(projection.reduce(
+        &record,
+        &EntityContext::default(),
+        &mut out,
+        |_| None,
+        |_| None,
+        |r| Some(r.ordinal())
+    ));
     assert_eq!(out, words);
 }
 
@@ -1058,6 +1335,7 @@ fn malformed_foreign_bounds_and_box_to_brush_collisions_reject_only_the_record()
         let mut words = [0; states::ENTITY_WORDS];
         assert!(!projection.reduce(
             &record,
+            &EntityContext::default(),
             &mut words,
             |m| Some(m.ordinal),
             |s| Some(s.ordinal),
@@ -1069,6 +1347,7 @@ fn malformed_foreign_bounds_and_box_to_brush_collisions_reject_only_the_record()
     let mut words = [0; states::ENTITY_WORDS];
     assert!(projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut words,
         |m| Some(m.ordinal),
         |s| Some(s.ordinal),
@@ -1098,11 +1377,25 @@ fn synthetic_q3_pose_uses_load_selected_interpolation_without_changing_native_tr
     record.angles = Vec3([14., 15., 16.]);
     record.appearance.source = Protocol::Quake3_68.rule_set();
     let mut words = [0; states::ENTITY_WORDS];
-    assert!(projection.reduce(&record, &mut words, |_| None, |_| None, |_| None));
+    assert!(projection.reduce(
+        &record,
+        &EntityContext::default(),
+        &mut words,
+        |_| None,
+        |_| None,
+        |_| None
+    ));
     assert_eq!((words[16], words[23]), (1, 1));
     assert_eq!(f32::from_bits(words[1]), 11.);
     assert_eq!(f32::from_bits(words[6]), 15.);
     record.appearance.presentation = Some(EntityPresentation::new(MODULE));
-    assert!(projection.reduce(&record, &mut words, |_| None, |_| None, |_| None));
+    assert!(projection.reduce(
+        &record,
+        &EntityContext::default(),
+        &mut words,
+        |_| None,
+        |_| None,
+        |_| None
+    ));
     assert_eq!((words[16], words[23]), (0, 0));
 }

@@ -417,6 +417,7 @@ fn verify_entity_fields(f: &Fixture) {
     assert!(
         qa_network::projection::EntityProjection::load_native_q3().reduce(
             &record,
+            &qa_network::projection::EntityContext::default(),
             &mut words,
             |model| Some(model.ordinal),
             |sound| Some(sound.ordinal),

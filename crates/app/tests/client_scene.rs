@@ -103,6 +103,7 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
         let mut words = [0; states::Q2_ENTITY_WORDS];
         assert!(projection.reduce(
             &record,
+            &qa_network::projection::EntityContext::default(),
             &mut words,
             |model| Some(model.ordinal),
             |sound| Some(sound.ordinal),
@@ -202,6 +203,7 @@ fn classic_frame_origin_motion_reaches_alias_pose_without_affecting_rerelease() 
         let mut rerelease_words = [0; states::Q2_RERELEASE_ENTITY_WORDS];
         assert!(projection.reduce(
             &record,
+            &qa_network::projection::EntityContext::default(),
             if source == RuleSetId::Quake2 {
                 &mut classic_words[..]
             } else {
@@ -346,6 +348,7 @@ fn received_native_beams_keep_palette_width_endpoints_and_float_alpha_without_a_
         for (index, record) in [old, current].iter().enumerate() {
             assert!(projection.reduce(
                 record,
+                &qa_network::projection::EntityContext::default(),
                 if source == RuleSetId::Quake2 {
                     &mut classic[index][..]
                 } else {
@@ -587,6 +590,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
     let mut words = [0; states::QW_ENTITY_WORDS];
     assert!(projection.reduce(
         &source_edict,
+        &qa_network::projection::EntityContext::default(),
         &mut words,
         |model| Some(model.ordinal),
         |sound| Some(sound.ordinal),
@@ -893,6 +897,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         let mut words = [0; states::Q2_ENTITY_WORDS];
         assert!(projection.reduce(
             &record,
+            &qa_network::projection::EntityContext::default(),
             &mut words,
             |reference| Some(reference.ordinal),
             |sound| Some(sound.ordinal),
@@ -1660,6 +1665,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
         let mut words = [0; states::Q2_ENTITY_WORDS];
         assert!(projection.reduce(
             &record,
+            &qa_network::projection::EntityContext::default(),
             &mut words,
             |model| Some(model.ordinal),
             |sound| Some(sound.ordinal),
@@ -1825,6 +1831,7 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
     let mut words = [0; states::ENTITY_WORDS];
     assert!(projection.reduce(
         &record,
+        &qa_network::projection::EntityContext::default(),
         &mut words,
         |model| Some(model.ordinal),
         |sound| Some(sound.ordinal),
@@ -1901,6 +1908,7 @@ fn synthesized_q3_player_sound_origin_does_not_interpolate_a_packet_pose() {
     };
     assert!(projection.reduce(
         &record,
+        &qa_network::projection::EntityContext::default(),
         &mut previous_words,
         |_| None,
         |_| None,

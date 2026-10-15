@@ -1,6 +1,8 @@
 //! One connection-owned entity-number projection shared by snapshots and cues.
 use qa_core::{
-    primitives::{ClientId, EntityId, ModuleId, NativeReference, ResourceNamespace},
+    primitives::{
+        ClientId, EntityId, ModuleId, NativeClientRef, NativeReference, ResourceNamespace,
+    },
     stamps::StampSet,
 };
 use qa_network::{commands::packet::Protocol, snapshots::snapshot_limits, states};
@@ -373,6 +375,27 @@ impl NativeNumbers {
     pub fn number(&self, id: EntityId) -> Option<u32> {
         let row = self.slots.get(id.slot as usize)?;
         (row.id == Some(id)).then_some(row.number).flatten()
+    }
+
+    /// One admitted player in this connection's native client namespace.
+    pub fn client_reference(
+        &self,
+        entities: &EntityTable,
+        id: EntityId,
+        receiver: ClientId,
+    ) -> Option<NativeClientRef> {
+        let slot = entities.resolve(id)?;
+        let row = self.slots.get(slot)?;
+        if row.id != Some(id) || !matches!(row.role, MappingRole::Player) {
+            return None;
+        }
+        let number = row.number?;
+        if self.owners.get(number as usize) != Some(&Some(id)) {
+            return None;
+        }
+        let client = number.checked_sub(self.first as u32)?;
+        (client < self.player_count())
+            .then(|| NativeClientRef::client(ResourceNamespace::Client(receiver), client))
     }
 
     pub fn foreign(&mut self, id: EntityId) -> Option<u32> {

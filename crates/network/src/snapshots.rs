@@ -1217,6 +1217,7 @@ fn read_qw_records(
                     let mut words = [0; states::QW_ENTITY_WORDS];
                     entity_projection.reduce(
                         &record,
+                        &crate::projection::EntityContext::default(),
                         &mut words,
                         |model| Some(model.ordinal),
                         |sound| Some(sound.ordinal),

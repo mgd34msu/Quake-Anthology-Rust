@@ -35,6 +35,7 @@ fn encode(number: u32, record: EntityRecord) -> Entity<{ states::ENTITY_WORDS }>
     let mut words = [0; states::ENTITY_WORDS];
     assert!(EntityProjection::load(Protocol::Quake3_68).reduce(
         &record,
+        &qa_network::projection::EntityContext::default(),
         &mut words,
         |model| Some(model.ordinal),
         |sound| Some(sound.ordinal),

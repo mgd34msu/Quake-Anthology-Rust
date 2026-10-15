@@ -4,10 +4,10 @@ use crate::{commands::packet::Protocol, states};
 use qa_core::{
     math::{AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
-        AngleOffset, EntityAppearance, EntityId, ModelRef, MovementMagnitude, MovementMode,
-        MovementTimer, NativePlayerTail, PlayerPresentation, PlayerSignals, PlayerState,
-        PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding, ValueWidth,
-        Vec3, ViewWeapon, WeaponReadiness, WeaponState,
+        AngleOffset, CollisionTags, EntityAppearance, EntityId, ModelRef, MovementMagnitude,
+        MovementMode, MovementTimer, NativeClientRef, NativePlayerTail, PlayerPresentation,
+        PlayerSignals, PlayerState, PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef,
+        ValueBinding, ValueWidth, Vec3, ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -18,6 +18,14 @@ pub use qa_core::primitives::EntityRecord;
 pub const MOVEMENT_WORDS: usize = 13;
 pub const PM_FLAGS_WORD: usize = 8;
 pub const GRAVITY_WORD: usize = 9;
+
+/// Canonical SERVER roles and destination-native client references, borrowed
+/// only while reducing an entity into its selected native record layout.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EntityContext {
+    pub tags: CollisionTags,
+    pub client: Option<NativeClientRef>,
+}
 
 /// These are native values, never common entity, client or registry handles.
 #[derive(Default)]

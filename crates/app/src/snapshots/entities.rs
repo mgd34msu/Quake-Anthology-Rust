@@ -5,7 +5,7 @@ use qa_core::primitives::{
 };
 use qa_network::{
     commands::packet::{Error, Protocol},
-    projection::{EntityProjection, EntityRecord, PlayerProjection},
+    projection::{EntityContext, EntityProjection, EntityRecord, PlayerProjection},
     snapshots::{Entity, Frame, ReceivedFrame, snapshot_limits},
     states,
 };
@@ -172,6 +172,21 @@ impl<const N: usize> Rows<N> {
             let slot = self.sources[index].slot as usize;
             let columns = &source.entities.columns;
             let appearance = columns.appearance[slot];
+            let Some(tags) = source
+                .entities
+                .collision_tags(self.sources[index], columns.collision_tags[slot])
+            else {
+                rejected += 1;
+                continue;
+            };
+            let context = EntityContext {
+                tags,
+                client: numbers.client_reference(
+                    source.entities,
+                    self.sources[index],
+                    source.receiver,
+                ),
+            };
             let record = EntityRecord {
                 position: columns.position[slot],
                 velocity: columns.velocity[slot],
@@ -180,6 +195,7 @@ impl<const N: usize> Rows<N> {
             };
             if !projection.reduce(
                 &record,
+                &context,
                 &mut row.words,
                 &mut *source.resolve_model,
                 &mut *source.resolve_sound,

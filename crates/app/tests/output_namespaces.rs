@@ -247,6 +247,7 @@ fn weak_references_preserve_primary_ordinals_and_rebase_only_foreign_entities() 
 #[test]
 fn every_protocol_projects_active_players_into_its_player_namespace() {
     use qa_app::output_namespace::native_client_entity;
+    use qa_core::primitives::{ClientId, NativeClientRef, ResourceNamespace};
     use qa_network::snapshots::snapshot_limits;
     for protocol in PROTOCOLS {
         let first = snapshot_limits(protocol).first_entity;
@@ -277,6 +278,18 @@ fn every_protocol_projects_active_players_into_its_player_namespace() {
             native_client_entity(protocol, 3)
         );
         assert_eq!(numbers.project(&table, foreign), Some(first + 1));
+        let receiver = ClientId(27);
+        for (id, ordinal) in [(low, 0), (high, 2), (own, 3), (foreign, 1)] {
+            assert_eq!(
+                numbers.client_reference(&table, id, receiver),
+                Some(NativeClientRef::client(
+                    ResourceNamespace::Client(receiver),
+                    ordinal
+                ))
+            );
+        }
+        assert_eq!(numbers.client_reference(&table, inactive, receiver), None);
+        assert_eq!(numbers.client_reference(&table, monster, receiver), None);
         assert_eq!(
             numbers.native(&table, ModuleId(2), first as i32),
             Some(first + 1)
@@ -308,6 +321,38 @@ fn every_protocol_projects_active_players_into_its_player_namespace() {
         assert_eq!(numbers.project(&table, own), Some(first + 3));
         assert_eq!(numbers.project(&table, foreign), Some(first + 1));
     }
+}
+
+#[test]
+fn projected_client_references_reject_stale_and_unadmitted_lifetimes() {
+    use qa_core::primitives::{ClientId, NativeClientRef, ResourceNamespace};
+    let mut table = EntityTable::new(4, 2).unwrap();
+    let player = table.id_at(1).unwrap();
+    let receiver = ClientId(3);
+    let protocol = Protocol::Quake3_68;
+    let mut numbers = NativeNumbers::load(protocol);
+    numbers.refresh(&table, None, protocol, [player]);
+    let expected = Some(NativeClientRef::client(
+        ResourceNamespace::Client(receiver),
+        0,
+    ));
+    assert_eq!(numbers.client_reference(&table, player, receiver), expected);
+    let replacement = table.reset_client(player).unwrap();
+    assert_eq!(numbers.client_reference(&table, player, receiver), None);
+    assert_eq!(
+        numbers.client_reference(&table, replacement, receiver),
+        None
+    );
+    numbers.refresh(&table, None, protocol, [replacement]);
+    assert_eq!(
+        numbers.client_reference(&table, replacement, receiver),
+        expected
+    );
+    numbers.refresh(&table, None, protocol, []);
+    assert_eq!(
+        numbers.client_reference(&table, replacement, receiver),
+        None
+    );
 }
 
 #[test]

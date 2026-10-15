@@ -1,5 +1,5 @@
 //! Source-native meanings of overloaded entity cells and published trajectories.
-use qa_core::primitives::{RuleSetId, ThinkTime, Trajectory, TrajectoryCurve, Vec3};
+use qa_core::primitives::{CollisionTags, RuleSetId, ThinkTime, Trajectory, TrajectoryCurve, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelCellRole {
@@ -72,6 +72,14 @@ pub const fn entity_roles(source: RuleSetId) -> EntityRoles {
     [NEUTRAL, NEUTRAL, NEUTRAL, NEUTRAL, Q3][source as usize]
 }
 impl EntityRoles {
+    pub fn project_type(self, native: Option<u32>, tags: CollisionTags) -> u32 {
+        native.unwrap_or_else(|| {
+            self.player
+                .filter(|_| tags.0 & CollisionTags::PLAYER.0 != 0)
+                .unwrap_or(0)
+        })
+    }
+
     pub fn is_player(self, kind: u32) -> bool {
         self.player == Some(kind)
     }

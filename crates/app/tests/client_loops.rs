@@ -257,6 +257,7 @@ fn snapshot_with_player(
                     let mut words = [0; $entity];
                     assert!(projection.reduce(
                         record,
+                        &qa_network::projection::EntityContext::default(),
                         &mut words,
                         |_| None,
                         |sound| {

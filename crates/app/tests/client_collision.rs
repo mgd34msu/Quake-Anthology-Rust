@@ -16,7 +16,7 @@ use qa_core::{
 };
 use qa_network::{
     commands::packet::Protocol,
-    projection::{EntityProjection, EntityRecord},
+    projection::{EntityContext, EntityProjection, EntityRecord},
     snapshots::{Entity, Frame, ReceivedFrame},
     states,
 };
@@ -148,6 +148,7 @@ impl Fixture {
         let mut words = [0; N];
         assert!(EntityProjection::load(self.protocol).reduce(
             &record,
+            &EntityContext::default(),
             &mut words,
             |model| Some(model.ordinal),
             |sound| Some(sound.ordinal),
@@ -197,6 +198,39 @@ impl Fixture {
             0
         );
         resources
+    }
+}
+
+struct QueuedSource(qa_core::sys_events::EventTime);
+impl qa_app::host::FrameSource for QueuedSource {
+    fn begin_frame(&mut self) -> std::time::Duration {
+        std::time::Duration::from_nanos(self.0.0)
+    }
+    fn poll_events(&mut self, queue: &mut qa_core::sys_events::SysEventQueue) {
+        queue
+            .push(qa_core::sys_events::SysEvent {
+                time: self.0,
+                kind: qa_core::sys_events::EventKind::Time,
+            })
+            .unwrap();
+    }
+    fn wait_time(&mut self, _: std::time::Duration) -> std::time::Duration {
+        panic!("uncapped fixture")
+    }
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+    fn present(&mut self) {}
+}
+
+fn accept_local_frames(host: &mut qa_app::host::FrameHost) {
+    for milliseconds in [100, 125, 150] {
+        host.frame(
+            &mut QueuedSource(qa_core::sys_events::EventTime::from_milliseconds(
+                milliseconds,
+            )),
+            true,
+        );
     }
 }
 
@@ -655,6 +689,7 @@ fn queued_snapshot_collision_uses_wire_pose_while_server_moves_independently() {
     let mut words = [0; states::Q2_ENTITY_WORDS];
     assert!(projection.reduce(
         &record,
+        &EntityContext::default(),
         &mut words,
         |model| Some(model.ordinal),
         |sound| Some(sound.ordinal),
@@ -895,42 +930,13 @@ fn q3_player_tags_use_existing_entity_role_instead_of_native_number() {
 
 #[test]
 fn queued_client_maxclients_and_snapshots_classify_each_split_client_independently() {
-    use qa_app::{
-        Runtime,
-        client_policy::ClientPolicy,
-        host::{FrameHost, FrameSource},
-        map::SpawnAnchor,
-    };
+    use qa_app::{Runtime, client_policy::ClientPolicy, host::FrameHost, map::SpawnAnchor};
     use qa_console::{commands::Console, views::Context};
     use qa_core::{
         primitives::{Body, ModuleId},
-        sys_events::{EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
+        sys_events::SeatId,
     };
     use qa_session::timing::TickRate;
-    use std::time::Duration;
-
-    struct Source(EventTime);
-    impl FrameSource for Source {
-        fn begin_frame(&mut self) -> Duration {
-            Duration::from_nanos(self.0.0)
-        }
-        fn poll_events(&mut self, queue: &mut SysEventQueue) {
-            queue
-                .push(SysEvent {
-                    time: self.0,
-                    kind: EventKind::Time,
-                })
-                .unwrap();
-        }
-        fn wait_time(&mut self, _: Duration) -> Duration {
-            panic!("uncapped fixture")
-        }
-        fn elapsed(&self) -> Duration {
-            Duration::ZERO
-        }
-        fn present(&mut self) {}
-    }
-
     let protocol = Protocol::Quake2Repro1038;
     let fixture = Fixture::new(protocol, ClientId(0));
     let resources = [
@@ -1002,12 +1008,7 @@ fn queued_client_maxclients_and_snapshots_classify_each_split_client_independent
     host.local_clients = [Some(ClientId(0)), Some(ClientId(1)), None, None];
     // The ordinary host publishes the derived config row into EventRing, sends
     // its native packet through loopback, then accepts it through SysEventQueue.
-    for milliseconds in [100, 125, 150] {
-        host.frame(
-            &mut Source(EventTime::from_milliseconds(milliseconds)),
-            true,
-        );
-    }
+    accept_local_frames(&mut host);
     assert_eq!(host.runtime.network.malformed, 0);
     assert_eq!(host.runtime.server.clients.len(), 2);
     for (seat, max_clients, monster_number) in [(0, 3, 4), (1, 2, 3)] {
@@ -1033,4 +1034,192 @@ fn queued_client_maxclients_and_snapshots_classify_each_split_client_independent
             Some(expected),
         );
     }
+}
+
+#[test]
+fn queued_q2_player_role_reaches_q3_collision_without_a_maxclients_row() {
+    use qa_app::{Runtime, client_policy::ClientPolicy, host::FrameHost, map::SpawnAnchor};
+    use qa_console::{commands::Console, views::Context};
+    use qa_core::{
+        loopback::Endpoint,
+        primitives::{Body, CollisionTags, ModuleId, NativeEntity},
+        sys_events::SeatId,
+    };
+    use qa_session::{clients::Connection, timing::TickRate};
+
+    let protocol = Protocol::Quake3_68;
+    let source_protocol = Protocol::Quake2_34;
+    let module = ModuleId(7);
+    let fixture = Fixture::new(protocol, ClientId(0));
+    let resources = fixture.resources(ClientId(0));
+    assert_eq!(resources.state.layout.max_clients(), None);
+    let bounds = Bounds {
+        mins: Vec3([-8.; 3]),
+        maxs: Vec3([8.; 3]),
+    };
+    let appearance = EntityAppearance {
+        source: RuleSetId::Quake2,
+        models: [
+            ModelRef::native(ResourceNamespace::Module(module), 2),
+            None,
+            None,
+            None,
+        ],
+        native: qa_core::primitives::NativeAppearanceTail {
+            solid: SolidCodec::QUAKE2.pack_bounds(bounds),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // No hand-authored Q3 eType: the publishing player is a real common client
+    // whose appearance and native edict namespace both remain Quake II.
+    assert_eq!(appearance.native.entity_type, 0);
+    let mut runtime = Runtime::load(2, []).unwrap();
+    runtime.geometry = fixture.store;
+    runtime.models = Some(std::sync::Arc::new(fixture.catalog));
+    let receiver = runtime
+        .connect_local(
+            SeatId::FIRST,
+            SpawnAnchor {
+                position: Vec3::default(),
+                angles: Vec3::default(),
+                entity: 0,
+                fixture_fallback: false,
+            },
+            ClientPolicy::select(
+                Some(RuleSetId::Quake3),
+                None,
+                Some(RuleSetId::Quake2Rerelease),
+                Some(RuleSetId::Quake2Rerelease),
+            )
+            .unwrap(),
+            protocol,
+            5,
+        )
+        .unwrap();
+    assert_eq!(receiver, ClientId(0));
+    assert!(
+        runtime
+            .server
+            .bind_client_native(receiver, NativeEntity { module, slot: 6 })
+    );
+    runtime.client_resources[receiver.0 as usize] = Some(resources);
+    runtime.native_numbers[receiver.0 as usize].set_native_clients(
+        8,
+        qa_network::snapshots::snapshot_limits(source_protocol).first_entity,
+    );
+    let peer = runtime
+        .server
+        .connect(
+            Connection::Bot,
+            module,
+            Some(NativeEntity { module, slot: 8 }),
+        )
+        .unwrap();
+    assert_eq!(peer, ClientId(1));
+    let peer_entity = runtime.server.clients[peer.0 as usize].entity;
+    runtime.server.entities.columns.set_body(
+        peer_entity.slot as usize,
+        Body {
+            position: Vec3([-24., 0., 0.]),
+            mins: bounds.mins,
+            maxs: bounds.maxs,
+            ..Default::default()
+        },
+    );
+    runtime.server.entities.columns.appearance[peer_entity.slot as usize] = appearance;
+    assert_eq!(
+        runtime.server.entities.columns.collision_tags[peer_entity.slot as usize],
+        CollisionTags::PLAYER
+    );
+    let monster = runtime
+        .server
+        .entities
+        .allocate(
+            ThinkTime::Milliseconds(0),
+            module,
+            qa_world::entities::AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    runtime.server.entities.columns.native_entity[monster.slot as usize] =
+        Some(NativeEntity { module, slot: 13 });
+    runtime.server.entities.columns.set_body(
+        monster.slot as usize,
+        Body {
+            position: Vec3([24., 0., 0.]),
+            mins: bounds.mins,
+            maxs: bounds.maxs,
+            ..Default::default()
+        },
+    );
+    runtime.server.entities.columns.appearance[monster.slot as usize] = appearance;
+    assert_eq!(
+        runtime.server.entities.columns.collision_tags[monster.slot as usize],
+        CollisionTags::default()
+    );
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    host.local_clients[SeatId::FIRST.index()] = Some(receiver);
+    accept_local_frames(&mut host);
+    assert_eq!(host.runtime.network.malformed, 0);
+    assert_eq!(
+        host.runtime.native_numbers[receiver.0 as usize].number(peer_entity),
+        Some(7)
+    );
+    assert_ne!(peer.0, 7);
+    let accepted = host
+        .runtime
+        .network
+        .get(receiver, Endpoint::Client)
+        .unwrap()
+        .channel
+        .current_snapshot()
+        .unwrap();
+    let ReceivedFrame::Quake3(accepted) = accepted else {
+        panic!("Q3 wire frame");
+    };
+    let peer_row = accepted
+        .entities
+        .iter()
+        .find(|row| row.number == 7)
+        .unwrap();
+    let monster_row = accepted
+        .entities
+        .iter()
+        .find(|row| row.number == 13)
+        .unwrap();
+    let roles = qa_gameplay::rules::entities::entity_roles(RuleSetId::Quake3);
+    assert!(roles.is_player(peer_row.words[11]));
+    assert_eq!(
+        peer_row.words[20], 7,
+        "Q3 clientNum is destination-native, not common ClientId"
+    );
+    assert!(!roles.is_player(monster_row.words[11]));
+    assert_eq!(
+        host.runtime.client_resources[receiver.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .max_clients(),
+        0
+    );
+    let view = host.runtime.client_collision[receiver.0 as usize]
+        .as_mut()
+        .unwrap();
+    let peer_target = view.entity(7).unwrap();
+    let monster_target = view.entity(13).unwrap();
+    assert_eq!(
+        player_mask_trace(view, &host.runtime.geometry, true).entity,
+        Some(peer_target)
+    );
+    assert_eq!(
+        player_mask_trace(view, &host.runtime.geometry, false).entity,
+        Some(monster_target)
+    );
 }

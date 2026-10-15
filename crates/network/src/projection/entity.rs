@@ -1,6 +1,6 @@
 //! The existing native delta encoder consumes these projected field-table words.
 //! This value borrows no engine ownership; namespaces remain caller-selected.
-use super::{Convert, Field};
+use super::{Convert, EntityContext, Field};
 use crate::{commands::packet::Protocol, states};
 use qa_core::primitives::{
     EntityAppearance, EntityClientData, EntityLight, EntityModelData, EntityParameter,
@@ -297,6 +297,7 @@ impl EntityProjection {
     pub fn reduce(
         &self,
         record: &EntityRecord,
+        context: &EntityContext,
         out: &mut [u32],
         mut resolve_model: impl FnMut(ModelRef) -> Option<u32>,
         mut resolve_sound: impl FnMut(SoundRef) -> Option<u32>,
@@ -385,13 +386,9 @@ impl EntityProjection {
                         0
                     }
                 }
-                EntityType => {
-                    if same {
-                        a.native.entity_type
-                    } else {
-                        0
-                    }
-                }
+                EntityType => self
+                    .roles
+                    .project_type(same.then_some(a.native.entity_type), context.tags),
                 OtherEntity => {
                     if same {
                         match a.native.other_entity {
@@ -509,7 +506,11 @@ impl EntityProjection {
                     None if same && roles.other2_reference => return false,
                     None => 0,
                 },
-                Client => match presentation.filter(|_| same).map(|p| p.client) {
+                Client => match if same {
+                    presentation.map(|p| p.client)
+                } else {
+                    context.client.map(EntityClientData::Client)
+                } {
                     Some(EntityClientData::Scalar(value)) => value as u32,
                     Some(EntityClientData::Client(reference)) => {
                         let Some(value) = resolve_entity(NativeReference::Client(reference))

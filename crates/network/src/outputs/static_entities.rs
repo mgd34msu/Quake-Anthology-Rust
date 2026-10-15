@@ -52,6 +52,7 @@ pub fn static_entity(
     let mut words = [0; states::QW_ENTITY_WORDS];
     if !EntityProjection::load(protocol).reduce(
         record,
+        &crate::projection::EntityContext::default(),
         &mut words,
         |_| model,
         |_| None,
