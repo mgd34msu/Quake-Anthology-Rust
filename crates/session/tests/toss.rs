@@ -1,6 +1,6 @@
 use qa_core::primitives::{
-    BodyAttachment, BodyFollow, Bounds, EntityId, LinkOrder, ModuleId, Motion, NativeEntityRef,
-    ResourceNamespace, RuleSetId, ThinkTime, UserCmd, Vec3,
+    BodyAttachment, BodyFollow, Bounds, EntityId, LinkOrder, ModuleId, Motion, RuleSetId,
+    ThinkTime, UserCmd, Vec3,
 };
 use qa_gameplay::rules::{
     motion::{client_motion_rules, step_rules, toss_rules},
@@ -13,7 +13,7 @@ use qa_session::physics::{
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent},
     collision::{QuakeTraceKind, Trace},
-    entities::{AllocationPolicy, EntityTable, FullTable},
+    entities::{AllocationPolicy, EntityReference, EntityTable, FullTable},
 };
 use std::collections::VecDeque;
 
@@ -27,7 +27,7 @@ enum Event {
     Trace(QuakeTraceKind, Vec3),
     Link,
     Impact(Option<EntityId>),
-    Ground(Option<NativeEntityRef>),
+    Ground(Option<EntityReference>),
     Water,
     Sound,
     WaterLevel(f32),
@@ -53,6 +53,7 @@ struct Host {
     impact_flags: Vec<u32>,
     origin_velocity: Option<Vec3>,
     remove_on_impact: bool,
+    retire_ground_on_impact: bool,
     reuse_on_impact: bool,
     clear_ground_on_link: bool,
     client_water_level: f32,
@@ -95,6 +96,7 @@ impl Host {
             impact_flags: Vec::new(),
             origin_velocity: None,
             remove_on_impact: false,
+            retire_ground_on_impact: false,
             reuse_on_impact: false,
             clear_ground_on_link: false,
             client_water_level: 0.0,
@@ -142,7 +144,7 @@ impl Host {
         trace.entity = Some(target);
         self.trace = Some(MotionTrace {
             trace,
-            ground: NativeEntityRef::native(ResourceNamespace::Module(ModuleId(3)), 2),
+            ground: self.entities.capture_reference(target),
         });
     }
 }
@@ -252,9 +254,18 @@ impl MotionHost for Host {
     fn impact(
         &mut self,
         entity: Option<EntityId>,
-        _: &MotionTrace,
+        trace: &MotionTrace,
     ) -> Result<Option<EntityId>, Self::Error> {
         self.events.push(Event::Impact(entity));
+        if self.retire_ground_on_impact
+            && let Some(ground) = trace.ground
+        {
+            assert!(
+                self.entities
+                    .release(ground.entity(), ThinkTime::Seconds(1.0))
+            );
+            self.retire_ground_on_impact = false;
+        }
         self.impact_flags.push(self.state.flags.unwrap_or(0));
         if let Some(entity) = entity {
             if self.remove_on_impact || self.reuse_on_impact {
@@ -287,7 +298,7 @@ impl MotionHost for Host {
         }
         Ok(entity)
     }
-    fn ground(&mut self, _: EntityId, ground: Option<NativeEntityRef>) -> Result<(), Self::Error> {
+    fn ground(&mut self, _: EntityId, ground: Option<EntityReference>) -> Result<(), Self::Error> {
         self.events.push(Event::Ground(ground));
         Ok(())
     }
@@ -1266,4 +1277,20 @@ fn step_impact_removal_stops_and_native_slot_reuse_rebinds_explicitly() {
             assert!(!host.events.contains(&Event::Link));
         }
     }
+}
+
+#[test]
+fn anonymous_ground_capture_survives_obstacle_retirement_during_impact() {
+    let mut host = Host::new(6.0);
+    let slot = host.entity.slot as usize;
+    host.entities.columns.velocity[slot] = Vec3([0.0, 0.0, -100.0]);
+    host.collision(Vec3([0.0, 0.0, 1.0]), Vec3([1.0, 2.0, 3.0]));
+    let ground = host.trace.unwrap().ground.unwrap();
+    assert_eq!(ground.reference(), None);
+    host.retire_ground_on_impact = true;
+    host.run(RuleSetId::Quake, FRAME).unwrap();
+    assert_eq!(host.entities.resolve_reference(ground), None);
+    assert!(host.events.contains(&Event::Ground(Some(ground))));
+    assert_eq!(host.entities.columns.position[slot], Vec3([1.0, 2.0, 3.0]));
+    assert_eq!(host.entities.columns.velocity[slot], Vec3::default());
 }

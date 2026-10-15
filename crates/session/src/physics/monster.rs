@@ -24,7 +24,10 @@ pub trait MonsterHost {
     ) -> Result<MotionTrace, Self::Error>;
     fn write_origin(&mut self, axis: usize, value: f32) -> Result<(), Self::Error>;
     fn write_flags(&mut self, flags: u32) -> Result<(), Self::Error>;
-    fn write_ground(&mut self, ground: NativeEntityRef) -> Result<(), Self::Error>;
+    fn write_ground(
+        &mut self,
+        ground: qa_world::entities::EntityReference,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Goal selection adds live native yaw and absolute bounds to the same mover.

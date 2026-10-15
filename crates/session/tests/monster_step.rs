@@ -19,7 +19,7 @@ use qa_world::collision::{
 enum Write {
     Origin(usize, f32),
     Flags(u32),
-    Ground(NativeEntityRef),
+    Ground(qa_world::entities::EntityReference),
 }
 struct Host {
     pose: EntityPose,
@@ -27,7 +27,8 @@ struct Host {
     flags: u32,
     enemy: Option<NativeEntityRef>,
     target: Option<Vec3>,
-    ground: Option<NativeEntityRef>,
+    ground: Option<qa_world::entities::EntityReference>,
+    entities: qa_world::entities::EntityTable,
     geometry: CollisionStore,
     resource: GeometryId,
     scratch: TraceScratch,
@@ -97,6 +98,8 @@ impl Host {
             .unwrap();
         let scratch = geometry.scratch();
         let (trace_rules, entity_rules) = trace_policy(RuleSetId::Quake);
+        let entities = qa_world::entities::EntityTable::new(1, 1).unwrap();
+        let ground = entities.capture_reference(entities.id_at(0).unwrap());
         Self {
             pose: EntityPose::default(),
             bounds: Bounds {
@@ -106,7 +109,8 @@ impl Host {
             flags: 0,
             enemy: None,
             target: None,
-            ground: Some(reference(0)),
+            ground,
+            entities,
             geometry,
             resource,
             scratch,
@@ -213,7 +217,10 @@ impl MonsterHost for Host {
         self.writes.push(Write::Flags(flags));
         Ok(())
     }
-    fn write_ground(&mut self, ground: NativeEntityRef) -> Result<(), PhysicsError> {
+    fn write_ground(
+        &mut self,
+        ground: qa_world::entities::EntityReference,
+    ) -> Result<(), PhysicsError> {
         self.writes.push(Write::Ground(ground));
         Ok(())
     }
@@ -284,7 +291,11 @@ fn supported_step_clears_partial_before_ground_and_never_invents_onground() {
                 Write::Origin(1, 0.0),
                 Write::Origin(2, 0.03125),
                 Write::Flags(0),
-                Write::Ground(reference(0)),
+                Write::Ground(
+                    host.entities
+                        .capture_reference(host.entities.id_at(0).unwrap())
+                        .unwrap()
+                ),
             ]
         );
         assert_eq!(host.enemy_reads, 0);

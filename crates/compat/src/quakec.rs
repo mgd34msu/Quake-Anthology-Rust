@@ -124,7 +124,7 @@ pub struct PhysicsEntity {
 #[derive(Clone, Copy, Debug)]
 pub enum MotionField {
     Flags(u32),
-    Ground(qa_core::primitives::NativeEntityRef),
+    Ground(qa_world::entities::EntityReference),
     WaterType(f32),
     WaterLevel(f32),
     OldOrigin { axis: usize, value: f32 },
@@ -489,17 +489,13 @@ impl Vm {
         context: crate::services::CallContext,
         captured: qa_world::entities::EntityReference,
     ) -> Result<AdmittedEntity, crate::services::CallError> {
-        use qa_core::primitives::{NativeEntity, ResourceNamespace};
-        let reference = captured.reference();
-        if reference.namespace == ResourceNamespace::Module(context.module) {
+        use qa_core::primitives::ResourceNamespace;
+        if let Some(reference) = captured.reference()
+            && reference.namespace == ResourceNamespace::Module(context.module)
+        {
             return self.admit_reference(entities, context, reference);
         }
-        let ResourceNamespace::Module(module) = reference.namespace else {
-            return Err(crate::services::CallError::Entity);
-        };
-        let slot =
-            i32::try_from(reference.ordinal).map_err(|_| crate::services::CallError::Entity)?;
-        if let Some(entity) = entities.find_native(NativeEntity { module, slot }, None) {
+        if let Some(entity) = entities.resolve_reference(captured) {
             return self.admit_entity(entities, context, entity);
         }
         let entity = captured.entity();
@@ -992,6 +988,21 @@ impl Vm {
         view.finish()?;
         result
     }
+    pub(crate) fn captured_entity_offset(
+        &mut self,
+        entities: &qa_world::entities::EntityTable,
+        context: crate::services::CallContext,
+        reference: qa_world::entities::EntityReference,
+    ) -> Result<u32, crate::services::CallError> {
+        if Some(reference.entity()) == entities.id_at(0) {
+            self.projection.quakec_validate_owner(context.module)?;
+            return Ok(0);
+        }
+        let admitted = self.admit_captured_reference(entities, context, reference)?;
+        let value = admitted.offset();
+        self.release_entity(admitted)?;
+        Ok(value)
+    }
     pub fn write_motion_field(
         &mut self,
         entities: &mut qa_world::entities::EntityTable,
@@ -1000,10 +1011,7 @@ impl Vm {
         field: MotionField,
     ) -> Result<(), crate::services::CallError> {
         let ground = if let MotionField::Ground(reference) = field {
-            let admitted = self.admit_reference(entities, context, reference)?;
-            let value = admitted.offset();
-            self.release_entity(admitted)?;
-            Some(value)
+            Some(self.captured_entity_offset(entities, context, reference)?)
         } else {
             None
         };

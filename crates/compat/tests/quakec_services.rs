@@ -5567,7 +5567,7 @@ fn captured_retired_reference_stays_nonzero_and_pinned_without_becoming_readable
             vm.admit_reference(
                 &calls.services.server.entities,
                 calls.context,
-                captured.reference()
+                captured.reference().unwrap()
             ),
             Err(CallError::Entity)
         ));
@@ -5601,6 +5601,79 @@ fn captured_retired_reference_stays_nonzero_and_pinned_without_becoming_readable
             [10.0_f32.to_bits(), 20.0_f32.to_bits(), 30.0_f32.to_bits()]
         );
         vm.release_entity(reused).unwrap();
+    });
+}
+
+#[test]
+fn anonymous_capture_admission_retains_exact_generation_and_retired_pin() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = alias_vm(
+            3,
+            &[(Opcode::LoadV, 28, 29, 50), (Opcode::Return, 50, 0, 0)],
+        );
+        vm.seed_entities(
+            &calls.services.server.entities,
+            calls.context.module,
+            calls.context.native_rules,
+            1,
+        )
+        .unwrap();
+        let actor = alias_actor(calls, ModuleId(2), 7);
+        calls.services.server.entities.columns.native_entity[actor.slot as usize] = None;
+        let captured = calls
+            .services
+            .server
+            .entities
+            .capture_reference(actor)
+            .unwrap();
+        assert_eq!(captured.reference(), None);
+        let live = vm
+            .admit_captured_reference(&calls.services.server.entities, calls.context, captured)
+            .unwrap();
+        assert_ne!(live.offset(), 0);
+        assert_eq!(
+            alias_load(&mut vm, calls, live.offset(), b"origin", true).unwrap(),
+            [10.0_f32.to_bits(), 20.0_f32.to_bits(), 30.0_f32.to_bits()]
+        );
+        assert!(
+            calls
+                .services
+                .server
+                .free_entity(actor, calls.context.clock)
+        );
+        let retired = vm
+            .admit_captured_reference(&calls.services.server.entities, calls.context, captured)
+            .unwrap();
+        assert_eq!(retired.offset(), live.offset());
+        assert_eq!(
+            alias_load(&mut vm, calls, retired.offset(), b"origin", true),
+            Err(Trap::EntityAccess)
+        );
+        let replacement = alias_actor(calls, ModuleId(2), 7);
+        calls.services.server.entities.columns.native_entity[replacement.slot as usize] = None;
+        assert_eq!(
+            calls.services.server.entities.resolve_reference(captured),
+            None
+        );
+        vm.release_entity(live).unwrap();
+        assert!(matches!(
+            vm.admit_entity(&calls.services.server.entities, calls.context, replacement),
+            Err(CallError::Capacity)
+        ));
+        vm.release_entity(retired).unwrap();
+        let current = vm
+            .admit_entity(&calls.services.server.entities, calls.context, replacement)
+            .unwrap();
+        assert_eq!(
+            vm.resolve_entity(
+                &calls.services.server.entities,
+                calls.context.module,
+                current.offset()
+            )
+            .unwrap(),
+            Some(replacement)
+        );
+        vm.release_entity(current).unwrap();
     });
 }
 

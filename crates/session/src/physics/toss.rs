@@ -1,12 +1,12 @@
 use super::{MotionWrite, PhysicsError};
 use qa_core::{
     math,
-    primitives::{EntityId, NativeEntityRef, Vec3},
+    primitives::{EntityId, Vec3},
 };
 use qa_gameplay::rules::motion::TossRules;
 use qa_world::{
     collision::{QuakeTraceKind, Trace},
-    entities::EntityTable,
+    entities::{EntityReference, EntityTable},
 };
 
 /// Scoped native metadata. Optional fields are required only by executed paths.
@@ -24,12 +24,12 @@ pub struct MotionFrame {
     pub max_velocity: f32,
 }
 
-/// The weak native ground reference is captured before touch callbacks can free
-/// or reuse its common lifetime. Foreign native identities stay explicit.
+/// Capture the hit lifetime before callbacks. Native rows may rebind; anonymous
+/// bodies retain their exact generation without acquiring a made-up namespace.
 #[derive(Clone, Copy, Debug)]
 pub struct MotionTrace {
     pub trace: Trace,
-    pub ground: Option<NativeEntityRef>,
+    pub ground: Option<EntityReference>,
 }
 
 /// Each method ends its entity/VM borrows before returning. Relink performs
@@ -64,7 +64,7 @@ pub trait MotionHost {
     fn ground(
         &mut self,
         entity: EntityId,
-        ground: Option<NativeEntityRef>,
+        ground: Option<EntityReference>,
     ) -> Result<(), Self::Error>;
     fn sound(&mut self, entity: EntityId, name: &[u8]) -> Result<(), Self::Error>;
     /// Read contents at the surviving entity's current origin and apply the

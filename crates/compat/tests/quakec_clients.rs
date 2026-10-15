@@ -701,14 +701,17 @@ fn native_motion_fields_and_frame_scalars_publish_nonphysical_aliases() {
         with_native_client(&mut vm, source, |vm, services, context, native, client| {
             let entity = services.server.clients[client.0 as usize].entity;
             vm.project_entities(services, context).unwrap();
+            let world = services
+                .server
+                .entities
+                .capture_reference(services.server.entities.id_at(0).unwrap())
+                .unwrap();
+            assert_eq!(world.reference(), None);
             for field in [
                 MotionField::Flags(512),
                 MotionField::WaterLevel(3.0),
                 MotionField::WaterType(-3.0),
-                MotionField::Ground(NativeEntityRef::entity(
-                    ResourceNamespace::Module(context.module),
-                    0,
-                )),
+                MotionField::Ground(world),
             ] {
                 vm.write_motion_field(&mut services.server.entities, context, native, field)
                     .unwrap();
@@ -3017,7 +3020,23 @@ fn native_motion_scalar_writes_refresh_shifted_physical_aliases() {
             )
             .unwrap();
             assert_eq!(services.server.entities.columns.velocity[slot].0[2], 513.0);
-            let weak = NativeEntityRef::entity(ResourceNamespace::Module(context.module), 0);
+            let weak = services
+                .server
+                .entities
+                .capture_reference(
+                    services
+                        .server
+                        .entities
+                        .find_native(
+                            NativeEntity {
+                                module: context.module,
+                                slot: 0,
+                            },
+                            None,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
             vm.write_motion_field(
                 &mut services.server.entities,
                 context,
@@ -3051,15 +3070,31 @@ fn native_motion_scalar_writes_refresh_shifted_physical_aliases() {
                 number(vm, native, b"gravity", gravity);
                 assert_eq!(vm.motion_gravity(context, native), Ok(Some(gravity)));
             }
-            let foreign = NativeEntityRef::entity(ResourceNamespace::Module(ModuleId(55)), 0);
+            let foreign_entity = services
+                .server
+                .entities
+                .allocate(context.clock, ModuleId(55), context.allocation)
+                .unwrap()
+                .id;
+            let foreign = services
+                .server
+                .entities
+                .capture_reference(foreign_entity)
+                .unwrap();
+            assert_eq!(foreign.reference(), None);
+            vm.write_motion_field(
+                &mut services.server.entities,
+                context,
+                native,
+                MotionField::Ground(foreign),
+            )
+            .unwrap();
+            let ground = read(vm, native, b"groundentity");
+            assert_ne!(ground, 0);
             assert_eq!(
-                vm.write_motion_field(
-                    &mut services.server.entities,
-                    context,
-                    native,
-                    MotionField::Ground(foreign)
-                ),
-                Err(CallError::Entity)
+                vm.resolve_entity(&services.server.entities, context.module, ground)
+                    .unwrap(),
+                Some(foreign_entity)
             );
             assert!(
                 services

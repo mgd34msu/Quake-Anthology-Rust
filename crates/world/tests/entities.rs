@@ -16,7 +16,9 @@ fn captured_native_reference_authenticates_its_pair_before_callbacks() {
         .unwrap()
         .id;
     let slot = id.slot as usize;
-    assert!(table.capture_reference(id).is_none());
+    let anonymous = table.capture_reference(id).unwrap();
+    assert_eq!(anonymous.reference(), None);
+    assert_eq!(table.resolve_reference(anonymous), Some(id));
     table.columns.native_entity[slot] = Some(NativeEntity {
         module: ModuleId(8),
         slot: 0,
@@ -35,7 +37,10 @@ fn captured_native_reference_authenticates_its_pair_before_callbacks() {
     assert_eq!(captured.entity(), id);
     assert_eq!(
         captured.reference(),
-        NativeEntityRef::entity(ResourceNamespace::Module(ModuleId(7)), 0)
+        Some(NativeEntityRef::entity(
+            ResourceNamespace::Module(ModuleId(7)),
+            0
+        ))
     );
     assert!(table.release(id, ThinkTime::Seconds(0.0)));
     assert!(table.capture_reference(id).is_none());
@@ -50,6 +55,14 @@ fn captured_native_reference_authenticates_its_pair_before_callbacks() {
     assert_eq!(replacement.slot, id.slot);
     assert_ne!(replacement, captured.entity());
     assert_eq!(captured.entity(), id);
+    assert_eq!(table.resolve_reference(anonymous), None);
+    assert_eq!(table.resolve_reference(captured), None);
+    table.columns.native_entity[replacement.slot as usize] = Some(NativeEntity {
+        module: ModuleId(7),
+        slot: 0,
+    });
+    assert_eq!(table.resolve_reference(captured), Some(replacement));
+    assert_eq!(table.resolve_reference(anonymous), None);
 }
 
 #[test]

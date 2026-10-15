@@ -7,13 +7,13 @@ use qa_core::primitives::{
 
 pub const MAX_ENTITIES: usize = 8192;
 
-/// A native reference paired with its verified lifetime before a callback.
-/// The weak native ordinal can rebind, while the captured generation remains
-/// available when a callback retires that row without replacing it.
+/// A verified canonical lifetime, with an optional weak native row identity.
+/// Native ordinals can rebind after callbacks; anonymous references retain
+/// their exact generation when their original lifetime ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntityReference {
     entity: EntityId,
-    reference: NativeEntityRef,
+    reference: Option<NativeEntityRef>,
 }
 
 impl EntityReference {
@@ -21,7 +21,7 @@ impl EntityReference {
         self.entity
     }
 
-    pub const fn reference(self) -> NativeEntityRef {
+    pub const fn reference(self) -> Option<NativeEntityRef> {
         self.reference
     }
 }
@@ -523,15 +523,32 @@ impl EntityTable {
 
     pub fn capture_reference(&self, entity: EntityId) -> Option<EntityReference> {
         let slot = self.resolve(entity)?;
-        let native = self.columns.native_entity[slot]?;
-        if native.module != self.columns.owner[slot] {
+        let reference = match self.columns.native_entity[slot] {
+            Some(native) => {
+                if native.module != self.columns.owner[slot] {
+                    return None;
+                }
+                let ordinal = u32::try_from(native.slot).ok()?;
+                Some(NativeEntityRef::entity(
+                    ResourceNamespace::Module(native.module),
+                    ordinal,
+                ))
+            }
+            None => None,
+        };
+        Some(EntityReference { entity, reference })
+    }
+
+    pub fn resolve_reference(&self, captured: EntityReference) -> Option<EntityId> {
+        let Some(reference) = captured.reference else {
+            return self.resolve(captured.entity).map(|_| captured.entity);
+        };
+        let ResourceNamespace::Module(module) = reference.namespace else {
             return None;
-        }
-        let ordinal = u32::try_from(native.slot).ok()?;
-        Some(EntityReference {
-            entity,
-            reference: NativeEntityRef::entity(ResourceNamespace::Module(native.module), ordinal),
-        })
+        };
+        let slot = i32::try_from(reference.ordinal).ok()?;
+        let current = self.find_native(NativeEntity { module, slot }, None)?;
+        (self.columns.owner[current.slot as usize] == module).then_some(current)
     }
 
     /// A disconnected client's slot stays reserved, but its lifetime ends.
