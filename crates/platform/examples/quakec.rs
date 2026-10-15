@@ -27,6 +27,7 @@ fn load(bytes: &[u8]) -> Result<Vm, Box<dyn std::error::Error>> {
             header_bytes: 16,
             extra_string_bytes: 4096,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .map_err(|e| format!("{e:?}").into())

@@ -2159,6 +2159,10 @@ pub struct PrintEvent {
 }
 /// Native print bytes and their semantic view share the ring's leased pages.
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Copyable ring records retain native page handles without per-event allocation."
+)]
 pub enum PrintText {
     Text(TextId),
     Native {

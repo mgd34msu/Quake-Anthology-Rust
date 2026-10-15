@@ -62,6 +62,7 @@ fn module(runtime: &mut Runtime, id: ModuleId, x: f32, rate: u32) -> ModuleReque
             header_bytes: 16,
             extra_string_bytes: 128,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap();

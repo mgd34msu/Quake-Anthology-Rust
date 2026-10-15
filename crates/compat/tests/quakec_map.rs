@@ -67,6 +67,7 @@ fn load(mutate: impl FnOnce(&mut Image)) -> Vm {
             header_bytes: 16,
             extra_string_bytes: 2048,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap()

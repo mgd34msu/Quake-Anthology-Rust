@@ -693,6 +693,7 @@ const fn quakec() -> CallTable {
         )),
     });
     t.entries[4] = qc!(qc_set_size, 3, 6, false);
+    t.entries[7] = qc!(qc_random, 0, 0, true);
     t.entries[8] = Some(CallEntry {
         handler: Handler::QuakeC(qc_sound),
         quakec: Some(QcSignature::new(
@@ -952,6 +953,15 @@ fn qc_spawn(
 ) -> Result<CallValue, CallError> {
     Ok(CallValue::Word(u64::from(
         vm.spawn_entity(c.services, c.context)?,
+    )))
+}
+fn qc_random(
+    _: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    _: &[u64],
+) -> Result<CallValue, CallError> {
+    Ok(CallValue::Word(u64::from(
+        ((vm.random_word() & 0x7fff) as f32 / 32767.0).to_bits(),
     )))
 }
 fn qc_remove(

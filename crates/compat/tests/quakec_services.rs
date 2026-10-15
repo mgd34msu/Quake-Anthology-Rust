@@ -104,6 +104,7 @@ fn vm_with_definitions(
             header_bytes: 16,
             extra_string_bytes: 128,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap()
@@ -163,6 +164,101 @@ fn with_services(rules: RuleSetId, run: impl FnOnce(&mut QuakeCCalls<'_, '_>)) {
     with_model_services(rules, None, run);
 }
 
+fn random_vm(random_seed: u32) -> Vm {
+    let bytes = quakec_program::program(
+        &[
+            (Opcode::Call0, 28, 0, 0),
+            (Opcode::Return, 1, 0, 0),
+            (Opcode::Call1, 28, 0, 0),
+            (Opcode::Return, 1, 0, 0),
+            (Opcode::Call0, 28, 0, 0),
+            (Opcode::Invalid, 0, 0, 0),
+        ],
+        &[0, 1, -7, 3, 5],
+    );
+    let mut vm = Vm::load(
+        Image::parse(&bytes, Some(5927)).unwrap(),
+        Layout {
+            entities: 4,
+            header_bytes: 16,
+            extra_string_bytes: 128,
+            state_step: 0.1,
+            random_seed,
+        },
+    )
+    .unwrap();
+    vm.image.globals[28] = 2;
+    vm
+}
+
+#[test]
+fn qc_random_uses_seeded_native_stream_and_binary32_return_for_both_sources() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            for (seed, expected) in [
+                (0, [0x3f0a_cf16, 0x3e8f_191e, 0x3e43_4987]),
+                (1, [0x3f0a_cf16, 0x3e8f_191e, 0x3e43_4987]),
+                (2, [0x3e3f_d180, 0x3f72_ffe6, 0x3e99_1132]),
+                (42, [0x3ef9_19f2, 0x3f08_c912, 0x3f00_6301]),
+            ] {
+                let mut vm = random_vm(seed);
+                for word in expected {
+                    assert_eq!(vm.call(calls, 1, 32, false), Ok([word, 0, 0]));
+                }
+            }
+        });
+    }
+}
+
+#[test]
+fn qc_random_streams_remain_vm_owned_across_module_and_source_interleaving() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut first = random_vm(1);
+        let mut second = random_vm(42);
+        assert_eq!(first.call(calls, 1, 32, false).unwrap()[0], 0x3f0a_cf16);
+        calls.context.module = ModuleId(9);
+        calls.context.native_rules = RuleSetId::QuakeWorld;
+        assert_eq!(second.call(calls, 1, 32, false).unwrap()[0], 0x3ef9_19f2);
+        assert_eq!(first.call(calls, 1, 32, false).unwrap()[0], 0x3e8f_191e);
+        calls.context.module = ModuleId(1);
+        calls.context.native_rules = RuleSetId::Quake;
+        assert_eq!(second.call(calls, 1, 32, false).unwrap()[0], 0x3f08_c912);
+        assert_eq!(first.random_word(), 1681692777);
+        let mut fresh = random_vm(1);
+        assert_eq!(fresh.call(calls, 1, 32, false).unwrap()[0], 0x3f0a_cf16);
+    });
+}
+
+#[test]
+fn qc_random_rejects_wrong_argc_before_draw_and_keeps_draw_before_guest_trap() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = random_vm(1);
+            vm.image.globals[1] = 0xdead_beef;
+            assert_eq!(vm.call(calls, 3, 32, false), Err(Trap::Builtin));
+            assert_eq!(vm.image.globals[1], 0xdead_beef);
+            assert_eq!(vm.call(calls, 4, 32, false), Err(Trap::Statement));
+            assert_eq!(vm.image.globals[1], 0x3f0a_cf16);
+            assert_eq!(vm.call(calls, 1, 32, false), Ok([0x3e8f_191e, 0, 0]));
+        });
+    }
+}
+
+#[test]
+fn qc_random_includes_one_and_writes_only_the_scalar_return_word() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            // This seed's first native word is 2113667071, whose low15 bits are all set.
+            let mut vm = random_vm(70403);
+            vm.image.globals[2..4].copy_from_slice(&[0x7fc1_2345, 0xdead_beef]);
+            assert_eq!(
+                vm.call(calls, 1, 32, false),
+                Ok([1.0f32.to_bits(), 0x7fc1_2345, 0xdead_beef])
+            );
+        });
+    }
+}
+
 #[test]
 fn native_qc_particle_uses_four_arguments_catalog_ids_and_delivered_output() {
     use qa_core::events::{FrameEvent, OutputSubmission};
@@ -178,6 +274,7 @@ fn native_qc_particle_uses_four_arguments_catalog_ids_and_delivered_output() {
                 header_bytes: 16,
                 extra_string_bytes: 128,
                 state_step: 0.1,
+                random_seed: 1,
             },
         )
         .unwrap();
@@ -1025,6 +1122,7 @@ fn named_vm(calls: &mut QuakeCCalls<'_, '_>, defined: &[&[u8]]) -> Vm {
             header_bytes: 16,
             extra_string_bytes: 1024,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap();
@@ -2715,7 +2813,8 @@ fn vm_rejects_zero_stride_before_entity_number_or_builtin_resolution() {
                 entities: 1,
                 header_bytes: 0,
                 extra_string_bytes: 0,
-                state_step: 0.1
+                state_step: 0.1,
+                random_seed: 1,
             }
         ),
         Err(Trap::Memory)

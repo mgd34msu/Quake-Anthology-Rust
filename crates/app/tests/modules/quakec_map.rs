@@ -76,6 +76,7 @@ fn program(bodies: &[(&[u8], &[Op])], builtins: &[i32]) -> Vm {
             header_bytes: 16,
             extra_string_bytes: 8192,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap();

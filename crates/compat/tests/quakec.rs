@@ -12,6 +12,7 @@ fn load(bytes: &[u8]) -> Vm {
             header_bytes: 16,
             extra_string_bytes: 128,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap()

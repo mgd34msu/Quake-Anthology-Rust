@@ -4,7 +4,7 @@ use crate::{
     hooks::Hooks,
     memory::{MemoryError, ModuleMemory},
 };
-use qa_core::{bits::BitSet, primitives::Vec3};
+use qa_core::{bits::BitSet, primitives::Vec3, random::Random};
 use qa_formats::program::quakec::{Image, Opcode};
 
 mod client;
@@ -42,6 +42,7 @@ pub struct Layout {
     pub header_bytes: usize,
     pub extra_string_bytes: usize,
     pub state_step: f64,
+    pub random_seed: u32,
 }
 #[derive(Clone, Copy, Default)]
 struct Frame {
@@ -152,6 +153,7 @@ pub struct Vm {
     trace_fields: Option<TraceFields>,
     vector_globals: Option<[usize; 3]>,
     state_step: f64,
+    random: Random,
     stack: [Frame; 32],
     locals: [u32; 2048],
     depth: usize,
@@ -270,6 +272,10 @@ impl Vm {
             trace_fields,
             vector_globals,
             state_step: layout.state_step,
+            random: Random::with_algorithm(
+                layout.random_seed,
+                qa_core::random::Algorithm::GlibcType3,
+            ),
             stack: [Frame::default(); 32],
             locals: [0; 2048],
             depth: 0,
@@ -278,6 +284,9 @@ impl Vm {
             string_limit,
             temporary_used: 0,
         })
+    }
+    pub fn random_word(&mut self) -> u32 {
+        self.random.next_u32()
     }
     pub fn seed_entities(
         &mut self,

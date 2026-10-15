@@ -91,6 +91,7 @@ impl Code {
                 header_bytes: 16,
                 extra_string_bytes: 128,
                 state_step: 0.1,
+                random_seed: 1,
             },
         )
         .unwrap();
@@ -3541,6 +3542,7 @@ fn qc_client_vm() -> Vm {
             header_bytes: 16,
             extra_string_bytes: 8192,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap();
@@ -4293,6 +4295,7 @@ fn netquake_native_inventory_reaches_client_and_hud_through_queued_packets() {
                 header_bytes: 16,
                 extra_string_bytes: 128,
                 state_step: 0.1,
+                random_seed: 1,
             },
         )
         .unwrap();

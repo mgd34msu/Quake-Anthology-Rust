@@ -9,6 +9,7 @@ use crate::shader::{
 use qa_core::{
     math::{inverse_transform_point, length, normalized_fast, weighted_lerp},
     primitives::Vec3,
+    random::{Algorithm, Random},
     sys_events::EventTime,
 };
 
@@ -553,12 +554,12 @@ impl StageEvaluator {
     /// The native Linux noise initialization uses glibc srand(1001). This Rust
     /// implementation owns its state and never touches libc's global RNG.
     pub fn load() -> Self {
-        let mut rng = NativeRand::new(1001);
+        let mut rng = Random::with_algorithm(1001, Algorithm::GlibcType3);
         let mut noise = [0.0; 256];
         let mut perm = [0; 256];
         for i in 0..256 {
-            noise[i] = (rng.next() as f32 / i32::MAX as f32) * 2.0 - 1.0;
-            perm[i] = (rng.next() as f32 / i32::MAX as f32 * 255.0) as u8;
+            noise[i] = (rng.next_u32() as f32 / i32::MAX as f32) * 2.0 - 1.0;
+            perm[i] = (rng.next_u32() as f32 / i32::MAX as f32 * 255.0) as u8;
         }
         Self::with_noise(noise, perm)
     }
@@ -1100,34 +1101,4 @@ pub fn blend_pixel(blend: Option<StageBlend>, source: [f32; 4], destination: [f3
         (source[i] * factor(blend.source, i) + destination[i] * factor(blend.destination, i))
             .clamp(0.0, 1.0)
     })
-}
-struct NativeRand {
-    state: [u32; 31],
-    front: usize,
-    back: usize,
-}
-impl NativeRand {
-    fn new(seed: u32) -> Self {
-        let mut state = [0; 31];
-        state[0] = seed;
-        for i in 1..31 {
-            state[i] = (16807_u64 * state[i - 1] as u64 % 2147483647) as u32;
-        }
-        let mut rand = Self {
-            state,
-            front: 3,
-            back: 0,
-        };
-        for _ in 0..310 {
-            rand.next();
-        }
-        rand
-    }
-    fn next(&mut self) -> u32 {
-        self.state[self.front] = self.state[self.front].wrapping_add(self.state[self.back]);
-        let result = self.state[self.front] >> 1;
-        self.front = (self.front + 1) % 31;
-        self.back = (self.back + 1) % 31;
-        result
-    }
 }

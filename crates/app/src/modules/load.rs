@@ -422,6 +422,7 @@ pub fn load_quakec(
                 header_bytes: 16,
                 extra_string_bytes: 1024 * 1024,
                 state_step: 0.1,
+                random_seed: 1,
             },
         )
         .map_err(|e| format!("QuakeC memory: {e:?}"))?;

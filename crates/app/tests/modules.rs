@@ -718,6 +718,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             header_bytes: 16,
             extra_string_bytes: 128,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap();
@@ -840,6 +841,7 @@ fn quakec_output_host(rules: RuleSetId, level: f32, texts: [&[u8]; 2]) -> FrameH
             header_bytes: 16,
             extra_string_bytes: 4096,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap();
@@ -941,6 +943,7 @@ fn quakec_math_program_with_vectors(builtin: i32, vectors: &[(u16, &[u8])]) -> V
             header_bytes: 16,
             extra_string_bytes: 64,
             state_step: 0.1,
+            random_seed: 1,
         },
     )
     .unwrap();
@@ -1162,6 +1165,7 @@ fn quakec_numeric_strings_reach_print_consumers_through_session_dispatch() {
                     header_bytes: 16,
                     extra_string_bytes: 0,
                     state_step: 0.1,
+                    random_seed: 1,
                 },
             )
             .unwrap();
@@ -1326,6 +1330,7 @@ fn quakec_client_prints_resolve_native_namespaces_and_keep_native_payloads() {
                         header_bytes: 16,
                         extra_string_bytes: 2048,
                         state_step: 0.1,
+                        random_seed: 1,
                     },
                 )
                 .unwrap();
@@ -2112,6 +2117,7 @@ fn scheduling_role_selects_clock_arithmetic_and_phase_independently_of_program_f
                         header_bytes: 16,
                         extra_string_bytes: 0,
                         state_step: 0.1,
+                        random_seed: 1,
                     },
                 )
                 .unwrap();
