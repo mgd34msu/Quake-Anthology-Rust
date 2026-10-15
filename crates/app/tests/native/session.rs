@@ -581,7 +581,7 @@ fn native_visibility_uses_compiled_pvs_through_session_dispatch() {
         runtime.collision = Some(visibility_world::collision(
             &runtime.geometry,
             [Some(0), Some(1)],
-            PvsRows::load(vec![Some(0); 2], vec![3]).unwrap(),
+            PvsRows::load(vec![Some(0); 2], vec![3], None).unwrap(),
         ));
         let mut request = module(
             &mut runtime,
@@ -681,9 +681,9 @@ fn native_visibility_selects_clip_leaf_rules_at_the_module_boundary() {
                     0,
                     0,
                     if axial {
-                        PvsRows::load(vec![Some(0), Some(1)], vec![1, 0, 1]).unwrap()
+                        PvsRows::load(vec![Some(0), Some(1)], vec![1, 0, 1], None).unwrap()
                     } else {
-                        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2]).unwrap()
+                        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2], None).unwrap()
                     },
                 )
                 .unwrap();
@@ -774,7 +774,7 @@ fn native_area_connection_uses_shared_topology_through_session_dispatch() {
         runtime.collision = Some(visibility_world::collision(
             &runtime.geometry,
             [Some(0), Some(1)],
-            PvsRows::load(vec![Some(0); 2], vec![3]).unwrap(),
+            PvsRows::load(vec![Some(0); 2], vec![3], None).unwrap(),
         ));
         let mut request = module(
             &mut runtime,
@@ -3040,10 +3040,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             vec![],
             0,
             0,
-            qa_world::visibility::PvsRows::load(vec![Some(0); 6], vec![0, 1, 32])
-                .unwrap()
-                .with_hearing(vec![Some(2); 6])
-                .unwrap(),
+            qa_world::visibility::PvsRows::load(
+                vec![Some(0); 6],
+                vec![0, 1, 32],
+                Some(vec![Some(2); 6]),
+            )
+            .unwrap(),
         )
         .unwrap();
         runtime.collision = Some(

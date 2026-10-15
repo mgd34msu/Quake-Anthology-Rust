@@ -1210,7 +1210,7 @@ fn visibility() -> VisibilityWorld {
         vec![],
         0,
         0,
-        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2]).unwrap(),
+        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2], None).unwrap(),
     )
     .unwrap()
 }

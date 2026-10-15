@@ -36,3 +36,22 @@ pub fn pvs(
     }
     Ok(())
 }
+
+/// Append one native PVS row using nonzero literals and zero runs of up to 255.
+pub fn encode_pvs(row: &[u8], encoded: &mut Vec<u8>) {
+    let mut at = 0;
+    while at < row.len() {
+        let byte = row[at];
+        at += 1;
+        if byte != 0 {
+            encoded.push(byte);
+            continue;
+        }
+        let mut run = 1u8;
+        while at < row.len() && row[at] == 0 && run < 255 {
+            run += 1;
+            at += 1;
+        }
+        encoded.extend_from_slice(&[0, run]);
+    }
+}

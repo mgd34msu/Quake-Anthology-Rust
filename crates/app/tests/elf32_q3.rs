@@ -114,7 +114,7 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
     runtime.collision = Some(visibility_world::collision(
         &runtime.geometry,
         [Some(0), Some(1)],
-        qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![3, 3]).unwrap(),
+        qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![3, 3], None).unwrap(),
     ));
     let mut requests = Vec::new();
     load_q3(

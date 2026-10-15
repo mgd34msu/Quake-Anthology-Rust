@@ -262,7 +262,7 @@ pub fn load_visibility(map: &Map<'_>) -> Result<VisibilityWorld, WorldLoadError>
                     .ok_or(WorldLoadError::VisibilityHeader)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        PvsRows::load(offsets, bytes.to_vec())?
+        PvsRows::load(offsets, bytes.to_vec(), None)?
     } else if matches!(rules, RuleSetId::Quake2) {
         let (offsets, hearing): (Vec<_>, Vec<_>) = (0..count)
             .map(|cluster| {
@@ -273,7 +273,7 @@ pub fn load_visibility(map: &Map<'_>) -> Result<VisibilityWorld, WorldLoadError>
             .collect::<Result<Vec<_>, WorldLoadError>>()?
             .into_iter()
             .unzip();
-        PvsRows::load(offsets, bytes.to_vec())?.with_hearing(hearing)?
+        PvsRows::load(offsets, bytes.to_vec(), Some(hearing))?
     } else {
         let stride = word(bytes, 4)? as usize;
         let length = count.div_ceil(8);
@@ -290,12 +290,12 @@ pub fn load_visibility(map: &Map<'_>) -> Result<VisibilityWorld, WorldLoadError>
             offsets.push(Some(
                 u32::try_from(encoded.len()).map_err(|_| WorldLoadError::VisibilityHeader)?,
             ));
-            encode_row(
+            qa_core::rle::encode_pvs(
                 &bytes[8 + cluster * stride..8 + cluster * stride + length],
                 &mut encoded,
             );
         }
-        PvsRows::load(offsets, encoded)?
+        PvsRows::load(offsets, encoded, None)?
     };
     let nodes = map
         .nodes
@@ -359,22 +359,4 @@ fn word(bytes: &[u8], at: usize) -> Result<u32, WorldLoadError> {
         .get(at..at + 4)
         .ok_or(WorldLoadError::VisibilityHeader)?;
     Ok(u32::from_le_bytes([row[0], row[1], row[2], row[3]]))
-}
-
-fn encode_row(row: &[u8], encoded: &mut Vec<u8>) {
-    let mut at = 0;
-    while at < row.len() {
-        let byte = row[at];
-        at += 1;
-        if byte != 0 {
-            encoded.push(byte);
-            continue;
-        }
-        let mut run = 1u8;
-        while at < row.len() && row[at] == 0 && run < 255 {
-            run += 1;
-            at += 1;
-        }
-        encoded.extend_from_slice(&[0, run]);
-    }
 }

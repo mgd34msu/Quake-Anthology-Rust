@@ -1070,10 +1070,12 @@ fn native_multicast_uses_compiled_sight_hearing_and_portal_connectivity() {
         vec![],
         0,
         0,
-        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2, 3])
-            .unwrap()
-            .with_hearing(vec![Some(2); 2])
-            .unwrap(),
+        PvsRows::load(
+            vec![Some(0), Some(1)],
+            vec![1, 2, 3],
+            Some(vec![Some(2); 2]),
+        )
+        .unwrap(),
     )
     .unwrap();
     let portals = qa_world::portals::AreaPortals::load(
@@ -1122,6 +1124,244 @@ fn native_multicast_uses_compiled_sight_hearing_and_portal_connectivity() {
     assert!(runtime.server.events.is_empty());
 }
 
+fn hearing_graph(store: &qa_world::collision::CollisionStore) -> qa_app::WorldCollision {
+    use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisNode, VisibilityWorld};
+    let bounds = Bounds {
+        mins: Vec3([-5000.0; 3]),
+        maxs: Vec3([5000.0; 3]),
+    };
+    let world = VisibilityWorld::load(
+        [500.0, 1500.0, 3000.0]
+            .map(|distance| Plane::oriented(Vec3([1.0, 0.0, 0.0]), distance))
+            .to_vec(),
+        [[1, -1], [2, -2], [-4, -3]]
+            .into_iter()
+            .enumerate()
+            .map(|(plane, children)| VisNode {
+                plane: plane as u32,
+                children,
+                bounds,
+                surfaces: SurfaceSpan::default(),
+            })
+            .collect(),
+        (0..4)
+            .map(|selector| VisLeaf {
+                selector: Some(selector),
+                area: None,
+                solid: false,
+                bounds,
+                surfaces: SurfaceSpan::default(),
+            })
+            .collect(),
+        vec![],
+        0,
+        0,
+        PvsRows::load(
+            vec![Some(0), Some(1), Some(2), Some(3)],
+            vec![0b0011, 0b0110, 0b1100, 0b1000],
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    qa_app::WorldCollision::new(
+        store,
+        GeometryId {
+            slot: 0,
+            generation: 1,
+        },
+        0,
+    )
+    .with_visibility(std::sync::Arc::new(world))
+}
+
+fn assert_converted_q2_print(peer: &mut Channel, packet: &[u8], text: &[u8]) {
+    let payload = receive(peer, packet);
+    assert_eq!(payload, [b"\x0a\x02".as_slice(), text, b"\0"].concat());
+    let (record, length) =
+        qa_network::outputs::read_native_service(Protocol::Quake2_34, &payload).unwrap();
+    assert_eq!(length, payload.len());
+    assert!(matches!(
+        record,
+        qa_network::outputs::NativeService::Print(print)
+            if print.kind == PrintKind::Console && print.level == Some(2) && print.text == text
+    ));
+}
+
+#[test]
+fn qw_hearing_reaches_only_one_distant_pvs_hop_before_q2_encoding_and_retirement() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let c = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    let d = remote(&mut runtime, Protocol::Quake2_34, 2001);
+    runtime.server.clients[c.0 as usize].player.body.position = Vec3([2001.0, 0.0, 0.0]);
+    runtime.server.clients[d.0 as usize].player.body.position = Vec3([4001.0, 0.0, 0.0]);
+    runtime.collision = Some(hearing_graph(&runtime.geometry));
+    let mut source = Source::default();
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    let sequence = publish_from(
+        &mut runtime,
+        RuleSetId::QuakeWorld,
+        false,
+        NativeTarget::Hearing,
+        b"\x08\x02heard\x80\0",
+    );
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_filtered, 1);
+    assert_eq!(counts.native_unsupported, 0);
+    assert_eq!(counts.native_blocked, 0);
+    assert_eq!(source.packets.len(), 1);
+    assert_eq!(source.packets[0].0, 2000);
+    assert_converted_q2_print(&mut peer, &source.packets[0].1, b"heard\x80");
+    assert!(
+        runtime.server.events.is_empty(),
+        "publication {sequence} remains leased"
+    );
+
+    source.packets.clear();
+    publish_from(
+        &mut runtime,
+        RuleSetId::QuakeWorld,
+        false,
+        NativeTarget::Sight,
+        b"\x08\x02unseen\0",
+    );
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_filtered, 2);
+    assert_eq!(counts.native_unsupported, 0);
+    assert!(source.packets.is_empty());
+    assert!(runtime.server.events.is_empty());
+}
+
+#[test]
+fn qw_hearing_distance_is_inclusive_uses_body_origin_and_does_not_leak_to_other_roles() {
+    let beyond = f32::from_bits(1025.0f32.to_bits() + 1);
+    assert!(beyond - 1.0 > 1024.0);
+    for (listener, view_offset, nearby) in [
+        (1025.0, Vec3([0.0, 0.0, 4096.0]), true),
+        (beyond, Vec3([-1024.0, 0.0, 0.0]), false),
+    ] {
+        for (rules, target) in [
+            (RuleSetId::QuakeWorld, NativeTarget::Hearing),
+            (RuleSetId::Quake2, NativeTarget::Hearing),
+            (RuleSetId::QuakeWorld, NativeTarget::Sight),
+            (RuleSetId::Quake2, NativeTarget::Sight),
+        ] {
+            let expected =
+                nearby && rules == RuleSetId::QuakeWorld && target == NativeTarget::Hearing;
+            let mut runtime = Runtime::load(1, []).unwrap();
+            let client = remote(&mut runtime, Protocol::Quake2_34, 2000);
+            let player = &mut runtime.server.clients[client.0 as usize].player;
+            player.body.position = Vec3([listener, 0.0, 0.0]);
+            player.view_offset = view_offset;
+            runtime.collision = Some(visibility_world::collision(
+                &runtime.geometry,
+                [Some(0), Some(1)],
+                qa_world::visibility::PvsRows::load(vec![Some(0), Some(0)], vec![0, 1], None)
+                    .unwrap(),
+            ));
+            publish_from(
+                &mut runtime,
+                rules,
+                false,
+                target,
+                if rules == RuleSetId::QuakeWorld {
+                    b"\x08\x02boundary\0"
+                } else {
+                    b"\x0a\x02boundary\0"
+                },
+            );
+            let mut source = Source::default();
+            let counts = dispatch(&mut runtime, &mut source);
+            assert_eq!(
+                counts.native_filtered,
+                u64::from(!expected),
+                "{rules:?} {target:?} x={listener}"
+            );
+            assert_eq!(counts.native_unsupported, 0);
+            assert_eq!(
+                source.packets.len(),
+                usize::from(expected),
+                "{rules:?} {target:?} x={listener}"
+            );
+            if expected {
+                let mut peer =
+                    Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16)
+                        .unwrap();
+                assert_converted_q2_print(&mut peer, &source.packets[0].1, b"boundary");
+            }
+            assert!(runtime.server.events.is_empty());
+        }
+    }
+}
+
+#[test]
+fn qw_nearby_hearing_bypasses_phs_but_preserves_explicit_closed_portals() {
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let client = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    runtime.server.clients[client.0 as usize]
+        .player
+        .body
+        .position = Vec3([-1.0, 0.0, 0.0]);
+    runtime.collision = Some(visibility_world::collision(
+        &runtime.geometry,
+        [Some(0), Some(1)],
+        qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![1, 2], None).unwrap(),
+    ));
+    let mut row = [0];
+    runtime
+        .collision
+        .as_ref()
+        .unwrap()
+        .visibility
+        .as_ref()
+        .unwrap()
+        .pvs()
+        .read_channel(
+            qa_world::visibility::VisibilityChannel::Hearing,
+            Some(0),
+            &mut row,
+        )
+        .unwrap();
+    assert_eq!(row, [1]); // The listener in selector 1 is outside the actual PHS.
+    let mut source = Source::default();
+    publish_from(
+        &mut runtime,
+        RuleSetId::QuakeWorld,
+        false,
+        NativeTarget::Hearing,
+        b"\x08\x02closed\0",
+    );
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_filtered, 1);
+    assert!(source.packets.is_empty());
+    assert!(runtime.server.events.is_empty());
+    runtime
+        .collision
+        .as_mut()
+        .unwrap()
+        .portals
+        .as_mut()
+        .unwrap()
+        .set(0, true)
+        .unwrap();
+    publish_from(
+        &mut runtime,
+        RuleSetId::QuakeWorld,
+        false,
+        NativeTarget::Hearing,
+        b"\x08\x02opened\0",
+    );
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_filtered, 0);
+    assert_eq!(counts.native_unsupported, 0);
+    assert_eq!(source.packets.len(), 1);
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    assert_converted_q2_print(&mut peer, &source.packets[0].1, b"opened");
+    assert!(runtime.server.events.is_empty());
+}
+
 #[test]
 fn multicast_plane_ties_follow_the_producer_role_before_destination_protocol_encoding() {
     for (rules, visible) in [
@@ -1139,7 +1379,7 @@ fn multicast_plane_ties_follow_the_producer_role_before_destination_protocol_enc
         runtime.collision = Some(visibility_world::collision(
             &runtime.geometry,
             [Some(0), Some(1)],
-            qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![1, 2]).unwrap(),
+            qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![1, 2], None).unwrap(),
         ));
         let mut bytes = [0; 32];
         let length = qa_network::outputs::print(

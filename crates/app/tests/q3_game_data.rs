@@ -57,7 +57,7 @@ impl Fixture {
         runtime.collision = Some(visibility_world::collision(
             &runtime.geometry,
             [Some(0), Some(1)],
-            PvsRows::load(vec![Some(0), Some(1)], vec![3, 3]).unwrap(),
+            PvsRows::load(vec![Some(0), Some(1)], vec![3, 3], None).unwrap(),
         ));
         let console = Console::new(Context::default()).unwrap();
         let mut storage =

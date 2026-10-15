@@ -903,15 +903,21 @@ fn delivery_visible(
     listener: Vec3,
     delivery: NativeDelivery,
 ) -> bool {
+    let nearby_hearing = delivery.target == NativeTarget::Hearing
+        && delivery.source == qa_core::primitives::RuleSetId::QuakeWorld
+        && qa_core::math::length(delivery.origin - listener) <= 1024.0;
     match delivery.target {
         NativeTarget::All | NativeTarget::Client(_) => true,
+        NativeTarget::Hearing if nearby_hearing && !delivery.check_portals => true,
         target => collision.is_some_and(|collision| {
             let Some(world) = collision.visibility.as_deref() else {
                 return false;
             };
             let policy = qa_world::visibility::PointVisibility {
                 leaf_rules: qa_gameplay::rules::point_leaf_rules(delivery.source),
-                channel: if target == NativeTarget::Hearing {
+                channel: if nearby_hearing {
+                    qa_world::visibility::VisibilityChannel::All
+                } else if target == NativeTarget::Hearing {
                     qa_world::visibility::VisibilityChannel::Hearing
                 } else {
                     qa_world::visibility::VisibilityChannel::Sight
