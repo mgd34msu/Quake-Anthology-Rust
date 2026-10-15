@@ -647,6 +647,11 @@ pub(super) struct Scratch {
     contacts: Box<[Contact]>,
 }
 
+// A point has six axial rows. Extruding by the local vertical target keeps
+// six; the second segment has at most three positive and three negative
+// slopes, adding six nonzero cross-axis rows (three opposing pairs cancel).
+pub(super) const CAPSULE_PAIR_ROWS: usize = 12;
+
 impl Scratch {
     pub fn new(rows: usize, contacts: usize) -> Self {
         Self {
@@ -1374,6 +1379,472 @@ fn prepare_source(
     })
 }
 
+fn extrude_rows(
+    rows: &mut [Row],
+    source_count: usize,
+    offset: &[Int; 3],
+    work: &mut Work,
+) -> Result<usize, Failure> {
+    for row in &mut rows[..source_count] {
+        work.item()?;
+        row.reduce()?;
+        row.slope = dot(&row.normal, offset)?;
+    }
+    let mut count = source_count;
+    // Exact Fourier-Motzkin elimination of u in [-1,1] from
+    // n.(p-u*offset) <= distance. Sphere inflation then tests the distance
+    // to this extruded cell, including edges and corners.
+    for i in 0..source_count {
+        if rows[i].slope.is_zero() || rows[i].slope.negative() {
+            continue;
+        }
+        for j in 0..source_count {
+            if !rows[j].slope.negative() {
+                continue;
+            }
+            work.item()?;
+            let positive = rows[i].slope;
+            let negative = rows[j].slope.neg();
+            let mut row = Row {
+                distance: negative
+                    .mul(&rows[i].distance)?
+                    .add(&positive.mul(&rows[j].distance)?)?,
+                ..Row::default()
+            };
+            for axis in 0..3 {
+                row.normal[axis] = negative
+                    .mul(&rows[i].normal[axis])?
+                    .add(&positive.mul(&rows[j].normal[axis])?)?;
+            }
+            if zero(&row.normal) {
+                if row.distance.negative() {
+                    return Err(Failure::Arithmetic);
+                }
+                continue;
+            }
+            row.reduce()?;
+            *rows.get_mut(count).ok_or(Failure::Scratch)? = row;
+            count += 1;
+        }
+    }
+    for row in &mut rows[..source_count] {
+        let slope = if row.slope.negative() {
+            row.slope.neg()
+        } else {
+            row.slope
+        };
+        row.distance = row.distance.add(&slope)?;
+        row.slope = Int::ZERO;
+        row.reduce()?;
+    }
+    Ok(count)
+}
+
+trait CapsuleCells {
+    fn len(&self) -> u32;
+    fn contents(&self, index: usize) -> Contents;
+    fn fill<'a>(
+        &self,
+        index: usize,
+        offset: &[Int; 3],
+        rows: &'a mut [Row],
+        work: &mut Work,
+    ) -> Result<&'a [Row], Failure>;
+    fn target_radius(&self) -> Option<f32> {
+        None
+    }
+}
+
+struct CellCapsules<'a> {
+    data: &'a Data,
+    planes: &'a [Plane],
+    cells: IndexSpan,
+    pose: &'a Pose,
+}
+
+struct PairCapsules {
+    center: [Int; 3],
+    offset: [Int; 3],
+    radius: f32,
+}
+
+impl CapsuleCells for PairCapsules {
+    fn len(&self) -> u32 {
+        1
+    }
+    fn contents(&self, _: usize) -> Contents {
+        Contents::BODY
+    }
+    fn fill<'a>(
+        &self,
+        _: usize,
+        offset: &[Int; 3],
+        rows: &'a mut [Row],
+        work: &mut Work,
+    ) -> Result<&'a [Row], Failure> {
+        if rows.len() < CAPSULE_PAIR_ROWS {
+            return Err(Failure::Scratch);
+        }
+        for axis in 0..3 {
+            for side in 0..2 {
+                let mut row = Row::default();
+                row.normal[axis] = if side == 0 { Int::ONE } else { Int::ONE.neg() };
+                row.distance = if side == 0 {
+                    self.center[axis]
+                } else {
+                    self.center[axis].neg()
+                };
+                rows[axis * 2 + side] = row;
+            }
+        }
+        let count = extrude_rows(rows, 6, &self.offset, work)?;
+        let count = extrude_rows(rows, count, offset, work)?;
+        Ok(&rows[..count])
+    }
+    fn target_radius(&self) -> Option<f32> {
+        Some(self.radius)
+    }
+}
+
+fn validate_query(query: TraceQuery) -> Result<(), Failure> {
+    if !query.start.is_finite()
+        || !query.end.is_finite()
+        || !(Bounds {
+            mins: query.mins,
+            maxs: query.maxs,
+        })
+        .is_valid()
+    {
+        Err(Failure::Input)
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn trace_capsule_pair(
+    query: TraceQuery,
+    center: Vec3,
+    target: Capsule,
+    scratch: &mut Scratch,
+) -> Result<Trace, Failure> {
+    validate_query(query)?;
+    // Direct target clipping already selected this body. Scene filtering
+    // remains outside this adapter, as in the original capsule kernel.
+    let query = TraceQuery {
+        mask: Contents::BODY,
+        ..query
+    };
+    let moving = query.capsule.ok_or(Failure::Input)?;
+    if !moving.is_valid() || !target.is_valid() {
+        return Err(Failure::Input);
+    }
+    let radius = moving.radius + target.radius;
+    if !radius.is_finite() {
+        return Err(Failure::Input);
+    }
+    if scratch.rows.len() < CAPSULE_PAIR_ROWS {
+        return Err(Failure::Scratch);
+    }
+    let source = PairCapsules {
+        center: vector(center)?,
+        offset: vector(target.offset)?,
+        radius: target.radius,
+    };
+    let mut work = Work {
+        remaining: HullPositionLimits::default().query_work,
+    };
+    trace_rounded(
+        &source,
+        query,
+        Capsule { radius, ..moving },
+        scratch,
+        &mut work,
+    )
+}
+
+#[cfg(test)]
+mod pair_tests {
+    use super::*;
+
+    #[test]
+    fn capsule_pair_row_bound_is_sufficient_and_checked() -> Result<(), Failure> {
+        let source = PairCapsules {
+            center: vector(Vec3::default())?,
+            offset: vector(Vec3::axis(2, 4.0))?,
+            radius: 1.0,
+        };
+        let mut scratch = Scratch::new(CAPSULE_PAIR_ROWS, 0);
+        let mut work = Work { remaining: 1000 };
+        let rows = source.fill(
+            0,
+            &vector(Vec3([1.0, 2.0, 3.0]))?,
+            &mut scratch.rows,
+            &mut work,
+        )?;
+        assert_eq!(rows.len(), CAPSULE_PAIR_ROWS);
+        let mut work = Work { remaining: 0 };
+        assert!(matches!(
+            source.fill(
+                0,
+                &vector(Vec3::axis(0, 1.0))?,
+                &mut scratch.rows,
+                &mut work
+            ),
+            Err(Failure::Budget)
+        ));
+        let mut query = TraceQuery::point(
+            Vec3::default(),
+            Vec3::default(),
+            super::super::TraceRules::ARENA,
+            super::super::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+        );
+        query.capsule = Some(Capsule {
+            radius: 1.0,
+            offset: Vec3::axis(0, 4.0),
+        });
+        query.mask = Contents::EMPTY;
+        let target = Capsule {
+            radius: 1.0,
+            offset: Vec3::axis(2, 4.0),
+        };
+        let mut short = Scratch::new(CAPSULE_PAIR_ROWS - 1, 0);
+        assert!(matches!(
+            trace_capsule_pair(query, Vec3::default(), target, &mut short),
+            Err(Failure::Scratch)
+        ));
+        assert!(trace_capsule_pair(query, Vec3::default(), target, &mut scratch)?.all_solid);
+        Ok(())
+    }
+}
+
+impl CapsuleCells for CellCapsules<'_> {
+    fn len(&self) -> u32 {
+        self.cells.count
+    }
+    fn contents(&self, index: usize) -> Contents {
+        self.data.cells[self.cells.first as usize + index].contents
+    }
+    fn fill<'a>(
+        &self,
+        index: usize,
+        offset: &[Int; 3],
+        rows: &'a mut [Row],
+        work: &mut Work,
+    ) -> Result<&'a [Row], Failure> {
+        self.data.fill_capsule_rows(
+            self.planes,
+            self.data.cells[self.cells.first as usize + index],
+            offset,
+            self.pose,
+            rows,
+            work,
+        )
+    }
+}
+
+fn capsule_occupancy(
+    source: &impl CapsuleCells,
+    query: TraceQuery,
+    capsule: Capsule,
+    rows: &mut [Row],
+    work: &mut Work,
+) -> Result<Option<Contents>, Failure> {
+    let center = vector(query.start + math::midpoint(query.mins, query.maxs))?;
+    let offset = vector(capsule.offset)?;
+    let radius = Int::binary32(capsule.radius)?;
+    for index in 0..source.len() as usize {
+        work.item()?;
+        let contents = source.contents(index);
+        if !contents.intersects(query.mask) {
+            continue;
+        }
+        let rows = source.fill(index, &offset, rows, work)?;
+        if sphere::occupancy(rows, &center, radius, work)? {
+            return Ok(Some(contents));
+        }
+    }
+    Ok(None)
+}
+
+fn capsule_intervals(
+    source: &impl CapsuleCells,
+    mask: Contents,
+    path: &CapsulePath,
+    rows: &mut [Row],
+    work: &mut Work,
+    mut visit: impl FnMut(sphere::SweepInterval, Contents, usize, &mut Work) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    for index in 0..source.len() as usize {
+        work.item()?;
+        let contents = source.contents(index);
+        if !contents.intersects(mask) {
+            continue;
+        }
+        let rows = source.fill(index, &path.offset, rows, work)?;
+        if let Some(interval) = sphere::interval(rows, &path.start, &path.delta, path.radius, work)?
+        {
+            visit(interval, contents, index, work)?;
+        }
+    }
+    Ok(())
+}
+
+fn moving_capsule(
+    source: &impl CapsuleCells,
+    query: TraceQuery,
+    capsule: Capsule,
+    scratch: &mut Scratch,
+    work: &mut Work,
+) -> Result<Trace, Failure> {
+    if !query.rules.contact_epsilon.is_finite() || query.rules.contact_epsilon < 0.0 {
+        return Err(Failure::Input);
+    }
+    let path = CapsulePath::new(query, capsule)?;
+    let component = component(
+        source.len(),
+        query.rules.contact_epsilon != 0.0,
+        work,
+        |work, visit| {
+            capsule_intervals(
+                source,
+                query.mask,
+                &path,
+                &mut scratch.rows,
+                work,
+                |interval, contents, _, work| visit(interval, contents, work),
+            )
+        },
+    )?;
+    if let Some(trace) = component.solid_trace(query) {
+        return Ok(trace);
+    }
+    let start_solid = component.start_contents.is_some();
+    let Some((parameter, contents)) = component.hit else {
+        let endpoint = TraceQuery {
+            start: query.end,
+            ..query
+        };
+        if capsule_occupancy(source, endpoint, capsule, &mut scratch.rows, work)?.is_some() {
+            return Err(Failure::Input);
+        }
+        let mut trace = Trace::clear(query.end);
+        trace.start_solid = start_solid;
+        return Ok(trace);
+    };
+    let mut selected = None;
+    capsule_intervals(
+        source,
+        query.mask,
+        &path,
+        &mut scratch.rows,
+        work,
+        |interval, _, index, work| {
+            if selected.is_none() && interval.first.compare(parameter, work)? == Ordering::Equal {
+                selected = Some(index);
+            }
+            Ok(())
+        },
+    )?;
+    let selected = selected.ok_or(Failure::Arithmetic)?;
+    let rows = source.fill(selected, &path.offset, &mut scratch.rows, work)?;
+    let padded = (f64::from(capsule.radius) + query.rules.contact_epsilon) as f32;
+    if !padded.is_finite() {
+        return Err(Failure::Input);
+    }
+    let padded = sphere::interval(rows, &path.start, &path.delta, Int::binary32(padded)?, work)?
+        .ok_or(Failure::Arithmetic)?;
+    let mut fraction = padded.first.floor(work)?;
+    loop {
+        work.item()?;
+        let value = sphere::Bound::Rational(Fraction::binary32(fraction)?);
+        if value.compare(parameter, work)? != Ordering::Less {
+            if fraction == 0.0 {
+                return Err(Failure::Input);
+            }
+            fraction = fraction.next_down();
+            continue;
+        }
+        if start_solid && value.compare(component.reach, work)? != Ordering::Greater {
+            return Err(Failure::Input);
+        }
+        let end = query.start.lerp(query.end, fraction);
+        let endpoint = TraceQuery {
+            start: end,
+            end,
+            ..query
+        };
+        if capsule_occupancy(source, endpoint, capsule, &mut scratch.rows, work)?.is_none() {
+            let center = end + math::midpoint(query.mins, query.maxs);
+            let rows = source.fill(selected, &path.offset, &mut scratch.rows, work)?;
+            let nearest = sphere::closest(rows, &vector(center)?, work)?;
+            let shift = nearest.denominator.bit_length();
+            let denominator = nearest.denominator.scaled_f64(shift);
+            let displacement = Vec3(
+                nearest
+                    .displacement
+                    .map(|value| (value.scaled_f64(shift + 149) / denominator) as f32),
+            );
+            // Scale by the largest component using division before the
+            // shared normalize. A truly axial projection stays exactly
+            // +/-1 instead of losing a bit to length's reciprocal product.
+            let largest = displacement
+                .0
+                .iter()
+                .map(|value| value.abs())
+                .fold(0.0f32, f32::max);
+            let mut normal = displacement / largest;
+            let distance = math::length(displacement);
+            math::normalize(&mut normal);
+            if distance == 0.0 || !distance.is_finite() || !normal.is_finite() {
+                return Err(Failure::Input);
+            }
+            let closing = dot(&vector(normal)?, &path.delta)?;
+            if closing.is_zero() || !closing.negative() {
+                return Err(Failure::Input);
+            }
+            let distance = normal.dot(center) - distance - normal.dot(capsule.offset).abs();
+            let distance = source
+                .target_radius()
+                .map_or(distance, |radius| distance + radius);
+            let plane = Plane::oriented(normal, distance);
+            if !plane.is_valid() {
+                return Err(Failure::Input);
+            }
+            let mut trace = Trace::clear(end);
+            trace.fraction = fraction;
+            trace.plane = plane;
+            trace.start_solid = start_solid;
+            trace.contents = contents;
+            return Ok(trace);
+        }
+        if fraction == 0.0 {
+            return Err(Failure::Input);
+        }
+        fraction = fraction.next_down();
+    }
+}
+
+fn trace_rounded(
+    source: &impl CapsuleCells,
+    query: TraceQuery,
+    capsule: Capsule,
+    scratch: &mut Scratch,
+    work: &mut Work,
+) -> Result<Trace, Failure> {
+    if query.start != query.end {
+        return moving_capsule(source, query, capsule, scratch, work);
+    }
+    let contents = capsule_occupancy(source, query, capsule, &mut scratch.rows, work)?;
+    let mut trace = Trace::clear(query.end);
+    if let Some(contents) = contents {
+        trace.start_solid = true;
+        trace.all_solid = true;
+        trace.fraction = 0.0;
+        trace.contents = contents;
+    }
+    Ok(trace)
+}
+
 impl Data {
     pub fn point_contents(
         &self,
@@ -1476,286 +1947,9 @@ impl Data {
         rows: &'a mut [Row],
         work: &mut Work,
     ) -> Result<&'a [Row], Failure> {
-        let source_count = cell.sides.count as usize;
-        for row in self.fill_source_rows(planes, cell, pose, rows)? {
-            work.item()?;
-            row.reduce()?;
-            row.slope = dot(&row.normal, offset)?;
-        }
-        let mut count = source_count;
-        // Exact Fourier-Motzkin elimination of u in [-1,1] from
-        // n.(p-u*offset) <= distance. Sphere inflation then tests the distance
-        // to this extruded cell, including edges and corners.
-        for i in 0..source_count {
-            if rows[i].slope.is_zero() || rows[i].slope.negative() {
-                continue;
-            }
-            for j in 0..source_count {
-                if !rows[j].slope.negative() {
-                    continue;
-                }
-                work.item()?;
-                let positive = rows[i].slope;
-                let negative = rows[j].slope.neg();
-                let mut row = Row {
-                    distance: negative
-                        .mul(&rows[i].distance)?
-                        .add(&positive.mul(&rows[j].distance)?)?,
-                    ..Row::default()
-                };
-                for axis in 0..3 {
-                    row.normal[axis] = negative
-                        .mul(&rows[i].normal[axis])?
-                        .add(&positive.mul(&rows[j].normal[axis])?)?;
-                }
-                if zero(&row.normal) {
-                    if row.distance.negative() {
-                        return Err(Failure::Arithmetic);
-                    }
-                    continue;
-                }
-                row.reduce()?;
-                *rows.get_mut(count).ok_or(Failure::Scratch)? = row;
-                count += 1;
-            }
-        }
-        for row in &mut rows[..source_count] {
-            let slope = if row.slope.negative() {
-                row.slope.neg()
-            } else {
-                row.slope
-            };
-            row.distance = row.distance.add(&slope)?;
-            row.slope = Int::ZERO;
-            row.reduce()?;
-        }
+        self.fill_source_rows(planes, cell, pose, rows)?;
+        let count = extrude_rows(rows, cell.sides.count as usize, offset, work)?;
         Ok(&rows[..count])
-    }
-
-    fn capsule_occupancy(
-        &self,
-        planes: &[Plane],
-        cells: IndexSpan,
-        query: TraceQuery,
-        capsule: Capsule,
-        pose: &Pose,
-        rows: &mut [Row],
-        work: &mut Work,
-    ) -> Result<Option<Contents>, Failure> {
-        let center = vector(query.start + math::midpoint(query.mins, query.maxs))?;
-        let offset = vector(capsule.offset)?;
-        let radius = Int::binary32(capsule.radius)?;
-        for &cell in &self.cells[cells.range()] {
-            work.item()?;
-            if !cell.contents.intersects(query.mask) {
-                continue;
-            }
-            let rows = self.fill_capsule_rows(planes, cell, &offset, pose, rows, work)?;
-            if sphere::occupancy(rows, &center, radius, work)? {
-                return Ok(Some(cell.contents));
-            }
-        }
-        Ok(None)
-    }
-
-    fn capsule_intervals(
-        &self,
-        planes: &[Plane],
-        cells: IndexSpan,
-        mask: Contents,
-        path: &CapsulePath,
-        pose: &Pose,
-        rows: &mut [Row],
-        work: &mut Work,
-        mut visit: impl FnMut(sphere::SweepInterval, Contents, usize, &mut Work) -> Result<(), Failure>,
-    ) -> Result<(), Failure> {
-        for index in cells.range() {
-            work.item()?;
-            let cell = self.cells[index];
-            if !cell.contents.intersects(mask) {
-                continue;
-            }
-            let rows = self.fill_capsule_rows(planes, cell, &path.offset, pose, rows, work)?;
-            if let Some(interval) =
-                sphere::interval(rows, &path.start, &path.delta, path.radius, work)?
-            {
-                visit(interval, cell.contents, index, work)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn moving_capsule(
-        &self,
-        planes: &[Plane],
-        cells: IndexSpan,
-        query: TraceQuery,
-        capsule: Capsule,
-        pose: &Pose,
-        scratch: &mut Scratch,
-        work: &mut Work,
-    ) -> Result<Trace, Failure> {
-        if !query.rules.contact_epsilon.is_finite() || query.rules.contact_epsilon < 0.0 {
-            return Err(Failure::Input);
-        }
-        let path = CapsulePath::new(query, capsule)?;
-        let component = component(
-            cells.count,
-            query.rules.contact_epsilon != 0.0,
-            work,
-            |work, visit| {
-                self.capsule_intervals(
-                    planes,
-                    cells,
-                    query.mask,
-                    &path,
-                    pose,
-                    &mut scratch.rows,
-                    work,
-                    |interval, contents, _, work| visit(interval, contents, work),
-                )
-            },
-        )?;
-        if let Some(trace) = component.solid_trace(query) {
-            return Ok(trace);
-        }
-        let start_solid = component.start_contents.is_some();
-        let Some((parameter, contents)) = component.hit else {
-            let endpoint = TraceQuery {
-                start: query.end,
-                ..query
-            };
-            if self
-                .capsule_occupancy(
-                    planes,
-                    cells,
-                    endpoint,
-                    capsule,
-                    pose,
-                    &mut scratch.rows,
-                    work,
-                )?
-                .is_some()
-            {
-                return Err(Failure::Input);
-            }
-            let mut trace = Trace::clear(query.end);
-            trace.start_solid = start_solid;
-            return Ok(trace);
-        };
-        let mut selected = None;
-        self.capsule_intervals(
-            planes,
-            cells,
-            query.mask,
-            &path,
-            pose,
-            &mut scratch.rows,
-            work,
-            |interval, _, index, work| {
-                if selected.is_none() && interval.first.compare(parameter, work)? == Ordering::Equal
-                {
-                    selected = Some(index);
-                }
-                Ok(())
-            },
-        )?;
-        let cell = self.cells[selected.ok_or(Failure::Arithmetic)?];
-        let rows =
-            self.fill_capsule_rows(planes, cell, &path.offset, pose, &mut scratch.rows, work)?;
-        let padded = (f64::from(capsule.radius) + query.rules.contact_epsilon) as f32;
-        if !padded.is_finite() {
-            return Err(Failure::Input);
-        }
-        let padded =
-            sphere::interval(rows, &path.start, &path.delta, Int::binary32(padded)?, work)?
-                .ok_or(Failure::Arithmetic)?;
-        let mut fraction = padded.first.floor(work)?;
-        loop {
-            work.item()?;
-            let value = sphere::Bound::Rational(Fraction::binary32(fraction)?);
-            if value.compare(parameter, work)? != Ordering::Less {
-                if fraction == 0.0 {
-                    return Err(Failure::Input);
-                }
-                fraction = fraction.next_down();
-                continue;
-            }
-            if start_solid && value.compare(component.reach, work)? != Ordering::Greater {
-                return Err(Failure::Input);
-            }
-            let end = query.start.lerp(query.end, fraction);
-            let endpoint = TraceQuery {
-                start: end,
-                end,
-                ..query
-            };
-            if self
-                .capsule_occupancy(
-                    planes,
-                    cells,
-                    endpoint,
-                    capsule,
-                    pose,
-                    &mut scratch.rows,
-                    work,
-                )?
-                .is_none()
-            {
-                let center = end + math::midpoint(query.mins, query.maxs);
-                let rows = self.fill_capsule_rows(
-                    planes,
-                    cell,
-                    &path.offset,
-                    pose,
-                    &mut scratch.rows,
-                    work,
-                )?;
-                let nearest = sphere::closest(rows, &vector(center)?, work)?;
-                let shift = nearest.denominator.bit_length();
-                let denominator = nearest.denominator.scaled_f64(shift);
-                let displacement = Vec3(
-                    nearest
-                        .displacement
-                        .map(|value| (value.scaled_f64(shift + 149) / denominator) as f32),
-                );
-                // Scale by the largest component using division before the
-                // shared normalize. A truly axial projection stays exactly
-                // +/-1 instead of losing a bit to length's reciprocal product.
-                let largest = displacement
-                    .0
-                    .iter()
-                    .map(|value| value.abs())
-                    .fold(0.0f32, f32::max);
-                let mut normal = displacement / largest;
-                let distance = math::length(displacement);
-                math::normalize(&mut normal);
-                if distance == 0.0 || !distance.is_finite() || !normal.is_finite() {
-                    return Err(Failure::Input);
-                }
-                let closing = dot(&vector(normal)?, &path.delta)?;
-                if closing.is_zero() || !closing.negative() {
-                    return Err(Failure::Input);
-                }
-                let plane = Plane::oriented(
-                    normal,
-                    normal.dot(center) - distance - normal.dot(capsule.offset).abs(),
-                );
-                if !plane.is_valid() {
-                    return Err(Failure::Input);
-                }
-                let mut trace = Trace::clear(end);
-                trace.fraction = fraction;
-                trace.plane = plane;
-                trace.start_solid = start_solid;
-                trace.contents = contents;
-                return Ok(trace);
-            }
-            if fraction == 0.0 {
-                return Err(Failure::Input);
-            }
-            fraction = fraction.next_down();
-        }
     }
 
     fn occupancy(
@@ -1999,16 +2193,7 @@ impl Data {
             mask: query.effective_mask(),
             ..query
         };
-        if !query.start.is_finite()
-            || !query.end.is_finite()
-            || !(Bounds {
-                mins: query.mins,
-                maxs: query.maxs,
-            })
-            .is_valid()
-        {
-            return Err(Failure::Input);
-        }
+        validate_query(query)?;
         if scratch.rows.len() < self.rows {
             return Err(Failure::Scratch);
         }
@@ -2046,30 +2231,21 @@ impl Data {
             return Err(Failure::Input);
         }
         if let Some(capsule) = query.capsule {
-            if !capsule.radius.is_finite() || capsule.radius < 0.0 || !capsule.offset.is_finite() {
+            if !capsule.is_valid() {
                 return Err(Failure::Input);
             }
-            if moving {
-                return self
-                    .moving_capsule(planes, cells, query, capsule, &pose, scratch, &mut work);
-            }
-            let contents = self.capsule_occupancy(
-                planes,
-                cells,
+            return trace_rounded(
+                &CellCapsules {
+                    data: self,
+                    planes,
+                    cells,
+                    pose: &pose,
+                },
                 query,
                 capsule,
-                &pose,
-                &mut scratch.rows,
+                scratch,
                 &mut work,
-            )?;
-            let mut trace = Trace::clear(query.end);
-            if let Some(contents) = contents {
-                trace.start_solid = true;
-                trace.all_solid = true;
-                trace.fraction = 0.0;
-                trace.contents = contents;
-            }
-            return Ok(trace);
+            );
         }
         if moving {
             return self.moving(planes, cells, query, &path, &pose, scratch, &mut work);

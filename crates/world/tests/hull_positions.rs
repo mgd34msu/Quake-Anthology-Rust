@@ -1049,7 +1049,16 @@ fn admission_rejection_keeps_native_queries_and_publishes_no_partial_models() {
 
 #[test]
 fn insufficient_old_scratch_is_rejected_and_admitted_moving_points_can_exit() {
-    let (mut store, geometry) = convex(vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0)]);
+    // Six retained sides need more workspace than the body-capsule minimum
+    // already reserved by a store with no admitted hull positions.
+    let (mut store, geometry) = convex(vec![
+        Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0),
+        Plane::oriented(Vec3([-1.0, 0.0, 0.0]), 4.0),
+        Plane::oriented(Vec3([0.0, 1.0, 0.0]), 4.0),
+        Plane::oriented(Vec3([0.0, -1.0, 0.0]), 4.0),
+        Plane::oriented(Vec3([0.0, 0.0, 1.0]), 4.0),
+        Plane::oriented(Vec3([0.0, 0.0, -1.0]), 4.0),
+    ]);
     let mut old = store.scratch();
     let query = radius(Vec3::default(), 1.0);
     assert_eq!(

@@ -409,7 +409,7 @@ impl CollisionStore {
         TraceScratch {
             hulls: HullScratch::new(hull_depth),
             brushes: BrushScratch::new(brush_depth, brushes, position_capacity, patch_planes),
-            position: position::Scratch::new(positions, contacts),
+            position: position::Scratch::new(positions.max(position::CAPSULE_PAIR_ROWS), contacts),
         }
     }
 
@@ -456,8 +456,21 @@ impl CollisionStore {
                 } else {
                     (Vec3::default(), None)
                 };
-                let mut trace = super::capsules::trace_capsule(local, body, entity, origin);
+                let capsule = super::capsules::trace_capsule(
+                    local,
+                    body,
+                    entity,
+                    origin,
+                    &mut scratch.position,
+                )?;
+                let mut trace = capsule.trace;
                 restore_normal(&mut trace, matrix, angles, rules);
+                if capsule.local_plane {
+                    trace.plane = Plane::oriented(
+                        trace.plane.normal,
+                        trace.plane.distance + trace.plane.normal.dot(origin),
+                    );
+                }
                 trace.end = mode.end_position(query.start, query.end, trace.fraction);
                 Ok(trace)
             }

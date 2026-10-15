@@ -1,6 +1,6 @@
 //! Rounded entity targets use the same body dispatcher and box/brush reducer.
 use super::store::BodyTraceMode;
-use super::{Trace, TraceQuery, boxes::trace_convex_box};
+use super::{Trace, TraceError, TraceQuery, boxes::trace_convex_box, position as rounded};
 use qa_core::{
     math,
     primitives::{Body, Bounds, Capsule, EntityId, Vec3},
@@ -8,12 +8,18 @@ use qa_core::{
 
 const RADIUS_MARGIN: f32 = 1.0;
 
-pub fn trace_capsule(
+pub(super) struct CapsuleTrace {
+    pub trace: Trace,
+    pub local_plane: bool,
+}
+
+pub(super) fn trace_capsule(
     query: TraceQuery,
     body: &Body,
     entity: Option<EntityId>,
     model_origin: Vec3,
-) -> Trace {
+    scratch: &mut rounded::Scratch,
+) -> Result<CapsuleTrace, TraceError> {
     let mut query = query;
     // The transformed wrapper and native kernel each recenter independently.
     query.center_box();
@@ -23,52 +29,68 @@ pub fn trace_capsule(
     };
     let target = Capsule::from_bounds(bounds);
     let center = math::midpoint(bounds.mins, bounds.maxs);
+    let mut local_plane = false;
     let mut trace = if let Some(moving) = query.capsule {
-        let mut trace = Trace::clear(query.end);
-        if query.start == query.end {
-            position(query.start, moving, center, target, &mut trace);
-        } else if query.swept_bounds(0.0).overlaps(Bounds {
-            mins: bounds.mins - Vec3([RADIUS_MARGIN; 3]),
-            maxs: bounds.maxs + Vec3([RADIUS_MARGIN; 3]),
-        }) {
-            let radius = target.radius + moving.radius;
-            if query.start.0[0] != query.end.0[0] || query.start.0[1] != query.end.0[1] {
-                let half_height = (body.maxs.0[2] - center.0[2]) + query.maxs.0[2] - radius;
-                if half_height > 0.0 {
-                    rounded_section(
-                        &mut trace,
-                        query,
-                        center,
-                        radius,
-                        Some(half_height),
-                        query.start,
-                        query.end,
-                        model_origin,
-                    );
-                }
+        if moving.offset.0[0] != 0.0 || moving.offset.0[1] != 0.0 {
+            if !bounds.is_valid() {
+                return Err(TraceError::Query);
             }
-            rounded_section(
-                &mut trace,
-                query,
-                center + target.offset,
-                radius,
-                None,
-                query.start - moving.offset,
-                query.end - moving.offset,
-                model_origin,
-            );
-            rounded_section(
-                &mut trace,
-                query,
-                center - target.offset,
-                radius,
-                None,
-                query.start + moving.offset,
-                query.end + moving.offset,
-                model_origin,
-            );
+            let trace =
+                rounded::trace_capsule_pair(query, center, target, scratch).map_err(|failure| {
+                    match failure {
+                        rounded::Failure::Scratch => TraceError::Scratch,
+                        _ => TraceError::Query,
+                    }
+                })?;
+            local_plane = trace.plane.is_valid();
+            trace
+        } else {
+            let mut trace = Trace::clear(query.end);
+            if query.start == query.end {
+                position(query.start, moving, center, target, &mut trace);
+            } else if query.swept_bounds(0.0).overlaps(Bounds {
+                mins: bounds.mins - Vec3([RADIUS_MARGIN; 3]),
+                maxs: bounds.maxs + Vec3([RADIUS_MARGIN; 3]),
+            }) {
+                let radius = target.radius + moving.radius;
+                if query.start.0[0] != query.end.0[0] || query.start.0[1] != query.end.0[1] {
+                    let half_height = (body.maxs.0[2] - center.0[2]) + query.maxs.0[2] - radius;
+                    if half_height > 0.0 {
+                        rounded_section(
+                            &mut trace,
+                            query,
+                            center,
+                            radius,
+                            Some(half_height),
+                            query.start,
+                            query.end,
+                            model_origin,
+                        );
+                    }
+                }
+                rounded_section(
+                    &mut trace,
+                    query,
+                    center + target.offset,
+                    radius,
+                    None,
+                    query.start - moving.offset,
+                    query.end - moving.offset,
+                    model_origin,
+                );
+                rounded_section(
+                    &mut trace,
+                    query,
+                    center - target.offset,
+                    radius,
+                    None,
+                    query.start + moving.offset,
+                    query.end + moving.offset,
+                    model_origin,
+                );
+            }
+            trace
         }
-        trace
     } else {
         // Native box/capsule collision swaps their shapes, retaining the
         // already computed query bounds for the temporary brush's cull.
@@ -92,7 +114,7 @@ pub fn trace_capsule(
         trace.entity = entity;
     }
     trace.brush_solid = false;
-    trace
+    Ok(CapsuleTrace { trace, local_plane })
 }
 
 fn position(start: Vec3, moving: Capsule, center: Vec3, target: Capsule, trace: &mut Trace) {

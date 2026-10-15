@@ -420,6 +420,10 @@ pub struct Capsule {
     pub offset: Vec3,
 }
 impl Capsule {
+    pub fn is_valid(self) -> bool {
+        self.radius.is_finite() && self.radius >= 0.0 && self.offset.is_finite()
+    }
+
     pub fn contains(self, center: Vec3, point: Vec3) -> bool {
         let delta = point - center;
         let length_squared = self.offset.dot(self.offset);
