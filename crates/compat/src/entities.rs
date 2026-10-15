@@ -1049,6 +1049,11 @@ impl EntityProjection {
             bound = None;
         }
         let entity = self.bind(services, context, native_slot, bound)?;
+        let tags = services
+            .server
+            .entities
+            .collision_tags(entity, layout.tags(flags))
+            .ok_or(CallError::Entity)?;
         if layout.source == RuleSetId::Quake3
             && let Some(binding) = self.bindings[native_slot].as_mut()
         {
@@ -1064,7 +1069,7 @@ impl EntityProjection {
         columns.collision_shape[slot] = shape;
         columns.model_rules[slot] = layout.model_rules;
         columns.collision_owner[slot] = owner;
-        columns.collision_tags[slot] = layout.tags(flags);
+        columns.collision_tags[slot] = tags;
         columns.point_contents_pose[slot] = self.point_contents_pose(memory, address)?;
         // Original Q2's temporary box hull carries CONTENTS_MONSTER.
         columns.collision_contents[slot] =

@@ -109,9 +109,11 @@ fn q3_file_imports_seek_shared_handles_with_native_long_widths_and_eof() {
                     table.invoke($ordinal, &mut call, &mut unknown)
                 }};
             }
-            assert_eq!(invoke!(open, &[base + 16, 0, 0]), Ok(17));
+            // A null output handle asks for existence; an opened handle below
+            // retains the independent native file-length result.
+            assert_eq!(invoke!(open, &[base + 16, 0, 0]), Ok(1));
             if matches!(addresses, Addresses::Qvm { .. }) {
-                assert_eq!(invoke!(open, &[base + 16, 1u64 << 32, 0]), Ok(17));
+                assert_eq!(invoke!(open, &[base + 16, 1u64 << 32, 0]), Ok(1));
                 assert_eq!(invoke!(open, &[base + 16, 512, 0]), Ok(17));
                 let wrapped = memory.read_word(0).unwrap() as u64;
                 assert_ne!(wrapped, 0);

@@ -2426,17 +2426,80 @@ fn respawn_lock_is_common_state_with_protocol_exact_residual_flags()
     ));
     assert!(client.movement.respawned);
 
-    // Rerelease bit512 has a different meaning. It remains native metadata
-    // until that capability is projected, and cannot become a Q3 respawn lock.
+    // Rerelease bit512 is a different shared capability, never a Q3 respawn lock.
     let rr = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
     let mut rr_words = [0; states::Q2_REPRO_PLAYER_WORDS];
     rr_words[qa_network::projection::PM_FLAGS_WORD] = 512;
     assert!(rr.apply(&rr_words, &mut player, &mut context, namespace, |_| None));
     assert!(!player.movement.respawned);
+    assert!(player.movement.ignore_player_collision);
     assert_eq!(player.native.unwrap().flags, 512);
     assert_eq!(
         (player.movement_rules, player.trace_rules),
         (RuleSetId::Quake2, RuleSetId::QuakeWorld)
     );
+    Ok(())
+}
+
+#[test]
+fn rerelease_ignore_player_flag_survives_wire_and_shared_movement_projection()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{ClientId, ModuleId, ResourceNamespace};
+    let namespace = ResourceNamespace::Module(ModuleId(7));
+    let wire = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
+    let movement = PlayerProjection::load_movement(Protocol::Quake2Repro1038);
+    let mut source = states::Q2ReproPlayer::default();
+    source.words[qa_network::projection::PM_FLAGS_WORD] = 512 | 2048;
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    let extra = states::write_q2_repro_player(&mut writer, &Default::default(), &source)?;
+    let decoded = states::read_q2_repro_player(
+        &mut Reader::new(writer.bytes(), Encoding::Bytes),
+        &Default::default(),
+        extra,
+    )?;
+    let words: Vec<_> = decoded.words.into_iter().chain(decoded.stats).collect();
+    let mut player = PlayerState {
+        movement_rules: RuleSetId::Quake3,
+        trace_rules: RuleSetId::Quake,
+        ..Default::default()
+    };
+    let mut context = PlayerContext::default();
+    assert!(wire.apply(
+        &words,
+        &mut player,
+        &mut context,
+        ResourceNamespace::Client(ClientId(3)),
+        |_| None
+    ));
+    assert!(player.movement.ignore_player_collision);
+    assert!(!player.movement.respawned);
+    // Native Pmove borrows the module's current tail, not another CLIENT's
+    // retained wire metadata. Source ownership stays explicit at the boundary.
+    assert!(wire.apply(&words, &mut player, &mut context, namespace, |_| None));
+    assert!(movement.apply(&words, &mut player, &mut context, namespace, |_| None));
+    assert!(player.movement.ignore_player_collision);
+    assert_eq!(
+        (player.movement_rules, player.trace_rules),
+        (RuleSetId::Quake3, RuleSetId::Quake)
+    );
+    let empty = vec![0; wire.words()];
+    assert!(wire.apply_stats(&empty, &mut player, namespace));
+    assert!(player.movement.ignore_player_collision);
+    assert!(!movement.apply(&[], &mut player, &mut context, namespace, |_| None));
+    assert!(player.movement.ignore_player_collision);
+    let mut reduced = vec![0; movement.words()];
+    assert!(movement.reduce(&player, &context, &mut reduced, |_| None, |_| None));
+    assert_eq!(reduced[qa_network::projection::PM_FLAGS_WORD], 512 | 2048);
+    player.movement.ignore_player_collision = false;
+    assert!(movement.reduce(&player, &context, &mut reduced, |_| None, |_| None));
+    assert_eq!(reduced[qa_network::projection::PM_FLAGS_WORD], 2048);
+    player.movement.ignore_player_collision = true;
+    let q3 = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let mut q3_words = [0; states::PLAYER_WORDS];
+    q3_words[19] = 512;
+    assert!(q3.apply(&q3_words, &mut player, &mut context, namespace, |_| None));
+    assert!(player.movement.respawned);
+    assert!(!player.movement.ignore_player_collision);
     Ok(())
 }

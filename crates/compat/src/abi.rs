@@ -473,6 +473,7 @@ const fn server() -> CallTable {
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command);
     t.entries[15] = scalar!(q3_locate_game_data);
+    t.entries[17] = scalar!(q3_send_server_command);
     t.entries[30] = scalar!(native_link);
     t.entries[31] = scalar!(native_unlink);
     t.entries[18] = scalar!(config_set);
@@ -2872,6 +2873,34 @@ fn q3_get_userinfo(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     }
     let text = (ENGINE_CALLS.userinfo)(c.services, native)?;
     c.memory.write_string(target, length, text)?;
+    Ok(0)
+}
+fn q3_send_server_command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let slot = c.arg(0)? as u32 as i32;
+    let limit = c
+        .services
+        .storage
+        .client_capacity(c.context.module)
+        .ok_or(CallError::Entity)?;
+    if slot != -1 && (slot < 0 || slot as u32 >= limit) {
+        return Ok(0);
+    }
+    let text = c.memory.cstring(c.required_pointer(1)?)?;
+    // SV_AddServerCommand stores one MAX_STRING_CHARS row with Q_strncpyz.
+    let text = &text[..text
+        .len()
+        .min(qa_network::message::COMMAND_STRING_BYTES - 1)];
+    let target = (slot != -1).then_some(qa_core::primitives::NativeEntity {
+        module: c.context.module,
+        slot,
+    });
+    (ENGINE_CALLS.send_server_command)(
+        c.services,
+        c.context.module,
+        c.context.native_rules,
+        target,
+        text,
+    )?;
     Ok(0)
 }
 fn q3_set_userinfo(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

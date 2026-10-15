@@ -159,7 +159,7 @@ pub(super) fn connect(
         callback(host, module, id, ClientCallback::Begin)?;
         // The native module becomes movement owner only after Begin succeeds.
         host.runtime.server.clients[id.0 as usize].module_movement = true;
-        host.runtime.native_numbers[id.0 as usize].set_native_clients(info.clients as u32);
+        host.runtime.native_numbers[id.0 as usize].set_native_clients(info.clients as u32, 1);
         Ok(())
     })();
     if let Err(error) = result {

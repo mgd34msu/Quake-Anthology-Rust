@@ -775,6 +775,100 @@ fn rerelease_entity_class_filters_are_independent_of_geometry_and_other_callers(
 }
 
 #[test]
+fn live_native_flags_keep_common_players_and_replace_stale_native_classes() {
+    use qa_core::primitives::RuleSetId;
+    use qa_world::collision::{
+        NativeModelNames, NativeTraceEntities, NativeTraceFields, NativeTraceTarget,
+    };
+    struct LiveClasses;
+    impl NativeTraceEntities for LiveClasses {
+        fn module(&self) -> ModuleId {
+            ModuleId(2)
+        }
+        fn owner(&self, _: i32) -> Option<CollisionOwner> {
+            Some(CollisionOwner::None)
+        }
+        fn fields(&self, slot: i32, _: bool) -> Option<NativeTraceFields> {
+            Some(NativeTraceFields {
+                tags: if slot == 0 {
+                    CollisionTags::default()
+                } else {
+                    CollisionTags::MONSTER
+                },
+                enabled: true,
+                box_target: true,
+                contents: Contents::BODY,
+            })
+        }
+        fn bounds(&self, _: i32, cached: Bounds) -> Option<Bounds> {
+            Some(cached)
+        }
+        fn target(
+            &self,
+            _: i32,
+            cached: NativeTraceTarget,
+            _: bool,
+            _: &CollisionStore,
+            _: GeometryId,
+            _: Option<&dyn NativeModelNames>,
+        ) -> Option<NativeTraceTarget> {
+            Some(cached)
+        }
+    }
+    let world = empty();
+    let (_, mut area) = table();
+    let mut table = EntityTable::new(16, 2).unwrap();
+    let client = table.id_at(1).unwrap();
+    let slot = client.slot as usize;
+    table.columns.set_body(
+        slot,
+        Body {
+            mins: Vec3([-5.0; 3]),
+            maxs: Vec3([5.0; 3]),
+            ..Default::default()
+        },
+    );
+    table.columns.native_entity[slot] = Some(NativeEntity {
+        module: ModuleId(2),
+        slot: 0,
+    });
+    table.columns.collision_shape[slot] = CollisionShape::Box;
+    table.columns.collision_contents[slot] = Contents::BODY.0;
+    assert!(area.link(
+        &table,
+        client,
+        LinkFlags::SOLID,
+        LinkOrder::Tail,
+        LinkIntent::Explicit
+    ));
+    let monster = body(
+        &mut table,
+        &mut area,
+        Vec3([30.0, 0.0, 0.0]),
+        Vec3([-5.0; 3]),
+        Vec3([5.0; 3]),
+    );
+    // Cached flags are stale. Native reads must replace these flags while the
+    // reserved common client lifetime remains a player even at native slot0.
+    table.columns.collision_tags[monster.slot as usize] = CollisionTags::PLAYER;
+    let mut scratch = world.store.scratch();
+    let mut tracer = WorldTrace::new(
+        &world.store,
+        world.geometry,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    )
+    .with_native_entities(Some(&LiveClasses));
+    let mut q = query(qa_world::collision::trace_policy(RuleSetId::Quake2Rerelease).1);
+    assert_eq!(tracer.trace(q).unwrap().entity, Some(monster));
+    q.mask |= Contents::PLAYER;
+    assert_eq!(tracer.trace(q).unwrap().entity, Some(client));
+}
+
+#[test]
 fn stale_linked_geometry_rejects_the_whole_query_instead_of_a_partial_hit() {
     let mut world = brush_world(
         vec![Plane::oriented(Vec3([-1.0, 0.0, 0.0]), -24.0)],

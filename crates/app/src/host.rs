@@ -1686,6 +1686,7 @@ impl FrameHost {
                             &resources.state.models,
                             &self.runtime.geometry,
                             binding.view_entity(Some(frame)),
+                            resources.state.max_clients(),
                         );
                     }
                 }

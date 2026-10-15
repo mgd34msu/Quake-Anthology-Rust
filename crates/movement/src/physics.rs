@@ -11,8 +11,8 @@ use qa_gameplay::rules::movement::{
     LandingPolicy, ProbePhase, SpecialMovement, StancePolicy, ViewAnglePolicy, capabilities,
 };
 use qa_world::collision::{
-    Contents, EntityTracePolicy, Trace, TraceError, TraceQuery, TraceRules, TraceScope, WorldTrace,
-    trace_policy,
+    Contents, EntityTraceFlags, EntityTracePolicy, Trace, TraceError, TraceQuery, TraceRules,
+    TraceScope, WorldTrace, trace_policy,
 };
 
 pub trait TraceServices {
@@ -1367,6 +1367,8 @@ impl Step<'_> {
             self.player.movement.timer = MovementTimer::NONE;
             self.player.movement.ducked = false;
             self.player.movement.jump_held = false;
+            self.player.movement.respawned = false;
+            self.player.movement.ignore_player_collision = false;
             self.player.movement.grounded = false;
             self.player.movement.ground = None;
             self.player.movement.ladder = false;
@@ -1572,7 +1574,7 @@ where
     } else {
         exact_dt as f32
     };
-    let mask = Contents::SOLID
+    let mut mask = Contents::SOLID
         | Contents::WINDOW
         | Contents::PLAYER_CLIP
         | if matches!(player.movement.mode, MovementMode::Dead | MovementMode::Gib) {
@@ -1580,6 +1582,13 @@ where
         } else {
             Contents::BODY | Contents::PLAYER
         };
+    let mut parameters = parameters;
+    if parameters.special.ignore_player_collision && player.movement.ignore_player_collision {
+        // Native PM_Trace changes only its default mask. Explicit masks still
+        // reach the shared trace executor unchanged, including a PLAYER bit.
+        mask.0 &= !Contents::PLAYER.0;
+        parameters.entity_rules.filtering.0 |= EntityTraceFlags::PLAYER_MASK;
+    }
     let previous_velocity = player.body.velocity;
     let mut step = Step {
         player,

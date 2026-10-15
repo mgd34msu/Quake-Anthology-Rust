@@ -35,6 +35,8 @@ struct Fixture {
     bindings: ClientModelBindings,
     client: ClientId,
     protocol: Protocol,
+    world: qa_render::world::WorldId,
+    presentation: WorldPresentationId,
 }
 impl Fixture {
     fn new(protocol: Protocol, client: ClientId) -> Self {
@@ -123,6 +125,8 @@ impl Fixture {
             bindings,
             client,
             protocol,
+            world,
+            presentation,
         }
     }
     fn record(&self, x: f32, solid: u32) -> EntityRecord {
@@ -166,6 +170,56 @@ impl Fixture {
             })
             .unwrap()
     }
+
+    fn resources(&self, client: ClientId) -> qa_app::client_resources::ClientResources {
+        let mut resources = qa_app::client_resources::ClientResources::load(
+            client,
+            self.protocol,
+            self.protocol.rule_set(),
+        )
+        .unwrap()
+        .unwrap();
+        let state = &mut resources.state;
+        for ordinal in [1, 2] {
+            let index = state.layout.resources[0].get(ordinal).unwrap();
+            state
+                .configs
+                .set(index, self.configs.config(index).unwrap().text)
+                .unwrap();
+        }
+        assert_eq!(
+            state.models.bind_all(
+                &state.configs,
+                &self.catalog,
+                ModelRequest::native("", self.protocol.rule_set(), None).profile(),
+                Some((self.world, self.presentation)),
+            ),
+            0
+        );
+        resources
+    }
+}
+
+fn player_mask_trace(view: &mut ClientCollision, store: &CollisionStore, players: bool) -> Trace {
+    let policy = qa_world::collision::trace_policy(RuleSetId::Quake2Rerelease);
+    view.trace(store)
+        .unwrap()
+        .trace(TraceQuery {
+            mask: Contents::SOLID
+                | Contents::BODY
+                | if players {
+                    Contents::PLAYER
+                } else {
+                    Contents::default()
+                },
+            ..TraceQuery::point(
+                Vec3([-64., 0., 0.]),
+                Vec3([64., 0., 0.]),
+                policy.0,
+                policy.1,
+            )
+        })
+        .unwrap()
 }
 fn frame<'a, const P: usize, const E: usize>(
     sequence: u32,
@@ -204,6 +258,7 @@ fn accepted_client_pose_is_owned_and_repeated_or_late_rows_do_not_replace_it() {
         &fixture.bindings,
         &fixture.store,
         Some(1),
+        0,
     )
     .unwrap();
     let old = view.entity(7).unwrap();
@@ -238,6 +293,7 @@ fn accepted_client_pose_is_owned_and_repeated_or_late_rows_do_not_replace_it() {
             &fixture.bindings,
             &fixture.store,
             Some(1),
+            0,
         )
         .unwrap();
         let trace = fixture.trace(&mut view);
@@ -265,6 +321,7 @@ fn accepted_client_pose_is_owned_and_repeated_or_late_rows_do_not_replace_it() {
         &fixture.bindings,
         &fixture.store,
         Some(1),
+        0,
     )
     .unwrap();
     assert_eq!(view.entity(7), Some(old));
@@ -284,6 +341,7 @@ fn removal_reset_and_ordinal_reuse_create_client_lifetimes() {
         &fixture.bindings,
         &fixture.store,
         None,
+        0,
     )
     .unwrap();
     let old = view.entity(7).unwrap();
@@ -296,6 +354,7 @@ fn removal_reset_and_ordinal_reuse_create_client_lifetimes() {
         &fixture.bindings,
         &fixture.store,
         None,
+        0,
     )
     .unwrap();
     assert_eq!(view.entity(7), None);
@@ -305,6 +364,7 @@ fn removal_reset_and_ordinal_reuse_create_client_lifetimes() {
         &fixture.bindings,
         &fixture.store,
         None,
+        0,
     )
     .unwrap();
     assert_ne!(view.entity(7), Some(old));
@@ -321,6 +381,7 @@ fn removal_reset_and_ordinal_reuse_create_client_lifetimes() {
         &fixture.bindings,
         &fixture.store,
         None,
+        0,
     )
     .unwrap();
     assert_ne!(view.entity(7), Some(new));
@@ -343,6 +404,7 @@ fn unknown_or_stale_world_rejects_only_its_client_without_server_fallback() {
             &fixture.bindings,
             &fixture.store,
             None,
+            0,
         )
         .unwrap();
     let unknown = ClientModelBindings::load(ClientId(1), ConfigLayout::QUAKE2);
@@ -352,7 +414,8 @@ fn unknown_or_stale_world_rejects_only_its_client_without_server_fallback() {
             &projection,
             &unknown,
             &fixture.store,
-            None
+            None,
+            0,
         ),
         Err(ClientCollisionError::Waiting)
     );
@@ -365,7 +428,8 @@ fn unknown_or_stale_world_rejects_only_its_client_without_server_fallback() {
             &projection,
             &fixture.bindings,
             &fixture.store,
-            None
+            None,
+            0,
         ),
         Err(ClientCollisionError::Geometry)
     );
@@ -405,6 +469,7 @@ fn q3_world_self_and_trigger_classification_keep_native_numbers_distinct() {
             &fixture.bindings,
             &fixture.store,
             Some(0),
+            0,
         )
         .unwrap();
         assert_eq!(
@@ -441,6 +506,7 @@ fn q2_box_angles_are_ignored_and_native_order_breaks_equal_hits() {
         &fixture.bindings,
         &fixture.store,
         None,
+        0,
     )
     .unwrap();
     let trace = fixture.trace(&mut view);
@@ -453,6 +519,7 @@ fn q2_box_angles_are_ignored_and_native_order_breaks_equal_hits() {
         &fixture.bindings,
         &fixture.store,
         None,
+        0,
     )
     .unwrap();
     assert_eq!(fixture.trace(&mut view).entity, view.entity(3));
@@ -480,6 +547,7 @@ fn qw_brushes_precede_living_peers_and_dead_peers_do_not_block() {
         &fixture.bindings,
         &fixture.store,
         None,
+        0,
     )
     .unwrap();
     assert_eq!(fixture.trace(&mut view).entity, view.entity(48));
@@ -493,6 +561,7 @@ fn qw_brushes_precede_living_peers_and_dead_peers_do_not_block() {
         &fixture.bindings,
         &fixture.store,
         None,
+        0,
     )
     .unwrap();
     assert_eq!(fixture.trace(&mut view).fraction, 1.);
@@ -504,6 +573,7 @@ fn qw_brushes_precede_living_peers_and_dead_peers_do_not_block() {
         &fixture.bindings,
         &fixture.store,
         None,
+        0,
     )
     .unwrap();
     assert!(fixture.trace(&mut view).fraction < 1.);
@@ -695,6 +765,7 @@ fn rerelease_full_native_entity_capacity_reserves_only_the_world() {
         &fixture.bindings,
         &fixture.store,
         Some(1),
+        0,
     )
     .unwrap();
     assert_eq!(
@@ -706,4 +777,260 @@ fn rerelease_full_native_entity_capacity_reserves_only_the_world() {
     );
     assert_eq!(view.entity(8191).unwrap().slot, 8191);
     assert_eq!(view.rejected_snapshots, 0);
+}
+
+fn native_player_range<const P: usize, const E: usize>(
+    protocol: Protocol,
+    wrap: for<'a> fn(Frame<'a, P, E>) -> ReceivedFrame<'a>,
+) {
+    let fixture = Fixture::new(protocol, ClientId(0));
+    let mut resources = fixture.resources(fixture.client);
+    let index = resources.state.layout.max_clients().unwrap();
+    let projection = EntityProjection::load(protocol);
+    let bounds = Bounds {
+        mins: Vec3([-8.; 3]),
+        maxs: Vec3([8.; 3]),
+    };
+    let solid = SolidCodec::load(protocol.rule_set())
+        .unwrap()
+        .pack_bounds(bounds);
+    let rows = [
+        fixture.row::<E>(2, fixture.record(-24., solid)),
+        fixture.row(3, fixture.record(24., solid)),
+    ];
+    let player = [0; P];
+    let mut view = ClientCollision::load(fixture.client, protocol, &fixture.store).unwrap();
+    // The accepted snapshot does not change while only CLIENT's numeric row does.
+    for (text, expected, player_skipped) in [
+        (b"".as_slice(), 0, false),
+        (b"2suffix", 2, true),
+        (b"0", 0, false),
+        (b"-1", 0, false),
+        (b"257", 0, false),
+        (b"2", 2, true),
+    ] {
+        assert!(resources.apply(index, text, Some(&fixture.catalog), None));
+        assert_eq!(resources.state.max_clients(), expected);
+        view.synchronize(
+            wrap(frame(1, &player, &rows)),
+            &projection,
+            &resources.state.models,
+            &fixture.store,
+            None,
+            resources.state.max_clients(),
+        )
+        .unwrap();
+        let first = view.entity(2).unwrap();
+        let monster = view.entity(3).unwrap();
+        assert_eq!(
+            player_mask_trace(&mut view, &fixture.store, true).entity,
+            Some(first)
+        );
+        assert_eq!(
+            player_mask_trace(&mut view, &fixture.store, false).entity,
+            Some(if player_skipped { monster } else { first }),
+            "protocol={protocol:?}, maxclients={text:?}",
+        );
+    }
+}
+
+#[test]
+fn client_integer_maxclients_retags_same_snapshot_without_ignoring_monsters() {
+    fn classic(
+        frame: Frame<'_, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>,
+    ) -> ReceivedFrame<'_> {
+        ReceivedFrame::Quake2(frame)
+    }
+    fn rerelease(
+        frame: Frame<'_, { states::Q2_REPRO_PLAYER_WORDS }, { states::Q2_RERELEASE_ENTITY_WORDS }>,
+    ) -> ReceivedFrame<'_> {
+        ReceivedFrame::Quake2Repro(frame)
+    }
+    native_player_range::<{ states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>(
+        Protocol::Quake2_34,
+        classic,
+    );
+    native_player_range::<{ states::Q2_REPRO_PLAYER_WORDS }, { states::Q2_RERELEASE_ENTITY_WORDS }>(
+        Protocol::Quake2Repro1038,
+        rerelease,
+    );
+}
+
+#[test]
+fn q3_player_tags_use_existing_entity_role_instead_of_native_number() {
+    let fixture = Fixture::new(Protocol::Quake3_68, ClientId(0));
+    let projection = EntityProjection::load(fixture.protocol);
+    let solid = SolidCodec::QUAKE3.pack_bounds(Bounds {
+        mins: Vec3([-8.; 3]),
+        maxs: Vec3([8.; 3]),
+    });
+    let mut player_record = fixture.record(-24., solid);
+    player_record.appearance.native.entity_type = 1;
+    let rows = [
+        fixture.row::<{ states::ENTITY_WORDS }>(63, player_record),
+        fixture.row(2, fixture.record(24., solid)),
+    ];
+    let player = [0; states::PLAYER_WORDS];
+    let mut view = ClientCollision::load(fixture.client, fixture.protocol, &fixture.store).unwrap();
+    view.synchronize(
+        ReceivedFrame::Quake3(frame(1, &player, &rows)),
+        &projection,
+        &fixture.bindings,
+        &fixture.store,
+        None,
+        0,
+    )
+    .unwrap();
+    let native_player = view.entity(63);
+    let monster = view.entity(2);
+    assert_eq!(
+        player_mask_trace(&mut view, &fixture.store, true).entity,
+        native_player
+    );
+    assert_eq!(
+        player_mask_trace(&mut view, &fixture.store, false).entity,
+        monster
+    );
+}
+
+#[test]
+fn queued_client_maxclients_and_snapshots_classify_each_split_client_independently() {
+    use qa_app::{
+        Runtime,
+        client_policy::ClientPolicy,
+        host::{FrameHost, FrameSource},
+        map::SpawnAnchor,
+    };
+    use qa_console::{commands::Console, views::Context};
+    use qa_core::{
+        primitives::{Body, ModuleId},
+        sys_events::{EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
+    };
+    use qa_session::timing::TickRate;
+    use std::time::Duration;
+
+    struct Source(EventTime);
+    impl FrameSource for Source {
+        fn begin_frame(&mut self) -> Duration {
+            Duration::from_nanos(self.0.0)
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            queue
+                .push(SysEvent {
+                    time: self.0,
+                    kind: EventKind::Time,
+                })
+                .unwrap();
+        }
+        fn wait_time(&mut self, _: Duration) -> Duration {
+            panic!("uncapped fixture")
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn present(&mut self) {}
+    }
+
+    let protocol = Protocol::Quake2Repro1038;
+    let fixture = Fixture::new(protocol, ClientId(0));
+    let resources = [
+        fixture.resources(ClientId(0)),
+        fixture.resources(ClientId(1)),
+    ];
+    let solid = SolidCodec::QUAKE2_RERELEASE.pack_bounds(Bounds {
+        mins: Vec3([-8.; 3]),
+        maxs: Vec3([8.; 3]),
+    });
+    let mut appearance = fixture.record(0., solid).appearance;
+    appearance.models[0] = ModelRef::native(ResourceNamespace::Module(ModuleId::default()), 2);
+    let mut runtime = Runtime::load(2, []).unwrap();
+    runtime.geometry = fixture.store;
+    runtime.models = Some(std::sync::Arc::new(fixture.catalog));
+    for (seat, resources) in resources.into_iter().enumerate() {
+        let id = runtime
+            .connect_local(
+                SeatId::ALL[seat],
+                SpawnAnchor {
+                    position: Vec3([-24., 0., 0.]),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy::select(Some(RuleSetId::Quake2Rerelease), None, None, None).unwrap(),
+                protocol,
+                seat as u32,
+            )
+            .unwrap();
+        assert_eq!(id, ClientId(seat as u32));
+        runtime.client_resources[seat] = Some(resources);
+        // Connection metadata has no native source configstring here: there are
+        // no loaded modules. Each connection must publish its own bounded row.
+        runtime.native_numbers[seat].set_native_clients(
+            [3, 2][seat],
+            qa_network::snapshots::snapshot_limits(protocol).first_entity,
+        );
+        let entity = runtime.server.clients[seat].entity;
+        runtime.server.entities.columns.appearance[entity.slot as usize] = appearance;
+    }
+    let monster = runtime
+        .server
+        .entities
+        .allocate(
+            ThinkTime::Milliseconds(0),
+            ModuleId(7),
+            qa_world::entities::AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    runtime.server.entities.columns.set_body(
+        monster.slot as usize,
+        Body {
+            position: Vec3([24., 0., 0.]),
+            mins: Vec3([-8.; 3]),
+            maxs: Vec3([8.; 3]),
+            ..Default::default()
+        },
+    );
+    runtime.server.entities.columns.appearance[monster.slot as usize] = appearance;
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    host.local_clients = [Some(ClientId(0)), Some(ClientId(1)), None, None];
+    // The ordinary host publishes the derived config row into EventRing, sends
+    // its native packet through loopback, then accepts it through SysEventQueue.
+    for milliseconds in [100, 125, 150] {
+        host.frame(
+            &mut Source(EventTime::from_milliseconds(milliseconds)),
+            true,
+        );
+    }
+    assert_eq!(host.runtime.network.malformed, 0);
+    assert_eq!(host.runtime.server.clients.len(), 2);
+    for (seat, max_clients, monster_number) in [(0, 3, 4), (1, 2, 3)] {
+        let resources = host.runtime.client_resources[seat].as_ref().unwrap();
+        assert_eq!(resources.state.max_clients(), max_clients);
+        assert_eq!(
+            host.runtime.native_numbers[seat].player_count(),
+            max_clients
+        );
+        assert_eq!(
+            host.runtime.native_numbers[seat].number(monster),
+            Some(monster_number)
+        );
+        let view = host.runtime.client_collision[seat].as_mut().unwrap();
+        let expected = view.entity(monster_number).unwrap();
+        let other_player_number = if seat == 0 { 2 } else { 1 };
+        assert_eq!(
+            player_mask_trace(view, &host.runtime.geometry, true).entity,
+            view.entity(other_player_number),
+        );
+        assert_eq!(
+            player_mask_trace(view, &host.runtime.geometry, false).entity,
+            Some(expected),
+        );
+    }
 }

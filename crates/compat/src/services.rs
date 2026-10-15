@@ -1078,6 +1078,13 @@ pub struct EngineCallTable {
     pub userinfo: UserinfoCall,
     pub set_userinfo: fn(&mut EngineServices<'_>, NativeEntity, &[u8]) -> Result<(), CallError>,
     pub serverinfo: fn(&mut EngineServices<'_>, ModuleId, &mut [u8]) -> Result<usize, CallError>,
+    pub send_server_command: fn(
+        &mut EngineServices<'_>,
+        ModuleId,
+        RuleSetId,
+        Option<NativeEntity>,
+        &[u8],
+    ) -> Result<(), CallError>,
     pub server_command: fn(&mut EngineServices<'_>, i32) -> Result<bool, CallError>,
     pub client_configstrings: ClientConfigStringsCall,
     pub renderer: for<'a> fn(
@@ -1359,6 +1366,22 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     userinfo: |s, native| s.storage.userinfo(s.server, native),
     set_userinfo: |s, native, text| s.storage.set_userinfo(s.server, native, text),
     serverinfo: |s, module, output| s.storage.serverinfo(s.cvars, module, output),
+    send_server_command: |s, module, source, native, text| {
+        let client = match native {
+            None => None,
+            Some(native) => {
+                let Some(client) = s.server.client_for_native(native) else {
+                    return Ok(());
+                };
+                Some(client)
+            }
+        };
+        s.server
+            .events
+            .server_command(client, module, source, text)
+            .map(|_| ())
+            .map_err(|_| CallError::Capacity)
+    },
     server_command: |s, number| {
         s.client_connection
             .as_deref_mut()

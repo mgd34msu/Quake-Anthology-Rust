@@ -102,9 +102,9 @@ impl<const N: usize> Rows<N> {
                 match columns.native_entity[slot]
                     .filter(|native| Some(native.module) == source.native_module)
                 {
-                    Some(native) => match u32::try_from(native.slot) {
-                        Ok(number) => Some(number),
-                        Err(_) => {
+                    Some(_) => match numbers.project(source.entities, id) {
+                        Some(number) => Some(number),
+                        None => {
                             rejected += 1;
                             continue;
                         }
@@ -112,16 +112,8 @@ impl<const N: usize> Rows<N> {
                     None => None,
                 }
             };
-            // Non-Q3 entity zero is the native world, not a packet entity.
-            if native == Some(0) && protocol != Protocol::Quake3_68 {
-                continue;
-            }
-            // Reserve native ordinals before foreign rows receive numbers,
-            // even when this entity is hidden or outside the current PVS.
-            if let Some(number) = native
-                && numbers.number(id) != Some(number)
-            {
-                rejected += 1;
+            // World ordinals are protocol metadata, never packet entities.
+            if native == Some(snapshot_limits(protocol).world_entity) {
                 continue;
             }
             if native.is_some() && native == player_number {
@@ -418,7 +410,16 @@ impl EntityScratch {
         player: &PlayerState,
         numbers: &mut NativeNumbers,
     ) -> Result<(), Error> {
-        numbers.refresh(source.entities, source.native_module, self.protocol);
+        numbers.refresh(
+            source.entities,
+            source.native_module,
+            self.protocol,
+            source
+                .players
+                .iter()
+                .filter(|client| client.connection.is_some())
+                .map(|client| client.entity),
+        );
         let number = numbers.number(source.self_entity).ok_or(Error::Context)?;
         macro_rules! prepare {
             ($rows:expr) => {

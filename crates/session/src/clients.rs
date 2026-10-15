@@ -263,6 +263,9 @@ impl Server {
         self.entities.columns.native_entity[entity_slot] = native;
         self.entities.columns.collision_shape[entity_slot] = CollisionShape::Box;
         self.entities.columns.collision_contents[entity_slot] = Contents::BODY.0;
+        self.entities.columns.collision_tags[entity_slot] = self
+            .entities
+            .collision_tags(client.entity, Default::default())?;
         Some(ClientId(slot as u32))
     }
 
@@ -376,6 +379,7 @@ impl Server {
             client.player.loop_sound = None;
             client.player.prediction = Default::default();
             client.player.movement.respawned = false;
+            client.player.movement.ignore_player_collision = false;
         }
         client.module = native.module;
         self.entities.columns.owner[slot] = native.module;

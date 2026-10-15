@@ -252,6 +252,86 @@ fn records(host: &FrameHost, client: ClientId) -> Result<Vec<(u32, EntityRecord)
 }
 
 #[test]
+fn primary_players_cross_native_world_slot_conventions_without_losing_peers() -> Result<(), String>
+{
+    for (protocol, source, source_first) in [
+        (Protocol::Quake2_34, RuleSetId::Quake3, 0),
+        (Protocol::Quake3_68, RuleSetId::Quake2, 1),
+    ] {
+        let (mut host, client) = host(protocol, 2)?;
+        assert!(host.runtime.server.bind_client_native(
+            client,
+            NativeEntity {
+                module: MODULE,
+                slot: source_first
+            }
+        ));
+        host.runtime.native_numbers[client.0 as usize].set_native_clients(2, source_first as u32);
+        let peer = host
+            .runtime
+            .server
+            .connect(
+                qa_session::clients::Connection::Remote,
+                MODULE,
+                Some(NativeEntity {
+                    module: MODULE,
+                    slot: source_first + 1,
+                }),
+            )
+            .ok_or("peer")?;
+        let entity = host.runtime.server.clients[peer.0 as usize].entity;
+        let columns = &mut host.runtime.server.entities.columns;
+        columns.position[entity.slot as usize] = Vec3([48., 0., 0.]);
+        columns.mins[entity.slot as usize] = Vec3([-8.; 3]);
+        columns.maxs[entity.slot as usize] = Vec3([8.; 3]);
+        columns.appearance[entity.slot as usize] = EntityAppearance {
+            source,
+            models: [
+                ModelRef::native(ResourceNamespace::Module(MODULE), 5),
+                None,
+                None,
+                None,
+            ],
+            ..Default::default()
+        };
+        let ordinary = add(
+            &mut host,
+            Some(NativeEntity {
+                module: MODULE,
+                slot: source_first + 2,
+            }),
+            source,
+            Vec3([100., 0., 0.]),
+        );
+        transmit(
+            &mut host,
+            client,
+            EventTime(1_000_000_000),
+            None,
+            None,
+            None,
+        )?;
+        dispatch(&mut host, EventTime(1_000_000_000));
+        let rows = records(&host, client)?;
+        let first = qa_network::snapshots::snapshot_limits(protocol).first_entity;
+        assert!(
+            rows.iter()
+                .any(|(number, record)| *number == first + 1 && record.position.0[0] == 48.)
+        );
+        let mapped = host.runtime.native_numbers[client.0 as usize]
+            .number(ordinary)
+            .ok_or("ordinary projection")?;
+        assert!(mapped >= first + 2);
+        assert!(
+            rows.iter()
+                .any(|(number, record)| *number == mapped && record.position.0[0] == 100.)
+        );
+        assert_eq!(host.runtime.network.command_errors, 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn netquake_and_quakeworld_project_entities_through_the_same_source_path() -> Result<(), String> {
     for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
         let (mut host, client) = host(protocol, 1)?;
@@ -675,7 +755,7 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
             }),
         )
         .ok_or("peer")?;
-    host.runtime.native_numbers[0].set_native_clients(2);
+    host.runtime.native_numbers[0].set_native_clients(2, 1);
     let remote = &mut host.runtime.server.clients[peer.0 as usize];
     remote.player.body.position = Vec3([48., 12., 24.]);
     remote.player.body.velocity = Vec3([16., 0., 0.]);

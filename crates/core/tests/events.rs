@@ -475,6 +475,66 @@ fn native_ack_observer_sees_the_owned_record_once_before_text_retirement() {
         0
     );
 }
+
+#[test]
+fn server_commands_target_only_clients_and_hold_text_through_native_ack() {
+    let mut ring = EventRing::load(4, 4, 4, 32).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let first = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let second = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(7))).unwrap();
+    let sequence = ring
+        .server_command(None, ModuleId(7), RuleSetId::Quake3, b"cp \"ready\"")
+        .unwrap();
+
+    assert!(consume(&mut ring, presentation, OutputSubmission::Unsent).is_empty());
+    assert!(consume(&mut ring, module, OutputSubmission::Unsent).is_empty());
+    let mut batch = ring.batch(first).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::ServerCommand {
+        module: owner,
+        source,
+        text,
+    } = record.event
+    else {
+        panic!("server command");
+    };
+    assert_eq!((owner, source), (ModuleId(7), RuleSetId::Quake3));
+    assert_eq!(ring.texts.get(text), Some(b"cp \"ready\"".as_slice()));
+    assert!(ring.submit(
+        first,
+        sequence,
+        OutputSubmission::Reliable(NativeReceipt(3))
+    ));
+    assert_eq!(
+        consume(
+            &mut ring,
+            second,
+            OutputSubmission::Reliable(NativeReceipt(9))
+        ),
+        [sequence]
+    );
+    assert_eq!(ring.acknowledge(first, NativeReceipt(3)), 1);
+    assert_eq!(ring.texts.get(text), Some(b"cp \"ready\"".as_slice()));
+    assert_eq!(ring.acknowledge(second, NativeReceipt(9)), 1);
+    assert!(ring.is_empty());
+    assert!(ring.texts.get(text).is_none());
+
+    let targeted = ring
+        .server_command(
+            Some(ClientId(1)),
+            ModuleId(7),
+            RuleSetId::Quake3,
+            b"print \"only second\"",
+        )
+        .unwrap();
+    assert!(consume(&mut ring, first, OutputSubmission::BestEffort).is_empty());
+    assert_eq!(
+        consume(&mut ring, second, OutputSubmission::BestEffort),
+        [targeted]
+    );
+    assert!(ring.is_empty());
+}
 #[test]
 fn console_parts_preserve_raw_bytes_in_one_bounded_ring_lease() {
     let mut ring = EventRing::load(4, 2, 1, 8).unwrap();

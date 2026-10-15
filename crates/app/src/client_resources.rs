@@ -21,6 +21,7 @@ pub struct ResourceState {
     pub models: ClientModelBindings,
     pub layout: ConfigLayout,
     pub rejected: u64,
+    client_capacity: u32,
     sounds: qa_audio::SoundBindings,
     player_sounds: [Option<(qa_core::primitives::SoundId, u32)>;
         qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS.len()],
@@ -50,6 +51,7 @@ impl ClientResources {
                 models: ClientModelBindings::load(client, layout),
                 layout,
                 rejected: 0,
+                client_capacity: qa_network::snapshots::snapshot_limits(protocol).client_capacity,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
                 player_sounds: [None; qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS.len()],
                 sound_policy: qa_gameplay::rules::sound_policy(sound_rules),
@@ -428,6 +430,17 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     }
 }
 impl ResourceState {
+    /// Accepted CLIENT configuration supplies the native player-number range.
+    /// Missing, zero or invalid counts never classify ordinary bodies as players.
+    pub fn max_clients(&self) -> u32 {
+        self.layout
+            .max_clients()
+            .and_then(|index| self.configs.config(index))
+            .and_then(|row| u32::try_from(row.integer).ok())
+            .filter(|&count| count <= self.client_capacity)
+            .unwrap_or(0)
+    }
+
     /// Native signon copies survive freeing or reusing their source edicts.
     pub fn receive_static_entity(&mut self, mut record: EntityRecord) -> bool {
         let Some(slot) = self.static_entities.get_mut(self.static_entity_count) else {
@@ -589,6 +602,7 @@ pub struct ConfigPublication {
     pub pending: Option<(u64, usize)>,
     game_state: Option<(u64, bool)>,
     game_state_required: bool,
+    last_client_limit: Option<u32>,
 }
 #[derive(Clone, Copy, Default)]
 struct PublishedConfig {
@@ -619,6 +633,7 @@ impl ConfigPublication {
             pending: None,
             game_state: None,
             game_state_required: false,
+            last_client_limit: None,
         }
     }
     /// Source capacities are fixed when the module set is loaded.
@@ -632,6 +647,7 @@ impl ConfigPublication {
         self.seen.fill(0);
         self.rows.fill(PublishedConfig::default());
         self.primary_claims.fill(false);
+        self.last_client_limit = None;
     }
     pub fn reset(&mut self) {
         self.module = None;
@@ -644,6 +660,7 @@ impl ConfigPublication {
         self.pending = None;
         self.game_state = None;
         self.game_state_required = false;
+        self.last_client_limit = None;
     }
     pub fn connection(&mut self, module: ModuleId, layout: ConfigLayout) {
         if self.module != Some(module) || self.layout.map(|old| old.rules) != Some(layout.rules) {
@@ -673,6 +690,13 @@ impl ConfigPublication {
                 unsupported: sequence.is_none(),
             };
         }
+    }
+    pub(crate) fn needs_client_limit(&self, count: u32) -> bool {
+        self.last_client_limit != Some(count)
+    }
+    pub(crate) fn published_client_limit(&mut self, index: usize, count: u32, sequence: u64) {
+        self.published(index, Some(sequence));
+        self.last_client_limit = Some(count);
     }
     /// The ring supplies the proved ACK and the immutable destination row.
     /// An old row's receipt cannot ready its later rewrite or relocation.

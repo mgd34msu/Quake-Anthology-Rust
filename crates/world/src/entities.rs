@@ -306,6 +306,30 @@ impl EntityTable {
         self.reserved
     }
 
+    fn client_index_at_slot(&self, slot: usize) -> Option<usize> {
+        slot.checked_sub(1)
+            .filter(|&index| index < self.reserved.saturating_sub(1))
+    }
+
+    /// The load-reserved common client index, never a native entity number.
+    pub fn client_index(&self, id: EntityId) -> Option<usize> {
+        self.client_index_at_slot(self.resolve(id)?)
+    }
+
+    /// Native flags may add player-like actors. The actual common clients
+    /// retain their role even when another native namespace publishes them.
+    pub fn collision_tags(&self, id: EntityId, native: CollisionTags) -> Option<CollisionTags> {
+        let slot = self.resolve(id)?;
+        Some(CollisionTags(
+            native.0
+                | if self.client_index_at_slot(slot).is_some() {
+                    CollisionTags::PLAYER.0
+                } else {
+                    0
+                },
+        ))
+    }
+
     pub fn len(&self) -> usize {
         self.live_count
     }
@@ -460,9 +484,7 @@ impl EntityTable {
 
     /// A disconnected client's slot stays reserved, but its lifetime ends.
     pub fn reset_client(&mut self, id: EntityId) -> Option<EntityId> {
-        let slot = self
-            .resolve(id)
-            .filter(|slot| *slot > 0 && *slot < self.reserved)?;
+        let slot = self.client_index(id)? + 1;
         self.clear_columns(slot);
         self.generations[slot] += 1;
         if self.generations[slot] == u32::MAX {

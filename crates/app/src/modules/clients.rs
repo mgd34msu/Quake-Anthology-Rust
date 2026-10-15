@@ -587,7 +587,7 @@ impl FrameHost {
             if native_client as usize >= maxclients {
                 return Err("native client outside module maxclients".into());
             }
-            self.runtime.native_numbers[id.0 as usize].set_native_clients(maxclients as u32);
+            self.runtime.native_numbers[id.0 as usize].set_native_clients(maxclients as u32, 1);
             let native = NativeEntity {
                 module: api.module,
                 slot: (native_client + 1) as i32,

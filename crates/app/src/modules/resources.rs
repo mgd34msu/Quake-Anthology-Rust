@@ -340,8 +340,11 @@ impl FrameHost {
         }
     }
     pub(crate) fn publish_module_configs(&mut self) {
-        let Some(modules) = &self.modules else { return };
+        let modules = self.modules.as_ref();
         let runtime = &mut self.runtime;
+        // The window shell and isolated channel consumers have no loaded
+        // SERVER. Native modules or registered collision geometry supply it.
+        let publish_limits = modules.is_some() || runtime.geometry.geometries().next().is_some();
         for (index, client) in runtime.server.clients.iter().enumerate() {
             let Some(output) = client.output else {
                 continue;
@@ -367,7 +370,35 @@ impl FrameHost {
                 runtime.server.entities.columns.native_entity[client.entity.slot as usize]
                     .map(|native| native.module),
                 protocol,
+                runtime
+                    .server
+                    .clients
+                    .iter()
+                    .filter(|client| client.connection.is_some())
+                    .map(|client| client.entity),
             );
+            if publish_limits && let Some(destination) = target.max_clients() {
+                let count = runtime.native_numbers[index].player_count();
+                if publication.needs_client_limit(count) {
+                    let mut text = qa_core::text::FixedText::<16>::default();
+                    use std::fmt::Write;
+                    if write!(&mut text, "{count}").is_err() {
+                        continue;
+                    }
+                    let Ok(sequence) = runtime.server.events.publish_configstring(
+                        Some(OutputTarget::Client(ClientId(index as u32))),
+                        client.module,
+                        target.rules,
+                        destination as u32,
+                        destination as u32,
+                        text.as_bytes(),
+                    ) else {
+                        continue;
+                    };
+                    publication.published_client_limit(destination, count, sequence);
+                }
+            }
+            let Some(modules) = modules else { continue };
             let changed = modules
                 .rows
                 .iter()
@@ -428,6 +459,12 @@ impl FrameHost {
                         publication.seen(native_index, revision);
                         continue;
                     };
+                    if target.max_clients() == Some(destination) {
+                        // Player ordinals belong to this connection's native
+                        // namespace, independently of the publishing module.
+                        publication.seen(native_index, revision);
+                        continue;
+                    }
                     // Preserve exact text only when both native filename
                     // codecs agree, including Quake's literal prefix bytes.
                     let converted;

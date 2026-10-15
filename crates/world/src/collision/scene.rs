@@ -375,13 +375,18 @@ impl<'a> WorldTrace<'a> {
                 )
             }
         };
-        if let Some((module, view)) = self.native_entities
+        let mut fields = if let Some((module, view)) = self.native_entities
             && let Some(native) = native
             && native.module == module
         {
-            return view.fields(native.slot, point_contents);
+            view.fields(native.slot, point_contents)?
+        } else {
+            cached
+        };
+        if let CollisionOwner::Lifetime(id) = entity {
+            fields.tags = self.entities.collision_tags(id, fields.tags)?;
         }
-        Some(cached)
+        Some(fields)
     }
 
     fn native(&self, id: EntityId) -> Option<(NativeEntity, &'a dyn NativeTraceEntities)> {

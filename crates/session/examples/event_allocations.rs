@@ -19,7 +19,7 @@ impl EventConsumer for Consumer {
             FrameEvent::StaticEntity(event) => {
                 std::hint::black_box(event);
             }
-            FrameEvent::ConfigString { text, .. } => {
+            FrameEvent::ConfigString { text, .. } | FrameEvent::ServerCommand { text, .. } => {
                 std::hint::black_box(texts.get(text));
             }
             FrameEvent::Native(event) | FrameEvent::GameState { payload: event, .. } => {

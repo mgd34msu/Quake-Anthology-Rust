@@ -15,6 +15,44 @@ use qa_network::{
 use qa_session::{clients::Connection, timing::TickRate};
 use std::{ops::ControlFlow, time::Duration};
 
+#[test]
+fn explicit_native_clients_use_protocol_limits_independently_of_common_capacity() {
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let capacity = qa_network::snapshots::snapshot_limits(protocol).client_capacity;
+        for (number, admitted) in [(capacity - 1, true), (capacity, false)] {
+            let mut runtime = Runtime::load(1, []).unwrap();
+            let result = runtime.connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy::select(Some(RuleSetId::Quake3), None, None, None).unwrap(),
+                protocol,
+                number,
+            );
+            assert_eq!(
+                result.is_ok(),
+                admitted,
+                "{protocol:?} native client {number}"
+            );
+            if admitted {
+                assert_eq!(runtime.native_numbers[0].native_clients(), capacity);
+            } else {
+                assert!(runtime.server.clients[0].connection.is_none());
+            }
+        }
+    }
+}
+
 const RESOURCES: ModuleId = ModuleId(7);
 const ENTITIES: ModuleId = ModuleId(8);
 const REMOTE: u16 = 24000;

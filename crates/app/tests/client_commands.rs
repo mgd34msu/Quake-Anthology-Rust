@@ -14,6 +14,8 @@ mod collision;
 mod native_image;
 #[path = "client_commands/scene.rs"]
 mod scene;
+#[path = "client_commands/server.rs"]
+mod server;
 #[path = "support/service_program.rs"]
 mod service_program;
 
@@ -1328,6 +1330,9 @@ fn main() {
     scene::entities(false, false);
     scene::entities(false, true);
     collision::selection(false);
+    server::qvm_import_uses_module_native_clients_and_source_string_storage();
+    server::broadcast_backpressure_uses_each_real_ack_and_drops_foreign_protocols();
+    server::command_width_and_reconnect_boundaries_do_not_stall_later_commands();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         music::native_music_reaches_shared_paint(native, false);
@@ -1341,6 +1346,7 @@ fn main() {
         scene::entities(true, false);
         scene::entities(true, true);
         collision::selection(true);
+        server::owned_native_import_uses_the_same_service_and_integer_width();
     }
     bcs_rescans_and_failed_cs_preserve_rows();
     selected_systeminfo_updates_only_the_native_server_id();

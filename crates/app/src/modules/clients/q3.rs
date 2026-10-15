@@ -198,7 +198,7 @@ pub(super) fn connect(
             CommandArgs::default(),
         )
         .map_err(|e| format!("ClientBegin: {e:?}"))?;
-        host.runtime.native_numbers[id.0 as usize].set_native_clients(info.clients as u32);
+        host.runtime.native_numbers[id.0 as usize].set_native_clients(info.clients as u32, 0);
         if let Some(seat) = host.runtime.snapshots[id.0 as usize]
             .as_ref()
             .and_then(|b| b.seat())

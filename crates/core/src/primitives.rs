@@ -1480,6 +1480,8 @@ pub struct MovementState {
     pub jump_held: bool,
     /// The active movement policy may wait for spawn-time actions to release.
     pub respawned: bool,
+    /// A supported movement policy omits canonical players from default traces.
+    pub ignore_player_collision: bool,
     pub timer: MovementTimer,
     pub remaining_ms: u32,
     pub command_time_ms: i32,

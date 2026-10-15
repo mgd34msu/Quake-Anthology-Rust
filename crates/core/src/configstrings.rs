@@ -236,6 +236,10 @@ impl ConfigLayout {
     pub fn statusbar(self) -> Option<usize> {
         self.statusbar.get(0)
     }
+    /// Native Q2/RR maximum-client count; other layouts have no scalar row.
+    pub fn max_clients(self) -> Option<usize> {
+        (self.scalar[1] != usize::MAX).then_some(self.scalar[1])
+    }
     /// Maximum text bytes, excluding the native trailing NUL.
     pub fn capacity(self, index: usize) -> Option<usize> {
         if index >= self.count {

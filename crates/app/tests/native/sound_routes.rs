@@ -1067,10 +1067,8 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                 .unwrap();
         channel.set_qport(4000);
         runtime
-            .network
-            .bind(
+            .bind_server_connection(
                 remote,
-                Endpoint::Server,
                 qa_network::ingress::Connection {
                     route: qa_network::ingress::Route {
                         socket: 0,
@@ -1083,6 +1081,8 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                         protocol, 8192,
                     )),
                 },
+                1,
+                None,
             )
             .unwrap();
         let (first, primary_emit) =

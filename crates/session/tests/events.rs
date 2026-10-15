@@ -11,6 +11,10 @@ impl EventConsumer for Consumer {
                 assert!(texts.get(text).is_some());
                 index
             }
+            FrameEvent::ServerCommand { text, .. } => {
+                assert!(texts.get(text).is_some());
+                0
+            }
             FrameEvent::Sound(s) => s.sound.0,
             FrameEvent::StaticEntity(_) | FrameEvent::Music(_) => 0,
             FrameEvent::Effect(e) => e.effect.0,

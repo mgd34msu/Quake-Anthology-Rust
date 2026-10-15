@@ -42,6 +42,13 @@ pub enum FrameEvent {
         destination_index: u32,
         text: TextId,
     },
+    /// One native SERVER command. Its ring-owned text remains leased until
+    /// every addressed client channel reports a real reliable ACK.
+    ServerCommand {
+        module: ModuleId,
+        source: RuleSetId,
+        text: TextId,
+    },
 }
 fn print_event(client: Option<ClientId>, kind: PrintKind, level: u8, text: TextId) -> FrameEvent {
     FrameEvent::Print(PrintEvent {
@@ -418,7 +425,9 @@ impl EventRing {
                 PrintText::Text(id) => pages[0] = Some(id),
                 PrintText::Native { wire, .. } => pages = wire.pages,
             },
-            FrameEvent::ConfigString { text, .. } => pages[0] = Some(text),
+            FrameEvent::ConfigString { text, .. } | FrameEvent::ServerCommand { text, .. } => {
+                pages[0] = Some(text);
+            }
             FrameEvent::Music(crate::primitives::MusicControl::Start {
                 intro, loop_track, ..
             }) => {
@@ -515,6 +524,8 @@ impl EventRing {
                             Some(OutputTarget::Client(id) | OutputTarget::Local(id)),
                             FrameEvent::ViewFeedback(event),
                         ) => event.client == id,
+                        (Some(OutputTarget::Client(_)), FrameEvent::ServerCommand { .. }) => true,
+                        (_, FrameEvent::ServerCommand { .. }) => false,
                         _ => true,
                     });
             if relevant && c.resync {
@@ -720,6 +731,29 @@ impl EventRing {
                 source,
                 index,
                 destination_index,
+                text,
+            },
+        )
+    }
+    /// Native command text is exact. The ABI adapter applies its source
+    /// storage width before this shared ring takes the one retained copy.
+    pub fn server_command(
+        &mut self,
+        client: Option<ClientId>,
+        module: ModuleId,
+        source: RuleSetId,
+        text: &[u8],
+    ) -> Result<u64, EventStorageError> {
+        if text.len() > self.texts.width || text.contains(&0) {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        }
+        self.publish_text(
+            client.map(OutputTarget::Client),
+            |texts| texts.insert(text),
+            |text| FrameEvent::ServerCommand {
+                module,
+                source,
                 text,
             },
         )

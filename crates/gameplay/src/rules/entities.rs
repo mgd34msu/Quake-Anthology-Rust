@@ -72,6 +72,10 @@ pub const fn entity_roles(source: RuleSetId) -> EntityRoles {
     [NEUTRAL, NEUTRAL, NEUTRAL, NEUTRAL, Q3][source as usize]
 }
 impl EntityRoles {
+    pub fn is_player(self, kind: u32) -> bool {
+        self.player == Some(kind)
+    }
+
     pub fn client_solid(self, kind: u32) -> bool {
         !self.client_non_solids.contains(&kind)
     }
@@ -98,8 +102,7 @@ impl EntityRoles {
             } else {
                 ParameterRole::Scalar
             },
-            client_reference: self.player == Some(entity_type)
-                || self.client_events.contains(&event),
+            client_reference: self.is_player(entity_type) || self.client_events.contains(&event),
             other_reference: self.other_events.contains(&event)
                 || standalone && flags & self.player_event_flag != 0,
             other2_reference: self.other2_events.contains(&event),

@@ -5,7 +5,7 @@ use crate::{
 };
 use qa_core::{
     primitives::{
-        Body, Bounds, ClientId, CollisionOwner, CollisionShape, CollisionTags, EntityId,
+        Body, Bounds, ClientId, CollisionOwner, CollisionShape, CollisionTags, EntityId, IndexSpan,
         ModelRules, ModuleId, ThinkTime, Vec3,
     },
     solids::{PackedSolid, SolidCodec},
@@ -46,6 +46,7 @@ struct CollisionPolicy {
     roles: qa_gameplay::rules::entities::EntityRoles,
     world_number: u32,
     passes: usize,
+    players: IndexSpan,
 }
 
 pub struct ClientCollision {
@@ -59,11 +60,11 @@ pub struct ClientCollision {
     ordered: Vec<EntityId>,
     scratch: TraceScratch,
     selected: Option<(qa_core::primitives::GeometryId, u32)>,
-    accepted: Option<(u32, u64)>,
+    accepted: Option<(u32, u64, u32)>,
     self_number: Option<u32>,
     valid: bool,
     pub rejected_snapshots: u64,
-    rejected: Option<(u32, u64)>,
+    rejected: Option<(u32, u64, u32)>,
 }
 
 impl ClientCollision {
@@ -84,15 +85,15 @@ impl ClientCollision {
                 model_rules: qa_gameplay::rules::model_rules(protocol.rule_set()),
                 solids: SolidCodec::load(protocol.rule_set()),
                 roles: qa_gameplay::rules::entities::entity_roles(protocol.rule_set()),
-                world_number: if protocol == Protocol::Quake3_68 {
-                    1022
-                } else {
-                    0
-                },
+                world_number: snapshot_limits(protocol).world_entity,
                 passes: if protocol == Protocol::QuakeWorld28 {
                     2
                 } else {
                     1
+                },
+                players: IndexSpan {
+                    first: snapshot_limits(protocol).first_entity,
+                    count: 0,
                 },
             },
             entities: EntityTable::new(MAX_ENTITIES, 1)
@@ -159,15 +160,17 @@ impl ClientCollision {
         models: &ClientModelBindings,
         store: &CollisionStore,
         self_number: Option<u32>,
+        max_clients: u32,
     ) -> Result<(), ClientCollisionError> {
-        if self.accepted.is_some_and(|(sequence, _)| {
+        if self.accepted.is_some_and(|(sequence, ..)| {
             let distance = frame.sequence().wrapping_sub(sequence);
             distance != 0 && distance >= (1 << 31)
         }) {
             return Ok(());
         }
-        let marker = (frame.sequence(), models.revision());
-        let result = self.synchronize_inner(frame, projection, models, store, self_number);
+        let marker = (frame.sequence(), models.revision(), max_clients);
+        let result =
+            self.synchronize_inner(frame, projection, models, store, self_number, max_clients);
         if result.is_err() && self.rejected != Some(marker) {
             self.rejected_snapshots = self.rejected_snapshots.saturating_add(1);
             self.rejected = Some(marker);
@@ -182,8 +185,9 @@ impl ClientCollision {
         models: &ClientModelBindings,
         store: &CollisionStore,
         self_number: Option<u32>,
+        max_clients: u32,
     ) -> Result<(), ClientCollisionError> {
-        let marker = (frame.sequence(), models.revision());
+        let marker = (frame.sequence(), models.revision(), max_clients);
         if self.valid && self.accepted == Some(marker) && self.self_number == self_number {
             return Ok(());
         }
@@ -247,7 +251,8 @@ impl ClientCollision {
         self.numbers.begin(&self.entities, None, self.protocol);
         self.ordered.clear();
         // Original QW builds BSP physents before accepted living player boxes.
-        let policy = self.policy;
+        let mut policy = self.policy;
+        policy.players.count = max_clients;
         let passes = policy.passes;
         for pass in 0..passes {
             visit_raw(
@@ -395,6 +400,12 @@ impl ClientCollision {
             } else if packed.is_some() {
                 return Err(ClientCollisionError::Model(number));
             }
+        }
+        if shape != CollisionShape::None
+            && (policy.players.contains(number as usize)
+                || policy.roles.is_player(record.appearance.native.entity_type))
+        {
+            tags = CollisionTags::PLAYER;
         }
         let angles = if matches!(shape, CollisionShape::Box) {
             Vec3::default()

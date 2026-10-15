@@ -205,3 +205,25 @@ fn filename_index_policy_reserves_only_rerelease_player_model() {
     strings.set(row, b"direct native text").unwrap();
     assert_eq!(strings.config(row).unwrap().text, b"direct native text");
 }
+
+#[test]
+fn maximum_client_row_is_the_existing_native_scalar_projection() {
+    let classic = ConfigLayout::QUAKE2;
+    let rerelease = ConfigLayout::QUAKE2_RERELEASE;
+    let row = classic.max_clients().unwrap();
+    assert_eq!(
+        rerelease.project_index(classic, row),
+        rerelease.max_clients()
+    );
+    assert_eq!(
+        classic.project_index(rerelease, rerelease.max_clients().unwrap()),
+        Some(row)
+    );
+    for layout in [
+        ConfigLayout::QUAKE,
+        ConfigLayout::QUAKEWORLD,
+        ConfigLayout::QUAKE3,
+    ] {
+        assert_eq!(layout.max_clients(), None);
+    }
+}

@@ -1799,6 +1799,11 @@ impl EntityProjection {
             }
         }
         services.server.entities.set_targetname(entity, names[2]);
+        let tags = services
+            .server
+            .entities
+            .collision_tags(entity, QuakeCLayout::tags(flags))
+            .ok_or(CallError::Entity)?;
         let columns = &mut services.server.entities.columns;
         columns.classname[slot] = names[0];
         columns.target[slot] = names[1];
@@ -1810,7 +1815,7 @@ impl EntityProjection {
         columns.collision_shape[slot] = shape;
         columns.collision_owner[slot] = owner;
         columns.model_rules[slot] = layout.model_rules;
-        columns.collision_tags[slot] = QuakeCLayout::tags(flags);
+        columns.collision_tags[slot] = tags;
         columns.collision_contents[slot] = Contents::SOLID.0;
         columns.appearance[slot] = appearance;
         if let Some(thinks) = &self.quakec_thinks {

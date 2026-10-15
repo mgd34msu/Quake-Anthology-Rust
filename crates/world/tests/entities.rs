@@ -3,6 +3,60 @@ use qa_core::primitives::{EntityId, ModuleId, NativeEntity};
 use qa_world::entities::{AllocationPolicy, EntityTable};
 
 #[test]
+fn client_classification_is_a_common_lifetime_role_not_a_native_ordinal() {
+    use qa_core::primitives::CollisionTags;
+    let mut table = EntityTable::new(6, 3).unwrap();
+    let world = table.id_at(0).unwrap();
+    let client = table.id_at(2).unwrap();
+    let body = table
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(2),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    table.columns.native_entity[client.slot as usize] = Some(NativeEntity {
+        module: ModuleId(8),
+        slot: 0,
+    });
+    table.columns.native_entity[body.slot as usize] = Some(NativeEntity {
+        module: ModuleId(9),
+        slot: 1,
+    });
+    assert_eq!(table.client_index(world), None);
+    assert_eq!(table.client_index(client), Some(1));
+    assert_eq!(table.client_index(body), None);
+    assert_eq!(
+        table.collision_tags(world, CollisionTags::MONSTER),
+        Some(CollisionTags::MONSTER)
+    );
+    assert_eq!(
+        table.collision_tags(client, CollisionTags::MONSTER),
+        Some(CollisionTags(
+            CollisionTags::PLAYER.0 | CollisionTags::MONSTER.0
+        ))
+    );
+    assert_eq!(
+        table.collision_tags(body, CollisionTags::PROJECTILE),
+        Some(CollisionTags::PROJECTILE)
+    );
+    let replacement = table.reset_client(client).unwrap();
+    assert_eq!(table.client_index(client), None);
+    assert_eq!(table.collision_tags(client, CollisionTags::default()), None);
+    assert_eq!(table.client_index(replacement), Some(1));
+    assert_eq!(
+        table.collision_tags(replacement, CollisionTags::default()),
+        Some(CollisionTags::PLAYER)
+    );
+    // A fresh native view replaces old native flags rather than retaining them.
+    assert_eq!(
+        table.collision_tags(body, CollisionTags::default()),
+        Some(CollisionTags::default())
+    );
+}
+
+#[test]
 fn native_lookup_keeps_module_identity_exclusion_and_live_generation() -> Result<(), &'static str> {
     let mut table = EntityTable::new(4, 1).map_err(|_| "table")?;
     let native = NativeEntity {

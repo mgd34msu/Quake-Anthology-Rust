@@ -211,6 +211,7 @@ pub fn dispatch(
                         FrameEvent::Hud(_) => true,
                         FrameEvent::ViewFeedback(_) => true,
                         FrameEvent::ConfigString { .. } => true,
+                        FrameEvent::ServerCommand { .. } => true,
                         FrameEvent::StaticEntity(_) => true,
                         FrameEvent::PlayerValue { .. } | FrameEvent::SetAngles(_) => true,
                     };
@@ -240,8 +241,7 @@ pub fn dispatch(
     }
     let client_count = server.clients.len();
     for slot in 0..client_count {
-        let client = &mut server.clients[slot];
-        let Some(id) = client.output else {
+        let Some(id) = server.clients[slot].output else {
             continue;
         };
         let client_id = ClientId(slot as u32);
@@ -252,10 +252,21 @@ pub fn dispatch(
             .and_then(|connection| connection.commands.as_ref())
             .map(|commands| commands.protocol)
         {
-            let native_module = server.entities.columns.native_entity[client.entity.slot as usize]
+            let native_module = server.entities.columns.native_entity
+                [server.clients[slot].entity.slot as usize]
                 .map(|native| native.module);
-            runtime.native_numbers[slot].refresh(&server.entities, native_module, protocol);
+            runtime.native_numbers[slot].refresh(
+                &server.entities,
+                native_module,
+                protocol,
+                server
+                    .clients
+                    .iter()
+                    .filter(|client| client.connection.is_some())
+                    .map(|client| client.entity),
+            );
         }
+        let client = &mut server.clients[slot];
         // A local client still has a native channel. During bounded resync,
         // finish its retained datagram/reliable flight under the old binding.
         // Commands and snapshots keep that binding until the flight is drained.
@@ -343,6 +354,34 @@ pub fn dispatch(
                     } else {
                         counts.stale_texts += 1;
                         OutputSubmission::BestEffort
+                    }
+                } else if let FrameEvent::ServerCommand { source, text, .. } = record.event {
+                    let Some(text) = texts.get(text) else {
+                        counts.stale_texts += 1;
+                        return OutputSubmission::BestEffort;
+                    };
+                    let Some(connection) = runtime
+                        .network
+                        .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+                    else {
+                        counts.native_unsupported += 1;
+                        return OutputSubmission::BestEffort;
+                    };
+                    if source != qa_core::primitives::RuleSetId::Quake3
+                        || connection.commands.as_ref().is_none_or(|commands| {
+                            commands.protocol != qa_network::commands::packet::Protocol::Quake3_68
+                        })
+                    {
+                        counts.native_unsupported += 1;
+                        OutputSubmission::BestEffort
+                    } else {
+                        match native::reliable(&mut connection.channel, text) {
+                            Ok(submission) => submission,
+                            Err(()) => {
+                                counts.native_unsupported += 1;
+                                OutputSubmission::BestEffort
+                            }
+                        }
                     }
                 } else if let Some(delivery) = record.delivery {
                     if !delivery_visible(
@@ -912,7 +951,7 @@ fn sound_entity(
         SoundEmitter::Entity(id) => {
             entities.resolve(id)?;
             if let Some(fields) = sound.native_fields
-                && numbers.is_native_module(module)
+                && numbers.is_identity_namespace(module)
             {
                 Some(u32::from(fields.entity))
             } else {
@@ -923,10 +962,10 @@ fn sound_entity(
             namespace: ResourceNamespace::Module(owner),
             slot,
         } if owner == module => {
-            if let Some(fields) = sound.native_fields {
-                numbers
-                    .is_native_module(module)
-                    .then_some(u32::from(fields.entity))
+            if let Some(fields) = sound.native_fields
+                && numbers.is_identity_namespace(module)
+            {
+                Some(u32::from(fields.entity))
             } else {
                 numbers.native(entities, owner, slot)
             }
@@ -942,7 +981,7 @@ fn project_cue(
     captured: Option<qa_core::primitives::NativeCueBinding>,
 ) -> Result<qa_network::outputs::Cue, qa_network::outputs::Error> {
     use qa_network::outputs::{Cue, Error};
-    let native_entity_namespace = numbers.is_native_module(module);
+    let native_entity_namespace = numbers.is_identity_namespace(module);
     Ok(match cue {
         Cue::Sound(_) | Cue::StaticSound(_) => return Err(Error::Unsupported),
         Cue::MuzzleFlash(mut flash) => {

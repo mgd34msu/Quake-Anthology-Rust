@@ -156,6 +156,7 @@ impl Runtime {
                 &resources.state.models,
                 &self.geometry,
                 binding.view_entity(Some(frame)),
+                resources.state.max_clients(),
             );
         }
     }
@@ -567,6 +568,10 @@ impl Runtime {
             .as_ref()
             .ok_or("connection needs native command policy")?
             .protocol;
+        let limits = qa_network::snapshots::snapshot_limits(protocol);
+        if native_client >= limits.client_capacity {
+            return Err("native client outside protocol capacity".into());
+        }
         let output = client.output.ok_or("client output consumer")?;
         let mut binding = snapshots::SnapshotBinding::load(
             id,
@@ -605,7 +610,12 @@ impl Runtime {
         self.config_publications[slot].reset();
         self.native_numbers[slot].configure(protocol);
         self.native_numbers[slot].reset();
-        self.native_numbers[slot].set_native_clients(self.server.clients.len() as u32);
+        self.native_numbers[slot].set_native_clients(
+            (self.server.clients.len() as u32)
+                .max(native_client + 1)
+                .min(limits.client_capacity),
+            limits.first_entity,
+        );
         self.native_numbers[slot].set_self(self_entity, native_client, protocol);
         Ok(())
     }

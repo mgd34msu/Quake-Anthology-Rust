@@ -26,23 +26,66 @@ pub struct SnapshotLimits {
     pub native_numbers: usize,
     pub entity_capacity: usize,
     pub area_capacity: usize,
+    pub client_capacity: u32,
+    pub world_entity: u32,
     pub first_entity: u32,
     pub end_entity: u32,
     retained_rows: Option<u64>,
 }
 pub const fn snapshot_limits(protocol: packet::Protocol) -> SnapshotLimits {
-    let (native_numbers, entity_capacity, area_capacity, first_entity, end_entity, retained_rows) =
-        match protocol {
-            packet::Protocol::NetQuake15 => (600, 600, 0, 1, 600, None),
-            packet::Protocol::QuakeWorld28 => (512, 64, 0, 1, 512, None),
-            packet::Protocol::Quake2_34 => (1024, 1023, 32, 1, 1024, Some(896)),
-            packet::Protocol::Quake2Repro1038 => (8192, 8191, 255, 1, 8192, Some(8192)),
-            packet::Protocol::Quake3_68 => (1024, 1023, 32, 0, 1023, Some(1920)),
-        };
+    let (
+        native_numbers,
+        entity_capacity,
+        area_capacity,
+        client_capacity,
+        first_entity,
+        end_entity,
+        retained_rows,
+    ) = match protocol {
+        packet::Protocol::NetQuake15 => (600, 600, 0, 16, 1, 600, None),
+        packet::Protocol::QuakeWorld28 => {
+            (512, 64, 0, states::QW_PLAYER_SLOTS as u32, 1, 512, None)
+        }
+        packet::Protocol::Quake2_34 => (
+            1024,
+            1023,
+            32,
+            qa_core::configstrings::ConfigLayout::QUAKE2.players.count,
+            1,
+            1024,
+            Some(896),
+        ),
+        packet::Protocol::Quake2Repro1038 => (
+            8192,
+            8191,
+            255,
+            qa_core::configstrings::ConfigLayout::QUAKE2_RERELEASE
+                .players
+                .count,
+            1,
+            8192,
+            Some(8192),
+        ),
+        packet::Protocol::Quake3_68 => (
+            1024,
+            1023,
+            32,
+            qa_core::configstrings::ConfigLayout::QUAKE3.players.count,
+            0,
+            1023,
+            Some(1920),
+        ),
+    };
     SnapshotLimits {
         native_numbers,
         entity_capacity,
         area_capacity,
+        client_capacity,
+        world_entity: if matches!(protocol, packet::Protocol::Quake3_68) {
+            1022
+        } else {
+            0
+        },
         first_entity,
         end_entity,
         retained_rows,
