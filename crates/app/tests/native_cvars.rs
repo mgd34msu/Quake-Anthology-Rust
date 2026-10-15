@@ -125,7 +125,12 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
             cvar
         );
         assert_eq!(native.updates, 1);
-        services.cvars.server_active = true;
+        services
+            .cvars
+            .set_runtime_policy(qa_console::cvars::RuntimePolicy {
+                server_active: true,
+                ..services.cvars.runtime_policy()
+            });
         let generation = services.cvars.view_generation(view);
         memory
             .write_word(cvar + 28, if rr { 1 } else { 0 })
@@ -327,7 +332,10 @@ fn native_bindings_keep_alias_projections_distinct_in_the_one_registry() {
         );
         assert_eq!(native.capacity_drops, 1);
         cvars.register("s_khz", Some("22"), 32, context).unwrap();
-        cvars.server_active = true;
+        cvars.set_runtime_policy(qa_console::cvars::RuntimePolicy {
+            server_active: true,
+            ..cvars.runtime_policy()
+        });
         cvars.write(first, "44").unwrap();
         assert_eq!(cvars.latched(first).unwrap().unwrap().as_str(), "44");
         assert_eq!(

@@ -237,9 +237,12 @@ impl super::SnapshotBinding {
         }
     }
     pub(crate) fn owns_client_view(&self) -> bool {
+        self.client_view_owner().is_some()
+    }
+    pub(crate) fn client_view_owner(&self) -> Option<(ModuleId, EntityId)> {
         self.presentation
             .as_ref()
-            .is_some_and(|row| row.feedback.owner.is_some())
+            .and_then(|row| row.feedback.owner)
     }
     pub(crate) fn attach_client_view(&mut self, module: ModuleId, lifetime: EntityId) {
         if let Some(row) = self.presentation.as_mut() {

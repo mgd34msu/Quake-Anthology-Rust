@@ -1,3 +1,5 @@
+#[path = "client_commands/input.rs"]
+mod input;
 #[path = "model_assets/support.rs"]
 #[allow(dead_code)]
 mod model_support;
@@ -1309,6 +1311,9 @@ fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    input::queued_native_input(false);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    input::queued_native_input(true);
     music::wire_music_reaches_shared_paint();
     music::console_cd_reaches_music_and_ordered_console_responses();
     music::native_music_reaches_shared_paint(qvm, false);

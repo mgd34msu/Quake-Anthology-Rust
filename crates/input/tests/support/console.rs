@@ -17,6 +17,9 @@ pub struct Capture {
     input: Input,
     pub presses: u32,
     pub releases: u32,
+    pub last_context: Option<Context>,
+    pub raw: qa_core::text::FixedText<64>,
+    pub raw_calls: u32,
 }
 impl Host for Capture {
     fn input(&mut self) -> &mut Input {
@@ -35,8 +38,9 @@ fn edge(
     _: &mut Console<Capture>,
     host: &mut Capture,
     args: &Arguments<'_>,
-    _: Context,
+    context: Context,
 ) -> Result<(), CommandError> {
+    host.last_context = Some(context);
     if args.get(0).starts_with('+') {
         host.presses += 1;
     } else {
@@ -73,8 +77,19 @@ impl Router {
         key_source: Option<KeySource>,
         text: &str,
     ) -> bool {
+        self.command_bytes(seat, time, key_source, text.as_bytes())
+    }
+    pub fn command_bytes(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        key_source: Option<KeySource>,
+        text: &[u8],
+    ) -> bool {
         self.console
-            .append_line(
+            .module_parts()
+            .1
+            .append_line_bytes(
                 text,
                 Context {
                     seat,
@@ -210,8 +225,17 @@ impl<T: qa_input::Target> qa_input::Target for Routing<'_, T> {
         source: Option<KeySource>,
         text: &str,
     ) -> bool {
-        self.router.command(seat, time, source, text)
-            && self.observer.command(seat, time, source, text)
+        self.command_bytes(seat, time, source, text.as_bytes())
+    }
+    fn command_bytes(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        source: Option<KeySource>,
+        text: &[u8],
+    ) -> bool {
+        self.router.command_bytes(seat, time, source, text)
+            && self.observer.command_bytes(seat, time, source, text)
     }
     fn cancel_commands(&mut self, source: KeySource) {
         self.router.console.discard_source(source);

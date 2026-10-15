@@ -153,6 +153,7 @@ impl Fixture {
         EngineServices {
             server: &mut self.server,
             input: &mut self.input,
+            editor: None,
             cvars: &mut self.cvars,
             commands: &mut self.commands,
             client_connection: None,
@@ -804,6 +805,7 @@ fn cold_native_config_sound_uses_the_existing_numeric_cache_then_rebinds_frozen_
         let mut services = EngineServices {
             server: &mut fixture.server,
             input: &mut fixture.input,
+            editor: None,
             cvars: &mut fixture.cvars,
             commands: &mut fixture.commands,
             client_connection: None,

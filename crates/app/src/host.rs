@@ -291,6 +291,29 @@ pub struct FrameResult {
 }
 
 impl FrameHost {
+    pub(crate) fn update_console_policy(&mut self, initialize: bool) {
+        let native = self
+            .modules
+            .as_ref()
+            .is_some_and(|modules| modules.has_running_server());
+        let providers = self.providers.iter().any(|provider| {
+            self.modules
+                .as_ref()
+                .is_none_or(|modules| !modules.has_module(provider.module))
+        });
+        let builtin =
+            self.runtime.collision.is_some()
+                && self.runtime.server.clients.iter().any(|client| {
+                    client.connection.is_some() && client.module == ModuleId::default()
+                });
+        self.console
+            .cvars
+            .set_runtime_policy(qa_console::cvars::RuntimePolicy {
+                initialized: initialize || self.console.cvars.runtime_policy().initialized,
+                server_active: native || providers || builtin,
+            });
+    }
+
     fn intake(&mut self, source: &mut impl FrameSource) {
         // Keep the two physical intakes, including window state changes. During
         // replay, only a real window quit interrupts the recorded input.
@@ -563,6 +586,7 @@ impl FrameHost {
         source.request_mouse_capture(self.mouse_capture_requested());
         self.intake(source);
         self.drain(&mut result);
+        self.update_console_policy(true);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
             source.request_mouse_capture(false);
@@ -635,6 +659,7 @@ impl FrameHost {
         self.intake(source);
         self.drain(&mut result);
         self.previous = Some(server_time);
+        self.update_console_policy(true);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
             source.request_mouse_capture(false);
@@ -1088,22 +1113,23 @@ impl FrameHost {
     fn mouse_capture_requested(&self) -> bool {
         !self.runtime.quit
             && self.console.cvars.integer(self.mouse_enabled) != 0
-            && self
-                .local_worlds
-                .iter()
-                .zip(self.local_clients)
-                .enumerate()
-                .any(|(seat, (world, client))| {
-                    self.runtime.input.key_catchers(SeatId::ALL[seat])
-                        & qa_core::sys_events::key_catchers::CONSOLE
-                        == 0
-                        && world.is_some()
-                        && client
-                            .and_then(|id| self.runtime.server.clients.get(id.0 as usize))
-                            .is_some_and(|row| {
-                                row.connection == Some(qa_session::clients::Connection::Local)
-                            })
-                })
+            && (self.native_input_wants_mouse()
+                || self
+                    .local_worlds
+                    .iter()
+                    .zip(self.local_clients)
+                    .enumerate()
+                    .any(|(seat, (world, client))| {
+                        self.runtime.input.key_catchers(SeatId::ALL[seat])
+                            & qa_core::sys_events::key_catchers::CONSOLE
+                            == 0
+                            && world.is_some()
+                            && client
+                                .and_then(|id| self.runtime.server.clients.get(id.0 as usize))
+                                .is_some_and(|row| {
+                                    row.connection == Some(qa_session::clients::Connection::Local)
+                                })
+                    }))
     }
 
     fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
@@ -1503,14 +1529,7 @@ impl FrameHost {
                     } => {
                         self.receive_packet(socket, from, bytes, event.time);
                     }
-                    _ => self.runtime.input.dispatch(
-                        event,
-                        &mut ConsoleInput {
-                            console: &mut self.console,
-                            events: &mut self.runtime.server.events,
-                            time: event.time,
-                        },
-                    ),
+                    _ => self.dispatch_input(event),
                 }
                 self.console
                     .sync_editor_input(&mut self.runtime.input, event.time);
@@ -1522,6 +1541,70 @@ impl FrameHost {
             }
         }
         self.queue = queue;
+    }
+
+    fn dispatch_input(&mut self, event: qa_core::sys_events::SysEvent<'_>) {
+        use qa_input::{DispatchCursor, DispatchStep, InputAtom, InputCapture};
+        let mut cursor = DispatchCursor::new(event);
+        loop {
+            let step = self.runtime.input.advance(
+                cursor,
+                &mut ConsoleInput {
+                    console: &mut self.console,
+                    events: &mut self.runtime.server.events,
+                    time: event.time,
+                },
+            );
+            let DispatchStep::Atom { atom, resume } = step else {
+                break;
+            };
+            let console_caught = match atom {
+                InputAtom::Key {
+                    seat,
+                    source,
+                    down,
+                    repeat,
+                    time,
+                } => ConsoleInput {
+                    console: &mut self.console,
+                    events: &mut self.runtime.server.events,
+                    time,
+                }
+                .key(seat, source.control, down, repeat),
+                InputAtom::Character {
+                    seat, value, time, ..
+                } => {
+                    let caught = self.console.editor.seat() == Some(seat);
+                    ConsoleInput {
+                        console: &mut self.console,
+                        events: &mut self.runtime.server.events,
+                        time,
+                    }
+                    .character(seat, value);
+                    caught
+                }
+                InputAtom::Mouse { .. } => false,
+            };
+            let capture = if console_caught {
+                if matches!(atom, InputAtom::Key { down: false, .. }) {
+                    let _ = self.module_input(atom);
+                }
+                InputCapture::Caught
+            } else {
+                self.module_input(atom)
+            };
+            self.console
+                .sync_editor_input(&mut self.runtime.input, event.time);
+            cursor = self.runtime.input.resume(
+                resume,
+                capture,
+                &mut ConsoleInput {
+                    console: &mut self.console,
+                    events: &mut self.runtime.server.events,
+                    time: event.time,
+                },
+            );
+        }
     }
 
     fn client_frame(
@@ -1714,13 +1797,22 @@ impl Target for ConsoleInput<'_> {
         source: Option<qa_core::sys_events::KeySource>,
         text: &str,
     ) -> bool {
+        self.command_bytes(seat, time, source, text.as_bytes())
+    }
+    fn command_bytes(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        source: Option<qa_core::sys_events::KeySource>,
+        text: &[u8],
+    ) -> bool {
         let context = qa_console::views::Context {
             seat,
             event_time: Some(time),
             key_source: source,
             ..self.console.cvars.context()
         };
-        if let Err(error) = self.console.append_line(text, context) {
+        if let Err(error) = self.console.append_line_bytes(text, context) {
             self.events.reject_publication();
             let _ = self
                 .events

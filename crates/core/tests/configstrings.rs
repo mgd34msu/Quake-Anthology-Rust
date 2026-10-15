@@ -170,3 +170,38 @@ fn cross_source_lightstyles_share_ordinals_without_scalar_collisions() {
     }
     assert_eq!(q3.style_index(0), None);
 }
+
+#[test]
+fn filename_index_policy_reserves_only_rerelease_player_model() {
+    for rules in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        let layout = ConfigLayout::for_rules(rules);
+        for (kind, policy) in layout.resource_policies.into_iter().enumerate() {
+            assert!(!policy.permits(0));
+            assert!(policy.permits(1));
+            assert!(policy.permits(254));
+            assert_eq!(
+                policy.permits(255),
+                rules != RuleSetId::Quake2Rerelease || kind != 0
+            );
+            assert!(policy.permits(256));
+        }
+    }
+    // Allocation policy does not narrow or rewrite raw native configstring rows.
+    let rr = ConfigLayout::QUAKE2_RERELEASE;
+    let row = rr.resources[0].get(255).unwrap();
+    assert_eq!(rr.project_index(rr, row), Some(row));
+    assert_eq!(
+        ConfigLayout::QUAKE2.project_index(rr, row),
+        ConfigLayout::QUAKE2.resources[0].get(255)
+    );
+    let mut strings =
+        ConfigStrings::load((0..rr.count).map(|index| rr.capacity(index).unwrap())).unwrap();
+    strings.set(row, b"direct native text").unwrap();
+    assert_eq!(strings.config(row).unwrap().text, b"direct native text");
+}

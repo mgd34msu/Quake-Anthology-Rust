@@ -295,6 +295,7 @@ fn with_native_client(
     let mut services = EngineServices {
         server: &mut server,
         input: &mut input,
+        editor: None,
         cvars: &mut cvars,
         commands: &mut commands,
         client_connection: None,

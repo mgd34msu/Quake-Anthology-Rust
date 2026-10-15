@@ -1,5 +1,5 @@
 use qa_console::{
-    cvars::Cvars,
+    cvars::{Cvars, RuntimePolicy},
     views::{Context, RuleSetId},
 };
 #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
@@ -65,7 +65,10 @@ fn generations_follow_values_details_deferred_updates_and_source_defaults() {
     assert!(cvars.view_generation(colours) > colours_generation);
     let mode = cvars.bind("teamplay", q2).unwrap();
     let generation = cvars.generation(mode.canonical());
-    cvars.server_active = true;
+    cvars.set_runtime_policy(RuntimePolicy {
+        server_active: true,
+        ..cvars.runtime_policy()
+    });
     cvars.write(mode, "2").unwrap();
     assert_eq!(cvars.generation(mode.canonical()), generation);
     cvars.apply_latches().unwrap();
@@ -97,7 +100,8 @@ fn published_hot_views_match_native_projections_after_coupled_and_seat_changes()
         views::{Role, RuleSetId},
     };
     let mut cvars = Cvars::new().unwrap();
-    cvars.cheats = true;
+    let cheats = cvars.find("sv_cheats").unwrap();
+    cvars.set_text(cheats, "1").unwrap();
     for (source, name, value) in [
         (RuleSetId::Quake, "gamma", "0.8"),
         (RuleSetId::Quake, "teamplay", "2"),

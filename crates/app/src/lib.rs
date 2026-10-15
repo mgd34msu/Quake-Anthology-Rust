@@ -210,7 +210,7 @@ impl Runtime {
                 .as_mut()
                 .map(|binding| binding as &mut dyn qa_compat::services::ClientAudio)
         });
-        let (cvars, commands) = console.module_parts();
+        let (cvars, commands, editor) = console.module_parts();
         let world = self.collision.as_mut();
         let (identity, visibility, portals) = match world {
             Some(world) => (
@@ -235,6 +235,7 @@ impl Runtime {
             input: &mut self.input,
             cvars,
             commands,
+            editor: Some(editor),
             client_connection: None,
             client_collision: None,
             renderer: self.renderer_configuration.as_deref(),
@@ -842,6 +843,9 @@ impl Host for Runtime {
     }
     fn print(&mut self, text: std::fmt::Arguments<'_>) {
         self.print_event(None, PrintKind::Console, text);
+    }
+    fn print_bytes(&mut self, text: &[u8]) {
+        let _ = self.server.events.console_bytes(text);
     }
     fn reject_input(&mut self, count: u64) {
         for _ in 0..count {

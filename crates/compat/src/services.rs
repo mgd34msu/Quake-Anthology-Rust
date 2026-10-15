@@ -9,7 +9,7 @@ use qa_core::names::NameTable;
 use qa_core::primitives::ThinkTime;
 use qa_core::text::{InfoBytes, InfoRules};
 use qa_core::{
-    configstrings::{ConfigLayout, ConfigRef, ConfigStrings},
+    configstrings::{ConfigLayout, ConfigRef, ConfigStrings, ResourceIndexPolicy},
     events::FrameEvent,
     primitives::{
         Body, Bounds, ClientId, CollisionOwner, CollisionShape, CvarHandle, EffectEvent, EntityId,
@@ -29,6 +29,7 @@ use qa_world::{
     entities::AllocationPolicy,
 };
 
+mod input;
 mod native_message;
 mod signon;
 pub use signon::{AmbientSound, SIGNON_BYTES, SignonCursor};
@@ -269,6 +270,7 @@ struct ConfigRange {
     span: IndexSpan,
     files: Option<IndexSpan>,
     resources: Option<[IndexSpan; 3]>,
+    resource_policies: [ResourceIndexPolicy; 3],
     message: Box<[u8]>,
     written: usize,
     revision: u64,
@@ -441,6 +443,9 @@ impl ServiceStorage {
                 info,
                 info_scratch: vec![0; info.bytes].into_boxed_slice(),
                 resources,
+                resource_policies: layout.map_or([ResourceIndexPolicy::DEFAULT; 3], |layout| {
+                    layout.resource_policies
+                }),
                 span: IndexSpan {
                     first: u32::try_from(total).map_err(|_| CallError::Capacity)?,
                     count: u32::try_from(count).map_err(|_| CallError::Capacity)?,
@@ -861,6 +866,16 @@ impl ServiceStorage {
             return Err(CallError::ConfigString);
         }
         let first = self.check_range(module, range)?;
+        let module_range = self.range(module).ok_or(CallError::ConfigString)?;
+        let policy = if let Some(resources) = module_range.resources {
+            let kind = resources
+                .iter()
+                .position(|&resource| resource == range)
+                .ok_or(CallError::ConfigString)?;
+            module_range.resource_policies[kind]
+        } else {
+            ResourceIndexPolicy::DEFAULT
+        };
         let name_id = if create {
             self.resource_names
                 .intern(name)
@@ -872,7 +887,10 @@ impl ServiceStorage {
         };
         // SV_FindIndex stops at the first empty slot. Keep that native order,
         // including a gap made by a module's direct configstring update.
-        for ordinal in 1..range.count as usize {
+        for ordinal in 0..range.count as usize {
+            if !policy.permits(ordinal as u32) {
+                continue;
+            }
             let row = self
                 .configs
                 .config(first + ordinal)
@@ -918,6 +936,7 @@ impl ServiceStorage {
 pub struct EngineServices<'a> {
     pub server: &'a mut Server,
     pub input: &'a mut qa_input::Input,
+    pub editor: Option<&'a mut qa_console::editor::Editor>,
     pub cvars: &'a mut Cvars,
     pub commands: &'a mut CommandBuffer,
     pub client_connection: Option<&'a mut dyn ClientConnection>,
@@ -995,6 +1014,33 @@ pub enum ClipTarget {
     },
 }
 pub struct EngineCallTable {
+    pub key_down: fn(&EngineServices<'_>, qa_core::sys_events::SeatId, i32) -> bool,
+    pub key_catchers: fn(&EngineServices<'_>, qa_core::sys_events::SeatId) -> u32,
+    pub set_key_catchers: fn(
+        &mut EngineServices<'_>,
+        qa_core::sys_events::SeatId,
+        u32,
+        ModuleId,
+        qa_core::sys_events::EventTime,
+    ) -> Result<(), CallError>,
+    pub key_binding: for<'a> fn(&'a EngineServices<'_>, i32) -> &'a [u8],
+    pub set_key_binding: fn(
+        &mut EngineServices<'_>,
+        i32,
+        &[u8],
+        Context,
+        qa_core::sys_events::EventTime,
+    ) -> Result<(), CallError>,
+    pub key_for_binding: fn(&EngineServices<'_>, Option<&[u8]>) -> i32,
+    pub key_name: fn(i32, &mut qa_core::text::FixedText<32>) -> Result<(), CallError>,
+    pub clear_keys: fn(
+        &mut EngineServices<'_>,
+        qa_core::sys_events::SeatId,
+        Context,
+        qa_core::sys_events::EventTime,
+    ) -> Result<(), CallError>,
+    pub overstrike: fn(&EngineServices<'_>) -> Result<bool, CallError>,
+    pub set_overstrike: fn(&mut EngineServices<'_>, bool) -> Result<(), CallError>,
     pub client_collision_load: fn(&mut EngineServices<'_>, &[u8]) -> Result<(), CallError>,
     pub client_collision_count: fn(&EngineServices<'_>) -> Result<u32, CallError>,
     pub client_collision_inline: fn(&EngineServices<'_>, i32) -> Result<i32, CallError>,
@@ -1175,6 +1221,27 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    key_down: |s, seat, key| s.key_down(seat, key),
+    key_catchers: |s, seat| s.input.key_catchers(seat),
+    set_key_catchers: |s, seat, mask, module, time| s.set_key_catchers(seat, mask, module, time),
+    key_binding: |s, key| s.key_binding(key),
+    set_key_binding: |s, key, text, context, time| s.set_key_binding(key, text, context, time),
+    key_for_binding: |s, text| s.key_for_binding(text),
+    key_name: input::key_name,
+    clear_keys: |s, seat, context, time| s.clear_keys(seat, context, time),
+    overstrike: |s| {
+        s.editor
+            .as_deref()
+            .map(qa_console::editor::Editor::overstrike)
+            .ok_or(CallError::Unsupported)
+    },
+    set_overstrike: |s, active| {
+        s.editor
+            .as_deref_mut()
+            .ok_or(CallError::Unsupported)?
+            .set_overstrike(active);
+        Ok(())
+    },
     client_collision_load: |s, name| s.client_collision_load(name),
     client_collision_count: |s| s.client_collision_count(),
     client_collision_inline: |s, index| s.client_collision_inline(index),

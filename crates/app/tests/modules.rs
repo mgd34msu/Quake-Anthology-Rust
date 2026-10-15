@@ -182,7 +182,14 @@ fn qvm_game_selection_does_not_schedule_client_exports_as_server_ticks() {
         Q3Spec::parse("game:vm/qagame.qvm").unwrap().path,
         "vm/qagame.qvm"
     );
-    assert_eq!(Q3Spec::parse("ui:vm/ui.qvm").unwrap().role, Q3Role::Ui);
+    assert_eq!(
+        Q3Spec::parse("ui:vm/ui.qvm").unwrap().role,
+        Q3Role::Ui(SeatId::FIRST)
+    );
+    assert_eq!(
+        Q3Spec::parse("ui:2:vm/ui.qvm").unwrap().role,
+        Q3Role::Ui(SeatId::new(2).unwrap())
+    );
     assert_eq!(
         Q3Spec::parse("game:vm/qagame.qvm").unwrap().player_stats,
         Q3StatLayout::BASE

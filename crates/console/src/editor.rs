@@ -15,6 +15,7 @@ pub struct Editor {
     seat: Option<SeatId>,
     line: FixedText<LINE_BYTES>,
     cursor: usize,
+    overstrike: bool,
 }
 
 impl Editor {
@@ -39,6 +40,22 @@ impl Editor {
         };
     }
 
+    pub fn set_active(&mut self, seat: SeatId, active: bool) {
+        if active {
+            self.seat = Some(seat);
+        } else if self.seat == Some(seat) {
+            self.seat = None;
+        }
+    }
+
+    pub fn overstrike(&self) -> bool {
+        self.overstrike
+    }
+
+    pub fn set_overstrike(&mut self, active: bool) {
+        self.overstrike = active;
+    }
+
     pub fn key(&mut self, seat: SeatId, control: u16, down: bool, repeat: bool) -> EditAction {
         // The neutral grave key is the native console toggle, independent of
         // bindings. Its repeat and key-up events never execute game commands.
@@ -57,6 +74,7 @@ impl Editor {
         match control {
             40 | 88 if !repeat => return EditAction::Submit,
             41 if !repeat => self.seat = None,
+            73 if !repeat => self.overstrike = !self.overstrike,
             42 => {
                 let start = self.adjacent(false);
                 let _ = self.line.replace(start..self.cursor, "");
@@ -82,7 +100,12 @@ impl Editor {
         }
         let mut bytes = [0; 4];
         let text = value.encode_utf8(&mut bytes);
-        self.line.replace(self.cursor..self.cursor, text)?;
+        let end = if self.overstrike {
+            self.adjacent(true)
+        } else {
+            self.cursor
+        };
+        self.line.replace(self.cursor..end, text)?;
         self.cursor += text.len();
         Ok(())
     }

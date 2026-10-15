@@ -59,6 +59,13 @@ pub enum WriteError {
     InvalidInfo,
     MissingDefault,
 }
+
+/// Live host facts, independent of the native flags selected by each view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RuntimePolicy {
+    pub initialized: bool,
+    pub server_active: bool,
+}
 impl From<conversion::Error> for WriteError {
     fn from(e: conversion::Error) -> Self {
         Self::Conversion(e)
@@ -155,9 +162,8 @@ pub struct Cvars {
     revision_clock: u64,
     native_views: Vec<NativeView>,
     native_heads: Box<[Option<u32>]>,
-    pub server_active: bool,
-    pub cheats: bool,
-    pub initialized: bool,
+    runtime_policy: RuntimePolicy,
+    cheats_handle: CvarHandle,
 }
 
 impl Cvars {
@@ -252,6 +258,16 @@ impl Cvars {
         let texts = (0..pending_capacity)
             .map(|_| FixedText::default())
             .collect();
+        let cheats_name = names
+            .find_folded(b"sv_cheats")
+            .ok_or(NamesError::Capacity)?;
+        let cheats_binding = name_bindings[cheats_name.0 as usize].first;
+        let cheats_handle = CvarHandle(
+            offsets[BINDINGS
+                .get(cheats_binding as usize)
+                .ok_or(NamesError::Capacity)?
+                .row as usize] as u32,
+        );
         let mut registry = Self {
             catalog_values,
             values,
@@ -294,9 +310,8 @@ impl Cvars {
             dirty_values: StampSet::new(pending_capacity),
             dirty_bindings: Vec::with_capacity(BINDINGS.len()),
             dirty_projections: StampSet::new(BINDINGS.len()),
-            server_active: false,
-            cheats: false,
-            initialized: false,
+            runtime_policy: RuntimePolicy::default(),
+            cheats_handle,
         };
         for (i, binding) in BINDINGS.iter().enumerate() {
             let handle = registry.slot(binding.row as usize, binding.seat);
@@ -324,6 +339,12 @@ impl Cvars {
     }
     pub fn context(&self) -> Context {
         self.context
+    }
+    pub fn runtime_policy(&self) -> RuntimePolicy {
+        self.runtime_policy
+    }
+    pub fn set_runtime_policy(&mut self, policy: RuntimePolicy) {
+        self.runtime_policy = policy;
     }
     pub fn select_context(&mut self, context: Context) {
         if context == self.context {
@@ -937,15 +958,29 @@ impl Cvars {
         }
         DEFINITIONS[BINDINGS[view.binding as usize].row as usize].policies & 2 != 0
     }
+    pub fn macro_value(&self, name: &[u8], context: Context) -> Option<Text> {
+        let view = self.bind(std::str::from_utf8(name).ok()?, context)?;
+        (!self.private(view))
+            .then(|| self.read(view).ok())
+            .flatten()
+    }
     fn check_write(&self, view: View, text: &str) -> Result<(), WriteError> {
         let flags = self.flags(view);
         if flags & 64 != 0 {
             return Err(WriteError::ReadOnly);
         }
-        if flags & 16 != 0 && self.initialized {
+        if flags & 16 != 0 && self.runtime_policy.initialized {
             return Err(WriteError::InitOnly);
         }
-        if flags & 512 != 0 && !self.cheats {
+        // Q3 Cvar_Set2 returns from its LATCH branch before checking CHEAT.
+        // The eagerly registered catalog retains its initial setup window.
+        let native_latch = self.runtime_policy.initialized
+            && view.context.source == RuleSetId::Quake3
+            && flags & 32 != 0;
+        if flags & 512 != 0
+            && !native_latch
+            && self.integer_in(self.cheats_handle, view.context.source) == 0
+        {
             return Err(WriteError::Cheats);
         }
         if flags & 6 != 0 && !info_text(text) {
@@ -1078,7 +1113,24 @@ impl Cvars {
         Ok((changes, pending))
     }
     fn write_inner(&mut self, view: View, text: &str, enforce: bool) -> Result<(), WriteError> {
+        let native_q3 = self.runtime_policy.initialized && view.context.source == RuleSetId::Quake3;
+        // Even a forced equal write leaves Q3's outstanding latch untouched.
+        if native_q3
+            && self
+                .read(view)
+                .is_ok_and(|current| current.as_str() == text)
+        {
+            return Ok(());
+        }
         let (changes, pending) = self.prepare_write(view, text, enforce)?;
+        if native_q3
+            && pending
+            && self
+                .latched(view)?
+                .is_some_and(|current| current.as_str() == text)
+        {
+            return Ok(());
+        }
         self.remove_pending(|old| old.handles().any(|h| changes.handles().any(|new| h == new)));
         if pending {
             self.mark_pending(&changes);
@@ -1231,7 +1283,9 @@ impl Cvars {
     }
     fn latch_pending(&self, view: View) -> bool {
         self.flags(view) & 32 != 0
-            && (self.server_active || self.values[view.handle.0 as usize].latch_active)
+            && (self.runtime_policy.server_active
+                || self.values[view.handle.0 as usize].latch_active
+                || (self.runtime_policy.initialized && view.context.source == RuleSetId::Quake3))
     }
     pub fn apply_latches(&mut self) -> Result<(), WriteError> {
         while !self.pending.is_empty() {

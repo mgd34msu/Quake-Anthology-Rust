@@ -104,6 +104,20 @@ impl ConfigStrings {
     }
 }
 
+/// Native null/special ordinals are excluded from filename lookup and allocation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResourceIndexPolicy {
+    pub reserved: Option<u32>,
+}
+impl ResourceIndexPolicy {
+    pub const DEFAULT: Self = Self { reserved: None };
+
+    /// Native ordinals, independently of their containing configstring span.
+    pub const fn permits(self, ordinal: u32) -> bool {
+        ordinal != 0 && !matches!(self.reserved, Some(reserved) if reserved == ordinal)
+    }
+}
+
 /// Module storage indices are source data, independent of movement and map.
 /// Q1/QW rows are internal storage, not native wire configstring numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +126,7 @@ pub struct ConfigLayout {
     pub count: usize,
     /// Model, sound and image ordinals, in that order. An absent range is empty.
     pub resources: [IndexSpan; 3],
+    pub resource_policies: [ResourceIndexPolicy; 3],
     pub players: IndexSpan,
     pub lights: IndexSpan,
     /// Numeric or named soundtrack row consumed by the engine client.
@@ -136,6 +151,7 @@ impl ConfigLayout {
         rules: RuleSetId::Quake,
         count: 576,
         resources: [span(0, 256), span(256, 256), span(512, 0)],
+        resource_policies: [ResourceIndexPolicy::DEFAULT; 3],
         players: span(0, 0),
         lights: span(512, 64),
         cd_track: None,
@@ -155,6 +171,7 @@ impl ConfigLayout {
         rules: RuleSetId::Quake2,
         count: 2080,
         resources: [span(32, 256), span(288, 256), span(544, 256)],
+        resource_policies: [ResourceIndexPolicy::DEFAULT; 3],
         players: span(1312, 256),
         lights: span(800, 256),
         cd_track: Some(1),
@@ -170,6 +187,13 @@ impl ConfigLayout {
         rules: RuleSetId::Quake2Rerelease,
         count: 12448,
         resources: [span(62, 8192), span(8254, 2048), span(10302, 512)],
+        resource_policies: [
+            ResourceIndexPolicy {
+                reserved: Some(255),
+            },
+            ResourceIndexPolicy::DEFAULT,
+            ResourceIndexPolicy::DEFAULT,
+        ],
         players: span(11582, 256),
         lights: span(10814, 256),
         cd_track: Some(1),
@@ -185,6 +209,7 @@ impl ConfigLayout {
         rules: RuleSetId::Quake3,
         count: Q3_GAME_STATE_ROWS,
         resources: [span(32, 256), span(288, 256), span(0, 0)],
+        resource_policies: [ResourceIndexPolicy::DEFAULT; 3],
         players: span(544, 64),
         lights: span(0, 0),
         cd_track: None,

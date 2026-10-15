@@ -50,7 +50,7 @@ impl QuakeCSpec {
 pub enum Q3Role {
     Game,
     Cgame(SeatId),
-    Ui,
+    Ui(SeatId),
 }
 pub struct Q3Spec {
     pub role: Q3Role,
@@ -61,7 +61,7 @@ impl Q3Spec {
     pub fn parse(value: &str) -> Result<Self, &'static str> {
         let (kind, rest) = value
             .split_once(':')
-            .ok_or("q3-module needs game:path, cgame:seat:path or ui:path")?;
+            .ok_or("q3-module needs game:path, cgame:seat:path or ui:[seat:]path")?;
         let (kind, player_stats) = kind
             .strip_suffix("-ta")
             .map_or((kind, qa_core::primitives::Q3StatLayout::BASE), |kind| {
@@ -69,7 +69,19 @@ impl Q3Spec {
             });
         let (role, path) = match kind {
             "game" => (Q3Role::Game, rest),
-            "ui" => (Q3Role::Ui, rest),
+            "ui" => {
+                let (seat, path) = if let Some((seat, path)) = rest.split_once(':') {
+                    let seat = seat
+                        .parse()
+                        .ok()
+                        .and_then(SeatId::new)
+                        .ok_or("ui seat needs 0..4")?;
+                    (seat, path)
+                } else {
+                    (SeatId::FIRST, rest)
+                };
+                (Q3Role::Ui(seat), path)
+            }
             "cgame" => {
                 let (seat, path) = rest.split_once(':').ok_or("cgame module needs seat:path")?;
                 let seat = seat
@@ -219,7 +231,7 @@ pub fn load_q3(
                     None,
                 )
             }
-            Q3Role::Ui => (
+            Q3Role::Ui(_) => (
                 Phase::Client,
                 Scope::Client,
                 Role::Engine,
@@ -325,10 +337,9 @@ pub fn load_q3(
                 source: RuleSetId::Quake3,
                 side,
                 role,
-                seat: if let Q3Role::Cgame(seat) = spec.role {
-                    seat
-                } else {
-                    SeatId::FIRST
+                seat: match spec.role {
+                    Q3Role::Cgame(seat) | Q3Role::Ui(seat) => seat,
+                    Q3Role::Game => SeatId::FIRST,
                 },
                 ..Context::default()
             },

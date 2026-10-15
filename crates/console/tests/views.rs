@@ -1,6 +1,6 @@
 use qa_console::{
     catalog::Scope,
-    cvars::{Cvars, WriteError},
+    cvars::{Cvars, RuntimePolicy, WriteError},
     cvars_generated::{BINDINGS, CONVERSIONS, DEFINITIONS, OPERANDS},
     views::{Context, Role, RuleSetId},
 };
@@ -94,7 +94,10 @@ fn teamplay_policy_updates_both_operands_and_latches_the_pair_together() {
         assert_eq!(read(&cvars, "g_friendlyFire", q1), friendly);
         assert_eq!(read(&cvars, "teamplay", q1), mode);
     }
-    cvars.server_active = true;
+    cvars.set_runtime_policy(RuntimePolicy {
+        server_active: true,
+        ..cvars.runtime_policy()
+    });
     write(&mut cvars, "teamplay", "1", q1);
     assert_eq!(read(&cvars, "teamplay", q1), "2");
     assert_eq!(read(&cvars, "g_friendlyFire", q1), "1.000000");
@@ -125,6 +128,8 @@ fn scoped_names_and_native_flags_protect_only_the_requested_boundary() {
     assert_eq!(read(&cvars, "password", client), "client-secret");
     assert_eq!(read(&cvars, "password", server), "server-secret");
     let q3 = context(RuleSetId::Quake3);
+    let cheats = cvars.bind("sv_cheats", q3).unwrap();
+    cvars.force_write(cheats, "0").unwrap();
     assert_eq!(
         cvars.write(cvars.bind("name", q3).unwrap(), "bad;info"),
         Err(WriteError::InvalidInfo)
@@ -137,7 +142,10 @@ fn scoped_names_and_native_flags_protect_only_the_requested_boundary() {
         cvars.write(cvars.bind("r_fullbright", q3).unwrap(), "1"),
         Err(WriteError::Cheats)
     );
-    cvars.initialized = true;
+    cvars.set_runtime_policy(RuntimePolicy {
+        initialized: true,
+        ..cvars.runtime_policy()
+    });
     assert_eq!(
         cvars.write(cvars.bind("fs_basepath", q3).unwrap(), "data"),
         Err(WriteError::InitOnly)

@@ -27,6 +27,7 @@ mod clients;
 use clients::ClientLifecycle;
 pub use clients::{ClientCommandError, ClientLifecycleInfo};
 mod cues;
+mod input;
 mod map_start;
 mod resources;
 
@@ -261,6 +262,7 @@ struct Module {
     consumes_server_commands: bool,
     produces_client_audio: bool,
     produces_client_view: bool,
+    input: Option<qa_compat::abi::ClientInputExports>,
     scene_role: crate::renderer::native::SceneRole,
     collision_role: qa_compat::services::ClientCollision,
 }
@@ -278,8 +280,18 @@ pub struct Modules {
     rows: Box<[Option<Module>]>,
     storage: ServiceStorage,
     signon: Box<[SignonCursor]>,
+    input: [input::Recipients; qa_core::sys_events::SeatId::COUNT],
 }
 impl Modules {
+    pub(crate) fn has_module(&self, module: ModuleId) -> bool {
+        self.row(module).is_some()
+    }
+    pub(crate) fn has_running_server(&self) -> bool {
+        self.rows
+            .iter()
+            .flatten()
+            .any(|row| row.state == State::Running && row.request.phase == Phase::Server)
+    }
     /// Cold precaching follows loaded producer roles, independently of the map.
     pub(crate) fn has_sound_source(&self, rules: RuleSetId) -> bool {
         self.rows
@@ -624,6 +636,10 @@ impl FrameHost {
             let consumes_server_commands = request.program.consumes_server_commands();
             let produces_client_audio = request.program.produces_client_audio();
             let produces_client_view = request.program.produces_client_view();
+            let input = request
+                .program
+                .imports()
+                .and_then(|table| table.input_exports());
             let q3_clients = request
                 .program
                 .imports()
@@ -688,6 +704,7 @@ impl FrameHost {
                 consumes_server_commands,
                 produces_client_audio,
                 produces_client_view,
+                input,
                 scene_role: Default::default(),
                 collision_role: Default::default(),
                 clock,
@@ -699,14 +716,17 @@ impl FrameHost {
                 },
             });
         }
+        let input = input::recipients(&rows);
         host.modules = Some(Modules {
             functions: Arc::new(functions),
             rows,
             storage,
             signon,
+            input,
         });
         host.bind_client_presentation()?;
         host.configure_output_resources();
+        host.update_console_policy(false);
         Ok(host)
     }
     fn bind_client_presentation(&mut self) -> Result<(), String> {
@@ -745,6 +765,7 @@ impl FrameHost {
         Ok(())
     }
     fn retire_module_state(&mut self, module: ModuleId) {
+        self.retire_module_input(module);
         let Some(row) = self.module_row(module) else {
             return;
         };
@@ -763,6 +784,7 @@ impl FrameHost {
                 .storage
                 .retire_music(module, &mut self.runtime.server.events);
         }
+        self.update_console_policy(false);
         let Some((client, lifetime)) = connection else {
             return;
         };
@@ -1059,6 +1081,7 @@ impl FrameHost {
             }
             self.module_lifecycle_row(ModuleId(index as u16), shutdown);
         }
+        self.update_console_policy(false);
     }
     /// Stop one module without stopping the shared frame loop or other providers.
     pub fn shutdown_module(&mut self, module: ModuleId) -> bool {
@@ -1509,6 +1532,7 @@ fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context
 }
 fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall<'_>) -> bool {
+    let platform_time = host.runtime.input_time;
     let (time, words, native_player, command) = match call {
         CallbackCall::Think { time, .. } => {
             let mut arguments = [0; 9];
@@ -1588,7 +1612,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 services: &mut services,
                 table: imports,
                 context: call_context,
-                platform_time: host.time,
+                platform_time,
                 command: command.argv,
                 unknown: &mut row.unknown,
             };
@@ -1617,7 +1641,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 services: &mut services,
                 table: imports,
                 context: call_context,
-                platform_time: host.time,
+                platform_time,
                 command: command.argv,
                 raw_args: command.raw,
                 native_player,
@@ -1671,6 +1695,7 @@ fn native_self(
     u32::try_from(offset).ok()
 }
 fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
+    let platform_time = host.runtime.input_time;
     let phase = match call {
         CallbackCall::Think { .. } => quakec::CallPhase::Think,
         CallbackCall::Spawn { .. } => quakec::CallPhase::Spawn,
@@ -1738,7 +1763,7 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
         } else {
             context(row.request.context, time)
         },
-        platform_time: host.time,
+        platform_time,
         developer: host.developer,
         unknown: &mut row.unknown,
     };

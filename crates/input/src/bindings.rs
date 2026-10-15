@@ -65,7 +65,10 @@ impl Binding {
         binding
     }
     pub fn parse(text: &str) -> Result<Self, BindError> {
-        if text.contains('\0') {
+        Self::parse_bytes(text.as_bytes())
+    }
+    pub fn parse_bytes(text: &[u8]) -> Result<Self, BindError> {
+        if text.contains(&0) {
             return Err(BindError::Nul);
         }
         let mut binding = Self {
@@ -73,18 +76,26 @@ impl Binding {
             parts: [Part::default(); 512],
             count: 0,
         };
-        binding.text.set(text).map_err(|_| BindError::TooLong)?;
+        binding
+            .text
+            .set_bytes(text)
+            .map_err(|_| BindError::TooLong)?;
         let mut start = 0;
         while start < text.len() {
-            let end =
-                start + qa_core::text::command_separator(&text.as_bytes()[start..], false, false);
-            let clause = text[start..end].trim_matches(|c: char| c.is_ascii() && c <= ' ');
-            if !clause.is_empty() {
-                let first = clause.as_ptr() as usize - text.as_ptr() as usize;
+            let end = start + qa_core::text::command_separator(&text[start..], false, false);
+            let mut first = start;
+            let mut last = end;
+            while first < last && text[first] <= b' ' {
+                first += 1;
+            }
+            while last > first && text[last - 1] <= b' ' {
+                last -= 1;
+            }
+            if first != last {
                 binding.parts[binding.count] = Part {
                     start: first as u16,
-                    end: (first + clause.len()) as u16,
-                    button: clause.starts_with('+'),
+                    end: last as u16,
+                    button: text[first] == b'+',
                 };
                 binding.count += 1;
             }
@@ -94,5 +105,8 @@ impl Binding {
     }
     pub fn text(&self) -> &str {
         self.text.as_str()
+    }
+    pub fn bytes(&self) -> &[u8] {
+        self.text.as_bytes()
     }
 }

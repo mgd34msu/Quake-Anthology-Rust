@@ -328,9 +328,20 @@ macro_rules! qc {
         })
     };
 }
+/// Load-selected native input exports over the existing session FunctionTable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientInputExports {
+    pub catcher: u32,
+    pub key: u32,
+    pub mouse: u32,
+    pub character: bool,
+    pub event_handling: Option<u32>,
+    pub menu: Option<u32>,
+}
 pub struct CallTable {
     entries: [Option<CallEntry>; 256],
     client_view: bool,
+    input_exports: Option<ClientInputExports>,
 }
 pub struct UnknownCalls {
     numbers: NameTable,
@@ -374,6 +385,9 @@ impl UnknownCalls {
     }
 }
 impl CallTable {
+    pub const fn input_exports(&self) -> Option<ClientInputExports> {
+        self.input_exports
+    }
     /// Independent presentation ownership, selected by the loaded ABI table.
     pub const fn produces_client_view(&self) -> bool {
         self.client_view
@@ -425,6 +439,7 @@ const fn common() -> CallTable {
     let mut table = CallTable {
         entries: [None; 256],
         client_view: false,
+        input_exports: None,
     };
     table.entries[100] = scalar!(memset);
     table.entries[101] = scalar!(memcpy);
@@ -481,9 +496,19 @@ const fn server() -> CallTable {
     t.entries[45] = scalar!(file_seek);
     t
 }
+mod input;
+
 const fn client() -> CallTable {
     let mut t = common();
     t.client_view = true;
+    t.input_exports = Some(ClientInputExports {
+        catcher: qa_core::sys_events::key_catchers::CGAME,
+        key: 6,
+        mouse: 7,
+        character: false,
+        event_handling: Some(8),
+        menu: None,
+    });
     t.entries[0] = scalar!(print);
     t.entries[1] = scalar!(abort);
     t.entries[2] = scalar!(milliseconds);
@@ -547,6 +572,10 @@ const fn client() -> CallTable {
     t.entries[55] = scalar!(client_usercmd);
     t.entries[56] = scalar!(q3_set_usercmd_value);
     t.entries[57] = scalar!(register_shader::<false>);
+    t.entries[60] = scalar!(input::key_down);
+    t.entries[61] = scalar!(input::catchers);
+    t.entries[62] = scalar!(input::set_catchers);
+    t.entries[63] = scalar!(input::get_key);
     t.entries[71] = scalar!(snap_vector);
     t.entries[80] = client_audio!(client_sound::add_loop::<true>);
     t.entries[81] = client_audio!(client_sound::stop_loop);
@@ -556,6 +585,14 @@ const fn client() -> CallTable {
 }
 const fn ui() -> CallTable {
     let mut t = common();
+    t.input_exports = Some(ClientInputExports {
+        catcher: qa_core::sys_events::key_catchers::UI,
+        key: 3,
+        mouse: 4,
+        character: true,
+        event_handling: None,
+        menu: Some(7),
+    });
     t.entries[0] = scalar!(abort);
     t.entries[1] = scalar!(print);
     t.entries[2] = scalar!(milliseconds);
@@ -586,6 +623,15 @@ const fn ui() -> CallTable {
     t.entries[32] = scalar!(client_sound::local::<true>);
     t.entries[62] = scalar!(client_sound::stop_background);
     t.entries[63] = scalar!(client_sound::start_background);
+    t.entries[33] = scalar!(input::name);
+    t.entries[34] = scalar!(input::binding);
+    t.entries[35] = scalar!(input::set_binding);
+    t.entries[36] = scalar!(input::key_down);
+    t.entries[37] = scalar!(input::overstrike);
+    t.entries[38] = scalar!(input::set_overstrike);
+    t.entries[39] = scalar!(input::clear);
+    t.entries[40] = scalar!(input::catchers);
+    t.entries[41] = scalar!(input::set_catchers);
     t.entries[43] = scalar!(renderer_configuration);
     t.entries[86] = scalar!(file_seek);
     t.entries[50] = scalar!(q3_cvar_register);
@@ -608,6 +654,7 @@ const fn quakec() -> CallTable {
     let mut t = CallTable {
         entries: [None; 256],
         client_view: false,
+        input_exports: None,
     };
     let vector = QcSignature::new(QcArgc::Fixed(1), QcArgs::Vector, true);
     let scalar = QcSignature::new(QcArgc::Fixed(1), QcArgs::Scalars, true);

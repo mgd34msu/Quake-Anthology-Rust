@@ -178,6 +178,7 @@ impl Fixture {
         EngineServices {
             server: &mut self.server,
             input: &mut self.input,
+            editor: None,
             cvars: &mut self.cvars,
             commands: &mut self.commands,
             client_connection: None,

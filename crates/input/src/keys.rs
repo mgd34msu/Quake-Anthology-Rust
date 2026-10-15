@@ -292,10 +292,12 @@ pub fn native_number(control: u16) -> Option<u8> {
     }
 }
 
-fn from_native(code: u8) -> Option<u16> {
+/// Native key slots are exact bytes. Aliases that share a physical key use
+/// the existing reserved native slots rather than merging their bindings.
+pub fn from_native(code: u8) -> Option<u16> {
     NAMES
         .iter()
-        .find(|entry| entry.native == Some(code.to_ascii_lowercase()))
+        .find(|entry| entry.native == Some(code) && native_number(entry.control) == Some(code))
         .map(|entry| entry.control)
         .or_else(|| {
             // Original key numbers without a physical platform key still have
@@ -311,6 +313,26 @@ pub fn write_name(control: u16, output: &mut impl std::fmt::Write) -> std::fmt::
     } else {
         write!(output, "control{control}")
     }
+}
+
+/// Original Q3 spelling over its exact256-key ABI namespace.
+pub fn write_native_name(key: i32, output: &mut impl std::fmt::Write) -> std::fmt::Result {
+    if key == -1 {
+        return output.write_str("<KEY NOT FOUND>");
+    }
+    let Ok(code) = u8::try_from(key) else {
+        return output.write_str("<OUT OF RANGE>");
+    };
+    if code > b' ' && code < 127 && code != b'"' && code != b';' {
+        return output.write_char(char::from(code));
+    }
+    if let Some(entry) = NAMES
+        .iter()
+        .find(|entry| entry.native == Some(code) && entry.text != "\"")
+    {
+        return output.write_str(entry.text);
+    }
+    write!(output, "0x{code:02x}")
 }
 
 /// SDL physical mouse buttons are numbered from one.

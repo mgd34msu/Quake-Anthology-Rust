@@ -1,5 +1,5 @@
 use qa_console::{
-    cvars::{Cvars, WriteError},
+    cvars::{Cvars, RuntimePolicy, WriteError},
     views::{Context, Role, RuleSetId},
 };
 
@@ -380,7 +380,10 @@ fn module_values_use_the_existing_latch_flag_and_reset_paths() {
         .register("_qa_latched", Some("10"), 32, context)
         .unwrap();
     let generation = cvars.view_generation(view);
-    cvars.server_active = true;
+    cvars.set_runtime_policy(RuntimePolicy {
+        server_active: true,
+        ..cvars.runtime_policy()
+    });
     cvars.write(view, "20").unwrap();
     assert_eq!(cvars.read(view).unwrap().as_str(), "10");
     assert_eq!(cvars.view_generation(view), generation);

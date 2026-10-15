@@ -266,13 +266,7 @@ fn transmit_with(
     ));
     after_send(host);
     // Ordinary loopback packets enter the system-event queue before CLIENT import.
-    host.queue
-        .push(SysEvent {
-            time,
-            kind: EventKind::Time,
-        })
-        .unwrap();
-    host.drain(&mut Default::default());
+    queued_time(host, milliseconds);
     let frame = host
         .runtime
         .network
@@ -285,6 +279,17 @@ fn transmit_with(
         panic!("expected Q3 native frame")
     };
     *frame.player
+}
+
+fn queued_time(host: &mut FrameHost, milliseconds: u64) {
+    let time = EventTime::from_milliseconds(milliseconds);
+    host.queue
+        .push(SysEvent {
+            time,
+            kind: EventKind::Time,
+        })
+        .unwrap();
+    host.drain(&mut Default::default());
 }
 fn read(host: &mut FrameHost, address: i32) -> u32 {
     host.call_module_export(
@@ -967,7 +972,7 @@ fn q3_accepted_follow_flag_keeps_received_pose_when_prediction_has_a_nonzero_com
 }
 
 fn write_inventory(host: &mut FrameHost, offset: i32, value: u32, queued_ms: u64) {
-    host.time = EventTime::from_milliseconds(queued_ms);
+    queued_time(host, queued_ms);
     // Establish the provider sample explicitly. Other successful exports must
     // retain it, even when their call arguments carry another native time.
     host.call_module_export(
@@ -1046,7 +1051,7 @@ fn q3_clientthink_between_ticks_preserves_native_frame_clock_and_ta_marker() {
         .native_powerup(RuleSetId::Quake3, 10)
         .unwrap();
     let (item, timer) = (scout.item, scout.id);
-    host.time = EventTime::from_milliseconds(1000);
+    queued_time(&mut host, 1000);
     host.call_module_export(
         MODULE,
         Export::words(CallbackId(10), &[(PLAYERS + 312 + 10 * 4) as u64, 1000]),
@@ -1067,7 +1072,7 @@ fn q3_clientthink_between_ticks_preserves_native_frame_clock_and_ta_marker() {
     assert_eq!(player.native_clock, clock);
     assert_eq!(player.inventory.item_counts[item.0 as usize], 1);
     assert_eq!(player.inventory.powerup_until[timer.0 as usize], 1.0);
-    host.time = EventTime::from_milliseconds(1050);
+    queued_time(&mut host, 1050);
     assert!(host.runtime.send_local_command(
         client,
         &UserCmd {
@@ -1281,7 +1286,7 @@ fn q3_guest_clock_wrap_retains_one_second_powerup_through_queue_and_hud() {
         let native = i64::from(i32::MAX) + 17;
         let guest_time = native as i32;
         let expiry = guest_time.wrapping_add(1000);
-        host.time = EventTime::from_milliseconds(137);
+        queued_time(&mut host, 137);
         host.call_module_export(
             MODULE,
             Export::clocked(CallbackId(8)),

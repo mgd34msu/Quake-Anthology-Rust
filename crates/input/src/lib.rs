@@ -1,17 +1,17 @@
 //! One device binding table and usercmd builder, independent of map/game rules.
 use qa_core::{
-    primitives::{RuleSetId, UserCmd, Vec3, WeaponId, buttons},
+    primitives::{ModuleId, RuleSetId, UserCmd, Vec3, WeaponId, buttons},
     sys_events::{DeviceId, EventKind, EventTime, KeySource, MAX_INPUT_DEVICES, SeatId, SysEvent},
 };
 
 pub mod bindings;
 mod command;
+mod dispatch;
 pub mod keys;
 mod view;
 pub use bindings::{BindError, Binding};
 pub use command::UserCmdBuilder;
-use qa_core::text::FixedText;
-use std::fmt::Write;
+pub use dispatch::{DispatchCursor, DispatchResume, DispatchStep, InputAtom, InputCapture};
 
 const CONTROLS: usize = 1024;
 const ACTIONS: usize = 31;
@@ -63,6 +63,15 @@ pub trait Target {
         source: Option<KeySource>,
         text: &str,
     ) -> bool;
+    fn command_bytes(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        source: Option<KeySource>,
+        text: &[u8],
+    ) -> bool {
+        std::str::from_utf8(text).is_ok_and(|text| self.command(seat, time, source, text))
+    }
     /// Cancel pending commands inherited from this physical source.
     fn cancel_commands(&mut self, source: KeySource);
 }
@@ -142,6 +151,7 @@ struct Seat {
     weapon: Option<WeaponId>,
     zoom_sensitivity: Option<f32>,
     catchers: u32,
+    catcher_owners: [Option<ModuleId>; 32],
 }
 impl Seat {
     fn clear_mouse(&mut self) {
@@ -324,13 +334,22 @@ impl InputPolicy {
         INPUT_RULES[self.rules as usize]
     }
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u8)]
+enum BindingHold {
+    #[default]
+    None,
+    Pending,
+    Acquired,
+}
+
 #[derive(Clone, Copy)]
 struct Device {
     id: Option<DeviceId>,
     seat: Option<SeatId>,
     held: [bool; CONTROLS],
     held_count: u16,
-    acquired: [bool; CONTROLS],
+    acquired: [BindingHold; CONTROLS],
     axes: [i16; 6],
 }
 impl Default for Device {
@@ -340,7 +359,7 @@ impl Default for Device {
             seat: None,
             held: [false; CONTROLS],
             held_count: 0,
-            acquired: [false; CONTROLS],
+            acquired: [BindingHold::None; CONTROLS],
             axes: [0; 6],
         }
     }
@@ -450,15 +469,22 @@ impl Input {
     pub fn set_text_seat(&mut self, seat: SeatId) {
         self.text_seat = seat;
     }
+    pub fn text_seat(&self) -> SeatId {
+        self.text_seat
+    }
     /// Catchers suppress this seat's game input while the same held-key and
     /// release accounting continues. No second usercmd builder is introduced.
     pub fn set_catcher(&mut self, seat: SeatId, owner: u32, active: bool, time: EventTime) {
-        let state = &mut self.seats[seat.index()];
+        let state = &self.seats[seat.index()];
         let catchers = if active {
             state.catchers | owner
         } else {
             state.catchers & !owner
         };
+        self.set_catchers(seat, catchers, time);
+    }
+    pub fn set_catchers(&mut self, seat: SeatId, catchers: u32, time: EventTime) {
+        let state = &mut self.seats[seat.index()];
         if (state.catchers != 0) != (catchers != 0) {
             state.clear_mouse();
             for button in &mut state.actions {
@@ -466,9 +492,59 @@ impl Input {
             }
         }
         state.catchers = catchers;
+        for (bit, owner) in state.catcher_owners.iter_mut().enumerate() {
+            if catchers & (1 << bit) == 0 {
+                *owner = None;
+            }
+        }
     }
     pub fn key_catchers(&self, seat: SeatId) -> u32 {
         self.seats[seat.index()].catchers
+    }
+    pub fn replace_owned_key_catchers(
+        &mut self,
+        seat: SeatId,
+        catchers: u32,
+        module: ModuleId,
+        time: EventTime,
+    ) {
+        self.set_catchers(seat, catchers, time);
+        for (bit, owner) in self.seats[seat.index()]
+            .catcher_owners
+            .iter_mut()
+            .enumerate()
+        {
+            *owner = (catchers & (1 << bit) != 0).then_some(module);
+        }
+    }
+    pub fn catcher_module(&self, seat: SeatId, bit: u32) -> Option<ModuleId> {
+        if !bit.is_power_of_two() || self.key_catchers(seat) & bit == 0 {
+            return None;
+        }
+        self.seats[seat.index()].catcher_owners[bit.trailing_zeros() as usize]
+    }
+    pub fn retire_catcher_module(&mut self, module: ModuleId, time: EventTime) {
+        for seat in SeatId::ALL {
+            let state = &self.seats[seat.index()];
+            let mut catchers = state.catchers;
+            for (bit, owner) in state.catcher_owners.iter().enumerate() {
+                if *owner == Some(module) {
+                    catchers &= !(1 << bit);
+                }
+            }
+            self.set_catchers(seat, catchers, time);
+        }
+    }
+    pub fn is_down(&self, seat: SeatId, control: u16) -> bool {
+        let control = keys::normalize(control);
+        seat_devices(&self.devices, seat.index()).any(|device| {
+            device
+                .held
+                .get(usize::from(control))
+                .copied()
+                .unwrap_or(false)
+                || (224..=227).contains(&control) && device.held[usize::from(control + 4)]
+        })
     }
     pub fn rejected_devices(&self) -> u64 {
         self.rejected_devices
@@ -548,18 +624,32 @@ impl Input {
         time: EventTime,
         target: &mut impl Target,
     ) -> Result<(), BindError> {
+        if !text.is_empty() {
+            return self.bind_bytes(control, text.as_bytes(), time, target);
+        }
+        if self.bind(control, None, time, target) {
+            Ok(())
+        } else {
+            Err(BindError::Control)
+        }
+    }
+    /// Native empty bindings retain their allocated empty value, distinct from
+    /// an unbound control. Human bind_text keeps its empty-to-unbound behavior.
+    pub fn bind_bytes(
+        &mut self,
+        control: u16,
+        text: &[u8],
+        time: EventTime,
+        target: &mut impl Target,
+    ) -> Result<(), BindError> {
         if self
             .binding(control)
-            .is_some_and(|binding| binding.text() == text)
+            .is_some_and(|binding| binding.bytes() == text)
         {
             return Ok(());
         }
-        let binding = if text.is_empty() {
-            None
-        } else {
-            Some(Binding::parse(text)?)
-        };
-        if self.bind(control, binding, time, target) {
+        let binding = Binding::parse_bytes(text)?;
+        if self.bind(control, Some(binding), time, target) {
             Ok(())
         } else {
             Err(BindError::Control)
@@ -651,109 +741,13 @@ impl Input {
                 .acquired
                 .get_mut(usize::from(source.control))
         {
-            *acquired = false;
+            *acquired = BindingHold::None;
         }
     }
     fn remove(&mut self, id: DeviceId, time: EventTime) {
         self.release_sources(time, |source| source.device == id);
         if let Some(index) = self.device_index(id) {
             self.devices[index] = Device::default();
-        }
-    }
-    pub fn dispatch(&mut self, event: SysEvent<'_>, target: &mut impl Target) {
-        match event.kind {
-            EventKind::Key {
-                device,
-                code,
-                down,
-                repeat,
-                ..
-            } => self.key(device, code, down, repeat, event.time, target),
-            EventKind::MouseButton {
-                device,
-                button,
-                down,
-            } => {
-                if let Some(control) = keys::mouse_button(button) {
-                    self.key(device, control, down, false, event.time, target);
-                }
-            }
-            EventKind::ControllerButton {
-                device,
-                button,
-                down,
-            } if button < 32 => self.key(
-                device,
-                544 + u16::from(button),
-                down,
-                false,
-                event.time,
-                target,
-            ),
-            EventKind::MouseWheel { device, x, y } => {
-                for (delta, positive, negative) in [(y, 576, 577), (x, 579, 578)] {
-                    let control = if delta > 0 { positive } else { negative };
-                    // Native wheel input is a momentary key, once per event
-                    // and nonzero axis, including high-resolution devices.
-                    if delta != 0 {
-                        self.key(device, control, true, false, event.time, target);
-                        self.key(device, control, false, false, event.time, target);
-                    }
-                }
-            }
-            EventKind::Mouse { device, dx, dy } => {
-                if let Some(index) = self.ensure_device(device)
-                    && let Some(seat) = self.devices[index].seat
-                {
-                    let state = &mut self.seats[seat.index()];
-                    state.mouse[0] = state.mouse[0].saturating_add(i64::from(dx));
-                    state.mouse[1] = state.mouse[1].saturating_add(i64::from(dy));
-                }
-            }
-            EventKind::ControllerAxis {
-                device,
-                axis,
-                value,
-            } => {
-                if let Some(index) = self.device_index(device)
-                    && let Some(slot) = self.devices[index].axes.get_mut(usize::from(axis))
-                {
-                    *slot = value;
-                }
-            }
-            EventKind::Text { device, text } => {
-                for value in text.chars() {
-                    self.character(device, value, target);
-                }
-            }
-            EventKind::Time => self.seed(event.time),
-            EventKind::MouseCapture(_) => {
-                for index in 0..self.devices.len() {
-                    if let Some(id @ DeviceId::Mouse(_)) = self.devices[index].id {
-                        self.release_device(id, event.time, target);
-                    }
-                }
-                self.clear_mouse();
-            }
-            EventKind::Focus(false) => {
-                for index in 0..self.devices.len() {
-                    if let Some(id) = self.devices[index].id {
-                        self.release_device(id, event.time, target);
-                    }
-                }
-                for seat in &mut self.seats {
-                    seat.actions.fill(Button::default());
-                }
-                self.clear_mouse();
-                for device in self.devices.iter_mut() {
-                    device.axes.fill(0);
-                }
-            }
-            EventKind::DeviceRemoved(id) => {
-                self.release_device(id, event.time, target);
-                self.remove(id, event.time);
-            }
-            _ => {}
         }
     }
     fn device_index(&self, id: DeviceId) -> Option<usize> {
@@ -781,103 +775,6 @@ impl Input {
     fn device_seat(&self, id: DeviceId) -> Option<SeatId> {
         self.device_index(id)
             .and_then(|index| self.devices[index].seat)
-    }
-    fn character(&self, device: DeviceId, value: char, target: &mut impl Target) {
-        let seat = if device == DeviceId::Keyboard(0) {
-            Some(self.text_seat)
-        } else {
-            self.device_seat(device)
-        };
-        if let Some(seat) = seat {
-            target.character(seat, value);
-        }
-    }
-    pub fn release_device(&mut self, id: DeviceId, time: EventTime, target: &mut impl Target) {
-        let Some(index) = self.device_index(id) else {
-            return;
-        };
-        for control in 0..CONTROLS {
-            if self.devices[index].held[control] {
-                self.key(id, control as u16, false, false, time, target);
-            }
-        }
-    }
-    fn key(
-        &mut self,
-        id: DeviceId,
-        control: u16,
-        down: bool,
-        repeat: bool,
-        time: EventTime,
-        target: &mut impl Target,
-    ) {
-        if usize::from(control) >= CONTROLS {
-            return;
-        }
-        let index = if down {
-            self.ensure_device(id)
-        } else {
-            self.device_index(id)
-        };
-        let Some(device_index) = index else {
-            return;
-        };
-        let device = &mut self.devices[device_index];
-        let Some(seat) = device.seat else {
-            return;
-        };
-        let Some(was_held) = device.set_held(control, down) else {
-            return;
-        };
-        // Editing receives repeats. Held actions acquire/release only once.
-        let consumed = target.key(seat, control, down, repeat);
-        if was_held == down {
-            return;
-        }
-        if down {
-            device.acquired[usize::from(control)] = !consumed;
-        } else if !std::mem::take(&mut device.acquired[usize::from(control)]) {
-            return;
-        }
-        if let Some(binding) = &self.bindings[usize::from(keys::normalize(control))] {
-            if down && consumed {
-                return;
-            }
-            let mut button_seen = false;
-            for part in &binding.parts[..binding.count] {
-                button_seen |= part.button;
-                let text = &binding.text.as_str()[part.start as usize..part.end as usize];
-                if !part.button && !down && !button_seen {
-                    continue;
-                }
-                let mut command = FixedText::<1088>::default();
-                let text = if part.button {
-                    if down {
-                        let _ = command.write_str(text);
-                    } else {
-                        let _ = write!(command, "-{}", &text[1..]);
-                    }
-                    let _ = write!(
-                        command,
-                        " {} {}",
-                        device_index * CONTROLS + control as usize,
-                        time.milliseconds()
-                    );
-                    command.as_str()
-                } else {
-                    text
-                };
-                let source = KeySource {
-                    device: id,
-                    control,
-                };
-                if !target.command(seat, time, Some(source), text) {
-                    target.cancel_commands(source);
-                    self.cancel_source(source, time);
-                    return;
-                }
-            }
-        }
     }
     pub fn build_frame_with_policy(
         &mut self,

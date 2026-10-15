@@ -32,14 +32,20 @@ impl CommandBuffer {
         }
     }
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
-        self.append_text(text, context, false)
+        self.append_bytes(text.as_bytes(), context)
     }
     pub fn append_line(&mut self, text: &str, context: Context) -> Result<(), TextError> {
+        self.append_line_bytes(text.as_bytes(), context)
+    }
+    pub fn append_bytes(&mut self, text: &[u8], context: Context) -> Result<(), TextError> {
+        self.append_text(text, context, false)
+    }
+    pub fn append_line_bytes(&mut self, text: &[u8], context: Context) -> Result<(), TextError> {
         self.append_text(text, context, true)
     }
     fn append_text(
         &mut self,
-        text: &str,
+        text: &[u8],
         context: Context,
         newline: bool,
     ) -> Result<(), TextError> {
@@ -48,7 +54,7 @@ impl CommandBuffer {
         if text.is_empty() && !newline {
             return Ok(());
         }
-        self.text[self.bytes..self.bytes + text.len()].copy_from_slice(text.as_bytes());
+        self.text[self.bytes..self.bytes + text.len()].copy_from_slice(text);
         self.bytes += text.len();
         if newline {
             self.text[self.bytes] = b'\n';
@@ -65,6 +71,9 @@ impl CommandBuffer {
         Ok(())
     }
     pub fn insert(&mut self, text: &str, context: Context) -> Result<(), TextError> {
+        self.insert_bytes(text.as_bytes(), context)
+    }
+    pub fn insert_bytes(&mut self, text: &[u8], context: Context) -> Result<(), TextError> {
         let newline = usize::from(matches!(
             context.source,
             RuleSetId::QuakeWorld | RuleSetId::Quake3
@@ -75,7 +84,7 @@ impl CommandBuffer {
             return Ok(());
         }
         self.text.copy_within(..self.bytes, size);
-        self.text[..text.len()].copy_from_slice(text.as_bytes());
+        self.text[..text.len()].copy_from_slice(text);
         if newline != 0 {
             self.text[text.len()] = b'\n';
         }
@@ -88,8 +97,8 @@ impl CommandBuffer {
         }
         Ok(())
     }
-    fn admit(&self, text: &str, extra: usize) -> Result<(), TextError> {
-        if text.contains('\0') {
+    fn admit(&self, text: &[u8], extra: usize) -> Result<(), TextError> {
+        if text.contains(&0) {
             return Err(TextError::Nul);
         }
         if text.len() + extra >= CAPACITY - self.bytes {
@@ -150,7 +159,7 @@ impl CommandBuffer {
             span.context.source == RuleSetId::Quake3,
         );
         let result = line
-            .set(std::str::from_utf8(&self.text[..end]).unwrap_or(""))
+            .set_bytes(&self.text[..end])
             .map_err(|_| TextError::TooLong);
         let removed = end + usize::from(end < span.end);
         self.text.copy_within(removed..self.bytes, 0);

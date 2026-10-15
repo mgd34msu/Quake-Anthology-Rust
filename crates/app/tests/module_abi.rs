@@ -1638,8 +1638,14 @@ fn q3_ui_create_and_reset_preserve_native_flags_protection_and_latches() {
             invoke(&mut services, 8, name, Some("1"), flags);
             invoke(&mut services, 3, name, Some("2"), 0);
             let view = services.cvars.bind(name, ctx.console).unwrap();
-            services.cvars.initialized = true;
-            services.cvars.cheats = false;
+            services
+                .cvars
+                .set_runtime_policy(qa_console::cvars::RuntimePolicy {
+                    initialized: true,
+                    ..services.cvars.runtime_policy()
+                });
+            let cheats = services.cvars.bind("sv_cheats", ctx.console).unwrap();
+            services.cvars.force_write(cheats, "0").unwrap();
             invoke(&mut services, 7, name, None, 0);
             assert_eq!(services.cvars.read(view).unwrap().as_str(), "2");
             assert_eq!(services.cvars.flags(view) & flags, flags);

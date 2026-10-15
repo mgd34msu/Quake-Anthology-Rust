@@ -164,8 +164,15 @@ pub fn tokenize_engine<'a>(
     source: RuleSetId,
     tokens: &'a mut Tokens,
 ) -> Result<Arguments<'a>, TextError> {
+    tokenize_engine_bytes(text.as_bytes(), source, tokens)
+}
+pub fn tokenize_engine_bytes<'a>(
+    text: &'a [u8],
+    source: RuleSetId,
+    tokens: &'a mut Tokens,
+) -> Result<Arguments<'a>, TextError> {
     let maximum = tokens.spans.len();
-    tokenize_limit(text.as_bytes(), source, tokens, maximum, false)
+    tokenize_limit(text, source, tokens, maximum, false)
 }
 fn tokenize_limit<'a>(
     text: &'a [u8],
@@ -321,6 +328,13 @@ pub fn expand_engine<'a>(
     value: impl FnMut(&str) -> Option<Text<'a>>,
 ) -> Result<(), TextError> {
     expand_text(text, tokens, MAX_TEXT, false, value)
+}
+pub fn expand_engine_bytes<'a>(
+    text: &mut FixedText<MAX_TEXT>,
+    tokens: &mut Tokens,
+    value: impl FnMut(&[u8]) -> Option<Text<'a>>,
+) -> Result<(), TextError> {
+    expand_limit(text, tokens, MAX_TEXT, false, value)
 }
 fn expand_text<'a>(
     text: &mut FixedText<MAX_TEXT>,

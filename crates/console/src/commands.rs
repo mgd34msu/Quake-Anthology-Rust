@@ -12,7 +12,7 @@ use qa_core::{
     names::{NamesError, compare_folded},
     primitives::NameId,
 };
-use qa_input::{BindError, Binding, Input, Target, bindings, keys};
+use qa_input::{BindError, Input, Target, bindings, keys};
 use std::{
     cmp::Ordering,
     fmt::{Arguments as Output, Write},
@@ -27,6 +27,12 @@ pub enum ScriptError {
 }
 pub trait Host {
     fn print(&mut self, text: Output<'_>);
+    fn print_bytes(&mut self, text: &[u8]) {
+        match std::str::from_utf8(text) {
+            Ok(text) => self.print(format_args!("{text}")),
+            Err(_) => self.print(format_args!("Console byte output is unavailable\n")),
+        }
+    }
     fn reject_input(&mut self, _count: u64) {}
     fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError>;
     fn quit(&mut self);
@@ -172,11 +178,14 @@ impl<H: Host> Console<H> {
     }
     /// Borrow the existing table and buffer for a module call. No module owns
     /// another console or queues commands outside this buffer.
-    pub fn module_parts(&mut self) -> (&mut Cvars, &mut CommandBuffer) {
-        (&mut self.cvars, &mut self.buffer)
+    pub fn module_parts(&mut self) -> (&mut Cvars, &mut CommandBuffer, &mut crate::editor::Editor) {
+        (&mut self.cvars, &mut self.buffer, &mut self.editor)
     }
     pub fn append_line(&mut self, text: &str, context: Context) -> Result<(), TextError> {
-        self.buffer.append_line(text, context)
+        self.append_line_bytes(text.as_bytes(), context)
+    }
+    pub fn append_line_bytes(&mut self, text: &[u8], context: Context) -> Result<(), TextError> {
+        self.buffer.append_line_bytes(text, context)
     }
     pub fn discard_source(&mut self, source: KeySource) {
         self.buffer.discard_source(source);
@@ -270,16 +279,16 @@ impl<H: Host> Console<H> {
                 context.source,
                 RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
             ) {
-                let raw = parser.line.as_str();
-                let expanded = if raw.contains('$') {
-                    command_text::expand_engine(&mut parser.line, &mut parser.tokens, |name| {
-                        self.cvars
-                            .bind(name, context)
-                            .and_then(|view| self.cvars.read(view).ok())
-                    })
+                let raw = parser.line.as_bytes();
+                let expanded = if raw.contains(&b'$') {
+                    command_text::expand_engine_bytes(
+                        &mut parser.line,
+                        &mut parser.tokens,
+                        |name| self.cvars.macro_value(name, context),
+                    )
                 } else if raw.len() >= crate::text::MAX_TEXT {
                     Err(TextError::TooLong)
-                } else if raw.bytes().filter(|&b| b == b'"').count() & 1 != 0 {
+                } else if raw.iter().filter(|&&b| b == b'"').count() & 1 != 0 {
                     Err(TextError::UnmatchedQuote)
                 } else {
                     Ok(())
@@ -290,8 +299,8 @@ impl<H: Host> Console<H> {
                     continue;
                 }
             }
-            let args = match command_text::tokenize_engine(
-                parser.line.as_str(),
+            let args = match command_text::tokenize_engine_bytes(
+                parser.line.as_bytes(),
                 context.source,
                 &mut parser.tokens,
             ) {
@@ -302,7 +311,10 @@ impl<H: Host> Console<H> {
                     continue;
                 }
             };
-            let name = args.get(0);
+            let Ok(name) = std::str::from_utf8(args.get_bytes(0)) else {
+                host.print(format_args!("Command name is not UTF-8\n"));
+                continue;
+            };
             if name.is_empty() {
                 continue;
             }
@@ -327,7 +339,10 @@ impl<H: Host> Console<H> {
                             Err(error) => Err(CommandError::Cvar(WriteError::Conversion(error))),
                         }
                     } else {
-                        self.cvars.write(view, args.get(1)).map_err(Into::into)
+                        match std::str::from_utf8(args.get_bytes(1)) {
+                            Ok(value) => self.cvars.write(view, value).map_err(Into::into),
+                            Err(_) => Err(CommandError::Usage),
+                        }
                     }
                 } else if let Some(alias) = id
                     .and_then(|id| self.alias_by_name[id.0 as usize])
@@ -338,7 +353,7 @@ impl<H: Host> Console<H> {
                         host.print(format_args!("Alias expansion limit\n"));
                         continue;
                     }
-                    let result = self.buffer.insert(alias.text.as_str(), context);
+                    let result = self.buffer.insert_bytes(alias.text.as_bytes(), context);
                     if let Err(error) = result {
                         self.reject_expansion(error, context, host);
                     }
@@ -354,10 +369,18 @@ impl<H: Host> Console<H> {
         self.parser = Some(parser);
     }
     fn echo(&mut self, host: &mut H, args: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
-        for text in args.iter().skip(1) {
-            host.print(format_args!("{text} "));
+        let mut argument = FixedText::<{ crate::text::MAX_TEXT + 1 }>::default();
+        for text in args.iter_bytes().skip(1) {
+            argument.clear();
+            argument
+                .append_bytes(text)
+                .map_err(|_| TextError::TooLong)?;
+            argument
+                .append_bytes(b" ")
+                .map_err(|_| TextError::TooLong)?;
+            host.print_bytes(argument.as_bytes());
         }
-        host.print(format_args!("\n"));
+        host.print_bytes(b"\n");
         Ok(())
     }
     fn bind(
@@ -371,30 +394,27 @@ impl<H: Host> Console<H> {
         }
         let control = keys::parse(args.get(1)).ok_or(CommandError::Bind(BindError::Control))?;
         if args.len() == 2 {
-            let mut value = FixedText::<1025>::default();
             if let Some(binding) = host.input().binding(control) {
-                write_binding(binding, &mut value);
-                host.print(format_args!(
-                    "\"{}\" = \"{}\"\n",
-                    args.get(1),
-                    value.as_str()
-                ));
+                let mut value = FixedText::<1088>::default();
+                let _ = write!(value, "\"{}\" = \"", args.get(1));
+                let _ = value.append_bytes(binding.bytes());
+                let _ = value.write_str("\"\n");
+                host.print_bytes(value.as_bytes());
             } else {
                 host.print(format_args!("\"{}\" is not bound\n", args.get(1)));
             }
             return Ok(());
         }
-        args.join(2, &mut self.joined)?;
+        args.join_bytes(2, &mut self.joined)?;
         let time = context.event_time.unwrap_or_else(|| host.input_time());
-        let mut output = BindOutput {
-            buffer: &mut self.buffer,
-            context,
-            rejected: None,
-            rejected_count: 0,
-        };
-        host.input()
-            .bind_text(control, self.joined.as_str(), time, &mut output)
-            .map_err(CommandError::Bind)?;
+        let mut output = BindOutput::new(&mut self.buffer, context);
+        if self.joined.as_bytes().is_empty() {
+            host.input().bind(control, None, time, &mut output);
+        } else {
+            host.input()
+                .bind_bytes(control, self.joined.as_bytes(), time, &mut output)
+                .map_err(CommandError::Bind)?;
+        }
         output.finish(host)
     }
     fn unbind(
@@ -408,12 +428,7 @@ impl<H: Host> Console<H> {
         }
         let control = keys::parse(args.get(1)).ok_or(CommandError::Bind(BindError::Control))?;
         let time = context.event_time.unwrap_or_else(|| host.input_time());
-        let mut output = BindOutput {
-            buffer: &mut self.buffer,
-            context,
-            rejected: None,
-            rejected_count: 0,
-        };
+        let mut output = BindOutput::new(&mut self.buffer, context);
         host.input().bind(control, None, time, &mut output);
         output.finish(host)
     }
@@ -424,12 +439,7 @@ impl<H: Host> Console<H> {
         context: Context,
     ) -> Result<(), CommandError> {
         let time = context.event_time.unwrap_or_else(|| host.input_time());
-        let mut output = BindOutput {
-            buffer: &mut self.buffer,
-            context,
-            rejected: None,
-            rejected_count: 0,
-        };
+        let mut output = BindOutput::new(&mut self.buffer, context);
         host.input().unbind_all(time, &mut output);
         output.finish(host)
     }
@@ -449,9 +459,9 @@ impl<H: Host> Console<H> {
                 }
                 let _ = keys::write_name(control, &mut line);
                 let _ = line.write_str(" \"");
-                write_binding(binding, &mut line);
+                let _ = line.append_bytes(binding.bytes());
                 let _ = line.write_str("\"\n");
-                host.print(format_args!("{}", line.as_str()));
+                host.print_bytes(line.as_bytes());
             }
         }
         Ok(())
@@ -508,14 +518,14 @@ impl<H: Host> Console<H> {
                 .filter(|a| a.name.is_some())
             {
                 host.print(format_args!(
-                    "{} : {}",
+                    "{} : ",
                     alias
                         .name
                         .and_then(|id| self.cvars.names.get(id))
                         .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                        .unwrap_or_default(),
-                    alias.text.as_str()
+                        .unwrap_or_default()
                 ));
+                host.print_bytes(alias.text.as_bytes());
             }
             return Ok(());
         }
@@ -529,7 +539,7 @@ impl<H: Host> Console<H> {
             return Err(CommandError::AliasName);
         }
         let mut text = FixedText::<1024>::default();
-        args.join(2, &mut text)?;
+        args.join_bytes(2, &mut text)?;
         text.write_str("\n").map_err(|_| TextError::TooLong)?;
         let folded = self.cvars.lookup_name(name);
         let index = folded
@@ -672,12 +682,13 @@ impl<H: Host> Console<H> {
             None
         };
         let value = if q2 {
-            args.get(2)
+            std::str::from_utf8(args.get_bytes(2)).map_err(|_| CommandError::Usage)?
         } else {
-            self.joined.as_str()
+            std::str::from_utf8(self.joined.as_bytes()).map_err(|_| CommandError::Usage)?
         };
+        let name = std::str::from_utf8(args.get_bytes(1)).map_err(|_| CommandError::Usage)?;
         self.cvars
-            .set_user(args.get(1), value, context, full_flags, added_flags)?;
+            .set_user(name, value, context, full_flags, added_flags)?;
         Ok(())
     }
     fn cmdlist(&mut self, host: &mut H, _: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
@@ -728,10 +739,7 @@ impl<H: Host> Console<H> {
     }
 }
 
-fn write_binding(binding: &Binding, output: &mut impl Write) {
-    let _ = output.write_str(binding.text());
-}
-struct BindOutput<'a> {
+pub struct BindOutput<'a> {
     buffer: &'a mut CommandBuffer,
     context: Context,
     rejected: Option<TextError>,
@@ -746,7 +754,16 @@ impl Target for BindOutput<'_> {
         key_source: Option<qa_core::sys_events::KeySource>,
         text: &str,
     ) -> bool {
-        let result = self.buffer.append_line(
+        self.command_bytes(seat, time, key_source, text.as_bytes())
+    }
+    fn command_bytes(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        key_source: Option<qa_core::sys_events::KeySource>,
+        text: &[u8],
+    ) -> bool {
+        let result = self.buffer.append_line_bytes(
             text,
             Context {
                 seat,
@@ -766,10 +783,21 @@ impl Target for BindOutput<'_> {
     }
 }
 
-impl BindOutput<'_> {
+impl<'a> BindOutput<'a> {
+    pub fn new(buffer: &'a mut CommandBuffer, context: Context) -> Self {
+        Self {
+            buffer,
+            context,
+            rejected: None,
+            rejected_count: 0,
+        }
+    }
+    pub fn outcome(self) -> (u64, Result<(), TextError>) {
+        (self.rejected_count, self.rejected.map_or(Ok(()), Err))
+    }
     fn finish(self, host: &mut impl Host) -> Result<(), CommandError> {
-        host.reject_input(self.rejected_count);
-        self.rejected
-            .map_or(Ok(()), |error| Err(CommandError::Text(error)))
+        let (count, result) = self.outcome();
+        host.reject_input(count);
+        result.map_err(CommandError::Text)
     }
 }

@@ -743,9 +743,7 @@ impl FrameHost {
         let result = (|| {
             if rules == qa_core::primitives::RuleSetId::Quake2 {
                 qa_console::command_text::expand_bytes(&mut text, &mut tokens, |name| {
-                    let name = std::str::from_utf8(name).ok()?;
-                    let view = self.console.cvars.bind(name, context)?;
-                    self.console.cvars.read(view).ok()
+                    self.console.cvars.macro_value(name, context)
                 })
                 .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))?;
             }
