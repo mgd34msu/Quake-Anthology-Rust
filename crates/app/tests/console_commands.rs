@@ -969,7 +969,7 @@ fn qvm_foreign_trace_fixture() -> (FrameHost, qa_core::primitives::EntityId) {
     let mut world = visibility_world::collision(
         &runtime.geometry,
         [Some(0), Some(1)],
-        qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![3, 3]).unwrap(),
+        qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![3, 3], None).unwrap(),
     );
     world.geometry = geometry;
     runtime.collision = Some(world);

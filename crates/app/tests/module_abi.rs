@@ -224,7 +224,7 @@ fn q3_visibility_imports_use_compiled_pvs_and_native_portal_policy() {
             runtime.collision = Some(visibility_world::collision(
                 &runtime.geometry,
                 selectors,
-                PvsRows::load(vec![Some(0), Some(1)], row_bytes).unwrap(),
+                PvsRows::load(vec![Some(0), Some(1)], row_bytes, None).unwrap(),
             ));
             for (open, ignore, same_leaf, expected) in [
                 (false, "0", false, false),
@@ -343,7 +343,7 @@ fn q3_area_connection_keeps_native_bounds_and_integer_override() {
         runtime.collision = Some(visibility_world::collision(
             &runtime.geometry,
             [Some(0), Some(1)],
-            PvsRows::load(vec![Some(0); 2], vec![3]).unwrap(),
+            PvsRows::load(vec![Some(0); 2], vec![3], None).unwrap(),
         ));
         let mut console = Console::new(Context::default()).unwrap();
         let no_areas = console

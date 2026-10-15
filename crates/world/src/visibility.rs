@@ -67,12 +67,13 @@ pub struct PointVisibility {
 #[derive(Debug)]
 pub struct PvsRows {
     offsets: Box<[Option<u32>]>,
-    hearing: Option<Box<[Option<u32>]>>,
+    hearing: Box<[Option<u32>]>,
     encoded: Box<[u8]>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum VisibilityChannel {
+    All,
     Sight,
     Hearing,
 }
@@ -83,7 +84,13 @@ impl PvsRows {
             .is_some_and(|b| b & (1 << (bit & 7)) != 0)
     }
 
-    pub fn load(offsets: Vec<Option<u32>>, encoded: Vec<u8>) -> Result<Self, VisibilityError> {
+    /// Compiled hearing rows are authoritative. Without that column, build
+    /// the one-hop union of immutable sight rows in the same encoded arena.
+    pub fn load(
+        offsets: Vec<Option<u32>>,
+        mut encoded: Vec<u8>,
+        compiled_hearing: Option<Vec<Option<u32>>>,
+    ) -> Result<Self, VisibilityError> {
         if offsets.len() > u32::MAX as usize || encoded.len() > u32::MAX as usize {
             return Err(VisibilityError::Size);
         }
@@ -91,9 +98,67 @@ impl PvsRows {
         for &offset in offsets.iter().flatten() {
             decode_rle(&encoded, offset, &mut row)?;
         }
+        let hearing = if let Some(hearing) = compiled_hearing {
+            if hearing.len() != offsets.len() {
+                return Err(VisibilityError::Size);
+            }
+            for &offset in hearing.iter().flatten() {
+                decode_rle(&encoded, offset, &mut row)?;
+            }
+            hearing
+        } else {
+            let sight_bytes = encoded.len();
+            let mut destination = vec![0; row.len()];
+            let mut adjacent = vec![0; row.len()];
+            let mut hearing = Vec::new();
+            hearing
+                .try_reserve_exact(offsets.len())
+                .map_err(|_| VisibilityError::Size)?;
+            for &offset in &offsets {
+                let Some(offset) = offset else {
+                    hearing.push(None);
+                    continue;
+                };
+                decode_rle(&encoded[..sight_bytes], offset, &mut row)?;
+                destination.copy_from_slice(&row);
+                let mut all_visible = false;
+                for (selector, &offset) in offsets.iter().enumerate() {
+                    if !Self::row_contains(&row, selector as u32) {
+                        continue;
+                    }
+                    let Some(offset) = offset else {
+                        all_visible = true;
+                        break;
+                    };
+                    decode_rle(&encoded[..sight_bytes], offset, &mut adjacent)?;
+                    for (destination, &adjacent) in destination.iter_mut().zip(&adjacent) {
+                        *destination |= adjacent;
+                    }
+                }
+                if all_visible {
+                    hearing.push(None);
+                    continue;
+                }
+                let offset = u32::try_from(encoded.len()).map_err(|_| VisibilityError::Size)?;
+                encoded
+                    .try_reserve(
+                        destination
+                            .len()
+                            .checked_mul(2)
+                            .ok_or(VisibilityError::Size)?,
+                    )
+                    .map_err(|_| VisibilityError::Size)?;
+                qa_core::rle::encode_pvs(&destination, &mut encoded);
+                if encoded.len() > u32::MAX as usize {
+                    return Err(VisibilityError::Size);
+                }
+                hearing.push(Some(offset));
+            }
+            hearing
+        };
         Ok(Self {
             offsets: offsets.into_boxed_slice(),
-            hearing: None,
+            hearing: hearing.into_boxed_slice(),
             encoded: encoded.into_boxed_slice(),
         })
     }
@@ -101,7 +166,7 @@ impl PvsRows {
     pub fn all_visible(selector_count: usize) -> Self {
         Self {
             offsets: vec![None; selector_count].into_boxed_slice(),
-            hearing: None,
+            hearing: vec![None; selector_count].into_boxed_slice(),
             encoded: Box::default(),
         }
     }
@@ -113,20 +178,6 @@ impl PvsRows {
     pub fn row_bytes(&self) -> usize {
         self.offsets.len().div_ceil(8)
     }
-    /// Compiled PHS rows share the same encoded lump and selector namespace.
-    /// Formats without a separate hearing column use their sight rows.
-    pub fn with_hearing(mut self, offsets: Vec<Option<u32>>) -> Result<Self, VisibilityError> {
-        if offsets.len() != self.offsets.len() {
-            return Err(VisibilityError::Size);
-        }
-        let mut row = vec![0; self.row_bytes()];
-        for &offset in offsets.iter().flatten() {
-            decode_rle(&self.encoded, offset, &mut row)?;
-        }
-        self.hearing = Some(offsets.into_boxed_slice());
-        Ok(self)
-    }
-
     /// Missing rows follow qsrc Mod_DecompressVis's all-visible fallback.
     pub fn read_into(
         &self,
@@ -144,13 +195,17 @@ impl PvsRows {
         if destination.len() != self.row_bytes() {
             return Err(VisibilityQueryError::ScratchSize);
         }
+        let offsets = match channel {
+            VisibilityChannel::All => {
+                destination.fill(255);
+                return Ok(());
+            }
+            VisibilityChannel::Sight => &self.offsets,
+            VisibilityChannel::Hearing => &self.hearing,
+        };
         let Some(selector) = selector else {
             destination.fill(255);
             return Ok(());
-        };
-        let offsets = match channel {
-            VisibilityChannel::Sight => &self.offsets,
-            VisibilityChannel::Hearing => self.hearing.as_ref().unwrap_or(&self.offsets),
         };
         let Some(&offset) = offsets.get(selector as usize) else {
             return Err(VisibilityQueryError::Selector(selector));
@@ -217,15 +272,17 @@ impl VisibilityWorld {
             .point_in_leaf(second, policy.leaf_rules)
             .and_then(|i| self.leaf(i))
             .ok_or(VisibilityQueryError::Origin)?;
-        match (first.selector, second.selector) {
-            (Some(from), Some(to)) => {
-                self.pvs().read_channel(policy.channel, Some(from), row)?;
-                if !PvsRows::row_contains(row, to) {
-                    return Ok(false);
+        if !matches!(policy.channel, VisibilityChannel::All) {
+            match (first.selector, second.selector) {
+                (Some(from), Some(to)) => {
+                    self.pvs().read_channel(policy.channel, Some(from), row)?;
+                    if !PvsRows::row_contains(row, to) {
+                        return Ok(false);
+                    }
                 }
+                _ if !policy.missing_visible => return Ok(false),
+                _ => {}
             }
-            _ if !policy.missing_visible => return Ok(false),
-            _ => {}
         }
         if let Some(portals) = portals {
             let first = first.area.unwrap_or(0);

@@ -17,6 +17,10 @@ use std::time::Duration;
 #[path = "support/visibility_world.rs"]
 mod visibility_world;
 
+#[allow(dead_code)]
+#[path = "../../compat/tests/support/quakec_program.rs"]
+mod quakec_program;
+
 #[derive(Default)]
 struct Source {
     reject: Option<u16>,
@@ -1070,10 +1074,12 @@ fn native_multicast_uses_compiled_sight_hearing_and_portal_connectivity() {
         vec![],
         0,
         0,
-        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2, 3])
-            .unwrap()
-            .with_hearing(vec![Some(2); 2])
-            .unwrap(),
+        PvsRows::load(
+            vec![Some(0), Some(1)],
+            vec![1, 2, 3],
+            Some(vec![Some(2); 2]),
+        )
+        .unwrap(),
     )
     .unwrap();
     let portals = qa_world::portals::AreaPortals::load(
@@ -1122,6 +1128,495 @@ fn native_multicast_uses_compiled_sight_hearing_and_portal_connectivity() {
     assert!(runtime.server.events.is_empty());
 }
 
+fn hearing_graph(store: &qa_world::collision::CollisionStore) -> qa_app::WorldCollision {
+    use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisNode, VisibilityWorld};
+    let bounds = Bounds {
+        mins: Vec3([-5000.0; 3]),
+        maxs: Vec3([5000.0; 3]),
+    };
+    let world = VisibilityWorld::load(
+        [500.0, 1500.0, 3000.0]
+            .map(|distance| Plane::oriented(Vec3([1.0, 0.0, 0.0]), distance))
+            .to_vec(),
+        [[1, -1], [2, -2], [-4, -3]]
+            .into_iter()
+            .enumerate()
+            .map(|(plane, children)| VisNode {
+                plane: plane as u32,
+                children,
+                bounds,
+                surfaces: SurfaceSpan::default(),
+            })
+            .collect(),
+        (0..4)
+            .map(|selector| VisLeaf {
+                selector: Some(selector),
+                area: None,
+                solid: false,
+                bounds,
+                surfaces: SurfaceSpan::default(),
+            })
+            .collect(),
+        vec![],
+        0,
+        0,
+        PvsRows::load(
+            vec![Some(0), Some(1), Some(2), Some(3)],
+            vec![0b0011, 0b0110, 0b1100, 0b1000],
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    qa_app::WorldCollision::new(
+        store,
+        GeometryId {
+            slot: 0,
+            generation: 1,
+        },
+        0,
+    )
+    .with_visibility(std::sync::Arc::new(world))
+}
+
+fn assert_converted_q2_print(peer: &mut Channel, packet: &[u8], text: &[u8]) {
+    let payload = receive(peer, packet);
+    assert_eq!(payload, [b"\x0a\x02".as_slice(), text, b"\0"].concat());
+    let (record, length) =
+        qa_network::outputs::read_native_service(Protocol::Quake2_34, &payload).unwrap();
+    assert_eq!(length, payload.len());
+    assert!(matches!(
+        record,
+        qa_network::outputs::NativeService::Print(print)
+            if print.kind == PrintKind::Console && print.level == Some(2) && print.text == text
+    ));
+}
+
+#[test]
+fn qw_hearing_reaches_only_one_distant_pvs_hop_before_q2_encoding_and_retirement() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let c = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    let d = remote(&mut runtime, Protocol::Quake2_34, 2001);
+    runtime.server.clients[c.0 as usize].player.body.position = Vec3([2001.0, 0.0, 0.0]);
+    runtime.server.clients[d.0 as usize].player.body.position = Vec3([4001.0, 0.0, 0.0]);
+    runtime.collision = Some(hearing_graph(&runtime.geometry));
+    let mut source = Source::default();
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    let sequence = publish_from(
+        &mut runtime,
+        RuleSetId::QuakeWorld,
+        false,
+        NativeTarget::Hearing,
+        b"\x08\x02heard\x80\0",
+    );
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_filtered, 1);
+    assert_eq!(counts.native_unsupported, 0);
+    assert_eq!(counts.native_blocked, 0);
+    assert_eq!(source.packets.len(), 1);
+    assert_eq!(source.packets[0].0, 2000);
+    assert_converted_q2_print(&mut peer, &source.packets[0].1, b"heard\x80");
+    assert!(
+        runtime.server.events.is_empty(),
+        "publication {sequence} remains leased"
+    );
+
+    source.packets.clear();
+    publish_from(
+        &mut runtime,
+        RuleSetId::QuakeWorld,
+        false,
+        NativeTarget::Sight,
+        b"\x08\x02unseen\0",
+    );
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_filtered, 2);
+    assert_eq!(counts.native_unsupported, 0);
+    assert!(source.packets.is_empty());
+    assert!(runtime.server.events.is_empty());
+}
+
+#[test]
+fn qw_sound_builtin_uses_sv_phs_before_foreign_sound_encoding_and_ring_retirement() {
+    use qa_app::modules::{Export, ModuleRequest, Phase, Program};
+    use qa_compat::{
+        quakec::{Layout, Vm},
+        services::CallContext,
+    };
+    use qa_core::{configstrings::ConfigLayout, events::FrameEvent};
+    use qa_formats::program::quakec::{Image, Opcode::*};
+    use qa_world::entities::AllocationPolicy;
+    use std::{num::NonZeroU32, sync::Arc};
+
+    let module = ModuleId(7);
+    let rules = RuleSetId::QuakeWorld;
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let clients = [
+        remote(&mut runtime, Protocol::Quake2_34, 2000),
+        remote(&mut runtime, Protocol::Quake2_34, 2001),
+    ];
+    for (client, x) in clients.into_iter().zip([2001.0, 4001.0]) {
+        runtime.server.clients[client.0 as usize]
+            .player
+            .body
+            .position = Vec3([x, 0.0, 0.0]);
+    }
+    runtime.collision = Some(hearing_graph(&runtime.geometry));
+    let anchor = runtime
+        .server
+        .entities
+        .allocate(ThinkTime::Seconds(0.0), module, AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
+    runtime.server.entities.columns.native_entity[anchor.slot as usize] =
+        Some(NativeEntity { module, slot: 0 });
+    let bytes = quakec_program::program_with_definitions(
+        &[
+            // Initialization precaches through the actual QW builtin table.
+            (StoreS, 80, 4, 0),
+            (Call1, 81, 0, 0),
+            (Return, 0, 0, 0),
+            // A separate export invokes sound(entity0,1,name,1,1).
+            (StoreEnt, 82, 4, 0),
+            (StoreF, 83, 7, 0),
+            (StoreS, 80, 10, 0),
+            (StoreF, 84, 13, 0),
+            (StoreF, 85, 16, 0),
+            (Call5, 86, 0, 0),
+            (Return, 0, 0, 0),
+            (Return, 0, 0, 0),
+        ],
+        &[0, 1, 4, -19, -8, 11],
+        &[(4, 34, b"self"), (2, 35, b"time")],
+        &[
+            (3, 0, b"origin"),
+            (3, 3, b"velocity"),
+            (3, 6, b"angles"),
+            (3, 9, b"mins"),
+            (3, 12, b"maxs"),
+            (3, 15, b"size"),
+            (3, 18, b"absmin"),
+            (3, 21, b"absmax"),
+            (2, 24, b"solid"),
+        ],
+        25,
+        96,
+    );
+    let mut vm = Vm::load(
+        Image::parse(&bytes, Some(5927)).unwrap(),
+        Layout {
+            entities: 64,
+            header_bytes: 16,
+            extra_string_bytes: 128,
+            state_step: 0.1,
+            random_seed: 1,
+        },
+    )
+    .unwrap();
+    vm.image.globals[80] = vm.insert_string(b"hearing.wav").unwrap() as u32;
+    vm.image.globals[81] = 3;
+    vm.image.globals[82] = 0;
+    vm.image.globals[83..86].fill(1.0f32.to_bits());
+    vm.image.globals[86] = 4;
+    let origin = vm.field_address(0, 0, 3).unwrap();
+    vm.entities
+        .write_word(origin, 1.0f32.to_bits() as i32)
+        .unwrap();
+    let context = Context {
+        source: rules,
+        ..Context::default()
+    };
+    let mut host = FrameHost::load_modules(
+        Console::new(context).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![ModuleRequest {
+            context: CallContext {
+                native_rules: rules,
+                trace_rules: rules,
+                sound_policy: qa_gameplay::rules::sound_policy(rules),
+                module,
+                clock: ThinkTime::Seconds(0.0),
+                server_frame: 0,
+                console: context,
+                allocation: AllocationPolicy::EDICT,
+                link_order: qa_gameplay::rules::link_order(rules),
+            },
+            timing_rules: rules,
+            phase: Phase::Server,
+            rate: TickRate::fixed(100).unwrap(),
+            anchor,
+            program: Program::quakec(vm, None),
+            entries: vec![1, 2, 5],
+            frame: Export::clocked(CallbackId(2)),
+            prepare: vec![],
+            initialize: vec![Export::clocked(CallbackId(0))],
+            shutdown: vec![],
+            api: None,
+            instruction_budget: 1000,
+            configstrings: ConfigLayout::for_rules(rules).count,
+            files: 0,
+            entity_source: None,
+        }],
+    )
+    .unwrap();
+    host.initialize_modules(Phase::Server);
+    assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    let rate = NonZeroU32::new(44100).unwrap();
+    let bank = Arc::new(
+        qa_audio::Bank::load(
+            rate,
+            vec![(
+                "sound/hearing.wav".into(),
+                Pcm {
+                    rate,
+                    channels: PcmChannels::Mono,
+                    samples: vec![100; 4],
+                    loop_start: None,
+                    loop_end: None,
+                    loop_invalid: false,
+                },
+            )],
+        )
+        .unwrap(),
+    );
+    let sound = bank.find("sound/hearing.wav").unwrap();
+    host.runtime.sound_bank = Some(Arc::clone(&bank));
+    host.bind_sounds(&bank).unwrap();
+    let mut peers: [Channel; 2] = std::array::from_fn(|index| {
+        let mut peer =
+            Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+        peer.set_qport(2000 + index as u16);
+        peer
+    });
+    let mut source = Source::default();
+    let initialized = host.frame(&mut source, true);
+    assert_eq!(initialized.output.native_unsupported, 0);
+    let sound_row = ConfigLayout::QUAKE2.resources[1].first as usize + 1;
+    let mut registered = [false; 2];
+    let mut config_records = 0;
+    for (port, packet) in &source.packets {
+        let index = usize::from(*port - 2000);
+        let payload = receive(&mut peers[index], packet);
+        let mut remaining = payload.as_slice();
+        while !remaining.is_empty() {
+            let length =
+                qa_network::outputs::read_configstrings(Protocol::Quake2_34, remaining, |row| {
+                    config_records += 1;
+                    if row.index as usize == sound_row {
+                        assert_eq!(row.text, b"hearing.wav");
+                        registered[index] = true;
+                    }
+                })
+                .unwrap();
+            remaining = &remaining[length..];
+        }
+    }
+    assert_eq!(registered, [true; 2]);
+    for (index, peer) in peers.iter_mut().enumerate() {
+        let time = EventTime::from_milliseconds(1);
+        let ack = peer.prepare(None, time).unwrap().unwrap().bytes.to_vec();
+        peer.submitted(time).unwrap();
+        host.queue
+            .push(SysEvent {
+                time,
+                kind: EventKind::Packet {
+                    socket: 0,
+                    from: Peer::Socket(([127, 0, 0, 1], 2000 + index as u16).into()),
+                    bytes: &ack,
+                },
+            })
+            .unwrap();
+    }
+    host.drain(&mut qa_app::host::FrameResult::default());
+    assert_eq!(host.runtime.network.acknowledged, config_records);
+    assert!(host.runtime.server.events.is_empty());
+
+    let phs = host.console.cvars.bind("sv_phs", context).unwrap();
+    for (enabled, target, destinations) in
+        [("1", NativeTarget::Hearing, 1), ("0", NativeTarget::All, 2)]
+    {
+        host.console.cvars.force_write(phs, enabled).unwrap();
+        host.call_module_export(
+            module,
+            Export::clocked(CallbackId(1)),
+            ThinkTime::Seconds(0.0),
+        )
+        .unwrap();
+        let consumer = host.runtime.server.clients[clients[0].0 as usize]
+            .output
+            .unwrap();
+        let mut batch = host.runtime.server.events.batch(consumer).unwrap();
+        let record = host.runtime.server.events.next(&mut batch).unwrap();
+        let FrameEvent::Sound(event) = record.event else {
+            panic!("QC sound builtin did not publish sound")
+        };
+        assert_eq!(event.sound, sound);
+        assert_eq!(event.source_ordinal, Some(1));
+        assert_eq!(event.entity, Some(SoundEmitter::Entity(anchor)));
+        assert_eq!(event.position, Vec3([1.0, 0.0, 0.0]));
+        assert_eq!(event.channel, 1);
+        assert!(!event.positioned);
+        let delivery = record.delivery.unwrap();
+        assert_eq!(delivery.target, target);
+        assert_eq!(delivery.source, rules);
+        assert!(!delivery.reliable);
+        assert!(!delivery.check_portals);
+        assert!(host.runtime.server.events.next(&mut batch).is_none());
+        source.packets.clear();
+        source.now = EventTime::from_milliseconds(20);
+        let counts = dispatch(&mut host.runtime, &mut source);
+        assert_eq!(counts.native_filtered, 2 - destinations as u64);
+        assert_eq!(counts.native_unsupported, 0);
+        assert_eq!(counts.native_blocked, 0);
+        assert_eq!(source.packets.len(), destinations);
+        for (port, packet) in &source.packets {
+            let index = usize::from(*port - 2000);
+            assert!(index < destinations);
+            let payload = receive(&mut peers[index], packet);
+            assert_eq!(payload, [9, 8, 1, 1, 0]); // Q2 sound1, world entity0/channel1.
+            let (cue, length) =
+                qa_network::outputs::read_cue(Protocol::Quake2_34, &payload).unwrap();
+            assert_eq!(length, payload.len());
+            assert!(matches!(cue, qa_network::outputs::Cue::Sound(sound)
+                if sound.index == 1 && sound.entity == 0 && sound.channel == 1
+                    && sound.volume == 255 && sound.attenuation == 64));
+        }
+        assert!(host.runtime.server.events.is_empty());
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+}
+
+#[test]
+fn qw_hearing_distance_is_inclusive_uses_body_origin_and_does_not_leak_to_other_roles() {
+    let beyond = f32::from_bits(1025.0f32.to_bits() + 1);
+    assert!(beyond - 1.0 > 1024.0);
+    for (listener, view_offset, nearby) in [
+        (1025.0, Vec3([0.0, 0.0, 4096.0]), true),
+        (beyond, Vec3([-1024.0, 0.0, 0.0]), false),
+    ] {
+        for (rules, target) in [
+            (RuleSetId::QuakeWorld, NativeTarget::Hearing),
+            (RuleSetId::Quake2, NativeTarget::Hearing),
+            (RuleSetId::QuakeWorld, NativeTarget::Sight),
+            (RuleSetId::Quake2, NativeTarget::Sight),
+        ] {
+            let expected =
+                nearby && rules == RuleSetId::QuakeWorld && target == NativeTarget::Hearing;
+            let mut runtime = Runtime::load(1, []).unwrap();
+            let client = remote(&mut runtime, Protocol::Quake2_34, 2000);
+            let player = &mut runtime.server.clients[client.0 as usize].player;
+            player.body.position = Vec3([listener, 0.0, 0.0]);
+            player.view_offset = view_offset;
+            runtime.collision = Some(visibility_world::collision(
+                &runtime.geometry,
+                [Some(0), Some(1)],
+                qa_world::visibility::PvsRows::load(vec![Some(0), Some(0)], vec![0, 1], None)
+                    .unwrap(),
+            ));
+            publish_from(
+                &mut runtime,
+                rules,
+                false,
+                target,
+                if rules == RuleSetId::QuakeWorld {
+                    b"\x08\x02boundary\0"
+                } else {
+                    b"\x0a\x02boundary\0"
+                },
+            );
+            let mut source = Source::default();
+            let counts = dispatch(&mut runtime, &mut source);
+            assert_eq!(
+                counts.native_filtered,
+                u64::from(!expected),
+                "{rules:?} {target:?} x={listener}"
+            );
+            assert_eq!(counts.native_unsupported, 0);
+            assert_eq!(
+                source.packets.len(),
+                usize::from(expected),
+                "{rules:?} {target:?} x={listener}"
+            );
+            if expected {
+                let mut peer =
+                    Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16)
+                        .unwrap();
+                assert_converted_q2_print(&mut peer, &source.packets[0].1, b"boundary");
+            }
+            assert!(runtime.server.events.is_empty());
+        }
+    }
+}
+
+#[test]
+fn qw_nearby_hearing_bypasses_phs_but_preserves_explicit_closed_portals() {
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let client = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    runtime.server.clients[client.0 as usize]
+        .player
+        .body
+        .position = Vec3([-1.0, 0.0, 0.0]);
+    runtime.collision = Some(visibility_world::collision(
+        &runtime.geometry,
+        [Some(0), Some(1)],
+        qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![1, 2], None).unwrap(),
+    ));
+    let mut row = [0];
+    runtime
+        .collision
+        .as_ref()
+        .unwrap()
+        .visibility
+        .as_ref()
+        .unwrap()
+        .pvs()
+        .read_channel(
+            qa_world::visibility::VisibilityChannel::Hearing,
+            Some(0),
+            &mut row,
+        )
+        .unwrap();
+    assert_eq!(row, [1]); // The listener in selector 1 is outside the actual PHS.
+    let mut source = Source::default();
+    publish_from(
+        &mut runtime,
+        RuleSetId::QuakeWorld,
+        false,
+        NativeTarget::Hearing,
+        b"\x08\x02closed\0",
+    );
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_filtered, 1);
+    assert!(source.packets.is_empty());
+    assert!(runtime.server.events.is_empty());
+    runtime
+        .collision
+        .as_mut()
+        .unwrap()
+        .portals
+        .as_mut()
+        .unwrap()
+        .set(0, true)
+        .unwrap();
+    publish_from(
+        &mut runtime,
+        RuleSetId::QuakeWorld,
+        false,
+        NativeTarget::Hearing,
+        b"\x08\x02opened\0",
+    );
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_filtered, 0);
+    assert_eq!(counts.native_unsupported, 0);
+    assert_eq!(source.packets.len(), 1);
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    assert_converted_q2_print(&mut peer, &source.packets[0].1, b"opened");
+    assert!(runtime.server.events.is_empty());
+}
+
 #[test]
 fn multicast_plane_ties_follow_the_producer_role_before_destination_protocol_encoding() {
     for (rules, visible) in [
@@ -1139,7 +1634,7 @@ fn multicast_plane_ties_follow_the_producer_role_before_destination_protocol_enc
         runtime.collision = Some(visibility_world::collision(
             &runtime.geometry,
             [Some(0), Some(1)],
-            qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![1, 2]).unwrap(),
+            qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![1, 2], None).unwrap(),
         ));
         let mut bytes = [0; 32];
         let length = qa_network::outputs::print(

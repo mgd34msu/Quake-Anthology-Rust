@@ -409,10 +409,12 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
         vec![],
         0,
         0,
-        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2, 3])
-            .unwrap()
-            .with_hearing(vec![Some(2); 2])
-            .unwrap(),
+        PvsRows::load(
+            vec![Some(0), Some(1)],
+            vec![1, 2, 3],
+            Some(vec![Some(2); 2]),
+        )
+        .unwrap(),
     )
     .unwrap();
     runtime.collision = Some(

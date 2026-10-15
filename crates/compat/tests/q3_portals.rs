@@ -99,7 +99,7 @@ impl Fixture {
             vec![],
             0,
             0,
-            PvsRows::load(vec![Some(0), Some(1)], vec![3, 3]).unwrap(),
+            PvsRows::load(vec![Some(0), Some(1)], vec![3, 3], None).unwrap(),
         )
         .unwrap();
         let leaves = LeafScratch::new(world.node_count() + 1);

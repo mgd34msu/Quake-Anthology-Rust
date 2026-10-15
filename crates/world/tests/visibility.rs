@@ -7,10 +7,12 @@ use qa_world::visibility::{
 #[test]
 fn hearing_rows_share_encoded_data_and_keep_independent_offsets() {
     use qa_world::visibility::VisibilityChannel::{Hearing, Sight};
-    let rows = PvsRows::load(vec![Some(0), Some(1)], vec![1, 2, 3, 0, 1])
-        .unwrap()
-        .with_hearing(vec![Some(2), Some(3)])
-        .unwrap();
+    let rows = PvsRows::load(
+        vec![Some(0), Some(1)],
+        vec![1, 2, 3, 0, 1],
+        Some(vec![Some(2), Some(3)]),
+    )
+    .unwrap();
     let mut row = [0];
     for (channel, selector, expected) in [
         (Sight, 0, 1),
@@ -22,19 +24,9 @@ fn hearing_rows_share_encoded_data_and_keep_independent_offsets() {
             .unwrap();
         assert_eq!(row, [expected]);
     }
-    assert!(PvsRows::all_visible(2).with_hearing(vec![None]).is_err());
-    assert!(
-        PvsRows::load(vec![Some(0)], vec![1])
-            .unwrap()
-            .with_hearing(vec![Some(2)])
-            .is_err()
-    );
-    assert!(
-        PvsRows::load(vec![Some(0)], vec![1, 0, 0])
-            .unwrap()
-            .with_hearing(vec![Some(1)])
-            .is_err()
-    );
+    assert!(PvsRows::load(vec![None; 2], Vec::new(), Some(vec![None])).is_err());
+    assert!(PvsRows::load(vec![Some(0)], vec![1], Some(vec![Some(2)])).is_err());
+    assert!(PvsRows::load(vec![Some(0)], vec![1, 0, 0], Some(vec![Some(1)])).is_err());
     let rows = PvsRows::all_visible(2);
     rows.read_channel(Hearing, Some(1), &mut row).unwrap();
     assert_eq!(row, [255]);
@@ -165,10 +157,12 @@ fn two_leaves(pvs: PvsRows) -> VisibilityWorld {
 fn point_visibility_uses_the_callers_plane_tie_for_both_sight_and_hearing() {
     use qa_world::visibility::{PointVisibility, VisibilityChannel};
     let world = two_leaves(
-        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2, 2, 1])
-            .unwrap()
-            .with_hearing(vec![Some(2), Some(3)])
-            .unwrap(),
+        PvsRows::load(
+            vec![Some(0), Some(1)],
+            vec![1, 2, 2, 1],
+            Some(vec![Some(2), Some(3)]),
+        )
+        .unwrap(),
     );
     let mut row = [0];
     for (rules, sight, hearing) in [
@@ -220,19 +214,19 @@ fn box_queries_use_the_loaded_visibility_leaf_metadata() {
 
 #[test]
 fn rows_use_native_zero_runs_and_missing_rows_are_all_visible() {
-    let rows = PvsRows::load(vec![Some(0); 16], vec![0, 2]).unwrap();
+    let rows = PvsRows::load(vec![Some(0); 16], vec![0, 2], None).unwrap();
     let mut destination = [99; 2];
     rows.read_into(Some(0), &mut destination).unwrap();
     assert_eq!(destination, [0, 0]);
     rows.read_into(None, &mut destination).unwrap();
     assert_eq!(destination, [255, 255]);
 
-    let rows = PvsRows::load(vec![Some(0); 24], vec![7, 0, 1, 129]).unwrap();
+    let rows = PvsRows::load(vec![Some(0); 24], vec![7, 0, 1, 129], None).unwrap();
     let mut mixed = [0; 3];
     rows.read_into(Some(0), &mut mixed).unwrap();
     assert_eq!(mixed, [7, 0, 129]);
 
-    let rows = PvsRows::load(vec![None, Some(0)], vec![2]).unwrap();
+    let rows = PvsRows::load(vec![None, Some(0)], vec![2], None).unwrap();
     let mut destination = [0; 1];
     rows.read_into(Some(0), &mut destination).unwrap();
     assert_eq!(destination, [255]);
@@ -241,14 +235,14 @@ fn rows_use_native_zero_runs_and_missing_rows_are_all_visible() {
 
     let malformed = [vec![0], vec![0, 0], vec![0, 2]];
     for encoded in malformed {
-        assert!(PvsRows::load(vec![Some(0); 8], encoded).is_err());
+        assert!(PvsRows::load(vec![Some(0); 8], encoded, None).is_err());
     }
-    assert!(PvsRows::load(vec![Some(4)], vec![1]).is_err());
+    assert!(PvsRows::load(vec![Some(4)], vec![1], None).is_err());
 }
 
 #[test]
 fn secondary_rows_union_and_failed_queries_clear_previous_output() {
-    let world = two_leaves(PvsRows::load(vec![Some(0), Some(1)], vec![1, 2]).unwrap());
+    let world = two_leaves(PvsRows::load(vec![Some(0), Some(1)], vec![1, 2], None).unwrap());
     let mut view = ViewVisibility::new(&world);
     view.query(&world, Vec3([1.0; 3]), Some(0), None, &[], &[])
         .unwrap();
@@ -301,7 +295,7 @@ fn all_incoming_dag_parents_are_marked_without_duplicate_surfaces() {
         vec![0],
         1,
         0,
-        PvsRows::load(vec![Some(0)], vec![1]).unwrap(),
+        PvsRows::load(vec![Some(0)], vec![1], None).unwrap(),
     )
     .unwrap();
     let mut view = ViewVisibility::new(&world);
@@ -404,7 +398,7 @@ fn missing_primary_or_secondary_row_includes_unclustered_nonsolid_leaf() {
         vec![0],
         1,
         -1,
-        PvsRows::load(vec![None, Some(0)], vec![0, 1]).unwrap(),
+        PvsRows::load(vec![None, Some(0)], vec![0, 1], None).unwrap(),
     )
     .unwrap();
     let mut view = ViewVisibility::new(&world);
