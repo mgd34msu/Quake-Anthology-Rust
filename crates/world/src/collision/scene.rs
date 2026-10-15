@@ -52,7 +52,6 @@ pub trait NativeTraceEntities {
         cached: NativeTraceTarget,
         point_contents: bool,
         store: &CollisionStore,
-        geometry: GeometryId,
         models: Option<&dyn NativeModelNames>,
     ) -> Option<NativeTraceTarget>;
 }
@@ -492,7 +491,6 @@ impl<'a> WorldTrace<'a> {
                 cached,
                 point_contents,
                 self.store,
-                self.geometry,
                 self.native_models,
             )
         } else {

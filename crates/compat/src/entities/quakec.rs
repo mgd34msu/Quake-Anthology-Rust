@@ -702,7 +702,6 @@ impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
         cached: NativeTraceTarget,
         point_contents: bool,
         store: &CollisionStore,
-        _geometry: qa_core::primitives::GeometryId,
         _names: Option<&dyn NativeModelNames>,
     ) -> Option<NativeTraceTarget> {
         if !self.supports(native.module) {
@@ -2605,7 +2604,7 @@ impl EntityProjection {
             Some(
                 inline_model(
                     services.geometry,
-                    services.world.ok_or(CallError::Geometry)?.0,
+                    services.native_geometry.ok_or(CallError::Geometry)?,
                     text,
                 )?
                 .1,
@@ -2964,7 +2963,7 @@ impl EntityProjection {
                 contents_pose: columns.point_contents_pose[slot],
             },
             services.geometry,
-            services.world.map(|world| world.0),
+            services.native_geometry,
             None,
         )?;
         let body = target.body;

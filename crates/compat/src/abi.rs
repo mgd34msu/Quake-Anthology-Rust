@@ -1160,7 +1160,7 @@ fn qc_precache<const MODEL: bool>(
         if name.starts_with(b"*") {
             crate::entities::inline_model(
                 c.services.geometry,
-                c.services.world.ok_or(CallError::Geometry)?.0,
+                c.services.native_geometry.ok_or(CallError::Geometry)?,
                 name,
             )?;
         } else {
@@ -2709,7 +2709,7 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
         ((ENGINE_CALLS.clip)(c.services, query, target)?, address)
     } else {
         let entities = c.native_entities.as_ref().ok_or(CallError::Entity)?;
-        let view = entities.trace_view(c.memory, c.context)?;
+        let view = entities.trace_view(c.memory, c.context, c.services.native_geometry)?;
         let query = TraceQuery {
             pass: view.pass(c.pointer(5)?)?,
             ..query
@@ -2732,7 +2732,12 @@ fn q3_trace<const CAPSULE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, 
     let bounds = c.bounds(2, true)?;
     let mask = Contents::from_q3(c.arg(6)? as u32);
     let (rules, entity_rules) = trace_policy(c.context.trace_rules);
-    let view = native_collision_view(c.native_entities.as_deref(), c.memory, c.context)?;
+    let view = native_collision_view(
+        c.native_entities.as_deref(),
+        c.memory,
+        c.context,
+        c.services.native_geometry,
+    )?;
     let number = c.arg(5)? as u32 as i32;
     let pass =
         crate::entities::NativeTraceView::pass_number(view.as_ref(), c.context.module, number)?;
@@ -2827,7 +2832,7 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
             codec.command(c.memory, address, client.command.server_time_ms)?,
         );
         let options = codec.options(c.memory, address)?;
-        let view = entities.trace_view(c.memory, c.context)?;
+        let view = entities.trace_view(c.memory, c.context, c.services.native_geometry)?;
         let result = (ENGINE_CALLS.pmove)(c.services, id, Some(&view), options);
         view.finish()?;
         let result = result?;
@@ -2942,9 +2947,10 @@ fn native_collision_view<'a, 'memory>(
     projection: Option<&'a crate::entities::EntityProjection>,
     memory: &'a crate::memory::ModuleMemory<'memory>,
     context: CallContext,
+    geometry: Option<qa_core::primitives::GeometryId>,
 ) -> Result<Option<crate::entities::NativeTraceView<'a, 'memory>>, CallError> {
     projection
-        .map(|projection| projection.optional_trace_view(memory, context))
+        .map(|projection| projection.optional_trace_view(memory, context, geometry))
         .transpose()
         .map(Option::flatten)
 }
@@ -2955,7 +2961,12 @@ fn native_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
         return Err(CallError::Geometry);
     }
     let (_, rules) = qa_world::collision::trace_policy(c.context.trace_rules);
-    let view = native_collision_view(c.native_entities.as_deref(), c.memory, c.context)?;
+    let view = native_collision_view(
+        c.native_entities.as_deref(),
+        c.memory,
+        c.context,
+        c.services.native_geometry,
+    )?;
     let contents = (ENGINE_CALLS.point_contents)(
         c.services,
         point,
@@ -3110,7 +3121,12 @@ fn q3_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         slot: c.arg(1)? as i32,
     });
     let rules = qa_world::collision::trace_policy(c.context.trace_rules).1;
-    let view = native_collision_view(c.native_entities.as_deref(), c.memory, c.context)?;
+    let view = native_collision_view(
+        c.native_entities.as_deref(),
+        c.memory,
+        c.context,
+        c.services.native_geometry,
+    )?;
     let contents = (ENGINE_CALLS.point_contents)(
         c.services,
         point,

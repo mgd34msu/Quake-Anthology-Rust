@@ -11,7 +11,7 @@ use qa_compat::{
 use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
 use qa_core::{
     names::NameTable,
-    primitives::{Bounds, ModuleId, Plane, RuleSetId, ThinkTime, Vec3},
+    primitives::{Bounds, GeometryId, ModuleId, Plane, RuleSetId, ThinkTime, Vec3},
     sys_events::EventTime,
 };
 use qa_session::clients::Server;
@@ -59,6 +59,8 @@ struct Fixture {
     storage: ServiceStorage,
     geometry: CollisionStore,
     scratch: TraceScratch,
+    collision_world: Option<GeometryId>,
+    native_geometry: Option<GeometryId>,
     world: VisibilityWorld,
     leaves: LeafScratch,
     row: Box<[u8]>,
@@ -124,6 +126,8 @@ impl Fixture {
             storage,
             geometry,
             scratch,
+            collision_world: None,
+            native_geometry: None,
             world,
             leaves,
             row,
@@ -155,8 +159,8 @@ impl Fixture {
             names: &mut self.names,
             storage: &mut self.storage,
             geometry: &self.geometry,
-            world: None,
-            native_geometry: None,
+            world: self.collision_world.map(|geometry| (geometry, 0)),
+            native_geometry: self.native_geometry,
             foreign_trace: None,
             visibility: Some((&self.world, &mut self.leaves, &mut self.row)),
             portals: Some(&mut self.portals),
@@ -223,6 +227,212 @@ fn address_modes() -> [(Addresses, u64, u64); 3] {
             0,
         ),
     ]
+}
+
+#[test]
+fn q3_brush_model_publication_and_live_queries_use_owner_geometry() {
+    use qa_core::primitives::{CollisionShape, IndexSpan, NativeEntity, SurfaceFlags};
+    use qa_world::collision::{
+        Contents, NativeTraceEntities, NativeTraceTarget, TraceQuery,
+        brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
+        surfaces::SurfaceTable,
+        trace_policy,
+    };
+
+    fn geometry(store: &mut CollisionStore, extent: f32) -> GeometryId {
+        let mut planes = Vec::new();
+        for axis in 0..3 {
+            let mut normal = Vec3::default();
+            normal.0[axis] = 1.0;
+            planes.push(Plane::oriented(normal, extent));
+            normal.0[axis] = -1.0;
+            planes.push(Plane::oriented(normal, extent));
+        }
+        store
+            .load_brushes(
+                planes,
+                vec![Brush {
+                    sides: IndexSpan { first: 0, count: 6 },
+                    contents: Contents::SOLID,
+                }],
+                SurfaceTable::flags(vec![SurfaceFlags::default(); 6]),
+                BrushTree {
+                    planes: Vec::new(),
+                    nodes: Vec::new(),
+                    leaves: vec![
+                        CollisionLeaf {
+                            stored_contents: None,
+                            brushes: IndexSpan::default(),
+                        },
+                        CollisionLeaf {
+                            stored_contents: None,
+                            brushes: IndexSpan { first: 0, count: 1 },
+                        },
+                    ],
+                    leaf_brushes: vec![0],
+                    models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
+                },
+                vec![
+                    Bounds {
+                        mins: Vec3([-1024.0; 3]),
+                        maxs: Vec3([1024.0; 3]),
+                    },
+                    Bounds {
+                        mins: Vec3([-extent; 3]),
+                        maxs: Vec3([extent; 3]),
+                    },
+                ],
+            )
+            .unwrap()
+    }
+
+    for (addresses, base, pointer_alias) in address_modes() {
+        let mut fixture = Fixture::new();
+        let query_geometry = geometry(&mut fixture.geometry, 4.0);
+        let owner_geometry = geometry(&mut fixture.geometry, 8.0);
+        fixture.scratch = fixture.geometry.scratch();
+        fixture.collision_world = Some(query_geometry);
+        fixture.native_geometry = Some(owner_geometry);
+        let mut projection = EntityProjection::load_q3();
+        projection.seed(&fixture.server.entities, MODULE).unwrap();
+        let mut memory = ModuleMemory::load(base, 8192, &[]).unwrap();
+        let entity = base + ENTITY_OFFSET;
+        let player = base + PLAYER_OFFSET;
+        let name = base + 3296;
+        memory.write_word(entity, 0).unwrap();
+        memory.write_word(entity + 512, 1023).unwrap();
+        memory.write(name, b"*1\0").unwrap();
+        invoke(
+            &mut fixture,
+            &mut projection,
+            &mut memory,
+            addresses,
+            15,
+            &[
+                entity + pointer_alias,
+                1,
+                ENTITY_BYTES,
+                player + pointer_alias,
+                PLAYER_BYTES,
+            ],
+        )
+        .unwrap();
+        invoke(
+            &mut fixture,
+            &mut projection,
+            &mut memory,
+            addresses,
+            23,
+            &[entity + pointer_alias, name + pointer_alias],
+        )
+        .unwrap();
+        assert_eq!(memory.read_vec3(entity + 436).unwrap(), Vec3([-8.0; 3]));
+        assert_eq!(memory.read_vec3(entity + 448).unwrap(), Vec3([8.0; 3]));
+        let native = NativeEntity {
+            module: MODULE,
+            slot: 0,
+        };
+        let common = fixture.server.entities.find_native(native, None).unwrap();
+        assert_eq!(
+            fixture.server.entities.columns.collision_shape[common.slot as usize],
+            CollisionShape::Model {
+                geometry: owner_geometry,
+                index: 1
+            }
+        );
+
+        let output = base + 3072;
+        let start = base + 3264;
+        let end = base + 3280;
+        memory.write_vec3(start, Vec3([-50.0, 0.0, 0.0])).unwrap();
+        memory.write_vec3(end, Vec3([50.0, 0.0, 0.0])).unwrap();
+        let (rules, entities) = trace_policy(context().trace_rules);
+        let expected = fixture
+            .geometry
+            .trace_model(
+                owner_geometry,
+                1,
+                TraceQuery::point(
+                    Vec3([-50.0, 0.0, 0.0]),
+                    Vec3([50.0, 0.0, 0.0]),
+                    rules,
+                    entities,
+                ),
+                &mut fixture.scratch,
+            )
+            .unwrap();
+        invoke(
+            &mut fixture,
+            &mut projection,
+            &mut memory,
+            addresses,
+            24,
+            &[
+                output + pointer_alias,
+                start + pointer_alias,
+                0,
+                0,
+                end + pointer_alias,
+                1023,
+                u64::from(u32::MAX),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            memory.read_word(output + 8).unwrap() as u32,
+            expected.fraction.to_bits()
+        );
+        memory.write_vec3(start, Vec3([6.0, 0.0, 0.0])).unwrap();
+        assert_eq!(
+            invoke(
+                &mut fixture,
+                &mut projection,
+                &mut memory,
+                addresses,
+                25,
+                &[start + pointer_alias, 1023]
+            )
+            .unwrap(),
+            u64::from(Contents::SOLID.to_q3())
+        );
+
+        let columns = &fixture.server.entities.columns;
+        let cached = NativeTraceTarget {
+            body: columns.body(common.slot as usize),
+            angles: Vec3::default(),
+            shape: columns.collision_shape[common.slot as usize],
+            rules: columns.model_rules[common.slot as usize],
+            contents_pose: None,
+        };
+        let view = projection.trace_view(&memory, context(), None).unwrap();
+        assert!(view.fields(native, false).is_some());
+        assert!(
+            view.target(
+                native,
+                cached,
+                false,
+                &fixture.geometry,
+                Some(&fixture.storage)
+            )
+            .is_none()
+        );
+        assert_eq!(view.finish(), Err(CallError::Geometry));
+        memory.write_word(entity + 432, 0).unwrap();
+        let view = projection.trace_view(&memory, context(), None).unwrap();
+        assert_eq!(
+            view.target(
+                native,
+                cached,
+                false,
+                &fixture.geometry,
+                Some(&fixture.storage)
+            )
+            .unwrap()
+            .shape,
+            CollisionShape::Box
+        );
+        assert_eq!(view.finish(), Ok(()));
+    }
 }
 
 #[test]

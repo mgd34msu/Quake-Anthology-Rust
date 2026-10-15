@@ -41,8 +41,12 @@ fn program() -> Vm {
             (Address, 34, 110, 114),
             (StorePS, 111, 114, 0),
             (Return, 0, 0, 0),
+            (Address, 34, 113, 114),
+            (StorePV, 100, 114, 0),
+            (Call0, 112, 0, 0),
+            (Return, 0, 0, 0),
         ],
-        &[0, 1, 2, 8, -16, -14, 10],
+        &[0, 1, 2, 8, -16, -14, 10, 13],
         &[
             (4, 34, b"self"),
             (2, 35, b"time"),
@@ -156,7 +160,7 @@ fn fixture() -> (
             &mut runtime,
             module,
             Program::quakec(program(), None),
-            (0..7).collect(),
+            (0..8).collect(),
             RuleSetId::Quake,
         )
         .0
@@ -308,6 +312,66 @@ fn foreign_qc_trace_reads_temporary_solid_and_current_model_from_its_owner_geome
     assert_eq!(changed[1], first[1]);
     assert_eq!(host.runtime.server.area.bounds(actor), bounds);
     assert_eq!(host.runtime.server.area.relinks, relinks);
+}
+
+#[test]
+fn cancelled_qc_export_publishes_its_admitted_prefix_in_owner_geometry() {
+    use qa_core::primitives::{CallbackCall, CollisionShape};
+    let (mut host, owner, query, actor) = fixture();
+    let bounds = host.runtime.server.area.bounds(actor);
+    let relinks = host.runtime.server.area.relinks;
+    let position = Vec3([24.0, 0.0, 0.0]);
+    let raw_model = {
+        let Program::QuakeC(qc) = &mut host.module_row_mut(A).unwrap().request.program else {
+            unreachable!()
+        };
+        for (word, value) in qc.vm.image.globals[100..103].iter_mut().zip(position.0) {
+            *word = value.to_bits();
+        }
+        qc.vm.image.globals[112] = u32::MAX;
+        qc.vm.image.globals[113] = 0;
+        let field = qc.vm.field_address(2 * qc.vm.stride as u32, 27, 1).unwrap();
+        qc.vm.entities.read_word(field).unwrap()
+    };
+    assert!(
+        host.call_module(
+            CallbackId(7),
+            CallbackCall::Export {
+                entity: actor,
+                time: ThinkTime::Seconds(3.0),
+                arguments: [0; 9],
+                client: None,
+                command: Default::default(),
+            },
+        )
+        .is_err()
+    );
+    assert_eq!(host.module_counts(A).unwrap().traps, 1);
+    let slot = actor.slot as usize;
+    assert_eq!(
+        host.runtime.server.entities.columns.position[slot],
+        position
+    );
+    assert_eq!(
+        host.runtime.server.entities.columns.collision_shape[slot],
+        CollisionShape::Model {
+            geometry: owner,
+            index: 1,
+        }
+    );
+    assert_ne!(owner, query);
+    assert_eq!(host.runtime.server.area.bounds(actor), bounds);
+    assert_eq!(host.runtime.server.area.relinks, relinks);
+    let Program::QuakeC(qc) = &mut host.module_row_mut(A).unwrap().request.program else {
+        unreachable!()
+    };
+    let native = 2 * qc.vm.stride as u32;
+    let origin = qc.vm.field_address(native, 0, 3).unwrap();
+    assert_eq!(qc.vm.entities.read_vec3(origin).unwrap(), position);
+    let model = qc.vm.field_address(native, 27, 1).unwrap();
+    assert_eq!(qc.vm.entities.read_word(model).unwrap(), raw_model);
+    call(&mut host, A, 1);
+    assert_eq!(host.module_counts(A).unwrap().traps, 1);
 }
 
 #[test]
