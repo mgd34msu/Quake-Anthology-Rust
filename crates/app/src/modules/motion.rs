@@ -15,7 +15,7 @@ use qa_session::physics::{
 };
 use qa_world::{
     collision::{QuakeTraceKind, TraceQuery, trace_policy},
-    entities::EntityTable,
+    entities::{EntityReference, EntityTable},
 };
 use std::sync::Arc;
 
@@ -255,6 +255,8 @@ struct Host<'a> {
     time: ThinkTime,
     client: Option<(ClientId, EntityId)>,
     trace_rules: Option<RuleSetId>,
+    captured_mover: EntityReference,
+    captured_hit: Option<EntityReference>,
 }
 impl<'a> Host<'a> {
     fn new(
@@ -265,6 +267,12 @@ impl<'a> Host<'a> {
     ) -> Result<Self, ClientCommandError> {
         let native = native_offset(host, module, entity)?;
         let mover = contacts::reference(host, entity)?;
+        let captured_mover = host
+            .runtime
+            .server
+            .entities
+            .capture_reference(entity)
+            .ok_or(ClientCommandError::InvalidSlot)?;
         Ok(Self {
             host,
             module,
@@ -273,6 +281,8 @@ impl<'a> Host<'a> {
             time,
             client: None,
             trace_rules: None,
+            captured_mover,
+            captured_hit: None,
         })
     }
     fn client(
@@ -407,9 +417,6 @@ impl<'a> Host<'a> {
             }
             CollisionOwner::None => return Err(ClientCommandError::InvalidSlot),
         };
-        if native.module != self.module {
-            return Err(ClientCommandError::DifferentModule);
-        }
         Ok(NativeEntityRef::entity(
             ResourceNamespace::Module(native.module),
             u32::try_from(native.slot).map_err(|_| ClientCommandError::InvalidSlot)?,
@@ -659,13 +666,18 @@ impl MotionHost for Host<'_> {
             .resolve(entity)
             .ok_or(ClientCommandError::Inactive)?;
         let body = entities.columns.body(slot);
-        self.trace_between(
+        let trace = self.trace_between(
             entity,
             body.position,
             end,
             Some((body.mins, body.maxs)),
             kind,
-        )
+        )?;
+        self.captured_hit = trace
+            .trace
+            .entity
+            .and_then(|hit| self.host.runtime.server.entities.capture_reference(hit));
+        Ok(trace)
     }
     fn relink(&mut self, entity: EntityId) -> Result<Option<EntityId>, Self::Error> {
         self.edit(entity, |vm, services, context, native| {
@@ -689,6 +701,12 @@ impl MotionHost for Host<'_> {
             self.mover,
             native,
             self.time,
+            (
+                Some(self.captured_mover),
+                self.captured_hit.filter(|captured| {
+                    captured.reference() == native && Some(captured.entity()) == trace.trace.entity
+                }),
+            ),
         )?;
         self.current()
     }
@@ -818,3 +836,7 @@ impl ClientHost for Host<'_> {
         Host::current(self)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/modules/foreign_motion.rs"]
+mod tests;

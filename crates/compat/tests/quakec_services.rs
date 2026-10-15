@@ -222,7 +222,10 @@ fn owned_builtin_import_uses_stopped_arguments_and_native_return_widths() {
                 parameters(&mut vm, &[&raw]);
                 vm.image.globals[1..4].copy_from_slice(&[0xdead_beef, tail[0], tail[1]]);
                 let mut run = vm.begin_root(1, 64, false).unwrap();
-                let Step::Builtin(builtin) = vm.advance(&mut run).unwrap() else {
+                let Step::Builtin(builtin) = vm
+                    .advance(&mut run, &qa_compat::quakec::EntityAccess::native_only())
+                    .unwrap()
+                else {
                     panic!("expected an executed builtin");
                 };
                 vm.image.globals[4..7].fill(99.0f32.to_bits());
@@ -231,7 +234,10 @@ fn owned_builtin_import_uses_stopped_arguments_and_native_return_widths() {
                     QcImportStep::Returned
                 ));
                 assert_eq!(builtin.arguments(), &[raw]);
-                assert_eq!(vm.resume(&mut run), Ok(Step::Returned(expected)));
+                assert_eq!(
+                    vm.resume(&mut run, &qa_compat::quakec::EntityAccess::native_only()),
+                    Ok(Step::Returned(expected))
+                );
                 assert!(!vm.is_running());
             }
         });
@@ -5103,6 +5109,706 @@ fn a_missing_native_weapon_deadline_does_not_fabricate_zero() {
                 .player
                 .weapon_state,
             None
+        );
+    });
+}
+
+fn alias_vm(capacity: usize, body: &[(Opcode, i16, i16, i16)]) -> Vm {
+    let mut fields = FIELDS.to_vec();
+    fields.extend_from_slice(&[
+        (1, 37, b"classname"),
+        (4, 38, b"chain"),
+        (2, 39, b"invincible_sound"),
+        (2, 40, b"health"),
+        (2, 41, b"movetype"),
+        (3, 42, b"avelocity"),
+    ]);
+    let bytes = quakec_program::program_with_definitions(body, &[0, 1], GLOBALS, &fields, 45, 96);
+    Vm::load(
+        Image::parse(&bytes, Some(5927)).unwrap(),
+        Layout {
+            entities: capacity,
+            header_bytes: 16,
+            extra_string_bytes: 128,
+            state_step: 0.1,
+            random_seed: 1,
+        },
+    )
+    .unwrap()
+}
+fn alias_actor(calls: &mut QuakeCCalls<'_, '_>, module: ModuleId, ordinal: i32) -> EntityId {
+    let entity = calls
+        .services
+        .server
+        .entities
+        .allocate(calls.context.clock, module, AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
+    let columns = &mut calls.services.server.entities.columns;
+    columns.native_entity[entity.slot as usize] = Some(NativeEntity {
+        module,
+        slot: ordinal,
+    });
+    columns.set_body(
+        entity.slot as usize,
+        Body {
+            position: Vec3([10.0, 20.0, 30.0]),
+            velocity: Vec3([1.0, -2.0, 3.0]),
+            mins: Vec3([-1.0, -2.0, -3.0]),
+            maxs: Vec3([4.0, 5.0, 6.0]),
+        },
+    );
+    columns.set_angles(entity.slot as usize, Vec3([7.0, 8.0, 9.0]));
+    columns.collision_shape[entity.slot as usize] = CollisionShape::Box;
+    columns.collision_contents[entity.slot as usize] = qa_world::collision::Contents::SOLID.0;
+    entity
+}
+fn alias_load(
+    vm: &mut Vm,
+    calls: &mut QuakeCCalls<'_, '_>,
+    value: u32,
+    field: &[u8],
+    vector: bool,
+) -> Result<[u32; 3], Trap> {
+    vm.image.globals[28] = value;
+    vm.image.globals[29] = vm.image.field(field).unwrap() as u32;
+    vm.image.statements[1].opcode = if vector { Opcode::LoadV } else { Opcode::LoadF };
+    vm.call(calls, 1, 100, false)
+}
+
+#[test]
+fn foreign_alias_reads_current_published_pose_and_link_bounds_without_a_second_body() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = alias_vm(
+            4,
+            &[(Opcode::LoadV, 28, 29, 50), (Opcode::Return, 50, 0, 0)],
+        );
+        vm.seed_entities(
+            &calls.services.server.entities,
+            calls.context.module,
+            calls.context.native_rules,
+            1,
+        )
+        .unwrap();
+        let first = alias_actor(calls, ModuleId(2), 7);
+        let second = alias_actor(calls, ModuleId(3), 7);
+        let mut link_context = calls.context;
+        link_context.module = ModuleId(2);
+        (ENGINE_CALLS.link)(calls.services, link_context, first, LinkFlags::SOLID).unwrap();
+        let count = calls.services.server.entities.active().count();
+        let relinks = calls.services.server.area.relinks;
+        let absolute = calls.services.server.area.bounds(first).unwrap();
+        let a = vm
+            .admit_entity(&calls.services.server.entities, calls.context, first)
+            .unwrap();
+        let b = vm
+            .admit_entity(&calls.services.server.entities, calls.context, second)
+            .unwrap();
+        assert_ne!(a.offset(), b.offset());
+        assert_eq!(
+            vm.resolve_entity(
+                &calls.services.server.entities,
+                calls.context.module,
+                a.offset()
+            ),
+            Ok(Some(first))
+        );
+        assert_eq!(
+            vm.bound_entity(
+                &calls.services.server.entities,
+                NativeEntity {
+                    module: calls.context.module,
+                    slot: vm.entity_number(a.offset()).unwrap() as i32
+                }
+            ),
+            Ok(None)
+        );
+        for (field, expected) in [
+            (b"origin".as_slice(), Vec3([10.0, 20.0, 30.0])),
+            (b"velocity", Vec3([1.0, -2.0, 3.0])),
+            (b"angles", Vec3([7.0, 8.0, 9.0])),
+            (b"mins", Vec3([-1.0, -2.0, -3.0])),
+            (b"maxs", Vec3([4.0, 5.0, 6.0])),
+            (b"size", Vec3([5.0, 7.0, 9.0])),
+            (b"absmin", absolute.mins),
+            (b"absmax", absolute.maxs),
+        ] {
+            assert_eq!(
+                alias_load(&mut vm, calls, a.offset(), field, true),
+                Ok(expected.0.map(f32::to_bits))
+            );
+        }
+        calls
+            .services
+            .server
+            .entities
+            .columns
+            .set_position(first.slot as usize, Vec3([40.0, 50.0, 60.0]));
+        assert_eq!(
+            alias_load(&mut vm, calls, a.offset(), b"origin", true),
+            Ok([40.0f32, 50.0, 60.0].map(f32::to_bits))
+        );
+        assert_eq!(
+            alias_load(&mut vm, calls, a.offset(), b"absmin", true),
+            Ok(absolute.mins.0.map(f32::to_bits))
+        );
+        assert_eq!(
+            alias_load(&mut vm, calls, b.offset(), b"absmin", true),
+            Ok([9.0f32, 18.0, 27.0].map(f32::to_bits))
+        );
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
+        assert_eq!(calls.services.server.entities.active().count(), count);
+        assert_eq!(calls.services.server.area.relinks, relinks);
+        assert_eq!(calls.services.server.area.bounds(first), Some(absolute));
+        vm.release_entity(a).unwrap();
+        vm.release_entity(b).unwrap();
+    });
+}
+
+#[test]
+fn foreign_box_sound_uses_nq_center_and_qw_origin_with_only_required_authority() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = alias_vm(34, &[(Opcode::Return, 1, 0, 0)]);
+            vm.seed_entities(
+                &calls.services.server.entities,
+                calls.context.module,
+                calls.context.native_rules,
+                1,
+            )
+            .unwrap();
+            let actor = alias_actor(calls, ModuleId(2), 7);
+            calls.services.server.entities.columns.set_body(
+                actor.slot as usize,
+                Body {
+                    position: Vec3::default(),
+                    mins: Vec3([-16.0, -16.0, -24.0]),
+                    maxs: Vec3([16.0, 16.0, 32.0]),
+                    ..Body::default()
+                },
+            );
+            let admitted = vm
+                .admit_entity(&calls.services.server.entities, calls.context, actor)
+                .unwrap();
+            let sound = bind_native_message_sound(calls);
+            let client = calls
+                .services
+                .server
+                .connect(
+                    qa_session::clients::Connection::Remote,
+                    ModuleId::default(),
+                    None,
+                )
+                .unwrap();
+            let consumer = calls.services.server.clients[client.0 as usize]
+                .output
+                .unwrap();
+            let count = calls.services.server.entities.active().count();
+            let relinks = calls.services.server.area.relinks;
+            let channel = if rules == RuleSetId::QuakeWorld { 9 } else { 1 };
+            vm.start_sound(
+                calls.services,
+                calls.context,
+                calls.platform_time,
+                admitted.offset(),
+                b"test.wav",
+                channel,
+                255,
+                1.0,
+            )
+            .unwrap();
+            let mut batch = calls.services.server.events.batch(consumer).unwrap();
+            let record = calls.services.server.events.next(&mut batch).unwrap();
+            let qa_core::events::FrameEvent::Sound(event) = record.event else {
+                panic!("sound record");
+            };
+            let centered = rules == RuleSetId::Quake;
+            let expected = if centered {
+                Vec3([0.0, 0.0, 4.0])
+            } else {
+                Vec3::default()
+            };
+            assert_eq!(event.sound, sound);
+            assert_eq!(event.entity, Some(SoundEmitter::Entity(actor)));
+            assert_eq!(event.position, expected);
+            assert_eq!(event.positioned, centered);
+            assert_eq!(event.channel, 1);
+            assert_eq!(event.spatial, calls.context.sound_policy);
+            let delivery = record.delivery.unwrap();
+            assert_eq!(delivery.module, calls.context.module);
+            assert_eq!(delivery.source, rules);
+            assert_eq!(delivery.origin, expected);
+            assert_eq!(delivery.target, NativeTarget::All);
+            assert_eq!(delivery.reliable, rules == RuleSetId::QuakeWorld);
+
+            calls.services.server.entities.columns.published_fields[actor.slot as usize] =
+                EntityFields::POSITION;
+            let before = calls.services.server.events.sequence_range();
+            let result = vm.start_sound(
+                calls.services,
+                calls.context,
+                calls.platform_time,
+                admitted.offset(),
+                b"test.wav",
+                channel,
+                255,
+                1.0,
+            );
+            if centered {
+                assert_eq!(result, Err(CallError::Unsupported));
+                assert_eq!(calls.services.server.events.sequence_range(), before);
+            } else {
+                result.unwrap();
+                let mut batch = calls.services.server.events.batch(consumer).unwrap();
+                calls.services.server.events.next(&mut batch).unwrap();
+                let second = calls.services.server.events.next(&mut batch).unwrap();
+                let qa_core::events::FrameEvent::Sound(event) = second.event else {
+                    panic!("second sound record");
+                };
+                assert_eq!(event.position, Vec3::default());
+                assert!(!event.positioned);
+                assert_eq!(event.entity, Some(SoundEmitter::Entity(actor)));
+            }
+            assert_eq!(calls.services.server.entities.active().count(), count);
+            assert_eq!(calls.services.server.area.relinks, relinks);
+            assert_eq!(
+                calls.services.server.entities.columns.native_entity[actor.slot as usize],
+                Some(NativeEntity {
+                    module: ModuleId(2),
+                    slot: 7
+                })
+            );
+            vm.release_entity(admitted).unwrap();
+        });
+    }
+}
+
+#[test]
+fn foreign_reads_reject_unknown_authority_and_private_layouts_before_destination_writes() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = alias_vm(
+            3,
+            &[(Opcode::LoadV, 28, 29, 50), (Opcode::Return, 50, 0, 0)],
+        );
+        vm.seed_entities(
+            &calls.services.server.entities,
+            calls.context.module,
+            calls.context.native_rules,
+            1,
+        )
+        .unwrap();
+        let actor = alias_actor(calls, ModuleId(2), 7);
+        calls.services.server.entities.columns.published_fields[actor.slot as usize] =
+            EntityFields::POSITION;
+        let admitted = vm
+            .admit_entity(&calls.services.server.entities, calls.context, actor)
+            .unwrap();
+        for field in [b"velocity".as_slice(), b"solid", b"health", b"classname"] {
+            vm.image.globals[50..53].copy_from_slice(&[11, 22, 33]);
+            assert_eq!(
+                alias_load(
+                    &mut vm,
+                    calls,
+                    admitted.offset(),
+                    field,
+                    field == b"velocity"
+                ),
+                Err(Trap::EntityAccess)
+            );
+            assert_eq!(vm.image.globals[50..53], [11, 22, 33]);
+        }
+        vm.image.globals[28] = admitted.offset();
+        vm.image.globals[29] = 0;
+        vm.image.statements[1].opcode = Opcode::LoadV;
+        let mut run = vm.begin_root(1, 100, false).unwrap();
+        assert_eq!(
+            vm.advance(&mut run, &qa_compat::quakec::EntityAccess::native_only()),
+            Err(Trap::EntityAccess)
+        );
+        vm.release_entity(admitted).unwrap();
+    });
+}
+
+#[test]
+fn foreign_classname_cache_reuses_its_bounded_string_reservation() {
+    with_services(RuleSetId::Quake, |calls| {
+        *calls.services.names =
+            NameTable::load([b"abcdefgh".as_slice(), b"xy", b"longer than eight"]).unwrap();
+        let mut vm = alias_vm(
+            3,
+            &[(Opcode::LoadS, 28, 29, 50), (Opcode::Return, 50, 0, 0)],
+        );
+        vm.seed_entities(
+            &calls.services.server.entities,
+            calls.context.module,
+            calls.context.native_rules,
+            1,
+        )
+        .unwrap();
+        let actor = alias_actor(calls, ModuleId(2), 7);
+        calls.services.server.entities.columns.classname[actor.slot as usize] =
+            calls.services.names.find(b"abcdefgh");
+        let admitted = vm
+            .admit_entity(&calls.services.server.entities, calls.context, actor)
+            .unwrap();
+        let offset = alias_load(&mut vm, calls, admitted.offset(), b"classname", false).unwrap()[0];
+        assert_eq!(vm.string(offset as i32).unwrap(), b"abcdefgh");
+        while vm.insert_string(b"x").is_ok() {}
+        assert_eq!(
+            alias_load(&mut vm, calls, admitted.offset(), b"classname", false).unwrap()[0],
+            offset
+        );
+        calls.services.server.entities.columns.classname[actor.slot as usize] =
+            calls.services.names.find(b"xy");
+        assert_eq!(
+            alias_load(&mut vm, calls, admitted.offset(), b"classname", false).unwrap()[0],
+            offset
+        );
+        assert_eq!(vm.string(offset as i32).unwrap(), b"xy");
+        calls.services.server.entities.columns.classname[actor.slot as usize] =
+            calls.services.names.find(b"longer than eight");
+        vm.image.globals[50..53].copy_from_slice(&[11, 22, 33]);
+        assert_eq!(
+            alias_load(&mut vm, calls, admitted.offset(), b"classname", false),
+            Err(Trap::String)
+        );
+        assert_eq!(vm.image.globals[50..53], [11, 22, 33]);
+        vm.release_entity(admitted).unwrap();
+    });
+}
+
+#[test]
+fn live_aliases_keep_their_ordinal_and_retired_pins_hold_capacity_until_release() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = alias_vm(
+            3,
+            &[(Opcode::LoadV, 28, 29, 50), (Opcode::Return, 50, 0, 0)],
+        );
+        vm.seed_entities(
+            &calls.services.server.entities,
+            calls.context.module,
+            calls.context.native_rules,
+            1,
+        )
+        .unwrap();
+        let first = alias_actor(calls, ModuleId(2), 7);
+        let second = alias_actor(calls, ModuleId(3), 7);
+        let one = vm
+            .admit_entity(&calls.services.server.entities, calls.context, first)
+            .unwrap();
+        let offset = one.offset();
+        vm.release_entity(one).unwrap();
+        assert!(matches!(
+            vm.admit_entity(&calls.services.server.entities, calls.context, second),
+            Err(CallError::Capacity)
+        ));
+        let one = vm
+            .admit_entity(&calls.services.server.entities, calls.context, first)
+            .unwrap();
+        let two = vm
+            .admit_entity(&calls.services.server.entities, calls.context, first)
+            .unwrap();
+        assert_eq!(one.offset(), offset);
+        assert_eq!(two.offset(), offset);
+        assert!(
+            calls
+                .services
+                .server
+                .free_entity(first, calls.context.clock)
+        );
+        assert_eq!(
+            alias_load(&mut vm, calls, offset, b"origin", true),
+            Err(Trap::EntityAccess)
+        );
+        vm.release_entity(one).unwrap();
+        assert!(matches!(
+            vm.admit_entity(&calls.services.server.entities, calls.context, second),
+            Err(CallError::Capacity)
+        ));
+        vm.release_entity(two).unwrap();
+        let replacement = vm
+            .admit_entity(&calls.services.server.entities, calls.context, second)
+            .unwrap();
+        assert_eq!(replacement.offset(), offset);
+        vm.release_entity(replacement).unwrap();
+    });
+}
+
+#[test]
+fn captured_retired_reference_stays_nonzero_and_pinned_without_becoming_readable() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = alias_vm(
+            3,
+            &[(Opcode::LoadV, 28, 29, 50), (Opcode::Return, 50, 0, 0)],
+        );
+        vm.seed_entities(
+            &calls.services.server.entities,
+            calls.context.module,
+            calls.context.native_rules,
+            1,
+        )
+        .unwrap();
+        let retired = alias_actor(calls, ModuleId(2), 7);
+        let captured = calls
+            .services
+            .server
+            .entities
+            .capture_reference(retired)
+            .unwrap();
+        let other = alias_actor(calls, ModuleId(3), 7);
+        assert!(
+            calls
+                .services
+                .server
+                .free_entity(retired, calls.context.clock)
+        );
+        assert!(matches!(
+            vm.admit_reference(
+                &calls.services.server.entities,
+                calls.context,
+                captured.reference()
+            ),
+            Err(CallError::Entity)
+        ));
+        let one = vm
+            .admit_captured_reference(&calls.services.server.entities, calls.context, captured)
+            .unwrap();
+        let two = vm
+            .admit_captured_reference(&calls.services.server.entities, calls.context, captured)
+            .unwrap();
+        let offset = one.offset();
+        assert_ne!(offset, 0);
+        assert_eq!(two.offset(), offset);
+        vm.image.globals[50..53].copy_from_slice(&[11, 22, 33]);
+        assert_eq!(
+            alias_load(&mut vm, calls, offset, b"origin", true),
+            Err(Trap::EntityAccess)
+        );
+        assert_eq!(vm.image.globals[50..53], [11, 22, 33]);
+        vm.release_entity(one).unwrap();
+        assert!(matches!(
+            vm.admit_entity(&calls.services.server.entities, calls.context, other),
+            Err(CallError::Capacity)
+        ));
+        vm.release_entity(two).unwrap();
+        let reused = vm
+            .admit_entity(&calls.services.server.entities, calls.context, other)
+            .unwrap();
+        assert_eq!(reused.offset(), offset);
+        assert_eq!(
+            alias_load(&mut vm, calls, reused.offset(), b"origin", true).unwrap(),
+            [10.0_f32.to_bits(), 20.0_f32.to_bits(), 30.0_f32.to_bits()]
+        );
+        vm.release_entity(reused).unwrap();
+    });
+}
+
+#[test]
+fn captured_reference_prefers_current_native_row_over_retired_canonical_generation() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = alias_vm(
+            4,
+            &[(Opcode::LoadV, 28, 29, 50), (Opcode::Return, 50, 0, 0)],
+        );
+        vm.seed_entities(
+            &calls.services.server.entities,
+            calls.context.module,
+            calls.context.native_rules,
+            1,
+        )
+        .unwrap();
+        let retired = alias_actor(calls, ModuleId(2), 7);
+        let captured = calls
+            .services
+            .server
+            .entities
+            .capture_reference(retired)
+            .unwrap();
+        assert!(
+            calls
+                .services
+                .server
+                .free_entity(retired, calls.context.clock)
+        );
+        let old_pin = vm
+            .admit_captured_reference(&calls.services.server.entities, calls.context, captured)
+            .unwrap();
+        let current = alias_actor(calls, ModuleId(2), 7);
+        assert_ne!(current, retired);
+        calls
+            .services
+            .server
+            .entities
+            .columns
+            .set_position(current.slot as usize, Vec3([70.0, 80.0, 90.0]));
+        let replacement = vm
+            .admit_captured_reference(&calls.services.server.entities, calls.context, captured)
+            .unwrap();
+        assert_ne!(old_pin.offset(), replacement.offset());
+        assert_eq!(
+            alias_load(&mut vm, calls, replacement.offset(), b"origin", true).unwrap(),
+            [70.0_f32.to_bits(), 80.0_f32.to_bits(), 90.0_f32.to_bits()]
+        );
+        assert_eq!(
+            alias_load(&mut vm, calls, old_pin.offset(), b"origin", true),
+            Err(Trap::EntityAccess)
+        );
+        assert_eq!(
+            vm.resolve_entity(
+                &calls.services.server.entities,
+                calls.context.module,
+                replacement.offset()
+            )
+            .unwrap(),
+            Some(current)
+        );
+        vm.release_entity(old_pin).unwrap();
+        vm.release_entity(replacement).unwrap();
+    });
+}
+
+#[test]
+fn foreign_private_scalar_words_persist_but_vector_cross_row_and_state_stores_are_atomic_rejections()
+ {
+    with_services(RuleSetId::Quake, |calls| {
+        for hooks in [false, true] {
+            let mut vm = alias_vm(
+                4,
+                &[(Opcode::StorePF, 28, 31, 0), (Opcode::Return, 1, 0, 0)],
+            );
+            vm.seed_entities(
+                &calls.services.server.entities,
+                calls.context.module,
+                calls.context.native_rules,
+                1,
+            )
+            .unwrap();
+            let actor = alias_actor(calls, ModuleId(2), 7);
+            let admitted = vm
+                .admit_entity(&calls.services.server.entities, calls.context, actor)
+                .unwrap();
+            let count = calls.services.server.entities.active().count();
+            vm.image.globals[28] = 0x7fc1_2345;
+            for field in [b"chain".as_slice(), b"invincible_sound"] {
+                vm.image.globals[31] = vm
+                    .field_address(admitted.offset(), vm.image.field(field).unwrap() as u32, 1)
+                    .unwrap() as u32;
+                assert!(vm.call(calls, 1, 100, hooks).is_ok());
+                assert_eq!(read(&vm, admitted.offset(), field, 1), [0x7fc1_2345]);
+            }
+            vm.image.statements[1].opcode = Opcode::StorePV;
+            let before = vm.entities.read(0, vm.entities.len()).unwrap().to_vec();
+            assert_eq!(vm.call(calls, 1, 100, hooks), Err(Trap::EntityAccess));
+            assert_eq!(vm.entities.read(0, vm.entities.len()).unwrap(), before);
+            vm.image.statements[1].opcode = Opcode::StorePF;
+            vm.image.globals[31] = admitted.offset() + vm.header_bytes as u32 - 2;
+            assert_eq!(vm.call(calls, 1, 100, hooks), Err(Trap::EntityAccess));
+            assert_eq!(vm.entities.read(0, vm.entities.len()).unwrap(), before);
+            vm.image.globals[31] = admitted.offset() - 2;
+            assert_eq!(vm.call(calls, 1, 100, hooks), Err(Trap::EntityAccess));
+            assert_eq!(vm.entities.read(0, vm.entities.len()).unwrap(), before);
+            vm.image.globals[34] = admitted.offset();
+            vm.image.statements[1].opcode = Opcode::State;
+            assert_eq!(vm.call(calls, 1, 100, hooks), Err(Trap::EntityAccess));
+            assert_eq!(vm.entities.read(0, vm.entities.len()).unwrap(), before);
+            vm.project_dirty_entities(calls.services, calls.context)
+                .unwrap();
+            assert_eq!(calls.services.server.entities.active().count(), count);
+            assert_eq!(
+                calls.services.server.entities.columns.position[actor.slot as usize],
+                Vec3([10.0, 20.0, 30.0])
+            );
+            assert_eq!(read(&vm, admitted.offset(), b"chain", 1), [0x7fc1_2345]);
+            vm.release_entity(admitted).unwrap();
+        }
+    });
+}
+
+#[test]
+fn native_store_prefix_survives_a_later_rejected_foreign_vector_store() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = alias_vm(
+            4,
+            &[
+                (Opcode::StorePF, 28, 31, 0),
+                (Opcode::StorePV, 50, 32, 0),
+                (Opcode::Return, 1, 0, 0),
+            ],
+        );
+        vm.seed_entities(
+            &calls.services.server.entities,
+            calls.context.module,
+            calls.context.native_rules,
+            1,
+        )
+        .unwrap();
+        let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let own = entity(calls, &vm, native);
+        let actor = alias_actor(calls, ModuleId(2), 7);
+        let admitted = vm
+            .admit_entity(&calls.services.server.entities, calls.context, actor)
+            .unwrap();
+        let alias_bytes = vm
+            .entities
+            .read(u64::from(admitted.offset()), vm.stride)
+            .unwrap()
+            .to_vec();
+        vm.image.globals[28] = 17.0f32.to_bits();
+        vm.image.globals[31] = vm.field_address(native, 29, 1).unwrap() as u32;
+        vm.image.globals[32] = vm.field_address(admitted.offset(), 0, 3).unwrap() as u32;
+        vm.image.globals[50..53].copy_from_slice(&[9.0f32, 8.0, 7.0].map(f32::to_bits));
+        assert_eq!(vm.call(calls, 1, 100, false), Err(Trap::EntityAccess));
+        assert_eq!(
+            vm.entities
+                .read(u64::from(admitted.offset()), vm.stride)
+                .unwrap(),
+            alias_bytes
+        );
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
+        assert_eq!(
+            calls.services.server.entities.columns.appearance[own.slot as usize].frame,
+            17
+        );
+        assert_eq!(
+            calls.services.server.entities.columns.position[actor.slot as usize],
+            Vec3([10.0, 20.0, 30.0])
+        );
+        vm.release_entity(admitted).unwrap();
+    });
+}
+
+#[test]
+fn full_qw_backing_never_overwrites_a_live_foreign_alias() {
+    with_services(RuleSetId::QuakeWorld, |calls| {
+        let mut vm = alias_vm(34, &[(Opcode::Return, 1, 0, 0)]);
+        vm.seed_entities(
+            &calls.services.server.entities,
+            calls.context.module,
+            calls.context.native_rules,
+            1,
+        )
+        .unwrap();
+        let actor = alias_actor(calls, ModuleId(2), 7);
+        let admitted = vm
+            .admit_entity(&calls.services.server.entities, calls.context, actor)
+            .unwrap();
+        let offset = admitted.offset();
+        vm.release_entity(admitted).unwrap();
+        let count = calls.services.server.entities.active().count();
+        assert_eq!(
+            vm.spawn_entity(calls.services, calls.context),
+            Err(CallError::Capacity)
+        );
+        assert_eq!(calls.services.server.entities.active().count(), count);
+        assert_eq!(
+            vm.resolve_entity(
+                &calls.services.server.entities,
+                calls.context.module,
+                offset
+            ),
+            Ok(Some(actor))
         );
     });
 }

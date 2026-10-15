@@ -397,7 +397,10 @@ impl Runtime {
                 .entities
                 .columns
                 .set_body(client.entity.slot as usize, client.player.body);
-            self.server.entities.columns.angles[client.entity.slot as usize] = spawn.angles;
+            self.server
+                .entities
+                .columns
+                .set_angles(client.entity.slot as usize, spawn.angles);
             self.server.area.link(
                 &self.server.entities,
                 client.entity,

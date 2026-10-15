@@ -294,6 +294,9 @@ fn utility_and_unknown_pairs_count_as_initialized_and_void_pointer_fields_do_not
 
 struct Reject;
 impl Builtins for Reject {
+    fn entity_access(&self) -> qa_compat::quakec::EntityAccess<'_> {
+        qa_compat::quakec::EntityAccess::native_only()
+    }
     fn call(&mut self, _: &mut Vm, _: u32, _: usize) -> Result<(), Trap> {
         Err(Trap::Builtin)
     }

@@ -1,11 +1,30 @@
 use qa_core::bits::BitSet;
 use qa_core::primitives::{
     Body, BodyAttachment, CallbackId, CollisionOwner, CollisionShape, CollisionTags,
-    EntityAppearance, EntityId, EntityPose, ModelRules, ModuleId, Motion, NameId, NativeEntity,
-    ThinkTime, Vec3,
+    EntityAppearance, EntityFields, EntityId, EntityPose, ModelRules, ModuleId, Motion, NameId,
+    NativeEntity, NativeEntityRef, ResourceNamespace, ThinkTime, Vec3,
 };
 
 pub const MAX_ENTITIES: usize = 8192;
+
+/// A native reference paired with its verified lifetime before a callback.
+/// The weak native ordinal can rebind, while the captured generation remains
+/// available when a callback retires that row without replacing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntityReference {
+    entity: EntityId,
+    reference: NativeEntityRef,
+}
+
+impl EntityReference {
+    pub const fn entity(self) -> EntityId {
+        self.entity
+    }
+
+    pub const fn reference(self) -> NativeEntityRef {
+        self.reference
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReuseDelay {
@@ -118,6 +137,7 @@ pub enum AttachmentError {
 }
 
 pub struct EntityColumns {
+    pub published_fields: Box<[EntityFields]>,
     pub position: Box<[Vec3]>,
     pub velocity: Box<[Vec3]>,
     pub mins: Box<[Vec3]>,
@@ -155,6 +175,7 @@ pub struct EntityColumns {
 impl EntityColumns {
     fn new(capacity: usize) -> Self {
         Self {
+            published_fields: vec![EntityFields::default(); capacity].into_boxed_slice(),
             position: vec![Vec3::default(); capacity].into_boxed_slice(),
             velocity: vec![Vec3::default(); capacity].into_boxed_slice(),
             mins: vec![Vec3::default(); capacity].into_boxed_slice(),
@@ -188,6 +209,7 @@ impl EntityColumns {
     }
 
     fn clear(&mut self, slot: usize) {
+        self.published_fields[slot] = EntityFields::default();
         self.position[slot] = Vec3::default();
         self.velocity[slot] = Vec3::default();
         self.mins[slot] = Vec3::default();
@@ -240,10 +262,30 @@ impl EntityColumns {
     }
 
     pub fn set_body(&mut self, slot: usize, body: Body) {
-        self.position[slot] = body.position;
-        self.velocity[slot] = body.velocity;
-        self.mins[slot] = body.mins;
-        self.maxs[slot] = body.maxs;
+        self.set_position(slot, body.position);
+        self.set_velocity(slot, body.velocity);
+        self.set_bounds(slot, body.mins, body.maxs);
+    }
+
+    pub fn set_position(&mut self, slot: usize, position: Vec3) {
+        self.position[slot] = position;
+        self.published_fields[slot].insert(EntityFields::POSITION);
+    }
+
+    pub fn set_velocity(&mut self, slot: usize, velocity: Vec3) {
+        self.velocity[slot] = velocity;
+        self.published_fields[slot].insert(EntityFields::VELOCITY);
+    }
+
+    pub fn set_angles(&mut self, slot: usize, angles: Vec3) {
+        self.angles[slot] = angles;
+        self.published_fields[slot].insert(EntityFields::ANGLES);
+    }
+
+    pub fn set_bounds(&mut self, slot: usize, mins: Vec3, maxs: Vec3) {
+        self.mins[slot] = mins;
+        self.maxs[slot] = maxs;
+        self.published_fields[slot].insert(EntityFields::BOUNDS);
     }
 
     pub fn targetname(&self, slot: usize) -> Option<NameId> {
@@ -476,6 +518,19 @@ impl EntityTable {
     pub fn find_native(&self, native: NativeEntity, exclude: Option<EntityId>) -> Option<EntityId> {
         self.active().find(|id| {
             Some(*id) != exclude && self.columns.native_entity[id.slot as usize] == Some(native)
+        })
+    }
+
+    pub fn capture_reference(&self, entity: EntityId) -> Option<EntityReference> {
+        let slot = self.resolve(entity)?;
+        let native = self.columns.native_entity[slot]?;
+        if native.module != self.columns.owner[slot] {
+            return None;
+        }
+        let ordinal = u32::try_from(native.slot).ok()?;
+        Some(EntityReference {
+            entity,
+            reference: NativeEntityRef::entity(ResourceNamespace::Module(native.module), ordinal),
         })
     }
 

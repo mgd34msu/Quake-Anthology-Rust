@@ -467,6 +467,15 @@ impl Vm {
         self.projection
             .quakec_touch_callback(&self.entities, native, trigger_only)
     }
+    /// Check current contact presence without resolving a function that an
+    /// earlier immediate callback may replace before the reciprocal call.
+    pub fn touch_pending(&self, native: u32) -> Result<bool, CallError> {
+        self.client_globals.require()?;
+        Ok(self
+            .projection
+            .quakec_touch_word(&self.entities, native, false)?
+            .is_some())
+    }
     pub fn client_set_angles(&self, native: u32) -> Result<Option<Vec3>, CallError> {
         self.client_globals.require()?;
         self.projection

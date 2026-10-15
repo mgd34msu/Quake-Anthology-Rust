@@ -176,6 +176,9 @@ fn read_vector(vm: &Vm, native: u32, name: &[u8]) -> Vec3 {
 }
 struct NoImports;
 impl Builtins for NoImports {
+    fn entity_access(&self) -> qa_compat::quakec::EntityAccess<'_> {
+        qa_compat::quakec::EntityAccess::native_only()
+    }
     fn call(&mut self, _: &mut Vm, _: u32, _: usize) -> Result<(), Trap> {
         Err(Trap::Builtin)
     }

@@ -1,3 +1,7 @@
+#[path = "support/quakec_program.rs"]
+#[allow(dead_code)]
+mod quakec_program;
+
 use qa_compat::{
     abi::{Addresses, Invocation, Q3_SERVER, UnknownCalls},
     entities::EntityProjection,
@@ -266,6 +270,7 @@ fn q3_portal_import_uses_link_cache_and_native_boundaries() {
             &[entity_arg],
         )
         .unwrap();
+        assert_q3_link_alias_reads(&mut fixture);
         assert_eq!(fixture.portals.connected(0, 1), Some(false));
 
         invoke(
@@ -348,4 +353,112 @@ fn q3_portal_import_uses_link_cache_and_native_boundaries() {
         .unwrap();
         assert_eq!(fixture.portals.connected(0, 1), Some(false));
     }
+}
+
+fn assert_q3_link_alias_reads(fixture: &mut Fixture) {
+    use qa_compat::quakec::{EntityAccess, Layout, Step, Trap, Vm};
+    use qa_core::primitives::{EntityFields, NativeEntity};
+    use qa_formats::program::quakec::{Image, Opcode};
+    let entity = fixture
+        .server
+        .entities
+        .find_native(
+            NativeEntity {
+                module: MODULE,
+                slot: 0,
+            },
+            None,
+        )
+        .unwrap();
+    let columns = &fixture.server.entities.columns;
+    let authority = columns.published_fields[entity.slot as usize];
+    assert!(authority.contains(EntityFields::POSITION));
+    assert!(authority.contains(EntityFields::BOUNDS));
+    assert!(authority.contains(EntityFields::ANGLES));
+    assert!(!authority.contains(EntityFields::VELOCITY));
+    assert_eq!(columns.classname[entity.slot as usize], None);
+    let body = columns.body(entity.slot as usize);
+    let angles = columns.angles[entity.slot as usize];
+    let bounds = fixture.server.area.bounds(entity).unwrap();
+    let links = fixture.server.area.relinks;
+    let count = fixture.server.entities.active().count();
+    let fields = [
+        (3, 0, b"origin".as_slice()),
+        (3, 3, b"velocity"),
+        (3, 6, b"angles"),
+        (3, 9, b"mins"),
+        (3, 12, b"maxs"),
+        (3, 15, b"absmin"),
+        (3, 18, b"absmax"),
+        (2, 21, b"solid"),
+        (1, 22, b"classname"),
+    ];
+    let bytes = quakec_program::program_with_definitions(
+        &[(Opcode::LoadV, 28, 29, 50), (Opcode::Return, 50, 0, 0)],
+        &[0, 1],
+        &[],
+        &fields,
+        23,
+        64,
+    );
+    let mut vm = Vm::load(
+        Image::parse(&bytes, Some(5927)).unwrap(),
+        Layout {
+            entities: 3,
+            header_bytes: 16,
+            extra_string_bytes: 32,
+            state_step: 0.1,
+            random_seed: 1,
+        },
+    )
+    .unwrap();
+    let mut recipient = context();
+    recipient.module = ModuleId(1);
+    recipient.native_rules = RuleSetId::Quake;
+    recipient.clock = ThinkTime::Seconds(0.0);
+    vm.seed_entities(
+        &fixture.server.entities,
+        recipient.module,
+        recipient.native_rules,
+        1,
+    )
+    .unwrap();
+    let admitted = vm
+        .admit_entity(&fixture.server.entities, recipient, entity)
+        .unwrap();
+    vm.image.globals[28] = admitted.offset();
+    for (offset, expected) in [
+        (0, body.position),
+        (6, angles),
+        (9, body.mins),
+        (12, body.maxs),
+        (15, bounds.mins),
+        (18, bounds.maxs),
+    ] {
+        vm.image.globals[29] = offset;
+        let mut run = vm.begin_root(1, 100, false).unwrap();
+        assert_eq!(
+            vm.advance(&mut run, &EntityAccess::engine(&fixture.services())),
+            Ok(Step::Returned(expected.0.map(f32::to_bits)))
+        );
+    }
+    for field in [3, 21, 22] {
+        vm.image.statements[1].opcode = if field == 3 {
+            Opcode::LoadV
+        } else {
+            Opcode::LoadF
+        };
+        vm.image.globals[29] = field;
+        vm.image.globals[50..53].copy_from_slice(&[11, 22, 33]);
+        let mut run = vm.begin_root(1, 100, false).unwrap();
+        assert_eq!(
+            vm.advance(&mut run, &EntityAccess::engine(&fixture.services())),
+            Err(Trap::EntityAccess)
+        );
+        assert_eq!(vm.image.globals[50..53], [11, 22, 33]);
+    }
+    vm.release_entity(admitted).unwrap();
+    assert_eq!(fixture.server.entities.active().count(), count);
+    assert_eq!(fixture.server.area.relinks, links);
+    assert_eq!(fixture.server.area.bounds(entity), Some(bounds));
 }

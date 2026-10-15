@@ -425,9 +425,24 @@ fn read_owner(
     )?))
 }
 #[derive(Clone, Copy)]
+struct ClassnameSlot {
+    name: qa_core::primitives::NameId,
+    offset: i32,
+    capacity: usize,
+}
+#[derive(Clone, Copy)]
+enum BindingRole {
+    OwnedNative,
+    BorrowedPrimary,
+    Foreign {
+        active_uses: usize,
+        classname: Option<ClassnameSlot>,
+    },
+}
+#[derive(Clone, Copy)]
 struct Binding {
     entity: EntityId,
-    owned: bool,
+    role: BindingRole,
     published: bool,
     /// Q3's private svEntity_t area pair, captured by the last LinkEntity.
     /// Explicit UnlinkEntity preserves it just like qsrc; lifetime retirement
@@ -436,6 +451,15 @@ struct Binding {
     // A native ordinal's reuse delay is independent of its common lifetime.
     freed_at: Option<ThinkTime>,
     think_word: Option<u32>,
+}
+
+impl Binding {
+    fn owned(self) -> bool {
+        matches!(self.role, BindingRole::OwnedNative)
+    }
+    fn foreign(self) -> bool {
+        matches!(self.role, BindingRole::Foreign { .. })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -535,7 +559,9 @@ impl EntityProjection {
         if let Some(binding) = *row
             && entities.resolve(binding.entity).is_some()
         {
-            return if binding.entity == entity && !binding.owned {
+            return if binding.entity == entity
+                && matches!(binding.role, BindingRole::BorrowedPrimary)
+            {
                 Ok(())
             } else {
                 Err(CallError::Entity)
@@ -543,7 +569,7 @@ impl EntityProjection {
         }
         *row = Some(Binding {
             entity,
-            owned: false,
+            role: BindingRole::BorrowedPrimary,
             published: false,
             portal_areas: [None; 2],
             freed_at: None,
@@ -577,6 +603,9 @@ impl EntityProjection {
         let slot = usize::try_from(native.slot).map_err(|_| CallError::Entity)?;
         let binding = self.bindings.get(slot).ok_or(CallError::Entity)?;
         Ok(binding.and_then(|binding| {
+            if binding.foreign() {
+                return None;
+            }
             let entity = binding.entity;
             let slot = entities.resolve(entity)?;
             (entities.columns.native_entity[slot] == Some(native)).then_some(entity)
@@ -786,10 +815,9 @@ impl EntityProjection {
             let entity = self.bind(services, context, slot, bound)?;
             let slot = entity.slot as usize;
             let columns = &mut services.server.entities.columns;
-            columns.position[slot] = body.position;
-            columns.mins[slot] = body.mins;
-            columns.maxs[slot] = body.maxs;
-            columns.angles[slot] = angles;
+            columns.set_position(slot, body.position);
+            columns.set_bounds(slot, body.mins, body.maxs);
+            columns.set_angles(slot, angles);
             columns.flags[slot] = flags;
             columns.point_contents_pose[slot] = contents_pose;
             columns.appearance[slot] = appearance;
@@ -914,7 +942,7 @@ impl EntityProjection {
         });
         self.bindings[slot] = Some(Binding {
             entity,
-            owned: true,
+            role: BindingRole::OwnedNative,
             published: false,
             portal_areas: [None; 2],
             freed_at: None,
@@ -1044,7 +1072,7 @@ impl EntityProjection {
         let owner = read_owner(memory, entities, context.module, layout, address)?;
         // A reset native link count begins a fresh game-owned lifetime. Borrowed
         // client lifetimes remain owned by the session, not by this adapter.
-        if link_count == 0 && self.bindings[native_slot].is_some_and(|b| b.owned && b.published) {
+        if link_count == 0 && self.bindings[native_slot].is_some_and(|b| b.owned() && b.published) {
             self.retire(services, context, native_slot)?;
             bound = None;
         }
@@ -1062,10 +1090,9 @@ impl EntityProjection {
         }
         let slot = entity.slot as usize;
         let columns = &mut services.server.entities.columns;
-        columns.position[slot] = origin;
-        columns.angles[slot] = angles;
-        columns.mins[slot] = bounds.mins;
-        columns.maxs[slot] = bounds.maxs;
+        columns.set_position(slot, origin);
+        columns.set_angles(slot, angles);
+        columns.set_bounds(slot, bounds.mins, bounds.maxs);
         columns.collision_shape[slot] = shape;
         columns.model_rules[slot] = layout.model_rules;
         columns.collision_owner[slot] = owner;
@@ -1227,7 +1254,9 @@ impl EntityProjection {
                 self.bindings[slot] = None;
                 return Ok(());
             }
-            if binding.owned {
+            if binding.foreign() {
+                self.bindings[slot] = None;
+            } else if binding.owned() {
                 (ENGINE_CALLS.free)(services, context, binding.entity)?;
                 self.bindings[slot] = None;
             } else {

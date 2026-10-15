@@ -1,5 +1,5 @@
 //! Owned stops over the single QuakeC opcode loop and its native local stack.
-use super::{Trap, Vm};
+use super::{EntityAccess, Trap, Vm};
 use std::sync::Arc;
 
 /// Raw parameter triplets admitted by one executed CALL instruction. Strings
@@ -165,29 +165,29 @@ impl Vm {
         });
         Ok(())
     }
-    pub fn advance(&mut self, run: &mut Run) -> Result<Step, Trap> {
+    pub fn advance(&mut self, run: &mut Run, access: &EntityAccess<'_>) -> Result<Step, Trap> {
         self.check_run(run, Some(false))?;
-        self.advance_ready(run)
+        self.advance_ready(run, access)
     }
     /// The builtin adapter has already applied any return/global writes. Void
     /// builtins leave return cells unchanged; resume never synthesizes a value.
-    pub fn resume(&mut self, run: &mut Run) -> Result<Step, Trap> {
+    pub fn resume(&mut self, run: &mut Run, access: &EntityAccess<'_>) -> Result<Step, Trap> {
         self.check_run(run, Some(true))?;
         if let Some(active) = &mut self.active_run {
             active.suspended = false;
         }
-        self.advance_ready(run)
+        self.advance_ready(run, access)
     }
     pub fn abort(&mut self, run: &mut Run) -> Result<(), Trap> {
         self.check_run(run, None)?;
         self.finish(run)
     }
-    fn advance_ready(&mut self, run: &mut Run) -> Result<Step, Trap> {
+    fn advance_ready(&mut self, run: &mut Run, access: &EntityAccess<'_>) -> Result<Step, Trap> {
         let state = run.state.as_mut().ok_or(Trap::Continuation)?;
         let result = if self.settings.hooks {
-            self.run::<true>(state)
+            self.run::<true>(state, access)
         } else {
-            self.run::<false>(state)
+            self.run::<false>(state, access)
         };
         match result {
             Ok(Step::Builtin(call)) => {

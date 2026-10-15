@@ -253,6 +253,7 @@ pub(crate) struct QuakeCLayout {
     motion_decode: Option<fn(f32) -> Motion>,
     model_rules: ModelRules,
     name_fields: [Option<usize>; 3],
+    alias_private: [Option<usize>; 2],
     origin: Option<usize>,
     velocity: Option<usize>,
     angles: Option<usize>,
@@ -294,6 +295,7 @@ impl QuakeCLayout {
             model_rules: qa_gameplay::rules::model_rules(RuleSetId::Quake),
             name_fields: [b"classname".as_slice(), b"target", b"targetname"]
                 .map(|name| field(name, 1)),
+            alias_private: [field(b"chain", 4), field(b"invincible_sound", 2)],
             origin: field(b"origin", 3),
             velocity: field(b"velocity", 3),
             angles: field(b"angles", 3),
@@ -321,6 +323,48 @@ impl QuakeCLayout {
             client: ClientFields::load(field),
         }
     }
+    fn foreign_fields(self) -> Box<[crate::quakec::ForeignWord]> {
+        use crate::quakec::ForeignWord;
+        let mut fields = vec![ForeignWord::Unsupported; self.fields / 4];
+        for (offset, width, first) in [
+            (self.origin, 3, ForeignWord::Position(0)),
+            (self.velocity, 3, ForeignWord::Velocity(0)),
+            (self.angles, 3, ForeignWord::Angles(0)),
+            (self.mins, 3, ForeignWord::Min(0)),
+            (self.maxs, 3, ForeignWord::Max(0)),
+            (self.size, 3, ForeignWord::Size(0)),
+            (self.abs_min, 3, ForeignWord::AbsoluteMin(0)),
+            (self.abs_max, 3, ForeignWord::AbsoluteMax(0)),
+            (self.name_fields[0], 1, ForeignWord::Classname),
+            (self.alias_private[0], 1, ForeignWord::Private),
+            (self.alias_private[1], 1, ForeignWord::Private),
+        ] {
+            let Some(offset) = offset.map(|offset| (offset - self.header) / 4) else {
+                continue;
+            };
+            for axis in 0..width {
+                let word = match first {
+                    ForeignWord::Position(_) => ForeignWord::Position(axis),
+                    ForeignWord::Velocity(_) => ForeignWord::Velocity(axis),
+                    ForeignWord::Angles(_) => ForeignWord::Angles(axis),
+                    ForeignWord::Min(_) => ForeignWord::Min(axis),
+                    ForeignWord::Max(_) => ForeignWord::Max(axis),
+                    ForeignWord::Size(_) => ForeignWord::Size(axis),
+                    ForeignWord::AbsoluteMin(_) => ForeignWord::AbsoluteMin(axis),
+                    ForeignWord::AbsoluteMax(_) => ForeignWord::AbsoluteMax(axis),
+                    value => value,
+                };
+                if let Some(target) = fields.get_mut(offset + axis) {
+                    *target = if *target == ForeignWord::Unsupported || *target == word {
+                        word
+                    } else {
+                        ForeignWord::Conflict
+                    };
+                }
+            }
+        }
+        fields.into_boxed_slice()
+    }
     fn address(self, memory: &ModuleMemory<'_>, value: u32) -> Result<u64, CallError> {
         let address = value as usize;
         if !address.is_multiple_of(self.stride) {
@@ -339,20 +383,6 @@ impl QuakeCLayout {
         Ok(NativeEntity {
             module,
             slot: (value as usize / self.stride) as i32,
-        })
-    }
-    fn owner(
-        self,
-        memory: &ModuleMemory<'_>,
-        module: ModuleId,
-        address: u64,
-    ) -> Result<CollisionOwner, CallError> {
-        let value = self.word(memory, address, self.owner)?;
-        let owner = self.identity(memory, module, value)?;
-        Ok(if value == 0 {
-            CollisionOwner::None
-        } else {
-            CollisionOwner::Native(owner)
         })
     }
     fn flags(self, memory: &ModuleMemory<'_>, address: u64) -> Result<u32, CallError> {
@@ -417,16 +447,41 @@ impl QuakeCLayout {
         entity: EntityId,
     ) -> Result<(), CallError> {
         let slot = entities.resolve(entity).ok_or(CallError::Entity)?;
-        for (field, target) in [
-            (self.origin, &mut entities.columns.position[slot]),
-            (self.velocity, &mut entities.columns.velocity[slot]),
-            (self.angles, &mut entities.columns.angles[slot]),
-            (self.mins, &mut entities.columns.mins[slot]),
-            (self.maxs, &mut entities.columns.maxs[slot]),
+        use qa_core::primitives::EntityFields;
+        for (field, target, authority) in [
+            (
+                self.origin,
+                &mut entities.columns.position[slot],
+                EntityFields::POSITION,
+            ),
+            (
+                self.velocity,
+                &mut entities.columns.velocity[slot],
+                EntityFields::VELOCITY,
+            ),
+            (
+                self.angles,
+                &mut entities.columns.angles[slot],
+                EntityFields::ANGLES,
+            ),
+            (
+                self.mins,
+                &mut entities.columns.mins[slot],
+                EntityFields::default(),
+            ),
+            (
+                self.maxs,
+                &mut entities.columns.maxs[slot],
+                EntityFields::default(),
+            ),
         ] {
             if let Some(field) = field {
                 *target = self.vector(memory, address, Some(field))?;
+                entities.columns.published_fields[slot].insert(authority);
             }
+        }
+        if self.mins.is_some() && self.maxs.is_some() {
+            entities.columns.published_fields[slot].insert(EntityFields::BOUNDS);
         }
         entities.columns.angular_velocity[slot] = self
             .angular_velocity
@@ -576,6 +631,7 @@ pub(crate) struct QuakeCTraceView<'a, 'memory> {
     memory: &'a ModuleMemory<'memory>,
     strings: &'a ModuleMemory<'memory>,
     layout: QuakeCLayout,
+    projection: &'a EntityProjection,
     module: ModuleId,
     error: TraceError,
 }
@@ -597,8 +653,8 @@ impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
     }
     fn owner(&self, slot: i32) -> Option<CollisionOwner> {
         self.error.capture(|| {
-            self.layout
-                .owner(self.memory, self.module, self.address(slot)?)
+            self.projection
+                .quakec_collision_owner(self.memory, self.module, self.address(slot)?)
         })
     }
     fn fields(&self, slot: i32, point_contents: bool) -> Option<NativeTraceFields> {
@@ -649,6 +705,172 @@ impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
 }
 
 impl EntityProjection {
+    fn quakec_collision_owner(
+        &self,
+        memory: &ModuleMemory<'_>,
+        module: ModuleId,
+        address: u64,
+    ) -> Result<CollisionOwner, CallError> {
+        let layout = self.quakec_layout()?;
+        let value = layout.word(memory, address, layout.owner)?;
+        if value == 0 {
+            return Ok(CollisionOwner::None);
+        }
+        let native = layout.identity(memory, module, value)?;
+        Ok(self
+            .quakec_foreign_entity(native.slot as usize)
+            .map_or(CollisionOwner::Native(native), CollisionOwner::Lifetime))
+    }
+    pub(crate) fn quakec_is_foreign(&self, slot: usize) -> bool {
+        self.bindings
+            .get(slot)
+            .copied()
+            .flatten()
+            .is_some_and(|binding| binding.foreign())
+    }
+    pub(crate) fn quakec_foreign_entity(&self, slot: usize) -> Option<EntityId> {
+        self.bindings
+            .get(slot)
+            .copied()
+            .flatten()
+            .filter(|binding| binding.foreign())
+            .map(|binding| binding.entity)
+    }
+    pub(crate) fn quakec_resolve_value(
+        &self,
+        entities: &EntityTable,
+        native: NativeEntity,
+    ) -> Result<Option<EntityId>, CallError> {
+        if self.owner != Some(native.module) {
+            return Err(CallError::Entity);
+        }
+        let slot = usize::try_from(native.slot).map_err(|_| CallError::Entity)?;
+        if let Some(entity) = self.quakec_foreign_entity(slot) {
+            return Ok(entities.resolve(entity).map(|_| entity));
+        }
+        self.binding(entities, native)
+    }
+    pub(crate) fn quakec_admit_entity(
+        &mut self,
+        entities: &EntityTable,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        entity: EntityId,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<(usize, bool), CallError> {
+        if self.owner != Some(context.module) {
+            return Err(CallError::Entity);
+        }
+        let canonical = entities.resolve(entity).ok_or(CallError::Entity)?;
+        if let Some(native) = entities.columns.native_entity[canonical]
+            .filter(|native| native.module == context.module)
+        {
+            if self.binding(entities, native)? != Some(entity) {
+                return Err(CallError::Entity);
+            }
+            return Ok((native.slot as usize, false));
+        }
+        self.quakec_admit_alias(entities, memory, context, entity, store)
+    }
+    pub(crate) fn quakec_admit_retired_alias(
+        &mut self,
+        entities: &EntityTable,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        entity: EntityId,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<(usize, bool), CallError> {
+        if self.owner != Some(context.module) || entities.resolve(entity).is_some() {
+            return Err(CallError::Entity);
+        }
+        self.quakec_admit_alias(entities, memory, context, entity, store)
+    }
+    fn quakec_admit_alias(
+        &mut self,
+        entities: &EntityTable,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        entity: EntityId,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<(usize, bool), CallError> {
+        if let Some(slot) = self.bindings.iter().position(|row| {
+            row.is_some_and(|binding| binding.foreign() && binding.entity == entity)
+        }) {
+            let binding = self.bindings[slot].as_mut().ok_or(CallError::Entity)?;
+            let BindingRole::Foreign { active_uses, .. } = &mut binding.role else {
+                return Err(CallError::Entity);
+            };
+            *active_uses = active_uses.checked_add(1).ok_or(CallError::Capacity)?;
+            return Ok((slot, true));
+        }
+        let (slot, _) = self.quakec_claim_slot(entities, context, false)?;
+        let layout = self.quakec_layout()?;
+        layout.clear_fields(memory, (slot * layout.stride) as u64, store)?;
+        self.bindings[slot] = Some(Binding {
+            entity,
+            role: BindingRole::Foreign {
+                active_uses: 1,
+                classname: None,
+            },
+            published: false,
+            portal_areas: [None; 2],
+            freed_at: None,
+            think_word: None,
+        });
+        self.observed_count = self.observed_count.max(slot + 1);
+        Ok((slot, true))
+    }
+    pub(crate) fn quakec_release_alias(
+        &mut self,
+        slot: usize,
+        entity: EntityId,
+    ) -> Result<(), CallError> {
+        let binding = self
+            .bindings
+            .get_mut(slot)
+            .and_then(Option::as_mut)
+            .filter(|binding| binding.entity == entity)
+            .ok_or(CallError::Entity)?;
+        let BindingRole::Foreign { active_uses, .. } = &mut binding.role else {
+            return Err(CallError::Entity);
+        };
+        *active_uses = active_uses.checked_sub(1).ok_or(CallError::Entity)?;
+        Ok(())
+    }
+    pub(crate) fn quakec_alias_classname(
+        &self,
+        slot: usize,
+    ) -> Option<(qa_core::primitives::NameId, i32, usize)> {
+        match self.bindings.get(slot).copied().flatten()?.role {
+            BindingRole::Foreign {
+                classname: Some(value),
+                ..
+            } => Some((value.name, value.offset, value.capacity)),
+            _ => None,
+        }
+    }
+    pub(crate) fn quakec_cache_alias_classname(
+        &mut self,
+        slot: usize,
+        name: qa_core::primitives::NameId,
+        offset: i32,
+        capacity: usize,
+    ) -> Result<(), CallError> {
+        let binding = self
+            .bindings
+            .get_mut(slot)
+            .and_then(Option::as_mut)
+            .ok_or(CallError::Entity)?;
+        let BindingRole::Foreign { classname, .. } = &mut binding.role else {
+            return Err(CallError::Entity);
+        };
+        *classname = Some(ClassnameSlot {
+            name,
+            offset,
+            capacity,
+        });
+        Ok(())
+    }
     pub(crate) fn quakec_client_count(&self) -> Result<usize, CallError> {
         self.quakec_layout()?.client_edicts.ok_or(CallError::Entity)
     }
@@ -710,7 +932,7 @@ impl EntityProjection {
         let native = self.quakec_identity(memory, context, value)?;
         self.quakec_client_address(memory, value)?;
         let previous = self.bindings[native.slot as usize].ok_or(CallError::Entity)?;
-        if previous.owned
+        if previous.owned()
             || previous.entity != old
             || self.quakec_bound_entity(&services.server.entities, native)? != Some(old)
         {
@@ -764,7 +986,7 @@ impl EntityProjection {
         let native = self.quakec_identity(memory, context, value)?;
         self.quakec_client_address(memory, value)?;
         let slot = native.slot as usize;
-        let Some(binding) = self.bindings[slot].filter(|binding| binding.owned) else {
+        let Some(binding) = self.bindings[slot].filter(|binding| binding.owned()) else {
             return Ok(());
         };
         if services.server.entities.resolve(binding.entity).is_some()
@@ -1218,7 +1440,7 @@ impl EntityProjection {
         {
             let word = layout.word(memory, address, layout.motion.ground_entity)?;
             let native = layout.identity(memory, context.module, word)?;
-            self.binding(entities, native)?
+            self.quakec_resolve_value(entities, native)?
         } else {
             None
         };
@@ -1230,11 +1452,13 @@ impl EntityProjection {
         })
     }
     fn quakec_client_environment_write(
-        &self,
+        &mut self,
         services: &EngineServices<'_>,
-        memory: &ModuleMemory<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
         address: u64,
         client: qa_core::primitives::ClientId,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<ClientEnvironmentWrite, CallError> {
         let layout = self.quakec_layout()?;
         let player = &services.server.clients[client.0 as usize].player;
@@ -1253,10 +1477,17 @@ impl EntityProjection {
             water_level: player.movement.water_level,
             water_type: Contents(player.movement.water_contents).to_q1(),
             flags,
-            ground: player
-                .movement
-                .grounded
-                .then(|| self.quakec_hit(services, player.movement.ground)),
+            ground: if player.movement.grounded {
+                Some(self.quakec_encode_hit(
+                    &services.server.entities,
+                    memory,
+                    context,
+                    player.movement.ground,
+                    store,
+                )?)
+            } else {
+                None
+            },
         })
     }
     pub(crate) fn quakec_read_frame_client(
@@ -1283,7 +1514,7 @@ impl EntityProjection {
         Ok(())
     }
     pub(crate) fn quakec_finish_frame_client(
-        &self,
+        &mut self,
         services: &EngineServices<'_>,
         memory: &mut ModuleMemory<'_>,
         context: CallContext,
@@ -1295,8 +1526,8 @@ impl EntityProjection {
         let view = services.server.clients[client.0 as usize]
             .player
             .view_angles;
-        let environment =
-            self.quakec_client_environment_write(services, memory, address, client)?;
+        let environment = self
+            .quakec_client_environment_write(services, memory, context, address, client, store)?;
         layout.store_client_environment(memory, address, environment, store)?;
         if let Some(field) = layout.client.view_angles {
             layout.store_vector(memory, address, Some(field), view, store)?;
@@ -1338,6 +1569,9 @@ impl EntityProjection {
         strings: &'a ModuleMemory<'_>,
         value: u32,
     ) -> Result<&'a [u8], CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
         let Some(field) = layout.name_fields[0] else {
@@ -1362,8 +1596,8 @@ impl EntityProjection {
         let origin = layout.vector(memory, address, layout.origin)?;
         let velocity = layout.vector(memory, address, layout.velocity)?;
         let slot = entities.resolve(entity).ok_or(CallError::Entity)?;
-        entities.columns.position[slot] = origin;
-        entities.columns.velocity[slot] = velocity;
+        entities.columns.set_position(slot, origin);
+        entities.columns.set_velocity(slot, velocity);
         Ok(())
     }
     pub(crate) fn quakec_read_client(
@@ -1448,8 +1682,8 @@ impl EntityProjection {
         let origin = player.body.position - offset;
         let velocity = player.body.velocity;
         let view = player.view_angles;
-        let environment =
-            self.quakec_client_environment_write(services, memory, address, client)?;
+        let environment = self
+            .quakec_client_environment_write(services, memory, context, address, client, store)?;
         layout.store_number(memory, address, layout.client.water_jump, water_jump, store)?;
         layout.store_client_environment(memory, address, environment, store)?;
         layout.store_vector(memory, address, layout.origin, origin, store)?;
@@ -1463,6 +1697,19 @@ impl EntityProjection {
         value: u32,
         trigger_only: bool,
     ) -> Result<Option<qa_core::primitives::CallbackId>, CallError> {
+        self.quakec_touch_word(memory, value, trigger_only)?
+            .map(|word| self.quakec_callback(word))
+            .transpose()
+    }
+    pub(crate) fn quakec_touch_word(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+        trigger_only: bool,
+    ) -> Result<Option<u32>, CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
         let word = layout.word(memory, address, layout.motion.touch)?;
@@ -1477,7 +1724,7 @@ impl EntityProjection {
             } {
                 Ok(None)
             } else {
-                self.quakec_callback(word).map(Some)
+                Ok(Some(word))
             }
         }
     }
@@ -1504,22 +1751,29 @@ impl EntityProjection {
         layout.store_number(memory, address, layout.client.fix_angle, 0.0, store)
     }
     pub(crate) fn quakec_trace_view<'a, 'memory>(
-        &self,
+        &'a self,
         memory: &'a ModuleMemory<'memory>,
         strings: &'a ModuleMemory<'memory>,
         context: CallContext,
         pass: u32,
     ) -> Result<(QuakeCTraceView<'a, 'memory>, CollisionOwner), CallError> {
-        let pass = self.quakec_identity(memory, context, pass)?;
+        self.quakec_validate_owner(context.module)?;
+        let native = self
+            .quakec_layout()?
+            .identity(memory, context.module, pass)?;
+        let pass = self
+            .quakec_foreign_entity(native.slot as usize)
+            .map_or(CollisionOwner::Native(native), CollisionOwner::Lifetime);
         Ok((
             QuakeCTraceView {
                 memory,
                 strings,
                 layout: self.quakec_layout()?,
+                projection: self,
                 module: context.module,
                 error: TraceError::default(),
             },
-            CollisionOwner::Native(pass),
+            pass,
         ))
     }
     pub(crate) fn load_quakec(
@@ -1539,6 +1793,11 @@ impl EntityProjection {
             observed_count: 1,
             leaves: [0; 128],
         }
+    }
+    pub(crate) fn quakec_foreign_fields(
+        &self,
+    ) -> Result<Box<[crate::quakec::ForeignWord]>, CallError> {
+        Ok(self.quakec_layout()?.foreign_fields())
     }
     fn quakec_layout(&self) -> Result<QuakeCLayout, CallError> {
         match self.schema {
@@ -1638,13 +1897,16 @@ impl EntityProjection {
                 continue;
             };
             let native_slot = native.slot as usize;
+            if self.quakec_is_foreign(native_slot) {
+                continue;
+            }
             let client = native_slot > 0 && native_slot <= clients;
             // An owned reserved-row body has no active connection. It still
             // participates in links and pushes, but native client physics is
             // skipped, just as SV_Physics_Client skips inactive clients.
             if client
                 && (layout.integer_motion
-                    || self.bindings[native_slot].is_some_and(|binding| binding.owned))
+                    || self.bindings[native_slot].is_some_and(|binding| binding.owned()))
             {
                 continue;
             }
@@ -1697,7 +1959,7 @@ impl EntityProjection {
                 module,
                 slot: slot as i32,
             };
-            let entity = self.quakec_bound_entity(entities, native)?;
+            let entity = self.quakec_resolve_value(entities, native)?;
             // Native client edicts remain allocated when disconnected. They
             // are ABI-visible without inventing a common entity lifetime.
             if entity.is_some() || (slot > 0 && slot <= clients) {
@@ -1739,6 +2001,9 @@ impl EntityProjection {
         value: u32,
         blocked: bool,
     ) -> Result<u32, CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
         layout.word(
@@ -1784,8 +2049,12 @@ impl EntityProjection {
         if self.owner != Some(context.module) {
             return Err(CallError::Entity);
         }
-        self.quakec_layout()?
-            .identity(memory, context.module, value)
+        let layout = self.quakec_layout()?;
+        let native = layout.identity(memory, context.module, value)?;
+        if self.quakec_is_foreign(native.slot as usize) {
+            return Err(CallError::Entity);
+        }
+        Ok(native)
     }
     pub(crate) fn quakec_validate_owner(&self, module: ModuleId) -> Result<(), CallError> {
         if self.owner == Some(module) {
@@ -1793,6 +2062,54 @@ impl EntityProjection {
         } else {
             Err(CallError::Entity)
         }
+    }
+    fn quakec_claim_slot(
+        &self,
+        entities: &EntityTable,
+        context: CallContext,
+        overwrite: bool,
+    ) -> Result<(usize, CallContext), CallError> {
+        let layout = self.quakec_layout()?;
+        let clients = layout.client_edicts.ok_or(CallError::Entity)?;
+        let first = clients.checked_add(1).ok_or(CallError::Capacity)?;
+        if first >= self.bindings.len() {
+            return Err(CallError::Capacity);
+        }
+        let eligible = (first..self.observed_count).find(|&slot| {
+            let row = self.bindings[slot];
+            let free = row.is_none_or(|binding| {
+                !binding.foreign() && entities.resolve(binding.entity).is_none()
+            });
+            free && context
+                .allocation
+                .reuse
+                .eligible(context.clock, row.and_then(|binding| binding.freed_at))
+        });
+        let mut claim = context;
+        claim.allocation.full = FullTable::Reject;
+        let slot = if let Some(slot) = eligible {
+            slot
+        } else if self.observed_count < self.bindings.len() {
+            self.observed_count
+        } else if let Some(slot) = (first..self.observed_count).find(|&slot| {
+            self.bindings[slot].is_some_and(|binding| {
+                matches!(binding.role, BindingRole::Foreign { active_uses: 0, .. })
+                    && entities.resolve(binding.entity).is_none()
+            })
+        }) {
+            slot
+        } else if overwrite && context.allocation.full == FullTable::OverwriteLastOwned {
+            let slot = self.bindings.len() - 1;
+            let binding = self.bindings[slot].ok_or(CallError::Capacity)?;
+            if !binding.owned() {
+                return Err(CallError::Capacity);
+            }
+            claim.allocation.full = FullTable::OverwriteOwned(binding.entity);
+            slot
+        } else {
+            return Err(CallError::Capacity);
+        };
+        Ok((slot, claim))
     }
     pub(crate) fn quakec_spawn(
         &mut self,
@@ -1805,37 +2122,7 @@ impl EntityProjection {
         if self.owner != Some(context.module) {
             return Err(CallError::Entity);
         }
-        let clients = layout.client_edicts.ok_or(CallError::Entity)?;
-        let first = clients.checked_add(1).ok_or(CallError::Capacity)?;
-        if first >= self.bindings.len() {
-            return Err(CallError::Capacity);
-        }
-        let eligible = (first..self.observed_count).find(|&slot| {
-            let row = self.bindings[slot];
-            let free = row
-                .is_none_or(|binding| services.server.entities.resolve(binding.entity).is_none());
-            free && context
-                .allocation
-                .reuse
-                .eligible(context.clock, row.and_then(|binding| binding.freed_at))
-        });
-        let mut claim = context;
-        claim.allocation.full = FullTable::Reject;
-        let slot = if let Some(slot) = eligible {
-            slot
-        } else if self.observed_count < self.bindings.len() {
-            self.observed_count
-        } else if context.allocation.full == FullTable::OverwriteLastOwned {
-            let slot = self.bindings.len() - 1;
-            let binding = self.bindings[slot].ok_or(CallError::Capacity)?;
-            if !binding.owned {
-                return Err(CallError::Capacity);
-            }
-            claim.allocation.full = FullTable::OverwriteOwned(binding.entity);
-            slot
-        } else {
-            return Err(CallError::Capacity);
-        };
+        let (slot, claim) = self.quakec_claim_slot(&services.server.entities, context, true)?;
         let entity = self.bind(services, claim, slot, None)?;
         self.observed_count = self.observed_count.max(slot + 1);
         let address = slot.checked_mul(layout.stride).ok_or(CallError::Memory)?;
@@ -1862,7 +2149,7 @@ impl EntityProjection {
             .ok_or(CallError::Entity)?;
         let binding = self.bindings[native.slot as usize].ok_or(CallError::Entity)?;
         if native.slot as usize <= self.quakec_client_count()?
-            || !binding.owned
+            || !binding.owned()
             || !services.server.entities.can_release(entity)
         {
             return Err(CallError::Entity);
@@ -2016,6 +2303,9 @@ impl EntityProjection {
         memory: &ModuleMemory<'_>,
         value: u32,
     ) -> Result<Option<(u64, f32)>, CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
         let yaw = layout.angles.ok_or(CallError::Memory)? + 4;
@@ -2030,6 +2320,9 @@ impl EntityProjection {
         memory: &ModuleMemory<'_>,
         value: u32,
     ) -> Result<Vec3, CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
         layout.vector(memory, address, layout.origin)
@@ -2039,6 +2332,9 @@ impl EntityProjection {
         memory: &ModuleMemory<'_>,
         value: u32,
     ) -> Result<Bounds, CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
         Ok(Bounds {
@@ -2051,6 +2347,9 @@ impl EntityProjection {
         memory: &ModuleMemory<'_>,
         value: u32,
     ) -> Result<u32, CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
         let layout = self.quakec_layout()?;
         layout.flags(memory, layout.address(memory, value)?)
     }
@@ -2059,6 +2358,9 @@ impl EntityProjection {
         memory: &ModuleMemory<'_>,
         value: u32,
     ) -> Result<u32, CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
         let layout = self.quakec_layout()?;
         layout.word(memory, layout.address(memory, value)?, layout.motion.enemy)
     }
@@ -2067,6 +2369,9 @@ impl EntityProjection {
         memory: &ModuleMemory<'_>,
         value: u32,
     ) -> Result<u32, CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
         let layout = self.quakec_layout()?;
         layout.word(memory, layout.address(memory, value)?, layout.motion.goal)
     }
@@ -2081,6 +2386,17 @@ impl EntityProjection {
         ))
     }
     pub(crate) fn quakec_scalar_store(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+        field: crate::quakec::Scalar,
+    ) -> Result<u64, CallError> {
+        if self.quakec_is_foreign(value as usize / self.quakec_layout()?.stride) {
+            return Err(CallError::Unsupported);
+        }
+        self.quakec_scalar_address(memory, value, field)
+    }
+    pub(crate) fn quakec_scalar_address(
         &self,
         memory: &ModuleMemory<'_>,
         value: u32,
@@ -2155,6 +2471,7 @@ impl EntityProjection {
         store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<bool, CallError> {
         use qa_world::collision::{QuakeTraceKind, TraceQuery, trace_policy};
+        self.quakec_identity(memory, context, value)?;
         let layout = self.quakec_layout()?;
         let origin = layout.vector(memory, u64::from(value), layout.origin)?;
         let mins = layout.vector(memory, u64::from(value), layout.mins)?;
@@ -2185,10 +2502,16 @@ impl EntityProjection {
         if value != 0 {
             layout.link_fields(memory, u64::from(value))?;
         }
+        let ground = self.quakec_encode_hit(
+            &services.server.entities,
+            memory,
+            context,
+            trace.entity,
+            store,
+        )?;
         self.quakec_set_origin(services, memory, strings, context, value, trace.end, store)?;
         let flags = layout.flags(memory, u64::from(value))? as i32 | 512;
         layout.store_number(memory, u64::from(value), layout.flags, flags as f32, store)?;
-        let ground = self.quakec_hit(services, trace.entity);
         store(memory, ground_address, ground)?;
         Ok(true)
     }
@@ -2285,6 +2608,40 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
     ) -> Result<(EntityId, Vec3, bool), CallError> {
+        self.quakec_validate_owner(context.module)?;
+        let layout = self.quakec_layout()?;
+        let slot = value as usize / layout.stride;
+        layout.address(memory, value)?;
+        if let Some(entity) = self.quakec_foreign_entity(slot) {
+            use qa_core::primitives::EntityFields;
+            let canonical = services
+                .server
+                .entities
+                .resolve(entity)
+                .ok_or(CallError::Entity)?;
+            let columns = &services.server.entities.columns;
+            if !columns.published_fields[canonical].contains(EntityFields::POSITION) {
+                return Err(CallError::Unsupported);
+            }
+            let bsp = matches!(
+                columns.collision_shape[canonical],
+                CollisionShape::Model { .. }
+            );
+            let centered = context.native_rules != RuleSetId::QuakeWorld || bsp;
+            if centered && !columns.published_fields[canonical].contains(EntityFields::BOUNDS) {
+                return Err(CallError::Unsupported);
+            }
+            let body = columns.body(canonical);
+            return Ok((
+                entity,
+                if centered {
+                    body.center()
+                } else {
+                    body.position
+                },
+                centered,
+            ));
+        }
         let (entity, _) = self
             .quakec_publish(services, memory, strings, context, value)?
             .ok_or(CallError::Entity)?;
@@ -2521,6 +2878,10 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
     ) -> Result<Option<(EntityId, LinkFlags)>, CallError> {
+        let slot = value as usize / self.quakec_layout()?.stride;
+        if self.quakec_is_foreign(slot) {
+            return Ok(None);
+        }
         let native = self.quakec_identity(memory, context, value)?;
         let Some(entity) = self.binding(&services.server.entities, native)? else {
             return Ok(None);
@@ -2593,7 +2954,7 @@ impl EntityProjection {
         let solid = layout.solid(memory, address)?;
         let shape = target.shape;
         let owner = if layout.owner.is_some() {
-            layout.owner(memory, context.module, address)?
+            self.quakec_collision_owner(memory, context.module, address)?
         } else {
             CollisionOwner::None
         };
@@ -2638,8 +2999,25 @@ impl EntityProjection {
         let columns = &mut services.server.entities.columns;
         columns.classname[slot] = names[0];
         columns.target[slot] = names[1];
-        columns.set_body(slot, body);
+        columns.position[slot] = body.position;
+        columns.velocity[slot] = body.velocity;
+        columns.mins[slot] = body.mins;
+        columns.maxs[slot] = body.maxs;
         columns.angles[slot] = angles;
+        use qa_core::primitives::EntityFields;
+        for (present, authority) in [
+            (layout.origin.is_some(), EntityFields::POSITION),
+            (layout.velocity.is_some(), EntityFields::VELOCITY),
+            (layout.angles.is_some(), EntityFields::ANGLES),
+            (
+                layout.mins.is_some() && layout.maxs.is_some(),
+                EntityFields::BOUNDS,
+            ),
+        ] {
+            if present {
+                columns.published_fields[slot].insert(authority);
+            }
+        }
         columns.angular_velocity[slot] = angular_velocity;
         columns.motion[slot] = motion;
         columns.flags[slot] = flags;
@@ -2888,24 +3266,26 @@ impl EntityProjection {
         )?;
         Ok(())
     }
-    pub(crate) fn quakec_hit(&self, services: &EngineServices<'_>, hit: Option<EntityId>) -> u32 {
-        let Some(entity) = hit.and_then(|entity| services.server.entities.resolve(entity)) else {
-            return 0;
+    pub(crate) fn quakec_encode_hit(
+        &mut self,
+        entities: &EntityTable,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        hit: Option<EntityId>,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<u32, CallError> {
+        let Some(entity) = hit else {
+            return Ok(0);
         };
-        let Some(native) = services.server.entities.columns.native_entity[entity] else {
-            return 0;
-        };
-        if Some(native.module) != self.owner {
-            return 0;
+        // Collision world is the recipient ABI's explicit world ordinal zero.
+        if Some(entity) == entities.id_at(0) {
+            return Ok(0);
         }
-        let Ok(layout) = self.quakec_layout() else {
-            return 0;
-        };
-        u32::try_from(native.slot)
-            .ok()
-            .and_then(|slot| (slot as usize).checked_mul(layout.stride))
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(0)
+        let (slot, foreign) = self.quakec_admit_entity(entities, memory, context, entity, store)?;
+        if foreign {
+            self.quakec_release_alias(slot, entity)?;
+        }
+        u32::try_from(slot * self.quakec_layout()?.stride).map_err(|_| CallError::Entity)
     }
 }
 

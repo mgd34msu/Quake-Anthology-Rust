@@ -484,10 +484,7 @@ impl EntityScratch {
                 continue;
             }
             let is_self = client.entity == source.self_entity;
-            let bounds = Bounds {
-                mins: client.player.body.position + client.player.body.mins,
-                maxs: client.player.body.position + client.player.body.maxs,
-            };
+            let bounds = client.player.body.bounds();
             if !is_self && (!bounds.is_valid() || !self.visibility.visible(source, bounds)) {
                 continue;
             }

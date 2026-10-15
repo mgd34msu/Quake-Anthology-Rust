@@ -36,7 +36,9 @@ fn post_load_native_binding_rejects_duplicate_lifetimes_without_changing_roles()
 
 #[test]
 fn native_weapon_owner_handoff_clears_readiness_and_identical_binding_preserves_it() {
-    use qa_core::primitives::{ResourceNamespace, RuleSetId, WeaponReadiness, WeaponState};
+    use qa_core::primitives::{
+        Body, EntityFields, ResourceNamespace, RuleSetId, WeaponReadiness, WeaponState,
+    };
     let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();
     let original = NativeEntity {
         module: ModuleId(3),
@@ -69,11 +71,18 @@ fn native_weapon_owner_handoff_clears_readiness_and_identical_binding_preserves_
     let sound =
         qa_core::primitives::SoundRef::native(ResourceNamespace::Module(original.module), 37);
     player.loop_sound = sound;
+    let entity_slot = server.clients[id.0 as usize].entity.slot as usize;
+    server
+        .entities
+        .columns
+        .set_body(entity_slot, Body::default());
     assert!(server.bind_client_native(id, original));
+    assert!(server.entities.columns.published_fields[entity_slot].contains(EntityFields::BODY));
     assert_eq!(server.clients[id.0 as usize].player.native_clock, clock);
     assert_eq!(server.clients[id.0 as usize].player.loop_sound, sound);
     assert_eq!(server.clients[id.0 as usize].player.weapon_state, seconds);
     assert!(!server.bind_client_native(id, other_native));
+    assert!(server.entities.columns.published_fields[entity_slot].contains(EntityFields::BODY));
     assert_eq!(server.clients[id.0 as usize].player.loop_sound, sound);
     assert_eq!(server.clients[id.0 as usize].player.native_clock, clock);
     assert_eq!(server.clients[id.0 as usize].player.weapon_state, seconds);
@@ -83,6 +92,10 @@ fn native_weapon_owner_handoff_clears_readiness_and_identical_binding_preserves_
         ..original
     };
     assert!(server.bind_client_native(id, same_owner_new_row));
+    assert_eq!(
+        server.entities.columns.published_fields[entity_slot],
+        EntityFields::default()
+    );
     assert_eq!(server.clients[id.0 as usize].player.native_clock, None);
     assert_eq!(server.clients[id.0 as usize].player.loop_sound, None);
     assert_eq!(server.clients[id.0 as usize].player.weapon_state, None);

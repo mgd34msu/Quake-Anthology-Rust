@@ -19,6 +19,9 @@ fn load(bytes: &[u8]) -> Vm {
 }
 struct Reject;
 impl Builtins for Reject {
+    fn entity_access(&self) -> qa_compat::quakec::EntityAccess<'_> {
+        qa_compat::quakec::EntityAccess::native_only()
+    }
     fn call(&mut self, _: &mut Vm, _: u32, _: usize) -> Result<(), Trap> {
         Err(Trap::Builtin)
     }
@@ -80,6 +83,9 @@ struct Nested {
     depth: usize,
 }
 impl Builtins for Nested {
+    fn entity_access(&self) -> qa_compat::quakec::EntityAccess<'_> {
+        qa_compat::quakec::EntityAccess::native_only()
+    }
     fn call(&mut self, vm: &mut Vm, number: u32, argc: usize) -> Result<(), Trap> {
         if number != 1 || argc != 0 || self.depth != 0 {
             return Err(Trap::Builtin);

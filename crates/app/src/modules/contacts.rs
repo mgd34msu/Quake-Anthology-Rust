@@ -1,11 +1,12 @@
 //! Contact traversal owns its cursor and releases spatial borrows per callback.
 use super::{FrameHost, Program, clients::ClientCommandError};
-use qa_compat::abi::CallbackRequest;
+use qa_compat::{abi::CallbackRequest, quakec::AdmittedEntity};
 use qa_core::primitives::{
     CallbackCall, EntityId, ModuleId, NativeEntityRef, ResourceNamespace, ThinkTime,
 };
 use qa_session::dispatch::{CallError, CallOutcome};
 use qa_world::area::{AreaCursor, LinkFlags};
+use qa_world::entities::EntityReference;
 use std::sync::Arc;
 
 pub(super) fn reference(
@@ -33,19 +34,56 @@ pub(super) fn current(
     let ResourceNamespace::Module(module) = reference.namespace else {
         return Err(ClientCommandError::DifferentModule);
     };
-    let row = host
-        .module_row(module)
-        .ok_or(ClientCommandError::MissingModule)?;
-    let Program::QuakeC(qc) = &row.request.program else {
-        return Err(ClientCommandError::NeedsNativeModule);
-    };
     let native = qa_core::primitives::NativeEntity {
         module,
         slot: i32::try_from(reference.ordinal).map_err(|_| ClientCommandError::InvalidSlot)?,
     };
+    Ok(host.runtime.server.entities.find_native(native, None))
+}
+
+pub(super) fn admit(
+    host: &mut FrameHost,
+    recipient: ModuleId,
+    reference: NativeEntityRef,
+) -> Result<AdmittedEntity, ClientCommandError> {
+    super::edit_quakec(host, recipient, |vm, services, context| {
+        vm.admit_reference(&services.server.entities, context, reference)
+    })
+}
+
+pub(super) fn release(
+    host: &mut FrameHost,
+    admitted: AdmittedEntity,
+) -> Result<(), ClientCommandError> {
+    let ResourceNamespace::Module(module) = admitted.reference().namespace else {
+        return Err(ClientCommandError::DifferentModule);
+    };
+    let row = host
+        .module_row_mut(module)
+        .ok_or(ClientCommandError::MissingModule)?;
+    let Program::QuakeC(qc) = &mut row.request.program else {
+        return Err(ClientCommandError::NeedsNativeModule);
+    };
     qc.vm
-        .bound_entity(&host.runtime.server.entities, native)
+        .release_entity(admitted)
         .map_err(ClientCommandError::Usercmd)
+}
+
+fn admit_captured(
+    host: &mut FrameHost,
+    recipient: ModuleId,
+    reference: NativeEntityRef,
+    captured: Option<EntityReference>,
+) -> Result<AdmittedEntity, ClientCommandError> {
+    match captured {
+        Some(captured) if captured.reference() == reference => {
+            super::edit_quakec(host, recipient, |vm, services, context| {
+                vm.admit_captured_reference(&services.server.entities, context, captured)
+            })
+        }
+        Some(_) => Err(ClientCommandError::InvalidSlot),
+        None => admit(host, recipient, reference),
+    }
 }
 
 /// One owned traversal serves both ordinary provider calls and a stopped QC
@@ -145,6 +183,7 @@ pub(super) fn triggers(
 pub(super) struct PreparedTouch {
     request: CallbackRequest,
     stamp: Option<(ModuleId, usize)>,
+    admitted: AdmittedEntity,
 }
 impl PreparedTouch {
     pub(super) fn request(&self) -> CallbackRequest {
@@ -156,6 +195,7 @@ impl PreparedTouch {
         host: &mut FrameHost,
         accepted: bool,
     ) -> Result<(), ClientCommandError> {
+        release(host, self.admitted)?;
         if !accepted {
             return Err(ClientCommandError::Dispatch(CallError::Rejected));
         }
@@ -168,23 +208,30 @@ impl PreparedTouch {
         Ok(())
     }
 
+    pub(super) fn cancel(self, host: &mut FrameHost) -> Result<(), ClientCommandError> {
+        release(host, self.admitted)
+    }
+
     fn invoke(self, host: &mut FrameHost) -> Result<(), ClientCommandError> {
-        let functions = host
-            .modules
-            .as_ref()
-            .map(|modules| Arc::clone(&modules.functions))
-            .ok_or(ClientCommandError::MissingModule)?;
         let request = self.request;
-        let accepted = functions
-            .dispatch_resolved(host, request.target, request.call)
-            .map_err(ClientCommandError::Dispatch)?
-            .complete(host, request.call);
-        self.complete(host, accepted)
+        let result = (|| {
+            let functions = host
+                .modules
+                .as_ref()
+                .map(|modules| Arc::clone(&modules.functions))
+                .ok_or(ClientCommandError::MissingModule)?;
+            Ok(functions
+                .dispatch_resolved(host, request.target, request.call)
+                .map_err(ClientCommandError::Dispatch)?
+                .complete(host, request.call))
+        })();
+        let completed = self.complete(host, result.as_ref().is_ok_and(|accepted| *accepted));
+        result.map(|_| ()).and(completed)
     }
 }
 
 fn prepare_touch(
-    host: &FrameHost,
+    host: &mut FrameHost,
     module: ModuleId,
     entity: EntityId,
     other: NativeEntityRef,
@@ -192,33 +239,65 @@ fn prepare_touch(
     deduplicate: bool,
     trigger_only: bool,
 ) -> Result<Option<PreparedTouch>, ClientCommandError> {
+    prepare_admitted_touch(
+        host,
+        module,
+        entity,
+        (other, None, None),
+        time,
+        deduplicate,
+        trigger_only,
+    )
+}
+
+fn resolve_touch(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entity: EntityId,
+    time: Option<ThinkTime>,
+    deduplicate: bool,
+    trigger_only: bool,
+) -> Result<
+    Option<(
+        ModuleId,
+        qa_session::dispatch::ResolvedCall,
+        Option<ThinkTime>,
+    )>,
+    ClientCommandError,
+> {
     let entities = &host.runtime.server.entities;
     let Some(slot) = entities.resolve(entity) else {
         return Ok(None);
     };
     let owner = entities.columns.owner[slot];
     let native = entities.columns.native_entity[slot].ok_or(ClientCommandError::InvalidSlot)?;
-    // Foreign QC other values still require their own native namespace adapter.
-    // Keep the existing same-module admission rather than inventing world zero.
-    if native.module != module || native.module != owner {
+    if native.module != owner {
         return Err(ClientCommandError::DifferentModule);
     }
-    let index = usize::try_from(native.slot).map_err(|_| ClientCommandError::InvalidSlot)?;
+    let index = slot;
     let row = host
         .module_row(owner)
         .ok_or(ClientCommandError::MissingModule)?;
     if deduplicate {
-        if index >= row.client_contacts.len() {
+        let batch = host
+            .module_row(module)
+            .ok_or(ClientCommandError::MissingModule)?;
+        if index >= batch.client_contacts.len() {
             return Err(ClientCommandError::InvalidSlot);
         }
-        if row.client_contacts.contains(index) {
+        if batch.client_contacts.contains(index) {
             return Ok(None);
         }
     }
     let Program::QuakeC(qc) = &row.request.program else {
-        return Err(ClientCommandError::NeedsNativeModule);
+        host.module_row_mut(module)
+            .ok_or(ClientCommandError::MissingModule)?
+            .counts
+            .unsupported_contacts += 1;
+        return Ok(None);
     };
-    let offset = index
+    let offset = usize::try_from(native.slot)
+        .map_err(|_| ClientCommandError::InvalidSlot)?
         .checked_mul(qc.vm.stride)
         .and_then(|value| u32::try_from(value).ok())
         .ok_or(ClientCommandError::InvalidSlot)?;
@@ -237,16 +316,53 @@ fn prepare_touch(
     let target = functions
         .resolve(entities, callback, entity)
         .map_err(ClientCommandError::Dispatch)?;
+    let time = if owner == module {
+        time
+    } else {
+        Some(row.time(host.time))
+    };
+    Ok(Some((owner, target, time)))
+}
+
+fn prepare_admitted_touch(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entity: EntityId,
+    (other, mut admitted, captured): (
+        NativeEntityRef,
+        Option<AdmittedEntity>,
+        Option<EntityReference>,
+    ),
+    time: Option<ThinkTime>,
+    deduplicate: bool,
+    trigger_only: bool,
+) -> Result<Option<PreparedTouch>, ClientCommandError> {
+    let prepared = resolve_touch(host, module, entity, time, deduplicate, trigger_only);
+    let prepared = match prepared {
+        Ok(Some(prepared)) => prepared,
+        result => {
+            if let Some(admitted) = admitted.take() {
+                release(host, admitted)?;
+            }
+            return result.map(|_| None);
+        }
+    };
+    let (owner, target, time) = prepared;
+    let admitted = match admitted {
+        Some(admitted) => admitted,
+        None => admit_captured(host, owner, other, captured)?,
+    };
     Ok(Some(PreparedTouch {
         request: CallbackRequest {
             target,
             call: CallbackCall::Touch {
                 entity,
-                other,
+                other: admitted.reference(),
                 time,
             },
         },
-        stamp: deduplicate.then_some((module, index)),
+        stamp: deduplicate.then_some((module, entity.slot as usize)),
+        admitted,
     }))
 }
 
@@ -274,17 +390,89 @@ pub(super) fn impact(
     mover: NativeEntityRef,
     obstacle: NativeEntityRef,
     time: ThinkTime,
+    captured: (Option<EntityReference>, Option<EntityReference>),
 ) -> Result<(), ClientCommandError> {
     let restore = super::edit_quakec(host, module, |vm, _, _| vm.prepare_impact(time))?;
+    let mut first = None;
+    let mut second = None;
     let execution = (|| {
-        if let Some(entity) = mover_entity {
-            touch(host, module, entity, obstacle, None, false, false)?;
+        let original_mover = current(host, mover)?;
+        let first_runs = if let Some(entity) = mover_entity {
+            resolve_touch(host, module, entity, None, false, false)?.is_some()
+        } else {
+            false
+        };
+        let obstacle_entity = current(host, obstacle)?;
+        if first_runs {
+            first = Some(admit_captured(host, module, obstacle, captured.1)?);
+        }
+        if let Some(entity) = obstacle_entity {
+            let owner = host.runtime.server.entities.columns.owner[entity.slot as usize];
+            if let Some(row) = host.module_row(owner)
+                && let Program::QuakeC(qc) = &row.request.program
+                && qc
+                    .vm
+                    .weak_entity_offset(owner, obstacle)
+                    .and_then(|offset| qc.vm.touch_pending(offset))
+                    .map_err(ClientCommandError::Usercmd)?
+            {
+                second = Some(admit_captured(host, owner, mover, captured.0)?);
+            }
+        }
+        // Both values are pinned before callback one can retire either source.
+        // Re-resolve callback-self and its touch word after each immediate call.
+        if first_runs
+            && let Some(entity) = mover_entity
+            && let Some(touch) = prepare_admitted_touch(
+                host,
+                module,
+                entity,
+                (obstacle, first.take(), captured.1),
+                None,
+                false,
+                false,
+            )?
+        {
+            touch.invoke(host)?;
         }
         if let Some(entity) = current(host, obstacle)? {
-            touch(host, module, entity, mover, None, false, false)?;
+            let replacement = current(host, mover)?;
+            if second.is_some() && replacement.is_some() && replacement != original_mover {
+                if let Some(admitted) = second.take() {
+                    release(host, admitted)?;
+                }
+                let owner = host.runtime.server.entities.columns.owner[entity.slot as usize];
+                second = Some(admit_captured(host, owner, mover, captured.0)?);
+            }
+            if let Some(touch) = prepare_admitted_touch(
+                host,
+                module,
+                entity,
+                (mover, second.take(), captured.0),
+                None,
+                false,
+                false,
+            )? {
+                touch.invoke(host)?;
+            }
         }
         Ok(())
     })();
+    let released_first = first
+        .take()
+        .map(|admitted| release(host, admitted))
+        .transpose();
+    let released_second = second
+        .take()
+        .map(|admitted| release(host, admitted))
+        .transpose();
     let restored = super::edit_quakec(host, module, |vm, _, _| vm.finish_client_call(restore));
-    execution.and(restored)
+    execution
+        .and(released_first.map(|_| ()))
+        .and(released_second.map(|_| ()))
+        .and(restored)
 }
+
+#[cfg(test)]
+#[path = "../../tests/modules/foreign_contacts.rs"]
+pub(super) mod tests;

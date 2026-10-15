@@ -23,6 +23,9 @@ pub(super) enum QcContinuation {
 }
 
 impl quakec::Builtins for QuakeCCalls<'_, '_> {
+    fn entity_access(&self) -> quakec::EntityAccess<'_> {
+        quakec::EntityAccess::engine(self.services)
+    }
     fn call(&mut self, vm: &mut quakec::Vm, number: u32, argc: usize) -> Result<(), quakec::Trap> {
         let call = quakec::BuiltinCall::capture(vm, number, argc)?;
         self.stopped(vm, &call)

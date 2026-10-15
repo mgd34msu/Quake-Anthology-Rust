@@ -3,6 +3,116 @@ use qa_core::primitives::{EntityId, ModuleId, NativeEntity};
 use qa_world::entities::{AllocationPolicy, EntityTable};
 
 #[test]
+fn captured_native_reference_authenticates_its_pair_before_callbacks() {
+    use qa_core::primitives::{NativeEntityRef, ResourceNamespace};
+
+    let mut table = EntityTable::new(3, 1).unwrap();
+    let id = table
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(7),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = id.slot as usize;
+    assert!(table.capture_reference(id).is_none());
+    table.columns.native_entity[slot] = Some(NativeEntity {
+        module: ModuleId(8),
+        slot: 0,
+    });
+    assert!(table.capture_reference(id).is_none());
+    table.columns.native_entity[slot] = Some(NativeEntity {
+        module: ModuleId(7),
+        slot: -1,
+    });
+    assert!(table.capture_reference(id).is_none());
+    table.columns.native_entity[slot] = Some(NativeEntity {
+        module: ModuleId(7),
+        slot: 0,
+    });
+    let captured = table.capture_reference(id).unwrap();
+    assert_eq!(captured.entity(), id);
+    assert_eq!(
+        captured.reference(),
+        NativeEntityRef::entity(ResourceNamespace::Module(ModuleId(7)), 0)
+    );
+    assert!(table.release(id, ThinkTime::Seconds(0.0)));
+    assert!(table.capture_reference(id).is_none());
+    let replacement = table
+        .allocate(
+            ThinkTime::Seconds(1.0),
+            ModuleId(7),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    assert_eq!(replacement.slot, id.slot);
+    assert_ne!(replacement, captured.entity());
+    assert_eq!(captured.entity(), id);
+}
+
+#[test]
+fn published_fields_follow_actual_writes_and_end_with_the_entity_lifetime() {
+    use qa_core::primitives::{Body, EntityFields, Vec3};
+
+    let mut table = EntityTable::new(4, 2).unwrap();
+    let client = table.id_at(1).unwrap();
+    let id = table
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = id.slot as usize;
+    assert_eq!(
+        table.columns.published_fields[slot],
+        EntityFields::default()
+    );
+
+    table.columns.set_position(slot, Vec3::default());
+    assert_eq!(table.columns.published_fields[slot], EntityFields::POSITION);
+    assert!(!table.columns.published_fields[slot].contains(EntityFields::VELOCITY));
+    table
+        .columns
+        .set_bounds(slot, Vec3([-1.0; 3]), Vec3([1.0; 3]));
+    table.columns.set_angles(slot, Vec3::default());
+    assert!(table.columns.published_fields[slot].contains(EntityFields::BOUNDS));
+    assert!(table.columns.published_fields[slot].contains(EntityFields::ANGLES));
+    assert!(!table.columns.published_fields[slot].contains(EntityFields::VELOCITY));
+    table.columns.set_velocity(slot, Vec3::default());
+    assert!(table.columns.published_fields[slot].contains(EntityFields::BODY));
+
+    assert!(table.release(id, ThinkTime::Seconds(0.0)));
+    let replacement = table
+        .allocate(
+            ThinkTime::Seconds(1.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    assert_eq!(replacement.slot, id.slot);
+    assert_ne!(replacement.generation, id.generation);
+    assert_eq!(
+        table.columns.published_fields[slot],
+        EntityFields::default()
+    );
+
+    table
+        .columns
+        .set_body(client.slot as usize, Body::default());
+    assert!(table.columns.published_fields[client.slot as usize].contains(EntityFields::BODY));
+    let client = table.reset_client(client).unwrap();
+    assert_eq!(
+        table.columns.published_fields[client.slot as usize],
+        EntityFields::default()
+    );
+}
+
+#[test]
 fn client_classification_is_a_common_lifetime_role_not_a_native_ordinal() {
     use qa_core::primitives::CollisionTags;
     let mut table = EntityTable::new(6, 3).unwrap();

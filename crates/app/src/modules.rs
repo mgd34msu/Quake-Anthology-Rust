@@ -225,6 +225,8 @@ pub struct Counts {
     /// Native QC physics rows whose client/movetype phase is not yet adopted.
     /// They never pass through a blanket think scan.
     pub unsupported_physics: u64,
+    /// Contacts whose target module has not published a callable native entry.
+    pub unsupported_contacts: u64,
 }
 impl Counts {
     fn record(&mut self, result: Result<ModuleResult, ()>) -> bool {

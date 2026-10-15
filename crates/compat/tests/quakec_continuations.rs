@@ -19,7 +19,10 @@ fn load(bytes: &[u8]) -> Vm {
     .unwrap()
 }
 fn builtin(vm: &mut Vm, run: &mut Run) -> BuiltinCall {
-    let Step::Builtin(call) = vm.advance(run).unwrap() else {
+    let Step::Builtin(call) = vm
+        .advance(run, &qa_compat::quakec::EntityAccess::native_only())
+        .unwrap()
+    else {
         panic!("expected an executed builtin");
     };
     call
@@ -37,6 +40,9 @@ fn branching() -> Vm {
 }
 struct Reject;
 impl Builtins for Reject {
+    fn entity_access(&self) -> qa_compat::quakec::EntityAccess<'_> {
+        qa_compat::quakec::EntityAccess::native_only()
+    }
     fn call(&mut self, _: &mut Vm, _: u32, _: usize) -> Result<(), Trap> {
         Err(Trap::Builtin)
     }
@@ -76,11 +82,17 @@ fn owned_builtin_arguments_and_native_locals_survive_nested_stops() {
     let second = builtin(&mut vm, &mut child);
     assert_eq!(second.arguments(), &[[31, 32, 33]]);
     assert_eq!((vm.statement, vm.argc), (6, 1));
-    assert_eq!(vm.resume(&mut child), Ok(Step::Returned([202, 0, 0])));
+    assert_eq!(
+        vm.resume(&mut child, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned([202, 0, 0]))
+    );
     assert_eq!((vm.statement, vm.argc), (2, 2));
     assert_eq!(vm.image.globals[40], 101);
     assert_eq!(first.arguments(), &[[11, 12, 13], [21, 22, 23]]);
-    assert_eq!(vm.resume(&mut outer), Ok(Step::Returned([101, 202, 0])));
+    assert_eq!(
+        vm.resume(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned([101, 202, 0]))
+    );
     assert_eq!((vm.statement, vm.argc), (777, 6));
     assert_eq!(vm.image.globals[40], 77);
     assert_eq!(
@@ -97,20 +109,35 @@ fn callbacks_share_remaining_budget_and_root_hook_selection() {
         let mut outer = vm.begin_root(1, budget, true).unwrap();
         builtin(&mut vm, &mut outer);
         let mut child = vm.begin_callback(3, 0, false).unwrap();
-        assert_eq!(vm.advance(&mut child), Ok(Step::Returned([93, 0, 0])));
-        assert_eq!(vm.resume(&mut outer), expected);
+        assert_eq!(
+            vm.advance(&mut child, &qa_compat::quakec::EntityAccess::native_only()),
+            Ok(Step::Returned([93, 0, 0]))
+        );
+        assert_eq!(
+            vm.resume(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+            expected
+        );
         assert_eq!(vm.hooks.instructions, budget - 1);
         assert!(!vm.is_running());
         let mut fresh = vm.begin_callback(3, 2, false).unwrap();
-        assert_eq!(vm.advance(&mut fresh), Ok(Step::Returned([93, 0, 0])));
+        assert_eq!(
+            vm.advance(&mut fresh, &qa_compat::quakec::EntityAccess::native_only()),
+            Ok(Step::Returned([93, 0, 0]))
+        );
         assert_eq!(vm.hooks.instructions, budget - 1);
     }
     let mut vm = branching();
     let mut outer = vm.begin_root(1, 4, false).unwrap();
     builtin(&mut vm, &mut outer);
     let mut child = vm.begin_callback(3, 100, true).unwrap();
-    assert_eq!(vm.advance(&mut child), Ok(Step::Returned([93, 0, 0])));
-    assert_eq!(vm.resume(&mut outer), Ok(Step::Returned([71, 93, 0])));
+    assert_eq!(
+        vm.advance(&mut child, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned([93, 0, 0]))
+    );
+    assert_eq!(
+        vm.resume(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned([71, 93, 0]))
+    );
     assert_eq!(vm.hooks.instructions, 0);
 }
 
@@ -118,6 +145,9 @@ fn callbacks_share_remaining_budget_and_root_hook_selection() {
 fn explicit_calls_keep_fresh_settings_and_restore_the_suspended_parent() {
     struct Fresh;
     impl Builtins for Fresh {
+        fn entity_access(&self) -> qa_compat::quakec::EntityAccess<'_> {
+            qa_compat::quakec::EntityAccess::native_only()
+        }
         fn call(&mut self, vm: &mut Vm, number: u32, argc: usize) -> Result<(), Trap> {
             assert_eq!((number, argc), (7, 0));
             let saved = (vm.statement, vm.argc);
@@ -146,33 +176,69 @@ fn foreign_expired_non_top_and_wrong_phase_operations_preserve_live_runs() {
     let mut other = branching();
     let mut outer = vm.begin_root(1, 100, false).unwrap();
     let mut peer = other.begin_root(1, 100, false).unwrap();
-    assert_eq!(vm.resume(&mut outer), Err(Trap::Continuation));
+    assert_eq!(
+        vm.resume(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+        Err(Trap::Continuation)
+    );
     assert!(matches!(
         vm.begin_callback(3, 100, false),
         Err(Trap::Continuation)
     ));
     builtin(&mut vm, &mut outer);
     builtin(&mut other, &mut peer);
-    assert_eq!(vm.advance(&mut outer), Err(Trap::Continuation));
-    assert_eq!(other.advance(&mut outer), Err(Trap::Continuation));
-    assert_eq!(other.resume(&mut outer), Err(Trap::Continuation));
+    assert_eq!(
+        vm.advance(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+        Err(Trap::Continuation)
+    );
+    assert_eq!(
+        other.advance(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+        Err(Trap::Continuation)
+    );
+    assert_eq!(
+        other.resume(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+        Err(Trap::Continuation)
+    );
     assert_eq!(other.abort(&mut outer), Err(Trap::Continuation));
     assert!(matches!(
         vm.begin_callback(999, 100, false),
         Err(Trap::Function)
     ));
     let mut child = vm.begin_callback(3, 100, false).unwrap();
-    assert_eq!(vm.advance(&mut outer), Err(Trap::Continuation));
-    assert_eq!(vm.resume(&mut outer), Err(Trap::Continuation));
+    assert_eq!(
+        vm.advance(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+        Err(Trap::Continuation)
+    );
+    assert_eq!(
+        vm.resume(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+        Err(Trap::Continuation)
+    );
     assert_eq!(vm.abort(&mut outer), Err(Trap::Continuation));
-    assert_eq!(vm.advance(&mut child), Ok(Step::Returned([93, 0, 0])));
+    assert_eq!(
+        vm.advance(&mut child, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned([93, 0, 0]))
+    );
     assert_eq!(vm.abort(&mut child), Err(Trap::Continuation));
-    assert_eq!(vm.resume(&mut outer), Ok(Step::Returned([71, 93, 0])));
-    assert_eq!(other.resume(&mut peer), Ok(Step::Returned([71, 93, 0])));
+    assert_eq!(
+        vm.resume(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned([71, 93, 0]))
+    );
+    assert_eq!(
+        other.resume(&mut peer, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned([71, 93, 0]))
+    );
     let mut replacement = vm.begin_callback(3, 2, false).unwrap();
     assert_eq!(vm.abort(&mut outer), Err(Trap::Continuation));
-    assert_eq!(vm.resume(&mut child), Err(Trap::Continuation));
-    assert_eq!(vm.advance(&mut replacement), Ok(Step::Returned([93, 0, 0])));
+    assert_eq!(
+        vm.resume(&mut child, &qa_compat::quakec::EntityAccess::native_only()),
+        Err(Trap::Continuation)
+    );
+    assert_eq!(
+        vm.advance(
+            &mut replacement,
+            &qa_compat::quakec::EntityAccess::native_only()
+        ),
+        Ok(Step::Returned([93, 0, 0]))
+    );
 }
 
 #[test]
@@ -196,18 +262,24 @@ fn child_fault_restores_parent_locals_and_keeps_admitted_entity_writes() {
     let mut outer = vm.begin_root(1, 100, true).unwrap();
     builtin(&mut vm, &mut outer);
     let mut child = vm.begin_callback(3, 1, false).unwrap();
-    assert_eq!(vm.advance(&mut child), Err(Trap::Statement));
+    assert_eq!(
+        vm.advance(&mut child, &qa_compat::quakec::EntityAccess::native_only()),
+        Err(Trap::Statement)
+    );
     assert_eq!(vm.entities.read_word(64).unwrap() as u32, 0x8000_0042);
     assert_eq!(vm.image.globals[40], 123);
     assert_eq!((vm.statement, vm.argc), (1, 0));
     assert_eq!(vm.abort(&mut child), Err(Trap::Continuation));
     assert_eq!(
-        vm.resume(&mut outer),
+        vm.resume(&mut outer, &qa_compat::quakec::EntityAccess::native_only()),
         Ok(Step::Returned([71, 0, 0x8000_0042]))
     );
     assert!(!vm.is_running());
     let mut safe = vm.begin_root(4, 100, false).unwrap();
-    assert!(matches!(vm.advance(&mut safe), Ok(Step::Returned(_))));
+    assert!(matches!(
+        vm.advance(&mut safe, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned(_))
+    ));
 }
 
 #[test]
@@ -224,7 +296,10 @@ fn void_resume_keeps_raw_return_cells_and_builtin_failure_unwinds() {
     let call = builtin(&mut vm, &mut run);
     assert_eq!(call.argc(), 0);
     assert!(call.arguments().is_empty());
-    assert_eq!(vm.resume(&mut run), Ok(Step::Returned(words)));
+    assert_eq!(
+        vm.resume(&mut run, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned(words))
+    );
     vm.statement = 77;
     vm.argc = 8;
     assert_eq!(vm.call(&mut Reject, 1, 100, true), Err(Trap::Builtin));
@@ -246,7 +321,10 @@ fn native_return_cells_are_read_after_restoring_the_callees_locals() {
     vm.image.globals[1..4].copy_from_slice(&[7, 8, 9]);
     vm.image.globals[28..31].copy_from_slice(&[100, 200, 300]);
     let mut run = vm.begin_root(1, 2, false).unwrap();
-    assert_eq!(vm.advance(&mut run), Ok(Step::Returned([7, 8, 9])));
+    assert_eq!(
+        vm.advance(&mut run, &qa_compat::quakec::EntityAccess::native_only()),
+        Ok(Step::Returned([7, 8, 9]))
+    );
     assert_eq!(&vm.image.globals[1..4], &[7, 8, 9]);
 }
 
@@ -254,6 +332,9 @@ fn native_return_cells_are_read_after_restoring_the_callees_locals() {
 fn synchronous_adapter_delivers_the_owned_window_to_a_stopped_override() {
     struct Stopped;
     impl Builtins for Stopped {
+        fn entity_access(&self) -> qa_compat::quakec::EntityAccess<'_> {
+            qa_compat::quakec::EntityAccess::native_only()
+        }
         fn call(&mut self, _: &mut Vm, _: u32, _: usize) -> Result<(), Trap> {
             panic!("the synchronous adapter must use its original snapshot");
         }

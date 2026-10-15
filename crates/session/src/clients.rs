@@ -292,6 +292,7 @@ impl Server {
         client.reset(&mut self.events.texts, module);
         client.connection = Some(connection);
         let entity_slot = client.entity.slot as usize;
+        self.entities.columns.published_fields[entity_slot] = Default::default();
         self.entities.columns.owner[entity_slot] = module;
         // A native module supplies its own raw namespace. Q3's client zero is
         // not the common world's reserved slot zero; an unbound shell has none.
@@ -408,6 +409,7 @@ impl Server {
         if client.module != native.module
             || self.entities.columns.native_entity[slot] != Some(native)
         {
+            self.entities.columns.published_fields[slot] = Default::default();
             client.player.weapon_state = None;
             client.player.native = None;
             client.player.native_clock = None;

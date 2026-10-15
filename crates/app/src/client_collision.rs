@@ -279,7 +279,7 @@ impl ClientCollision {
                     let slot = id.slot as usize;
                     let columns = &mut self.entities.columns;
                     columns.set_body(slot, body);
-                    columns.angles[slot] = angles;
+                    columns.set_angles(slot, angles);
                     columns.appearance[slot] = record.appearance;
                     columns.collision_shape[slot] = shape;
                     columns.model_rules[slot] = rules;

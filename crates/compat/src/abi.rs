@@ -898,6 +898,7 @@ fn qc_find(
     arguments: &[u64],
 ) -> Result<CallValue, CallError> {
     Ok(CallValue::Word(u64::from(vm.find_entity(
+        &quakec::EntityAccess::engine(c.services),
         &c.services.server.entities,
         c.context.module,
         qc_word(arguments, 0)?,
@@ -1224,7 +1225,15 @@ fn qc_trace_line(
     query.pass = pass;
     let trace = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
     view.finish()?;
-    let entity = vm.projection.quakec_hit(c.services, trace.entity);
+    let entity = vm.with_entity_stores(|projection, memory, _, store| {
+        projection.quakec_encode_hit(
+            &c.services.server.entities,
+            memory,
+            c.context,
+            trace.entity,
+            store,
+        )
+    })?;
     vm.write_trace(trace, entity)
         .map_err(|_| CallError::Memory)?;
     Ok(CallValue::Word(0))

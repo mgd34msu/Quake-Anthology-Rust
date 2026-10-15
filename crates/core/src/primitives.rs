@@ -798,7 +798,36 @@ pub struct Body {
     pub mins: Vec3,
     pub maxs: Vec3,
 }
+
+/// Common fields supplied by an actual producer, rather than zero-initialized
+/// backing. Module boundaries may expose only fields with this authority.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntityFields(u8);
+
+impl EntityFields {
+    pub const POSITION: Self = Self(1);
+    pub const VELOCITY: Self = Self(2);
+    pub const ANGLES: Self = Self(4);
+    pub const BOUNDS: Self = Self(8);
+    pub const BODY: Self = Self(Self::POSITION.0 | Self::VELOCITY.0 | Self::BOUNDS.0);
+
+    pub const fn contains(self, fields: Self) -> bool {
+        self.0 & fields.0 == fields.0
+    }
+
+    pub fn insert(&mut self, fields: Self) {
+        self.0 |= fields.0;
+    }
+}
+
 impl Body {
+    pub fn bounds(self) -> Bounds {
+        Bounds {
+            mins: self.position + self.mins,
+            maxs: self.position + self.maxs,
+        }
+    }
+
     pub fn center(self) -> Vec3 {
         self.position + crate::math::midpoint(self.mins, self.maxs)
     }

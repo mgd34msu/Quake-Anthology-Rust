@@ -134,6 +134,7 @@ pub(super) struct Activation {
     child: Option<bool>,
     input_callback: bool,
     termination: Option<qa_compat::services::ClientTermination>,
+    admitted: Option<quakec::AdmittedEntity>,
 }
 impl Activation {
     fn new(start: GuestStart, input_callback: bool) -> Self {
@@ -146,6 +147,7 @@ impl Activation {
             child: None,
             input_callback,
             termination: None,
+            admitted: None,
         }
     }
 }
@@ -203,9 +205,17 @@ pub(super) fn start(
             CallbackCall::Touch {
                 entity,
                 other,
-                time,
+                time: if other.namespace == ResourceNamespace::Module(module) {
+                    time
+                } else {
+                    Some(row.time(host.time))
+                },
             },
-            time.unwrap_or_else(|| row.time(host.time)),
+            if other.namespace == ResourceNamespace::Module(module) {
+                time.unwrap_or_else(|| row.time(host.time))
+            } else {
+                row.time(host.time)
+            },
         ),
         CallbackCall::Blocked {
             entity,
@@ -514,7 +524,12 @@ fn drive(host: &mut FrameHost, frame: Activation, command: CommandArgs<'_>) -> b
     result
 }
 
-fn completing(host: &mut FrameHost, frame: &mut Activation, result: Result<ModuleResult, ()>) {
+fn completing(host: &mut FrameHost, frame: &mut Activation, mut result: Result<ModuleResult, ()>) {
+    if let Some(admitted) = frame.admitted.take()
+        && contacts::release(host, admitted).is_err()
+    {
+        result = Err(());
+    }
     frame.backend.take();
     if result.is_err()
         && frame.input_callback
@@ -799,13 +814,35 @@ fn advance(
                 .and_then(|native| qc.vm.prepare_client_call(event, native, time)),
             CallbackCall::Touch { other, time, .. } => {
                 native.ok_or(ServiceError::Entity).and_then(|native| {
-                    let other = qc.vm.weak_entity_offset(start.module, other)?;
+                    let other = if other.namespace == ResourceNamespace::Module(start.module) {
+                        qc.vm.weak_entity_offset(start.module, other)?
+                    } else {
+                        let admitted = qc.vm.admit_reference(
+                            &host.runtime.server.entities,
+                            start.context,
+                            other,
+                        )?;
+                        let offset = admitted.offset();
+                        frame.admitted = Some(admitted);
+                        offset
+                    };
                     qc.vm.prepare_touch_call(native, other, time)
                 })
             }
             CallbackCall::Blocked { other, .. } => {
                 native.ok_or(ServiceError::Entity).and_then(|native| {
-                    let other = qc.vm.weak_entity_offset(start.module, other)?;
+                    let other = if other.namespace == ResourceNamespace::Module(start.module) {
+                        qc.vm.weak_entity_offset(start.module, other)?
+                    } else {
+                        let admitted = qc.vm.admit_reference(
+                            &host.runtime.server.entities,
+                            start.context,
+                            other,
+                        )?;
+                        let offset = admitted.offset();
+                        frame.admitted = Some(admitted);
+                        offset
+                    };
                     qc.vm.prepare_blocked(native, other)?;
                     Ok(quakec::ClientCallRestore::default())
                 })
@@ -1042,7 +1079,10 @@ fn advance(
                     match import {
                         // The ABI wrote only the return cells in this builtin's
                         // signature. Void imports and return-vector tails survive.
-                        QcImportStep::Returned => step = Some(qc.vm.resume(run).map_err(|_| ())?),
+                        QcImportStep::Returned => {
+                            let access = quakec::EntityAccess::engine(calls.services);
+                            step = Some(qc.vm.resume(run, &access).map_err(|_| ())?);
+                        }
                         QcImportStep::Host {
                             request,
                             continuation,
@@ -1065,11 +1105,13 @@ fn advance(
                         }
                     }
                 }
-                match step
-                    .take()
-                    .map_or_else(|| qc.vm.advance(run), Ok)
-                    .map_err(|_| ())?
-                {
+                let next = if let Some(step) = step.take() {
+                    step
+                } else {
+                    let access = quakec::EntityAccess::engine(calls.services);
+                    qc.vm.advance(run, &access).map_err(|_| ())?
+                };
+                match next {
                     quakec::Step::Builtin(builtin) => {
                         imported = Some(calls.import(&mut qc.vm, &builtin).map_err(|_| ())?);
                     }
@@ -1150,6 +1192,22 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>
     // A host stop resides in pending or reply, never both. Take ownership before
     // dropping the traversal so native saved globals cannot be lost on abort.
     let point = point.or(reply);
+    let pending = match frame.pending.take() {
+        Some(Pending {
+            operation: Operation::Triggers {
+                touch: Some(touch), ..
+            },
+            ..
+        }) => {
+            if touch.cancel(host).is_err()
+                && let Some(row) = host.module_row_mut(frame.start.module)
+            {
+                row.counts.rejected += 1;
+            }
+            None
+        }
+        pending => pending,
+    };
     if let Some(Pending {
         operation:
             Operation::Clear {
@@ -1159,7 +1217,7 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>
                 ..
             },
         ..
-    }) = frame.pending.take()
+    }) = pending
     {
         loop {
             if let Some(next) = resume.take() {
@@ -1173,6 +1231,12 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>
                 _ => break,
             }
         }
+    }
+    if let Some(admitted) = frame.admitted.take()
+        && contacts::release(host, admitted).is_err()
+        && let Some(row) = host.module_row_mut(frame.start.module)
+    {
+        row.counts.rejected += 1;
     }
     let Some((row, storage)) = host
         .modules

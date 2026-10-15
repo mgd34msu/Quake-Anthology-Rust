@@ -10,6 +10,9 @@ use std::{hint::black_box, io::Write};
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 struct Calls;
 impl Builtins for Calls {
+    fn entity_access(&self) -> qa_compat::quakec::EntityAccess<'_> {
+        qa_compat::quakec::EntityAccess::native_only()
+    }
     fn call(&mut self, vm: &mut Vm, number: u32, argc: usize) -> Result<(), Trap> {
         if number != 1 || argc != 2 {
             return Err(Trap::Builtin);

@@ -74,6 +74,7 @@ pub enum Trap {
     Budget,
     World,
     Continuation,
+    EntityAccess,
 }
 impl From<MemoryError> for Trap {
     fn from(_: MemoryError) -> Self {
@@ -81,6 +82,7 @@ impl From<MemoryError> for Trap {
     }
 }
 pub trait Builtins {
+    fn entity_access(&self) -> EntityAccess<'_>;
     fn call(&mut self, vm: &mut Vm, number: u32, argc: usize) -> Result<(), Trap>;
     fn stopped(&mut self, vm: &mut Vm, call: &BuiltinCall) -> Result<(), Trap> {
         self.call(vm, call.number, call.argc())
@@ -217,6 +219,59 @@ pub(super) fn temporary_string(memory: &mut ModuleMemory<'_>, text: &[u8]) -> Re
     u32::try_from(start).map_err(|_| Trap::String)
 }
 
+/// Canonical reads borrow no VM, callback dispatcher, or native child memory.
+pub struct EntityAccess<'a> {
+    view: Option<(
+        &'a qa_session::clients::Server,
+        &'a qa_core::names::NameTable,
+    )>,
+}
+impl<'a> EntityAccess<'a> {
+    pub fn engine(services: &'a crate::services::EngineServices<'_>) -> Self {
+        Self {
+            view: Some((&*services.server, &*services.names)),
+        }
+    }
+    pub fn native_only() -> Self {
+        Self { view: None }
+    }
+}
+#[must_use]
+#[derive(Debug)]
+pub struct AdmittedEntity {
+    owner: Arc<()>,
+    recipient: qa_core::primitives::ModuleId,
+    offset: u32,
+    stride: u32,
+    entity: Option<qa_core::primitives::EntityId>,
+}
+impl AdmittedEntity {
+    pub fn offset(&self) -> u32 {
+        self.offset
+    }
+    pub fn reference(&self) -> qa_core::primitives::NativeEntityRef {
+        qa_core::primitives::NativeEntityRef::entity(
+            qa_core::primitives::ResourceNamespace::Module(self.recipient),
+            self.offset / self.stride,
+        )
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ForeignWord {
+    Unsupported,
+    Conflict,
+    Private,
+    Position(usize),
+    Velocity(usize),
+    Angles(usize),
+    Min(usize),
+    Max(usize),
+    Size(usize),
+    AbsoluteMin(usize),
+    AbsoluteMax(usize),
+    Classname,
+}
+
 pub struct Vm {
     pub image: Image,
     pub entities: ModuleMemory<'static>,
@@ -228,6 +283,7 @@ pub struct Vm {
     pub stride: usize,
     pub header_bytes: usize,
     pub(crate) projection: crate::entities::EntityProjection,
+    foreign_fields: Box<[ForeignWord]>,
     dirty_entities: BitSet,
     dirty_slots: Box<[usize]>,
     dirty_count: usize,
@@ -340,6 +396,9 @@ impl Vm {
             layout.header_bytes,
             layout.entities,
         );
+        let foreign_fields = projection
+            .quakec_foreign_fields()
+            .map_err(|_| Trap::Memory)?;
         Ok(Self {
             image,
             entities,
@@ -351,6 +410,7 @@ impl Vm {
             stride,
             header_bytes: layout.header_bytes,
             projection,
+            foreign_fields,
             dirty_entities: BitSet::empty(layout.entities),
             dirty_slots: vec![0; layout.entities].into_boxed_slice(),
             dirty_count: 0,
@@ -377,6 +437,237 @@ impl Vm {
             active_run: None,
             settings: Settings::default(),
         })
+    }
+    pub fn admit_entity(
+        &mut self,
+        entities: &qa_world::entities::EntityTable,
+        context: crate::services::CallContext,
+        entity: qa_core::primitives::EntityId,
+    ) -> Result<AdmittedEntity, crate::services::CallError> {
+        let (slot, foreign) = self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_admit_entity(entities, memory, context, entity, store)
+        })?;
+        Ok(AdmittedEntity {
+            owner: Arc::clone(&self.run_owner),
+            recipient: context.module,
+            offset: (slot * self.stride) as u32,
+            stride: self.stride as u32,
+            entity: foreign.then_some(entity),
+        })
+    }
+    pub fn admit_reference(
+        &mut self,
+        entities: &qa_world::entities::EntityTable,
+        context: crate::services::CallContext,
+        reference: qa_core::primitives::NativeEntityRef,
+    ) -> Result<AdmittedEntity, crate::services::CallError> {
+        use qa_core::primitives::{NativeEntity, ResourceNamespace};
+        self.projection.quakec_validate_owner(context.module)?;
+        if reference.namespace == ResourceNamespace::Module(context.module) {
+            let offset = self.weak_entity_offset(context.module, reference)?;
+            return Ok(AdmittedEntity {
+                owner: Arc::clone(&self.run_owner),
+                recipient: context.module,
+                offset,
+                stride: self.stride as u32,
+                entity: None,
+            });
+        }
+        let ResourceNamespace::Module(module) = reference.namespace else {
+            return Err(crate::services::CallError::Entity);
+        };
+        let slot =
+            i32::try_from(reference.ordinal).map_err(|_| crate::services::CallError::Entity)?;
+        let entity = entities
+            .find_native(NativeEntity { module, slot }, None)
+            .ok_or(crate::services::CallError::Entity)?;
+        self.admit_entity(entities, context, entity)
+    }
+    pub fn admit_captured_reference(
+        &mut self,
+        entities: &qa_world::entities::EntityTable,
+        context: crate::services::CallContext,
+        captured: qa_world::entities::EntityReference,
+    ) -> Result<AdmittedEntity, crate::services::CallError> {
+        use qa_core::primitives::{NativeEntity, ResourceNamespace};
+        let reference = captured.reference();
+        if reference.namespace == ResourceNamespace::Module(context.module) {
+            return self.admit_reference(entities, context, reference);
+        }
+        let ResourceNamespace::Module(module) = reference.namespace else {
+            return Err(crate::services::CallError::Entity);
+        };
+        let slot =
+            i32::try_from(reference.ordinal).map_err(|_| crate::services::CallError::Entity)?;
+        if let Some(entity) = entities.find_native(NativeEntity { module, slot }, None) {
+            return self.admit_entity(entities, context, entity);
+        }
+        let entity = captured.entity();
+        let (slot, foreign) = self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_admit_retired_alias(entities, memory, context, entity, store)
+        })?;
+        Ok(AdmittedEntity {
+            owner: Arc::clone(&self.run_owner),
+            recipient: context.module,
+            offset: (slot * self.stride) as u32,
+            stride: self.stride as u32,
+            entity: foreign.then_some(entity),
+        })
+    }
+    pub fn release_entity(
+        &mut self,
+        admitted: AdmittedEntity,
+    ) -> Result<(), crate::services::CallError> {
+        if !Arc::ptr_eq(&self.run_owner, &admitted.owner) {
+            return Err(crate::services::CallError::Entity);
+        }
+        self.projection.quakec_validate_owner(admitted.recipient)?;
+        if let Some(entity) = admitted.entity {
+            self.projection
+                .quakec_release_alias(admitted.offset as usize / self.stride, entity)?;
+        }
+        Ok(())
+    }
+    fn check_entity_store(
+        &self,
+        access: &EntityAccess<'_>,
+        address: u64,
+        bytes: usize,
+    ) -> Result<(), Trap> {
+        self.entities.read(address, bytes)?;
+        if bytes == 0 {
+            return Ok(());
+        }
+        let first = address as usize / self.stride;
+        let last = (address as usize + bytes - 1) / self.stride;
+        for slot in first..=last {
+            if let Some(entity) = self.projection.quakec_foreign_entity(slot) {
+                let (server, _) = access.view.ok_or(Trap::EntityAccess)?;
+                server.entities.resolve(entity).ok_or(Trap::EntityAccess)?;
+                let offset = (address as usize)
+                    .checked_sub(slot * self.stride + self.header_bytes)
+                    .ok_or(Trap::EntityAccess)?;
+                if first != last
+                    || bytes != 4
+                    || !offset.is_multiple_of(4)
+                    || self.foreign_fields.get(offset / 4) != Some(&ForeignWord::Private)
+                {
+                    return Err(Trap::EntityAccess);
+                }
+            }
+        }
+        Ok(())
+    }
+    fn read_entity_words(
+        &mut self,
+        access: &EntityAccess<'_>,
+        address: u64,
+        width: usize,
+    ) -> Result<[u32; 3], Trap> {
+        use qa_core::primitives::EntityFields;
+        self.entities.read(address, width * 4)?;
+        let slot = address as usize / self.stride;
+        let mut words = [0; 3];
+        let Some(entity) = self.projection.quakec_foreign_entity(slot) else {
+            for (axis, word) in words[..width].iter_mut().enumerate() {
+                *word = self.entities.read_word(address + axis as u64 * 4)? as u32;
+            }
+            return Ok(words);
+        };
+        let (server, names) = access.view.ok_or(Trap::EntityAccess)?;
+        let canonical = server.entities.resolve(entity).ok_or(Trap::EntityAccess)?;
+        let offset = (address as usize)
+            .checked_sub(slot * self.stride + self.header_bytes)
+            .ok_or(Trap::EntityAccess)?;
+        if !offset.is_multiple_of(4) {
+            return Err(Trap::EntityAccess);
+        }
+        let descriptors = self
+            .foreign_fields
+            .get(offset / 4..offset / 4 + width)
+            .ok_or(Trap::EntityAccess)?;
+        let columns = &server.entities.columns;
+        let authority = columns.published_fields[canonical];
+        let reads_absolute = descriptors.iter().any(|field| {
+            matches!(
+                field,
+                ForeignWord::AbsoluteMin(_) | ForeignWord::AbsoluteMax(_)
+            )
+        });
+        let linked_bounds = reads_absolute.then(|| server.area.bounds(entity)).flatten();
+        for field in descriptors {
+            let required = match field {
+                ForeignWord::Position(_) => EntityFields::POSITION,
+                ForeignWord::Velocity(_) => EntityFields::VELOCITY,
+                ForeignWord::Angles(_) => EntityFields::ANGLES,
+                ForeignWord::Min(_) | ForeignWord::Max(_) | ForeignWord::Size(_) => {
+                    EntityFields::BOUNDS
+                }
+                ForeignWord::AbsoluteMin(_) | ForeignWord::AbsoluteMax(_) => {
+                    if linked_bounds.is_some() {
+                        EntityFields::default()
+                    } else {
+                        let mut required = EntityFields::POSITION;
+                        required.insert(EntityFields::BOUNDS);
+                        required
+                    }
+                }
+                ForeignWord::Classname => {
+                    columns.classname[canonical].ok_or(Trap::EntityAccess)?;
+                    EntityFields::default()
+                }
+                ForeignWord::Private => EntityFields::default(),
+                _ => return Err(Trap::EntityAccess),
+            };
+            if !authority.contains(required) {
+                return Err(Trap::EntityAccess);
+            }
+        }
+        let absolute = reads_absolute
+            .then(|| linked_bounds.unwrap_or_else(|| columns.body(canonical).bounds()));
+        // Every component has been admitted before string/cache or destination writes.
+        for (axis, word) in words[..width].iter_mut().enumerate() {
+            let field = self.foreign_fields[offset / 4 + axis];
+            let value = match field {
+                ForeignWord::Position(axis) => columns.position[canonical].0[axis],
+                ForeignWord::Velocity(axis) => columns.velocity[canonical].0[axis],
+                ForeignWord::Angles(axis) => columns.angles[canonical].0[axis],
+                ForeignWord::Min(axis) => columns.mins[canonical].0[axis],
+                ForeignWord::Max(axis) => columns.maxs[canonical].0[axis],
+                ForeignWord::Size(axis) => {
+                    columns.maxs[canonical].0[axis] - columns.mins[canonical].0[axis]
+                }
+                ForeignWord::AbsoluteMin(axis) => absolute.ok_or(Trap::EntityAccess)?.mins.0[axis],
+                ForeignWord::AbsoluteMax(axis) => absolute.ok_or(Trap::EntityAccess)?.maxs.0[axis],
+                ForeignWord::Private => {
+                    *word = self.entities.read_word(address + axis as u64 * 4)? as u32;
+                    continue;
+                }
+                ForeignWord::Classname => {
+                    let name = columns.classname[canonical].ok_or(Trap::EntityAccess)?;
+                    let text = names.get(name).ok_or(Trap::EntityAccess)?;
+                    let cached = self.projection.quakec_alias_classname(slot);
+                    let result = if let Some((previous, offset, capacity)) =
+                        cached.filter(|value| text.len() < value.2)
+                    {
+                        if previous != name {
+                            self.strings.write_string(offset as u64, capacity, text)?;
+                        }
+                        (offset, capacity)
+                    } else {
+                        (self.insert_string(text)?, text.len() + 1)
+                    };
+                    self.projection
+                        .quakec_cache_alias_classname(slot, name, result.0, result.1)
+                        .map_err(|_| Trap::EntityAccess)?;
+                    *word = result.0 as u32;
+                    continue;
+                }
+                _ => return Err(Trap::EntityAccess),
+            };
+            *word = value.to_bits();
+        }
+        Ok(words)
     }
     pub fn random_word(&mut self) -> u32 {
         self.random.next_u32()
@@ -555,7 +846,7 @@ impl Vm {
         let slot = self
             .entity_number(native)
             .map_err(|_| crate::services::CallError::Memory)?;
-        self.bound_entity(
+        self.projection.quakec_resolve_value(
             entities,
             qa_core::primitives::NativeEntity {
                 module,
@@ -564,7 +855,8 @@ impl Vm {
         )
     }
     pub(crate) fn find_entity(
-        &self,
+        &mut self,
+        access: &EntityAccess<'_>,
         entities: &qa_world::entities::EntityTable,
         module: qa_core::primitives::ModuleId,
         start: u32,
@@ -574,7 +866,10 @@ impl Vm {
         use crate::services::CallError;
         let ordinal = self.entity_number(start).map_err(|_| CallError::Memory)?;
         let mut cursor = self.projection.quakec_find_start(module, ordinal)?;
-        let text = self.string(match_offset).map_err(|_| CallError::Memory)?;
+        let text_length = self
+            .string(match_offset)
+            .map_err(|_| CallError::Memory)?
+            .len();
         while let Some((native, _)) = self.projection.quakec_next_entity(entities, &mut cursor)? {
             let native = (native.slot as usize)
                 .checked_mul(self.stride)
@@ -585,8 +880,13 @@ impl Vm {
             let address = self
                 .field_address(native, field, 1)
                 .map_err(|_| CallError::Memory)?;
-            let offset = self.entities.read_word(address)?;
-            if self.string(offset).map_err(|_| CallError::Memory)? == text {
+            let offset = self
+                .read_entity_words(access, address, 1)
+                .map_err(|_| CallError::Unsupported)?[0] as i32;
+            let value = self.string(offset).map_err(|_| CallError::Memory)?;
+            if value.len() == text_length
+                && value == self.string(match_offset).map_err(|_| CallError::Memory)?
+            {
                 return Ok(native);
             }
         }
@@ -700,7 +1000,10 @@ impl Vm {
         field: MotionField,
     ) -> Result<(), crate::services::CallError> {
         let ground = if let MotionField::Ground(reference) = field {
-            Some(self.weak_entity_offset(context.module, reference)?)
+            let admitted = self.admit_reference(entities, context, reference)?;
+            let value = admitted.offset();
+            self.release_entity(admitted)?;
+            Some(value)
         } else {
             None
         };
@@ -966,7 +1269,7 @@ impl Vm {
         hooks: bool,
     ) -> Result<[u32; 3], Trap> {
         let mut run = self.begin_root(function, budget, hooks)?;
-        let mut step = self.advance(&mut run)?;
+        let mut step = self.advance(&mut run, &builtins.entity_access())?;
         loop {
             match step {
                 Step::Returned(value) => return Ok(value),
@@ -975,7 +1278,7 @@ impl Vm {
                         self.abort(&mut run)?;
                         return Err(error);
                     }
-                    step = self.resume(&mut run)?;
+                    step = self.resume(&mut run, &builtins.entity_access())?;
                 }
             }
         }
@@ -1024,7 +1327,11 @@ impl Vm {
             .copy_from_slice(&self.locals[self.locals_used..self.locals_used + f.locals]);
         frame.return_pc
     }
-    fn run<const HOOKS: bool>(&mut self, state: &mut RunState) -> Result<Step, Trap> {
+    fn run<const HOOKS: bool>(
+        &mut self,
+        state: &mut RunState,
+        access: &EntityAccess<'_>,
+    ) -> Result<Step, Trap> {
         use Opcode::*;
         let mut pc = state.pc;
         loop {
@@ -1101,7 +1408,7 @@ impl Vm {
                 StorePF | StorePS | StorePEnt | StorePFld | StorePFnc | StorePV => {
                     let width = if op == StorePV { 3 } else { 1 };
                     let address = u64::from(self.image.globals[b]);
-                    self.entities.read(address, width * 4)?;
+                    self.check_entity_store(access, address, width * 4)?;
                     for i in 0..width {
                         self.store_entity_word(address + i as u64 * 4, self.image.globals[a + i])?;
                     }
@@ -1122,10 +1429,8 @@ impl Vm {
                         }
                         self.image.globals[c] = address as u32;
                     } else {
-                        for i in 0..width {
-                            self.image.globals[c + i] =
-                                self.entities.read_word(address + i as u64 * 4)? as u32;
-                        }
+                        let words = self.read_entity_words(access, address, width)?;
+                        self.image.globals[c..c + width].copy_from_slice(&words[..width]);
                     }
                     if HOOKS {
                         self.hooks.stores += 1;
@@ -1139,6 +1444,9 @@ impl Vm {
                     let nextthink = self.field_address(entity, state.nextthink as u32, 1)?;
                     let frame = self.field_address(entity, state.frame as u32, 1)?;
                     let think = self.field_address(entity, state.think as u32, 1)?;
+                    for target in [nextthink, frame, think] {
+                        self.check_entity_store(access, target, 4)?;
+                    }
                     let time = f32::from_bits(
                         self.image.globals[self.call_fields.time_global.ok_or(Trap::Memory)?],
                     );

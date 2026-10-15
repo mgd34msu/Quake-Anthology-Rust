@@ -1,5 +1,5 @@
 //! Native monster fields adapt to the shared displacement/support solver.
-use super::{ClientCallRestore, Scalar, Vm};
+use super::{ClientCallRestore, EntityAccess, Scalar, Trap, Vm};
 use crate::services::{CallContext, CallError, ENGINE_CALLS, EngineServices};
 use qa_core::primitives::{Bounds, NativeEntityRef, ResourceNamespace, Vec3};
 use qa_gameplay::rules::motion::{StepRules, step_rules};
@@ -48,6 +48,22 @@ impl<'a, 'engine> Host<'a, 'engine> {
             entity_rules,
         }
     }
+    fn read_target(&mut self, target: NativeEntityRef, field: Scalar) -> Result<f32, CallError> {
+        let native = self.vm.weak_entity_offset(self.context.module, target)?;
+        let address = self
+            .vm
+            .projection
+            .quakec_scalar_address(&self.vm.entities, native, field)?;
+        let access = EntityAccess::engine(self.services);
+        let words =
+            self.vm
+                .read_entity_words(&access, address, 1)
+                .map_err(|error| match error {
+                    Trap::EntityAccess => CallError::Unsupported,
+                    _ => CallError::Memory,
+                })?;
+        Ok(f32::from_bits(words[0]))
+    }
     fn store(&mut self, field: Scalar, word: u32) -> Result<(), CallError> {
         let address =
             self.vm
@@ -93,10 +109,11 @@ impl MonsterHost for Host<'_, '_> {
         )))
     }
     fn target_origin(&mut self, target: NativeEntityRef) -> Result<Vec3, CallError> {
-        let native = self.vm.weak_entity_offset(self.context.module, target)?;
-        self.vm
-            .projection
-            .quakec_monster_origin(&self.vm.entities, native)
+        Ok(Vec3([
+            self.read_target(target, Scalar::Origin(0))?,
+            self.read_target(target, Scalar::Origin(1))?,
+            self.read_target(target, Scalar::Origin(2))?,
+        ]))
     }
     fn contents(&mut self, point: Vec3) -> Result<i32, CallError> {
         let services = &mut self.services;
@@ -158,7 +175,11 @@ impl MonsterHost for Host<'_, '_> {
         self.store(Scalar::Flags, (flags as i32 as f32).to_bits())
     }
     fn write_ground(&mut self, ground: NativeEntityRef) -> Result<(), CallError> {
-        let native = self.vm.weak_entity_offset(self.context.module, ground)?;
+        let admitted =
+            self.vm
+                .admit_reference(&self.services.server.entities, self.context, ground)?;
+        let native = admitted.offset();
+        self.vm.release_entity(admitted)?;
         self.store(Scalar::Ground, native)
     }
 }
@@ -188,20 +209,10 @@ impl GoalHost for Host<'_, '_> {
             != 0)
     }
     fn absolute_min(&mut self, target: NativeEntityRef, axis: usize) -> Result<f32, CallError> {
-        let native = self.vm.weak_entity_offset(self.context.module, target)?;
-        self.vm.projection.quakec_scalar_number(
-            &self.vm.entities,
-            native,
-            Scalar::AbsoluteMin(axis),
-        )
+        self.read_target(target, Scalar::AbsoluteMin(axis))
     }
     fn absolute_max(&mut self, target: NativeEntityRef, axis: usize) -> Result<f32, CallError> {
-        let native = self.vm.weak_entity_offset(self.context.module, target)?;
-        self.vm.projection.quakec_scalar_number(
-            &self.vm.entities,
-            native,
-            Scalar::AbsoluteMax(axis),
-        )
+        self.read_target(target, Scalar::AbsoluteMax(axis))
     }
     fn random_word(&mut self) -> u32 {
         self.vm.random_word()
