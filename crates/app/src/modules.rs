@@ -869,9 +869,10 @@ impl FrameHost {
                 .then(|| qa_gameplay::rules::motion::push_rules(request.context.native_rules))
                 .flatten();
             let push_undo = if let (Some(_), Program::QuakeC(qc)) = (push, &request.program) {
-                Some(qa_session::physics::PushUndo::load(
-                    qc.vm.entities.len() / qc.vm.stride,
-                ))
+                let maximum_candidates = (qc.vm.entities.len() / qc.vm.stride)
+                    .checked_add(host.runtime.server.entities.capacity())
+                    .ok_or("push undo capacity")?;
+                Some(qa_session::physics::PushUndo::load(maximum_candidates))
             } else {
                 None
             };

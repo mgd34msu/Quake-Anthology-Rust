@@ -25,8 +25,9 @@ impl From<PushNumber> for Scalar {
 }
 
 impl Vm {
-    /// The provider starts at ordinal one. Every observed native row is
-    /// visited, including client and freed backing; each call rereads count.
+    /// The provider starts at ordinal one. Primary native rows retain ordinal
+    /// order, including client and freed backing. Aliases are skipped and each
+    /// call rereads the observed count.
     pub fn push_candidate(&self, cursor: &mut usize) -> Result<Option<NativeEntity>, CallError> {
         self.projection.quakec_push_candidate(cursor)
     }

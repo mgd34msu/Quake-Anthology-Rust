@@ -63,7 +63,7 @@ pub(super) fn capture(
         .ok_or(ClientCommandError::InvalidSlot)
 }
 
-fn admit_captured(
+pub(super) fn admit_captured(
     host: &mut FrameHost,
     recipient: ModuleId,
     captured: EntityReference,
