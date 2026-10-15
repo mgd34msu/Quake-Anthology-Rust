@@ -1219,7 +1219,7 @@ fn read_qw_records(
                         &record,
                         &crate::projection::EntityContext::default(),
                         &mut words,
-                        |model| Some(model.ordinal),
+                        |model, _| Some(model.ordinal),
                         |sound| Some(sound.ordinal),
                         |reference| Some(reference.ordinal()),
                     );

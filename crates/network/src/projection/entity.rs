@@ -4,9 +4,9 @@ use super::{Convert, EntityContext, Field};
 use crate::{commands::packet::Protocol, states};
 use qa_core::primitives::{
     EntityAppearance, EntityClientData, EntityLight, EntityModelData, EntityParameter,
-    EntityPresentation, EntityRecord, ModelRef, NativeClientRef, NativeEntityRef, NativeReference,
-    ResourceNamespace, RuleSetId, SoundRef, ThinkTime, Trajectory as PublishedTrajectory,
-    TrajectoryCurve,
+    EntityPresentation, EntityRecord, ModelRef, ModelUse, NativeClientRef, NativeEntityRef,
+    NativeReference, ResourceNamespace, RuleSetId, SoundRef, ThinkTime,
+    Trajectory as PublishedTrajectory, TrajectoryCurve,
 };
 use qa_core::solids::{PackedSolid, SolidCodec};
 use qa_gameplay::rules::entities::{
@@ -299,7 +299,7 @@ impl EntityProjection {
         record: &EntityRecord,
         context: &EntityContext,
         out: &mut [u32],
-        mut resolve_model: impl FnMut(ModelRef) -> Option<u32>,
+        mut resolve_model: impl FnMut(ModelRef, ModelUse) -> Option<u32>,
         mut resolve_sound: impl FnMut(SoundRef) -> Option<u32>,
         mut resolve_entity: impl FnMut(NativeReference) -> Option<u32>,
     ) -> bool {
@@ -331,7 +331,7 @@ impl EntityProjection {
                     [team, health].get(i).copied().unwrap_or(0) as u32
                 }
                 _ => a.models[i]
-                    .and_then(&mut resolve_model)
+                    .and_then(|reference| resolve_model(reference, ModelUse::Entity(i)))
                     .filter(|&n| n <= self.resource_limit)
                     .unwrap_or(0),
             };

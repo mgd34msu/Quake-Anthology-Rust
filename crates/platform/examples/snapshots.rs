@@ -492,7 +492,7 @@ fn connected_heap() -> Result<(), String> {
                 &source,
                 &context,
                 &mut player,
-                |model| Some(model.ordinal),
+                |model, _| Some(model.ordinal),
                 |sound| Some(sound.ordinal),
             ) {
                 return Err(qa_network::commands::packet::Error::Context);
@@ -768,7 +768,7 @@ fn connected_qw_heap() -> Result<(), String> {
                 &source,
                 &context,
                 &mut player_words,
-                |model| Some(model.ordinal),
+                |model, _| Some(model.ordinal),
                 |sound| Some(sound.ordinal),
             ) {
                 return Err(Error::Context);
@@ -940,7 +940,7 @@ fn connected_nq_heap() -> Result<(), String> {
                 &source,
                 &context,
                 &mut player,
-                |model| Some(model.ordinal),
+                |model, _| Some(model.ordinal),
                 |sound| Some(sound.ordinal),
             ) {
                 return Err(Error::Context);

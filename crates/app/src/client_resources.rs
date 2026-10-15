@@ -4,11 +4,26 @@ use qa_compat::services::ClientTermination;
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     primitives::{
-        ClientId, EntityId, EntityRecord, ModelRef, ModuleId, ResourceNamespace, RuleSetId,
-        SpatialPolicy,
+        ClientId, EntityId, EntityRecord, GeometryId, ModelRef, ModelUse, ModuleId, NameId,
+        ResourceNamespace, RuleSetId, SpatialPolicy,
     },
 };
 use qa_network::commands::packet::Protocol;
+
+pub(crate) fn model_world(
+    connection: Option<qa_session::clients::Connection>,
+    resources: Option<&ClientResources>,
+    server: Option<GeometryId>,
+) -> Option<GeometryId> {
+    match connection? {
+        qa_session::clients::Connection::Local => resources?
+            .state
+            .models
+            .collision_world()
+            .map(|(geometry, _)| geometry),
+        qa_session::clients::Connection::Remote | qa_session::clients::Connection::Bot => server,
+    }
+}
 
 pub struct ClientResources {
     pub state: ResourceState,
@@ -29,7 +44,7 @@ pub struct ResourceState {
     sound_policy: SpatialPolicy,
     loop_spatial: SpatialPolicy,
     static_sounds: u32,
-    static_entities: Box<[EntityRecord]>,
+    static_entities: Box<[crate::client_scene::StaticEntity]>,
     static_entity_count: usize,
 }
 impl ClientResources {
@@ -59,7 +74,7 @@ impl ClientResources {
                 loop_spatial: qa_gameplay::rules::loop_spatial_policy(sound_rules),
                 static_sounds: 0,
                 static_entities: vec![
-                    EntityRecord::default();
+                    crate::client_scene::StaticEntity::default();
                     qa_core::primitives::NATIVE_WIRE_BYTES
                         / qa_network::outputs::STATIC_ENTITY_BYTES
                 ]
@@ -443,7 +458,15 @@ impl ResourceState {
     }
 
     /// Native signon copies survive freeing or reusing their source edicts.
-    pub fn receive_static_entity(&mut self, mut record: EntityRecord) -> bool {
+    pub fn receive_static_entity(
+        &mut self,
+        mut record: EntityRecord,
+        lookup: Option<&dyn qa_compat::services::ModelLookup>,
+        world: Option<(
+            qa_render::world::WorldId,
+            qa_render::world::WorldPresentationId,
+        )>,
+    ) -> bool {
         let Some(slot) = self.static_entities.get_mut(self.static_entity_count) else {
             self.rejected += 1;
             return false;
@@ -456,13 +479,19 @@ impl ResourceState {
                 )
             });
         }
-        *slot = record;
+        *slot = self
+            .models
+            .capture_static(record, &self.configs, lookup, world);
         self.static_entity_count += 1;
         true
     }
-
-    pub fn static_entities(&self) -> &[EntityRecord] {
+    pub fn static_entities(&self) -> &[crate::client_scene::StaticEntity] {
         &self.static_entities[..self.static_entity_count]
+    }
+    pub(crate) fn complete_static_models(&mut self, catalog: &ModelCatalog) {
+        for entity in &mut self.static_entities[..self.static_entity_count] {
+            self.models.complete_static(entity, catalog);
+        }
     }
 
     pub fn static_entity_capacity(&self) -> usize {
@@ -598,6 +627,9 @@ pub struct ConfigPublication {
     seen: Box<[u64]>,
     rows: Box<[PublishedConfig]>,
     sounds: qa_audio::SoundBindings,
+    models: qa_core::bindings::OrdinalBindings<NameId>,
+    model_claims: Box<[bool]>,
+    model_world: Option<GeometryId>,
     primary_claims: Box<[bool]>,
     pub unsupported: u64,
     pub pending: Option<(u64, usize)>,
@@ -617,6 +649,38 @@ pub enum ResourceReadiness {
     Ready,
     Unsupported,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelName {
+    pub name: Option<NameId>,
+    pub revision: u64,
+    pub source: RuleSetId,
+}
+pub(crate) struct ModelInput {
+    pub ordinal: u32,
+    pub player: bool,
+    pub translucent: bool,
+}
+pub(crate) fn model_input(source: RuleSetId, ordinal: u32, usage: Option<ModelUse>) -> ModelInput {
+    let player = ordinal == 255
+        && matches!(usage, Some(ModelUse::Entity(0 | 1)))
+        && matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease);
+    let translucent = !player
+        && source == RuleSetId::Quake2
+        && usage == Some(ModelUse::Entity(1))
+        && ordinal <= u8::MAX as u32
+        && ordinal & 0x80 != 0;
+    ModelInput {
+        ordinal: if translucent { ordinal & 0x7f } else { ordinal },
+        player,
+        translucent,
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelProjection {
+    Pending,
+    Ready(u32),
+    Unsupported,
+}
 impl ConfigPublication {
     pub fn load() -> Self {
         let layout = ConfigLayout::for_rules(RuleSetId::Quake2Rerelease);
@@ -629,6 +693,14 @@ impl ConfigPublication {
             seen: vec![0; count].into_boxed_slice(),
             rows: vec![PublishedConfig::default(); count].into_boxed_slice(),
             sounds: qa_audio::SoundBindings::load(sounds),
+            models: qa_core::bindings::OrdinalBindings::load(
+                layout.resources[0].count as usize,
+                0,
+                0,
+                false,
+            ),
+            model_claims: vec![false; layout.resources[0].count as usize].into_boxed_slice(),
+            model_world: None,
             primary_claims: vec![false; sounds].into_boxed_slice(),
             unsupported: 0,
             pending: None,
@@ -638,8 +710,9 @@ impl ConfigPublication {
         }
     }
     /// Source capacities are fixed when the module set is loaded.
-    pub fn configure_sources(&mut self, capacity: usize) {
+    pub fn configure_sources(&mut self, capacity: usize, model_names: usize) {
         self.revisions = vec![None; capacity].into_boxed_slice();
+        self.models.configure(model_names, 0);
         self.reset();
     }
     pub fn bind_sounds(&mut self, bank: &qa_audio::Bank) {
@@ -657,6 +730,9 @@ impl ConfigPublication {
         self.seen.fill(0);
         self.rows.fill(PublishedConfig::default());
         self.sounds.clear();
+        self.models.clear();
+        self.model_claims.fill(false);
+        self.model_world = None;
         self.primary_claims.fill(false);
         self.pending = None;
         self.game_state = None;
@@ -881,6 +957,186 @@ impl ConfigPublication {
         };
         (readiness == ResourceReadiness::Ready).then_some(ordinal)
     }
+    /// Rebinding the CLIENT's loaded world changes the interpretation of inline
+    /// filenames. Republish model rows through their existing receipt lifecycle.
+    pub(crate) fn model_world(&mut self, world: Option<GeometryId>) {
+        if self.model_world == world {
+            return;
+        }
+        self.model_world = world;
+        self.models.clear();
+        self.model_claims.fill(false);
+        self.revisions.fill(None);
+        self.seen.fill(0);
+        if let Some(layout) = self.layout {
+            self.rows[layout.resources[0].range()].fill(PublishedConfig::default());
+        }
+    }
+    pub(crate) fn primary_model_fits(&self, ordinal: u32) -> bool {
+        self.layout.is_some_and(|layout| {
+            ordinal < layout.resources[0].count && layout.resource_policies[0].permits(ordinal)
+        })
+    }
+    pub(crate) fn model_alias_fits(&self, ordinal: u32) -> bool {
+        self.primary_model_fits(ordinal)
+            && self
+                .layout
+                .is_some_and(|layout| layout.rules != RuleSetId::Quake2 || ordinal < 127)
+    }
+    pub fn primary_model(&mut self, ordinal: u32, claimed: bool, name: Option<NameId>) {
+        let Some(layout) = self.layout else { return };
+        if !self.primary_model_fits(ordinal) {
+            return;
+        }
+        let previous = self.model_claims[ordinal as usize];
+        self.model_claims[ordinal as usize] = claimed;
+        if claimed || previous {
+            if self.models.get(ordinal) != name {
+                self.rows[layout.resources[0].first as usize + ordinal as usize] =
+                    PublishedConfig::default();
+            }
+            let _ = self.models.set(ordinal, name);
+        }
+    }
+    pub fn release_model_aliases(&mut self) {
+        let Some(layout) = self.layout else { return };
+        for ordinal in (1..layout.resources[0].count).rev() {
+            if self.model_claims[ordinal as usize] && self.model_alias_fits(ordinal) {
+                self.models.prefer(ordinal);
+            }
+        }
+        for ordinal in 1..layout.resources[0].count {
+            if !self.model_claims[ordinal as usize]
+                && let Some(name) = self.models.get(ordinal)
+                && self.models.ordinal(name) != Some(ordinal)
+            {
+                let _ = self.models.set(ordinal, None);
+                self.rows[layout.resources[0].first as usize + ordinal as usize] =
+                    PublishedConfig::default();
+            }
+        }
+    }
+    /// Only changed configuration publication reserves new native slots.
+    pub fn reserve_model(&mut self, name: NameId) -> Option<u32> {
+        let layout = self.layout?;
+        if let Some(ordinal) = self
+            .models
+            .ordinal(name)
+            .filter(|&ordinal| self.model_alias_fits(ordinal))
+        {
+            return Some(ordinal);
+        }
+        let ordinal = (1..layout.resources[0].count).rev().find(|&ordinal| {
+            self.model_alias_fits(ordinal)
+                && !self.model_claims[ordinal as usize]
+                && self.models.get(ordinal).is_none()
+        })?;
+        self.models.set(ordinal, Some(name)).ok()?;
+        self.rows[layout.resources[0].first as usize + ordinal as usize] =
+            PublishedConfig::default();
+        Some(ordinal)
+    }
+    /// One producer-owned model projection serves entity, player, view weapon
+    /// and static records. CLIENT tables never ready a SERVER reference.
+    pub fn project_model_ref(
+        &self,
+        reference: ModelRef,
+        usage: ModelUse,
+        client: ClientId,
+        mut bound_name: impl FnMut(ModuleId, u32, ModelUse) -> Option<ModelName>,
+    ) -> ModelProjection {
+        use ModelProjection::{Pending, Ready, Unsupported};
+        let Some(layout) = self.layout else {
+            return Unsupported;
+        };
+        let primary = match reference.namespace {
+            ResourceNamespace::Module(module) => Some(module) == self.module,
+            ResourceNamespace::Client(owner) => owner == client,
+        };
+        if primary && reference.ordinal == 0 {
+            return Ready(0);
+        }
+        let cell_fits = |ordinal, translucent| {
+            ordinal < layout.resources[0].count
+                && !(ordinal == 255
+                    && matches!(layout.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
+                    && matches!(usage, ModelUse::Entity(0 | 1)))
+                && !(layout.rules == RuleSetId::Quake2
+                    && usage == ModelUse::Entity(1)
+                    && ordinal >= if translucent { 127 } else { 128 })
+        };
+        let translucent;
+        let ordinal = match reference.namespace {
+            ResourceNamespace::Module(module) => {
+                let Some(source) = bound_name(module, reference.ordinal, usage) else {
+                    return Unsupported;
+                };
+                if reference.ordinal >= ConfigLayout::for_rules(source.source).resources[0].count {
+                    return Unsupported;
+                }
+                let input = model_input(source.source, reference.ordinal, Some(usage));
+                translucent = input.translucent;
+                if input.player {
+                    return if primary
+                        && matches!(layout.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
+                    {
+                        Ready(255)
+                    } else {
+                        Unsupported
+                    };
+                }
+                let Some(name) = source.name else {
+                    return Unsupported;
+                };
+                if primary
+                    && self.primary_model_fits(input.ordinal)
+                    && cell_fits(input.ordinal, translucent)
+                    && self.models.get(input.ordinal) == Some(name)
+                {
+                    input.ordinal
+                } else if let Some(ordinal) = self
+                    .models
+                    .ordinal(name)
+                    .filter(|&ordinal| cell_fits(ordinal, translucent))
+                {
+                    ordinal
+                } else {
+                    return if self.begin(module, source.revision) {
+                        Pending
+                    } else {
+                        Unsupported
+                    };
+                }
+            }
+            ResourceNamespace::Client(owner) if owner == client => {
+                let input = model_input(layout.rules, reference.ordinal, Some(usage));
+                if input.player {
+                    return Ready(255);
+                }
+                translucent = input.translucent;
+                if self.models.get(input.ordinal).is_none() {
+                    return Unsupported;
+                }
+                input.ordinal
+            }
+            ResourceNamespace::Client(_) => return Unsupported,
+        };
+        if !cell_fits(ordinal, translucent) {
+            return Unsupported;
+        }
+        match self.readiness(layout.resources[0].first as usize + ordinal as usize) {
+            ResourceReadiness::Ready => {
+                if translucent && layout.rules == RuleSetId::Quake2 {
+                    Ready(ordinal | 0x80)
+                } else {
+                    Ready(ordinal)
+                }
+            }
+            ResourceReadiness::Pending => Pending,
+            ResourceReadiness::Unsupported => Unsupported,
+        }
+    }
+
     /// Called only while changed precaches are published, never at emission.
     /// Secondary slots grow downwards, leaving low native ordinals available.
     pub fn reserve_sound(&mut self, sound: qa_core::primitives::SoundId) -> Option<u32> {
@@ -896,19 +1152,4 @@ impl ConfigPublication {
             PublishedConfig::default();
         Some(ordinal)
     }
-}
-
-/// Native resource ordinals are supplied by the owning module/connection,
-/// never obtained by narrowing an engine entity or render asset handle.
-pub fn model_ordinal(
-    reference: ModelRef,
-    module: Option<ModuleId>,
-    client: ClientId,
-    limit: u32,
-) -> Option<u32> {
-    let namespace_matches = match reference.namespace {
-        ResourceNamespace::Module(owner) => Some(owner) == module,
-        ResourceNamespace::Client(owner) => owner == client,
-    };
-    (namespace_matches && reference.ordinal < limit).then_some(reference.ordinal)
 }

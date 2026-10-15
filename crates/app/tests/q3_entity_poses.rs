@@ -37,7 +37,7 @@ fn encode(number: u32, record: EntityRecord) -> Entity<{ states::ENTITY_WORDS }>
         &record,
         &qa_network::projection::EntityContext::default(),
         &mut words,
-        |model| Some(model.ordinal),
+        |model, _usage| Some(model.ordinal),
         |sound| Some(sound.ordinal),
         |reference| Some(reference.ordinal()),
     ));

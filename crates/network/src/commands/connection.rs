@@ -725,12 +725,24 @@ impl Commands {
                     }
                     (Protocol::QuakeWorld28, 12 | 45 | 46)
                     | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 13) => {
+                        let models = (self.protocol == Protocol::QuakeWorld28 && scratch[at] == 45)
+                            .then(|| self.protocol.resource_layout().resources[0]);
+                        let mut model_result = Ok(());
                         let count = crate::outputs::read_configstrings(
                             self.protocol,
                             &scratch[at..],
-                            |config| consume(Incoming::ConfigString(config)),
+                            |config| {
+                                if let Some(models) = models
+                                    && config.text == b"progs/player.mdl"
+                                {
+                                    model_result =
+                                        channel.set_qw_player_model(config.index - models.first);
+                                }
+                                consume(Incoming::ConfigString(config));
+                            },
                         )
                         .map_err(|_| packet::Error::Opcode)?;
+                        model_result?;
                         at += count;
                     }
                     // Signon, temp entities, inventory and

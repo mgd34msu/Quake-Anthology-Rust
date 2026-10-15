@@ -293,7 +293,8 @@ fn snapshot_frames_for_protocol(protocol: qa_network::commands::packet::Protocol
         EventTime::from_milliseconds(2500),
         Some(stale),
         &mut source,
-        |_, _| None
+        |_, _| None,
+        |_, _, _, _| None
     ));
     host.runtime.loopback.clear_client(client);
     let connection = host

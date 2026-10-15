@@ -508,7 +508,7 @@ fn transmit_native(
     let time = EventTime::from_milliseconds(native_ms);
     assert!(
         host.runtime
-            .send_snapshot(client, time, None, source, |_, _| None)
+            .send_snapshot(client, time, None, source, |_, _| None, |_, _, _, _| None)
     );
     drain(host, queued_ms);
 }

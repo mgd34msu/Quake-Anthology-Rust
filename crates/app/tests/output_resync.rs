@@ -285,7 +285,8 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
                 EventTime::from_milliseconds(500),
                 None,
                 &mut Source::default(),
-                |_, _| None
+                |_, _| None,
+                |_, _, _, _| None
             ),
             "{protocol:?}"
         );

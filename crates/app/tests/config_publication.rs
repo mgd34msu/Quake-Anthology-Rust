@@ -1,4 +1,4 @@
-use qa_app::client_resources::{ConfigPublication, ResourceReadiness};
+use qa_app::client_resources::{ConfigPublication, ModelName, ResourceReadiness};
 use qa_core::{
     configstrings::ConfigLayout,
     primitives::{ClientId, ModuleId, ResourceNamespace, RuleSetId, SoundId, SoundRef},
@@ -30,7 +30,7 @@ fn bank() -> qa_audio::Bank {
 fn publication(bank: &qa_audio::Bank) -> (ConfigPublication, ConfigLayout) {
     let layout = ConfigLayout::for_rules(RuleSetId::Quake2);
     let mut publication = ConfigPublication::load();
-    publication.configure_sources(4);
+    publication.configure_sources(4, 64);
     publication.bind_sounds(bank);
     publication.connection(ModuleId(1), layout);
     (publication, layout)
@@ -189,7 +189,7 @@ fn player_loop_uses_the_connections_sound_mapping_and_ack() {
     let bank = bank();
     let layout = ConfigLayout::QUAKE3;
     let mut publication = ConfigPublication::load();
-    publication.configure_sources(4);
+    publication.configure_sources(4, 64);
     publication.bind_sounds(&bank);
     publication.connection(ModuleId(1), layout);
     let primary = bank.find("sound/a.wav").unwrap();
@@ -219,7 +219,7 @@ fn player_loop_uses_the_connections_sound_mapping_and_ack() {
             &player,
             &context,
             &mut words,
-            |_| None,
+            |_, _usage| None,
             |sound| publication.project_sound_ref(sound, client, resolve)
         ));
         words[47]
@@ -242,7 +242,7 @@ fn player_loop_uses_the_connections_sound_mapping_and_ack() {
 fn dedicated_primary_loops_require_a_claim_and_compatible_acknowledged_row() {
     let layout = ConfigLayout::QUAKE3;
     let mut publication = ConfigPublication::load();
-    publication.configure_sources(4);
+    publication.configure_sources(4, 64);
     publication.connection(ModuleId(1), layout);
     let client = ClientId(4);
     let reference = SoundRef::native(ResourceNamespace::Module(ModuleId(1)), 5).unwrap();
@@ -273,4 +273,547 @@ fn dedicated_primary_loops_require_a_claim_and_compatible_acknowledged_row() {
     publication.primary_sound(5, true, None);
     publication.published(row, None); // Filename conversion was unsupported.
     assert_eq!(project(&publication), None);
+}
+
+#[test]
+fn models_use_exact_name_bindings_and_only_the_current_destination_ack() {
+    use qa_app::client_resources::ModelProjection::{Pending, Ready};
+    use qa_core::primitives::{ModelRef, NameId};
+    let mut p = ConfigPublication::load();
+    p.configure_sources(4, 1024);
+    let layout = ConfigLayout::QUAKE2;
+    p.connection(ModuleId(1), layout);
+    let source = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 7).unwrap();
+    p.primary_model(7, true, Some(NameId(1)));
+    let primary = layout.resources[0].first as usize + 7;
+    p.published(primary, Some(10));
+    assert_eq!(
+        p.project_model_ref(
+            source,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(1)),
+                revision: 1,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Pending
+    );
+    p.acknowledged(primary, 10);
+    assert_eq!(
+        p.project_model_ref(
+            source,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(1)),
+                revision: 1,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Ready(7)
+    );
+    let foreign = ModelRef::native(ResourceNamespace::Module(ModuleId(2)), 3).unwrap();
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(2)),
+                revision: 1,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Pending
+    );
+    let first = p.reserve_model(NameId(2)).unwrap();
+    assert_eq!(first, 126);
+    let first_row = layout.resources[0].first as usize + first as usize;
+    p.published(first_row, Some(11));
+    p.acknowledged(first_row, 10);
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(2)),
+                revision: 1,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Pending
+    );
+    p.acknowledged(first_row, 11);
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(2)),
+                revision: 1,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Ready(first)
+    );
+    // A source rewrite changes the exact NameId. Its old receipt cannot ready
+    // the new destination row, even though the native source ordinal is stable.
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(3)),
+                revision: 2,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Pending
+    );
+    let rewritten = p.reserve_model(NameId(3)).unwrap();
+    assert_eq!(rewritten, 125);
+    let row = layout.resources[0].first as usize + rewritten as usize;
+    p.published(row, Some(12));
+    p.acknowledged(row, 11);
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(3)),
+                revision: 2,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Pending
+    );
+    p.acknowledged(row, 12);
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(3)),
+                revision: 2,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Ready(rewritten)
+    );
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(1)),
+                revision: 2,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Ready(7)
+    );
+    // Primary growth takes its native ordinal back; the displaced foreign file
+    // acquires one other bounded row and waits for that row's own ACK.
+    p.primary_model(first, true, Some(NameId(4)));
+    p.published(first_row, Some(13));
+    let relocated = p.reserve_model(NameId(2)).unwrap();
+    assert_eq!(relocated, 124);
+    let row = layout.resources[0].first as usize + relocated as usize;
+    p.published(row, Some(14));
+    p.acknowledged(row, 11);
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(2)),
+                revision: 2,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Pending
+    );
+    p.acknowledged(row, 14);
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(2)),
+                revision: 2,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Ready(relocated)
+    );
+}
+
+#[test]
+fn model_exhaustion_is_terminal_only_after_publication_and_rr255_stays_native() {
+    use qa_app::client_resources::ModelProjection::{Pending, Ready, Unsupported};
+    use qa_core::primitives::{ModelRef, NameId};
+    let mut p = ConfigPublication::load();
+    p.configure_sources(4, 1024);
+    let layout = ConfigLayout::QUAKE2_RERELEASE;
+    p.connection(ModuleId(1), layout);
+    for ordinal in 1..layout.resources[0].count {
+        if layout.resource_policies[0].permits(ordinal) {
+            p.primary_model(ordinal, true, Some(NameId(1)));
+        }
+    }
+    assert_eq!(p.reserve_model(NameId(900)), None);
+    let foreign = ModelRef::native(ResourceNamespace::Module(ModuleId(2)), 9).unwrap();
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(900)),
+                revision: 3,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Pending
+    );
+    p.finish(ModuleId(2), 3);
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(900)),
+                revision: 3,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Unsupported
+    );
+    assert_eq!(
+        p.project_model_ref(
+            foreign,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: Some(NameId(900)),
+                revision: 4,
+                source: RuleSetId::Quake3
+            })
+        ),
+        Pending
+    );
+    let primary = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 255).unwrap();
+    assert_eq!(
+        p.project_model_ref(
+            primary,
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| Some(ModelName {
+                name: None,
+                revision: 0,
+                source: RuleSetId::Quake2
+            })
+        ),
+        Ready(255)
+    );
+    assert_eq!(
+        p.project_model_ref(
+            ModelRef::native(ResourceNamespace::Client(ClientId(1)), 255).unwrap(),
+            qa_core::primitives::ModelUse::Entity(0),
+            ClientId(0),
+            |_, _, _| None
+        ),
+        Unsupported
+    );
+    p.reset();
+    p.connection(ModuleId(1), layout);
+    assert_eq!(p.reserve_model(NameId(900)), Some(8191));
+    for ordinal in (256..8191).rev() {
+        p.primary_model(ordinal, true, Some(NameId(1)));
+    }
+    p.primary_model(8191, true, Some(NameId(1)));
+    assert_eq!(p.reserve_model(NameId(901)), Some(254));
+}
+
+#[test]
+fn q2_model_cells_preserve_source_tags_and_do_not_treat_viewweapon255_as_player() {
+    use qa_app::client_resources::ModelProjection::{Pending, Ready, Unsupported};
+    use qa_core::primitives::{ModelRef, ModelUse, NameId};
+    for layout in [ConfigLayout::QUAKE2, ConfigLayout::QUAKE2_RERELEASE] {
+        let mut p = ConfigPublication::load();
+        p.configure_sources(4, 64);
+        p.connection(ModuleId(1), layout);
+        let reference = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 255).unwrap();
+        let player = |_, _, _| {
+            Some(ModelName {
+                name: None,
+                revision: 1,
+                source: RuleSetId::Quake2,
+            })
+        };
+        assert_eq!(
+            p.project_model_ref(reference, ModelUse::Entity(0), ClientId(0), player),
+            Ready(255)
+        );
+        assert_eq!(
+            p.project_model_ref(reference, ModelUse::Entity(1), ClientId(0), player),
+            Ready(255)
+        );
+        assert_eq!(
+            p.project_model_ref(reference, ModelUse::ViewWeapon, ClientId(0), player),
+            Unsupported
+        );
+        let ordinal = p.reserve_model(NameId(8)).unwrap();
+        assert_ne!(ordinal, 255);
+        let row = layout.resources[0].first as usize + ordinal as usize;
+        p.published(row, Some(31));
+        let file = |_, _, _| {
+            Some(ModelName {
+                name: Some(NameId(8)),
+                revision: 1,
+                source: RuleSetId::Quake3,
+            })
+        };
+        assert_eq!(
+            p.project_model_ref(reference, ModelUse::Entity(0), ClientId(0), file),
+            Pending
+        );
+        p.acknowledged(row, 31);
+        assert_eq!(
+            p.project_model_ref(reference, ModelUse::Entity(0), ClientId(0), file),
+            Ready(ordinal)
+        );
+        assert_eq!(
+            p.project_model_ref(reference, ModelUse::ViewWeapon, ClientId(0), file),
+            Ready(ordinal)
+        );
+    }
+    let mut p = ConfigPublication::load();
+    p.configure_sources(4, 64);
+    p.connection(ModuleId(1), ConfigLayout::QUAKE2);
+    p.primary_model(2, true, Some(NameId(2)));
+    let row = ConfigLayout::QUAKE2.resources[0].first as usize + 2;
+    p.published(row, Some(32));
+    p.acknowledged(row, 32);
+    let reference = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 0x82).unwrap();
+    let source = |_, _, _| {
+        Some(ModelName {
+            name: Some(NameId(2)),
+            revision: 1,
+            source: RuleSetId::Quake2,
+        })
+    };
+    assert_eq!(
+        p.project_model_ref(reference, ModelUse::Entity(1), ClientId(0), source),
+        Ready(0x82)
+    );
+    // A high ordinary primary slot cannot be reused as a foreign secondary
+    // filename: bit7 has a native meaning in that cell.
+    p.primary_model(200, true, Some(NameId(3)));
+    let row = ConfigLayout::QUAKE2.resources[0].first as usize + 200;
+    p.published(row, Some(33));
+    p.acknowledged(row, 33);
+    let high = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 200).unwrap();
+    let ordinary = |_, _, _| {
+        Some(ModelName {
+            name: Some(NameId(3)),
+            revision: 2,
+            source: RuleSetId::Quake3,
+        })
+    };
+    assert_eq!(
+        p.project_model_ref(high, ModelUse::Entity(1), ClientId(0), ordinary),
+        Pending
+    );
+    for usage in [ModelUse::Entity(0), ModelUse::ViewWeapon] {
+        assert_eq!(
+            p.project_model_ref(high, usage, ClientId(0), ordinary),
+            Ready(200)
+        );
+    }
+    let alias = p.reserve_model(NameId(3)).unwrap();
+    assert_eq!(alias, 126);
+    p.release_model_aliases();
+    assert_eq!(p.reserve_model(NameId(3)), Some(126));
+    let row = ConfigLayout::QUAKE2.resources[0].first as usize + alias as usize;
+    p.published(row, Some(34));
+    assert_eq!(
+        p.project_model_ref(high, ModelUse::Entity(1), ClientId(0), ordinary),
+        Pending
+    );
+    p.acknowledged(row, 34);
+    assert_eq!(
+        p.project_model_ref(high, ModelUse::Entity(1), ClientId(0), ordinary),
+        Ready(126)
+    );
+    for usage in [ModelUse::Entity(0), ModelUse::ViewWeapon] {
+        assert_eq!(
+            p.project_model_ref(high, usage, ClientId(0), ordinary),
+            Ready(200)
+        );
+    }
+    let invalid = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 456).unwrap();
+    assert_eq!(
+        p.project_model_ref(invalid, ModelUse::Entity(1), ClientId(0), source),
+        Unsupported
+    );
+}
+
+#[test]
+fn tagged_q2_foreign_alias_never_emits_the_player_sentinel() {
+    use qa_app::client_resources::ModelProjection::{Pending, Ready};
+    use qa_core::primitives::{ModelRef, ModelUse, NameId};
+    let layout = ConfigLayout::QUAKE2;
+    for primary_same_name in [false, true] {
+        let mut p = ConfigPublication::load();
+        p.configure_sources(4, 64);
+        p.connection(ModuleId(1), layout);
+        let name = NameId(5);
+        let ordinary = |_, _, _| {
+            Some(ModelName {
+                name: Some(name),
+                revision: 1,
+                source: RuleSetId::Quake3,
+            })
+        };
+        let primary = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 127).unwrap();
+        if primary_same_name {
+            p.primary_model(127, true, Some(name));
+            let row = layout.resources[0].first as usize + 127;
+            p.published(row, Some(40));
+            p.acknowledged(row, 40);
+            for usage in [
+                ModelUse::Entity(0),
+                ModelUse::Entity(1),
+                ModelUse::ViewWeapon,
+            ] {
+                assert_eq!(
+                    p.project_model_ref(primary, usage, ClientId(0), ordinary),
+                    Ready(127)
+                );
+            }
+        }
+        let tagged = ModelRef::native(ResourceNamespace::Module(ModuleId(2)), 200).unwrap();
+        let foreign = |_, _, _| {
+            Some(ModelName {
+                name: Some(name),
+                revision: 1,
+                source: RuleSetId::Quake2,
+            })
+        };
+        assert_eq!(
+            p.project_model_ref(tagged, ModelUse::Entity(1), ClientId(0), foreign),
+            Pending
+        );
+        let alias = p.reserve_model(name).unwrap();
+        assert_eq!(alias, 126);
+        p.release_model_aliases();
+        assert_eq!(p.reserve_model(name), Some(alias));
+        let row = layout.resources[0].first as usize + alias as usize;
+        p.published(row, Some(41));
+        assert_eq!(
+            p.project_model_ref(tagged, ModelUse::Entity(1), ClientId(0), foreign),
+            Pending
+        );
+        p.acknowledged(row, 41);
+        assert_eq!(
+            p.project_model_ref(tagged, ModelUse::Entity(1), ClientId(0), foreign),
+            Ready(254)
+        );
+        if primary_same_name {
+            for usage in [
+                ModelUse::Entity(0),
+                ModelUse::Entity(1),
+                ModelUse::ViewWeapon,
+            ] {
+                assert_eq!(
+                    p.project_model_ref(primary, usage, ClientId(0), ordinary),
+                    Ready(127)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn classic_q2_primary_filename255_keeps_ordinary_model_cells() {
+    use qa_app::client_resources::ModelProjection::{Pending, Ready};
+    use qa_core::primitives::{ModelRef, ModelUse, NameId};
+    let layout = ConfigLayout::QUAKE2;
+    let mut p = ConfigPublication::load();
+    p.configure_sources(4, 64);
+    p.connection(ModuleId(1), layout);
+    let name = NameId(17);
+    p.primary_model(255, true, Some(name));
+    let row = layout.resources[0].first as usize + 255;
+    p.published(row, Some(50));
+    p.acknowledged(row, 50);
+    let reference = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 255).unwrap();
+    let native = |_, _, _| {
+        Some(ModelName {
+            name: Some(name),
+            revision: 1,
+            source: RuleSetId::Quake2,
+        })
+    };
+    for usage in [
+        ModelUse::ViewWeapon,
+        ModelUse::Entity(2),
+        ModelUse::Entity(3),
+        ModelUse::Entity(0),
+        ModelUse::Entity(1),
+    ] {
+        assert_eq!(
+            p.project_model_ref(reference, usage, ClientId(0), native),
+            Ready(255)
+        );
+    }
+    let ordinary = |_, _, _| {
+        Some(ModelName {
+            name: Some(name),
+            revision: 1,
+            source: RuleSetId::Quake3,
+        })
+    };
+    assert_eq!(
+        p.project_model_ref(reference, ModelUse::Entity(0), ClientId(0), ordinary),
+        Pending
+    );
+    let alias = p.reserve_model(name).unwrap();
+    assert_eq!(alias, 126);
+    p.release_model_aliases();
+    let row = layout.resources[0].first as usize + alias as usize;
+    p.published(row, Some(51));
+    p.acknowledged(row, 51);
+    assert_eq!(
+        p.project_model_ref(reference, ModelUse::Entity(0), ClientId(0), ordinary),
+        Ready(alias)
+    );
+    for usage in [
+        ModelUse::ViewWeapon,
+        ModelUse::Entity(2),
+        ModelUse::Entity(3),
+    ] {
+        assert_eq!(
+            p.project_model_ref(reference, usage, ClientId(0), native),
+            Ready(255)
+        );
+    }
+    for usage in [ModelUse::Entity(0), ModelUse::Entity(1)] {
+        assert_eq!(
+            p.project_model_ref(reference, usage, ClientId(0), native),
+            Ready(255)
+        );
+    }
 }

@@ -4,11 +4,11 @@ use crate::{commands::packet::Protocol, states};
 use qa_core::{
     math::{self, AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
-        AngleOffset, CollisionTags, EntityAppearance, EntityId, ModelRef, MovementMagnitude,
-        MovementMode, MovementTimer, NativeClientRef, NativePlayerTail, NativeViewFlags,
-        PlayerPresentation, PlayerSignals, PlayerState, PlayerValueBindings, PlayerView,
-        Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding, ValueWidth, Vec3, ViewFlagLayout,
-        ViewWeapon, WeaponReadiness, WeaponState,
+        AngleOffset, CollisionTags, EntityAppearance, EntityId, ModelRef, ModelUse,
+        MovementMagnitude, MovementMode, MovementTimer, NativeClientRef, NativePlayerTail,
+        NativeViewFlags, PlayerPresentation, PlayerSignals, PlayerState, PlayerValueBindings,
+        PlayerView, Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding, ValueWidth, Vec3,
+        ViewFlagLayout, ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -954,7 +954,7 @@ impl PlayerProjection {
         player: &PlayerState,
         context: &PlayerContext,
         out: &mut [u32],
-        mut resolve_model: impl FnMut(ModelRef) -> Option<u32>,
+        mut resolve_model: impl FnMut(ModelRef, ModelUse) -> Option<u32>,
         mut resolve_sound: impl FnMut(SoundRef) -> Option<u32>,
     ) -> bool {
         if !self.layout_valid {
@@ -1313,7 +1313,7 @@ impl PlayerProjection {
         source: Source,
         p: &PlayerState,
         c: &PlayerContext,
-        resolve_model: &mut impl FnMut(ModelRef) -> Option<u32>,
+        resolve_model: &mut impl FnMut(ModelRef, ModelUse) -> Option<u32>,
         resolve_sound: &mut impl FnMut(SoundRef) -> Option<u32>,
     ) -> u32 {
         match source {
@@ -1382,7 +1382,7 @@ impl PlayerProjection {
             BodyModel => c
                 .appearance
                 .and_then(|a| a.models[0])
-                .and_then(resolve_model)
+                .and_then(|reference| resolve_model(reference, ModelUse::Entity(0)))
                 .filter(|&n| n <= 255)
                 .unwrap_or(0),
             BodySkin => c.appearance.map_or(0, |a| a.skin as u32),
@@ -1418,7 +1418,7 @@ impl PlayerProjection {
                 let model = p
                     .view_weapon
                     .model
-                    .and_then(resolve_model)
+                    .and_then(|reference| resolve_model(reference, ModelUse::ViewWeapon))
                     .filter(|&n| n <= limit)
                     .unwrap_or(0);
                 if self.protocol == Protocol::Quake2Repro1038 {

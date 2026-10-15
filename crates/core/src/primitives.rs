@@ -1247,6 +1247,13 @@ impl<T> ResourceRef<T> {
     }
 }
 pub type ModelRef = ResourceRef<ModelId>;
+/// The native cell using a model reference selects any cell-specific tags.
+/// This context is borrowed at publication, never stored in resource identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelUse {
+    Entity(usize),
+    ViewWeapon,
+}
 pub type SoundRef = ResourceRef<SoundId>;
 /// Weak entity ordinal in an explicitly selected module or CLIENT namespace.
 /// Unlike model/sound resources, native entity zero is an ordinary reference.

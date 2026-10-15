@@ -713,10 +713,18 @@ impl FrameHost {
             }
             let id = ClientId(index as u32);
             let observation = self.snapshot_observation(id, server_time);
-            self.runtime
-                .send_snapshot(id, server_time, observation, source, |module, ordinal| {
-                    self.modules.as_ref()?.bound_sound(module, ordinal)
-                });
+            self.runtime.send_snapshot(
+                id,
+                server_time,
+                observation,
+                source,
+                |module, ordinal| self.modules.as_ref()?.bound_sound(module, ordinal),
+                |module, ordinal, world, usage| {
+                    self.modules
+                        .as_ref()?
+                        .model_name(module, ordinal, world, Some(usage))
+                },
+            );
         }
         // Immediate server->client packets take this path in the same frame.
         source.request_mouse_capture(self.mouse_capture_requested());
@@ -1391,6 +1399,11 @@ impl FrameHost {
             f64::from(self.console.cvars.value(self.notify_time)),
             f64::from(self.console.cvars.value(self.center_time)),
             counts,
+            |module, ordinal, world, usage| {
+                self.modules
+                    .as_ref()?
+                    .model_name(module, ordinal, world, Some(usage))
+            },
         );
         result.output_drains += 1;
         self.retire_closing_clients();
@@ -1681,7 +1694,10 @@ impl FrameHost {
                                 if let Some(resources) =
                                     self.runtime.client_resources[id.0 as usize].as_mut()
                                 {
-                                    resources.state.receive_static_entity(entity);
+                                    let lookup=self.runtime.models.as_deref().map(|models|models as &dyn qa_compat::services::ModelLookup)
+                                        .or_else(||self.runtime.model_loader.as_ref().map(|models|models as &dyn qa_compat::services::ModelLookup));
+                                    let world=self.runtime.snapshots[id.0 as usize].as_ref().and_then(|binding|binding.seat()).and_then(|seat|self.local_worlds[seat.index()]);
+                                    resources.state.receive_static_entity(entity,lookup,world);
                                 }
                             }
                             Incoming::ConfigString(config) => {

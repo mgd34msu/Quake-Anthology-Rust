@@ -120,6 +120,11 @@ impl ClientCollision {
 
 /// The cold and frozen model catalog share the same native metadata owner.
 pub trait ModelLookup {
+    /// Cold retained resources capture the file before their CLIENT profile is bound.
+    fn file_handle(&self, path: &[u8]) -> Option<i32> {
+        let _ = path;
+        None
+    }
     fn inline_handle(&self, world: qa_render::world::WorldId, index: u32) -> Option<i32> {
         let _ = (world, index);
         None
@@ -760,6 +765,20 @@ impl ServiceStorage {
     }
     pub fn resources(&self, module: ModuleId) -> Option<[IndexSpan; 3]> {
         self.range(module)?.resources
+    }
+    /// Exact resource identities are cached when native config rows change.
+    pub fn bound_model_name(&self, module: ModuleId, ordinal: u32) -> Option<NameId> {
+        let module = self.range(module)?;
+        let models = module.resources?[0];
+        let local = models.get(ordinal as usize)?;
+        let index = module.span.get(local)?;
+        self.resource_keys.get(index).copied().flatten()
+    }
+    pub fn resource_name(&self, id: NameId) -> Option<&[u8]> {
+        self.resource_names.get(id)
+    }
+    pub fn resource_name_capacity(&self) -> usize {
+        self.resource_names.capacity()
     }
     pub fn uses_sound_phs(&self, cvars: &Cvars) -> bool {
         cvars.value_in(self.qw_phs, RuleSetId::QuakeWorld) != 0.0

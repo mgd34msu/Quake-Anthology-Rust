@@ -331,3 +331,55 @@ fn unprofiled_storage_keeps_explicit_spans_and_exact_name_order() {
         Err(CallError::ConfigString)
     );
 }
+
+#[test]
+fn loaded_model_names_share_exact_keys_and_rebind_only_the_rewritten_source_row() {
+    let first = ModuleId(1);
+    let second = ModuleId(2);
+    let q2 = ConfigLayout::QUAKE2;
+    let q3 = ConfigLayout::QUAKE3;
+    let mut fixture = Fixture::new(&[(first, q2.rules), (second, q3.rules)]);
+    let mut services = fixture.services();
+    for (module, layout) in [(first, q2), (second, q3)] {
+        assert_eq!(
+            (ENGINE_CALLS.resource_index)(
+                &mut services,
+                module,
+                layout.resources[0],
+                b"models/shared.md2",
+            ),
+            Ok(1)
+        );
+    }
+    let shared = services.storage.bound_model_name(first, 1).unwrap();
+    assert_eq!(services.storage.bound_model_name(second, 1), Some(shared));
+    assert_eq!(
+        services.storage.resource_name(shared),
+        Some(&b"models/shared.md2"[..])
+    );
+    assert!((shared.0 as usize) < services.storage.resource_name_capacity());
+    assert_eq!(
+        (ENGINE_CALLS.resource_index)(&mut services, first, q2.resources[0], b"models/Shared.md2",),
+        Ok(2)
+    );
+    let case_variant = services.storage.bound_model_name(first, 2).unwrap();
+    assert_ne!(case_variant, shared);
+    let index = q2.resources[0].get(1).unwrap();
+    (ENGINE_CALLS.configstring)(&mut services, first, index, b"models/replaced.md2").unwrap();
+    let replacement = services.storage.bound_model_name(first, 1).unwrap();
+    assert_ne!(replacement, shared);
+    assert_eq!(
+        services.storage.resource_name(replacement),
+        Some(&b"models/replaced.md2"[..])
+    );
+    assert_eq!(services.storage.bound_model_name(second, 1), Some(shared));
+    (ENGINE_CALLS.configstring)(&mut services, first, index, b"").unwrap();
+    assert_eq!(services.storage.bound_model_name(first, 1), None);
+    assert_eq!(
+        services
+            .storage
+            .bound_model_name(first, q2.resources[0].count),
+        None
+    );
+    assert_eq!(services.storage.bound_model_name(ModuleId(99), 1), None);
+}

@@ -455,7 +455,8 @@ fn blocked_local_snapshot_retries_exact_prepared_state_before_new_publication() 
         EventTime(0),
         None,
         &mut Clock::default(),
-        |_, _| None
+        |_, _| None,
+        |_, _, _, _| None
     ));
     let channel = &host
         .runtime
@@ -472,7 +473,8 @@ fn blocked_local_snapshot_retries_exact_prepared_state_before_new_publication() 
         EventTime(100_000_000),
         None,
         &mut Clock::default(),
-        |_, _| None
+        |_, _| None,
+        |_, _, _, _| None
     ));
     let channel = &host
         .runtime
@@ -508,7 +510,8 @@ fn delayed_local_snapshot_cannot_mutate_a_reused_client_lifetime() -> Result<(),
         EventTime(0),
         None,
         &mut Clock::default(),
-        |_, _| None
+        |_, _| None,
+        |_, _, _, _| None
     ));
     assert!(host.runtime.server.disconnect(client));
     assert_eq!(
@@ -612,7 +615,8 @@ fn repro_connections_use_negotiated_qport_and_frame_clock_with_native_feedback()
             EventTime(1_001_000_000),
             None,
             &mut Clock::default(),
-            |_, _| None
+            |_, _| None,
+            |_, _, _, _| None
         ));
         let channel = &host
             .runtime

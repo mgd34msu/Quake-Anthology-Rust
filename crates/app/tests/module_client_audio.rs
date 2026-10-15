@@ -262,10 +262,14 @@ fn damage_snapshot(host: &mut FrameHost, source: &mut Source, sequence: u32) {
         native: ThinkTime::Milliseconds(1000 + i64::from(sequence) * 100),
         queued: source.time,
     });
-    assert!(
-        host.runtime
-            .send_snapshot(client, source.time, None, source, |_, _| None)
-    );
+    assert!(host.runtime.send_snapshot(
+        client,
+        source.time,
+        None,
+        source,
+        |_, _| None,
+        |_, _, _, _| None
+    ));
     host.queue
         .push(SysEvent {
             time: source.time,

@@ -260,7 +260,7 @@ fn snapshot_with_player(
                         record,
                         &qa_network::projection::EntityContext::default(),
                         &mut words,
-                        |_| None,
+                        |_, _usage| None,
                         |sound| {
                             (sound.namespace == ResourceNamespace::Client(client))
                                 .then_some(sound.ordinal)

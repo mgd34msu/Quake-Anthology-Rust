@@ -54,7 +54,7 @@ pub fn static_entity(
         record,
         &crate::projection::EntityContext::default(),
         &mut words,
-        |_| model,
+        |_, _| model,
         |_| None,
         |reference| Some(reference.ordinal()),
     ) {

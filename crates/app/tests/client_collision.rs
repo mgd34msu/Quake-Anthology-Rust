@@ -154,7 +154,7 @@ impl Fixture {
             &record,
             &EntityContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _usage| Some(model.ordinal),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal())
         ));
@@ -695,7 +695,7 @@ fn queued_snapshot_collision_uses_wire_pose_while_server_moves_independently() {
         &record,
         &EntityContext::default(),
         &mut words,
-        |model| Some(model.ordinal),
+        |model, _usage| Some(model.ordinal),
         |sound| Some(sound.ordinal),
         |reference| Some(reference.ordinal())
     ));

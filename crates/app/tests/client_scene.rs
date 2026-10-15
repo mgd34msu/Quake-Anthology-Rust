@@ -105,7 +105,7 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
             &record,
             &qa_network::projection::EntityContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _usage| Some(model.ordinal),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal())
         ));
@@ -209,7 +209,7 @@ fn classic_frame_origin_motion_reaches_alias_pose_without_affecting_rerelease() 
             } else {
                 &mut rerelease_words[..]
             },
-            |model| Some(model.ordinal),
+            |model, _usage| Some(model.ordinal),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal())
         ));
@@ -354,7 +354,7 @@ fn received_native_beams_keep_palette_width_endpoints_and_float_alpha_without_a_
                 } else {
                     &mut rerelease[index][..]
                 },
-                |model| Some(model.ordinal),
+                |model, _usage| Some(model.ordinal),
                 |sound| Some(sound.ordinal),
                 |reference| Some(reference.ordinal())
             ));
@@ -528,7 +528,11 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
         },
         ..Default::default()
     };
-    assert!(resources.state.receive_static_entity(source_edict));
+    assert!(
+        resources
+            .state
+            .receive_static_entity(source_edict, None, None)
+    );
     let retained = resources.state.static_entities()[0];
     assert_eq!(retained.appearance.models[0], Some(reference(client)));
     assert_eq!(retained.appearance.native.colormap, 3);
@@ -592,7 +596,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
         &source_edict,
         &qa_network::projection::EntityContext::default(),
         &mut words,
-        |model| Some(model.ordinal),
+        |model, _usage| Some(model.ordinal),
         |sound| Some(sound.ordinal),
         |reference| Some(reference.ordinal())
     ));
@@ -623,7 +627,8 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
     assert_eq!(scene.entity(0).material, static_material);
     assert_eq!((scene.entity(0).frame, scene.entity(0).old_frame), (1, 1));
     assert_eq!(scene.entity(0).back_lerp, 0.0);
-    assert_eq!(resources.state.static_entities(), &[retained]);
+    assert_eq!(resources.state.static_entities().len(), 1);
+    assert_eq!(resources.state.static_entities()[0].record, retained.record);
 }
 
 #[test]
@@ -640,15 +645,19 @@ fn static_entity_admission_and_scene_capacity_reject_without_growing() {
         qa_core::primitives::NATIVE_WIRE_BYTES / qa_network::outputs::STATIC_ENTITY_BYTES
     );
     for index in 0..capacity {
-        assert!(resources.state.receive_static_entity(EntityRecord {
-            position: Vec3([index as f32, 0.0, 0.0]),
-            ..Default::default()
-        }));
+        assert!(resources.state.receive_static_entity(
+            EntityRecord {
+                position: Vec3([index as f32, 0.0, 0.0]),
+                ..Default::default()
+            },
+            None,
+            None
+        ));
     }
     assert!(
         !resources
             .state
-            .receive_static_entity(EntityRecord::default())
+            .receive_static_entity(EntityRecord::default(), None, None)
     );
     assert_eq!(resources.state.rejected, 1);
     assert_eq!(resources.state.static_entities().len(), capacity);
@@ -682,15 +691,19 @@ fn static_entity_admission_and_scene_capacity_reject_without_growing() {
         0
     );
     for position in [Vec3([1.0, 2.0, 3.0]), Vec3([4.0, 5.0, 6.0])] {
-        assert!(resources.state.receive_static_entity(EntityRecord {
-            position,
-            appearance: EntityAppearance {
-                source: RuleSetId::QuakeWorld,
-                models: [Some(reference(client)), None, None, None],
+        assert!(resources.state.receive_static_entity(
+            EntityRecord {
+                position,
+                appearance: EntityAppearance {
+                    source: RuleSetId::QuakeWorld,
+                    models: [Some(reference(client)), None, None, None],
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        }));
+            None,
+            None
+        ));
     }
     let projection = EntityProjection::load(Protocol::QuakeWorld28);
     let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
@@ -899,7 +912,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             &record,
             &qa_network::projection::EntityContext::default(),
             &mut words,
-            |reference| Some(reference.ordinal),
+            |reference, _usage| Some(reference.ordinal),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal())
         ));
@@ -925,7 +938,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             &native_player,
             &PlayerContext::default(),
             &mut player_words,
-            |model| Some(model.ordinal),
+            |model, _usage| Some(model.ordinal),
             |sound| Some(sound.ordinal),
         ));
         ring.store(Frame {
@@ -1386,7 +1399,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
             &source,
             &PlayerContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _usage| Some(model.ordinal),
             |sound| Some(sound.ordinal)
         ));
         ring.store(Frame {
@@ -1471,7 +1484,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
             &source,
             &PlayerContext::default(),
             &mut words,
-            |reference| Some(reference.ordinal),
+            |reference, _usage| Some(reference.ordinal),
             |sound| Some(sound.ordinal),
         ));
         ring.store(Frame {
@@ -1667,7 +1680,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
             &record,
             &qa_network::projection::EntityContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _usage| Some(model.ordinal),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal())
         ));
@@ -1833,7 +1846,7 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
         &record,
         &qa_network::projection::EntityContext::default(),
         &mut words,
-        |model| Some(model.ordinal),
+        |model, _usage| Some(model.ordinal),
         |sound| Some(sound.ordinal),
         |reference| Some(reference.ordinal())
     ));
@@ -1910,7 +1923,7 @@ fn synthesized_q3_player_sound_origin_does_not_interpolate_a_packet_pose() {
         &record,
         &qa_network::projection::EntityContext::default(),
         &mut previous_words,
-        |_| None,
+        |_, _usage| None,
         |_| None,
         |reference| Some(reference.ordinal())
     ));
@@ -1951,4 +1964,147 @@ fn synthesized_q3_player_sound_origin_does_not_interpolate_a_packet_pose() {
     };
     assert_eq!(entities.get(0).unwrap().origin, player.body.position);
     assert_eq!(entities.sound_origin(0, None), Some(player.body.position));
+}
+
+#[test]
+fn static_model_captures_survive_alias_rewrite_before_and_after_catalog_freeze() {
+    use qa_app::{
+        Runtime, client_resources::ClientResources, host::FrameHost,
+        model_assets::ModelCatalogBuilder,
+    };
+    use qa_console::{commands::Console, views::Context};
+    use qa_session::timing::TickRate;
+    use std::sync::Arc;
+    for bound_at_receipt in [false, true] {
+        let fixture = support::Fixture::new(&[
+            ("models/a.md2", support::md2()),
+            ("models/b.md2", support::md2()),
+            ("models/test/skin0.pcx", support::pcx(11)),
+            ("models/test/skin1.pcx", support::pcx(22)),
+        ]);
+        let mut assets = Assets::load().unwrap();
+        let palette = support::palette(&mut assets);
+        let first = ModelRequest::native("models/a.md2", RuleSetId::Quake2, Some(palette));
+        let second = ModelRequest::native("models/b.md2", RuleSetId::Quake2, Some(palette));
+        let profile = first.profile();
+        let mut builder =
+            ModelCatalogBuilder::new(assets, [profile], [], ModelLimits::default()).unwrap();
+        builder.register_request(&fixture.vfs, first).unwrap();
+        builder.register_request(&fixture.vfs, second).unwrap();
+        let client = ClientId(0);
+        let mut resources =
+            ClientResources::load(client, Protocol::QuakeWorld28, RuleSetId::Quake2)
+                .unwrap()
+                .unwrap();
+        let row = resources.state.layout.resources[0].get(50).unwrap();
+        assert!(resources.apply(row, first.path.as_bytes(), None, None));
+        let record = EntityRecord {
+            position: Vec3([8., 4., 2.]),
+            appearance: EntityAppearance {
+                source: RuleSetId::Quake2,
+                models: [Some(reference(client)), None, None, None],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (assets, catalog) = if bound_at_receipt {
+            let (assets, catalog) = builder.finish();
+            assert_eq!(
+                resources
+                    .state
+                    .models
+                    .bind_all(&resources.state.configs, &catalog, profile, None),
+                0
+            );
+            assert!(resources.state.receive_static_entity(record, None, None));
+            assert!(resources.apply(row, second.path.as_bytes(), Some(&catalog), None));
+            (assets, catalog)
+        } else {
+            // CLIENT intake during module registration can precede final asset
+            // binding. Capture the loading catalogue's existing file handle.
+            assert!(
+                resources
+                    .state
+                    .receive_static_entity(record, Some(&builder), None)
+            );
+            assert!(resources.apply(row, second.path.as_bytes(), None, None));
+            builder.finish()
+        };
+        let first_registration = catalog.registration(first.path, profile).unwrap();
+        let first_model = catalog
+            .bindings(first_registration, 0, ModelMaterialPolicy::default())
+            .unwrap()
+            .next()
+            .unwrap()
+            .model;
+        let second_registration = catalog.registration(second.path, profile).unwrap();
+        let second_model = catalog
+            .bindings(second_registration, 0, ModelMaterialPolicy::default())
+            .unwrap()
+            .next()
+            .unwrap()
+            .model;
+        assert_ne!(first_model, second_model);
+        let mut runtime = Runtime::load(1, []).unwrap();
+        runtime.client_resources[0] = Some(resources);
+        let mut host = FrameHost::load(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![],
+        )
+        .unwrap();
+        let catalog = Arc::new(catalog);
+        host.set_model_catalog(Arc::clone(&catalog), [(client, profile, None)]);
+        let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+        assert_eq!(
+            state
+                .models
+                .resolve(
+                    reference(client),
+                    0,
+                    &catalog,
+                    ModelMaterialPolicy::default()
+                )
+                .unwrap()
+                .next()
+                .unwrap()
+                .model,
+            second_model
+        );
+        let projection = EntityProjection::load(Protocol::QuakeWorld28);
+        let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
+        let player = PlayerState::default();
+        let input = ClientSceneInput {
+            client,
+            current: None,
+            previous: None,
+            projection: &projection,
+            appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
+            player_projection: &player_projection,
+            bindings: &state.models,
+            models: &catalog,
+            static_entities: state.static_entities(),
+            player: &player,
+            weapon_view_angles: player.view_angles,
+            alias_roll: AliasRoll::default(),
+            interpolation: Default::default(),
+            gun_animation: None,
+            gun_previous: None,
+            view_entity: None,
+        };
+        let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+        let mut frame = frontend.begin_frame([0; 4]).unwrap();
+        let counts = input.append(&mut frame, &assets, &Refdef::default(), false, None);
+        assert_eq!(
+            (counts.entities, counts.models, counts.missing_models),
+            (1, 1, 0),
+            "bound={bound_at_receipt}"
+        );
+        assert_eq!(
+            frame.finish().entity(0).model,
+            first_model.into(),
+            "bound={bound_at_receipt}"
+        );
+    }
 }

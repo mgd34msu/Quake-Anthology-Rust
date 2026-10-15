@@ -874,7 +874,10 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
     use qa_network::commands::packet::Protocol;
     use std::{num::NonZeroU32, sync::Arc};
 
-    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+    for (rules, receive_while_loading) in [RuleSetId::Quake, RuleSetId::QuakeWorld]
+        .into_iter()
+        .flat_map(|rules| [false, true].map(|loading| (rules, loading)))
+    {
         let mut files = model_support::Fixture::models();
         let mut assets = qa_render::Assets::load().unwrap();
         let palette = model_support::palette(&mut assets);
@@ -1043,8 +1046,6 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
                 )
                 .unwrap();
         }
-        let (assets, catalog) = host.runtime.model_loader.take().unwrap().finish();
-        host.set_model_catalog(Arc::new(catalog), [(client, profile, None)]);
         let bank = Arc::new(qa_audio::Bank::load(NonZeroU32::new(44100).unwrap(), vec![]).unwrap());
         host.runtime.sound_bank = Some(Arc::clone(&bank));
         host.bind_sounds(&bank).unwrap();
@@ -1057,7 +1058,34 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
                 .static_entities()
                 .is_empty()
         );
-        for milliseconds in [0, 25, 50, 100, 200, 300] {
+        if receive_while_loading {
+            for milliseconds in [0, 25, 50, 100, 200, 300] {
+                tick(&mut host, milliseconds);
+            }
+            let builder = host.runtime.model_loader.as_ref().unwrap();
+            if rules == RuleSetId::Quake {
+                use qa_compat::services::ModelLookup;
+                assert!(
+                    builder
+                        .model_handle(b"progs/test.mdl", RuleSetId::QuakeWorld)
+                        .is_none()
+                );
+            }
+            let retained = host.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .static_entities();
+            assert_eq!(retained.len(), 1);
+            assert_eq!(retained[0].appearance.source, RuleSetId::QuakeWorld);
+        }
+        let (assets, catalog) = host.runtime.model_loader.take().unwrap().finish();
+        host.set_model_catalog(Arc::new(catalog), [(client, profile, None)]);
+        for milliseconds in if receive_while_loading {
+            [325, 350, 375, 400, 425, 450]
+        } else {
+            [0, 25, 50, 100, 200, 300]
+        } {
             tick(&mut host, milliseconds);
         }
         let resources = &host.runtime.client_resources[client.0 as usize]
@@ -1091,17 +1119,16 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
         assert_eq!(counts.missing_models, 0);
         assert_eq!(frame.finish().entity(0).origin, retained.position);
         host.bind_sounds(&bank).unwrap();
-        for milliseconds in [400, 500, 600] {
+        for milliseconds in [500, 600, 700] {
             tick(&mut host, milliseconds);
         }
-        assert_eq!(
-            host.runtime.client_resources[client.0 as usize]
-                .as_ref()
-                .unwrap()
-                .state
-                .static_entities(),
-            &[retained]
-        );
+        let after = host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .static_entities();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].record, retained.record);
         assert_eq!(host.module_counts(module).unwrap().traps, 0);
     }
 }

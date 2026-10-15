@@ -70,7 +70,7 @@ fn classic_and_repro_packets_adopt_common_camera_fields_and_keep_split_height() 
             ..Default::default()
         };
         let mut words = vec![0; projection.words()];
-        assert!(projection.reduce(&source, &context, &mut words, |_| None, |_| None));
+        assert!(projection.reduce(&source, &context, &mut words, |_, _| None, |_| None));
         let words = wire(protocol, &words);
         let mut accepted = PlayerState::default();
         accepted.movement_rules = RuleSetId::Quake3;
@@ -167,7 +167,7 @@ fn native_view_residual_requires_exact_owner_and_flag_layout() {
                 ..Default::default()
             },
             &mut words,
-            |_| None,
+            |_, _| None,
             |_| None
         ));
         assert_eq!(words[35], expected);
@@ -183,7 +183,13 @@ fn repro_height_signed_width_and_unified_foreign_offsets_are_explicit() {
             .view
             .accept_offset(Vec3([-0.0, 1.25, -0.0]), Some(height));
         let mut words = vec![0; projection.words()];
-        assert!(projection.reduce(&player, &Default::default(), &mut words, |_| None, |_| None));
+        assert!(projection.reduce(
+            &player,
+            &Default::default(),
+            &mut words,
+            |_, _| None,
+            |_| None
+        ));
         let words = wire(Protocol::Quake2Repro1038, &words);
         assert_eq!(words[41] as i32, height as i32);
         let mut accepted = PlayerState::default();
@@ -199,7 +205,13 @@ fn repro_height_signed_width_and_unified_foreign_offsets_are_explicit() {
     let mut player = PlayerState::default();
     player.view.accept_offset(Vec3([1.0, 2.0, 24.125]), None);
     let mut words = vec![0; projection.words()];
-    assert!(projection.reduce(&player, &Default::default(), &mut words, |_| None, |_| None));
+    assert!(projection.reduce(
+        &player,
+        &Default::default(),
+        &mut words,
+        |_, _| None,
+        |_| None
+    ));
     assert_eq!(words[41], 0);
     assert_eq!(&words[13..16], &[16, 32, 386]);
     assert_eq!(player.view.fov_x, None);
@@ -216,7 +228,13 @@ fn q3_wire_height_drives_predicted_view_without_importing_foreign_camera_bob() {
         .view
         .accept_offset(Vec3([1.0, 2.0, 101.0]), Some(22.0));
     let mut words = [0; states::PLAYER_WORDS];
-    assert!(projection.reduce(&server, &Default::default(), &mut words, |_| None, |_| None));
+    assert!(projection.reduce(
+        &server,
+        &Default::default(),
+        &mut words,
+        |_, _| None,
+        |_| None
+    ));
     assert_eq!(words[28], 26);
     let mut bytes = [0; 1400];
     let mut writer = Writer::new(&mut bytes, Encoding::Q3);
@@ -264,7 +282,13 @@ fn q3_wire_height_drives_predicted_view_without_importing_foreign_camera_bob() {
 fn camera_words(protocol: Protocol, source: &PlayerState) -> Vec<u32> {
     let projection = PlayerProjection::load(protocol, &[]);
     let mut words = vec![0; projection.words()];
-    assert!(projection.reduce(source, &Default::default(), &mut words, |_| None, |_| None));
+    assert!(projection.reduce(
+        source,
+        &Default::default(),
+        &mut words,
+        |_, _| None,
+        |_| None
+    ));
     wire(protocol, &words)
 }
 

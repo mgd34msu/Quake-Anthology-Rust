@@ -179,7 +179,7 @@ impl Pmove {
             ..Default::default()
         };
         self.projection
-            .reduce(player, &context, &mut self.words, |_| None, |_| None);
+            .reduce(player, &context, &mut self.words, |_, _| None, |_| None);
         let clear_flags = self.layout.wide
             && matches!(
                 player.movement.mode,

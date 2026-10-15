@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod bindings;
 pub mod bits;
 pub mod bsp;
 pub mod checksum;

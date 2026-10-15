@@ -122,6 +122,12 @@ impl FrameHost {
             }
             let publication = &mut runtime.config_publications[index];
             publication.connection(client.module, ConfigLayout::QUAKE3);
+            let model_world = crate::client_resources::model_world(
+                client.connection,
+                runtime.client_resources[index].as_ref(),
+                runtime.collision.as_ref().map(|world| world.geometry),
+            );
+            publication.model_world(model_world);
             publication.require_game_state();
             if row.state != State::Running || publication.game_state_published() {
                 continue;
@@ -219,6 +225,17 @@ impl FrameHost {
                     modules.storage.configstring(client.module, native_index)
                 {
                     publication.seen(native_index, revision);
+                    if ConfigLayout::QUAKE3.resources[0].contains(native_index) {
+                        let ordinal =
+                            native_index - ConfigLayout::QUAKE3.resources[0].first as usize;
+                        publication.primary_model(
+                            ordinal as u32,
+                            !text.is_empty(),
+                            modules
+                                .model_name(client.module, ordinal as u32, model_world, None)
+                                .and_then(|model| model.name),
+                        );
+                    }
                     if ConfigLayout::QUAKE3.resources[1].contains(native_index) {
                         let ordinal =
                             native_index - ConfigLayout::QUAKE3.resources[1].first as usize;
@@ -326,6 +343,9 @@ impl FrameHost {
                 world,
             ));
         }
+        for resources in self.runtime.client_resources.iter_mut().flatten() {
+            resources.state.complete_static_models(&models);
+        }
         self.runtime.models = Some(models);
     }
 
@@ -337,7 +357,12 @@ impl FrameHost {
             .as_ref()
             .map_or(0, |modules| modules.rows.len());
         for publication in &mut self.runtime.config_publications {
-            publication.configure_sources(capacity);
+            publication.configure_sources(
+                capacity,
+                self.modules
+                    .as_ref()
+                    .map_or(0, |modules| modules.storage.resource_name_capacity()),
+            );
         }
     }
     pub(crate) fn bind_output_sounds(&mut self, bank: &qa_audio::Bank) {
@@ -371,6 +396,12 @@ impl FrameHost {
             };
             let publication = &mut runtime.config_publications[index];
             publication.connection(client.module, target);
+            let model_world = crate::client_resources::model_world(
+                client.connection,
+                runtime.client_resources[index].as_ref(),
+                runtime.collision.as_ref().map(|world| world.geometry),
+            );
+            publication.model_world(model_world);
             runtime.native_numbers[index].refresh(
                 &runtime.server.entities,
                 runtime.server.entities.columns.native_entity[client.entity.slot as usize]
@@ -422,8 +453,8 @@ impl FrameHost {
                 continue;
             }
             let mut complete = true;
-            // General config rows and native sound claims belong to the primary
-            // namespace. Secondary models/HUD/general config mapping is separate.
+            // General rows and native resource claims belong to the primary
+            // namespace; secondary filenames use its free destination slots.
             if let Some(row) = modules
                 .row(client.module)
                 .filter(|row| row.state == State::Running)
@@ -449,6 +480,40 @@ impl FrameHost {
                         continue;
                     }
                     let target_index = target.project_index(source, native_index);
+                    if source.resources[0].contains(native_index) {
+                        let ordinal = native_index - source.resources[0].first as usize;
+                        if ordinal != 0 && !publication.primary_model_fits(ordinal as u32) {
+                            if let Some(name) = modules
+                                .model_name(client.module, ordinal as u32, model_world, None)
+                                .and_then(|model| model.name)
+                                && !publish_model(
+                                    publication,
+                                    &mut runtime.server.events,
+                                    output,
+                                    ClientId(index as u32),
+                                    client.module,
+                                    source.rules,
+                                    native_index as u32,
+                                    target,
+                                    protocol,
+                                    name,
+                                    text,
+                                )
+                            {
+                                complete = false;
+                                break;
+                            }
+                            publication.seen(native_index, revision);
+                            continue;
+                        }
+                        publication.primary_model(
+                            ordinal as u32,
+                            !text.is_empty(),
+                            modules
+                                .model_name(client.module, ordinal as u32, model_world, None)
+                                .and_then(|model| model.name),
+                        );
+                    }
                     let is_sound = source.resources[1].contains(native_index);
                     let mut sample = None;
                     if is_sound {
@@ -527,6 +592,55 @@ impl FrameHost {
                 }
             }
             publication.release_aliases();
+            publication.release_model_aliases();
+            for row in modules
+                .rows
+                .iter()
+                .flatten()
+                .filter(|row| row.state == State::Running)
+            {
+                let module = row.request.context.module;
+                let Some(models) = modules
+                    .storage
+                    .resources(module)
+                    .map(|resources| resources[0])
+                else {
+                    continue;
+                };
+                for ordinal in 1..models.count {
+                    if module == client.module
+                        && (!publication.primary_model_fits(ordinal)
+                            || publication.model_alias_fits(ordinal))
+                    {
+                        continue;
+                    }
+                    let Some(name) = modules
+                        .model_name(module, ordinal, model_world, None)
+                        .and_then(|model| model.name)
+                    else {
+                        continue;
+                    };
+                    let Some(text) = modules.storage.resource_name(name) else {
+                        continue;
+                    };
+                    if !publish_model(
+                        publication,
+                        &mut runtime.server.events,
+                        output,
+                        ClientId(index as u32),
+                        module,
+                        row.request.context.native_rules,
+                        models.first + ordinal,
+                        target,
+                        protocol,
+                        name,
+                        text,
+                    ) {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
             if let Some(bank) = runtime.sound_bank.as_deref() {
                 // Running secondary module resources get first claim on free
                 // slots; resolving a PCM handle never rebuilds or hashes a path.
@@ -657,6 +771,90 @@ fn publish_sound(
         source_index,
         index as u32,
         name.as_bytes(),
+    ) {
+        Ok(sequence) => {
+            publication.published(index, Some(sequence));
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+impl super::Modules {
+    pub(crate) fn model_name(
+        &self,
+        module: qa_core::primitives::ModuleId,
+        ordinal: u32,
+        destination: Option<qa_core::primitives::GeometryId>,
+        usage: Option<qa_core::primitives::ModelUse>,
+    ) -> Option<crate::client_resources::ModelName> {
+        let row = self.row(module).filter(|row| row.state == State::Running)?;
+        let revision = self.storage.config_revision(module).ok()?;
+        let source = row.request.context.native_rules;
+        let input = crate::client_resources::model_input(source, ordinal, usage);
+        if input.player {
+            return Some(crate::client_resources::ModelName {
+                name: None,
+                revision,
+                source,
+            });
+        }
+        let name = self.storage.bound_model_name(module, input.ordinal)?;
+        let text = self.storage.resource_name(name)?;
+        if text.starts_with(b"*") && (destination.is_none() || row.geometry != destination) {
+            return None;
+        }
+        Some(crate::client_resources::ModelName {
+            name: Some(name),
+            revision,
+            source,
+        })
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Publication borrows source name identity, destination policy and the existing retained ring together"
+)]
+fn publish_model(
+    publication: &mut crate::client_resources::ConfigPublication,
+    events: &mut qa_core::events::EventRing,
+    output: qa_core::events::OutputConsumerId,
+    client: ClientId,
+    module: qa_core::primitives::ModuleId,
+    source: RuleSetId,
+    source_index: u32,
+    target: ConfigLayout,
+    protocol: qa_network::commands::packet::Protocol,
+    name: qa_core::primitives::NameId,
+    text: &[u8],
+) -> bool {
+    let Some(ordinal) = publication.reserve_model(name) else {
+        publication.unsupported += 1;
+        return true;
+    };
+    let index = target.resources[0].first as usize + ordinal as usize;
+    if !publication.unpublished(index) {
+        return true;
+    }
+    if protocol
+        .config_capacity(index)
+        .is_none_or(|limit| text.len() > limit)
+    {
+        publication.unsupported += 1;
+        publication.published(index, None);
+        return true;
+    }
+    if events.needs_resync(output) {
+        return false;
+    }
+    match events.publish_configstring(
+        Some(OutputTarget::Client(client)),
+        module,
+        source,
+        source_index,
+        index as u32,
+        text,
     ) {
         Ok(sequence) => {
             publication.published(index, Some(sequence));

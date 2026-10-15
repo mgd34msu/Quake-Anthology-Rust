@@ -75,7 +75,7 @@ fn native_player_signals_preserve_every_public_cell_without_changing_roles() {
         (RuleSetId::QuakeWorld, RuleSetId::Quake2)
     );
     let mut reduced = [0; states::PLAYER_WORDS];
-    assert!(projection.reduce(&player, &context, &mut reduced, |_| None, |_| None));
+    assert!(projection.reduce(&player, &context, &mut reduced, |_, _| None, |_| None));
     for word in [13, 16, 18, 23, 27, 29, 30, 31, 32, 38, 39] {
         assert_eq!(reduced[word], words[word]);
     }
@@ -104,7 +104,7 @@ fn signals_narrow_at_the_original_q3_codec_then_enter_the_client_namespace()
     assert!(native.apply(&native_words(), &mut server, &mut context, module, |_| None));
     let retained = server.native;
     let mut words = [0; states::PLAYER_WORDS];
-    assert!(wire.reduce(&server, &context, &mut words, |_| None, |_| None));
+    assert!(wire.reduce(&server, &context, &mut words, |_, _| None, |_| None));
     let mut bytes = [0; 1400];
     let mut writer = Writer::new(&mut bytes, Encoding::Q3);
     states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &words)?;
@@ -184,7 +184,7 @@ fn signal_export_requires_the_exact_native_source_and_namespace() {
                 ..Default::default()
             },
             &mut words,
-            |_| None,
+            |_, _| None,
             |_| None
         ));
         for word in [13, 16, 18, 23, 27, 29, 30, 31, 32, 38, 39] {
@@ -422,7 +422,7 @@ fn native_presentation_preserves_full_scalar_cells_and_ieee_bits() {
         [0x8000_0000, 0x7fc0_1234, 0xff80_0000]
     );
     let mut reduced = [0; states::PLAYER_WORDS];
-    assert!(projection.reduce(&player, &context, &mut reduced, |_| None, |_| None));
+    assert!(projection.reduce(&player, &context, &mut reduced, |_, _| None, |_| None));
     for word in PRESENTATION_WORDS {
         assert_eq!(reduced[word], words[word]);
     }
@@ -450,7 +450,7 @@ fn presentation_narrows_only_in_the_original_q3_codec_and_enters_the_client_name
     ));
     let retained = server.native;
     let mut words = [0; states::PLAYER_WORDS];
-    assert!(wire.reduce(&server, &context, &mut words, |_| None, |_| None));
+    assert!(wire.reduce(&server, &context, &mut words, |_, _| None, |_| None));
     let mut bytes = [0; 1400];
     let mut writer = Writer::new(&mut bytes, Encoding::Q3);
     states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &words)?;
@@ -490,7 +490,7 @@ fn presentation_narrows_only_in_the_original_q3_codec_and_enters_the_client_name
         &accepted,
         &accepted_context,
         &mut reduced,
-        |_| None,
+        |_, _| None,
         |_| None
     ));
     for word in PRESENTATION_WORDS {
@@ -534,7 +534,7 @@ fn presentation_export_requires_the_original_source_and_exact_resource_namespace
                 ..Default::default()
             },
             &mut words,
-            |_| None,
+            |_, _| None,
             |_| None
         ));
         for word in PRESENTATION_WORDS {

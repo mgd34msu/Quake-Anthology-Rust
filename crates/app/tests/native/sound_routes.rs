@@ -714,6 +714,7 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
             None,
             &mut AudioSource::default(),
             |_, _| None,
+            |_, _, _, _| None,
         );
         host.drain(&mut Default::default());
         assert!(

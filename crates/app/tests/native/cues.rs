@@ -128,7 +128,8 @@ fn accept_client_resources_and_pose(
         time,
         None,
         &mut Source { time, polls: 0 },
-        |_, _| None
+        |_, _| None,
+        |_, _, _, _| None
     ));
     host.queue
         .push(SysEvent {

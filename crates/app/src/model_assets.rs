@@ -1249,11 +1249,11 @@ fn model_handle(
     names: &NameTable,
     files: &[ModelFile],
     path: &[u8],
-    source: RuleSetId,
+    source: Option<RuleSetId>,
 ) -> Option<i32> {
     let name = names.find_path(std::str::from_utf8(path).ok()?)?;
     let handle = i32::try_from(name.0).ok()?;
-    renderer_file(files, handle, Some(source))?;
+    renderer_file(files, handle, source)?;
     Some(handle)
 }
 fn renderer_file(
@@ -1316,6 +1316,9 @@ fn lerp_tag(
     Some(sample(start)?.interpolate(sample(end)?, fraction))
 }
 impl ModelLookup for ModelCatalogBuilder {
+    fn file_handle(&self, path: &[u8]) -> Option<i32> {
+        model_handle(&self.names, &self.files, path, None)
+    }
     fn inline_handle(&self, world: WorldId, index: u32) -> Option<i32> {
         inline_handle(&self.worlds, &self.inline, world, index)
     }
@@ -1354,7 +1357,7 @@ impl ModelLookup for ModelCatalogBuilder {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
     }
     fn model_handle(&self, path: &[u8], source: RuleSetId) -> Option<i32> {
-        model_handle(&self.names, &self.files, path, source)
+        model_handle(&self.names, &self.files, path, Some(source))
     }
     fn model_bounds(&self, handle: i32) -> Option<Bounds> {
         model_bounds(&self.files, handle)
@@ -1396,6 +1399,9 @@ impl ModelLoader for ModelCatalogBuilder {
     }
 }
 impl ModelLookup for ModelCatalog {
+    fn file_handle(&self, path: &[u8]) -> Option<i32> {
+        model_handle(&self.names, &self.files, path, None)
+    }
     fn inline_handle(&self, world: WorldId, index: u32) -> Option<i32> {
         inline_handle(&self.worlds, &self.inline, world, index)
     }
@@ -1434,7 +1440,7 @@ impl ModelLookup for ModelCatalog {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
     }
     fn model_handle(&self, path: &[u8], source: RuleSetId) -> Option<i32> {
-        model_handle(&self.names, &self.files, path, source)
+        model_handle(&self.names, &self.files, path, Some(source))
     }
     fn model_bounds(&self, handle: i32) -> Option<Bounds> {
         model_bounds(&self.files, handle)

@@ -1,7 +1,8 @@
 use qa_core::primitives::{
     ClientId, CollisionTags, EntityAppearance, EntityClientData, EntityModelData, EntityParameter,
-    EntityPresentation, ModelRef, ModuleId, NativeAppearanceTail, NativeClientRef, NativeEntityRef,
-    NativeReference, ResourceNamespace, RuleSetId, SoundRef, ThinkTime, TrajectoryCurve, Vec3,
+    EntityPresentation, ModelRef, ModelUse, ModuleId, NativeAppearanceTail, NativeClientRef,
+    NativeEntityRef, NativeReference, ResourceNamespace, RuleSetId, SoundRef, ThinkTime,
+    TrajectoryCurve, Vec3,
 };
 use qa_network::{
     commands::packet::Protocol,
@@ -12,6 +13,42 @@ use qa_network::{
 
 const MODULE: ResourceNamespace = ResourceNamespace::Module(ModuleId(7));
 const CLIENT: ResourceNamespace = ResourceNamespace::Client(ClientId(3));
+
+#[test]
+fn identical_model_references_resolve_with_their_actual_entity_cell() -> Result<(), Error> {
+    for protocol in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
+        let projection = EntityProjection::load(protocol);
+        let mut record = EntityRecord::default();
+        record.appearance.source = RuleSetId::Quake2;
+        record.appearance.models = [ModelRef::native(MODULE, 0x87); 4];
+        let mut words = vec![0; projection.words()];
+        let mut uses = Vec::new();
+        assert!(projection.reduce(
+            &record,
+            &EntityContext::default(),
+            &mut words,
+            |reference, usage| {
+                assert_eq!(reference, ModelRef::native(MODULE, 0x87).unwrap());
+                let ModelUse::Entity(cell) = usage else {
+                    panic!("entity model cell");
+                };
+                uses.push(cell);
+                Some([17, 0x91, 19, 20][cell])
+            },
+            |_| None,
+            |_| None,
+        ));
+        assert_eq!(uses, [0, 1, 2, 3]);
+        let mut accepted = EntityRecord::default();
+        assert!(projection.apply(&wire(protocol, &words)?, &mut accepted, CLIENT));
+        assert_eq!(
+            accepted.appearance.models,
+            [17, 0x91, 19, 20].map(|ordinal| ModelRef::native(CLIENT, ordinal)),
+        );
+    }
+    Ok(())
+}
+
 fn source(protocol: Protocol) -> EntityRecord {
     EntityRecord {
         position: Vec3([12.375, -42.625, 48.125]),
@@ -159,7 +196,7 @@ fn all_native_entity_tables_retain_represented_fields_and_explicit_namespace() -
             &src,
             &EntityContext::default(),
             &mut words,
-            |model| {
+            |model, _| {
                 assert_eq!(model.namespace, MODULE);
                 Some(model.ordinal)
             },
@@ -214,7 +251,7 @@ fn all_native_entity_tables_retain_represented_fields_and_explicit_namespace() -
             &imported,
             &EntityContext::default(),
             &mut words,
-            |model| {
+            |model, _| {
                 assert_eq!(model.namespace, CLIENT);
                 Some(model.ordinal)
             },
@@ -250,7 +287,7 @@ fn models_are_resolved_and_missing_or_unrepresentable_models_become_zero() -> Re
             &src,
             &EntityContext::default(),
             &mut words,
-            |_| Some(wide),
+            |_, _| Some(wide),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal()),
         );
@@ -262,7 +299,7 @@ fn models_are_resolved_and_missing_or_unrepresentable_models_become_zero() -> Re
                 &src,
                 &EntityContext::default(),
                 &mut words,
-                |_| ordinal,
+                |_, _| ordinal,
                 |sound| Some(sound.ordinal),
                 |reference| Some(reference.ordinal()),
             );
@@ -286,7 +323,7 @@ fn foreign_native_flags_are_not_reinterpreted_as_other_game_flags() {
             &src,
             &EntityContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _| Some(model.ordinal),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal()),
         );
@@ -324,7 +361,7 @@ fn short_records_do_not_change_output_or_imported_pose() {
         &src,
         &EntityContext::default(),
         &mut short,
-        |_| panic!("no model resolver on short buffer"),
+        |_, _| panic!("no model resolver on short buffer"),
         |_| panic!("no sound resolver on short buffer"),
         |reference| Some(reference.ordinal()),
     ));
@@ -346,7 +383,7 @@ fn rerelease_zero_sentinels_and_explicit_alpha_follow_native_pack_rules() {
         &record,
         &EntityContext::default(),
         &mut words,
-        |model| Some(model.ordinal),
+        |model, _| Some(model.ordinal),
         |sound| Some(sound.ordinal),
         |reference| Some(reference.ordinal()),
     );
@@ -357,7 +394,7 @@ fn rerelease_zero_sentinels_and_explicit_alpha_follow_native_pack_rules() {
             &record,
             &EntityContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _| Some(model.ordinal),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal()),
         );
@@ -383,7 +420,7 @@ fn qw_internal_peer_velocity_never_changes_native_packetentity_bytes() -> Result
         &record,
         &EntityContext::default(),
         &mut from,
-        |model| Some(model.ordinal),
+        |model, _| Some(model.ordinal),
         |sound| Some(sound.ordinal),
         |reference| Some(reference.ordinal()),
     ));
@@ -393,7 +430,7 @@ fn qw_internal_peer_velocity_never_changes_native_packetentity_bytes() -> Result
         &record,
         &EntityContext::default(),
         &mut to,
-        |model| Some(model.ordinal),
+        |model, _| Some(model.ordinal),
         |sound| Some(sound.ordinal),
         |reference| Some(reference.ordinal()),
     ));
@@ -473,7 +510,7 @@ fn loop_sounds_use_the_resolved_namespace_independently_of_source_family() -> Re
                 &record,
                 &EntityContext::default(),
                 &mut words,
-                |model| Some(model.ordinal),
+                |model, _| Some(model.ordinal),
                 |sound| {
                     assert_eq!(sound, SoundRef::native(publishing, 900).unwrap());
                     resolutions += 1;
@@ -512,7 +549,7 @@ fn loop_sound_zero_missing_and_native_width_boundaries_do_not_alias_resources() 
                 &record,
                 &EntityContext::default(),
                 &mut words,
-                |model| Some(model.ordinal),
+                |model, _| Some(model.ordinal),
                 |_| resolved,
                 |reference| Some(reference.ordinal()),
             ));
@@ -536,7 +573,7 @@ fn loop_sound_zero_missing_and_native_width_boundaries_do_not_alias_resources() 
             &empty,
             &EntityContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _| Some(model.ordinal),
             |_| panic!("absent sound has no ordinal to resolve"),
             |reference| Some(reference.ordinal()),
         ));
@@ -565,7 +602,7 @@ fn q3_speaker_entity_type_has_the_original_literal_delta_encoding() -> Result<()
         &record,
         &EntityContext::default(),
         &mut words,
-        |_| panic!("no model reference"),
+        |_, _| panic!("no model reference"),
         |_| panic!("no sound reference"),
         |reference| Some(reference.ordinal()),
     ));
@@ -613,7 +650,7 @@ fn q3_event_target_is_retained_only_at_its_own_native_boundary() -> Result<(), E
             &record,
             &EntityContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _| Some(model.ordinal),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal()),
         ));
@@ -707,7 +744,7 @@ fn q3_native_all_51_cells_survive_named_projection_without_physical_pose_aliasin
         &record,
         &EntityContext::default(),
         &mut reduced,
-        |model| {
+        |model, _| {
             assert_eq!(model.namespace, MODULE);
             Some(model.ordinal)
         },
@@ -758,7 +795,7 @@ fn q3_all_named_fields_cross_the_existing_native_delta_table() -> Result<(), Err
         &record,
         &EntityContext::default(),
         &mut reduced,
-        |m| Some(m.ordinal),
+        |m, _| Some(m.ordinal),
         |s| Some(s.ordinal),
         |r| Some(r.ordinal())
     ));
@@ -799,7 +836,7 @@ fn q3_item_and_team_model_cells_keep_semantic_payload_instead_of_model_handles()
             &record,
             &EntityContext::default(),
             &mut reduced,
-            |_| panic!("item/team payload is not a registered model"),
+            |_, _| panic!("item/team payload is not a registered model"),
             |_| panic!("no sound"),
             |r| Some(r.ordinal())
         ));
@@ -829,7 +866,7 @@ fn q3_general_sound_and_speaker_parameters_resolve_resources_without_fabricated_
             &record,
             &EntityContext::default(),
             &mut reduced,
-            |_| None,
+            |_, _| None,
             |s| {
                 assert_eq!(s, SoundRef::native(MODULE, 23).unwrap());
                 Some(77)
@@ -849,7 +886,7 @@ fn q3_general_sound_and_speaker_parameters_resolve_resources_without_fabricated_
                 &record,
                 &EntityContext::default(),
                 &mut reduced,
-                |_| None,
+                |_, _| None,
                 |_| missing,
                 |r| Some(r.ordinal())
             ));
@@ -875,7 +912,7 @@ fn q3_reference_resolver_retains_client_domain_and_native_zero_and_sentinels() {
         &record,
         &EntityContext::default(),
         &mut out,
-        |_| None,
+        |_, _| None,
         |_| None,
         |reference| {
             assert_eq!(
@@ -891,7 +928,7 @@ fn q3_reference_resolver_retains_client_domain_and_native_zero_and_sentinels() {
         &record,
         &EntityContext::default(),
         &mut out,
-        |_| None,
+        |_, _| None,
         |_| None,
         |_| None
     ));
@@ -907,7 +944,7 @@ fn q3_reference_resolver_retains_client_domain_and_native_zero_and_sentinels() {
         &record,
         &EntityContext::default(),
         &mut out,
-        |_| None,
+        |_, _| None,
         |_| None,
         |reference| {
             assert_eq!(
@@ -923,7 +960,7 @@ fn q3_reference_resolver_retains_client_domain_and_native_zero_and_sentinels() {
         &record,
         &EntityContext::default(),
         &mut out,
-        |_| None,
+        |_, _| None,
         |_| None,
         |_| Some(256)
     ));
@@ -969,7 +1006,7 @@ fn foreign_canonical_players_cross_q3_wire_with_destination_client_references() 
                 &record,
                 &context,
                 &mut words,
-                |_| None,
+                |_, _| None,
                 |_| None,
                 |reference| {
                     assert_eq!(
@@ -1027,7 +1064,7 @@ fn foreign_type_projection_requires_canonical_player_role_and_allows_absent_clie
             &record,
             &EntityContext { tags, client: None },
             &mut words,
-            |_| None,
+            |_, _| None,
             |_| None,
             |_| panic!("an absent client reference must not resolve")
         ));
@@ -1057,7 +1094,7 @@ fn canonical_context_never_replaces_same_source_q3_native_type_or_client_cells()
                 &record,
                 &context,
                 &mut words,
-                |_| None,
+                |_, _| None,
                 |_| None,
                 |reference| match reference {
                     NativeReference::Entity(reference) => Some(reference.ordinal),
@@ -1084,7 +1121,7 @@ fn canonical_context_never_replaces_same_source_q3_native_type_or_client_cells()
         &record,
         &context,
         &mut words,
-        |_| None,
+        |_, _| None,
         |_| None,
         |reference| match reference {
             NativeReference::Entity(reference) => Some(reference.ordinal),
@@ -1119,7 +1156,7 @@ fn foreign_client_projection_reuses_checked_resolver_and_native_wire_limits() {
             &record,
             &context,
             &mut words,
-            |_| None,
+            |_, _| None,
             |_| None,
             |reference| {
                 assert_eq!(
@@ -1134,7 +1171,7 @@ fn foreign_client_projection_reuses_checked_resolver_and_native_wire_limits() {
         &record,
         &context,
         &mut words,
-        |_| None,
+        |_, _| None,
         |_| None,
         |reference| (reference.namespace() == CLIENT).then_some(reference.ordinal())
     ));
@@ -1144,7 +1181,7 @@ fn foreign_client_projection_reuses_checked_resolver_and_native_wire_limits() {
         &record,
         &context,
         &mut words,
-        |_| None,
+        |_, _| None,
         |_| None,
         |_| Some(u32::MAX)
     ));
@@ -1202,7 +1239,7 @@ fn packed_box_solids_cross_protocol_boundaries_in_native_units() -> Result<(), E
             &record,
             &EntityContext::default(),
             &mut words,
-            |m| Some(m.ordinal),
+            |m, _| Some(m.ordinal),
             |s| Some(s.ordinal),
             |r| Some(r.ordinal())
         ));
@@ -1239,7 +1276,7 @@ fn brush_solids_require_one_resolved_primary_model_before_wire_emission() -> Res
                 &record,
                 &EntityContext::default(),
                 &mut words,
-                |model| {
+                |model, _| {
                     resolutions[(model.ordinal - 8) as usize] += 1;
                     Some(model.ordinal + 2)
                 },
@@ -1270,7 +1307,7 @@ fn brush_solids_require_one_resolved_primary_model_before_wire_emission() -> Res
                     &record,
                     &EntityContext::default(),
                     &mut words,
-                    |model| {
+                    |model, _| {
                         if model.ordinal == 8 {
                             missing
                         } else {
@@ -1287,7 +1324,7 @@ fn brush_solids_require_one_resolved_primary_model_before_wire_emission() -> Res
                 &absent,
                 &EntityContext::default(),
                 &mut words,
-                |m| Some(m.ordinal),
+                |m, _| Some(m.ordinal),
                 |s| Some(s.ordinal),
                 |r| Some(r.ordinal())
             ));
@@ -1308,7 +1345,7 @@ fn native_public_solid_words_remain_exact_without_a_client_model_catalog() {
         &record,
         &EntityContext::default(),
         &mut out,
-        |_| None,
+        |_, _| None,
         |_| None,
         |r| Some(r.ordinal())
     ));
@@ -1319,7 +1356,7 @@ fn native_public_solid_words_remain_exact_without_a_client_model_catalog() {
         &record,
         &EntityContext::default(),
         &mut out,
-        |_| None,
+        |_, _| None,
         |_| None,
         |r| Some(r.ordinal())
     ));
@@ -1337,7 +1374,7 @@ fn malformed_foreign_bounds_and_box_to_brush_collisions_reject_only_the_record()
             &record,
             &EntityContext::default(),
             &mut words,
-            |m| Some(m.ordinal),
+            |m, _| Some(m.ordinal),
             |s| Some(s.ordinal),
             |r| Some(r.ordinal())
         ));
@@ -1349,7 +1386,7 @@ fn malformed_foreign_bounds_and_box_to_brush_collisions_reject_only_the_record()
         &record,
         &EntityContext::default(),
         &mut words,
-        |m| Some(m.ordinal),
+        |m, _| Some(m.ordinal),
         |s| Some(s.ordinal),
         |r| Some(r.ordinal())
     ));
@@ -1381,7 +1418,7 @@ fn synthetic_q3_pose_uses_load_selected_interpolation_without_changing_native_tr
         &record,
         &EntityContext::default(),
         &mut words,
-        |_| None,
+        |_, _| None,
         |_| None,
         |_| None
     ));
@@ -1393,7 +1430,7 @@ fn synthetic_q3_pose_uses_load_selected_interpolation_without_changing_native_tr
         &record,
         &EntityContext::default(),
         &mut words,
-        |_| None,
+        |_, _| None,
         |_| None,
         |_| None
     ));

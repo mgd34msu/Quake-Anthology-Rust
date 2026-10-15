@@ -27,7 +27,7 @@ pub struct EntitySource<'a> {
     pub self_entity: EntityId,
     pub visibility: Option<(&'a VisibilityWorld, &'a mut LeafScratch, &'a mut [u8])>,
     pub portals: Option<&'a AreaPortals>,
-    pub resolve_model: &'a mut dyn FnMut(ModelRef) -> Option<u32>,
+    pub resolve_model: &'a mut dyn FnMut(ModelRef, qa_core::primitives::ModelUse) -> Option<u32>,
     pub resolve_sound: &'a mut dyn FnMut(SoundRef) -> Option<u32>,
 }
 

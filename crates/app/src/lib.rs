@@ -777,6 +777,12 @@ impl Runtime {
         observation: Option<qa_core::primitives::SnapshotObservation>,
         source: &mut impl host::FrameSource,
         mut bound_sound: impl FnMut(ModuleId, u32) -> Option<qa_core::primitives::SoundId>,
+        mut bound_model: impl FnMut(
+            ModuleId,
+            u32,
+            Option<GeometryId>,
+            qa_core::primitives::ModelUse,
+        ) -> Option<crate::client_resources::ModelName>,
     ) -> bool {
         use qa_core::loopback::Endpoint;
         use qa_network::channel::Unreliable;
@@ -796,11 +802,22 @@ impl Runtime {
         let mut bytes = &mut *self.output_bytes;
         let native_module = self.server.entities.columns.native_entity[client.entity.slot as usize]
             .map(|native| native.module);
-        let model_limit = binding.protocol.resource_layout().resources[0].count;
-        let mut resolve_model = |reference| {
-            client_resources::model_ordinal(reference, Some(client.module), id, model_limit)
-        };
         let publication = &self.config_publications[id.0 as usize];
+        let model_world = crate::client_resources::model_world(
+            client.connection,
+            self.client_resources[id.0 as usize].as_ref(),
+            self.collision.as_ref().map(|world| world.geometry),
+        );
+        let mut resolve_model = |reference, usage| match publication.project_model_ref(
+            reference,
+            usage,
+            id,
+            |module, ordinal, usage| bound_model(module, ordinal, model_world, usage),
+        ) {
+            client_resources::ModelProjection::Ready(ordinal) => Some(ordinal),
+            client_resources::ModelProjection::Pending
+            | client_resources::ModelProjection::Unsupported => None,
+        };
         let mut resolve_sound =
             |reference| publication.project_sound_ref(reference, id, &mut bound_sound);
         let collision = &mut self.collision;

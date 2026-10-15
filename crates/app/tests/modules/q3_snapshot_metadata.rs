@@ -263,7 +263,8 @@ fn transmit_with(
         time,
         None,
         &mut Source { time, polls: 0 },
-        |_, _| None
+        |_, _| None,
+        |_, _, _, _| None
     ));
     after_send(host);
     // Ordinary loopback packets enter the system-event queue before CLIENT import.
@@ -859,7 +860,8 @@ fn q3_server_follow_target_changes_presentation_only_after_client_packet_accepta
         time,
         None,
         &mut Source { time, polls: 0 },
-        |_, _| None
+        |_, _| None,
+        |_, _, _, _| None
     ));
     // Encoding and submission mutate SERVER state, not the accepted CLIENT view.
     assert_eq!(presented_entity(&host, client), Some(0));

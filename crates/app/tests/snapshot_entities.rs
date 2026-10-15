@@ -159,7 +159,7 @@ fn transmit(
         .channel;
     let sequence = binding.sequence(channel, time);
     let mut bytes = [0; 1400];
-    let mut resolve = |model: ModelRef| {
+    let mut resolve = |model: ModelRef, _usage| {
         (model.namespace == ResourceNamespace::Module(MODULE)).then_some(model.ordinal)
     };
     let source = EntitySource {

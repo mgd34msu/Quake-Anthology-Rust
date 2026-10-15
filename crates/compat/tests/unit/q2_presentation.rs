@@ -60,7 +60,7 @@ fn native_camera_layouts_feed_the_existing_player_packet_projection() {
             ..Default::default()
         };
         let mut words = vec![0; projection.words()];
-        assert!(projection.reduce(&player, &context, &mut words, |_| None, |_| None));
+        assert!(projection.reduce(&player, &context, &mut words, |_, _| None, |_| None));
         let mut bytes = [0; 1400];
         let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
         if at.view_height.is_some() {

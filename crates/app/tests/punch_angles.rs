@@ -120,7 +120,8 @@ fn snapshot(
         EventTime::from_milliseconds(native_ms),
         None,
         source,
-        |_, _| None
+        |_, _| None,
+        |_, _, _, _| None
     ));
     host.queue
         .push(SysEvent {

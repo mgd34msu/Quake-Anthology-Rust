@@ -90,6 +90,7 @@ pub fn dispatch(
         notify_time,
         center_time,
         counts,
+        |_, _, _, _| None,
     )
 }
 
@@ -153,6 +154,12 @@ pub(crate) fn dispatch_frame(
     notify_time: f64,
     center_time: f64,
     mut counts: OutputCounts,
+    mut bound_model: impl FnMut(
+        ModuleId,
+        u32,
+        Option<qa_core::primitives::GeometryId>,
+        qa_core::primitives::ModelUse,
+    ) -> Option<crate::client_resources::ModelName>,
 ) -> OutputCounts {
     if runtime
         .server
@@ -652,10 +659,18 @@ pub(crate) fn dispatch_frame(
                                             delivery,
                                             commands.protocol,
                                             client_id,
-                                            client.module,
                                             &server.entities,
                                             &mut runtime.native_numbers[slot],
                                             &runtime.config_publications[slot],
+                                            crate::client_resources::model_world(
+                                                client.connection,
+                                                runtime.client_resources[slot].as_ref(),
+                                                runtime
+                                                    .collision
+                                                    .as_ref()
+                                                    .map(|world| world.geometry),
+                                            ),
+                                            &mut bound_model,
                                             runtime.catalog.hud.values.native(delivery.source),
                                             &runtime.catalog.registry.effects,
                                             &mut runtime.output_native_bytes,
@@ -950,10 +965,16 @@ fn encode_record(
     delivery: NativeDelivery,
     protocol: qa_network::commands::packet::Protocol,
     client: ClientId,
-    client_module: ModuleId,
     entities: &qa_world::entities::EntityTable,
     numbers: &mut crate::output_namespace::NativeNumbers,
     publication: &crate::client_resources::ConfigPublication,
+    model_world: Option<qa_core::primitives::GeometryId>,
+    bound_model: &mut impl FnMut(
+        ModuleId,
+        u32,
+        Option<qa_core::primitives::GeometryId>,
+        qa_core::primitives::ModelUse,
+    ) -> Option<crate::client_resources::ModelName>,
     source_values: &qa_ui::values::NativeValues,
     effects: &qa_core::effects::EffectCatalog,
     output: &mut [u8],
@@ -999,19 +1020,23 @@ fn encode_record(
             if !matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28) {
                 return Err(Error::Unsupported);
             }
-            let layout = protocol.config_layout().ok_or(Error::Unsupported)?;
             if let Some(reference) = record.appearance.models[0] {
-                let ordinal = crate::client_resources::model_ordinal(
+                match publication.project_model_ref(
                     reference,
-                    Some(client_module),
+                    qa_core::primitives::ModelUse::Entity(0),
                     client,
-                    layout.resources[0].count,
-                )
-                .ok_or(Error::Unsupported)?;
-                (
-                    ordinal,
-                    publication.readiness(layout.resources[0].first as usize + ordinal as usize),
-                )
+                    |module, ordinal, usage| bound_model(module, ordinal, model_world, usage),
+                ) {
+                    crate::client_resources::ModelProjection::Ready(ordinal) => {
+                        (ordinal, ResourceReadiness::Ready)
+                    }
+                    crate::client_resources::ModelProjection::Pending => {
+                        return Err(Error::Pending);
+                    }
+                    crate::client_resources::ModelProjection::Unsupported => {
+                        return Err(Error::Unsupported);
+                    }
+                }
             } else {
                 (0, ResourceReadiness::Ready)
             }

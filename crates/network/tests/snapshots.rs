@@ -1923,6 +1923,120 @@ fn qw_playerinfo_default_model_and_omitted_command_context_are_per_connection() 
 }
 
 #[test]
+fn qw_modellist_rows_select_the_playerinfo_default_before_the_next_service() -> Result<(), Error> {
+    use qa_network::commands::packet::ZERO_QW;
+    let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
+    let chunks: &[(&[u8], u32, &[u32])] = &[
+        // Matching is byte-exact, including case and the complete filename.
+        (
+            b"\x2d\0progs/Player.mdl\0progs/player.mdl.bak\0\0\0",
+            0,
+            &[1, 2],
+        ),
+        // Native chunk bases precede their first row; a continuation does not
+        // delay publication of the model already accepted in this packet.
+        (
+            b"\x2d\0maps/start.bsp\0progs/player.mdl\0\0\x02",
+            2,
+            &[1, 2],
+        ),
+        (
+            b"\x2d\x02progs/ogre.mdl\0progs/player.mdl\0\0\0",
+            4,
+            &[3, 4],
+        ),
+        // Sound and lightstyle text cannot select a player model.
+        (b"\x2e\0progs/player.mdl\0\0\0", 4, &[257]),
+        (b"\x0c\0progs/player.mdl\0", 4, &[512]),
+        // Restarting a list alone retains the hint; an exact new row replaces
+        // it, and repeated exact matches retain their authored last match.
+        (b"\x2d\0maps/restart.bsp\0\0\0", 4, &[1]),
+        (b"\x2d\0progs/player.mdl\0\0\0", 1, &[1]),
+        (
+            b"\x2d\x08progs/player.mdl\0progs/eyes.mdl\0progs/player.mdl\0\0\x0b",
+            11,
+            &[9, 10, 11],
+        ),
+    ];
+    for &(chunk, expected, indices) in chunks {
+        qw_move(&mut connections, &mut server, &mut commands, true)?;
+        let mut bytes = [0; 1400];
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        writer.write_data(chunk)?;
+        assert!(states::write_qw_player(
+            &mut writer,
+            0,
+            &[0; states::QW_PLAYER_WORDS],
+            ZERO_QW
+        )?);
+        let mut explicit = [0; states::QW_PLAYER_WORDS];
+        explicit[8] = 77.0f32.to_bits();
+        explicit[12] = 1 << 5; // PF_MODEL overrides the default hint.
+        assert!(states::write_qw_player(&mut writer, 1, &explicit, ZERO_QW)?);
+        let mut rows = Vec::new();
+        let mut models = Vec::new();
+        server_payload(
+            &mut server,
+            &mut connections,
+            writer.bytes(),
+            |_, _, incoming| match incoming {
+                Incoming::ConfigString(row) => rows.push(row.index),
+                Incoming::PlayerInfo(player) => models.push((player.number, player.words[8])),
+                _ => {}
+            },
+        )?;
+        assert_eq!(rows, indices);
+        assert_eq!(models, [(0, expected), (1, 77)]);
+    }
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn qw_modellist_retains_each_admitted_model_prefix_when_its_chunk_is_truncated() -> Result<(), Error>
+{
+    use qa_network::commands::packet::ZERO_QW;
+    let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
+    qw_move(&mut connections, &mut server, &mut commands, true)?;
+    let mut rows = Vec::new();
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x2d\x06progs/player.mdl\0",
+        |_, _, incoming| {
+            if let Incoming::ConfigString(row) = incoming {
+                rows.push(row.index);
+            }
+        },
+    )?;
+    assert_eq!(rows, [7]);
+    assert_eq!(connections.command_errors, 1);
+    qw_move(&mut connections, &mut server, &mut commands, true)?;
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    assert!(states::write_qw_player(
+        &mut writer,
+        0,
+        &[0; states::QW_PLAYER_WORDS],
+        ZERO_QW
+    )?);
+    let mut models = Vec::new();
+    server_payload(
+        &mut server,
+        &mut connections,
+        writer.bytes(),
+        |_, _, incoming| {
+            if let Incoming::PlayerInfo(player) = incoming {
+                models.push(player.words[8]);
+            }
+        },
+    )?;
+    assert_eq!(models, [7]);
+    assert_eq!(connections.command_errors, 1);
+    Ok(())
+}
+
+#[test]
 fn channel_qw_server_selects_native_slots_and_preserves_the_request_byte() -> Result<(), Error> {
     let mut server = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
         .map_err(|_| Error::Context)?;
@@ -2223,7 +2337,7 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
         &source,
         &context,
         &mut player,
-        |model| Some(model.ordinal),
+        |model, _| Some(model.ordinal),
         |sound| Some(sound.ordinal),
     ));
     player[18] = 3;

@@ -424,7 +424,7 @@ fn verify_entity_fields(f: &Fixture) {
             &record,
             &qa_network::projection::EntityContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _| Some(model.ordinal),
             |sound| Some(sound.ordinal),
             |reference| Some(reference.ordinal()),
         )
@@ -639,7 +639,7 @@ fn verify(f: &Fixture) {
             p,
             &Default::default(),
             &mut words,
-            |_| None,
+            |_, _| None,
             |sound| Some(sound.ordinal),
         ));
         assert_eq!(words[word], expected);
@@ -845,7 +845,7 @@ fn qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning() {
         p,
         &context,
         &mut words,
-        |_| None,
+        |_, _| None,
         |sound| Some(sound.ordinal),
     ));
     assert_eq!(words[19], residual | 32);
@@ -1553,7 +1553,7 @@ fn qvm_player_loop_sound_uses_public_memory_and_the_owning_namespace() {
                     ..Default::default()
                 },
                 &mut words,
-                |_| None,
+                |_, _| None,
                 |sound| (sound.namespace == namespace).then_some(sound.ordinal),
             ));
             assert_eq!(
@@ -1652,7 +1652,7 @@ fn qvm_player_signals_preserve_native_cells_and_publication_boundaries() {
                 ..Default::default()
             },
             &mut words,
-            |_| None,
+            |_, _| None,
             |_| None,
         ));
         let native = source == RuleSetId::Quake3 && namespace == ResourceNamespace::Module(MODULE);

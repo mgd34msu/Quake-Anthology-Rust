@@ -507,10 +507,11 @@ fn queued_local_and_remote_connections_share_snapshot_projection_for_every_proto
         for (client, frame) in [(local, local_frame), (remote, remote_frame)] {
             let actor = entity(frame, protocol, client, 42);
             assert_eq!(actor.position, Vec3([17., 19., 23.]), "{protocol:?}");
+            // This transport fixture loads no module model registrations.
+            // model_publication.rs covers models readied by real config ACKs.
             assert_eq!(
-                actor.appearance.models[0],
-                ModelRef::native(ResourceNamespace::Client(client), 5),
-                "{protocol:?} {client:?}: connection resource namespace"
+                actor.appearance.models[0], None,
+                "{protocol:?} {client:?}: unpublished model"
             );
             assert_eq!(
                 entity(frame, protocol, client, 43).appearance.models[0],
@@ -590,10 +591,14 @@ fn reliable_output_flushes_between_native_snapshot_boundaries() {
             time,
             ..Default::default()
         };
-        assert!(
-            host.runtime
-                .send_snapshot(remote, time, None, &mut source, |_, _| None)
-        );
+        assert!(host.runtime.send_snapshot(
+            remote,
+            time,
+            None,
+            &mut source,
+            |_, _| None,
+            |_, _, _, _| None
+        ));
         peer.receive(&source.packets, time);
         let sequence = peer.frame().unwrap().sequence();
         let mut bytes = [0; 64];
@@ -615,11 +620,14 @@ fn reliable_output_flushes_between_native_snapshot_boundaries() {
             .unwrap();
         let previous = source.packets.len();
         source.time = EventTime::from_milliseconds(101);
-        assert!(
-            !host
-                .runtime
-                .send_snapshot(remote, source.time, None, &mut source, |_, _| None)
-        );
+        assert!(!host.runtime.send_snapshot(
+            remote,
+            source.time,
+            None,
+            &mut source,
+            |_, _| None,
+            |_, _, _, _| None
+        ));
         assert!(source.packets.len() > previous);
         peer.receive(&source.packets[previous..], source.time);
         assert_eq!(peer.prints, [b"between frames".to_vec()]);
@@ -661,7 +669,8 @@ fn rejected_snapshot_fragment_keeps_provenance_pending_while_local_client_and_ti
             time,
             Some(observation),
             &mut source,
-            |_, _| None
+            |_, _| None,
+            |_, _, _, _| None
         ));
         let sequence = host.runtime.snapshots[remote.0 as usize]
             .as_ref()
@@ -678,10 +687,14 @@ fn rejected_snapshot_fragment_keeps_provenance_pending_while_local_client_and_ti
         assert!(channel.snapshot_observation(sequence).is_none());
         peer.receive(&source.packets, time);
         assert!(peer.frame().is_none());
-        assert!(
-            host.runtime
-                .send_snapshot(local, time, None, &mut source, |_, _| None)
-        );
+        assert!(host.runtime.send_snapshot(
+            local,
+            time,
+            None,
+            &mut source,
+            |_, _| None,
+            |_, _, _, _| None
+        ));
         host.frame(&mut source, true);
         assert!(
             host.runtime
@@ -765,7 +778,7 @@ fn queue_nq_view_snapshot(
             &record,
             &EntityContext::default(),
             &mut words,
-            |model| Some(model.ordinal),
+            |model, _usage| Some(model.ordinal),
             |_| None,
             |_| None,
         ));
@@ -1000,10 +1013,14 @@ fn queued_native_flags_select_position_and_angle_permissions_independently_of_mo
             time,
             ..Default::default()
         };
-        assert!(
-            host.runtime
-                .send_snapshot(local, time, None, &mut source, |_, _| None)
-        );
+        assert!(host.runtime.send_snapshot(
+            local,
+            time,
+            None,
+            &mut source,
+            |_, _| None,
+            |_, _, _, _| None
+        ));
 
         // Deliberately diverge SERVER after submission. CLIENT permissions and
         // angles must come from the accepted packet, not the live server row.
