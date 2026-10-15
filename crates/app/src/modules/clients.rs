@@ -1046,6 +1046,17 @@ impl FrameHost {
         }
     }
     pub(crate) fn retire_client(&mut self, id: ClientId) {
+        let module = self
+            .runtime
+            .server
+            .clients
+            .get(id.0 as usize)
+            .map(|client| client.module);
+        if quakec::retain_body(self, id).is_err()
+            && let Some(row) = module.and_then(|module| self.module_row_mut(module))
+        {
+            row.counts.rejected += 1;
+        }
         self.runtime.disconnect_client(id);
         if let Some(modules) = self.modules.as_mut() {
             for row in modules.rows.iter_mut().flatten() {

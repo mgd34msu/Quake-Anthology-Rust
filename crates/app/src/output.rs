@@ -80,23 +80,80 @@ pub fn dispatch(
     notify_time: f64,
     center_time: f64,
 ) -> OutputCounts {
+    let counts = retire_resync_clients(runtime);
+    dispatch_frame(
+        runtime,
+        source,
+        scrollback,
+        local,
+        time,
+        notify_time,
+        center_time,
+        counts,
+    )
+}
+
+pub(crate) trait RetirementOwner {
+    fn runtime(&mut self) -> &mut Runtime;
+    fn retire(&mut self, client: ClientId);
+}
+impl RetirementOwner for Runtime {
+    fn runtime(&mut self) -> &mut Runtime {
+        self
+    }
+    fn retire(&mut self, client: ClientId) {
+        self.disconnect_client(client);
+    }
+}
+impl RetirementOwner for crate::host::FrameHost {
+    fn runtime(&mut self) -> &mut Runtime {
+        &mut self.runtime
+    }
+    fn retire(&mut self, client: ClientId) {
+        self.disconnect_client(client);
+    }
+}
+
+pub(crate) fn retire_resync_clients(owner: &mut impl RetirementOwner) -> OutputCounts {
     let mut counts = OutputCounts::default();
     // Teardown must finish before borrowing SERVER state for the output pass.
-    for slot in 0..runtime.server.clients.len() {
-        let client = &runtime.server.clients[slot];
-        if client.is_active()
-            && client.connection == Some(Connection::Remote)
-            && let Some(output) = client.output
-            && runtime.server.events.needs_resync(output)
-        {
-            if let Some(counters) = runtime.server.events.counters(output) {
-                counts.native_overflow += counters.overflow;
-                counts.native_resync_retired += counters.retired_on_resync;
+    let clients = owner.runtime().server.clients.len();
+    for slot in 0..clients {
+        let retire = {
+            let runtime = owner.runtime();
+            let client = &runtime.server.clients[slot];
+            if client.is_active()
+                && client.connection == Some(Connection::Remote)
+                && let Some(output) = client.output
+                && runtime.server.events.needs_resync(output)
+            {
+                if let Some(counters) = runtime.server.events.counters(output) {
+                    counts.native_overflow += counters.overflow;
+                    counts.native_resync_retired += counters.retired_on_resync;
+                }
+                true
+            } else {
+                false
             }
-            runtime.disconnect_client(ClientId(slot as u32));
+        };
+        if retire {
+            owner.retire(ClientId(slot as u32));
             counts.native_disconnected += 1;
         }
     }
+    counts
+}
+
+pub(crate) fn dispatch_frame(
+    runtime: &mut Runtime,
+    source: &mut impl FrameSource,
+    scrollback: &mut qa_console::presentation::Scrollback,
+    local: &[Option<ClientId>; SeatId::COUNT],
+    time: EventTime,
+    notify_time: f64,
+    center_time: f64,
+    mut counts: OutputCounts,
+) -> OutputCounts {
     if runtime
         .server
         .events

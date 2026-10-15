@@ -612,6 +612,106 @@ impl EntityProjection {
         }
         self.bind_client(entities, native, entity)
     }
+    pub(crate) fn quakec_ensure_client_body(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<EntityId, CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        self.quakec_client_address(memory, value)?;
+        if let Some(entity) = self.binding(&services.server.entities, native)? {
+            return Ok(entity);
+        }
+        self.quakec_allocate_client_body(services, memory, strings, context, native, None)
+    }
+    pub(crate) fn quakec_retain_client_body(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        old: EntityId,
+    ) -> Result<EntityId, CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        self.quakec_client_address(memory, value)?;
+        let previous = self.bindings[native.slot as usize].ok_or(CallError::Entity)?;
+        if previous.owned
+            || previous.entity != old
+            || self.quakec_bound_entity(&services.server.entities, native)? != Some(old)
+        {
+            return Err(CallError::Entity);
+        }
+        self.quakec_allocate_client_body(services, memory, strings, context, native, Some(old))
+    }
+    fn quakec_allocate_client_body(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        native: NativeEntity,
+        old: Option<EntityId>,
+    ) -> Result<EntityId, CallError> {
+        let slot = native.slot as usize;
+        let previous = self.bindings[slot];
+        let mut claim = context;
+        claim.allocation.full = FullTable::Reject;
+        let entity = self.bind(services, claim, slot, None)?;
+        let published = self
+            .quakec_project_row(services, memory, strings, context, slot)
+            .and_then(|()| {
+                if let Some(old) = old
+                    && services.server.area.bounds(old).is_some()
+                    && !services
+                        .server
+                        .area
+                        .transfer_link(&services.server.entities, old, entity)
+                {
+                    return Err(CallError::Entity);
+                }
+                Ok(())
+            });
+        if let Err(error) = published {
+            let cleanup = self.retire(services, context, slot);
+            self.bindings[slot] = previous;
+            cleanup?;
+            return Err(error);
+        }
+        Ok(entity)
+    }
+    pub(crate) fn quakec_release_client_body(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        self.quakec_client_address(memory, value)?;
+        let slot = native.slot as usize;
+        let Some(binding) = self.bindings[slot].filter(|binding| binding.owned) else {
+            return Ok(());
+        };
+        if services.server.entities.resolve(binding.entity).is_some()
+            && self.quakec_bound_entity(&services.server.entities, native)? != Some(binding.entity)
+        {
+            return Err(CallError::Entity);
+        }
+        if services.server.clients.iter().any(|client| {
+            client.connection.is_some()
+                && client.entity == binding.entity
+                && services.server.entities.resolve(client.entity).is_some()
+                && services.server.entities.columns.native_entity[client.entity.slot as usize]
+                    == Some(native)
+        }) {
+            return Err(CallError::Entity);
+        }
+        self.retire(services, context, slot)
+    }
     pub(crate) fn quakec_bind_player_values(
         &mut self,
         stats: &[qa_core::primitives::ValueBinding],
@@ -1305,7 +1405,13 @@ impl EntityProjection {
             };
             let native_slot = native.slot as usize;
             let client = native_slot > 0 && native_slot <= clients;
-            if client && layout.integer_motion {
+            // An owned reserved-row body has no active connection. It still
+            // participates in links and pushes, but native client physics is
+            // skipped, just as SV_Physics_Client skips inactive clients.
+            if client
+                && (layout.integer_motion
+                    || self.bindings[native_slot].is_some_and(|binding| binding.owned))
+            {
                 continue;
             }
             let phase = if !client {
@@ -1522,7 +1628,10 @@ impl EntityProjection {
             .binding(&services.server.entities, native)?
             .ok_or(CallError::Entity)?;
         let binding = self.bindings[native.slot as usize].ok_or(CallError::Entity)?;
-        if native.slot == 0 || !binding.owned || !services.server.entities.can_release(entity) {
+        if native.slot as usize <= self.quakec_client_count()?
+            || !binding.owned
+            || !services.server.entities.can_release(entity)
+        {
             return Err(CallError::Entity);
         }
         let layout = self.quakec_layout()?;
@@ -2109,12 +2218,17 @@ impl EntityProjection {
         value: u32,
         store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
-        self.quakec_identity(memory, context, value)?;
+        let native = self.quakec_identity(memory, context, value)?;
         if value == 0 {
             return Ok(());
         }
         let layout = self.quakec_layout()?;
         layout.link_fields(memory, u64::from(value))?;
+        if native.slot as usize <= self.quakec_client_count()?
+            && self.binding(&services.server.entities, native)?.is_none()
+        {
+            self.quakec_ensure_client_body(services, memory, strings, context, value)?;
+        }
         let Some((entity, link_flags)) =
             self.quakec_publish(services, memory, strings, context, value)?
         else {

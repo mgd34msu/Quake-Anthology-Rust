@@ -471,6 +471,48 @@ impl Vm {
     ) -> Result<Option<qa_core::primitives::EntityId>, crate::services::CallError> {
         self.projection.quakec_bound_entity(entities, native)
     }
+    /// Materialize an unconnected native client's ordinary common body.
+    pub fn ensure_client_body(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        native: u32,
+    ) -> Result<qa_core::primitives::EntityId, crate::services::CallError> {
+        self.projection.quakec_ensure_client_body(
+            services,
+            &self.entities,
+            &self.strings,
+            context,
+            native,
+        )
+    }
+    /// Preserve native backing when its borrowed connection lifetime ends.
+    pub fn retain_client_body(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        native: u32,
+        old: qa_core::primitives::EntityId,
+    ) -> Result<qa_core::primitives::EntityId, crate::services::CallError> {
+        self.projection.quakec_retain_client_body(
+            services,
+            &self.entities,
+            &self.strings,
+            context,
+            native,
+            old,
+        )
+    }
+    /// Retire only this reserved native client's owned orphan body.
+    pub fn release_client_body(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        native: u32,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection
+            .quakec_release_client_body(services, &self.entities, context, native)
+    }
     /// Map admission and builtin spawn use the existing native ordinal
     /// allocator. This does not change the VM's return globals.
     pub fn spawn_entity(
@@ -744,6 +786,25 @@ impl Vm {
         self.dirty_entities.clear();
         self.dirty_count = 0;
         Ok(())
+    }
+    /// Publish one native row without consuming other pending guest stores.
+    pub fn project_entity(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        value: u32,
+    ) -> Result<(), crate::services::CallError> {
+        self.sync_client_globals()?;
+        let slot = self
+            .entity_number(value)
+            .map_err(|_| crate::services::CallError::Memory)?;
+        self.projection.quakec_project_row(
+            services,
+            &self.entities,
+            &self.strings,
+            context,
+            slot as usize,
+        )
     }
     /// Module return imports successful bytecode entity writes since the
     /// previous publication. Export projection also catches external byte edits.

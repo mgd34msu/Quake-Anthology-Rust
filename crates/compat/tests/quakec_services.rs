@@ -13,6 +13,7 @@ use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
 use qa_core::{names::NameTable, primitives::*, sys_events::EventTime};
 use qa_formats::program::quakec::{Image, Opcode};
 use qa_world::{
+    area::LinkFlags,
     collision::{CollisionStore, brushes::BrushTree, surfaces::SurfaceTable},
     entities::AllocationPolicy,
 };
@@ -2480,6 +2481,156 @@ fn spawn_remove_use_native_ordinals_and_independent_common_generations() {
             assert_eq!(
                 calls.services.server.entities.columns.owner[new.slot as usize],
                 calls.context.module
+            );
+        });
+    }
+}
+
+#[test]
+fn unconnected_reserved_clients_get_ordinary_bodies_only_at_explicit_link() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let native = vm.client_count().unwrap() as u32 * vm.stride as u32;
+            write(
+                &mut vm,
+                native,
+                b"origin",
+                &[20.0f32, 10.0, 5.0].map(f32::to_bits),
+            );
+            write(&mut vm, native, b"mins", &[-1.0f32; 3].map(f32::to_bits));
+            write(&mut vm, native, b"maxs", &[1.0f32; 3].map(f32::to_bits));
+            write(&mut vm, native, b"solid", &[2.0f32.to_bits()]);
+            vm.project_entities(calls.services, calls.context).unwrap();
+            assert_eq!(
+                vm.resolve_entity(
+                    &calls.services.server.entities,
+                    calls.context.module,
+                    native
+                ),
+                Ok(None)
+            );
+            let count = calls.services.server.entities.active().count();
+            vm.relink_entity(calls.services, calls.context, native)
+                .unwrap();
+            let body = entity(calls, &vm, native);
+            assert_eq!(calls.services.server.entities.active().count(), count + 1);
+            assert_eq!(
+                calls.services.server.entities.columns.position[body.slot as usize],
+                Vec3([20.0, 10.0, 5.0])
+            );
+            assert!(calls.services.server.area.bounds(body).is_some());
+            assert_eq!(
+                vm.ensure_client_body(calls.services, calls.context, native),
+                Ok(body)
+            );
+            assert_eq!(calls.services.server.entities.active().count(), count + 1);
+            let bytes = vm
+                .entities
+                .read(u64::from(native), vm.stride)
+                .unwrap()
+                .to_vec();
+            assert_eq!(
+                vm.remove_entity(calls.services, calls.context, native),
+                Err(CallError::Entity)
+            );
+            assert_eq!(
+                vm.make_static(calls.services, calls.context, native),
+                Err(CallError::Entity)
+            );
+            assert_eq!(
+                vm.entities.read(u64::from(native), vm.stride).unwrap(),
+                bytes
+            );
+            let ordinary = vm.spawn_entity(calls.services, calls.context).unwrap();
+            vm.remove_entity(calls.services, calls.context, ordinary)
+                .unwrap();
+            vm.relink_entity(calls.services, calls.context, ordinary)
+                .unwrap();
+            assert_eq!(
+                vm.resolve_entity(
+                    &calls.services.server.entities,
+                    calls.context.module,
+                    ordinary
+                ),
+                Ok(None)
+            );
+            assert_eq!(
+                vm.ensure_client_body(calls.services, calls.context, ordinary),
+                Err(CallError::Entity)
+            );
+            vm.release_client_body(calls.services, calls.context, native)
+                .unwrap();
+            assert!(calls.services.server.entities.resolve(body).is_none());
+            assert_eq!(
+                vm.entities.read(u64::from(native), vm.stride).unwrap(),
+                bytes
+            );
+        });
+    }
+}
+
+#[test]
+fn ensuring_reserved_client_body_projects_without_linking_and_rejects_full_capacity() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let native = vm.stride as u32;
+            write(&mut vm, native, b"origin", &[7.0f32.to_bits(), 0, 0]);
+            let body = vm
+                .ensure_client_body(calls.services, calls.context, native)
+                .unwrap();
+            assert_eq!(
+                calls.services.server.entities.columns.position[body.slot as usize],
+                Vec3([7.0, 0.0, 0.0])
+            );
+            assert_eq!(calls.services.server.area.bounds(body), None);
+            assert_eq!(
+                vm.ensure_client_body(calls.services, calls.context, 0),
+                Err(CallError::Entity)
+            );
+            assert_eq!(
+                vm.ensure_client_body(calls.services, calls.context, native + 1),
+                Err(CallError::Entity)
+            );
+            let mut wrong_owner = calls.context;
+            wrong_owner.module = ModuleId(99);
+            assert_eq!(
+                vm.ensure_client_body(calls.services, wrong_owner, native),
+                Err(CallError::Entity)
+            );
+        });
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            while calls
+                .services
+                .server
+                .entities
+                .allocate(
+                    calls.context.clock,
+                    calls.context.module,
+                    AllocationPolicy::EDICT,
+                )
+                .is_some()
+            {}
+            let before = calls.services.server.entities.active().collect::<Vec<_>>();
+            let mut context = calls.context;
+            context.allocation.full = qa_world::entities::FullTable::OverwriteLastOwned;
+            assert_eq!(
+                vm.ensure_client_body(calls.services, context, vm.stride as u32),
+                Err(CallError::Capacity)
+            );
+            assert_eq!(
+                calls.services.server.entities.active().collect::<Vec<_>>(),
+                before
+            );
+            assert_eq!(
+                vm.resolve_entity(
+                    &calls.services.server.entities,
+                    calls.context.module,
+                    vm.stride as u32
+                ),
+                Ok(None)
             );
         });
     }

@@ -388,8 +388,12 @@ impl PushHost for Host<'_> {
         displacement: Vec3,
     ) -> Result<(), Self::Error> {
         let reference = self.reference(owner)?;
-        let entity =
-            contacts::current(self.host, reference)?.ok_or(ClientCommandError::Inactive)?;
+        let entity = match contacts::current(self.host, reference)? {
+            Some(entity) => entity,
+            None => self.edit_owner(owner, |vm, services, context, native| {
+                vm.ensure_client_body(services, context, native)
+            })?,
+        };
         let mut moving = Host::new(self.host, self.module, entity, self.time)?;
         physics::push_entity(&mut moving, entity, displacement).map(|_| ())
     }

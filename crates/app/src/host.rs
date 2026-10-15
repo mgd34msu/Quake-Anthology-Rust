@@ -1200,7 +1200,8 @@ impl FrameHost {
             &self.client_listeners(),
             self.console.cvars.value(self.volume),
         );
-        result.output = crate::output::dispatch(
+        let counts = crate::output::retire_resync_clients(self);
+        result.output = crate::output::dispatch_frame(
             &mut self.runtime,
             source,
             &mut self.console.scrollback,
@@ -1208,6 +1209,7 @@ impl FrameHost {
             self.time,
             f64::from(self.console.cvars.value(self.notify_time)),
             f64::from(self.console.cvars.value(self.center_time)),
+            counts,
         );
         result.output_drains += 1;
         self.retire_closing_clients();
