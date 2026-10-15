@@ -32,8 +32,8 @@ pub enum InputAtom {
     },
 }
 
-/// Progress belongs only to the currently borrowed system event. Neither this
-/// value nor its continuation borrows Input or a binding across callbacks.
+/// Dispatch progress borrows neither Input nor a binding across callbacks.
+/// Text may borrow its system event; synthetic key clearing owns its state.
 pub struct DispatchCursor<'event> {
     time: EventTime,
     state: State<'event>,
@@ -66,6 +66,10 @@ enum State<'event> {
         next: usize,
         cleanup: Cleanup,
     },
+    ClearSeat {
+        seat: SeatId,
+        next_native: u16,
+    },
     Done,
 }
 #[derive(Clone, Copy)]
@@ -73,15 +77,17 @@ enum ReleaseFilter {
     All,
     Mice,
     Device(DeviceId),
-    Seat(SeatId),
+    UnmappedSeat(SeatId),
 }
 impl ReleaseFilter {
-    fn matches(self, device: &Device) -> bool {
+    fn matches(self, device: &Device, control: u16) -> bool {
         match self {
             Self::All => true,
             Self::Mice => matches!(device.id, Some(DeviceId::Mouse(_))),
             Self::Device(id) => device.id == Some(id),
-            Self::Seat(seat) => device.seat == Some(seat),
+            Self::UnmappedSeat(seat) => {
+                device.seat == Some(seat) && keys::native_number(control).is_none()
+            }
         }
     }
 }
@@ -108,6 +114,22 @@ enum Pending {
         dy: i32,
     },
     Character,
+    Released,
+}
+
+impl DispatchCursor<'static> {
+    /// Q3 Key_ClearStates visits native keys in byte order, releasing acquired
+    /// bindings before each zero-time key-up callback. Physical aliases share
+    /// one callback, while cleanup keeps the caller's current engine time.
+    pub fn clear_seat(seat: SeatId, cleanup_time: EventTime) -> Self {
+        Self {
+            time: cleanup_time,
+            state: State::ClearSeat {
+                seat,
+                next_native: 0,
+            },
+        }
+    }
 }
 
 impl<'event> DispatchCursor<'event> {
@@ -361,7 +383,7 @@ impl Input {
                         let control = (next % CONTROLS) as u16;
                         next += 1;
                         let device = &self.devices[index];
-                        if filter.matches(device)
+                        if filter.matches(device, control)
                             && device.held[usize::from(control)]
                             && let Some(id) = device.id
                         {
@@ -379,6 +401,86 @@ impl Input {
                     }
                     self.finish_release(cleanup, cursor.time);
                     cursor.state = State::Done;
+                }
+                State::ClearSeat {
+                    seat,
+                    mut next_native,
+                } => {
+                    while let Ok(native) = u8::try_from(next_native) {
+                        next_native += 1;
+                        let Some(control) = keys::from_native(native) else {
+                            continue;
+                        };
+                        // CL_KeyEvent consumes console-key ups before native
+                        // binding/catcher handling. Existing engine holds still
+                        // need retiring, but a caught console press has none.
+                        let console_key = matches!(native, b'`' | b'~');
+                        let reserved = 768 + u16::from(native);
+                        let mut source = None;
+                        for index in 0..self.devices.len() {
+                            let device = &self.devices[index];
+                            if device.seat != Some(seat) || device.held_count == 0 {
+                                continue;
+                            }
+                            let Some(id) = device.id else { continue };
+                            for physical in keys::physical_controls(control)
+                                .chain((control != reserved).then_some(reserved))
+                            {
+                                if !self.devices[index].held[usize::from(physical)] {
+                                    continue;
+                                }
+                                let acquired = matches!(
+                                    self.devices[index].acquired[usize::from(physical)],
+                                    BindingHold::Acquired(_)
+                                );
+                                if let Some((
+                                    InputAtom::Key {
+                                        source: released, ..
+                                    },
+                                    _,
+                                )) = self.prepare_key(
+                                    id,
+                                    physical,
+                                    false,
+                                    false,
+                                    EventTime(0),
+                                    commands,
+                                ) {
+                                    // Native Key_ClearStates also releases the current
+                                    // button binding when UI caught its original press.
+                                    if !acquired && !console_key {
+                                        self.emit_binding(
+                                            released,
+                                            seat,
+                                            index,
+                                            false,
+                                            EventTime(0),
+                                            commands,
+                                        );
+                                    }
+                                    source.get_or_insert(released);
+                                }
+                            }
+                        }
+                        if let Some(source) = source.filter(|_| !console_key) {
+                            cursor.state = State::ClearSeat { seat, next_native };
+                            return cursor.atom(
+                                InputAtom::Key {
+                                    seat,
+                                    source,
+                                    time: EventTime(0),
+                                    down: false,
+                                    repeat: false,
+                                },
+                                Pending::Released,
+                            );
+                        }
+                    }
+                    cursor.state = State::Release {
+                        filter: ReleaseFilter::UnmappedSeat(seat),
+                        next: 0,
+                        cleanup: Cleanup::Seat(seat),
+                    };
                 }
                 State::Done => return DispatchStep::Done,
             }
@@ -562,10 +664,7 @@ impl Input {
         );
     }
     pub fn clear_seat(&mut self, seat: SeatId, time: EventTime, target: &mut impl Target) {
-        self.dispatch_cursor(
-            DispatchCursor::release(time, ReleaseFilter::Seat(seat), Cleanup::Seat(seat)),
-            target,
-        );
+        self.dispatch_cursor(DispatchCursor::clear_seat(seat, time), target);
     }
     fn finish_release(&mut self, cleanup: Cleanup, time: EventTime) {
         match cleanup {

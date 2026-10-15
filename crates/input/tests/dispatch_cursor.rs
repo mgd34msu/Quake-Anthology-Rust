@@ -81,9 +81,16 @@ fn route(
     input: &mut Input,
     event: SysEvent<'_>,
     sink: &mut Sink,
+    callback: impl FnMut(&mut Input, InputAtom, &mut Sink) -> InputCapture,
+) {
+    walk(input, DispatchCursor::new(event), sink, callback);
+}
+fn walk(
+    input: &mut Input,
+    mut cursor: DispatchCursor<'_>,
+    sink: &mut Sink,
     mut callback: impl FnMut(&mut Input, InputAtom, &mut Sink) -> InputCapture,
 ) {
-    let mut cursor = DispatchCursor::new(event);
     loop {
         let DispatchStep::Atom { atom, resume } = input.advance(cursor, sink) else {
             break;
@@ -193,7 +200,7 @@ fn pending_press_cannot_acquire_replacement_after_rebind_or_clear_states() {
         sink.router.execute(&mut input);
         assert_eq!(
             (sink.router.host.presses, sink.router.host.releases),
-            (0, 0)
+            (0, u32::from(clear))
         );
         input.dispatch(key(11, DeviceId::Keyboard(0), 26, false, false), &mut sink);
         input.dispatch(key(12, DeviceId::Keyboard(0), 26, true, false), &mut sink);
@@ -201,9 +208,182 @@ fn pending_press_cannot_acquire_replacement_after_rebind_or_clear_states() {
         sink.router.execute(&mut input);
         assert_eq!(
             (sink.router.host.presses, sink.router.host.releases),
-            (1, 1)
+            (1, 1 + u32::from(clear))
         );
     }
+}
+
+#[test]
+fn native_clear_orders_keys_and_releases_all_holders_before_each_zero_time_callback() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let first = SeatId::FIRST;
+    let second = SeatId::ALL[1];
+    let keyboard = DeviceId::Keyboard(0);
+    let extra = DeviceId::Keyboard(9);
+    let other = DeviceId::Keyboard(22);
+    assert!(input.assign(extra, first));
+    assert!(input.assign(other, second));
+    for control in [4, 30, 224, 905, 70] {
+        input
+            .bind_text(control, "+edge", EventTime(0), &mut sink)
+            .unwrap();
+    }
+    for (device, control) in [
+        (keyboard, 4),
+        (keyboard, 30),
+        (keyboard, 224),
+        (keyboard, 228),
+        (keyboard, 905),
+        (extra, 224),
+        (keyboard, 70),
+        (other, 4),
+    ] {
+        input.dispatch(key(10, device, control, true, false), &mut sink);
+    }
+    sink.router.execute(&mut input);
+    assert_eq!(sink.router.host.presses, 8);
+    let mut callbacks = Vec::new();
+    walk(
+        &mut input,
+        DispatchCursor::clear_seat(first, EventTime::from_milliseconds(123)),
+        &mut sink,
+        |input, atom, sink| {
+            let InputAtom::Key {
+                seat,
+                source,
+                time,
+                down,
+                repeat,
+            } = atom
+            else {
+                panic!("key-up")
+            };
+            assert_eq!((seat, down, repeat), (first, false, false));
+            assert!(!input.is_down(seat, source.control));
+            let native = keys::native_number(source.control);
+            let releases = match native {
+                Some(49) => 1,
+                Some(97) => 2,
+                Some(137) => {
+                    assert!(!input.is_down(first, 224));
+                    assert!(!input.is_down(first, 905));
+                    6
+                }
+                None => 7,
+                _ => panic!("unexpected key"),
+            };
+            assert_eq!(sink.release_lines, releases);
+            assert_eq!(
+                time,
+                if native.is_some() {
+                    EventTime(0)
+                } else {
+                    EventTime::from_milliseconds(123)
+                }
+            );
+            // The admitted bind release is visible to the synchronous guest callback.
+            sink.router.execute(input);
+            assert_eq!(sink.router.host.releases, releases);
+            assert_eq!(
+                sink.router.host.last_context.unwrap().event_time,
+                Some(time)
+            );
+            callbacks.push(native);
+            InputCapture::Caught
+        },
+    );
+    assert_eq!(callbacks, [Some(49), Some(97), Some(137), None]);
+    assert!(input.is_down(second, 4));
+    assert_eq!(sink.router.host.releases, 7);
+}
+
+#[test]
+fn native_clear_reentry_skips_released_keys_and_releases_a_caught_current_binding() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    for control in [4, 30] {
+        input
+            .bind_text(control, "+edge; raw tail", EventTime(0), &mut sink)
+            .unwrap();
+    }
+    assert!(sink.router.console.register("raw", raw));
+    for control in [4, 30] {
+        route(
+            &mut input,
+            key(10, DeviceId::Keyboard(0), control, true, false),
+            &mut sink,
+            |_, _, _| InputCapture::Caught,
+        );
+    }
+    sink.router.execute(&mut input);
+    assert_eq!(sink.router.host.presses, 0);
+    let mut callbacks = Vec::new();
+    walk(
+        &mut input,
+        DispatchCursor::clear_seat(SeatId::FIRST, EventTime(99)),
+        &mut sink,
+        |input, atom, sink| {
+            let InputAtom::Key { source, time, .. } = atom else {
+                panic!("key-up")
+            };
+            callbacks.push(keys::native_number(source.control).unwrap());
+            assert_eq!(time, EventTime(0));
+            assert_eq!(sink.release_lines, 1);
+            walk(
+                input,
+                DispatchCursor::clear_seat(SeatId::FIRST, EventTime(101)),
+                sink,
+                |input, atom, sink| {
+                    let InputAtom::Key { source, time, .. } = atom else {
+                        panic!("key-up")
+                    };
+                    callbacks.push(keys::native_number(source.control).unwrap());
+                    assert_eq!(time, EventTime(0));
+                    assert!(!input.is_down(SeatId::FIRST, source.control));
+                    assert_eq!(sink.release_lines, 2);
+                    InputCapture::Caught
+                },
+            );
+            InputCapture::Caught
+        },
+    );
+    assert_eq!(callbacks, [49, 97]);
+    sink.router.execute(&mut input);
+    assert_eq!(
+        (sink.router.host.presses, sink.router.host.releases),
+        (0, 2)
+    );
+    assert_eq!(sink.router.host.raw_calls, 2);
+    assert_eq!(sink.router.host.raw.as_bytes(), b"tail");
+}
+
+#[test]
+fn native_clear_suppresses_console_key_ups_and_their_unacquired_bindings() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    for native in [b'`', b'~'] {
+        let control = keys::from_native(native).unwrap();
+        input
+            .bind_text(control, "+edge", EventTime(0), &mut sink)
+            .unwrap();
+        route(
+            &mut input,
+            key(10, DeviceId::Keyboard(0), control, true, false),
+            &mut sink,
+            |_, _, _| InputCapture::Caught,
+        );
+    }
+    walk(
+        &mut input,
+        DispatchCursor::clear_seat(SeatId::FIRST, EventTime(99)),
+        &mut sink,
+        |_, _, _| panic!("console key must not reach the module catcher"),
+    );
+    for native in [b'`', b'~'] {
+        assert!(!input.is_down(SeatId::FIRST, keys::from_native(native).unwrap()));
+    }
+    assert_eq!(sink.release_lines, 0);
 }
 
 #[test]
