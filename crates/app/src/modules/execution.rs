@@ -1,5 +1,5 @@
 //! Synchronous module calls use one load-reserved, iterative activation stack.
-use super::{Module, ModuleResult, Program, State, context, motion, native_self};
+use super::{Module, ModuleResult, Program, State, contacts, context, motion, native_self};
 use crate::host::FrameHost;
 use qa_compat::{
     abi::{
@@ -11,7 +11,8 @@ use qa_compat::{
 };
 use qa_core::{
     primitives::{
-        CallbackCall, ClientCallback, ClientId, CommandArgs, EntityId, ModuleId, RuleSetId,
+        CallbackCall, ClientCallback, ClientId, CommandArgs, EntityId, ModuleId, ResourceNamespace,
+        RuleSetId,
     },
     sys_events::EventTime,
 };
@@ -105,6 +106,10 @@ struct Pending {
 }
 enum Operation {
     Callback(Option<qa_compat::abi::CallbackRequest>),
+    Triggers {
+        run: contacts::TriggerRun,
+        touch: Option<contacts::PreparedTouch>,
+    },
     Cleanup {
         result: Result<ModuleResult, ()>,
         failed: bool,
@@ -411,23 +416,40 @@ fn drive(host: &mut FrameHost, start: GuestStart, command: CommandArgs<'_>) -> b
         } else {
             match advance(host, &mut frame, command) {
                 Ok(GuestStep::Host(request, point)) => {
-                    frame.pending = Some(Pending {
-                        point: Some(point),
-                        operation: match request {
-                            HostRequest::Callback(request) => Operation::Callback(Some(request)),
-                            HostRequest::ClearKeys {
-                                seat,
-                                context,
-                                time,
-                            } => Operation::Clear {
-                                cursor: Some(DispatchCursor::clear_seat(seat, time)),
-                                resume: None,
-                                context,
-                                time,
-                                recipient: None,
-                            },
-                        },
-                    });
+                    let operation = match request {
+                        HostRequest::Callback(request) => Ok(Operation::Callback(Some(request))),
+                        HostRequest::TouchTriggers { mover, time }
+                            if mover.namespace == ResourceNamespace::Module(frame.start.module) =>
+                        {
+                            contacts::TriggerRun::begin(host, mover, time)
+                                .map(|run| Operation::Triggers { run, touch: None })
+                                .map_err(|_| ())
+                        }
+                        HostRequest::TouchTriggers { .. } => Err(()),
+                        HostRequest::ClearKeys {
+                            seat,
+                            context,
+                            time,
+                        } => Ok(Operation::Clear {
+                            cursor: Some(DispatchCursor::clear_seat(seat, time)),
+                            resume: None,
+                            context,
+                            time,
+                            recipient: None,
+                        }),
+                    };
+                    if let Ok(operation) = operation {
+                        frame.pending = Some(Pending {
+                            point: Some(point),
+                            operation,
+                        });
+                    } else {
+                        // A rejected host operation still owns the builtin's
+                        // saved globals until cancellation consumes its reply.
+                        frame.reply = Some((point, 0));
+                        cancel(host, &mut frame, command);
+                        completing(host, &mut frame, Err(()));
+                    }
                     None
                 }
                 Ok(GuestStep::Returned(value)) => {
@@ -530,6 +552,32 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                 return OperationStep::Reply;
             } else {
                 return OperationStep::Abort;
+            }
+        }
+        Operation::Triggers { run, touch } => {
+            if let Some(accepted) = frame.child.take() {
+                let Some(completed) = touch.take() else {
+                    return OperationStep::Abort;
+                };
+                if completed.complete(host, accepted).is_err() {
+                    return OperationStep::Abort;
+                }
+            }
+            match run.next(host) {
+                Ok(Some(prepared)) => {
+                    let request = prepared.request();
+                    *touch = Some(prepared);
+                    let Some(modules) = host.modules.as_ref() else {
+                        return OperationStep::Abort;
+                    };
+                    let functions = Arc::clone(&modules.functions);
+                    match functions.dispatch_resolved(host, request.target, request.call) {
+                        Ok(outcome) => OperationStep::Call(outcome),
+                        Err(_) => OperationStep::Abort,
+                    }
+                }
+                Ok(None) => OperationStep::Reply,
+                Err(_) => OperationStep::Abort,
             }
         }
         Operation::Cleanup {
@@ -1028,6 +1076,14 @@ fn finish_quakec(
 }
 
 fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>) {
+    let point = frame
+        .pending
+        .as_mut()
+        .and_then(|pending| pending.point.take());
+    let reply = frame.reply.take().map(|(point, _)| point);
+    // A host stop resides in pending or reply, never both. Take ownership before
+    // dropping the traversal so native saved globals cannot be lost on abort.
+    let point = point.or(reply);
     if let Some(Pending {
         operation:
             Operation::Clear {
@@ -1067,6 +1123,17 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>
         (Program::QuakeC(qc), Some(Backend::QuakeC { run, .. })) => {
             if let Some(run) = run {
                 let _ = qc.vm.abort(run);
+            }
+            if let Some(ReplyPoint::QuakeC(continuation)) = point {
+                let mut calls = QuakeCCalls {
+                    services: &mut services,
+                    table: &QUAKEC,
+                    context: frame.start.context,
+                    platform_time: frame.start.platform_time,
+                    developer: host.developer,
+                    unknown: &mut row.unknown,
+                };
+                let _ = calls.abort_import(&mut qc.vm, continuation);
             }
             let _ = finish_quakec(&mut qc.vm, &mut services, frame, false);
         }

@@ -872,6 +872,9 @@ impl Vm {
                             }
                             step = self.resume(calls, &mut run, &mut Some(pending), 0)?;
                         }
+                        HostRequest::TouchTriggers { .. } => {
+                            return Err(Error::Service(CallError::Unsupported));
+                        }
                     },
                 }
             }

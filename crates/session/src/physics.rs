@@ -8,9 +8,11 @@ use qa_core::{
 use qa_world::collision::TraceError;
 use qa_world::entities::EntityTable;
 
+mod monster;
 mod step;
 mod support;
 mod toss;
+pub use monster::{MonsterHost, StepMove, StepPost, finish_step, move_step};
 pub use step::step_fall;
 pub use support::{SupportQueries, check_bottom};
 pub use toss::{

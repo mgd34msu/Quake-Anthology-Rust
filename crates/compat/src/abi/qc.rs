@@ -12,8 +12,13 @@ pub enum QcImportStep {
 
 #[derive(Debug)]
 pub struct QcImportContinuation {
-    shared: ImportContinuation,
+    kind: QcContinuation,
     returns: bool,
+}
+#[derive(Debug)]
+enum QcContinuation {
+    Shared(ImportContinuation),
+    Walk(quakec::monster::WalkAfterTouch),
 }
 
 impl quakec::Builtins for QuakeCCalls<'_, '_> {
@@ -31,7 +36,10 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             QcImportStep::Returned => Ok(()),
             // Engine composition drives owned host work. A direct builtin
             // caller cannot execute another module behind its service borrow.
-            QcImportStep::Host { .. } => Err(quakec::Trap::Builtin),
+            QcImportStep::Host { continuation, .. } => {
+                self.abort_import(vm, continuation)?;
+                Err(quakec::Trap::Builtin)
+            }
         }
     }
 }
@@ -94,10 +102,29 @@ impl QuakeCCalls<'_, '_> {
         continuation: QcImportContinuation,
         returned: u64,
     ) -> Result<QcImportStep, quakec::Trap> {
+        let shared = match continuation.kind {
+            QcContinuation::Shared(shared) => shared,
+            QcContinuation::Walk(walk) => {
+                let result = vm
+                    .finish_walk_move(self.services, self.context, &walk)
+                    .map_err(|_| quakec::Trap::Builtin)
+                    .and_then(|()| {
+                        Self::apply_value(
+                            vm,
+                            CallValue::Word(u64::from(1.0f32.to_bits())),
+                            continuation.returns,
+                        )
+                    });
+                // Native PF_walkmove writes OFS_RETURN before restoring self. A
+                // legal self/return alias must observe that exact order.
+                let restored = vm
+                    .restore_walk_move(walk)
+                    .map_err(|_| quakec::Trap::Builtin);
+                return result.and_then(|step| restored.map(|()| step));
+            }
+        };
         let step = self
-            .with_invocation(vm, &[], |invocation| {
-                continuation.shared.resume(invocation, returned)
-            })
+            .with_invocation(vm, &[], |invocation| shared.resume(invocation, returned))
             .map_err(|_| quakec::Trap::Builtin)?;
         let value = match step {
             ImportStep::Return(value) => CallValue::Word(value),
@@ -107,6 +134,19 @@ impl QuakeCCalls<'_, '_> {
             } => CallValue::Host(request, continuation),
         };
         Self::apply_value(vm, value, continuation.returns)
+    }
+
+    pub fn abort_import(
+        &mut self,
+        vm: &mut quakec::Vm,
+        continuation: QcImportContinuation,
+    ) -> Result<(), quakec::Trap> {
+        match continuation.kind {
+            QcContinuation::Shared(_) => Ok(()),
+            QcContinuation::Walk(walk) => vm
+                .restore_walk_move(walk)
+                .map_err(|_| quakec::Trap::Builtin),
+        }
     }
 
     fn apply_value(
@@ -135,8 +175,27 @@ impl QuakeCCalls<'_, '_> {
             CallValue::Host(request, shared) => {
                 return Ok(QcImportStep::Host {
                     request,
-                    continuation: QcImportContinuation { shared, returns },
+                    continuation: QcImportContinuation {
+                        kind: QcContinuation::Shared(shared),
+                        returns,
+                    },
                 });
+            }
+            CallValue::QuakeCHost(request, walk) => {
+                return Ok(QcImportStep::Host {
+                    request,
+                    continuation: QcImportContinuation {
+                        kind: QcContinuation::Walk(walk),
+                        returns,
+                    },
+                });
+            }
+            CallValue::QuakeCReturn(value, restore) => {
+                let result = Self::apply_value(vm, CallValue::Word(value), returns);
+                let restored = vm
+                    .finish_client_call(restore)
+                    .map_err(|_| quakec::Trap::Builtin);
+                return result.and_then(|step| restored.map(|()| step));
             }
         }
         Ok(QcImportStep::Returned)

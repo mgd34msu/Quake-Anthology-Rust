@@ -21,6 +21,14 @@ pub struct ClientCallRestore {
     self_word: Option<u32>,
     other_word: Option<u32>,
 }
+impl ClientCallRestore {
+    pub(super) fn self_only(word: u32) -> Self {
+        Self {
+            self_word: Some(word),
+            other_word: None,
+        }
+    }
+}
 
 impl ClientGlobals {
     pub fn load(image: &qa_formats::program::quakec::Image) -> Self {

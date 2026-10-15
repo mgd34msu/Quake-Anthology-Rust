@@ -17,12 +17,22 @@ pub struct TossRules {
 pub struct StepRules {
     pub gravity: GravityRules,
     pub ground_flag: u32,
-    pub no_fall_flags: u32,
+    pub fly_flag: u32,
+    pub swim_flag: u32,
+    pub partial_ground_flag: u32,
+    pub height: f32,
+    pub follow_above: f32,
+    pub follow_below: f32,
+    pub follow_adjust: f32,
 }
 
 impl StepRules {
+    pub const fn mobility_flags(&self) -> u32 {
+        self.ground_flag | self.fly_flag | self.swim_flag
+    }
+
     pub const fn falls(&self, flags: u32) -> bool {
-        flags & self.no_fall_flags == 0
+        flags & self.mobility_flags() == 0
     }
 
     pub fn landing_sound(&self, velocity_z: f32, world_gravity: f32) -> bool {
@@ -66,7 +76,13 @@ pub const fn step_rules(rules: RuleSetId) -> Option<StepRules> {
         Some(gravity) => Some(StepRules {
             gravity,
             ground_flag: GROUND,
-            no_fall_flags: GROUND | 1 | 2,
+            fly_flag: 1,
+            swim_flag: 2,
+            partial_ground_flag: 1024,
+            height: 18.0,
+            follow_above: 40.0,
+            follow_below: 30.0,
+            follow_adjust: 8.0,
         }),
         None => None,
     }

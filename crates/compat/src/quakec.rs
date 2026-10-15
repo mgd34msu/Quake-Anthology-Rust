@@ -11,6 +11,7 @@ use std::sync::Arc;
 mod client;
 mod continuation;
 mod map;
+pub(crate) mod monster;
 pub(crate) mod sound;
 pub use client::ClientCallRestore;
 use continuation::{ActiveRun, RunState, Settings};

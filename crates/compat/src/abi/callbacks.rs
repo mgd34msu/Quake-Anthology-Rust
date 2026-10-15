@@ -16,6 +16,10 @@ pub enum HostRequest {
         context: qa_console::views::Context,
         time: qa_core::sys_events::EventTime,
     },
+    TouchTriggers {
+        mover: qa_core::primitives::NativeEntityRef,
+        time: qa_core::primitives::ThinkTime,
+    },
 }
 
 #[derive(Debug)]

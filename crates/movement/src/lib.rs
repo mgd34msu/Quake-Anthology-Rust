@@ -9,7 +9,7 @@ pub use physics::{
     predict_view_angles, set_bounds,
 };
 use qa_core::{
-    primitives::{RuleSetId, UserCmd},
+    primitives::{RuleSetId, UserCmd, Vec3},
     sys_events::EventTime,
 };
 pub use slide::{SweepExit, SweepHost, SweepResult, clip_backoff, sweep};
@@ -36,6 +36,17 @@ pub fn change_yaw(current: f32, ideal: f32, speed: f32) -> Option<f32> {
         movement = -speed;
     }
     Some(qa_core::math::anglemod(current + movement))
+}
+
+/// PF_walkmove and SV_StepDirection narrow radians before double trig and
+/// distance multiplication. AngleVectors narrows its trig results earlier.
+pub fn yaw_displacement(yaw: f32, distance: f32) -> Vec3 {
+    let radians = (f64::from(yaw) * std::f64::consts::PI * 2.0 / 360.0) as f32;
+    Vec3([
+        (f64::from(radians).cos() * f64::from(distance)) as f32,
+        (f64::from(radians).sin() * f64::from(distance)) as f32,
+        0.0,
+    ])
 }
 
 /// Apply simulation time admission, never client command construction rules.

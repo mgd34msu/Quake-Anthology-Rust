@@ -185,6 +185,8 @@ fn renderer_lerp_tag<const RETURN_RESULT: bool>(
 enum CallValue {
     Word(u64),
     Host(HostRequest, ImportContinuation),
+    QuakeCHost(HostRequest, quakec::monster::WalkAfterTouch),
+    QuakeCReturn(u64, quakec::ClientCallRestore),
     TemporaryString(u32, u8),
     Vector(qa_core::primitives::Vec3),
     Basis(qa_core::math::AngleBasis),
@@ -423,9 +425,11 @@ impl CallTable {
                 request,
                 continuation,
             }),
-            CallValue::Vector(_) | CallValue::Basis(_) | CallValue::TemporaryString(..) => {
-                Err(CallError::Memory)
-            }
+            CallValue::Vector(_)
+            | CallValue::Basis(_)
+            | CallValue::TemporaryString(..)
+            | CallValue::QuakeCHost(..)
+            | CallValue::QuakeCReturn(..) => Err(CallError::Memory),
         }
     }
     fn invoke_value(
@@ -774,6 +778,7 @@ const fn quakec() -> CallTable {
     });
     t.entries[26] = value!(qc_float_string, scalar);
     t.entries[27] = value!(qc_vector_string, vector);
+    t.entries[32] = qc!(qc_walk_move, 2, 0, true);
     t.entries[34] = qc!(qc_drop_to_floor, 0, 0, true);
     t.entries[35] = scalar!(
         lightstyle,
@@ -921,6 +926,28 @@ fn qc_change_yaw(
 ) -> Result<CallValue, CallError> {
     vm.change_yaw()?;
     Ok(CallValue::Word(0))
+}
+fn qc_walk_move(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    match vm.walk_move(
+        c.services,
+        c.context,
+        f32::from_bits(qc_word(arguments, 0)?),
+        f32::from_bits(qc_word(arguments, 1)?),
+    )? {
+        quakec::monster::WalkMove::Rejected => Ok(CallValue::Word(0)),
+        quakec::monster::WalkMove::Blocked(restore) => Ok(CallValue::QuakeCReturn(0, restore)),
+        quakec::monster::WalkMove::Moved(walk) => Ok(CallValue::QuakeCHost(
+            HostRequest::TouchTriggers {
+                mover: walk.mover,
+                time: c.context.clock,
+            },
+            walk,
+        )),
+    }
 }
 fn qc_check_bottom(
     c: &mut QuakeCCalls<'_, '_>,
@@ -1386,6 +1413,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
                                     .map_err(|_| qvm::Trap::Syscall)?;
                                 0
                             }
+                            HostRequest::TouchTriggers { .. } => return Err(qvm::Trap::Syscall),
                         };
                         step = self
                             .resume_import(vm, continuation, returned)

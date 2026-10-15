@@ -84,6 +84,7 @@ struct MotionFields {
     touch: Option<usize>,
     ideal_yaw: Option<usize>,
     yaw_speed: Option<usize>,
+    enemy: Option<usize>,
 }
 impl MotionFields {
     fn load(field: impl Fn(&[u8], u16) -> Option<usize>) -> Self {
@@ -95,6 +96,7 @@ impl MotionFields {
             touch: field(b"touch", 6),
             ideal_yaw: field(b"ideal_yaw", 2),
             yaw_speed: field(b"yaw_speed", 2),
+            enemy: field(b"enemy", 4),
         }
     }
 }
@@ -1544,6 +1546,63 @@ impl EntityProjection {
         Ok(qa_movement::change_yaw(current, ideal, speed)
             .map(|value| (address + yaw as u64, value)))
     }
+    pub(crate) fn quakec_monster_origin(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<Vec3, CallError> {
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
+        layout.vector(memory, address, layout.origin)
+    }
+    pub(crate) fn quakec_monster_bounds(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<Bounds, CallError> {
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
+        Ok(Bounds {
+            mins: layout.vector(memory, address, layout.mins)?,
+            maxs: layout.vector(memory, address, layout.maxs)?,
+        })
+    }
+    pub(crate) fn quakec_monster_flags(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<u32, CallError> {
+        let layout = self.quakec_layout()?;
+        layout.flags(memory, layout.address(memory, value)?)
+    }
+    pub(crate) fn quakec_monster_enemy(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<u32, CallError> {
+        let layout = self.quakec_layout()?;
+        layout.word(memory, layout.address(memory, value)?, layout.motion.enemy)
+    }
+    pub(crate) fn quakec_monster_store(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+        field: crate::quakec::monster::Scalar,
+    ) -> Result<u64, CallError> {
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
+        let field = match field {
+            crate::quakec::monster::Scalar::Origin(axis) => layout
+                .origin
+                .filter(|_| axis < 3)
+                .map(|field| field + axis * 4),
+            crate::quakec::monster::Scalar::Flags => layout.flags,
+            crate::quakec::monster::Scalar::Ground => layout.motion.ground_entity,
+        };
+        let address = address + field.ok_or(CallError::Memory)? as u64;
+        memory.read(address, 4)?;
+        Ok(address)
+    }
     pub(crate) fn quakec_check_bottom(
         &self,
         services: &mut EngineServices<'_>,
@@ -1554,13 +1613,8 @@ impl EntityProjection {
     ) -> Result<bool, CallError> {
         use qa_world::collision::{QuakeTraceKind, trace_policy};
         self.quakec_identity(memory, context, value)?;
-        let layout = self.quakec_layout()?;
-        let address = u64::from(value);
-        let origin = layout.vector(memory, address, layout.origin)?;
-        let bounds = Bounds {
-            mins: layout.vector(memory, address, layout.mins)?,
-            maxs: layout.vector(memory, address, layout.maxs)?,
-        };
+        let origin = self.quakec_monster_origin(memory, value)?;
+        let bounds = self.quakec_monster_bounds(memory, value)?;
         let (rules, entity_rules) = trace_policy(context.trace_rules);
         let (view, pass) = self.quakec_trace_view(memory, strings, context, value)?;
         let result = qa_session::physics::check_bottom(
@@ -1573,7 +1627,9 @@ impl EntityProjection {
             },
             origin,
             bounds,
-            18.0,
+            qa_gameplay::rules::motion::step_rules(context.native_rules)
+                .ok_or(CallError::Unsupported)?
+                .height,
         );
         view.finish()?;
         result
