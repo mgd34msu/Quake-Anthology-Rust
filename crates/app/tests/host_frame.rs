@@ -476,7 +476,7 @@ fn registered_q3_player_values_reach_client_and_hud_through_session_packets() {
 }
 
 #[test]
-fn client_frame_transports_followers_over_predicted_anchors_without_relinking_world() {
+fn untransmitted_server_attachments_do_not_modify_client_prediction() {
     use qa_app::{WorldCollision, client_policy::ClientPolicy, map::SpawnAnchor};
     use qa_core::primitives::{BodyAttachment, BodyFollow, Bounds, Plane, SurfaceFlags, Vec3};
     use qa_world::collision::{
@@ -553,6 +553,13 @@ fn client_frame_transports_followers_over_predicted_anchors_without_relinking_wo
         .unwrap();
     let mut host = FrameHost::load(console, runtime, TickRate::FrameDriven, vec![]).unwrap();
     host.local_clients = local;
+    let client_positions = [Vec3([40.0, -200.0, 300.0]), Vec3([-20.0, 10.0, 80.0])];
+    for (seat, position) in client_positions.into_iter().enumerate() {
+        host.runtime.prediction[seat].player.body.position = position;
+        // These native protocols have no attachment graph field. Keep the
+        // CLIENT sample fixed while the separate SERVER graph advances.
+        host.runtime.snapshots[local[seat].unwrap().0 as usize] = None;
+    }
     // The source's queued-key fixture injects at the first physical intake.
     let mut source = Source {
         time: 0,
@@ -566,20 +573,23 @@ fn client_frame_transports_followers_over_predicted_anchors_without_relinking_wo
         source.time = ms;
         let result = host.frame(&mut source, true);
         assert_eq!(result.drains, 2);
-        let predicted_root = host.runtime.prediction[0].player.body.position;
-        assert_eq!(
-            host.runtime.prediction[1].player.body.position,
-            predicted_root + Vec3([0.0, 128.0, 0.0])
-        );
+        for (seat, position) in client_positions.into_iter().enumerate() {
+            assert_eq!(host.runtime.prediction[seat].player.body.position, position);
+            let id = local[seat].unwrap();
+            assert!(matches!(
+                host.runtime.client_collision[id.0 as usize]
+                    .as_mut()
+                    .unwrap()
+                    .trace(&host.runtime.geometry),
+                Err(qa_app::client_collision::ClientCollisionError::Waiting)
+            ));
+        }
         assert_eq!(
             host.runtime.server.entities.columns.position[child.slot as usize],
             host.runtime.server.clients[0].player.body.position + Vec3([0.0, 128.0, 0.0])
         );
     }
-    assert!(
-        host.runtime.prediction[0].player.body.position.0[0]
-            > host.runtime.server.clients[0].player.body.position.0[0]
-    );
+    assert!(host.runtime.server.clients[0].player.body.position.0[0] > 0.0);
     assert_eq!(
         host.runtime.prediction[1].player.movement_rules,
         RuleSetId::Quake

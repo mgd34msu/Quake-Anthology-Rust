@@ -12,18 +12,9 @@ pub fn trace_capsule(
     query: TraceQuery,
     body: &Body,
     entity: Option<EntityId>,
-    mode: BodyTraceMode,
+    model_origin: Vec3,
 ) -> Trace {
-    let original = query;
     let mut query = query;
-    let model_origin = if mode == BodyTraceMode::Transformed {
-        query.center_box();
-        query.start = query.start - body.position;
-        query.end = query.end - body.position;
-        body.position
-    } else {
-        Vec3::default()
-    };
     // The transformed wrapper and native kernel each recenter independently.
     query.center_box();
     let bounds = Bounds {
@@ -97,7 +88,6 @@ pub fn trace_capsule(
             Some(culling_bounds),
         )
     };
-    trace.end = mode.end_position(original.start, original.end, trace.fraction);
     if trace.fraction < 1.0 || trace.start_solid {
         trace.entity = entity;
     }

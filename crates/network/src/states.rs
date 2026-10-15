@@ -2020,6 +2020,7 @@ pub const QW_PLAYER_LAYOUT: [(&str, i8); 14] = [
 ];
 pub const QW_PLAYER_WORDS: usize = QW_PLAYER_LAYOUT.len();
 pub const QW_PLAYER_SLOTS: usize = 32;
+pub const QW_PLAYER_DEAD: u16 = 1 << 9;
 static QW_PLAYER_PREFIX: [Group<true, true, false, true>; 1] = [Group {
     fields: &[
         Field::new(
@@ -2117,7 +2118,7 @@ pub fn write_qw_player(
     writer.write_bits(flags, 16)?;
     delta::write(&QW_PLAYER_PREFIX, &words, &words, u64::from(flags), writer)?;
     if flags & (1 << 1) != 0 {
-        if flags & (1 << 9) != 0 {
+        if flags & u32::from(QW_PLAYER_DEAD) != 0 {
             // qsrc resets pitch twice; its roll remains the supplied command.
             command.view_angles.0[0] = 0.0;
             command.view_angles.0[1] = f32::from_bits(to[13]);

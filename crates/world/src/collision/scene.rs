@@ -63,6 +63,7 @@ pub struct WorldTrace<'a> {
     pass: CollisionOwner,
     native_entities: Option<(ModuleId, &'a dyn NativeTraceEntities)>,
     native_models: Option<&'a dyn NativeModelNames>,
+    candidates: Option<&'a [EntityId]>,
 }
 
 impl<'a> WorldTrace<'a> {
@@ -85,6 +86,7 @@ impl<'a> WorldTrace<'a> {
             pass,
             native_entities: None,
             native_models: None,
+            candidates: None,
         }
     }
 
@@ -100,6 +102,11 @@ impl<'a> WorldTrace<'a> {
 
     pub fn with_native_models(mut self, models: Option<&'a dyn NativeModelNames>) -> Self {
         self.native_models = models;
+        self
+    }
+
+    pub fn with_candidates(mut self, candidates: &'a [EntityId]) -> Self {
+        self.candidates = Some(candidates);
         self
     }
 
@@ -142,7 +149,10 @@ impl<'a> WorldTrace<'a> {
         .swept_bounds(1.0);
         let pass_owner = self.owner(query.pass).unwrap_or(CollisionOwner::None);
         let role = query.entity_rules.link_role;
-        for linked in self.area.query(self.entities, bounds, role) {
+        for linked in self
+            .area
+            .query_ordered(self.entities, bounds, role, self.candidates)
+        {
             if result.all_solid {
                 break;
             }
@@ -270,13 +280,14 @@ impl<'a> WorldTrace<'a> {
             return Ok(result);
         }
         let role = rules.link_role;
-        for linked in self.area.query(
+        for linked in self.area.query_ordered(
             self.entities,
             Bounds {
                 mins: point,
                 maxs: point,
             },
             role,
+            self.candidates,
         ) {
             if rules
                 .filtering

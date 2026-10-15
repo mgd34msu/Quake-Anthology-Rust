@@ -277,6 +277,7 @@ fn snapshot_with_player(
                 command: 0,
                 flags: 0,
                 qw_peers: 0,
+                qw_dead: 0,
                 areas: &[],
                 player: &player,
                 entities: &entities,
@@ -336,6 +337,12 @@ fn snapshot_with_player(
         );
     }
     drain(host, time);
+    let connection = host.runtime.network.get(client, Endpoint::Client).unwrap();
+    host.runtime.snapshots[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .advance_presentation(&connection.channel, time, Default::default())
+        .unwrap();
     ack_client(host, client, time);
 }
 fn dispatch(host: &mut FrameHost, source: &mut Source) {

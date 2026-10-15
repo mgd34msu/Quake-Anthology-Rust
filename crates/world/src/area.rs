@@ -452,14 +452,40 @@ impl AreaGrid {
         bounds: Bounds,
         flags: LinkFlags,
     ) -> impl Iterator<Item = LinkedEntity<'a>> + 'a {
-        Query {
+        self.query_ordered(table, bounds, flags, None)
+    }
+
+    /// CLIENT clipping follows accepted native entity order rather than area
+    /// node order. Both paths consult the same generation-checked links.
+    pub fn query_ordered<'a>(
+        &'a self,
+        table: &'a EntityTable,
+        bounds: Bounds,
+        flags: LinkFlags,
+        order: Option<&'a [EntityId]>,
+    ) -> impl Iterator<Item = LinkedEntity<'a>> + 'a {
+        let mut spatial = Query {
             grid: self,
             bounds,
             flags,
             pending: [0; 31],
             count: 1,
             current: NONE,
-        }
+        };
+        let mut ordered = order.map(|order| order.iter());
+        std::iter::from_fn(move || {
+            if let Some(order) = &mut ordered {
+                order.find_map(|&id| {
+                    let link = self.links.get(id.slot as usize)?;
+                    (link.id == Some(id)
+                        && link.flags.0 & flags.0 != 0
+                        && bounds.overlaps(link.bounds))
+                    .then_some(id)
+                })
+            } else {
+                spatial.next()
+            }
+        })
         .filter_map(move |id| {
             let slot = table.resolve(id)?;
             let columns = &table.columns;

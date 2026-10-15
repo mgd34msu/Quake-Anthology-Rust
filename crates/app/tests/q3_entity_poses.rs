@@ -53,6 +53,7 @@ fn frame<'a>(
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &[0; states::PLAYER_WORDS],
         entities: rows,

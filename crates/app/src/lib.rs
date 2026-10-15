@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod catalog;
+pub mod client_collision;
 pub mod client_policy;
 pub mod client_resources;
 pub mod client_scene;
@@ -47,6 +48,7 @@ pub struct Runtime {
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
     pub snapshots: Box<[Option<snapshots::SnapshotBinding>]>,
     pub client_resources: Box<[Option<client_resources::ClientResources>]>,
+    pub client_collision: Box<[Option<client_collision::ClientCollision>]>,
     pub native_numbers: Box<[output_namespace::NativeNumbers]>,
     pub(crate) config_publications: Box<[client_resources::ConfigPublication]>,
     pub output_duplicates: output::duplicates::Coordinator,
@@ -131,7 +133,31 @@ impl Runtime {
         {
             collision.scratch = self.geometry.scratch();
         }
+        for collision in self.client_collision.iter_mut().flatten() {
+            collision.prepare_scratch(&self.geometry);
+        }
         Ok(())
+    }
+
+    pub(crate) fn synchronize_client_collision(
+        &mut self,
+        id: ClientId,
+        frame: qa_network::snapshots::ReceivedFrame<'_>,
+    ) {
+        let slot = id.0 as usize;
+        if let (Some(view), Some(binding), Some(resources)) = (
+            self.client_collision.get_mut(slot).and_then(Option::as_mut),
+            self.snapshots.get(slot).and_then(Option::as_ref),
+            self.client_resources.get(slot).and_then(Option::as_ref),
+        ) {
+            let _ = view.synchronize(
+                frame,
+                binding.entity_projection(),
+                &resources.state.models,
+                &self.geometry,
+                binding.view_entity(Some(frame)),
+            );
+        }
     }
     pub fn engine_services<'a>(
         &'a mut self,
@@ -286,6 +312,7 @@ impl Runtime {
             renderer_configuration: None,
             scene: None,
             client_resources: std::iter::repeat_with(|| None).take(max_clients).collect(),
+            client_collision: std::iter::repeat_with(|| None).take(max_clients).collect(),
             native_numbers: std::iter::repeat_with(|| {
                 output_namespace::NativeNumbers::load(
                     qa_network::commands::packet::Protocol::Quake2Repro1038,
@@ -442,6 +469,7 @@ impl Runtime {
         self.loopback.clear_client(id);
         self.snapshots[slot] = None;
         self.client_resources[slot] = None;
+        self.client_collision[slot] = None;
         self.config_publications[slot].reset();
         self.native_numbers[slot].reset();
         true
@@ -561,6 +589,10 @@ impl Runtime {
         } else {
             None
         };
+        let collision_view = seat
+            .map(|_| client_collision::ClientCollision::load(id, protocol, &self.geometry))
+            .transpose()
+            .map_err(|error| format!("CLIENT collision: {error:?}"))?;
         let self_entity = client.entity;
         connection.output = Some(output);
         self.network
@@ -568,6 +600,7 @@ impl Runtime {
             .map_err(|e| format!("server channel {e:?}"))?;
         self.snapshots[slot] = Some(binding);
         self.client_resources[slot] = resources;
+        self.client_collision[slot] = collision_view;
         self.config_publications[slot].reset();
         self.native_numbers[slot].configure(protocol);
         self.native_numbers[slot].reset();

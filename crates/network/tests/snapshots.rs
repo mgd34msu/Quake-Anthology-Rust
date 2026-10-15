@@ -50,6 +50,7 @@ fn store(ring: &mut Q3Ring, sequence: u32, entities: &[Entity<ENTITY_WORDS>]) ->
         command: sequence,
         flags: 4,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[0xaa, 0x55],
         player: &player,
         entities,
@@ -170,6 +171,7 @@ fn generic_ring_wrap_gaps_row_retention_and_connection_isolation() -> Result<(),
             command: 0,
             flags: 0,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[0],
             player: &[1, 2],
             entities: &entities,
@@ -187,6 +189,7 @@ fn generic_ring_wrap_gaps_row_retention_and_connection_isolation() -> Result<(),
             command: 0,
             flags: 0,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[],
             player: &[0; 2],
             entities: &entities,
@@ -222,6 +225,7 @@ fn native_snapshot_boundary_omits_reserved_numbers_and_extra_area_bits() -> Resu
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[0x55; 64],
         player: &[0; PLAYER_WORDS],
         entities: &rows,
@@ -531,6 +535,7 @@ fn q2_store(
         command: 0,
         flags: 7,
         qw_peers: 0,
+        qw_dead: 0,
         player: &player,
         areas: &[!0x81, !0x42],
         entities,
@@ -945,6 +950,7 @@ fn qw_store(
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &[],
         entities,
@@ -1732,6 +1738,83 @@ fn qw_accepted_playerinfo_shares_the_snapshot_ring_and_expires_without_a_new_rec
 }
 
 #[test]
+fn accepted_qw_dead_capability_tracks_current_and_previous_playerinfo_without_a_second_history()
+-> Result<(), Error> {
+    let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
+    let mut ring = snapshots::QwRing::load(64, 512, 0, None)?;
+    for sequence in 1..=4 {
+        let request = qw_move(&mut connections, &mut server, &mut commands, true)?;
+        assert_eq!(request, (sequence > 1).then_some(sequence - 1));
+        qw_store(&mut ring, sequence, &[qw_entity(40, sequence as f32)])?;
+        let mut payload = [0; 1400];
+        let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+        if sequence < 4 {
+            for player in [0, 31] {
+                let mut words = [0; states::QW_PLAYER_WORDS];
+                words[0] = (32. + player as f32).to_bits();
+                words[8] = 5.0f32.to_bits();
+                words[12] = 1 << 5;
+                if sequence == 2 && player == 31 {
+                    words[12] |= u32::from(states::QW_PLAYER_DEAD);
+                }
+                assert!(states::write_qw_player(
+                    &mut writer,
+                    player,
+                    &words,
+                    qa_network::commands::packet::ZERO_QW
+                )?);
+            }
+        }
+        snapshots::write_qw(
+            &mut writer,
+            &ring,
+            sequence,
+            request.map(|base| (base, base as u8)),
+        )?;
+        server_payload(&mut server, &mut connections, writer.bytes(), |_, _, _| {})?;
+        let channel = &connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel;
+        let Some(snapshots::ReceivedFrame::QuakeWorld(frame)) = channel.current_snapshot() else {
+            return Err(Error::Context);
+        };
+        assert_eq!(frame.sequence, sequence);
+        assert_eq!(frame.qw_peers, if sequence < 4 { 1 | 1 << 31 } else { 0 });
+        assert_eq!(frame.qw_dead, if sequence == 2 { 1 << 31 } else { 0 });
+        assert_eq!(frame.qw_player(1), sequence < 4);
+        assert_eq!(frame.qw_player(32), sequence < 4);
+        assert_eq!(frame.qw_dead_player(32), sequence == 2);
+        for number in [0, 1, 2, 33, 40, u32::MAX] {
+            assert!(!frame.qw_dead_player(number));
+        }
+        assert_eq!(
+            frame
+                .entities
+                .iter()
+                .map(|row| row.number)
+                .collect::<Vec<_>>(),
+            if sequence < 4 {
+                vec![1, 32, 40]
+            } else {
+                vec![40]
+            }
+        );
+        if sequence > 1 {
+            let Some(snapshots::ReceivedFrame::QuakeWorld(previous)) = channel.previous_snapshot()
+            else {
+                return Err(Error::Context);
+            };
+            assert_eq!(previous.sequence, sequence - 1);
+            assert_eq!(previous.qw_dead_player(32), sequence == 3);
+            assert_eq!(previous.qw_dead, if sequence == 3 { 1 << 31 } else { 0 });
+        }
+    }
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
 fn qw_playerinfo_rejects_bad_numbers_and_does_not_commit_truncated_commands() -> Result<(), Error> {
     use qa_network::commands::{QwCmd, packet::ZERO_QW};
     let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
@@ -1864,6 +1947,7 @@ fn channel_qw_server_selects_native_slots_and_preserves_the_request_byte() -> Re
             command: 0,
             flags: 0,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[],
             player: &[],
             entities: &[qw_entity(3, sequence as f32)],
@@ -1894,6 +1978,7 @@ fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protoco
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &[],
         entities: &entities,
@@ -1936,6 +2021,7 @@ fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protoco
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &[0; states::Q2_PLAYER_WORDS],
         entities: &[],
@@ -1969,6 +2055,7 @@ fn publication_retains_snapshot_between_native_q3_fragments() -> Result<(), Erro
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &player,
         entities: &[],
@@ -2041,6 +2128,7 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
                         command: 0,
                         flags: 1,
                         qw_peers: 0,
+                        qw_dead: 0,
                         areas: &[!0x81],
                         player: &q2_player,
                         entities: &[],
@@ -2055,6 +2143,7 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
                         command: 0,
                         flags: 1,
                         qw_peers: 0,
+                        qw_dead: 0,
                         areas: &[0x81],
                         player: &q3_player,
                         entities: &[],
@@ -2149,6 +2238,7 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &player,
         entities: &entities,

@@ -1,3 +1,7 @@
+#[path = "model_assets/support.rs"]
+#[allow(dead_code)]
+mod support;
+
 use qa_app::{
     Runtime, WorldCollision,
     client_policy::ClientPolicy,
@@ -173,6 +177,52 @@ impl FrameSource for Source {
 fn client_prediction_resolves_the_movement_role_settings_after_snapshot_application() {
     let (mut host, id) = host();
     host.local_clients[0] = Some(id);
+    // The immutable geometry may be shared, but prediction must select it from
+    // the accepted CLIENT configuration rather than the SERVER world binding.
+    let geometry = host.runtime.collision.as_ref().unwrap().geometry;
+    let mut assets = qa_render::Assets::load().unwrap();
+    let world = support::world(&mut assets, 0.0);
+    let presentation =
+        qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first);
+    let profile = qa_app::model_assets::ModelRequest::native("", RuleSetId::Quake2, None).profile();
+    let mut builder = qa_app::model_assets::ModelCatalogBuilder::new(
+        assets,
+        [profile],
+        [world],
+        qa_app::model_assets::ModelLimits::default(),
+    )
+    .unwrap();
+    builder
+        .bind_loaded_world(
+            "maps/prediction.bsp",
+            world,
+            Some(geometry),
+            host.runtime.geometry.model_bounds(geometry, 0).unwrap(),
+        )
+        .unwrap();
+    let (_, catalog) = builder.finish();
+    let resources = &mut host.runtime.client_resources[id.0 as usize]
+        .as_mut()
+        .unwrap()
+        .state;
+    resources
+        .configs
+        .set(
+            resources.layout.resources[0].get(1).unwrap(),
+            b"maps/prediction.bsp",
+        )
+        .unwrap();
+    assert_eq!(
+        resources.models.bind_all(
+            &resources.configs,
+            &catalog,
+            profile,
+            Some((world, presentation)),
+        ),
+        0
+    );
+    assert_eq!(resources.models.collision_world(), Some((geometry, 0)));
+    host.runtime.models = Some(std::sync::Arc::new(catalog));
     let mut source = Source::default();
     host.frame(&mut source, true);
     source.0 = 16;
@@ -192,4 +242,11 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
     );
     assert_eq!(prediction.movement.tuning.gravity, None);
     assert_eq!(prediction.trace_rules, RuleSetId::Quake3);
+    assert!(
+        host.runtime.client_collision[id.0 as usize]
+            .as_mut()
+            .unwrap()
+            .trace(&host.runtime.geometry)
+            .is_ok()
+    );
 }

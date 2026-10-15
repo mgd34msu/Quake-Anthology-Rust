@@ -8,8 +8,8 @@ use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     math::{angle_vectors, lerp_angle},
     primitives::{
-        ClientId, EntityAppearance, IndexSpan, LoopOrigin, ModelRef, NativeAppearanceTail,
-        PlayerState, ResourceNamespace, RuleSetId, Vec3, ViewWeapon,
+        ClientId, EntityAppearance, GeometryId, IndexSpan, LoopOrigin, ModelRef,
+        NativeAppearanceTail, PlayerState, ResourceNamespace, RuleSetId, Vec3, ViewWeapon,
     },
 };
 use qa_gameplay::rules::appearance::{
@@ -29,7 +29,8 @@ enum ClientModel {
     Mesh(ModelRegistrationId),
     Inline {
         binding: InlineBinding,
-        presentation: WorldPresentationId,
+        presentation: Option<WorldPresentationId>,
+        collision: Option<GeometryId>,
     },
 }
 
@@ -68,7 +69,8 @@ pub struct ClientModelBindings {
     client: ClientId,
     range: IndexSpan,
     profile: Option<ModelProfile>,
-    world: Option<(WorldId, WorldPresentationId)>,
+    world: Option<(qa_compat::services::LoadedWorldBinding, WorldPresentationId)>,
+    revision: u64,
     registrations: Box<[Option<ClientModel>]>,
     colors: Option<crate::model_assets::ModelColorId>,
 }
@@ -80,6 +82,7 @@ impl ClientModelBindings {
             range,
             profile: None,
             world: None,
+            revision: 0,
             registrations: vec![None; range.count as usize].into_boxed_slice(),
             colors: None,
         }
@@ -87,12 +90,32 @@ impl ClientModelBindings {
 
     /// Disconnect/rebinding clears all weak references into the old catalog.
     pub fn reset(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         self.profile = None;
         self.world = None;
         self.registrations.fill(None);
         self.colors = None;
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn collision_world(&self) -> Option<(GeometryId, u32)> {
+        self.world
+            .and_then(|(world, _)| world.collision)
+            .map(|geometry| (geometry, 0))
+    }
+    pub fn collision_model(&self, model: ModelRef) -> Option<(GeometryId, u32)> {
+        if model.namespace != ResourceNamespace::Client(self.client) {
+            return None;
+        }
+        match self.registrations.get(model.ordinal as usize)?.as_ref()? {
+            ClientModel::Inline {
+                binding, collision, ..
+            } => collision.map(|geometry| (geometry, binding.index)),
+            ClientModel::Mesh(_) => None,
+        }
+    }
     pub(crate) fn client(&self) -> ClientId {
         self.client
     }
@@ -109,6 +132,7 @@ impl ClientModelBindings {
             return true;
         }
         let ordinal = index - self.range.first as usize;
+        self.revision = self.revision.wrapping_add(1);
         self.registrations[ordinal] = None;
         let Some(row) = configs.config(index) else {
             return false;
@@ -126,13 +150,26 @@ impl ClientModelBindings {
             let Some(binding) = index
                 .parse::<u32>()
                 .ok()
-                .and_then(|index| models.resolve_inline(world, index))
+                .and_then(|index| models.resolve_inline(world.render, index))
             else {
                 return false;
             };
             self.registrations[ordinal] = Some(ClientModel::Inline {
                 binding,
+                presentation: Some(presentation),
+                collision: world.collision,
+            });
+            return true;
+        }
+        if let Some((binding, collision)) = models.loaded_collision_model(row.text) {
+            let presentation = self
+                .world
+                .filter(|(world, _)| world.render == binding.world)
+                .map(|(_, presentation)| presentation);
+            self.registrations[ordinal] = Some(ClientModel::Inline {
+                binding,
                 presentation,
+                collision,
             });
             return true;
         }
@@ -156,7 +193,15 @@ impl ClientModelBindings {
         self.reset();
         self.profile = Some(profile);
         self.colors = models.color_binding(profile);
-        self.world = world;
+        self.world = world.map(|(render, presentation)| {
+            (
+                qa_compat::services::LoadedWorldBinding {
+                    render,
+                    collision: models.collision_world(render),
+                },
+                presentation,
+            )
+        });
         self.refresh_all(configs, models)
     }
 
@@ -203,7 +248,8 @@ impl ClientModelBindings {
             ClientModel::Inline {
                 binding,
                 presentation,
-            } => Some(SceneBindings::Inline(Some((binding, presentation)))),
+                ..
+            } => Some(SceneBindings::Inline(Some((binding, presentation?)))),
         }
     }
 }
@@ -422,51 +468,41 @@ impl ClientEntities<'_> {
 
     fn visit_rows(
         &self,
-        supplement: Option<(u32, EntityRecord)>,
+        mut supplement: Option<(u32, EntityRecord)>,
         mut visit: impl FnMut(u32, Option<PresentedEntity>),
     ) {
-        fn rows<const P: usize, const E: usize>(
-            entities: &ClientEntities<'_>,
-            frame: SnapshotFrame<'_, P, E>,
-            mut supplement: Option<(u32, EntityRecord)>,
-            visit: &mut impl FnMut(u32, Option<PresentedEntity>),
-        ) {
-            for row in frame.entities {
-                if let Some((number, record)) =
-                    supplement.filter(|(number, _)| *number < row.number)
-                {
-                    supplement = None;
-                    visit(number, entities.present(number, record, false, false));
-                }
-                let predicted = supplement
-                    .filter(|(number, _)| *number == row.number)
-                    .map(|(_, record)| record);
-                if predicted.is_some() {
-                    supplement = None;
-                }
-                visit(
-                    row.number,
-                    entities.decode(&row.words).and_then(|mut record| {
-                        if record.appearance.loop_sound.is_none()
-                            && let Some(predicted) = predicted
-                        {
-                            record.appearance.loop_sound = predicted.appearance.loop_sound;
-                        }
-                        entities.present(row.number, record, frame.qw_player(row.number), true)
-                    }),
-                );
-            }
-            if let Some((number, record)) = supplement {
-                visit(number, entities.present(number, record, false, false));
-            }
+        if let Some(frame) = self.current {
+            visit_raw(
+                frame,
+                self.projection,
+                self.client,
+                |number, record, peer, _| {
+                    if let Some((extra, value)) = supplement.filter(|(extra, _)| *extra < number) {
+                        supplement = None;
+                        visit(extra, self.present(extra, value, false, false));
+                    }
+                    let predicted = supplement
+                        .filter(|(extra, _)| *extra == number)
+                        .map(|(_, value)| value);
+                    if predicted.is_some() {
+                        supplement = None;
+                    }
+                    visit(
+                        number,
+                        record.and_then(|mut record| {
+                            if record.appearance.loop_sound.is_none()
+                                && let Some(predicted) = predicted
+                            {
+                                record.appearance.loop_sound = predicted.appearance.loop_sound;
+                            }
+                            self.present(number, record, peer, true)
+                        }),
+                    );
+                },
+            );
         }
-        match self.current {
-            Some(ReceivedFrame::NetQuake(frame)) => rows(self, frame, supplement, &mut visit),
-            Some(ReceivedFrame::QuakeWorld(frame)) => rows(self, frame, supplement, &mut visit),
-            Some(ReceivedFrame::Quake2(frame)) => rows(self, frame, supplement, &mut visit),
-            Some(ReceivedFrame::Quake2Repro(frame)) => rows(self, frame, supplement, &mut visit),
-            Some(ReceivedFrame::Quake3(frame)) => rows(self, frame, supplement, &mut visit),
-            None => {}
+        if let Some((number, record)) = supplement {
+            visit(number, self.present(number, record, false, false));
         }
     }
 
@@ -942,4 +978,40 @@ fn native_lighting(pose: AliasPose, angles: Vec3) -> qa_render::stage::EntityLig
         lighting.direction = direction;
     }
     lighting
+}
+
+/// Decode the connection's accepted rows once through its shared projection.
+/// Physics consumes these raw values; display interpolation remains separate.
+pub(crate) fn visit_raw(
+    frame: ReceivedFrame<'_>,
+    projection: &EntityProjection,
+    client: ClientId,
+    mut visit: impl FnMut(u32, Option<EntityRecord>, bool, bool),
+) {
+    fn rows<const P: usize, const E: usize>(
+        frame: SnapshotFrame<'_, P, E>,
+        projection: &EntityProjection,
+        client: ClientId,
+        visit: &mut impl FnMut(u32, Option<EntityRecord>, bool, bool),
+    ) {
+        for row in frame.entities {
+            let mut record = EntityRecord::default();
+            let record = projection
+                .apply(&row.words, &mut record, ResourceNamespace::Client(client))
+                .then_some(record);
+            visit(
+                row.number,
+                record,
+                frame.qw_player(row.number),
+                frame.qw_dead_player(row.number),
+            );
+        }
+    }
+    match frame {
+        ReceivedFrame::NetQuake(frame) => rows(frame, projection, client, &mut visit),
+        ReceivedFrame::QuakeWorld(frame) => rows(frame, projection, client, &mut visit),
+        ReceivedFrame::Quake2(frame) => rows(frame, projection, client, &mut visit),
+        ReceivedFrame::Quake2Repro(frame) => rows(frame, projection, client, &mut visit),
+        ReceivedFrame::Quake3(frame) => rows(frame, projection, client, &mut visit),
+    }
 }

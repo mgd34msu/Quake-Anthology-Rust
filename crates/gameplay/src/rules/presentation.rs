@@ -94,10 +94,30 @@ pub struct ClockRules {
     /// Native Q2 uses remaining milliseconds times its precomputed 0.01.
     /// Other native clocks use the interval reciprocal, in a different order.
     pub remaining_ms_scale: Option<f32>,
+    pub synchronization: Option<ClockSynchronization>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ClockSynchronization {
+    pub reset_difference_ms: u64,
+    pub fast_difference_ms: u64,
+    pub extrapolation_margin_ms: i64,
+    pub extrapolated_adjustment_ms: i64,
+    pub interpolated_adjustment_ms: i64,
+    pub nudge_limit_ms: i32,
+    pub inactive_snapshot_mask: u8,
 }
 pub fn clock_rules(rules: RuleSetId) -> ClockRules {
     ClockRules {
         remaining_ms_scale: (rules == RuleSetId::Quake2).then_some(0.01),
+        synchronization: (rules == RuleSetId::Quake3).then_some(ClockSynchronization {
+            reset_difference_ms: 500,
+            fast_difference_ms: 100,
+            extrapolation_margin_ms: 5,
+            extrapolated_adjustment_ms: -2,
+            interpolated_adjustment_ms: 1,
+            nudge_limit_ms: 30,
+            inactive_snapshot_mask: 2,
+        }),
     }
 }
 

@@ -26,6 +26,13 @@ fn source_entity_roles_distinguish_models_items_sounds_and_reference_domains() {
     assert_eq!(roles.cells(7, 0, 0).parameter, ParameterRole::Sound);
     assert!(!roles.cells(7, 0, 0).client_reference);
     assert!(!roles.cells(11, 0, 0).client_reference); // Portal roll scalar.
+    for kind in [2, 8, 9] {
+        assert!(!roles.client_solid(kind));
+        assert!(entity_roles(RuleSetId::Quake2).client_solid(kind));
+    }
+    for kind in [0, 1, 3, 4, 10, 11, 12] {
+        assert!(roles.client_solid(kind));
+    }
     assert!(roles.cells(1, 0, 0).client_reference);
     for event in [45, 46] {
         assert_eq!(

@@ -132,6 +132,7 @@ pub(crate) struct QuakeCLayout {
     client_edicts: Option<usize>,
     integer_motion: bool,
     motion_decode: Option<fn(f32) -> Motion>,
+    model_rules: ModelRules,
     name_fields: [Option<usize>; 3],
     origin: Option<usize>,
     velocity: Option<usize>,
@@ -171,6 +172,7 @@ impl QuakeCLayout {
             client_edicts: None,
             integer_motion: false,
             motion_decode: None,
+            model_rules: qa_gameplay::rules::model_rules(RuleSetId::Quake),
             name_fields: [b"classname".as_slice(), b"target", b"targetname"]
                 .map(|name| field(name, 1)),
             origin: field(b"origin", 3),
@@ -1071,6 +1073,7 @@ impl EntityProjection {
         self.seed(entities, module)?;
         layout.client_edicts = Some(clients);
         layout.integer_motion = integer_motion;
+        layout.model_rules = qa_gameplay::rules::model_rules(rules);
         layout.motion_decode = Some(if integer_motion {
             self::integer_motion
         } else {
@@ -1806,7 +1809,7 @@ impl EntityProjection {
         columns.flags[slot] = flags;
         columns.collision_shape[slot] = shape;
         columns.collision_owner[slot] = owner;
-        columns.model_rules[slot] = ModelRules::default();
+        columns.model_rules[slot] = layout.model_rules;
         columns.collision_tags[slot] = QuakeCLayout::tags(flags);
         columns.collision_contents[slot] = Contents::SOLID.0;
         columns.appearance[slot] = appearance;
@@ -2165,7 +2168,7 @@ impl QuakeCLayout {
             }
             _ => return Err(CallError::Entity),
         };
-        cached.rules = ModelRules::default();
+        cached.rules = self.model_rules;
         cached.contents_pose = None;
         Ok(cached)
     }

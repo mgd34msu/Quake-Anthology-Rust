@@ -102,6 +102,7 @@ pub struct LoadedWorldBinding {
 pub struct ClientCollision {
     selected: Option<GeometryId>,
     temporary: Bounds,
+    capsule: Option<Bounds>,
 }
 impl ClientCollision {
     pub fn geometry(&self) -> Option<GeometryId> {
@@ -110,6 +111,7 @@ impl ClientCollision {
     pub fn reset(&mut self) {
         self.selected = None;
         self.temporary = Bounds::default();
+        self.capsule = None;
     }
 }
 
@@ -996,10 +998,10 @@ pub struct EngineCallTable {
     pub client_collision_load: fn(&mut EngineServices<'_>, &[u8]) -> Result<(), CallError>,
     pub client_collision_count: fn(&EngineServices<'_>) -> Result<u32, CallError>,
     pub client_collision_inline: fn(&EngineServices<'_>, i32) -> Result<i32, CallError>,
-    pub client_collision_temp: fn(&mut EngineServices<'_>, Bounds) -> Result<i32, CallError>,
+    pub client_collision_temp: fn(&mut EngineServices<'_>, Bounds, bool) -> Result<i32, CallError>,
     pub client_collision_ready: fn(&EngineServices<'_>) -> Result<bool, CallError>,
     pub client_collision_target:
-        fn(&EngineServices<'_>, i32) -> Result<(CollisionShape, Bounds), CallError>,
+        fn(&EngineServices<'_>, i32, bool) -> Result<(CollisionShape, Bounds), CallError>,
     pub client_collision_contents: fn(
         &EngineServices<'_>,
         Vec3,
@@ -1176,12 +1178,18 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     client_collision_load: |s, name| s.client_collision_load(name),
     client_collision_count: |s| s.client_collision_count(),
     client_collision_inline: |s, index| s.client_collision_inline(index),
-    client_collision_temp: |s, bounds| {
-        s.client_collision
+    client_collision_temp: |s, bounds, capsule| {
+        let selection = s
+            .client_collision
             .as_deref_mut()
-            .ok_or(CallError::Unsupported)?
-            .temporary = bounds;
-        Ok(255)
+            .ok_or(CallError::Unsupported)?;
+        if capsule {
+            selection.capsule = Some(bounds);
+            Ok(254)
+        } else {
+            selection.temporary = bounds;
+            Ok(255)
+        }
     },
     client_collision_ready: |s| {
         s.client_collision
@@ -1194,7 +1202,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
                     .map_err(|_| CallError::Geometry)
             })
     },
-    client_collision_target: |s, handle| s.client_collision_target(handle),
+    client_collision_target: |s, handle, trace| s.client_collision_target(handle, trace),
     client_collision_contents: |s, point, (shape, bounds), origin, angles, caller, mode| {
         s.geometry
             .point_contents_body(
@@ -1207,7 +1215,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
                     ..Body::default()
                 },
                 angles,
-                crate::entities::Q3_MODEL_RULES,
+                qa_gameplay::rules::model_rules(RuleSetId::Quake3),
                 caller,
                 mode,
             )
@@ -1225,7 +1233,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
                     ..Body::default()
                 },
                 angles,
-                crate::entities::Q3_MODEL_RULES,
+                qa_gameplay::rules::model_rules(RuleSetId::Quake3),
                 mode,
                 None,
                 s.scratch,
@@ -1541,6 +1549,7 @@ impl EngineServices<'_> {
             .ok_or(CallError::Unsupported)?;
         if selection.selected != Some(geometry) {
             selection.temporary = Bounds::default();
+            selection.capsule = None;
             selection.selected = Some(geometry);
         }
         Ok(())
@@ -1562,7 +1571,11 @@ impl EngineServices<'_> {
             .then_some(index)
             .ok_or(CallError::Geometry)
     }
-    fn client_collision_target(&self, handle: i32) -> Result<(CollisionShape, Bounds), CallError> {
+    fn client_collision_target(
+        &self,
+        handle: i32,
+        trace: bool,
+    ) -> Result<(CollisionShape, Bounds), CallError> {
         let selection = self
             .client_collision
             .as_deref()
@@ -1570,9 +1583,20 @@ impl EngineServices<'_> {
         let count = self.client_collision_count()?;
         // Real inline models take precedence, including native ordinal 255.
         if handle >= 0 && (handle as u32) < count {
+            let geometry = selection.selected.ok_or(CallError::Geometry)?;
+            // Native traces use the resolved model's bounds for raw254's
+            // capsule path; point contents still uses its actual inline brush.
+            if trace && handle == 254 {
+                return Ok((
+                    CollisionShape::Capsule,
+                    self.geometry
+                        .model_bounds(geometry, 254)
+                        .ok_or(CallError::Geometry)?,
+                ));
+            }
             return Ok((
                 CollisionShape::Model {
-                    geometry: selection.selected.ok_or(CallError::Geometry)?,
+                    geometry,
                     index: handle as u32,
                 },
                 Bounds::default(),
@@ -1580,6 +1604,14 @@ impl EngineServices<'_> {
         }
         if handle == 255 {
             return Ok((CollisionShape::Box, selection.temporary));
+        }
+        // Original Q3 returns254 from TempCapsuleModel but rejects it in the
+        // common handle resolver. Admit only an explicitly registered capsule,
+        // without aliasing its bounds to the independently retained box255.
+        if handle == 254
+            && let Some(bounds) = selection.capsule
+        {
+            return Ok((CollisionShape::Capsule, bounds));
         }
         Err(CallError::Geometry)
     }

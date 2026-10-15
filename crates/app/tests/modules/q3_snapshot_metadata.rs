@@ -333,7 +333,12 @@ fn advance_damage_view(host: &mut FrameHost, client: ClientId, queued_ms: u64) {
     host.runtime.snapshots[client.0 as usize]
         .as_mut()
         .unwrap()
-        .advance_presentation(channel, EventTime::from_milliseconds(queued_ms));
+        .advance_presentation(
+            channel,
+            EventTime::from_milliseconds(queued_ms),
+            Default::default(),
+        )
+        .unwrap();
 }
 
 fn consume_damage(host: &mut FrameHost) -> qa_app::output::OutputCounts {
@@ -393,12 +398,19 @@ fn qvm_damage_crosses_queued_native_snapshot_ring_hud_and_real_refdef_without_mu
     transmit(&mut host, client, 250);
     advance_damage_view(&mut host, client, 250);
     assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    let presented = host.runtime.snapshots[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .interpolation()
+        .unwrap()
+        .time;
+    assert_eq!(presented, ThinkTime::Milliseconds(1148));
     let view = host.client_views()[0].unwrap();
     let expected = qa_ui::hud::view_angles(
         &host.runtime.server.clients[client.0 as usize].hud,
         angles,
         90,
-        ThinkTime::Milliseconds(1150),
+        presented,
     );
     assert_eq!(view.angles, expected);
     assert_ne!(view.angles, angles);
@@ -460,6 +472,17 @@ fn damage_overflow_resync_and_follow_changes_never_replay_retired_feedback() {
     transmit(&mut host, client, 250);
     advance_damage_view(&mut host, client, 300);
     host.publish_client_feedback();
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    advance_damage_view(&mut host, client, 304);
+    assert_eq!(
+        host.runtime.snapshots[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .interpolation()
+            .unwrap()
+            .time,
+        ThinkTime::Milliseconds(1200)
+    );
     assert_eq!(consume_damage(&mut host).view_feedback, 1);
     host.publish_client_feedback();
     assert_eq!(consume_damage(&mut host).view_feedback, 0);
@@ -467,6 +490,23 @@ fn damage_overflow_resync_and_follow_changes_never_replay_retired_feedback() {
     write_player_word(&mut host, 140, 1, 1400);
     transmit(&mut host, client, 500);
     advance_damage_view(&mut host, client, 500);
+    host.publish_client_feedback();
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .hud
+            .view_feedback
+            .is_some()
+    );
+    advance_damage_view(&mut host, client, 506);
+    assert_eq!(
+        host.runtime.snapshots[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .interpolation()
+            .unwrap()
+            .time,
+        ThinkTime::Milliseconds(1400)
+    );
     host.publish_client_feedback();
     assert!(
         host.runtime.server.clients[client.0 as usize]
@@ -533,16 +573,34 @@ fn future_damage_preserves_the_active_envelope_until_its_native_transition() {
         Some(active)
     );
     let angles = host.runtime.prediction[0].player.view_angles;
+    let presented = host.runtime.snapshots[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .interpolation()
+        .unwrap()
+        .time;
+    assert_eq!(presented, ThinkTime::Milliseconds(1148));
     assert_eq!(
         host.client_views()[0].unwrap().angles,
         qa_ui::hud::view_angles(
             &host.runtime.server.clients[client.0 as usize].hud,
             angles,
             90,
-            ThinkTime::Milliseconds(1150)
+            presented
         )
     );
     advance_damage_view(&mut host, client, 300);
+    assert_eq!(consume_damage(&mut host).view_feedback, 0);
+    advance_damage_view(&mut host, client, 301);
+    assert_eq!(
+        host.runtime.snapshots[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .interpolation()
+            .unwrap()
+            .time,
+        ThinkTime::Milliseconds(1200)
+    );
     assert_eq!(consume_damage(&mut host).view_feedback, 1);
     assert_eq!(
         host.runtime.server.clients[client.0 as usize]
@@ -1266,15 +1324,49 @@ fn q3_guest_clock_wrap_retains_one_second_powerup_through_queue_and_hud() {
             })
         );
         host.local_clients[0] = Some(client);
-        let result = host.frame(
+        // The guest's signed ABI projection remains valid even after wrapping.
+        // This is independent of CLIENT presentation, which rejects a negative
+        // first server time just as CL_SetCGameTime does.
+        let channel = &host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel;
+        let snapshot = host.runtime.snapshots[client.0 as usize].as_mut().unwrap();
+        assert_eq!(
+            snapshot.advance_presentation(
+                channel,
+                EventTime::from_milliseconds(300),
+                Default::default()
+            ),
+            Err(qa_app::snapshots::ClockError::TimeRegression)
+        );
+        assert!(snapshot.interpolation().is_none());
+        let player = &host.runtime.prediction[0].player;
+        let common_client = &mut host.runtime.server.clients[client.0 as usize];
+        host.runtime
+            .catalog
+            .hud
+            .project_stats(player, &mut common_client.hud);
+        common_client.hud_publication.publish_changes(
+            player,
+            &mut host.runtime.server.events,
+            client,
+        );
+        let output = qa_app::output::dispatch(
+            &mut host.runtime,
             &mut Source {
-                time: EventTime::from_milliseconds(300),
+                time: host.time,
                 polls: 0,
             },
-            true,
+            &mut host.console.scrollback,
+            &host.local_clients,
+            host.time,
+            3.0,
+            2.0,
         );
-        assert_eq!(result.drains, 2);
-        assert!(result.output.hud > 0);
+        assert!(output.hud > 0);
         let hud = &host.runtime.server.clients[1].hud;
         assert_eq!(hud.inventory.powerup_until[timer.0 as usize], 1.3);
         assert!(hud.owned_items.contains(item.0 as usize));

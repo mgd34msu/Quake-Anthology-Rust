@@ -137,11 +137,30 @@ fn snapshot(
     host.runtime.snapshots[client.0 as usize]
         .as_mut()
         .unwrap()
-        .advance_presentation(channel, EventTime::from_milliseconds(queued_ms));
+        .advance_presentation(
+            channel,
+            EventTime::from_milliseconds(queued_ms),
+            Default::default(),
+        )
+        .unwrap();
+    // Camera feedback fixtures retain their exact accepted view; movement and
+    // its angle quantization are tested independently below.
+    host.runtime.prediction[0].player.prediction = PredictionPolicy::DISABLED;
 }
 
 fn presented(host: &mut FrameHost, source: &mut Source, time: u64) -> Vec3 {
     source.time = EventTime::from_milliseconds(time);
+    let client = host.local_clients[0].unwrap();
+    let channel = &host
+        .runtime
+        .network
+        .get(client, Endpoint::Server)
+        .unwrap()
+        .channel;
+    let binding = host.runtime.snapshots[client.0 as usize].as_mut().unwrap();
+    // Sample the already accepted CLIENT frame without introducing a different
+    // SERVER snapshot in the presentation-only frame below.
+    binding.submitted(binding.sequence(channel, source.time));
     host.frame(source, true);
     let view = source.view.unwrap();
     assert_eq!(
@@ -295,6 +314,42 @@ fn netquake_wire_punch_is_direct_and_q3_has_no_player_punch() {
             Vec3::default()
         };
         assert_eq!(presented(&mut host, &mut source, 100), accepted + punch);
+    }
+}
+
+#[test]
+fn waiting_client_collision_honors_angle_prediction_without_changing_position() {
+    for enabled in [false, true] {
+        let (mut host, mut source, client) = fixture(Protocol::NetQuake15, RuleSetId::Quake);
+        snapshot(
+            &mut host,
+            &mut source,
+            client,
+            100,
+            100,
+            Vec3::default(),
+            Vec3([40.0, 50.0, 60.0]),
+        );
+        let accepted = host.runtime.prediction[0].player.view_angles;
+        let position = host.runtime.prediction[0].player.body.position;
+        host.runtime.prediction[0].player.prediction.angles = enabled;
+        let angles = presented(&mut host, &mut source, 100);
+        let expected = if enabled {
+            // Q3's signed16 angle units are 910, 3640 and -182 here.
+            Vec3([4.998779296875, 19.9951171875, -0.999755859375])
+        } else {
+            accepted
+        };
+        assert_eq!(angles, expected);
+        assert_eq!(host.runtime.prediction[0].player.view_angles, expected);
+        assert_eq!(host.runtime.prediction[0].player.body.position, position);
+        assert!(matches!(
+            host.runtime.client_collision[client.0 as usize]
+                .as_mut()
+                .unwrap()
+                .trace(&host.runtime.geometry),
+            Err(qa_app::client_collision::ClientCollisionError::Waiting)
+        ));
     }
 }
 

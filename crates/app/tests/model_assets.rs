@@ -2401,6 +2401,71 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
         })
     );
     assert_eq!(catalog.loaded_world(b"maps/unbound.bsp"), None);
+    assert_eq!(catalog.collision_world(first), Some(geometry));
+    assert_eq!(catalog.collision_world(second), Some(geometry));
+    // CLIENT bindings retain numeric collision identity independently of render
+    // world ordinals, palettes and filenames. The second render world shares
+    // this exact collision resource; casting WorldId would select the wrong one.
+    let client = qa_core::primitives::ClientId(3);
+    let layout = qa_core::configstrings::ConfigLayout::QUAKE2;
+    let mut configs = qa_core::configstrings::ConfigStrings::load(
+        (0..layout.count).map(|index| layout.capacity(index).unwrap()),
+    )
+    .unwrap();
+    for (ordinal, path) in [
+        (1, b"maps/start.bsp".as_slice()),
+        (2, b"*0"),
+        (3, b"MAPS\\ABSENT.BSP"),
+    ] {
+        configs
+            .set(layout.resources[0].get(ordinal).unwrap(), path)
+            .unwrap();
+    }
+    let mut bindings = qa_app::client_scene::ClientModelBindings::load(client, layout);
+    let revision = bindings.revision();
+    assert_eq!(
+        bindings.bind_all(
+            &configs,
+            &catalog,
+            ModelRequest::native("", RuleSetId::Quake2, None).profile(),
+            Some((first, WorldPresentationId(0)))
+        ),
+        0
+    );
+    assert!(bindings.revision() > revision);
+    assert_eq!(bindings.collision_world(), Some((geometry, 0)));
+    for ordinal in [1, 2, 3] {
+        let model = qa_core::primitives::ModelRef::native(
+            qa_core::primitives::ResourceNamespace::Client(client),
+            ordinal,
+        )
+        .unwrap();
+        assert_eq!(bindings.collision_model(model), Some((geometry, 0)));
+        let foreign = qa_core::primitives::ModelRef::native(
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(9)),
+            ordinal,
+        )
+        .unwrap();
+        assert_eq!(bindings.collision_model(foreign), None);
+    }
+    let revision = bindings.revision();
+    configs
+        .set(layout.resources[0].get(2).unwrap(), b"")
+        .unwrap();
+    assert!(bindings.config_changed(layout.resources[0].get(2).unwrap(), &configs, &catalog));
+    assert!(bindings.revision() > revision);
+    assert_eq!(
+        bindings.collision_model(
+            qa_core::primitives::ModelRef::native(
+                qa_core::primitives::ResourceNamespace::Client(client),
+                2
+            )
+            .unwrap()
+        ),
+        None
+    );
+    bindings.reset();
+    assert_eq!(bindings.collision_world(), None);
     assert_eq!(
         catalog.bounds(b"maps/absent.bsp", RuleSetId::Quake2),
         Some(expected)

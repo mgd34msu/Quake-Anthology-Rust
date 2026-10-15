@@ -49,7 +49,7 @@ fn capsule_targets_use_the_common_dispatch_with_native_startsolid_and_plane_fiel
         assert_eq!(hit.contents, Contents::BODY);
         assert_eq!(hit.end, moving.start.lerp(moving.end, hit.fraction));
         assert!(!hit.brush_solid);
-        // Temporary rounded bodies, like boxes, ignore native model angles.
+        // TranslationOnly remains an explicit body-role capability.
         let unrotated = store
             .trace_body(
                 moving,
@@ -114,4 +114,81 @@ fn capsule_point_contents_do_not_include_the_bounding_box_corners() {
     assert!(!capsule.contains(center, Vec3([15.0, 15.0, 0.0])));
     assert!(capsule.contains(center, Vec3([15.0, 0.0, 4.0])));
     assert!(!capsule.contains(center, Vec3([0.0, 0.0, 32.001])));
+}
+
+#[test]
+fn transformed_capsule_target_uses_the_shared_rotation_and_restores_contact_normal() {
+    use qa_core::primitives::{ModelRotation, ModelRules};
+    let store = CollisionStore::new();
+    let mut scratch = store.scratch();
+    let body = Body {
+        position: Vec3([10.0, 0.0, 0.0]),
+        mins: Vec3([-1.0, -1.0, -4.0]),
+        maxs: Vec3([1.0, 1.0, 4.0]),
+        ..Body::default()
+    };
+    let rules = ModelRules {
+        rotation: ModelRotation::TransposeBasis,
+        ..ModelRules::default()
+    };
+    let horizontal = query(Vec3([2.0, 0.0, 3.0]), Vec3([18.0, 0.0, 3.0])).with_capsule();
+    for (angles, hit) in [(Vec3::default(), true), (Vec3([90.0, 0.0, 0.0]), false)] {
+        let trace = store
+            .trace_body(
+                horizontal,
+                CollisionShape::Capsule,
+                &body,
+                angles,
+                rules,
+                BodyTraceMode::Transformed,
+                None,
+                &mut scratch,
+            )
+            .unwrap();
+        assert_eq!(trace.fraction < 1.0, hit);
+        assert_eq!(
+            store
+                .point_contents_body(
+                    Vec3([10.0, 0.0, 3.0]),
+                    CollisionShape::Capsule,
+                    &body,
+                    angles,
+                    rules,
+                    trace_policy(RuleSetId::Quake3).1,
+                    BodyTraceMode::Transformed
+                )
+                .unwrap(),
+            if hit { Contents::BODY } else { Contents::EMPTY }
+        );
+    }
+    let downward = query(Vec3([10.0, 0.0, 8.0]), Vec3([10.0, 0.0, 0.0])).with_capsule();
+    let hit = store
+        .trace_body(
+            downward,
+            CollisionShape::Capsule,
+            &body,
+            Vec3([90.0, 0.0, 0.0]),
+            rules,
+            BodyTraceMode::Transformed,
+            None,
+            &mut scratch,
+        )
+        .unwrap();
+    assert!(hit.fraction > 0.0 && hit.fraction < 1.0);
+    assert!(hit.plane.normal.0[2] > 0.99);
+    assert!(hit.plane.normal.0[0].abs() < 0.0001);
+    assert_eq!(hit.end, downward.start.lerp(downward.end, hit.fraction));
+    let direct = store
+        .trace_body(
+            query(Vec3([-8.0, 0.0, 3.0]), Vec3([8.0, 0.0, 3.0])).with_capsule(),
+            CollisionShape::Capsule,
+            &body,
+            Vec3([90.0, 0.0, 0.0]),
+            rules,
+            BodyTraceMode::Direct,
+            None,
+            &mut scratch,
+        )
+        .unwrap();
+    assert!(direct.fraction < 1.0); // Direct ignores supplied target pose.
 }

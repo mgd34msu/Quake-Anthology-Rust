@@ -162,6 +162,7 @@ fn snapshot(
             command: 0,
             flags: 0,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[],
             player: &player,
             entities: &entities,

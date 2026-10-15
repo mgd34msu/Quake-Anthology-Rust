@@ -76,10 +76,7 @@ pub(super) const LAYOUT: EntityLayout = EntityLayout {
     network_solid: crate::players::q3_entity_offset(27),
     solid_codec: SolidCodec::QUAKE3,
     appearance: AppearanceImport::Projected(&APPEARANCE),
-    model_rules: ModelRules {
-        rotation: qa_core::primitives::ModelRotation::TransposeBasis,
-        link_bounds: qa_core::primitives::RotatedLinkBounds::RadiusCube,
-    },
+    model_rules: qa_gameplay::rules::model_rules(RuleSetId::Quake3),
 };
 
 impl EntityProjection {

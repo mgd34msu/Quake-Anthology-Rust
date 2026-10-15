@@ -21,7 +21,9 @@ mod feedback;
 mod loops;
 mod presentation;
 pub use entities::EntitySource;
-pub use presentation::{GunAnimation, Interpolation, PresentationClock};
+pub use presentation::{
+    ClockError, ClockOptions, GunAnimation, Interpolation, PresentationClock, SnapshotClockSample,
+};
 
 fn player_context(
     player: &PlayerState,
@@ -178,6 +180,7 @@ impl SnapshotBinding {
     pub fn interpolation(&self) -> Option<Interpolation> {
         self.presentation
             .as_ref()
+            .filter(|client| client.clock.is_ready())
             .map(|client| client.clock.sample())
     }
     pub fn view_source(&self) -> Option<qa_core::primitives::RuleSetId> {
@@ -236,12 +239,13 @@ impl SnapshotBinding {
         &mut self,
         channel: &Channel,
         queued: qa_core::sys_events::EventTime,
-    ) {
+        options: ClockOptions,
+    ) -> Result<(), ClockError> {
         let Some(client) = self.presentation.as_mut() else {
-            return;
+            return Ok(());
         };
         let Some(current) = channel.current_snapshot() else {
-            return;
+            return Ok(());
         };
         let previous = channel.previous_snapshot();
         let period = if client.negotiated_period {
@@ -251,10 +255,18 @@ impl SnapshotBinding {
         };
         client.clock.advance(
             queued,
-            current.time(),
+            SnapshotClockSample {
+                sequence: current.sequence(),
+                time: current.time(),
+                flags: match current {
+                    ReceivedFrame::Quake3(frame) => frame.flags,
+                    _ => 0,
+                },
+            },
             previous.map(ReceivedFrame::time),
             period,
-        );
+            options,
+        )
     }
     #[expect(
         clippy::too_many_arguments,
@@ -647,7 +659,7 @@ impl SnapshotBinding {
         &mut self,
         incoming: Incoming<'_>,
         player: &mut PlayerState,
-        numbers: &crate::output_namespace::NativeNumbers,
+        resolve_ground: impl FnMut(u32) -> Option<qa_core::primitives::EntityId>,
         hud: &qa_ui::hud::HudBindings,
         registry: &qa_gameplay::registry::Registry,
         time: qa_core::sys_events::EventTime,
@@ -709,7 +721,7 @@ impl SnapshotBinding {
                 player,
                 &mut context,
                 ResourceNamespace::Client(self.client),
-                |number| numbers.entity(number),
+                resolve_ground,
             ) && hud.import_native_packet(
                 self.protocol.rule_set(),
                 self.player_stats,

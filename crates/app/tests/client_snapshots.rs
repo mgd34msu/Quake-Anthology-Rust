@@ -827,6 +827,7 @@ fn snapshot(
         command: 0,
         flags: 4,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[0x81, 0x42],
         player: &player,
         entities: &entities,
@@ -879,35 +880,52 @@ fn accepted_connection_snapshot_bytes(factory: fn() -> (Program, u64)) {
     assert_eq!(call(&mut host, 1, 0, &[]), Ok(other_sequence));
     assert_eq!(word(&mut host, 1, output + 4), 45678);
     host.time = EventTime::from_milliseconds(500000);
-    for &id in &ids {
+    for (seat, &id) in ids.iter().enumerate() {
         let channel = &host
             .runtime
             .network
             .get(id, Endpoint::Client)
             .unwrap()
             .channel;
-        host.runtime.snapshots[id.0 as usize]
+        let advanced = host.runtime.snapshots[id.0 as usize]
             .as_mut()
             .unwrap()
-            .advance_presentation(channel, host.time);
+            .advance_presentation(channel, host.time, Default::default());
+        if seat == 0 {
+            // The ABI preserves signed snapshot time even when that value is
+            // not a legal first running CL_SetCGameTime sample.
+            assert_eq!(advanced, Err(qa_app::snapshots::ClockError::TimeRegression));
+            assert!(
+                host.runtime.snapshots[id.0 as usize]
+                    .as_ref()
+                    .unwrap()
+                    .interpolation()
+                    .is_none()
+            );
+        } else {
+            advanced.unwrap();
+        }
     }
+    let inactive_calls = host.module_counts(ModuleId(1)).unwrap().calls;
     host.client_modules();
-    for (seat, expected) in [(-12345i32) as u32, 45678].into_iter().enumerate() {
-        let actual = match host
-            .module_counts(ModuleId(seat as u16 + 1))
-            .unwrap()
-            .last_result
-            .unwrap()
-        {
-            ModuleResult::Qvm(value) => value as u32,
-            ModuleResult::Native(value) => value as u32,
-            _ => unreachable!(),
-        };
-        assert_eq!(
-            actual, expected,
-            "CLIENT frame time is accepted native time"
-        );
-    }
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().calls,
+        inactive_calls
+    );
+    let actual = match host
+        .module_counts(ModuleId(2))
+        .unwrap()
+        .last_result
+        .unwrap()
+    {
+        ModuleResult::Qvm(value) => value as u32,
+        ModuleResult::Native(value) => value as u32,
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        actual, 45678,
+        "healthy CLIENT uses its accepted native clock"
+    );
     assert_eq!(call(&mut host, 0, 1, &[]), Ok((-12345i32) as u32));
     fill(&mut host, 0, output);
     assert_eq!(call(&mut host, 0, 2, &[sequence as u64, output]), Ok(1));
@@ -1079,7 +1097,8 @@ fn ui_keeps_its_queued_clock() {
     host.runtime.snapshots[0]
         .as_mut()
         .unwrap()
-        .advance_presentation(channel, host.time);
+        .advance_presentation(channel, host.time, Default::default())
+        .unwrap();
     host.client_modules();
     assert_eq!(
         host.module_counts(ModuleId(1)).unwrap().last_result,

@@ -501,11 +501,14 @@ const fn client() -> CallTable {
     t.entries[18] = scalar!(client_collision_load);
     t.entries[19] = scalar!(client_collision_count);
     t.entries[20] = scalar!(client_collision_inline);
-    t.entries[22] = scalar!(client_collision_temp);
+    t.entries[22] = scalar!(client_collision_temp::<false>);
     t.entries[23] = scalar!(client_collision_contents::<false>);
     t.entries[24] = scalar!(client_collision_contents::<true>);
-    t.entries[25] = scalar!(client_collision_trace::<false>);
-    t.entries[26] = scalar!(client_collision_trace::<true>);
+    t.entries[25] = scalar!(client_collision_trace::<false, false>);
+    t.entries[26] = scalar!(client_collision_trace::<true, false>);
+    t.entries[82] = scalar!(client_collision_temp::<true>);
+    t.entries[83] = scalar!(client_collision_trace::<false, true>);
+    t.entries[84] = scalar!(client_collision_trace::<true, true>);
     t.entries[28] = scalar!(client_sound::play);
     t.entries[29] = scalar!(client_sound::local::<false>);
     t.entries[30] = client_audio!(client_sound::clear);
@@ -2010,13 +2013,15 @@ fn client_collision_inline(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallEr
     (ENGINE_CALLS.client_collision_inline)(c.services, c.arg(0)? as u32 as i32)
         .map(|index| index as u32 as u64)
 }
-fn client_collision_temp(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn client_collision_temp<const CAPSULE: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
     // Native CM_TempBoxModel accepts finite inverted bounds as plane data.
     let bounds = qa_core::primitives::Bounds {
         mins: c.vector(0, false)?,
         maxs: c.vector(1, false)?,
     };
-    (ENGINE_CALLS.client_collision_temp)(c.services, bounds).map(|handle| handle as u64)
+    (ENGINE_CALLS.client_collision_temp)(c.services, bounds, CAPSULE).map(|handle| handle as u64)
 }
 fn client_collision_contents<const TRANSFORMED: bool>(
     c: &mut Invocation<'_, '_, '_>,
@@ -2042,7 +2047,7 @@ fn client_collision_contents<const TRANSFORMED: bool>(
     if TRANSFORMED && !(ENGINE_CALLS.client_collision_ready)(c.services)? {
         return Ok(0);
     }
-    let target = (ENGINE_CALLS.client_collision_target)(c.services, handle)?;
+    let target = (ENGINE_CALLS.client_collision_target)(c.services, handle, false)?;
     let caller = qa_world::collision::trace_policy(c.context.trace_rules).1;
     let mode = if TRANSFORMED {
         BodyTraceMode::Transformed
@@ -2054,7 +2059,7 @@ fn client_collision_contents<const TRANSFORMED: bool>(
     )
     .map(|contents| u64::from(contents.to_q3()))
 }
-fn client_collision_trace<const TRANSFORMED: bool>(
+fn client_collision_trace<const TRANSFORMED: bool, const CAPSULE: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
     use qa_core::primitives::Vec3;
@@ -2062,7 +2067,7 @@ fn client_collision_trace<const TRANSFORMED: bool>(
     let handle = c.arg(5)? as u32 as i32;
     // Direct CM_Trace resolves the model and tests numNodes before inputs.
     let early = if !TRANSFORMED {
-        let target = (ENGINE_CALLS.client_collision_target)(c.services, handle)?;
+        let target = (ENGINE_CALLS.client_collision_target)(c.services, handle, true)?;
         if !(ENGINE_CALLS.client_collision_ready)(c.services)? {
             let output = c.required_pointer(0)?;
             crate::traces::write_q3(c.memory, output, Trace::clear(Vec3::default()), 0)?;
@@ -2089,7 +2094,7 @@ fn client_collision_trace<const TRANSFORMED: bool>(
     };
     let target = match early {
         Some(target) => target,
-        None => (ENGINE_CALLS.client_collision_target)(c.services, handle)?,
+        None => (ENGINE_CALLS.client_collision_target)(c.services, handle, true)?,
     };
     let output = c.required_pointer(0)?;
     c.memory.read(output, 56)?;
@@ -2106,6 +2111,7 @@ fn client_collision_trace<const TRANSFORMED: bool>(
             mask: Contents::from_q3(c.arg(6)? as u32),
             ..TraceQuery::point(start, end, rules, entity_rules)
         };
+        let query = if CAPSULE { query.with_capsule() } else { query };
         let mode = if TRANSFORMED {
             BodyTraceMode::Transformed
         } else {

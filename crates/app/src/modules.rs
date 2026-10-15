@@ -1184,25 +1184,34 @@ impl FrameHost {
                 if row.request.phase != Phase::Client || row.produces_client_view != view_producer {
                     continue;
                 }
-                let time = row
-                    .client_connection
-                    .filter(|_| row.produces_client_view)
-                    .and_then(|(id, lifetime)| {
-                        let client = self.runtime.server.clients.get(id.0 as usize)?;
-                        if client.connection.is_none()
-                            || client.entity != lifetime
-                            || self.runtime.server.entities.resolve(lifetime).is_none()
-                        {
-                            return None;
-                        }
-                        self.runtime
-                            .snapshots
-                            .get(id.0 as usize)?
-                            .as_ref()?
-                            .interpolation()
-                            .map(|sample| sample.time)
-                    })
-                    .unwrap_or_else(|| row.time(self.time));
+                let time = if let Some((id, lifetime)) =
+                    row.client_connection.filter(|_| row.produces_client_view)
+                {
+                    let Some(_) = self
+                        .runtime
+                        .server
+                        .clients
+                        .get(id.0 as usize)
+                        .filter(|client| {
+                            client.connection.is_some()
+                                && client.entity == lifetime
+                                && self.runtime.server.entities.resolve(lifetime).is_some()
+                        })
+                    else {
+                        continue;
+                    };
+                    let Some(sample) = self.runtime.snapshots[id.0 as usize]
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.interpolation())
+                    else {
+                        // Bound world views wait for an active native sample;
+                        // queued uptime belongs to unbound UI/overlay clocks.
+                        continue;
+                    };
+                    sample.time
+                } else {
+                    row.time(self.time)
+                };
                 invoke_frame(self, ModuleId(index as u16), time);
             }
         }

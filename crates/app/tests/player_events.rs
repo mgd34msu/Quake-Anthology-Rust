@@ -433,6 +433,7 @@ fn dispatch(host: &mut FrameHost, source: &mut Source) -> qa_app::output::Output
 }
 fn drain(host: &mut FrameHost, milliseconds: u64) {
     let time = EventTime::from_milliseconds(milliseconds);
+    assert!(time >= host.time, "fixture realtime must remain monotonic");
     host.queue
         .push(SysEvent {
             time,
@@ -511,17 +512,33 @@ fn transmit_native(
     drain(host, queued_ms);
 }
 fn due(host: &mut FrameHost, client: ClientId, queued_ms: u64) {
-    drain(host, queued_ms);
-    let channel = &host
-        .runtime
-        .network
-        .get(client, Endpoint::Client)
-        .unwrap()
-        .channel;
-    host.runtime.snapshots[client.0 as usize]
-        .as_mut()
-        .unwrap()
-        .advance_presentation(channel, EventTime::from_milliseconds(queued_ms));
+    let mut queued_ms = queued_ms;
+    // Q3 adjusts its delta after producing the current frame. Drive ordinary
+    // packetless CLIENT frames until that native transition is actually due.
+    for _ in 0..3 {
+        drain(host, queued_ms);
+        let channel = &host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel;
+        let current = channel.current_snapshot().unwrap().time();
+        let snapshot = host.runtime.snapshots[client.0 as usize].as_mut().unwrap();
+        snapshot
+            .advance_presentation(
+                channel,
+                EventTime::from_milliseconds(queued_ms),
+                Default::default(),
+            )
+            .unwrap();
+        let presented = snapshot.interpolation().unwrap().time;
+        if presented.milliseconds() >= current.milliseconds() {
+            return;
+        }
+        queued_ms += u64::try_from(current.milliseconds() - presented.milliseconds()).unwrap();
+    }
+    panic!("CLIENT did not reach the retained native transition");
 }
 fn consume(host: &mut FrameHost, source: &mut Source) -> u64 {
     host.publish_client_feedback();

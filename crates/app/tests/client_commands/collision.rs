@@ -6,7 +6,9 @@ use qa_compat::services::ModelLookup;
 #[allow(dead_code, unused_imports)]
 mod map_fixture;
 
-const ENTRIES: u32 = 38;
+const ENTRIES: u32 = 60;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const NATIVE_DATA: u64 = 0x4000;
 
 fn data() -> [u8; 1024] {
     let mut data = [0; 1024];
@@ -38,6 +40,25 @@ fn data() -> [u8; 1024] {
         (480, [110.0, 0.0, 0.0]),
         (640, [8192.0, 0.0, 0.0]),
         (656, [0.0001, 0.0, 0.0]),
+        (672, [-1.0, -2.0, -3.0]),
+        (688, [1.0, 2.0, 3.0]),
+        (704, [-4.0, 2.5, 0.0]),
+        (720, [4.0, 2.5, 0.0]),
+        (736, [6.0, 2.5, 0.0]),
+        (752, [14.0, 2.5, 0.0]),
+        (768, [-1.0, -1.0, -4.0]),
+        (784, [1.0, 1.0, 4.0]),
+        (800, [-8.0, 0.0, 3.0]),
+        (816, [8.0, 0.0, 3.0]),
+        (832, [90.0, 0.0, 0.0]),
+        (848, [0.0, 0.0, 3.0]),
+        (864, [-0.5, -0.5, -1.0]),
+        (880, [0.5, 0.5, 1.0]),
+        (896, [2.0, 0.0, 3.0]),
+        (912, [18.0, 0.0, 3.0]),
+        (928, [0.75, 0.0, 0.0]),
+        (960, [10.0, 0.0, 8.0]),
+        (976, [10.0, 0.0, 0.0]),
     ] {
         for (axis, value) in value.into_iter().enumerate() {
             data[at + axis * 4..at + axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
@@ -76,15 +97,40 @@ fn query_call(entry: u32) -> Option<(u32, &'static [u32])> {
         35 => (26, &[512, 464, 480, 0, 0, 255, 1, 336, u32::MAX]),
         36 => (23, &[65536, 255]),
         37 => (25, &[512, 0, 304, 0, 0, 255, 0x02000000]),
+        38 => (83, &[512, 704, 720, 672, 688, 255, 0x02000000]),
+        39 => (
+            84,
+            &[512, 736, 752, 672, 688, 255, 0x02000000, 336, u32::MAX],
+        ),
+        40 => (25, &[512, 704, 720, 672, 688, 255, 0x02000000]),
+        41 => (83, &[512, u32::MAX, u32::MAX, u32::MAX, u32::MAX, 255, 1]),
+        42 => (84, &[512, 640, 656, 0, 0, 255, 1, 336, u32::MAX]),
+        43 => (83, &[512, 384, 320, 672, 688, 0, 1]),
+        44 => (82, &[768, 784]),
+        45 => (83, &[512, 800, 816, 0, 0, 254, 0x02000000]),
+        46 => (84, &[512, 896, 912, 0, 0, 254, 0x02000000, 336, 832]),
+        47 => (84, &[512, 960, 976, 0, 0, 254, 0x02000000, 336, 832]),
+        48 => (23, &[848, 254]),
+        49 => (24, &[848, 254, 368, 832]),
+        50 => (23, &[848, 255]),
+        51 => (82, &[u32::MAX, 784]),
+        52 => (84, &[512, 896, 912, 0, 0, 254, 0x02000000, 336, u32::MAX]),
+        53 => (82, &[864, 880]),
+        54 => (25, &[512, 800, 816, 864, 880, 254, 0x02000000]),
+        55 => (83, &[512, u32::MAX, u32::MAX, 0, 0, 254, 0x02000000]),
+        56 => (84, &[512, 960, 976, 0, 0, 254, 0x02000000, 336, 352]),
+        57 => (82, &[0, 784]),
+        58 => (23, &[928, 255]),
+        59 => (82, &[352, 784]),
         _ => return None,
     })
 }
 fn pointer_argument(number: u32, index: usize) -> bool {
     match number {
-        22 => true,
+        22 | 82 => true,
         23 => index == 0,
         24 => index != 1,
-        25 | 26 => index <= 4 || index >= 7,
+        25 | 26 | 83 | 84 => index <= 4 || index >= 7,
         _ => false,
     }
 }
@@ -159,10 +205,10 @@ fn native_program() -> Program {
     use qa_formats::program::native::{Image, LoadRole};
     use qa_platform::native::NativeScalar;
     let mut file = pe_export_fixture(64);
-    put(&mut file, 392 + 8, 8192, 4);
-    put(&mut file, 392 + 16, 8192, 4);
-    put(&mut file, 208, 12288, 4);
-    file.resize(8704, 0);
+    put(&mut file, 392 + 8, 16384, 4);
+    put(&mut file, 392 + 16, 16384, 4);
+    put(&mut file, 208, 20480, 4);
+    file.resize(16896, 0);
     pe_rva(&mut file, 0x1140, 0x1800, 4);
     pe_text(&mut file, 0x1800, &[0xc3]);
     let mut vm = Vm::map_image(
@@ -186,7 +232,7 @@ fn native_program() -> Program {
         code.extend([0; 4]);
         if entry == 9 || entry == 10 {
             code.extend([0x48, 0xb8]);
-            code.extend((vm.process.base() + 0x2400).to_le_bytes());
+            code.extend((vm.process.base() + NATIVE_DATA).to_le_bytes());
             code.extend(if entry == 9 {
                 &[0x8b, 0x04, 0x10, 0xc3][..]
             } else {
@@ -198,7 +244,7 @@ fn native_program() -> Program {
                 for (index, &word) in words.iter().enumerate() {
                     let value = if pointer_argument(number, index) && word != 0 && word != u32::MAX
                     {
-                        vm.process.base() + 0x2400 + u64::from(word)
+                        vm.process.base() + NATIVE_DATA + u64::from(word)
                     } else {
                         u64::from(word)
                     };
@@ -231,7 +277,7 @@ fn native_program() -> Program {
                     let address = if entry == 8 {
                         0
                     } else {
-                        vm.process.base() + 0x2400 + u64::from(pointer)
+                        vm.process.base() + NATIVE_DATA + u64::from(pointer)
                     };
                     code.extend([0x48, 0xba]);
                     code.extend(address.to_le_bytes());
@@ -246,9 +292,14 @@ fn native_program() -> Program {
         code[branch..branch + 4].copy_from_slice(&((end - branch - 4) as i32).to_le_bytes());
     }
     code.extend([0x31, 0xc0, 0xc3]);
-    assert!(code.len() < 0xc00, "fixture code bytes={}", code.len());
+    assert!(
+        code.len() < NATIVE_DATA as usize - 0x1800,
+        "fixture code bytes={}",
+        code.len()
+    );
     vm.process.memory_mut().unwrap()[0x1800..0x1800 + code.len()].copy_from_slice(&code);
-    vm.process.memory_mut().unwrap()[0x2400..0x2400 + data().len()].copy_from_slice(&data());
+    vm.process.memory_mut().unwrap()[NATIVE_DATA as usize..NATIVE_DATA as usize + data().len()]
+        .copy_from_slice(&data());
     Program::Native {
         vm: Box::new(vm),
         imports: &Q3_CLIENT,
@@ -290,6 +341,11 @@ pub(super) fn selection(native: bool) {
             (true, 32, 0, false),
             (true, 12, 0, true),
             (true, 37, 0, false),
+            (true, 51, 0, false),
+            (true, 57, 0, false),
+            (true, 52, 0, false),
+            (true, 56, 0, false),
+            (true, 59, 0, false),
         ] {
             scenario(true, Some(case), false);
         }
@@ -374,6 +430,13 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
         assert_eq!(probe(&mut host, seat, 9, 524), 0);
         assert_eq!(probe(&mut host, seat, 28, 0), 0); // Wrapper reconstructs end, including rounding.
         assert_eq!(probe(&mut host, seat, 9, 524), 0);
+        probe(&mut host, seat, 41, 0); // Capsule direct preserves no-node skipped pointers.
+        assert_eq!(probe(&mut host, seat, 9, 524), 0);
+        probe(&mut host, seat, 42, 0);
+        assert_eq!(probe(&mut host, seat, 9, 524), 0);
+        assert_eq!(probe(&mut host, seat, 44, 0), 254);
+        probe(&mut host, seat, 55, 0); // Registered254, no nodes skips invalid input vectors.
+        assert_eq!(probe(&mut host, seat, 9, 524), 0);
         if !native {
             rejected(&mut host, seat, 3, 0);
         }
@@ -382,6 +445,11 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
         assert_eq!(probe(&mut host, 1, 2, 0), 0);
         assert_eq!(probe(&mut host, 1, 0, 0), 256);
         assert_eq!(probe(&mut host, 1, 3, 255), 255);
+        assert_eq!(probe(&mut host, 1, 3, 254), 254);
+        assert_eq!(probe(&mut host, 1, 44, 0), 254);
+        assert_eq!(probe(&mut host, 1, 48, 0), 0); // Real inline254 brush wins over registered temp254.
+        probe(&mut host, 1, 45, 0);
+        assert_eq!(trace_word(&mut host, 1, 8), 1.0f32.to_bits()); // Trace254 uses actual inline bounds, not registered tall bounds.
         assert_eq!(probe(&mut host, 1, 11, 0), 255);
         assert_eq!(probe(&mut host, 1, 12, 0), 0); // Actual model255 wins over temp at origin.
         assert_eq!(probe(&mut host, 1, 33, 0), 1); // Model255 owns brush at100.
@@ -396,6 +464,9 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
         assert_eq!(probe(&mut host, 1, 2, 0), 0);
         if selected {
             assert_eq!(probe(&mut host, 0, 1, 0), 0);
+        }
+        if [52, 56].contains(&entry) {
+            probe(&mut host, 0, 44, 0);
         }
         if stale {
             assert!(host.runtime.geometry.remove(q2));
@@ -449,6 +520,7 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
     assert_eq!(probe(&mut host, 0, 0, 0), 3);
     assert_eq!(probe(&mut host, 0, 1, 0), 0);
     if !native {
+        rejected(&mut host, 0, 45, 0); // A world change clears old temp254 registration.
         let saved = [
             probe(&mut host, 0, 9, 0),
             probe(&mut host, 0, 9, 4),
@@ -505,6 +577,15 @@ fn query_cases(host: &mut FrameHost, native: bool) {
         assert_eq!(probe(host, seat, 13, 0), 0);
         assert_eq!(probe(host, seat, 14, 0), 0x02000000);
         assert_eq!(probe(host, seat, 31, 0), 0x02000000); // Raw255 never reads NaN angles.
+        for command in [38, 39] {
+            probe(host, seat, command, 0);
+            assert_eq!(trace_word(host, seat, 8), 1.0f32.to_bits());
+            assert_eq!(trace_word(host, seat, 48), 0);
+        }
+        probe(host, seat, 40, 0);
+        assert!(f32::from_bits(trace_word(host, seat, 8)) < 1.0); // Box's Y extent differs from capsule radius.
+        probe(host, seat, 43, 0);
+        assert!(f32::from_bits(trace_word(host, seat, 8)) < 1.0); // Same capsule query clips admitted brush geometry.
         for command in [15, 16] {
             assert_eq!(probe(host, seat, command, 0), 0);
             let mut expected = [0u32; 14];
@@ -564,10 +645,21 @@ fn query_cases(host: &mut FrameHost, native: bool) {
         // Output aliases start: all query inputs are captured before trace_t writes.
         probe(host, seat, 30, 0);
         assert_eq!(probe(host, seat, 9, 296), fraction.to_bits());
-        write(host, seat, 288, (-4.0f32).to_bits());
-        write(host, seat, 292, 0);
-        write(host, seat, 296, 0);
+        // Restore every input word overlapped by this aliased56-byte output.
+        for at in (288..344).step_by(4) {
+            write(
+                host,
+                seat,
+                at,
+                u32::from_le_bytes(data()[at as usize..at as usize + 4].try_into().unwrap()),
+            );
+        }
+        capsule_cases(host, seat, native);
     }
+    // The same native capsule handle retains separate bounds in each module.
+    probe(host, 1, 53, 0);
+    assert_eq!(probe(host, 0, 48, 0), 0x02000000);
+    assert_eq!(probe(host, 1, 48, 0), 0);
     // Two cgame modules retain independent mutable temp hulls.
     write(host, 1, 256, (-2.0f32).to_bits());
     write(host, 1, 272, 2.0f32.to_bits());
@@ -585,4 +677,40 @@ fn query_cases(host: &mut FrameHost, native: bool) {
     assert_eq!(probe(host, 0, 11, 0), 255);
     write(host, 0, 256, (-1.0f32).to_bits());
     probe(host, 0, 11, 0);
+}
+
+fn capsule_cases(host: &mut FrameHost, seat: usize, native: bool) {
+    assert_eq!(probe(host, seat, 44, 0), 254);
+    assert_eq!(probe(host, seat, 48, 0), 0x02000000);
+    assert_eq!(probe(host, seat, 49, 0), 0); // Pitch rotates the rounded target, including containment.
+    assert_eq!(probe(host, seat, 50, 0), 0); // Capsule registration leaves retained255 unchanged.
+    probe(host, seat, 45, 0);
+    let fraction = trace_word(host, seat, 8);
+    assert!(f32::from_bits(fraction) < 1.0);
+    assert_eq!(trace_word(host, seat, 48), 0x02000000);
+    assert_eq!(trace_word(host, seat, 52), 0);
+    probe(host, seat, 46, 0);
+    assert_eq!(trace_word(host, seat, 8), 1.0f32.to_bits()); // Same path clears the pitched target.
+    probe(host, seat, 47, 0);
+    assert!(f32::from_bits(trace_word(host, seat, 8)) < 1.0);
+    assert!(f32::from_bits(trace_word(host, seat, 32)) > 0.99); // Plane restored into world +Z.
+    assert_eq!(probe(host, seat, 9, 508), 0xa5a5a5a5);
+    assert_eq!(probe(host, seat, 9, 568), 0xa5a5a5a5);
+    if !native {
+        for entry in [51, 52, 56, 57, 59] {
+            rejected(host, seat, entry, 0);
+            probe(host, seat, 45, 0);
+            assert_eq!(trace_word(host, seat, 8), fraction); // Failed call leaves admitted capsule unchanged.
+        }
+    }
+    probe(host, seat, 54, 0); // Existing box/capsule kernel, without overwriting retained255.
+    assert!(f32::from_bits(trace_word(host, seat, 8)) < 1.0);
+    assert_eq!(probe(host, seat, 50, 0), 0);
+    assert_eq!(probe(host, seat, 58, 0), 0x02000000); // Small box query did not replace the larger retained255.
+    assert_eq!(probe(host, seat, 53, 0), 254);
+    probe(host, seat, 45, 0);
+    assert_eq!(trace_word(host, seat, 8), 1.0f32.to_bits()); // Same handle, newly registered shorter target.
+    assert_eq!(probe(host, seat, 44, 0), 254);
+    probe(host, seat, 45, 0);
+    assert_eq!(trace_word(host, seat, 8), fraction);
 }

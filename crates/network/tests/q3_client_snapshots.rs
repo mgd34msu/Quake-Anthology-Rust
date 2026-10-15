@@ -72,6 +72,7 @@ fn prepare_snapshot(
             command: 0,
             flags: 5,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[0x55, 0xaa],
             player: &player,
             entities,

@@ -419,7 +419,19 @@ impl CollisionStore {
         match shape {
             CollisionShape::Box => Ok(super::boxes::trace_box(query, body, entity, mode)),
             CollisionShape::Capsule => {
-                Ok(super::capsules::trace_capsule(query, body, entity, mode))
+                let mut local = query;
+                let (origin, matrix) = if mode == BodyTraceMode::Transformed {
+                    local.center_box();
+                    local.start = local.start - body.position;
+                    local.end = local.end - body.position;
+                    (body.position, rotate_query(&mut local, angles, rules))
+                } else {
+                    (Vec3::default(), None)
+                };
+                let mut trace = super::capsules::trace_capsule(local, body, entity, origin);
+                restore_normal(&mut trace, matrix, angles, rules);
+                trace.end = mode.end_position(query.start, query.end, trace.fraction);
+                Ok(trace)
             }
             CollisionShape::Model { geometry, index } => {
                 let mut trace = match mode {
@@ -481,11 +493,17 @@ impl CollisionStore {
                     mins: body.mins,
                     maxs: body.maxs,
                 };
-                let mut center = qa_core::math::midpoint(bounds.mins, bounds.maxs);
+                let center = qa_core::math::midpoint(bounds.mins, bounds.maxs);
+                let mut local = point;
                 if transformed {
-                    center = body.position + center;
+                    local = local - body.position;
+                    if model_rules.rotation != ModelRotation::TranslationOnly
+                        && angles.0.iter().any(|&angle| angle != 0.0)
+                    {
+                        local = point_rotate(local, basis(angles, model_rules.rotation));
+                    }
                 }
-                qa_core::primitives::Capsule::from_bounds(bounds).contains(center, point)
+                qa_core::primitives::Capsule::from_bounds(bounds).contains(center, local)
             }
             CollisionShape::Box => (0..3).all(|axis| {
                 let coordinate = if transformed {
@@ -642,48 +660,11 @@ impl CollisionStore {
         };
         local.start = local.start - offset;
         local.end = local.end - offset;
-        let rotated = rules.rotation != ModelRotation::TranslationOnly
-            && angles.0.iter().any(|&angle| angle != 0.0);
-        let matrix = if rotated {
-            let basis = basis(angles, rules.rotation);
-            let matrix = basis.axes();
-            // CM_TransformedBoxTrace negates the capsule's side column again
-            // after CreateRotationMatrix has inverted that row. Endpoints
-            // retain the ordinary matrix, independently of this native rule.
-            let capsule_matrix = if rules.rotation == ModelRotation::TransposeBasis {
-                [matrix[0], -matrix[1], matrix[2]]
-            } else {
-                matrix
-            };
-            local.capsule = local
-                .capsule
-                .map(|capsule| capsule.to_local(capsule_matrix));
-            if rules.rotation == ModelRotation::TransposeBasis {
-                local.start = inverse_transform_point(Vec3::default(), matrix, local.start);
-                local.end = inverse_transform_point(Vec3::default(), matrix, local.end);
-            } else {
-                local.start = point_rotate(local.start, basis);
-                local.end = point_rotate(local.end, basis);
-            }
-            Some(matrix)
-        } else {
-            None
-        };
+        let matrix = rotate_query(&mut local, angles, rules);
         // The wrapper's symmetric bounds still pass through raw BrushWork
         // centering, including its separate f32 rounding operation.
         let mut trace = trace_native(resource, model.root, local, scratch, invalid)?;
-        if let Some(matrix) = matrix
-            && trace.fraction != 1.0
-        {
-            trace.plane.normal = if rules.rotation == ModelRotation::NegativeEuler {
-                point_rotate(trace.plane.normal, basis(-angles, rules.rotation))
-            } else {
-                let transpose = std::array::from_fn(|row| {
-                    Vec3(std::array::from_fn(|column| matrix[column].0[row]))
-                });
-                inverse_transform_point(Vec3::default(), transpose, trace.plane.normal)
-            };
-        }
+        restore_normal(&mut trace, matrix, angles, rules);
         trace.end = if rules.rotation == ModelRotation::TranslationOnly {
             if trace.fraction != 1.0 {
                 trace.end + offset
@@ -719,6 +700,49 @@ impl CollisionStore {
             local = point_rotate(local, basis(angles, rules.rotation));
         }
         self.point_contents_model(geometry, index, local, caller)
+    }
+}
+
+fn rotate_query(query: &mut TraceQuery<'_>, angles: Vec3, rules: ModelRules) -> Option<[Vec3; 3]> {
+    if rules.rotation == ModelRotation::TranslationOnly
+        || !angles.0.iter().any(|&angle| angle != 0.0)
+    {
+        return None;
+    }
+    let basis = basis(angles, rules.rotation);
+    let matrix = basis.axes();
+    // Native Q3 rotates the moving capsule's offset with its separately
+    // negated side column while endpoints retain the ordinary matrix.
+    let capsule_matrix = if rules.rotation == ModelRotation::TransposeBasis {
+        [matrix[0], -matrix[1], matrix[2]]
+    } else {
+        matrix
+    };
+    query.capsule = query
+        .capsule
+        .map(|capsule| capsule.to_local(capsule_matrix));
+    if rules.rotation == ModelRotation::TransposeBasis {
+        query.start = inverse_transform_point(Vec3::default(), matrix, query.start);
+        query.end = inverse_transform_point(Vec3::default(), matrix, query.end);
+    } else {
+        query.start = point_rotate(query.start, basis);
+        query.end = point_rotate(query.end, basis);
+    }
+    Some(matrix)
+}
+
+fn restore_normal(trace: &mut Trace, matrix: Option<[Vec3; 3]>, angles: Vec3, rules: ModelRules) {
+    if let Some(matrix) = matrix
+        && trace.fraction != 1.0
+    {
+        trace.plane.normal = if rules.rotation == ModelRotation::NegativeEuler {
+            point_rotate(trace.plane.normal, basis(-angles, rules.rotation))
+        } else {
+            let transpose = std::array::from_fn(|row| {
+                Vec3(std::array::from_fn(|column| matrix[column].0[row]))
+            });
+            inverse_transform_point(Vec3::default(), transpose, trace.plane.normal)
+        };
     }
 }
 

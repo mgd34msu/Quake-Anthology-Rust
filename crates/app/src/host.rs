@@ -2,9 +2,7 @@
 use crate::Runtime;
 use qa_console::commands::Console;
 use qa_core::{
-    primitives::{
-        ClientId, CollisionOwner, CvarHandle, EffectEvent, ModuleId, SoundEvent, UserCmd,
-    },
+    primitives::{ClientId, CvarHandle, EffectEvent, ModuleId, SoundEvent, UserCmd},
     sys_events::{EventKind, EventTime, SeatId, SysEventQueue},
 };
 use qa_input::Target;
@@ -258,6 +256,8 @@ pub struct FrameHost {
     roll_speed: CvarHandle,
     kick_angles: CvarHandle,
     smooth_clients: CvarHandle,
+    time_nudge: CvarHandle,
+    timescale: CvarHandle,
     input_handles: qa_console::input_settings::InputHandles,
     pub(crate) movement_handles: qa_console::movement::MovementHandles,
     notify_time: CvarHandle,
@@ -444,6 +444,11 @@ impl FrameHost {
             .cvars
             .find("cg_smoothClients")
             .ok_or("missing cg_smoothClients")?;
+        let time_nudge = console
+            .cvars
+            .find("cl_timeNudge")
+            .ok_or("missing cl_timeNudge")?;
+        let timescale = console.cvars.find("timescale").ok_or("missing timescale")?;
         let input_handles = qa_console::input_settings::InputHandles::load(&console.cvars)?;
         let movement_handles = qa_console::movement::MovementHandles::bind(&console.cvars)?;
         let notify_time = console
@@ -503,6 +508,8 @@ impl FrameHost {
             roll_speed,
             kick_angles,
             smooth_clients,
+            time_nudge,
+            timescale,
             input_handles,
             movement_handles,
             notify_time,
@@ -636,8 +643,17 @@ impl FrameHost {
             return result;
         }
         let client = Stopwatch::start();
+        let command_times = std::array::from_fn(|seat| {
+            self.local_clients[seat]
+                .and_then(|id| {
+                    self.runtime.snapshots[id.0 as usize]
+                        .as_ref()?
+                        .interpolation()
+                })
+                .map(|sample| sample.time)
+        });
         self.advance_client_presentation();
-        result.commands = self.client_frame();
+        result.commands = self.client_frame(command_times);
         let native_owners = std::array::from_fn(|seat| {
             self.local_clients[seat]
                 .and_then(|id| self.runtime.snapshots.get(id.0 as usize)?.as_ref())
@@ -962,13 +978,31 @@ impl FrameHost {
     }
 
     fn advance_client_presentation(&mut self) {
-        for snapshot in self.runtime.snapshots.iter_mut().flatten() {
-            if let Some(connection) = self
-                .runtime
-                .network
-                .get(snapshot.client, qa_core::loopback::Endpoint::Client)
-            {
-                snapshot.advance_presentation(&connection.channel, self.time);
+        let options = crate::snapshots::ClockOptions {
+            time_nudge_ms: self.console.cvars.integer(self.time_nudge),
+            timescale: self.console.cvars.value(self.timescale),
+            // Native local-server pause and modified frame duration remain a
+            // separate capability; queued time is not silently rescaled here.
+            paused: false,
+        };
+        for slot in 0..self.runtime.snapshots.len() {
+            let failed = self.runtime.snapshots[slot].as_mut().and_then(|snapshot| {
+                let connection = self
+                    .runtime
+                    .network
+                    .get(snapshot.client, qa_core::loopback::Endpoint::Client)?;
+                snapshot
+                    .advance_presentation(&connection.channel, self.time, options)
+                    .err()
+                    .map(|error| (snapshot.client, error))
+            });
+            if let Some((client, error)) = failed {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("CLIENT {} clock: {error:?}\n", client.0));
+                self.disconnect_client(client);
             }
         }
     }
@@ -1177,6 +1211,9 @@ impl FrameHost {
                         disconnected = Some(id);
                         return std::ops::ControlFlow::Break(());
                     }
+                    if let Incoming::Snapshot(frame) = incoming {
+                        self.runtime.synchronize_client_collision(id, frame);
+                    }
                     let server = &self.runtime.server;
                     if let Some(binding) = self.runtime.snapshots[id.0 as usize].as_ref()
                         && let Some(seat) = binding.seat()
@@ -1263,6 +1300,7 @@ impl FrameHost {
                             }
                             Incoming::Gamestate(gamestate) => {
                                 self.runtime.prediction[seat.index()].clear_history();
+                                if let Some(view) = self.runtime.client_collision[id.0 as usize].as_mut() { view.reset(); }
                                 if let Some(resources) =
                                     self.runtime.client_resources[id.0 as usize].as_mut()
                                 {
@@ -1289,7 +1327,7 @@ impl FrameHost {
                                     if binding.apply(
                                         incoming,
                                         &mut prediction.player,
-                                        &self.runtime.native_numbers[id.0 as usize],
+                                        |number| self.runtime.client_collision[id.0 as usize].as_ref().and_then(|view| view.entity(number)),
                                         &self.runtime.catalog.hud,
                                         &self.runtime.catalog.registry,
                                         time,
@@ -1486,7 +1524,10 @@ impl FrameHost {
         self.queue = queue;
     }
 
-    fn client_frame(&mut self) -> [UserCmd; SeatId::COUNT] {
+    fn client_frame(
+        &mut self,
+        command_times: [Option<qa_core::primitives::ThinkTime>; SeatId::COUNT],
+    ) -> [UserCmd; SeatId::COUNT] {
         let rules: [_; SeatId::COUNT] = std::array::from_fn(|seat| {
             self.local_clients[seat].map_or(qa_core::primitives::RuleSetId::default(), |_| {
                 self.runtime.prediction[seat].player.movement_rules
@@ -1508,6 +1549,15 @@ impl FrameHost {
             .build_frame_with_policy(self.time, &policies);
         for (seat, command) in commands.iter_mut().enumerate() {
             *command = qa_movement::prepare_command(rules[seat], *command);
+            if self.local_clients[seat]
+                .and_then(|id| self.runtime.snapshots[id.0 as usize].as_ref())
+                .is_some_and(|binding| {
+                    binding.protocol == qa_network::commands::packet::Protocol::Quake3_68
+                })
+            {
+                command.server_time_ms =
+                    command_times[seat].map_or(0, |time| time.milliseconds() as i32);
+            }
         }
         for (seat, id) in self.local_clients.iter().enumerate() {
             if let Some(id) = id {
@@ -1521,18 +1571,47 @@ impl FrameHost {
                 }
                 self.runtime
                     .send_local_command(*id, &commands[seat], self.time);
-                if let Some(world) = &mut self.runtime.collision {
+                if let Some(frame) = self
+                    .runtime
+                    .network
+                    .get(*id, qa_core::loopback::Endpoint::Client)
+                    .and_then(|connection| connection.channel.current_snapshot())
+                {
+                    if let (Some(view), Some(binding), Some(resources)) = (
+                        self.runtime.client_collision[id.0 as usize].as_mut(),
+                        self.runtime.snapshots[id.0 as usize].as_ref(),
+                        self.runtime.client_resources[id.0 as usize].as_ref(),
+                    ) {
+                        let _ = view.synchronize(
+                            frame,
+                            binding.entity_projection(),
+                            &resources.state.models,
+                            &self.runtime.geometry,
+                            binding.view_entity(Some(frame)),
+                        );
+                    }
+                }
+                if self
+                    .runtime
+                    .network
+                    .get(*id, qa_core::loopback::Endpoint::Client)
+                    .and_then(|connection| connection.channel.current_snapshot())
+                    .is_none()
+                    && let Some(view) = self.runtime.client_collision[id.0 as usize].as_mut()
+                {
+                    view.invalidate();
+                }
+                if let Some(view) = self.runtime.client_collision[id.0 as usize].as_mut() {
                     let prediction = &mut self.runtime.prediction[seat];
-                    let client = &self.runtime.server.clients[id.0 as usize];
-                    let mut trace = qa_world::collision::WorldTrace::new(
-                        &self.runtime.geometry,
-                        world.geometry,
-                        world.index,
-                        &self.runtime.server.entities,
-                        &self.runtime.server.area,
-                        &mut world.scratch,
-                        CollisionOwner::Lifetime(client.entity),
-                    );
+                    let Ok(mut trace) = view.trace(&self.runtime.geometry) else {
+                        if prediction.player.prediction.angles {
+                            qa_movement::predict_view_angles(
+                                commands[seat],
+                                &mut prediction.player,
+                            );
+                        }
+                        continue;
+                    };
                     let base = prediction.player.movement.tuning;
                     prediction.player.movement.tuning = self.movement_handles.resolve(
                         &self.console.cvars,
@@ -1569,22 +1648,6 @@ impl FrameHost {
                     {
                         prediction.player.view_angles = angles;
                     }
-                }
-            }
-        }
-        if self.runtime.collision.is_some() {
-            let mut predicted_poses = std::array::from_fn::<_, { SeatId::COUNT }, _>(|seat| {
-                self.local_seat(seat)
-                    .filter(|(_, _, player)| player.prediction.position)
-                    .map(|(_, client, player)| (client.entity, player.body.position))
-            });
-            self.runtime
-                .server
-                .area
-                .predict_attachments(&self.runtime.server.entities, &mut predicted_poses);
-            for (seat, pose) in predicted_poses.iter().enumerate() {
-                if let Some((_, position)) = pose {
-                    self.runtime.prediction[seat].player.body.position = *position;
                 }
             }
         }

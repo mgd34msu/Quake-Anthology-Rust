@@ -15,6 +15,7 @@ use qa_compat::{
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
+    loopback::Endpoint,
     primitives::*,
     sys_events::{EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
@@ -234,7 +235,6 @@ fn frame(host: &mut FrameHost, source: &mut Source) {
 }
 
 fn damage_snapshot(host: &mut FrameHost, source: &mut Source, sequence: u32) {
-    use qa_core::loopback::Endpoint;
     let client = host.local_clients[0].unwrap();
     let module = ModuleId(99);
     assert!(
@@ -272,6 +272,12 @@ fn damage_snapshot(host: &mut FrameHost, source: &mut Source, sequence: u32) {
         })
         .unwrap();
     host.drain(&mut Default::default());
+    advance_damage_view(host, source.time);
+    host.publish_client_feedback();
+}
+
+fn advance_damage_view(host: &mut FrameHost, time: EventTime) {
+    let client = host.local_clients[0].unwrap();
     let channel = &host
         .runtime
         .network
@@ -281,8 +287,8 @@ fn damage_snapshot(host: &mut FrameHost, source: &mut Source, sequence: u32) {
     host.runtime.snapshots[client.0 as usize]
         .as_mut()
         .unwrap()
-        .advance_presentation(channel, source.time);
-    host.publish_client_feedback();
+        .advance_presentation(channel, time, Default::default())
+        .unwrap();
 }
 
 #[test]
@@ -312,6 +318,23 @@ fn native_cgame_view_ownership_suppresses_fallback_and_release_baselines_without
     assert_eq!(host.runtime.server.events.sequence_range().end, released);
     damage_snapshot(&mut host, &mut source, 3);
     damage_snapshot(&mut host, &mut source, 4);
+    let snapshot = host.runtime.snapshots[client.0 as usize].as_ref().unwrap();
+    assert_eq!(
+        snapshot.interpolation().unwrap().time,
+        ThinkTime::Milliseconds(1396)
+    );
+    // Native drift leaves the fourth transition in the future. A packetless
+    // CLIENT advance makes it due without replaying the suppressed baseline.
+    source.time = EventTime::from_milliseconds(500);
+    host.queue
+        .push(SysEvent {
+            time: source.time,
+            kind: EventKind::Time,
+        })
+        .unwrap();
+    host.drain(&mut Default::default());
+    advance_damage_view(&mut host, source.time);
+    host.publish_client_feedback();
     let time = host.time;
     let counts = qa_app::output::dispatch(
         &mut host.runtime,

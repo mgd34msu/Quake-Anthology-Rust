@@ -36,6 +36,7 @@ pub struct EntityRoles {
     other_events: &'static [u32],
     other2_events: &'static [u32],
     player_event_flag: u32,
+    client_non_solids: &'static [u32],
 }
 const NEUTRAL: EntityRoles = EntityRoles {
     event_base: None,
@@ -50,6 +51,7 @@ const NEUTRAL: EntityRoles = EntityRoles {
     other_events: &[],
     other2_events: &[],
     player_event_flag: 0,
+    client_non_solids: &[],
 };
 const Q3: EntityRoles = EntityRoles {
     event_base: Some(13),
@@ -64,11 +66,16 @@ const Q3: EntityRoles = EntityRoles {
     other_events: &[48, 49, 50, 54, 60],
     other2_events: &[60],
     player_event_flag: 0x10,
+    client_non_solids: &[2, 8, 9],
 };
 pub const fn entity_roles(source: RuleSetId) -> EntityRoles {
     [NEUTRAL, NEUTRAL, NEUTRAL, NEUTRAL, Q3][source as usize]
 }
 impl EntityRoles {
+    pub fn client_solid(self, kind: u32) -> bool {
+        !self.client_non_solids.contains(&kind)
+    }
+
     pub fn cells(self, entity_type: u32, event: u32, flags: u32) -> EntityCellRoles {
         let standalone = self.event_base.is_some_and(|base| entity_type > base);
         let event = self

@@ -4,7 +4,10 @@ mod support;
 use qa_app::{
     client_scene::{ClientEntities, ClientModelBindings, ClientSceneInput},
     model_assets::{ModelCatalog, ModelLimits, ModelMaterialPolicy, ModelProfile, ModelRequest},
-    snapshots::{GunAnimation, Interpolation, PresentationClock, SnapshotBinding},
+    snapshots::{
+        ClockOptions, GunAnimation, Interpolation, PresentationClock, SnapshotBinding,
+        SnapshotClockSample,
+    },
 };
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
@@ -115,6 +118,7 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
                 command: 0,
                 flags: 0,
                 qw_peers: 0,
+                qw_dead: 0,
                 areas: &[],
                 player: &native_player,
                 entities: &rows,
@@ -224,6 +228,7 @@ fn classic_frame_origin_motion_reaches_alias_pose_without_affecting_rerelease() 
                 command: 0,
                 flags: 0,
                 qw_peers: 0,
+                qw_dead: 0,
                 areas: &[],
                 player: &classic_player,
                 entities: &classic_rows,
@@ -235,6 +240,7 @@ fn classic_frame_origin_motion_reaches_alias_pose_without_affecting_rerelease() 
                 command: 0,
                 flags: 0,
                 qw_peers: 0,
+                qw_dead: 0,
                 areas: &[],
                 player: &rerelease_player,
                 entities: &rerelease_rows,
@@ -362,6 +368,7 @@ fn received_native_beams_keep_palette_width_endpoints_and_float_alpha_without_a_
                     command: 0,
                     flags: 0,
                     qw_peers: 0,
+                    qw_dead: 0,
                     areas: &[],
                     player: &classic_player,
                     entities: &classic_rows[index],
@@ -373,6 +380,7 @@ fn received_native_beams_keep_palette_width_endpoints_and_float_alpha_without_a_
                     command: 0,
                     flags: 0,
                     qw_peers: 0,
+                    qw_dead: 0,
                     areas: &[],
                     player: &rerelease_player,
                     entities: &rerelease_rows[index],
@@ -592,6 +600,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &native_player,
         entities: &rows,
@@ -920,6 +929,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             command: 0,
             flags: 0,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[!0b0101],
             player: &player_words,
             entities: &entities,
@@ -1055,6 +1065,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             command: 0,
             flags: 0,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[0b0101, 0b1010],
             player: &[0; states::PLAYER_WORDS],
             entities: &[],
@@ -1220,6 +1231,14 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
     }
 }
 
+fn clock_snapshot(time: ThinkTime) -> SnapshotClockSample {
+    SnapshotClockSample {
+        sequence: 0,
+        time,
+        flags: 0,
+    }
+}
+
 #[test]
 fn client_presentation_uses_queued_elapsed_time_in_the_native_snapshot_domain() {
     use qa_core::sys_events::EventTime;
@@ -1234,50 +1253,45 @@ fn client_presentation_uses_queued_elapsed_time_in_the_native_snapshot_domain() 
         (10_150, 200, 100, 150, 0.5),
         (20_000, 200, 100, 200, 1.0),
     ] {
-        clock.advance(
-            EventTime::from_milliseconds(queued),
-            ThinkTime::Milliseconds(current),
-            Some(ThinkTime::Milliseconds(old)),
-            Some(100),
-        );
+        clock
+            .advance(
+                EventTime::from_milliseconds(queued),
+                clock_snapshot(ThinkTime::Milliseconds(current)),
+                Some(ThinkTime::Milliseconds(old)),
+                Some(100),
+                ClockOptions::default(),
+            )
+            .unwrap();
         assert_eq!(clock.sample().time, ThinkTime::Milliseconds(expected_time));
         assert_eq!(clock.sample().fraction, expected_fraction);
     }
     let mut qw = PresentationClock::default();
     qw.advance(
         EventTime::from_milliseconds(500),
-        ThinkTime::Milliseconds(0),
+        clock_snapshot(ThinkTime::Milliseconds(0)),
         Some(ThinkTime::Milliseconds(0)),
         None,
-    );
+        ClockOptions::default(),
+    )
+    .unwrap();
     assert_eq!(qw.sample().fraction, 1.0); // no native server-time field
-    let mut q3 = PresentationClock::default();
-    q3.advance(
-        EventTime::from_milliseconds(500),
-        ThinkTime::Milliseconds(100),
-        Some(ThinkTime::Milliseconds(50)),
-        None,
-    );
-    q3.advance(
-        EventTime::from_milliseconds(525),
-        ThinkTime::Milliseconds(100),
-        Some(ThinkTime::Milliseconds(50)),
-        None,
-    );
-    assert_eq!(q3.sample().fraction, 0.5);
     let mut nq = PresentationClock::default();
     nq.advance(
         EventTime::from_milliseconds(500),
-        ThinkTime::Seconds(0.1),
+        clock_snapshot(ThinkTime::Seconds(0.1)),
         Some(ThinkTime::Seconds(0.05)),
         None,
-    );
+        ClockOptions::default(),
+    )
+    .unwrap();
     nq.advance(
         EventTime::from_milliseconds(525),
-        ThinkTime::Seconds(0.1),
+        clock_snapshot(ThinkTime::Seconds(0.1)),
         Some(ThinkTime::Seconds(0.05)),
         None,
-    );
+        ClockOptions::default(),
+    )
+    .unwrap();
     assert!((nq.sample().fraction - 0.5).abs() < 0.00001);
 }
 
@@ -1295,22 +1309,31 @@ fn cached_clock_policy_preserves_native_interpolation_rounding() {
         (67, 0x3f2b851f, 0x3f2b851e),
         (99, 0x3f7d70a4, 0x3f7d70a3),
     ];
-    for rules in RuleSetId::ALL {
+    for rules in RuleSetId::ALL
+        .into_iter()
+        .filter(|rules| *rules != RuleSetId::Quake3)
+    {
         let mut clock =
             PresentationClock::load(qa_gameplay::rules::presentation::clock_rules(rules));
-        clock.advance(
-            EventTime::default(),
-            ThinkTime::Milliseconds(100),
-            Some(ThinkTime::Milliseconds(0)),
-            Some(100),
-        );
-        for (ms, q2_bits, interval_bits) in rows {
-            clock.advance(
-                EventTime::from_milliseconds(ms),
-                ThinkTime::Milliseconds(100),
+        clock
+            .advance(
+                EventTime::default(),
+                clock_snapshot(ThinkTime::Milliseconds(100)),
                 Some(ThinkTime::Milliseconds(0)),
                 Some(100),
-            );
+                ClockOptions::default(),
+            )
+            .unwrap();
+        for (ms, q2_bits, interval_bits) in rows {
+            clock
+                .advance(
+                    EventTime::from_milliseconds(ms),
+                    clock_snapshot(ThinkTime::Milliseconds(100)),
+                    Some(ThinkTime::Milliseconds(0)),
+                    Some(100),
+                    ClockOptions::default(),
+                )
+                .unwrap();
             assert_eq!(clock.sample().time, ThinkTime::Milliseconds(ms as i64));
             assert_eq!(
                 clock.sample().fraction.to_bits(),
@@ -1367,6 +1390,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
             command: 0,
             flags: 0,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[],
             player: &words,
             entities: &[],
@@ -1375,7 +1399,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
         snapshot.apply(
             Incoming::Snapshot(ReceivedFrame::Quake2Repro(ring.frame(sequence).unwrap())),
             &mut player,
-            &qa_app::output_namespace::NativeNumbers::load(Protocol::Quake2Repro1038),
+            |_| None,
             &catalog.hud,
             &catalog.registry,
             qa_core::sys_events::EventTime::from_milliseconds(u64::from(sequence) * 25),
@@ -1451,6 +1475,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
             command: 0,
             flags: 0,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[],
             player: &words,
             entities: &[],
@@ -1650,6 +1675,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &player,
         entities: &old_rows,
@@ -1811,6 +1837,7 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &player,
         entities: &rows,
@@ -1890,6 +1917,7 @@ fn synthesized_q3_player_sound_origin_does_not_interpolate_a_packet_pose() {
         command: 0,
         flags: 0,
         qw_peers: 0,
+        qw_dead: 0,
         areas: &[],
         player: &words,
         entities: &[],

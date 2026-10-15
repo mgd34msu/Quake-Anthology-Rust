@@ -491,6 +491,7 @@ fn stalled_peer_does_not_block_independent_output_and_state_does_not_claim_snaps
             command: 0,
             flags: 0,
             qw_peers: 0,
+            qw_dead: 0,
             areas: &[],
             player: &player,
             entities: &[],

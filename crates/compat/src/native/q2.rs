@@ -139,10 +139,7 @@ const CLASSIC: Layout = Layout {
             event: (80, false),
             extended: None,
         }),
-        model_rules: qa_core::primitives::ModelRules {
-            rotation: qa_core::primitives::ModelRotation::NegativeEuler,
-            link_bounds: qa_core::primitives::RotatedLinkBounds::MaxAbsCube,
-        },
+        model_rules: qa_gameplay::rules::model_rules(RuleSetId::Quake2),
     },
 };
 const RERELEASE: Layout = Layout {
@@ -204,7 +201,7 @@ const RERELEASE: Layout = Layout {
                 old_frame: 112,
             }),
         }),
-        model_rules: CLASSIC.entity.model_rules,
+        model_rules: qa_gameplay::rules::model_rules(RuleSetId::Quake2Rerelease),
     },
 };
 

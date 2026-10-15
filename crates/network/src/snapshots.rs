@@ -93,6 +93,7 @@ struct Slot<const P: usize> {
     count: usize,
     first_entity: u64,
     qw_peers: u32,
+    qw_dead: u32,
     player: [u32; P],
 }
 impl<const P: usize> Slot<P> {
@@ -111,6 +112,7 @@ impl<const P: usize> Slot<P> {
         count: 0,
         first_entity: 0,
         qw_peers: 0,
+        qw_dead: 0,
         player: [0; P],
     };
 }
@@ -123,6 +125,8 @@ pub struct Frame<'a, const P: usize, const E: usize> {
     pub flags: u8,
     /// Accepted QW playerinfo rows, carried by the existing native ring slot.
     pub qw_peers: u32,
+    /// PF_DEAD for accepted QW playerinfo, owned by this same retained slot.
+    pub qw_dead: u32,
     /// Common polarity: a set bit hides the area. Native codecs convert at admission/submission.
     pub areas: &'a [u8],
     pub player: &'a [u32; P],
@@ -130,11 +134,18 @@ pub struct Frame<'a, const P: usize, const E: usize> {
 }
 impl<const P: usize, const E: usize> Frame<'_, P, E> {
     pub fn qw_player(&self, number: u32) -> bool {
-        number
-            .checked_sub(1)
-            .filter(|&peer| peer < states::QW_PLAYER_SLOTS as u32)
-            .is_some_and(|peer| self.qw_peers & (1 << peer) != 0)
+        self.qw_peers & qw_player_bit(number) != 0
     }
+    pub fn qw_dead_player(&self, number: u32) -> bool {
+        self.qw_peers & self.qw_dead & qw_player_bit(number) != 0
+    }
+}
+
+fn qw_player_bit(number: u32) -> u32 {
+    number
+        .checked_sub(1)
+        .filter(|&peer| peer < states::QW_PLAYER_SLOTS as u32)
+        .map_or(0, |peer| 1 << peer)
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,6 +299,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             command: slot.command,
             flags: slot.flags,
             qw_peers: slot.qw_peers,
+            qw_dead: slot.qw_dead,
             player: &slot.player,
             areas: rows(&self.areas, self.area_capacity, index, slot.area_bytes),
             entities: rows(&self.entities, self.capacity, index, slot.count),
@@ -328,6 +340,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             command: frame.command,
             flags: frame.flags,
             qw_peers: frame.qw_peers,
+            qw_dead: frame.qw_dead,
             area_bytes: frame.areas.len(),
             count: frame.entities.len(),
             first_entity,
@@ -1098,11 +1111,7 @@ fn read_qw_records(
             terminator: 0,
             remove_advances_old: false,
         },
-        |row| {
-            row.number.checked_sub(1).is_some_and(|n| {
-                n < states::QW_PLAYER_SLOTS as u32 && previous_peers & (1 << n) != 0
-            })
-        },
+        |row| previous_peers & qw_player_bit(row.number) != 0,
         |reader| {
             let mut header = states::read_qw_entity_header(reader)?;
             // CL_ParsePacketEntities casts MSG_ReadShort to unsigned short
@@ -1122,6 +1131,7 @@ fn read_qw_records(
     }
     overflow |= count > 64;
     let mut peer_mask = 0;
+    let mut dead_mask = 0;
     if !overflow
         && base_valid
         && let Some((players, projection, namespace)) = players
@@ -1170,6 +1180,9 @@ fn read_qw_records(
                         |reference| Some(reference.ordinal()),
                     );
                     peer_mask |= 1 << info.number;
+                    if context.player_info_flags & states::QW_PLAYER_DEAD != 0 {
+                        dead_mask |= 1 << info.number;
+                    }
                     Entity {
                         number: u32::from(info.number) + 1,
                         words,
@@ -1190,6 +1203,7 @@ fn read_qw_records(
             sequence: Some(sequence),
             count,
             qw_peers: peer_mask,
+            qw_dead: dead_mask,
             ..Slot::ZERO
         },
         base_valid,

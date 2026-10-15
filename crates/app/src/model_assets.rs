@@ -1577,6 +1577,26 @@ impl ModelCatalog {
                 }),
         })
     }
+    /// Cold CLIENT registration reads the same already-loaded file record.
+    pub fn loaded_collision_model(
+        &self,
+        path: &[u8],
+    ) -> Option<(InlineBinding, Option<qa_core::primitives::GeometryId>)> {
+        match file_lookup(&self.names, &self.files, path)? {
+            ModelFile::LoadedWorld {
+                binding, collision, ..
+            } => Some((*binding, *collision)),
+            _ => None,
+        }
+    }
+    pub fn collision_world(&self, world: WorldId) -> Option<qa_core::primitives::GeometryId> {
+        self.files.iter().find_map(|file| match file {
+            ModelFile::LoadedWorld {
+                binding, collision, ..
+            } if binding.world == world && binding.index == 0 => *collision,
+            _ => None,
+        })
+    }
     pub fn renderer_inline(&self, handle: i32) -> Option<InlineBinding> {
         let ModelFile::LoadedWorld { binding, .. } = renderer_file(&self.files, handle, None)?
         else {
