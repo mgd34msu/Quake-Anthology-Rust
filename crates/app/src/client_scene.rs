@@ -762,6 +762,7 @@ impl ClientSceneInput<'_> {
                     color: [255, 255, 255, (capabilities.alpha * 255.0) as u8],
                     alpha: Some(capabilities.alpha),
                     depth_hack: capabilities.depth_hack,
+                    infrared_visible: capabilities.infrared_visible,
                     ..SceneEntity::default()
                 };
                 let angles = match binding {
@@ -848,7 +849,16 @@ impl ClientSceneInput<'_> {
             counts.missing_models += 1;
             return;
         };
-        let animation_policy = self.appearance.weapon_interpolation();
+        let animation_policy = if self
+            .player
+            .view
+            .flags
+            .contains(qa_core::primitives::PlayerViewFlags::NO_WEAPON_LERP)
+        {
+            WeaponInterpolation::None
+        } else {
+            self.appearance.weapon_interpolation()
+        };
         let previous = if animation_policy != WeaponInterpolation::None {
             self.previous
                 .filter(|old| {
@@ -865,7 +875,15 @@ impl ClientSceneInput<'_> {
                                 .can_interpolate_player(previous, current)
                         })
                 })
-                .filter(|_| self.player_event_interpolation())
+                .filter(|_| {
+                    player_event_interpolation(
+                        self.current,
+                        self.view_entity,
+                        self.projection,
+                        self.appearance,
+                        self.client,
+                    )
+                })
                 .and_then(|old| self.weapon(old))
         } else {
             None
@@ -947,21 +965,29 @@ impl ClientSceneInput<'_> {
             ResourceNamespace::Client(self.client),
         )
     }
+}
 
-    fn player_event_interpolation(&self) -> bool {
-        if !self.appearance.player_event_check() {
-            return true;
-        }
-        let (Some(current), Some(number)) = (self.current, self.view_entity) else {
-            return true;
-        };
-        let Some((words, _)) = ClientEntities::row(current, number) else {
-            return true;
-        };
-        self.entities()
-            .decode(words)
-            .is_some_and(|entity| !self.appearance.is_interpolation_event(&entity.appearance))
+/// The selected native view entity can invalidate both camera and weapon
+/// interpolation, independently of player origin and native flag changes.
+pub(crate) fn player_event_interpolation(
+    current: Option<ReceivedFrame<'_>>,
+    number: Option<u32>,
+    projection: &EntityProjection,
+    appearance: AppearancePolicy,
+    client: ClientId,
+) -> bool {
+    if !appearance.player_event_check() {
+        return true;
     }
+    let (Some(current), Some(number)) = (current, number) else {
+        return true;
+    };
+    let Some((words, _)) = ClientEntities::row(current, number) else {
+        return true;
+    };
+    let mut entity = EntityRecord::default();
+    projection.apply(words, &mut entity, ResourceNamespace::Client(client))
+        && !appearance.is_interpolation_event(&entity.appearance)
 }
 
 /// Native alias renderers fall back to frame zero for invalid frame numbers.

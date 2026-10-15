@@ -5107,7 +5107,7 @@ fn netquake_foreign_noclip_preserves_substeps_and_final_native_snap() {
             movement: player.movement,
             body: player.body,
             view_angles: player.view_angles,
-            view_offset: player.view_offset,
+            view: player.view,
             ..Default::default()
         };
         expected.movement.mode = MovementMode::Noclip;

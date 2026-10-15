@@ -2,12 +2,13 @@
 //! Native ordinals and effective tuning are supplied by the module/connection.
 use crate::{commands::packet::Protocol, states};
 use qa_core::{
-    math::{AngleShortForm, eighth_to_short, short_to_eighth},
+    math::{self, AngleShortForm, eighth_to_short, short_to_eighth},
     primitives::{
         AngleOffset, CollisionTags, EntityAppearance, EntityId, ModelRef, MovementMagnitude,
-        MovementMode, MovementTimer, NativeClientRef, NativePlayerTail, PlayerPresentation,
-        PlayerSignals, PlayerState, PlayerValueBindings, Q3StatLayout, ResourceNamespace, SoundRef,
-        ValueBinding, ValueWidth, Vec3, ViewWeapon, WeaponReadiness, WeaponState,
+        MovementMode, MovementTimer, NativeClientRef, NativePlayerTail, NativeViewFlags,
+        PlayerPresentation, PlayerSignals, PlayerState, PlayerValueBindings, PlayerView,
+        Q3StatLayout, ResourceNamespace, SoundRef, ValueBinding, ValueWidth, Vec3, ViewFlagLayout,
+        ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -18,6 +19,14 @@ pub use qa_core::primitives::EntityRecord;
 pub const MOVEMENT_WORDS: usize = 13;
 pub const PM_FLAGS_WORD: usize = 8;
 pub const GRAVITY_WORD: usize = 9;
+
+/// A presentation sample borrows history from the receiving snapshot ring.
+/// The computed origin retains the native camera addition order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerViewSample {
+    pub origin: Vec3,
+    pub view: PlayerView,
+}
 
 /// Canonical SERVER roles and destination-native client references, borrowed
 /// only while reducing an entity into its selected native record layout.
@@ -52,6 +61,12 @@ enum Source {
     Velocity(usize),
     View(usize),
     ViewOffset(usize),
+    MovementViewHeight,
+    ViewHeight,
+    FieldOfView,
+    ScreenBlend(usize),
+    DamageBlend(usize),
+    ViewFlags,
     Punch(usize),
     DeltaAngle(usize),
     CommandTime,
@@ -214,18 +229,30 @@ const Q2: &[Field] = &[
     f(27, WeaponAngle(0), Bits),
     f(28, WeaponAngle(1), Bits),
     f(29, WeaponAngle(2), Bits),
+    f(30, ScreenBlend(0), Bits),
+    f(31, ScreenBlend(1), Bits),
+    f(32, ScreenBlend(2), Bits),
+    f(33, ScreenBlend(3), Bits),
+    f(34, FieldOfView, Bits),
+    f(35, ViewFlags, Bits),
     f(37, Health, Bits),
     f(41, Armor, Bits),
     f(50, Frags, Bits),
 ];
-const fn q2_repro_fields() -> [Field; Q2.len() + 2] {
-    let mut fields = [f(0, Mode, Bits); Q2.len() + 2];
+const fn q2_repro_fields() -> [Field; Q2.len() + 7] {
+    let mut fields = [f(0, Mode, Bits); Q2.len() + 7];
     let mut i = 0;
     while i < Q2.len() {
         let mut field = Q2[i];
         field.convert = match field.source {
             Position(_) | Velocity(_) | DeltaAngle(_) => Bits,
             ViewOffset(_) => ScaledShort(16),
+            ScreenBlend(_) => ScaledByte {
+                scale: 255,
+                nonzero: false,
+                implicit: 0,
+            },
+            FieldOfView => FloatInteger,
             Punch(_) => ScaledShort(1024),
             View(_) => ShortAngle,
             WeaponOffset(_) => ScaledShort(512),
@@ -241,6 +268,43 @@ const fn q2_repro_fields() -> [Field; Q2.len() + 2] {
     }
     fields[Q2.len()] = f(42, Client, Bits);
     fields[Q2.len() + 1] = f(40, WeaponRate, Bits);
+    fields[Q2.len() + 2] = f(41, ViewHeight, FloatInteger);
+    fields[Q2.len() + 3] = f(
+        36,
+        DamageBlend(0),
+        ScaledByte {
+            scale: 255,
+            nonzero: false,
+            implicit: 0,
+        },
+    );
+    fields[Q2.len() + 4] = f(
+        37,
+        DamageBlend(1),
+        ScaledByte {
+            scale: 255,
+            nonzero: false,
+            implicit: 0,
+        },
+    );
+    fields[Q2.len() + 5] = f(
+        38,
+        DamageBlend(2),
+        ScaledByte {
+            scale: 255,
+            nonzero: false,
+            implicit: 0,
+        },
+    );
+    fields[Q2.len() + 6] = f(
+        39,
+        DamageBlend(3),
+        ScaledByte {
+            scale: 255,
+            nonzero: false,
+            implicit: 0,
+        },
+    );
     fields
 }
 static Q2_REPRO: &[Field] = &q2_repro_fields();
@@ -273,7 +337,7 @@ static Q3: &[Field] = &[
     f(25, Speed, FloatInteger),
     f(26, DeltaAngle(1), UnsignedShortAngle),
     f(27, ExternalParameter, Bits),
-    f(28, ViewOffset(2), FloatInteger),
+    f(28, MovementViewHeight, FloatInteger),
     f(29, DamageSequence, Bits),
     f(30, DamageYaw, Bits),
     f(31, DamagePitch, Bits),
@@ -358,6 +422,105 @@ impl FeedbackFields {
     }
 }
 
+struct ViewFields {
+    position: [Field; 3],
+    offset: [Field; 3],
+    height: Option<Field>,
+    fov: Field,
+    screen: [Field; 4],
+    damage: Option<[Field; 4]>,
+    flags: Field,
+    client: Option<Field>,
+    layout: ViewFlagLayout,
+}
+impl ViewFields {
+    fn components<const N: usize>(
+        fields: &[Field],
+        matches: impl Fn(Source, usize) -> bool,
+    ) -> Option<[Field; N]> {
+        let mut result = [*fields.first()?; N];
+        for (axis, result) in result.iter_mut().enumerate() {
+            *result = *fields.iter().find(|field| matches(field.source, axis))?;
+        }
+        Some(result)
+    }
+    fn load(fields: &[Field], layout: ViewFlagLayout) -> Option<Self> {
+        Some(Self {
+            position: Self::components(
+                fields,
+                |source, axis| matches!(source, Position(i) if i == axis),
+            )?,
+            offset: Self::components(
+                fields,
+                |source, axis| matches!(source, ViewOffset(i) if i == axis),
+            )?,
+            height: fields
+                .iter()
+                .find(|field| matches!(field.source, ViewHeight))
+                .copied(),
+            fov: *fields
+                .iter()
+                .find(|field| matches!(field.source, FieldOfView))?,
+            screen: Self::components(
+                fields,
+                |source, axis| matches!(source, ScreenBlend(i) if i == axis),
+            )?,
+            damage: Self::components(
+                fields,
+                |source, axis| matches!(source, DamageBlend(i) if i == axis),
+            ),
+            flags: *fields
+                .iter()
+                .find(|field| matches!(field.source, ViewFlags))?,
+            client: fields
+                .iter()
+                .find(|field| matches!(field.source, Client))
+                .copied(),
+            layout,
+        })
+    }
+    fn number(field: Field, words: &[u32]) -> f32 {
+        f32::from_bits(field.convert.import(words[field.word]))
+    }
+    fn vector<const N: usize>(fields: [Field; N], words: &[u32]) -> [f32; N] {
+        fields.map(|field| Self::number(field, words))
+    }
+    fn read(&self, words: &[u32]) -> (Vec3, Vec3, PlayerView) {
+        let offset = Vec3(Self::vector(self.offset, words));
+        let mut view = PlayerView::default();
+        view.fov_x = Some(Self::number(self.fov, words));
+        view.screen_blend = Self::vector(self.screen, words);
+        view.damage_blend = self
+            .damage
+            .map_or([0.0; 4], |fields| Self::vector(fields, words));
+        view.flags = self
+            .layout
+            .decode(self.flags.convert.import(words[self.flags.word]));
+        view.accept_offset(offset, self.height.map(|field| Self::number(field, words)));
+        (Vec3(Self::vector(self.position, words)), offset, view)
+    }
+    fn can_interpolate(&self, from: &[u32], to: &[u32]) -> bool {
+        for field in self.position {
+            let distance = (Self::number(field, to) - Self::number(field, from)).abs();
+            if !distance.is_finite() || distance > 256.0 {
+                return false;
+            }
+        }
+        if self
+            .client
+            .is_some_and(|field| from[field.word] != to[field.word])
+        {
+            return false;
+        }
+        let changed = self.flags.convert.import(from[self.flags.word])
+            ^ self.flags.convert.import(to[self.flags.word]);
+        !self
+            .layout
+            .decode(changed)
+            .contains(qa_core::primitives::PlayerViewFlags::TELEPORT)
+    }
+}
+
 /// One walker; the native format selects data at load, not another player store.
 pub struct PlayerProjection {
     protocol: Protocol,
@@ -369,12 +532,15 @@ pub struct PlayerProjection {
     flags: [u32; 10],
     flag_mask: u32,
     prediction_masks: [u32; 2],
+    view_flags: Option<ViewFlagLayout>,
+    movement_view: bool,
     stats_only: bool,
     movement_only: bool,
     layout_valid: bool,
     client_limit: u32,
     feedback: Option<FeedbackFields>,
     punch: Option<[Field; 3]>,
+    view: Option<ViewFields>,
     bindings: Box<[Field<ValueBinding>]>,
     write_bindings: Box<[Field<ValueBinding>]>,
     pub dropped_bindings: usize,
@@ -396,6 +562,7 @@ impl PlayerProjection {
             .collect();
         projection.feedback = None;
         projection.punch = None;
+        projection.view = None;
         projection
     }
     pub fn load(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
@@ -581,6 +748,12 @@ impl PlayerProjection {
             [Some(x), Some(y), Some(z)] => Some([x, y, z]),
             _ => None,
         };
+        let view_flags = match protocol {
+            Protocol::Quake2_34 => Some(ViewFlagLayout::CLASSIC),
+            Protocol::Quake2Repro1038 => Some(ViewFlagLayout::REPRO),
+            _ => None,
+        };
+        let view = view_flags.and_then(|layout| ViewFields::load(&fields, layout));
         Self {
             protocol,
             fields,
@@ -596,6 +769,8 @@ impl PlayerProjection {
                 Protocol::Quake3_68 => [4096; 2],
                 _ => [0; 2],
             },
+            view_flags,
+            movement_view: protocol == Protocol::Quake3_68,
             stats_only,
             movement_only: false,
             layout_valid,
@@ -606,6 +781,7 @@ impl PlayerProjection {
             },
             feedback,
             punch,
+            view,
             dropped_bindings: bindings.len() - admitted.len(),
             write_bindings: admitted.clone(),
             bindings: admitted,
@@ -648,6 +824,75 @@ impl PlayerProjection {
         })))
     }
 
+    /// The split native height drives the connection's bounded transition.
+    pub fn split_view_height(&self, words: &[u32]) -> Option<f32> {
+        let field = self.view.as_ref()?.height?;
+        Some(ViewFields::number(field, words.get(..self.words)?))
+    }
+
+    /// Sample camera fields from retained native frames without importing a
+    /// second player. Flags always belong to the current accepted frame.
+    pub fn sample_view(
+        &self,
+        previous: Option<&[u32]>,
+        current: &[u32],
+        fraction: f32,
+        player: &PlayerState,
+        height: Option<f32>,
+    ) -> Option<PlayerViewSample> {
+        let fields = self.view.as_ref()?;
+        let current = current.get(..self.words)?;
+        let previous = previous
+            .and_then(|words| words.get(..self.words))
+            .filter(|words| fields.can_interpolate(words, current))
+            .unwrap_or(current);
+        let (position, offset, mut view) = fields.read(current);
+        let (old_position, old_offset, old_view) = fields.read(previous);
+        let sampled_offset = old_offset.lerp(offset, fraction);
+        view.fov_x = Some(math::lerp(
+            ViewFields::number(fields.fov, previous),
+            ViewFields::number(fields.fov, current),
+            fraction,
+        ));
+        let origin = if let Some(field) = fields.height {
+            let height = height.unwrap_or_else(|| ViewFields::number(field, current));
+            view.accept_offset(sampled_offset, Some(height));
+            let origin = if player.prediction.position {
+                player.body.position
+            } else {
+                old_position.lerp(position, fraction)
+            };
+            view.screen_blend = math::lerp_array(
+                old_view.screen_blend,
+                view.screen_blend,
+                if old_view.screen_blend[3] != 0.0 {
+                    fraction
+                } else {
+                    1.0
+                },
+            );
+            view.damage_blend = math::lerp_array(
+                old_view.damage_blend,
+                view.damage_blend,
+                if old_view.damage_blend[3] != 0.0 {
+                    fraction
+                } else {
+                    1.0
+                },
+            );
+            view.eye(origin, player.movement.view_height)
+        } else {
+            view.accept_offset(sampled_offset, None);
+            if player.prediction.position {
+                // Classic adds the previous offset before its lerp delta.
+                player.body.position + old_offset + (offset - old_offset) * fraction
+            } else {
+                (old_position + old_offset).lerp(position + offset, fraction)
+            }
+        };
+        Some(PlayerViewSample { origin, view })
+    }
+
     /// Presentation reads the same native field table without importing stats
     /// into a second player bank or allocating temporary value capacity.
     pub fn view_weapon(&self, words: &[u32], namespace: ResourceNamespace) -> Option<ViewWeapon> {
@@ -671,27 +916,9 @@ impl PlayerProjection {
         let (Some(from), Some(to)) = (from.get(..self.words), to.get(..self.words)) else {
             return false;
         };
-        if !matches!(
-            self.protocol,
-            Protocol::Quake2_34 | Protocol::Quake2Repro1038
-        ) {
-            return true;
-        }
-        for field in &self.fields {
-            match field.source {
-                Position(_) => {
-                    let old = f32::from_bits(field.convert.import(from[field.word]));
-                    let new = f32::from_bits(field.convert.import(to[field.word]));
-                    let distance = (new - old).abs();
-                    if !distance.is_finite() || distance > 256.0 {
-                        return false;
-                    }
-                }
-                Client if from[field.word] != to[field.word] => return false,
-                _ => {}
-            }
-        }
-        self.protocol != Protocol::Quake2Repro1038 || (from[35] ^ to[35]) & (1 << 4) == 0
+        self.view
+            .as_ref()
+            .is_none_or(|fields| fields.can_interpolate(from, to))
     }
 
     fn apply_weapon(
@@ -766,6 +993,9 @@ impl PlayerProjection {
                         }
                         Weapon => tail.weapon_number,
                         Presentation(part) => tail.presentation.map(|value| part.value(value)),
+                        ViewFlags => self
+                            .view_flags
+                            .map(|layout| layout.encode(player.view.flags, tail.view_flags) & 255),
                         _ => tail
                             .signals
                             .and_then(|signals| field.source.signal_value(signals)),
@@ -852,6 +1082,16 @@ impl PlayerProjection {
             return false;
         }
         let mut native = NativePlayerTail::new(self.protocol.rule_set(), namespace);
+        let mut offset = if self.protocol == Protocol::Quake2Repro1038 {
+            player
+                .view
+                .raw_offset()
+                .map_or(Vec3::default(), |(offset, _)| offset)
+        } else {
+            player.eye_offset()
+        };
+        let mut height = None;
+        let mut has_offset = false;
         if !stats_only {
             context.namespace = Some(namespace);
             player.prediction = Default::default();
@@ -859,6 +1099,15 @@ impl PlayerProjection {
             // Protocols without this flag cannot retain an earlier Q3 lock.
             player.movement.respawned = false;
             player.movement.ignore_player_collision = false;
+            if !self.movement_only {
+                if self.movement_view {
+                    player.view.clear_offset();
+                }
+                player.view.fov_x = None;
+                player.view.screen_blend = [0.0; 4];
+                player.view.damage_blend = [0.0; 4];
+                player.view.flags = Default::default();
+            }
         }
         for field in &self.fields {
             if stats_only && !matches!(field.source, Health | Armor | Score | Frags | WeaponTime) {
@@ -874,7 +1123,21 @@ impl PlayerProjection {
                 Position(i) => player.body.position.0[i] = f32::from_bits(value),
                 Velocity(i) => player.body.velocity.0[i] = f32::from_bits(value),
                 View(i) => player.view_angles.0[i] = f32::from_bits(value),
-                ViewOffset(i) => player.view_offset.0[i] = f32::from_bits(value),
+                ViewOffset(i) => {
+                    offset.0[i] = f32::from_bits(value);
+                    has_offset = true;
+                }
+                MovementViewHeight => player.movement.view_height = f32::from_bits(value),
+                ViewHeight => height = Some(f32::from_bits(value)),
+                FieldOfView => player.view.fov_x = Some(f32::from_bits(value)),
+                ScreenBlend(i) => player.view.screen_blend[i] = f32::from_bits(value),
+                DamageBlend(i) => player.view.damage_blend[i] = f32::from_bits(value),
+                ViewFlags => {
+                    if let Some(layout) = self.view_flags {
+                        player.view.flags = layout.decode(word);
+                        native.view_flags = Some(NativeViewFlags { layout, raw: word });
+                    }
+                }
                 Punch(i) => player.punch_angles.0[i] = f32::from_bits(value),
                 DeltaAngle(i) => {
                     player.movement.delta_angles.0[i] = field.convert.import_angle(word)
@@ -1016,6 +1279,10 @@ impl PlayerProjection {
                 BodyYaw | NativeValue => {}
             }
         }
+        if has_offset {
+            player.movement.view_height = height.unwrap_or(offset.0[2]);
+            player.view.accept_offset(offset, height);
+        }
         if !stats_only && !self.movement_only {
             player.native = Some(native);
         }
@@ -1053,7 +1320,28 @@ impl PlayerProjection {
             Position(i) => p.body.position.0[i].to_bits(),
             Velocity(i) => p.body.velocity.0[i].to_bits(),
             View(i) => p.view_angles.0[i].to_bits(),
-            ViewOffset(i) => p.view_offset.0[i].to_bits(),
+            ViewOffset(i) => {
+                let offset = if self.protocol == Protocol::Quake2Repro1038 {
+                    p.view
+                        .raw_offset()
+                        .map_or(Vec3::default(), |(offset, _)| offset)
+                } else {
+                    p.eye_offset()
+                };
+                offset.0[i].to_bits()
+            }
+            MovementViewHeight => p.movement.view_height.to_bits(),
+            ViewHeight => p
+                .view
+                .raw_offset()
+                .map_or(p.movement.view_height, |(_, height)| height.unwrap_or(0.0))
+                .to_bits(),
+            FieldOfView => p.view.fov_x.unwrap_or(90.0).to_bits(),
+            ScreenBlend(i) => p.view.screen_blend[i].to_bits(),
+            DamageBlend(i) => p.view.damage_blend[i].to_bits(),
+            ViewFlags => self
+                .view_flags
+                .map_or(0, |layout| layout.encode(p.view.flags, None) & 255),
             Punch(i) => p.punch_angles.0[i].to_bits(),
             DeltaAngle(i) => p.movement.delta_angles.0[i].degrees().to_bits(),
             CommandTime => p.movement.command_time_ms as u32,

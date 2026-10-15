@@ -316,12 +316,38 @@ impl Channel {
         if protocol == crate::commands::packet::Protocol::Quake3_68 {
             return self.queue_reliable(text);
         }
+        self.queue_client_text(protocol, 4, text)
+    }
+    /// Q2 full userinfo changes share the connection's ordinary reliable flight.
+    pub fn queue_userinfo(
+        &mut self,
+        protocol: crate::commands::packet::Protocol,
+        text: &[u8],
+    ) -> Result<NativeReceipt, TransmitError> {
+        use crate::commands::packet::Protocol;
+        if self.endpoint != Endpoint::Client
+            || !self.supports_protocol(protocol)
+            || !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038)
+        {
+            return Err(TransmitError::PayloadReliability);
+        }
+        if protocol.client_string_policy().truncates(text) {
+            return Err(TransmitError::MessageTooLarge);
+        }
+        self.queue_client_text(protocol, 3, text)
+    }
+    fn queue_client_text(
+        &mut self,
+        protocol: crate::commands::packet::Protocol,
+        opcode: u32,
+        text: &[u8],
+    ) -> Result<NativeReceipt, TransmitError> {
         let mut bytes = std::mem::take(&mut self.transmit.command_output);
         let result = (|| {
             let mut writer =
                 crate::message::Writer::new(&mut bytes, crate::message::Encoding::Bytes);
             writer
-                .write_bits(4, 8)
+                .write_bits(opcode, 8)
                 .and_then(|_| writer.write_string(protocol.client_string_policy(), text))
                 .map_err(|_| TransmitError::MessageTooLarge)?;
             let length = writer.bytes().len();

@@ -12,7 +12,7 @@ use qa_network::{
     commands::packet::{Error, Protocol},
     ingress::Incoming,
     message::{Encoding, ErrorKind, Writer},
-    projection::{PlayerContext, PlayerProjection},
+    projection::{PlayerContext, PlayerProjection, PlayerViewSample},
     snapshots::ReceivedFrame,
     states,
 };
@@ -104,8 +104,41 @@ struct ClientPresentation {
     negotiated_period: bool,
     sequence: Option<u32>,
     gun_animation: Option<GunAnimation>,
+    view_height: Option<ViewHeightAnimation>,
     loops: Option<loops::LoopPublication>,
     feedback: feedback::FeedbackPublication,
+}
+
+struct ViewHeightAnimation {
+    previous: f32,
+    current: f32,
+    changed_at: ThinkTime,
+}
+impl ViewHeightAnimation {
+    fn observe(state: &mut Option<Self>, height: f32, time: ThinkTime) {
+        match state {
+            Some(state) if state.current != height => {
+                state.previous = state.current;
+                state.current = height;
+                state.changed_at = time;
+            }
+            Some(_) => {}
+            None => {
+                *state = Some(Self {
+                    previous: height,
+                    current: height,
+                    changed_at: time,
+                });
+            }
+        }
+    }
+    fn sample(&self, time: ThinkTime) -> f32 {
+        let elapsed = time
+            .milliseconds()
+            .saturating_sub(self.changed_at.milliseconds()) as f32;
+        let remaining = 100.0 - elapsed.min(100.0);
+        self.current + (self.previous - self.current) * remaining * 0.01
+    }
 }
 
 impl SnapshotBinding {
@@ -146,6 +179,7 @@ impl SnapshotBinding {
             client.clock.reset();
             client.sequence = None;
             client.gun_animation = None;
+            client.view_height = None;
             if let Some(loops) = client.loops.as_mut() {
                 loops.request_reset();
             }
@@ -216,9 +250,8 @@ impl SnapshotBinding {
             && let Some(sample) = self.projection.punch_angles(words)
         {
             punch = sample;
-            previous = channel
-                .snapshot(current.sequence().wrapping_sub(1))
-                .and_then(ReceivedFrame::player_words)
+            previous = self
+                .previous_view_words(channel, current)
                 .filter(|old| self.projection.can_interpolate_player(old, words))
                 .and_then(|old| self.projection.punch_angles(old));
         }
@@ -229,6 +262,54 @@ impl SnapshotBinding {
             client.clock.sample().fraction,
             kick_enabled,
         )
+    }
+    /// Camera fields borrow the same accepted frames and clock as native kick
+    /// angles. Movement and SERVER state remain unchanged.
+    pub fn view_presentation(&self, channel: &Channel, player: &PlayerState) -> PlayerViewSample {
+        let fallback = PlayerViewSample {
+            origin: player.eye(),
+            view: player.view,
+        };
+        let Some(client) = self.presentation.as_ref() else {
+            return fallback;
+        };
+        let Some(current) = channel.current_snapshot() else {
+            return fallback;
+        };
+        let Some(words) = current.player_words() else {
+            return fallback;
+        };
+        let sample = client.clock.sample();
+        let previous = self.previous_view_words(channel, current);
+        self.projection
+            .sample_view(
+                previous,
+                words,
+                sample.fraction,
+                player,
+                client
+                    .view_height
+                    .as_ref()
+                    .map(|height| height.sample(sample.time)),
+            )
+            .unwrap_or(fallback)
+    }
+    fn previous_view_words<'a>(
+        &self,
+        channel: &'a Channel,
+        current: ReceivedFrame<'a>,
+    ) -> Option<&'a [u32]> {
+        let client = self.presentation.as_ref()?;
+        crate::client_scene::player_event_interpolation(
+            Some(current),
+            self.view_entity(Some(current)),
+            self.entity_projection(),
+            client.appearance,
+            self.client,
+        )
+        .then(|| channel.snapshot(current.sequence().wrapping_sub(1)))
+        .flatten()
+        .and_then(ReceivedFrame::player_words)
     }
     pub fn weapon_view_angles(
         &self,
@@ -277,7 +358,18 @@ impl SnapshotBinding {
             previous.map(ReceivedFrame::time),
             period,
             options,
-        )
+        )?;
+        if let Some(height) = current
+            .player_words()
+            .and_then(|words| self.projection.split_view_height(words))
+        {
+            ViewHeightAnimation::observe(
+                &mut client.view_height,
+                height,
+                client.clock.sample().time,
+            );
+        }
+        Ok(())
     }
     #[expect(
         clippy::too_many_arguments,
@@ -452,6 +544,7 @@ impl SnapshotBinding {
                 )),
                 sequence: None,
                 gun_animation: None,
+                view_height: None,
                 feedback: feedback::FeedbackPublication::load(protocol.rule_set()),
             }),
             entities: entities::EntityScratch::load(protocol),

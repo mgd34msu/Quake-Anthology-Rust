@@ -402,9 +402,9 @@ fn rerelease_free_modes_double_the_capped_speed_and_reset_native_flags() {
         if mode == MovementMode::Spectator {
             assert_eq!(state.body.mins, Vec3([-8.0; 3]));
             assert_eq!(state.body.maxs, Vec3([8.0; 3]));
-            assert_eq!(state.view_offset.0[2], 0.0);
+            assert_eq!(state.movement.view_height, 0.0);
         } else {
-            assert_eq!(state.view_offset.0[2], 22.0);
+            assert_eq!(state.movement.view_height, 22.0);
             assert_eq!(world.traces, 0);
         }
     }

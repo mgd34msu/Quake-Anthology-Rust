@@ -242,6 +242,8 @@ impl Default for CubeSkyParams {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SoftwareAlias {
+    /// Native infrared palette-index substitution, selected by presentation.
+    pub infrared_map: Option<&'static [u8; 256]>,
     /// Native fullbright aliases retain their software ambient/shade clamps.
     pub fullbright_light: Option<[f32; 2]>,
     /// Low/high alpha cutoffs select the native one-third/two-thirds map and

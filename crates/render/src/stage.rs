@@ -312,6 +312,8 @@ impl Default for EntityLighting {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DrawInputs {
+    pub view_flags: qa_core::primitives::PlayerViewFlags,
+    pub infrared_visible: bool,
     pub time_ms: i64,
     pub entity_color: [u8; 4],
     pub entity_alpha: Option<f32>,
@@ -338,6 +340,7 @@ impl DrawInputs {
             identity_light: refdef.identity_light,
             clip_plane: refdef.clip_plane,
             reflected_view: refdef.reflected_view,
+            view_flags: refdef.flags,
             ..Self::default()
         }
     }
@@ -364,7 +367,20 @@ impl DrawInputs {
         self.entity_texcoord = entity.shader_texcoord;
         self.entity_shader_time = entity.shader_time;
         self.lighting = entity.lighting;
+        self.infrared_visible = entity.infrared_visible;
+        if self.infrared_active() {
+            let mut light = self.lighting.unwrap_or_default();
+            light.ambient = [255.0, 0.0, 0.0];
+            light.directed = [0.0; 3];
+            self.lighting = Some(light);
+        }
         self
+    }
+    pub fn infrared_active(self) -> bool {
+        self.infrared_visible
+            && self
+                .view_flags
+                .contains(qa_core::primitives::PlayerViewFlags::INFRARED)
     }
     pub fn for_poly(self, poly: &crate::scene::Poly, list: &crate::scene::CommandList) -> Self {
         poly.entity
@@ -383,6 +399,8 @@ pub(crate) fn pack_unit_rgba(color: [f32; 4]) -> u32 {
 impl Default for DrawInputs {
     fn default() -> Self {
         Self {
+            view_flags: Default::default(),
+            infrared_visible: false,
             time_ms: 0,
             entity_color: [255; 4],
             entity_alpha: None,
@@ -617,6 +635,10 @@ impl StageEvaluator {
         settings: MaterialSettings,
         inputs: DrawInputs,
     ) -> Result<PreparedStage, StageError> {
+        let mut stage = *stage;
+        if inputs.infrared_active() && settings.software_alias.is_some() {
+            stage.rgb_gen = RgbGen::LightingDiffuse;
+        }
         if matches!(stage.rgb_gen, RgbGen::LightingDiffuse) {
             if inputs.lighting.is_none() {
                 return Err(StageError::MissingLighting);
@@ -688,7 +710,7 @@ impl StageEvaluator {
                 _ => None,
             });
         Ok(PreparedStage {
-            stage: *stage,
+            stage,
             inputs,
             image,
             shader_time: time,

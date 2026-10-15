@@ -69,6 +69,11 @@ impl FrameHost {
             let [Some(ambient), Some(directed)] = lighting else {
                 return Err("missing entity lighting cvars".into());
             };
+            let software_waterwarp = self
+                .console
+                .cvars
+                .bind("r_waterwarp", context)
+                .ok_or("missing software water warp cvar")?;
             row.scene_role.configure(
                 profile,
                 viewport,
@@ -77,6 +82,7 @@ impl FrameHost {
                 presentation,
                 [core, ring, length],
                 [ambient, directed],
+                software_waterwarp,
             );
         }
         Ok(())

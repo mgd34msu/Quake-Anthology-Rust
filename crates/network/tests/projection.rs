@@ -102,7 +102,7 @@ fn nq_clientdata_sparse_values_keep_native_wire_and_raw_items()
     let mut source = PlayerState::with_capacity(0, 0, 33);
     source.health = -12;
     source.armor = 55;
-    source.view_offset.0[2] = 22.0;
+    source.view.accept_offset(Vec3([0.0, 0.0, 22.0]), None);
     source.view_weapon.frame = 6;
     source.view_weapon.model = ModelRef::native(ResourceNamespace::Module(ModuleId(7)), 9);
     for (index, value) in [
@@ -653,7 +653,8 @@ fn player() -> PlayerState {
     p.body.velocity = Vec3([16.12, -32.7, 1.01]);
     p.view_angles = Vec3([15., 300., -30.]);
     p.movement.delta_angles = Vec3([90., 180., -90.]).into();
-    p.view_offset = Vec3([0., 0., 22.]);
+    p.view.accept_offset(Vec3([0., 0., 22.]), None);
+    p.movement.view_height = 22.0;
     p.health = -12;
     p.armor = 55;
     p.score = 123;
@@ -707,7 +708,7 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
     let mut p = player();
     p.movement.mode = MovementMode::Noclip;
     p.movement.remaining_ms = 70_000;
-    p.view_offset = Vec3([4096., -4096., 22.0625]);
+    p.view.accept_offset(Vec3([4096., -4096., 22.0625]), None);
     p.punch_angles = Vec3([0.03125, -0.0625, 32.]);
     p.weapon_state = None;
     p.view_weapon.frame = 65535;
@@ -775,7 +776,7 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
         (imported.movement_rules, imported.trace_rules),
         (RuleSetId::Quake3, RuleSetId::Quake)
     );
-    assert_eq!(imported.view_offset, Vec3([2047.9375, -2048., 22.0625]));
+    assert_eq!(imported.eye_offset(), Vec3([2047.9375, -2048., 22.0625]));
     assert_eq!(
         imported.punch_angles,
         Vec3([0.03125, -0.0625, 32767. / 1024.])
@@ -1342,6 +1343,7 @@ fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
             speed: Some(-16_777_219),
             signals: Some(Default::default()),
             presentation: Some(Default::default()),
+            view_flags: None,
         })
     );
     assert_eq!(

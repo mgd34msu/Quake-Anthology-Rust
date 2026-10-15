@@ -1,6 +1,7 @@
 use super::*;
 use qa_core::primitives::{
-    EntityAppearance, ModelRef, NativeAppearanceTail, ResourceNamespace, SoundRef, Vec3,
+    EntityAppearance, ModelRef, NativeAppearanceTail, PlayerViewFlags, ResourceNamespace, SoundRef,
+    Vec3,
 };
 
 const BASE: u64 = 0x180000000;
@@ -264,9 +265,32 @@ fn appearance_for_abi(rerelease: bool) {
     assert_eq!(player.view_weapon.rate, if rerelease { 60 } else { 0 });
     assert_eq!(player.view_angles, Vec3([10., 20., 30.]));
     assert_eq!(
-        player.view_offset,
+        player.view.effective_offset(player.movement.view_height),
         Vec3([1., 2., if rerelease { 23. } else { 3. }])
     );
+    assert_eq!(player.view.fov_x, Some(if rerelease { 111. } else { 103. }));
+    assert_eq!(player.view.screen_blend, [0.1, 0.2, 0.3, 0.4]);
+    assert_eq!(
+        player.view.damage_blend,
+        if rerelease {
+            [0.2, 0.4, 0.6, 0.8]
+        } else {
+            [0.; 4]
+        }
+    );
+    for flag in [
+        PlayerViewFlags::UNDERWATER,
+        PlayerViewFlags::NO_WORLD_MODEL,
+        PlayerViewFlags::INFRARED,
+        PlayerViewFlags::ULTRAVIOLET,
+    ] {
+        assert!(player.view.flags.contains(flag));
+    }
+    assert_eq!(
+        player.view.flags.contains(PlayerViewFlags::NO_WEAPON_LERP),
+        rerelease
+    );
+    assert!(!player.view.flags.contains(PlayerViewFlags::TELEPORT));
     assert_eq!(player.punch_angles, Vec3([-1., -2., -3.]));
     // Simulate an already-linked shared body. Importing a new presentation pose
     // must keep its prior explicit-link bounds and insertion counter unchanged.
@@ -439,7 +463,30 @@ fn write_player(bytes: &mut [u8], rr: bool, model: u32, frame: i32) {
         frame as u32 as u64,
         4,
     );
+    for (axis, value) in [0.1f32, 0.2, 0.3, 0.4].into_iter().enumerate() {
+        put(
+            bytes,
+            (if rr { 128 } else { 96 }) + axis * 4,
+            value.to_bits().into(),
+            4,
+        );
+    }
+    put(
+        bytes,
+        if rr { 160 } else { 112 },
+        (if rr { 111f32 } else { 103f32 }).to_bits().into(),
+        4,
+    );
+    put(
+        bytes,
+        if rr { 164 } else { 116 },
+        if rr { 31 } else { 15 },
+        if rr { 1 } else { 4 },
+    );
     if rr {
+        for (axis, value) in [0.2f32, 0.4, 0.6, 0.8].into_iter().enumerate() {
+            put(bytes, 144 + axis * 4, value.to_bits().into(), 4);
+        }
         bytes[48] = 20;
         put(bytes, 116, (-7i32) as u32 as u64, 4);
         put(bytes, 124, 60, 4);

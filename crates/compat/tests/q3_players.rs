@@ -583,7 +583,8 @@ fn verify(f: &Fixture) {
     );
     assert_eq!(p.body.mins, Vec3([-15.0, -15.0, -24.0]));
     assert_eq!(p.body.maxs, Vec3([15.0, 15.0, 32.0]));
-    assert_eq!(p.view_offset.0[2], -71.0);
+    assert_eq!(p.eye_offset().0[2], -71.0);
+    assert_eq!(p.view.raw_offset(), None);
     assert_eq!(p.movement.mode, MovementMode::Spectator);
     assert_eq!(
         (p.movement_rules, p.trace_rules),
@@ -728,15 +729,30 @@ fn qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin() {
     entity(&mut vm.memory, ENTITIES);
     player(&mut vm.memory, PLAYERS);
     f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+    f.server.clients[1]
+        .player
+        .view
+        .accept_offset(Vec3([1.0, 2.0, 3.0]), Some(22.0));
     f.publish(&mut vm).unwrap();
     verify(&f);
+    {
+        let player = &mut f.server.clients[1].player;
+        player.movement.view_height = 12.0;
+        assert_eq!(player.eye(), player.body.position + Vec3([0.0, 0.0, 12.0]));
+        player.movement.view_height = -71.0;
+    }
     assert_eq!(vm.memory.read_word(PLAYERS + 64).unwrap(), i32::MAX - 1);
     // An engine-owned client continues publishing native arrays/readiness only.
     f.server.clients[1].module_movement = false;
+    f.server.clients[1]
+        .player
+        .view
+        .accept_offset(Vec3([1.0, 2.0, 3.0]), Some(22.0));
     let p = &f.server.clients[1].player;
     let before = (
         [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
         p.view_angles,
+        p.view,
         p.movement,
         p.native,
         p.inventory.weapon,
@@ -765,6 +781,7 @@ fn qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin() {
         (
             [p.body.position, p.body.velocity, p.body.mins, p.body.maxs],
             p.view_angles,
+            p.view,
             p.movement,
             p.native,
             p.inventory.weapon,

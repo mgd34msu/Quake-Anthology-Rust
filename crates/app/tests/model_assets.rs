@@ -1673,6 +1673,8 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
                 assert_eq!(stage.depth_write, !translucent);
                 let expected = matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
                     .then_some(SoftwareAlias {
+                        infrared_map: qa_gameplay::rules::appearance::model_presentation(rules)
+                            .infrared_map,
                         fullbright_light: fullbright.then_some([128.0, 64.0]),
                         alpha_cutoffs: translucent.then_some([0.33, 0.66]),
                     });

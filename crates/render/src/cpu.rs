@@ -33,7 +33,14 @@ pub enum PreparePoint {
 
 pub struct CpuBackend {
     frame: Framebuffer,
+    clear_color: [u8; 4],
     material_frame: Framebuffer,
+    warp_frame: Framebuffer,
+    warp_material_frame: Framebuffer,
+    warp_sine: Box<[u8]>,
+    warp_columns: Box<[usize]>,
+    warp_rows: Box<[usize]>,
+    warp_dimensions: Option<(u32, u32)>,
     world: Option<world::WorldRaster>,
     evaluator: StageEvaluator,
     presentation: CpuPresentation,
@@ -50,6 +57,19 @@ struct Framebuffer {
     palettes: Box<[u32]>,
 }
 impl Framebuffer {
+    fn capacity_bytes(&self) -> usize {
+        std::mem::size_of_val(&*self.pixels)
+            + std::mem::size_of_val(&*self.inverse_depth)
+            + std::mem::size_of_val(&*self.depth_ranks)
+            + std::mem::size_of_val(&*self.indices)
+            + std::mem::size_of_val(&*self.palettes)
+    }
+    fn clear(&mut self, color: [u8; 4]) {
+        self.pixels.fill(u32::from_le_bytes(color));
+        self.inverse_depth.fill(0.0);
+        self.depth_ranks.fill(0);
+        self.palettes.fill(u32::MAX);
+    }
     fn load(width: u32, height: u32) -> Result<Self, &'static str> {
         let count = (width as usize)
             .checked_mul(height as usize)
@@ -132,6 +152,7 @@ impl Framebuffer {
     fn buffers(&mut self) -> world::Buffers<'_> {
         world::Buffers {
             first_row: 0,
+            frame_width: self.width,
             frame_height: self.height,
             pixels: &mut self.pixels,
             inverse_depth: &mut self.inverse_depth,
@@ -417,7 +438,16 @@ impl CpuBackend {
         }
         Ok(Self {
             frame: Framebuffer::load(width, height)?,
+            clear_color: [0; 4],
             material_frame: Framebuffer::load(width, height)?,
+            warp_frame: Framebuffer::load(320, 240)?,
+            warp_material_frame: Framebuffer::load(320, 240)?,
+            warp_sine: (0..width.max(height) as usize + 128)
+                .map(|i| (3.0 + (i as f64 * 3.14159 * 2.0 / 128.0).sin() * 3.0) as u8)
+                .collect(),
+            warp_columns: vec![0; width as usize + 6].into_boxed_slice(),
+            warp_rows: vec![0; height as usize + 6].into_boxed_slice(),
+            warp_dimensions: None,
             world: None,
             evaluator: StageEvaluator::load(),
             presentation: CpuPresentation::Rgb,
@@ -472,11 +502,12 @@ impl CpuBackend {
             .world
             .as_ref()
             .map_or(RasterConfig::default(), |world| world.config());
-        config.material_capacity_bytes = std::mem::size_of_val(&*self.material_frame.pixels)
-            + std::mem::size_of_val(&*self.material_frame.inverse_depth)
-            + std::mem::size_of_val(&*self.material_frame.depth_ranks)
-            + std::mem::size_of_val(&*self.material_frame.indices)
-            + std::mem::size_of_val(&*self.material_frame.palettes);
+        config.material_capacity_bytes = self.material_frame.capacity_bytes();
+        config.view_effect_capacity_bytes = self.warp_frame.capacity_bytes()
+            + self.warp_material_frame.capacity_bytes()
+            + std::mem::size_of_val(&*self.warp_sine)
+            + std::mem::size_of_val(&*self.warp_columns)
+            + std::mem::size_of_val(&*self.warp_rows);
         config
     }
     pub fn band_stats(&self, output: &mut [WorldStats; MAX_BANDS]) -> usize {
@@ -533,114 +564,158 @@ impl CpuBackend {
             match *command {
                 Command::Empty => {}
                 Command::Clear(color) => {
-                    self.frame.pixels.fill(u32::from_le_bytes(color));
-                    self.frame.inverse_depth.fill(0.0);
-                    self.frame.depth_ranks.fill(0);
-                    self.frame.palettes.fill(u32::MAX);
+                    self.frame.clear(color);
+                    self.clear_color = color;
                     self.presentation = CpuPresentation::Rgb;
                 }
                 Command::View(view) => {
-                    let Some(camera) =
-                        Camera::load(view.refdef, self.frame.width, self.frame.height)
-                    else {
+                    if view
+                        .refdef
+                        .validate(self.frame.width, self.frame.height)
+                        .is_none()
+                    {
+                        stats.rejected = stats.rejected.saturating_add(1);
+                        continue;
+                    }
+                    let warped = view.refdef.software_waterwarp
+                        && view
+                            .refdef
+                            .flags
+                            .contains(qa_core::primitives::PlayerViewFlags::UNDERWATER)
+                        && !view.refdef.hyperspace;
+                    let mut raster = view.refdef;
+                    if warped {
+                        raster.viewport = Viewport {
+                            width: view.refdef.viewport.width.min(320),
+                            height: view.refdef.viewport.height.min(240),
+                            ..Viewport::default()
+                        };
+                        raster.blend_viewport = None;
+                    }
+                    let (width, height) = if warped {
+                        (320, 240)
+                    } else {
+                        (self.frame.width, self.frame.height)
+                    };
+                    let Some(camera) = Camera::load(raster, width, height) else {
                         stats.rejected = stats.rejected.saturating_add(1);
                         continue;
                     };
-                    stats.views = stats.views.saturating_add(1);
-                    stats.pending_lights =
-                        stats.pending_lights.saturating_add(view.scene.lights.count);
-                    self.presentation = camera.refdef.cpu_presentation;
-                    self.time_ms = camera.refdef.time_ms;
-                    self.clear_depth(camera.refdef.viewport, camera.refdef.far);
-                    if camera.refdef.hyperspace {
-                        let color = u32::from_le_bytes(camera.refdef.hyperspace_color());
-                        let width = self.frame.width;
-                        let mut buffers = self.frame.buffers();
-                        if let Some(rows) = buffers.rows(width, camera.refdef.viewport) {
-                            for y in rows {
-                                for x in camera.refdef.viewport.x
-                                    ..camera.refdef.viewport.x + camera.refdef.viewport.width
-                                {
-                                    let index = buffers.offset(width, x, y);
-                                    buffers.write_rgba(index, color, None);
+                    if warped {
+                        self.warp_frame.clear(self.clear_color);
+                        std::mem::swap(&mut self.frame, &mut self.warp_frame);
+                        std::mem::swap(&mut self.material_frame, &mut self.warp_material_frame);
+                    }
+                    let result = (|| -> Result<(), E> {
+                        stats.views = stats.views.saturating_add(1);
+                        stats.pending_lights =
+                            stats.pending_lights.saturating_add(view.scene.lights.count);
+                        self.presentation = camera.refdef.cpu_presentation;
+                        self.time_ms = camera.refdef.time_ms;
+                        self.clear_depth(camera.refdef.viewport, camera.refdef.far);
+                        if camera.refdef.hyperspace {
+                            let color = u32::from_le_bytes(camera.refdef.hyperspace_color());
+                            let width = self.frame.width;
+                            let mut buffers = self.frame.buffers();
+                            if let Some(rows) = buffers.rows(width, camera.refdef.viewport) {
+                                for y in rows {
+                                    for x in camera.refdef.viewport.x
+                                        ..camera.refdef.viewport.x + camera.refdef.viewport.width
+                                    {
+                                        let index = buffers.offset(width, x, y);
+                                        buffers.write_rgba(index, color, None);
+                                    }
                                 }
                             }
+                            return Ok(());
                         }
-                        continue;
-                    }
-                    if let Some(world) = &mut self.world {
-                        observe(PreparePoint::Begin);
-                        let prepared = world.prepare_view_dispatched(
-                            &camera,
-                            list,
-                            view.scene,
-                            assets,
-                            &self.evaluator,
-                            &mut stats,
-                            &mut dispatch,
-                        );
-                        observe(PreparePoint::End);
-                        if prepared? {
-                            world.render_opaque(
+                        if let Some(world) = &mut self.world {
+                            observe(PreparePoint::Begin);
+                            let prepared = world.prepare_view_dispatched(
                                 &camera,
+                                list,
+                                view.scene,
                                 assets,
-                                self.frame.buffers(),
+                                &self.evaluator,
                                 &mut stats,
                                 &mut dispatch,
-                            )?;
-                        }
-                    } else {
-                        stats.rejected = stats.rejected.saturating_add(view.scene.surfaces.count);
-                    }
-                    let draws = list.draws(view.scene.draws);
-                    let mut draw_rank = 0;
-                    while draw_rank < draws.len() {
-                        let item = draws[draw_rank];
-                        let opacity = crate::scene::draw_entity(list, item)
-                            .and_then(|entity| entity.material_opacity);
-                        if opacity.is_some_and(|value| value.value() == 0.0) {
-                            draw_rank += 1;
-                            continue;
-                        }
-                        if opacity.is_some() {
-                            self.material_frame.seed_from(&self.frame);
-                            std::mem::swap(&mut self.frame, &mut self.material_frame);
-                        }
-                        let before = stats.rejected;
-                        let result = self.draw_item(
-                            &camera,
-                            list,
-                            view.scene.draws,
-                            assets,
-                            draw_rank,
-                            &mut stats,
-                            &mut dispatch,
-                        );
-                        if let Some(opacity) = opacity {
-                            // Every dispatcher loan has ended, including errors. Restore
-                            // scene ownership before propagating a failed dispatch.
-                            std::mem::swap(&mut self.frame, &mut self.material_frame);
-                            if result.is_ok() && stats.rejected == before {
-                                self.frame.composite_material(
-                                    &self.material_frame,
-                                    opacity,
+                            );
+                            observe(PreparePoint::End);
+                            if prepared? {
+                                world.render_opaque(
                                     &camera,
                                     assets,
-                                );
+                                    self.frame.buffers(),
+                                    &mut stats,
+                                    &mut dispatch,
+                                )?;
                             }
+                        } else {
+                            stats.rejected =
+                                stats.rejected.saturating_add(view.scene.surfaces.count);
                         }
-                        draw_rank = result?;
+                        let draws = list.draws(view.scene.draws);
+                        let mut draw_rank = 0;
+                        while draw_rank < draws.len() {
+                            let item = draws[draw_rank];
+                            let opacity = crate::scene::draw_entity(list, item)
+                                .and_then(|entity| entity.material_opacity);
+                            if opacity.is_some_and(|value| value.value() == 0.0) {
+                                draw_rank += 1;
+                                continue;
+                            }
+                            if opacity.is_some() {
+                                self.material_frame.seed_from(&self.frame);
+                                std::mem::swap(&mut self.frame, &mut self.material_frame);
+                            }
+                            let before = stats.rejected;
+                            let result = self.draw_item(
+                                &camera,
+                                list,
+                                view.scene.draws,
+                                assets,
+                                draw_rank,
+                                &mut stats,
+                                &mut dispatch,
+                            );
+                            if let Some(opacity) = opacity {
+                                // Every dispatcher loan has ended, including errors. Restore
+                                // scene ownership before propagating a failed dispatch.
+                                std::mem::swap(&mut self.frame, &mut self.material_frame);
+                                if result.is_ok() && stats.rejected == before {
+                                    self.frame.composite_material(
+                                        &self.material_frame,
+                                        opacity,
+                                        &camera,
+                                        assets,
+                                    );
+                                }
+                            }
+                            draw_rank = result?;
+                        }
+                        particles::draw(
+                            &camera,
+                            self.frame.width,
+                            list.particles(view.scene.particles),
+                            assets,
+                            self.frame.buffers(),
+                            &mut stats,
+                        );
+                        Ok(())
+                    })();
+                    if warped {
+                        std::mem::swap(&mut self.frame, &mut self.warp_frame);
+                        std::mem::swap(&mut self.material_frame, &mut self.warp_material_frame);
+                        if result.is_ok() {
+                            self.resolve_water(&view.refdef);
+                        }
                     }
-                    particles::draw(
-                        &camera,
-                        self.frame.width,
-                        list.particles(view.scene.particles),
-                        assets,
-                        self.frame.buffers(),
-                        &mut stats,
-                    );
-                    if camera.refdef.blend_phase == BlendPhase::AfterView {
-                        self.view_blend(&camera.refdef, false, assets);
+                    result?;
+                    if !view.refdef.hyperspace {
+                        if view.refdef.blend_phase == BlendPhase::AfterView {
+                            self.view_blend(&view.refdef, false, assets);
+                        }
+                        self.damage_vignette(&view.refdef, assets);
                     }
                 }
                 Command::Draw2d(draw) => {
@@ -671,6 +746,48 @@ impl CpuBackend {
                 let start = buffers.offset(width, viewport.x, y);
                 buffers.inverse_depth[start..start + viewport.width as usize].fill(far_depth);
                 buffers.depth_ranks[start..start + viewport.width as usize].fill(0);
+            }
+        }
+    }
+
+    fn resolve_water(&mut self, view: &Refdef) {
+        let viewport = view.viewport;
+        let phase =
+            qa_core::math::native_integer(f64::from(view.time_seconds() * 20.0)) as usize & 127;
+        if self.warp_dimensions != Some((viewport.width, viewport.height)) {
+            for (x, column) in self.warp_columns[..viewport.width as usize + 6]
+                .iter_mut()
+                .enumerate()
+            {
+                *column = (x as f32 / (viewport.width + 6) as f32 * viewport.width.min(320) as f32)
+                    as usize;
+            }
+            for (y, row) in self.warp_rows[..viewport.height as usize + 6]
+                .iter_mut()
+                .enumerate()
+            {
+                *row = (y as f32 / (viewport.height + 6) as f32 * viewport.height.min(240) as f32)
+                    as usize;
+            }
+            self.warp_dimensions = Some((viewport.width, viewport.height));
+        }
+        let target_width = self.frame.width;
+        let source_width = self.warp_frame.width;
+        let target = self.frame.buffers();
+        let source = self.warp_frame.buffers();
+        for y in 0..viewport.height {
+            for x in 0..viewport.width {
+                let source_x =
+                    self.warp_columns[x as usize + usize::from(self.warp_sine[phase + y as usize])];
+                let source_y =
+                    self.warp_rows[y as usize + usize::from(self.warp_sine[phase + x as usize])];
+                let source_index = source.offset(source_width, source_x as u32, source_y as u32);
+                let destination = target.offset(target_width, viewport.x + x, viewport.y + y);
+                target.pixels[destination] = source.pixels[source_index];
+                target.indices[destination] = source.indices[source_index];
+                target.palettes[destination] = source.palettes[source_index];
+                target.inverse_depth[destination] = source.inverse_depth[source_index];
+                target.depth_ranks[destination] = source.depth_ranks[source_index];
             }
         }
     }
@@ -1261,6 +1378,40 @@ impl CpuBackend {
                     *pixel = composite(*pixel, source, Some(StageBlend::ALPHA));
                     if preserve_alpha {
                         *pixel = (*pixel & 0x00ff_ffff) | alpha;
+                    }
+                }
+            }
+        }
+    }
+
+    fn damage_vignette(&mut self, refdef: &Refdef, assets: &Assets) {
+        let Some(vignette) = crate::scene::DamageVignette::load(refdef) else {
+            return;
+        };
+        let viewport = refdef.viewport;
+        let palette = match refdef.cpu_presentation {
+            CpuPresentation::Indexed { palette, .. } => {
+                assets.palette(palette).map(|resource| (palette, resource))
+            }
+            CpuPresentation::Rgb => None,
+        };
+        let width = self.frame.width;
+        let mut buffers = self.frame.buffers();
+        if let Some(rows) = buffers.rows(width, viewport) {
+            for y in rows {
+                for x in viewport.x..viewport.x + viewport.width {
+                    let color = vignette.color_at(viewport, x, y);
+                    if color[3] == 0.0 {
+                        continue;
+                    }
+                    let index = buffers.offset(width, x, y);
+                    let pixel = composite(buffers.pixels[index], color, Some(StageBlend::ALPHA));
+                    if let Some((palette, resource)) = palette {
+                        let [r, g, b, _] = pixel.to_le_bytes();
+                        let color = resource.nearest_index([r, g, b], None);
+                        buffers.write_indexed(index, color, resource, palette.0, None);
+                    } else {
+                        buffers.write_rgba(index, pixel, None);
                     }
                 }
             }

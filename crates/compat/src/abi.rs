@@ -2811,7 +2811,6 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         client.player.body,
         client.player.movement,
         client.player.view_angles,
-        client.player.view_offset,
         client.command,
         client.player.native,
         client.player.prediction,
@@ -2857,7 +2856,7 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         if let Some(offset) = layout.height {
             c.memory.write_word(
                 address + offset as u64,
-                player.view_offset.0[2].to_bits() as i32,
+                player.movement.view_height.to_bits() as i32,
             )?;
         }
         if let Some(outputs) = &layout.outputs {
@@ -2935,7 +2934,6 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
             client.player.body,
             client.player.movement,
             client.player.view_angles,
-            client.player.view_offset,
             client.command,
             client.player.native,
             client.player.prediction,

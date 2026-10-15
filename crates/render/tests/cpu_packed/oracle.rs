@@ -40,6 +40,7 @@ impl Frame {
 
     fn buffers(&mut self, width: u32) -> Buffers<'_> {
         Buffers {
+            frame_width: width,
             first_row: self.first_row,
             frame_height: self.first_row + self.pixels.len() as u32 / width,
             pixels: &mut self.pixels,

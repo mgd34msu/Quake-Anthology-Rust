@@ -71,6 +71,7 @@ pub(super) struct Raster<'a> {
     blend: bool,
     alpha_cutoffs: Option<[f32; 2]>,
     depth_write: bool,
+    infrared_map: Option<&'static [u8; 256]>,
 }
 
 impl<'a> Raster<'a> {
@@ -142,10 +143,18 @@ impl<'a> Raster<'a> {
             blend,
             alpha_cutoffs: software_alias.and_then(|alias| alias.alpha_cutoffs),
             depth_write: stage.stage.depth_write,
+            infrared_map: stage
+                .inputs
+                .infrared_active()
+                .then(|| software_alias.and_then(|alias| alias.infrared_map))
+                .flatten(),
         }))
     }
 
     pub fn light(self, normal: Vec3, color: [u8; 4]) -> f32 {
+        if self.infrared_map.is_some() {
+            return 0.0;
+        }
         if self.fullbright {
             return 0.0;
         }
@@ -176,7 +185,9 @@ impl<'a> Raster<'a> {
             return None;
         }
         let shade = (light as i32).clamp(0, 63 * 256 + 255) as usize & 0xff00;
-        let color = if self.flat_color.is_some() {
+        let color = if let Some(map) = self.infrared_map {
+            self.palette.colormap()[map[raw as usize] as usize]
+        } else if self.flat_color.is_some() {
             raw
         } else {
             self.palette.colormap()[shade + raw as usize]

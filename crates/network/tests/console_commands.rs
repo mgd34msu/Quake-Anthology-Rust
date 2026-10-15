@@ -30,7 +30,11 @@ fn transmit(protocol: Protocol, client: &mut Channel) -> Vec<u8> {
     bytes
 }
 
-fn receive(protocol: Protocol, bytes: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+fn decode(
+    protocol: Protocol,
+    bytes: &[u8],
+    consume: impl FnMut(Incoming<'_>) -> ControlFlow<()>,
+) -> Vec<u8> {
     let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 8).unwrap();
     let mut commands = Commands::load(protocol, 8192);
     let received = server.receive(bytes, EventTime(2)).unwrap();
@@ -40,20 +44,25 @@ fn receive(protocol: Protocol, bytes: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     };
     let payload = payload.to_vec();
     let length = commands.stage(&payload).unwrap();
-    let mut text = Vec::new();
     assert_eq!(
         commands
-            .decode(length, sequence, 0, &mut server, None, |record| {
-                if let Incoming::CommandString { text: bytes, .. } = record {
-                    text.push(bytes.to_vec());
-                } else {
-                    panic!("console command must not create a usercmd");
-                }
-                ControlFlow::Continue(())
-            })
+            .decode(length, sequence, 0, &mut server, None, consume)
             .unwrap(),
         0
     );
+    payload
+}
+
+fn receive(protocol: Protocol, bytes: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let mut text = Vec::new();
+    let payload = decode(protocol, bytes, |record| {
+        if let Incoming::CommandString { text: bytes, .. } = record {
+            text.push(bytes.to_vec());
+        } else {
+            panic!("console command must not create a usercmd");
+        }
+        ControlFlow::Continue(())
+    });
     (payload, text)
 }
 
@@ -143,5 +152,78 @@ fn console_command_queue_rejects_server_endpoints_and_mismatched_protocols() {
         client.queue_client_command(protocol, b"test").unwrap();
         let (_, records) = receive(protocol, &transmit(protocol, &mut client));
         assert_eq!(records, [b"test".as_slice()]);
+    }
+}
+
+#[test]
+fn userinfo_shares_reliable_flight_with_console_text_in_native_record_order() {
+    for protocol in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
+        let mut client = Channel::load(protocol.channel(), Endpoint::Client, 8192, 8).unwrap();
+        let text = b"\\name\\native\x80\\fov\\110";
+        client.queue_userinfo(protocol, text).unwrap();
+        client
+            .queue_client_command(protocol, b"nextserver")
+            .unwrap();
+        let bytes = transmit(protocol, &mut client);
+        let mut records = Vec::new();
+        let payload = decode(protocol, &bytes, |record| {
+            match record {
+                Incoming::Userinfo {
+                    protocol: actual,
+                    text,
+                    ..
+                } => {
+                    assert_eq!(actual, protocol);
+                    records.push((3, text.to_vec()));
+                }
+                Incoming::CommandString { text, .. } => records.push((4, text.to_vec())),
+                _ => panic!("no movement from a userinfo change"),
+            }
+            ControlFlow::Continue(())
+        });
+        assert_eq!(records, [(3, text.to_vec()), (4, b"nextserver".to_vec())]);
+        let mut expected = vec![3];
+        expected.extend(text);
+        expected.extend(b"\0\x04nextserver\0");
+        assert_eq!(payload, expected, "{protocol:?}");
+        assert!(client.reliable_receipts().is_empty());
+    }
+}
+
+#[test]
+fn userinfo_rejects_foreign_framing_and_preserves_prepared_packets() {
+    for protocol in PROTOCOLS {
+        let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 8).unwrap();
+        assert_eq!(
+            server.queue_userinfo(protocol, b"\\fov\\110"),
+            Err(TransmitError::PayloadReliability)
+        );
+        let mut client = Channel::load(protocol.channel(), Endpoint::Client, 8192, 8).unwrap();
+        if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
+            assert_eq!(
+                client.queue_userinfo(protocol, b"\\fov\\110"),
+                Err(TransmitError::PayloadReliability)
+            );
+            continue;
+        }
+        assert_eq!(
+            client.queue_userinfo(Protocol::Quake3_68, b"\\fov\\110"),
+            Err(TransmitError::PayloadReliability)
+        );
+        assert_eq!(
+            client.queue_userinfo(protocol, &[b'x'; 2046]),
+            Err(TransmitError::MessageTooLarge)
+        );
+        client.queue_client_command(protocol, b"first").unwrap();
+        let pending = client
+            .prepare(None, EventTime(1))
+            .unwrap()
+            .unwrap()
+            .bytes
+            .to_vec();
+        client.queue_userinfo(protocol, b"\\fov\\110").unwrap();
+        assert_eq!(client.pending_packet().unwrap().bytes, pending);
+        client.submitted(EventTime(1)).unwrap();
+        assert_eq!(receive(protocol, &pending).1, [b"first".to_vec()]);
     }
 }

@@ -21,6 +21,7 @@ struct Target {
     presentation: qa_render::material::world_load::PresentationDefaults,
     rails: [qa_console::cvars::View; 3],
     lighting: [qa_console::cvars::View; 2],
+    software_waterwarp: qa_console::cvars::View,
 }
 impl Target {
     fn world_presentation<'a>(
@@ -70,6 +71,7 @@ impl SceneRole {
         presentation: qa_render::material::world_load::PresentationDefaults,
         rails: [qa_console::cvars::View; 3],
         lighting: [qa_console::cvars::View; 2],
+        software_waterwarp: qa_console::cvars::View,
     ) {
         self.target = Some(Target {
             profile,
@@ -79,6 +81,7 @@ impl SceneRole {
             presentation,
             rails,
             lighting,
+            software_waterwarp,
         });
     }
 }
@@ -89,6 +92,7 @@ pub(crate) struct SceneBorrow<'a> {
     role: &'a mut SceneRole,
     rails: (i32, i32, f32),
     lighting: [f32; 2],
+    software_waterwarp: bool,
     client: Option<qa_render::effects::EffectClient>,
 }
 impl<'a> SceneBorrow<'a> {
@@ -111,12 +115,17 @@ impl<'a> SceneBorrow<'a> {
                 .lighting
                 .map(|view| cvars.numeric(view).unwrap_or(0.))
         });
+        let software_waterwarp = role
+            .target
+            .as_ref()
+            .is_some_and(|target| cvars.numeric(target.software_waterwarp).unwrap_or(0.0) != 0.0);
         Self {
             composer,
             models,
             role,
             rails,
             lighting,
+            software_waterwarp,
             client,
         }
     }
@@ -355,6 +364,10 @@ impl SceneService for SceneBorrow<'_> {
             .is_some_and(|frame| frame.draw_2d(draw))
     }
     fn view(&mut self, mut view: SceneView) -> Result<bool, CallError> {
+        view.world &= !view
+            .refdef
+            .flags
+            .contains(qa_core::primitives::PlayerViewFlags::NO_WORLD_MODEL);
         let selected_world = self.selected_world();
         let target = self.role.target.as_ref().ok_or(CallError::Geometry)?;
         let composer = self.composer.as_deref_mut().ok_or(CallError::Geometry)?;
@@ -365,6 +378,7 @@ impl SceneService for SceneBorrow<'_> {
         view.refdef.viewport.x += target.viewport.x;
         view.refdef.viewport.y += target.viewport.y;
         super::apply_presentation(&mut view.refdef, &target.presentation, composer.kind);
+        view.refdef.software_waterwarp &= self.software_waterwarp;
         view.refdef
             .validate(u32::MAX, u32::MAX)
             .ok_or(CallError::Geometry)?;

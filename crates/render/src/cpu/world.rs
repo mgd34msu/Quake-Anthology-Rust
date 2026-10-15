@@ -88,6 +88,8 @@ pub struct RasterConfig {
     pub preparation_capacity_bytes: usize,
     /// Completed-material target planes, independent of band count and rovers.
     pub material_capacity_bytes: usize,
+    /// Native view warp targets and sine data, shared by serial seat views.
+    pub view_effect_capacity_bytes: usize,
     /// Small views avoid the extra worker wake/barrier before rasterization.
     pub prepare_minimum_primitives_per_job: usize,
 }
@@ -428,7 +430,6 @@ struct WorldPrepare {
 }
 
 struct WorldBand {
-    width: u32,
     catalog: Arc<WorldCatalog>,
     edges: Edges,
     cache: SurfaceCache,
@@ -446,6 +447,7 @@ pub(super) struct WorldRaster {
 
 pub(super) struct Buffers<'a> {
     pub first_row: u32,
+    pub frame_width: u32,
     pub frame_height: u32,
     pub pixels: &'a mut [u32],
     pub inverse_depth: &'a mut [f32],
@@ -518,6 +520,7 @@ impl<'a> Buffers<'a> {
     fn reborrow(&mut self) -> Buffers<'_> {
         Buffers {
             first_row: self.first_row,
+            frame_width: self.frame_width,
             frame_height: self.frame_height,
             pixels: &mut *self.pixels,
             inverse_depth: &mut *self.inverse_depth,
@@ -527,8 +530,8 @@ impl<'a> Buffers<'a> {
         }
     }
 
-    fn split_rows(self, width: u32, rows: u32) -> (Self, Self) {
-        let count = width as usize * rows as usize;
+    fn split_rows(self, rows: u32) -> (Self, Self) {
+        let count = self.frame_width as usize * rows as usize;
         let (pixels, remaining_pixels) = self.pixels.split_at_mut(count);
         let (depth, remaining_depth) = self.inverse_depth.split_at_mut(count);
         let (ranks, remaining_ranks) = self.depth_ranks.split_at_mut(count);
@@ -537,6 +540,7 @@ impl<'a> Buffers<'a> {
         (
             Self {
                 first_row: self.first_row,
+                frame_width: self.frame_width,
                 frame_height: self.frame_height,
                 pixels,
                 inverse_depth: depth,
@@ -546,6 +550,7 @@ impl<'a> Buffers<'a> {
             },
             Self {
                 first_row: self.first_row + rows,
+                frame_width: self.frame_width,
                 frame_height: self.frame_height,
                 pixels: remaining_pixels,
                 inverse_depth: remaining_depth,
@@ -1019,6 +1024,7 @@ impl WorldRaster {
                 span_group_capacity_bytes,
                 preparation_capacity_bytes,
                 material_capacity_bytes: 0,
+                view_effect_capacity_bytes: 0,
                 prepare_minimum_primitives_per_job: 64,
             },
         })

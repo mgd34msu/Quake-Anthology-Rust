@@ -334,7 +334,7 @@ fn prediction_rejects_stale_world_without_changing_its_hot_state() {
     let body = body_bits(prediction.player.body);
     let movement = prediction.player.movement;
     let angles = prediction.player.view_angles;
-    let offset = prediction.player.view_offset;
+    let offset = prediction.player.eye_offset();
     let mut trace = WorldTrace::new(
         &store,
         geometry,
@@ -361,5 +361,5 @@ fn prediction_rejects_stale_world_without_changing_its_hot_state() {
     assert_eq!(body_bits(prediction.player.body), body);
     assert_eq!(prediction.player.movement, movement);
     assert_eq!(prediction.player.view_angles, angles);
-    assert_eq!(prediction.player.view_offset, offset);
+    assert_eq!(prediction.player.eye_offset(), offset);
 }

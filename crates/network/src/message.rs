@@ -148,6 +148,10 @@ impl StringPolicy {
         };
         &text[..length.min(maximum)]
     }
+    pub(crate) fn truncates(self, text: &[u8]) -> bool {
+        text.get(self.payload(text).len())
+            .is_some_and(|&byte| !self.terminates(byte))
+    }
     pub(crate) fn read_byte(self, byte: u8) -> u8 {
         if self.sanitize && ((self.sanitize_high && byte > 127) || byte == b'%') {
             b'.'

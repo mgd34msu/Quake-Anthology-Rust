@@ -1,7 +1,8 @@
 //! Q2 module ABI limits are available independently of the host backend.
 use crate::{memory::ModuleMemory, services::CallError};
 use qa_core::primitives::{
-    ModelRef, ModuleId, PlayerState, ResourceNamespace, RuleSetId, UserCmd, ViewWeapon,
+    ModelRef, ModuleId, NativePlayerTail, NativeViewFlags, PlayerState, ResourceNamespace,
+    RuleSetId, UserCmd, ViewFlagLayout, ViewWeapon,
 };
 
 pub const INFO_KEY_BYTES: usize = 64;
@@ -30,6 +31,12 @@ struct PresentationLayout {
     gun_skin: Option<usize>,
     gun_rate: Option<usize>,
     view_height: Option<usize>,
+    screen_blend: usize,
+    damage_blend: Option<usize>,
+    fov: usize,
+    flags: usize,
+    flags_width: crate::memory::Width,
+    flags_layout: ViewFlagLayout,
 }
 pub const CLASSIC: ClientLayout = ClientLayout {
     userinfo_bytes: 512,
@@ -53,6 +60,12 @@ pub const CLASSIC: ClientLayout = ClientLayout {
         gun_skin: None,
         gun_rate: None,
         view_height: None,
+        screen_blend: 96,
+        damage_blend: None,
+        fov: 112,
+        flags: 116,
+        flags_width: crate::memory::Width::Word,
+        flags_layout: ViewFlagLayout::CLASSIC,
     },
 };
 pub const RERELEASE: ClientLayout = ClientLayout {
@@ -77,6 +90,12 @@ pub const RERELEASE: ClientLayout = ClientLayout {
         gun_skin: Some(116),
         gun_rate: Some(124),
         view_height: Some(48),
+        screen_blend: 128,
+        damage_blend: Some(144),
+        fov: 160,
+        flags: 164,
+        flags_width: crate::memory::Width::Byte,
+        flags_layout: ViewFlagLayout::KEX,
     },
 };
 pub fn client_layout(rules: RuleSetId) -> Option<&'static ClientLayout> {
@@ -99,12 +118,17 @@ impl ClientLayout {
     ) -> Result<(), CallError> {
         let layout = self.presentation;
         player.view_angles = memory.read_vec3(pointer + layout.view as u64)?;
-        player.view_offset = memory.read_vec3(pointer + layout.offset as u64)?;
-        if let Some(height) = layout.view_height {
-            player.view_offset.0[2] += f32::from(
-                memory.read_field(pointer + height as u64, crate::memory::Width::Byte)? as i8,
-            );
-        }
+        let offset = memory.read_vec3(pointer + layout.offset as u64)?;
+        let height = layout
+            .view_height
+            .map(|height| {
+                memory
+                    .read_field(pointer + height as u64, crate::memory::Width::Byte)
+                    .map(|height| f32::from(height as i8))
+            })
+            .transpose()?;
+        player.view.accept_offset(offset, height);
+        player.movement.view_height = height.unwrap_or(offset.0[2]);
         player.punch_angles = memory.read_vec3(pointer + layout.punch as u64)?;
         player.view_weapon = ViewWeapon {
             model: ModelRef::native(
@@ -125,6 +149,42 @@ impl ClientLayout {
                 .transpose()?
                 .unwrap_or(0),
         };
+        let read_float = |at| -> Result<f32, CallError> {
+            let value =
+                f32::from_bits(memory.read_field(pointer + at as u64, crate::memory::Width::Word)?);
+            value.is_finite().then_some(value).ok_or(CallError::Memory)
+        };
+        let read_color = |at| -> Result<[f32; 4], CallError> {
+            Ok([
+                read_float(at)?,
+                read_float(at + 4)?,
+                read_float(at + 8)?,
+                read_float(at + 12)?,
+            ])
+        };
+        let screen_blend = read_color(layout.screen_blend)?;
+        let damage_blend = layout
+            .damage_blend
+            .map(read_color)
+            .transpose()?
+            .unwrap_or_default();
+        let fov = read_float(layout.fov)?;
+        let raw = memory.read_field(pointer + layout.flags as u64, layout.flags_width)?;
+        player.view.screen_blend = screen_blend;
+        player.view.damage_blend = damage_blend;
+        player.view.fov_x = Some(fov);
+        player.view.flags = layout.flags_layout.decode(raw);
+        let source = self.stats.protocol.rule_set();
+        let namespace = ResourceNamespace::Module(module);
+        if player.native_for(source, Some(namespace)).is_none() {
+            player.native = Some(NativePlayerTail::new(source, namespace));
+        }
+        if let Some(native) = &mut player.native {
+            native.view_flags = Some(NativeViewFlags {
+                layout: layout.flags_layout,
+                raw,
+            });
+        }
         Ok(())
     }
     pub fn read_command(
@@ -206,3 +266,7 @@ fn read_rerelease_command(bytes: &[u8], server_time: i32) -> UserCmd {
         server_time,
     )
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/q2_presentation.rs"]
+mod tests;

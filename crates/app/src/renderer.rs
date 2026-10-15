@@ -121,7 +121,7 @@ impl CpuDispatch {
 /// Cache sizes describe the backend's load-time reservation, across all bands.
 pub fn report_cpu_config(config: RasterConfig, workers: usize) {
     qa_console::logger::console(format_args!(
-        "{{\"event\":\"cpu_raster_config\",\"bands\":{},\"workers\":{},\"total_cache_budget_bytes\":{},\"allocated_cache_bytes\":{},\"per_band_cache_bytes\":{},\"mandatory_cache_bytes\":{},\"loaded_mip_working_set_bytes\":{},\"bin_index_capacity_bytes\":{},\"mip_layout_metadata_bytes\":{},\"span_group_capacity_bytes\":{},\"preparation_capacity_bytes\":{},\"material_capacity_bytes\":{},\"prepare_minimum_primitives_per_job\":{},\"worker_affinity\":\"inherited_process_cpu_mask\",\"cpu_affinity_source\":\"private_harness_metadata\",\"individual_worker_pinning\":false}}\n",
+        "{{\"event\":\"cpu_raster_config\",\"bands\":{},\"workers\":{},\"total_cache_budget_bytes\":{},\"allocated_cache_bytes\":{},\"per_band_cache_bytes\":{},\"mandatory_cache_bytes\":{},\"loaded_mip_working_set_bytes\":{},\"bin_index_capacity_bytes\":{},\"mip_layout_metadata_bytes\":{},\"span_group_capacity_bytes\":{},\"preparation_capacity_bytes\":{},\"material_capacity_bytes\":{},\"view_effect_capacity_bytes\":{},\"prepare_minimum_primitives_per_job\":{},\"worker_affinity\":\"inherited_process_cpu_mask\",\"cpu_affinity_source\":\"private_harness_metadata\",\"individual_worker_pinning\":false}}\n",
         config.bands.count(),
         workers,
         config.total_cache_budget_bytes,
@@ -134,6 +134,7 @@ pub fn report_cpu_config(config: RasterConfig, workers: usize) {
         config.span_group_capacity_bytes,
         config.preparation_capacity_bytes,
         config.material_capacity_bytes,
+        config.view_effect_capacity_bytes,
         config.prepare_minimum_primitives_per_job,
     ));
 }
@@ -280,6 +281,9 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
         origin: client.origin,
         axes: basis.axes(),
         fov,
+        blend: client.screen_blend,
+        damage_blend: client.damage_blend,
+        flags: client.flags,
         time_ms: client.time_ms as i64,
         ..Refdef::default()
     };
@@ -293,6 +297,7 @@ fn apply_presentation(
 ) {
     presentation.apply(refdef);
     if matches!(kind, Kind::Gl) {
+        refdef.software_waterwarp = false;
         refdef.blend_phase = BlendPhase::AfterView;
         refdef.palette_transform = None;
     }
@@ -672,15 +677,23 @@ impl Renderer {
                 } else {
                     &[]
                 };
-                let Ok(surfaces) = scene.views[seat].query(world, refdef, None, hidden_areas)
-                else {
-                    rejected += 1;
-                    continue;
+                let no_world = refdef
+                    .flags
+                    .contains(qa_core::primitives::PlayerViewFlags::NO_WORLD_MODEL);
+                let surfaces = if no_world {
+                    &[][..]
+                } else {
+                    let Ok(surfaces) = scene.views[seat].query(world, refdef, None, hidden_areas)
+                    else {
+                        rejected += 1;
+                        continue;
+                    };
+                    surfaces
                 };
                 self.sample.visible_surfaces += surfaces.len() as u32;
                 frame.clear_scene();
                 let world_added =
-                    frame.add_world(client.world, client.world_presentation, surfaces);
+                    no_world || frame.add_world(client.world, client.world_presentation, surfaces);
                 if let Some(client_scene) = &scenes[seat] {
                     let mut random = || self.effects.random_word();
                     self.sample.client_scene += client_scene.append(
@@ -703,7 +716,7 @@ impl Renderer {
                     &composition.assets,
                     Some(client.world),
                     &refdef,
-                    true,
+                    !no_world,
                     client.lighting_scales,
                     Some(&mut scene.views[seat]),
                     scene
@@ -712,8 +725,10 @@ impl Renderer {
                         .find(|entry| entry.id == client.world_presentation)
                         .map_or(1., |entry| entry.profile.q2_modulate),
                 );
-                if !world_added
-                    || !frame.render_world_scene(
+                let rendered = if no_world {
+                    frame.render_scene(refdef, hidden_areas, &composition.assets)
+                } else {
+                    frame.render_world_scene(
                         client.world,
                         client.world_presentation,
                         refdef,
@@ -721,7 +736,8 @@ impl Renderer {
                         &mut scene.views[seat],
                         &composition.assets,
                     )
-                {
+                };
+                if !world_added || !rendered {
                     rejected += 1;
                 }
                 if let Some(hud) = hud[seat] {

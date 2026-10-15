@@ -3,7 +3,7 @@ use crate::assets::{Assets, MaterialId, ModelId, PaletteId, Vertex};
 use crate::surface_cache::IndexedLighting;
 use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
 pub use qa_core::primitives::LightStyle;
-use qa_core::primitives::{Orientation, Vec3};
+use qa_core::primitives::{Orientation, PlayerViewFlags, Vec3};
 use std::cmp::Ordering as SortOrdering;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
@@ -102,6 +102,11 @@ pub struct Refdef {
     /// Cached presentation identity light (Q3 native overbright response).
     pub identity_light: f32,
     pub blend: [f32; 4],
+    pub damage_blend: [f32; 4],
+    /// Native damage vignette fraction; zero requests a full-screen blend.
+    pub damage_border: f32,
+    pub flags: PlayerViewFlags,
+    pub software_waterwarp: bool,
     pub blend_phase: BlendPhase,
     /// Final palette shifts also cover a seat's statusbar/console outside the
     /// camera viewport. None uses the camera viewport for standalone scenes.
@@ -126,7 +131,7 @@ pub fn fov_from_x(fov_x: f32, width: u32, height: u32) -> [f32; 2] {
 }
 
 pub(crate) fn milliseconds_to_seconds(time_ms: i64) -> f32 {
-    time_ms as f32 * 0.001
+    (time_ms as f64 * 0.001) as f32
 }
 
 impl Refdef {
@@ -151,7 +156,9 @@ impl Refdef {
                 .fov
                 .iter()
                 .chain(self.blend.iter())
+                .chain(self.damage_blend.iter())
                 .all(|value| value.is_finite())
+            || !self.damage_border.is_finite()
             || self.fov.iter().any(|&fov| fov <= 0.0 || fov >= 180.0)
             || !self.near.is_finite()
             || self.near <= 0.0
@@ -189,6 +196,10 @@ impl Default for Refdef {
             text: [[0; 32]; 8],
             identity_light: 1.0,
             blend: [0.0; 4],
+            damage_blend: [0.0; 4],
+            damage_border: 0.2,
+            flags: PlayerViewFlags::default(),
+            software_waterwarp: false,
             blend_phase: BlendPhase::AfterView,
             blend_viewport: None,
             cpu_presentation: CpuPresentation::Rgb,
@@ -196,6 +207,81 @@ impl Default for Refdef {
             palette_transform: None,
             lightstyles: [LightStyle::default(); 256],
         }
+    }
+}
+
+pub(crate) struct DamageVignette {
+    color: [u8; 4],
+    inset: Option<u32>,
+}
+impl DamageVignette {
+    pub(crate) fn load(view: &Refdef) -> Option<Self> {
+        let color = view
+            .damage_blend
+            .map(|value| qa_core::math::native_integer(f64::from(value * 255.0)) as u8);
+        if color[3] == 0 {
+            return None;
+        }
+        let inset = (view.damage_border > 0.0).then(|| {
+            (view.viewport.width.min(view.viewport.height) as f32 * view.damage_border.min(0.5))
+                as u32
+        });
+        // A positive native fraction can truncate to a degenerate border.
+        if inset == Some(0) {
+            return None;
+        }
+        Some(Self { color, inset })
+    }
+
+    pub(crate) fn color_at(&self, viewport: Viewport, x: u32, y: u32) -> [f32; 4] {
+        let mut color = self.color.map(|value| f32::from(value) / 255.0);
+        if let Some(inset) = self.inset {
+            let x = (x - viewport.x) as f32 + 0.5;
+            let y = (y - viewport.y) as f32 + 0.5;
+            let edge = x
+                .min(y)
+                .min(viewport.width as f32 - x)
+                .min(viewport.height as f32 - y);
+            color[3] *= (1.0 - edge / inset as f32).max(0.0);
+        }
+        color
+    }
+
+    pub(crate) fn triangles(&self, viewport: Viewport) -> ([Vertex; 24], usize) {
+        let width = viewport.width as f32;
+        let height = viewport.height as f32;
+        let inset = self.inset.unwrap_or(0) as f32;
+        let points = [
+            [0.0, 0.0],
+            [width, 0.0],
+            [width, height],
+            [0.0, height],
+            [inset, inset],
+            [width - inset, inset],
+            [width - inset, height - inset],
+            [inset, height - inset],
+        ];
+        let indices: &[usize] = if self.inset.is_some() {
+            &[
+                0, 5, 4, 0, 1, 5, 1, 6, 5, 1, 2, 6, 6, 2, 3, 6, 3, 7, 0, 7, 3, 0, 4, 7,
+            ]
+        } else {
+            &[0, 1, 2, 0, 2, 3]
+        };
+        let mut vertices = [Vertex::default(); 24];
+        for (to, &index) in vertices.iter_mut().zip(indices) {
+            let [x, y] = points[index];
+            *to = Vertex {
+                position: Vec3([viewport.x as f32 + x, viewport.y as f32 + y, 0.0]),
+                color: if index < 4 {
+                    self.color
+                } else {
+                    [self.color[0], self.color[1], self.color[2], 0]
+                },
+                ..Vertex::default()
+            };
+        }
+        (vertices, indices.len())
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -305,6 +391,7 @@ pub struct SceneEntity {
     pub lighting: Option<crate::stage::EntityLighting>,
     pub lighting_origin: Option<Vec3>,
     pub minimum_light: bool,
+    pub infrared_visible: bool,
     pub shadow_plane: Option<f32>,
     pub casts_shadow: bool,
     pub visibility: EntityVisibility,
@@ -358,6 +445,7 @@ impl Default for SceneEntity {
             lighting: None,
             lighting_origin: None,
             minimum_light: false,
+            infrared_visible: false,
             shadow_plane: None,
             casts_shadow: false,
             visibility: EntityVisibility::Always,

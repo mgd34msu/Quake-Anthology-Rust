@@ -28,7 +28,7 @@ fn player(rules: RuleSetId) -> PlayerState {
     player.body.position = Vec3([3.0, 4.0, 5.0]);
     player.body.velocity = Vec3([2.0, 3.0, 4.0]);
     player.view_angles = Vec3([123.5, -14.25, 6.0]);
-    player.view_offset = Vec3([1.0, 2.0, 3.0]);
+    player.view.accept_offset(Vec3([1.0, 2.0, 3.0]), None);
     player.movement.timer = MovementTimer::TELEPORT;
     player.movement.remaining_ms = 123;
     player
@@ -204,7 +204,7 @@ fn native_control_keeps_raw_under_cap_wish_and_separate_integration() {
     };
     let position = state.body.position;
     let view = state.view_angles;
-    let offset = state.view_offset;
+    let offset = state.eye_offset();
     let result = pmove(
         command,
         &mut state,
@@ -220,7 +220,7 @@ fn native_control_keeps_raw_under_cap_wish_and_separate_integration() {
         [3.0f32.to_bits(), (-2.0f32).to_bits(), 6.0f32.to_bits()]
     );
     assert_eq!(state.view_angles, view);
-    assert_eq!(state.view_offset, offset);
+    assert_eq!(state.eye_offset(), offset);
     assert_eq!(state.movement.remaining_ms, 123);
     let result = pmove(
         command,

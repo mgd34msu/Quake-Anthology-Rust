@@ -607,7 +607,7 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
     player.body.position = Vec3([123.25, -99.5, 40.0]);
     player.body.velocity = Vec3([-22.5, 66.25, 3.0]);
     player.view_angles = Vec3([10.5, 270.25, -8.0]);
-    player.view_offset = Vec3([3.0, 4.0, 22.0]);
+    player.view.accept_offset(Vec3([3.0, 4.0, 22.0]), None);
     player.movement.command_time_ms = 333;
     player.movement.delta_angles = Vec3([25.0, 5.0, -15.0]).into();
     player.movement.remaining_ms = 99;
@@ -619,7 +619,7 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
             player.body.maxs,
         ],
         player.view_angles,
-        player.view_offset,
+        player.view.effective_offset(player.movement.view_height),
         player.movement.command_time_ms,
         player.movement.delta_angles,
         player.movement.remaining_ms,
@@ -676,7 +676,7 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
                 player.body.maxs
             ],
             player.view_angles,
-            player.view_offset,
+            player.view.effective_offset(player.movement.view_height),
             player.movement.command_time_ms,
             player.movement.delta_angles,
             player.movement.remaining_ms,

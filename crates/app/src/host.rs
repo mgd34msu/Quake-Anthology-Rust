@@ -20,6 +20,9 @@ pub struct ClientView {
     pub origin: qa_core::primitives::Vec3,
     pub angles: qa_core::primitives::Vec3,
     pub fov_x: f32,
+    pub screen_blend: [f32; 4],
+    pub damage_blend: [f32; 4],
+    pub flags: qa_core::primitives::PlayerViewFlags,
     pub time_ms: u64,
     pub lighting_scales: [f32; 2],
 }
@@ -229,6 +232,12 @@ pub struct Provider {
         ) -> qa_core::events::OutputSubmission,
     >,
 }
+#[derive(Default)]
+struct ClientUserinfo {
+    revision: Option<(qa_core::primitives::EntityId, u64)>,
+    queued: qa_core::text::FixedText<{ qa_session::clients::USERINFO_BYTES }>,
+}
+
 pub struct FrameHost {
     pub(crate) modules: Option<crate::modules::Modules>,
     pub(crate) muzzle_sounds: crate::audio::MuzzleSounds,
@@ -255,6 +264,9 @@ pub struct FrameHost {
     maxfps: CvarHandle,
     zombie_time: CvarHandle,
     fov: CvarHandle,
+    q2_fov: (qa_console::cvars::View, qa_console::cvars::View),
+    software_waterwarp: qa_console::cvars::View,
+    userinfo: Box<[ClientUserinfo]>,
     lighting_scales: [CvarHandle; 2],
     style_interpolation: CvarHandle,
     roll_angle: CvarHandle,
@@ -465,6 +477,19 @@ impl FrameHost {
             .find("sv_zombietime")
             .ok_or("missing sv_zombietime")?;
         let fov = console.cvars.find("cg_fov").ok_or("missing cg_fov")?;
+        let q2_context = qa_console::views::Context {
+            source: qa_core::primitives::RuleSetId::Quake2,
+            ..Default::default()
+        };
+        let q2_fov = console
+            .cvars
+            .bind("deathmatch", q2_context)
+            .zip(console.cvars.bind("dmflags", q2_context))
+            .ok_or("missing Q2 FOV policy cvars")?;
+        let software_waterwarp = console
+            .cvars
+            .bind("sw_waterwarp", q2_context)
+            .ok_or("missing software water warp cvar")?;
         let lighting_scales =
             ["r_ambientScale", "r_directedScale"].map(|name| console.cvars.find(name));
         let [Some(ambient), Some(directed)] = lighting_scales else {
@@ -556,6 +581,11 @@ impl FrameHost {
             maxfps,
             zombie_time,
             fov,
+            q2_fov,
+            software_waterwarp,
+            userinfo: (0..SeatId::COUNT)
+                .map(|_| ClientUserinfo::default())
+                .collect(),
             lighting_scales,
             style_interpolation,
             roll_angle,
@@ -715,6 +745,7 @@ impl FrameHost {
         });
         self.advance_client_presentation();
         self.flush_closing_client_controls();
+        self.queue_client_userinfo();
         result.commands = self.client_frame(command_times);
         let native_owners = std::array::from_fn(|seat| {
             self.local_clients[seat]
@@ -780,19 +811,52 @@ impl FrameHost {
         std::array::from_fn(|seat| {
             let (client, row, player) = self.local_seat(seat)?;
             let (world, world_presentation) = self.local_worlds[seat]?;
+            let camera = self.client_camera(client, player);
+            let mut presentation = self.local_presentations[seat];
+            presentation.software_waterwarp &= self
+                .console
+                .cvars
+                .numeric(self.software_waterwarp)
+                .unwrap_or(0.0)
+                != 0.0;
             Some(ClientView {
                 world,
                 world_presentation,
-                presentation: self.local_presentations[seat],
-                origin: player.eye(),
+                presentation,
+                origin: camera.origin,
                 angles: self.client_angles(client, row, player),
-                fov_x: self.console.cvars.value(self.fov),
+                fov_x: camera
+                    .view
+                    .fov_x
+                    .unwrap_or_else(|| self.console.cvars.value(self.fov)),
+                screen_blend: camera.view.screen_blend,
+                damage_blend: camera.view.damage_blend,
+                flags: camera.view.flags,
                 time_ms: self.time.milliseconds(),
                 lighting_scales: self
                     .lighting_scales
                     .map(|handle| self.console.cvars.value(handle)),
             })
         })
+    }
+
+    fn client_camera(
+        &self,
+        client: ClientId,
+        player: &qa_core::primitives::PlayerState,
+    ) -> qa_network::projection::PlayerViewSample {
+        self.runtime.snapshots[client.0 as usize]
+            .as_ref()
+            .and_then(|snapshot| {
+                self.runtime
+                    .network
+                    .get(client, qa_core::loopback::Endpoint::Client)
+                    .map(|connection| snapshot.view_presentation(&connection.channel, player))
+            })
+            .unwrap_or(qa_network::projection::PlayerViewSample {
+                origin: player.eye(),
+                view: player.view,
+            })
     }
 
     fn client_angles(
@@ -1184,6 +1248,118 @@ impl FrameHost {
                     }))
     }
 
+    fn queue_client_userinfo(&mut self) {
+        use qa_network::commands::packet::Protocol;
+        let revision = self.console.cvars.revision();
+        let mut bytes = [0; qa_session::clients::USERINFO_BYTES];
+        for seat in SeatId::ALL {
+            let index = seat.index();
+            let Some(id) = self.local_clients[index] else {
+                self.userinfo[index].revision = None;
+                continue;
+            };
+            let Some(row) = self
+                .runtime
+                .server
+                .clients
+                .get(id.0 as usize)
+                .filter(|row| row.is_active())
+            else {
+                continue;
+            };
+            if self.userinfo[index].revision == Some((row.entity, revision)) {
+                continue;
+            }
+            let lifetime = row.entity;
+            let Some(connection) = self
+                .runtime
+                .network
+                .get_mut(id, qa_core::loopback::Endpoint::Client)
+            else {
+                continue;
+            };
+            let Some(protocol @ (Protocol::Quake2_34 | Protocol::Quake2Repro1038)) = connection
+                .commands
+                .as_ref()
+                .map(|commands| commands.protocol)
+            else {
+                continue;
+            };
+            let context = qa_console::views::Context {
+                source: protocol.rule_set(),
+                seat,
+                ..Default::default()
+            };
+            let capacity = qa_compat::services::userinfo_rules(protocol.rule_set()).bytes;
+            let Ok(length) = self
+                .console
+                .cvars
+                .info_string(context, 2, &mut bytes[..capacity])
+            else {
+                continue;
+            };
+            let cache = &mut self.userinfo[index];
+            if cache.revision.is_some_and(|(old, _)| old == lifetime)
+                && cache.queued.as_bytes() == &bytes[..length]
+            {
+                cache.revision = Some((lifetime, revision));
+                continue;
+            }
+            if connection
+                .channel
+                .queue_userinfo(protocol, &bytes[..length])
+                .is_ok()
+                && cache.queued.set_bytes(&bytes[..length]).is_ok()
+            {
+                cache.revision = Some((lifetime, revision));
+            }
+        }
+    }
+
+    fn builtin_userinfo(
+        &mut self,
+        id: ClientId,
+        protocol: qa_network::commands::packet::Protocol,
+        text: &[u8],
+    ) -> Result<(), crate::modules::ClientCommandError> {
+        use crate::modules::ClientCommandError;
+        use qa_network::commands::packet::Protocol;
+        self.runtime
+            .server
+            .replace_userinfo(
+                id,
+                text,
+                qa_compat::services::userinfo_rules(protocol.rule_set()),
+            )
+            .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))?;
+        // The negotiated module boundary selects consumer policy; wire storage
+        // and the player's movement/trace roles remain independent.
+        let policy = match protocol {
+            Protocol::Quake2_34 => Some((90, Some(0x8000))),
+            Protocol::Quake2Repro1038 => Some((1, None)),
+            _ => None,
+        };
+        if let Some((below_minimum, fixed_mask)) = policy {
+            let raw = qa_core::text::info_value(text, b"fov", false)
+                .map_or(&b""[..], |range| &text[range]);
+            let value = qa_core::text::atoi_prefix(raw);
+            let (deathmatch, flags) = self.q2_fov;
+            let fixed = fixed_mask.is_some_and(|mask| {
+                self.console.cvars.numeric(deathmatch).unwrap_or(0.0) != 0.0
+                    && self.console.cvars.integer_view(flags).unwrap_or(0) & mask != 0
+            });
+            let fov = if fixed {
+                90
+            } else if value < 1 {
+                below_minimum
+            } else {
+                value.min(160)
+            };
+            self.runtime.server.clients[id.0 as usize].player.view.fov_x = Some(fov as f32);
+        }
+        Ok(())
+    }
+
     fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
         let effect_clients = std::array::from_fn(|seat| {
             let (client, row, _) = self.local_seat(seat)?;
@@ -1263,7 +1439,7 @@ impl FrameHost {
                             },
                         ),
                 ),
-                origin: player.eye(),
+                origin: self.client_camera(client, player).origin,
                 right: qa_core::math::angle_vectors(self.client_angles(client, row, player)).right,
             })
         })
@@ -1605,15 +1781,20 @@ impl FrameHost {
                             }
                         }
                     }
-                    Incoming::Userinfo { text, output, .. } => {
+                    Incoming::Userinfo { protocol, text, output } => {
                         if output.is_some()
                             && self.runtime.server.clients[id.0 as usize].output == output
-                            && self.runtime.server.module_moves(id).is_some()
-                            && let Err(error) = self.userinfo_module_client(id, text)
                         {
-                            let _ = self.runtime.server.events.console_formatted(format_args!(
-                                "ClientUserinfoChanged: {error}\n"
-                            ));
+                            let result = if self.runtime.server.module_moves(id).is_some() {
+                                self.userinfo_module_client(id, text)
+                            } else {
+                                self.builtin_userinfo(id, protocol, text)
+                            };
+                            if let Err(error) = result {
+                                let _ = self.runtime.server.events.console_formatted(format_args!(
+                                    "ClientUserinfoChanged: {error}\n"
+                                ));
+                            }
                         }
                     }
                     Incoming::Disconnect { output } => {

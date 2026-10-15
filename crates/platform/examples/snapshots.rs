@@ -906,7 +906,9 @@ fn connected_nq_heap() -> Result<(), String> {
         ..Default::default()
     };
     source.body.velocity.0[0] = -32.;
-    source.view_offset.0[2] = 22.;
+    source
+        .view
+        .accept_offset(qa_core::primitives::Vec3([0.0, 0.0, 22.0]), None);
     let mut imported = PlayerState {
         movement_rules: RuleSetId::Quake3,
         trace_rules: RuleSetId::Quake2,

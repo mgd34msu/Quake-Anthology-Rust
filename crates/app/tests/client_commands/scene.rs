@@ -591,6 +591,9 @@ pub(super) fn ownership() {
         origin: Vec3::default(),
         angles: Vec3::default(),
         fov_x: 90.,
+        screen_blend: [0.0; 4],
+        damage_blend: [0.0; 4],
+        flags: Default::default(),
         time_ms: 16,
         lighting_scales: [0.6, 1.],
     };

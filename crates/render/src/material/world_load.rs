@@ -109,6 +109,7 @@ impl Default for WorldLoadOptions {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PresentationDefaults {
+    pub software_waterwarp: bool,
     pub cpu: CpuPresentation,
     pub perspective_step: PerspectiveStep,
     pub blend_phase: BlendPhase,
@@ -120,6 +121,7 @@ impl Default for PresentationDefaults {
     fn default() -> Self {
         let view = Refdef::default();
         Self {
+            software_waterwarp: view.software_waterwarp,
             cpu: view.cpu_presentation,
             perspective_step: view.perspective_step,
             blend_phase: view.blend_phase,
@@ -131,6 +133,7 @@ impl Default for PresentationDefaults {
 }
 impl PresentationDefaults {
     pub fn apply(&self, view: &mut Refdef) {
+        view.software_waterwarp = self.software_waterwarp;
         view.cpu_presentation = self.cpu;
         view.perspective_step = self.perspective_step;
         view.blend_phase = self.blend_phase;
@@ -417,7 +420,10 @@ fn presentation_defaults(
     options: &WorldLoadOptions,
 ) -> PresentationDefaults {
     let presentation_rules = profile.rules;
-    let mut presentation = PresentationDefaults::default();
+    let mut presentation = PresentationDefaults {
+        software_waterwarp: matches!(presentation_rules, RuleSetId::Quake2),
+        ..Default::default()
+    };
     // Native presentation choices are resolved here, independently of movement,
     // client protocol and module format. There is no family branch in drawing.
     if matches!(presentation_rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {

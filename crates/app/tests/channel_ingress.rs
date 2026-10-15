@@ -346,7 +346,7 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
         player.body.position = Vec3([12.375, -24.625, 48.125]);
         player.body.velocity = Vec3([32., -48., 64.]);
         player.health = -17;
-        player.view_offset.0[2] = 22.;
+        player.view.accept_offset(Vec3([0., 0., 22.]), None);
         let predicted = &mut host.runtime.prediction[0].player;
         predicted.movement_rules = RuleSetId::Quake3;
         predicted.trace_rules = RuleSetId::Quake2;

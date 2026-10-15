@@ -2518,3 +2518,103 @@ fn cube_background_uses_original_index_dimensions_and_typed_rotation_policy() {
         assert_eq!(cpu.pixels()[0], u32::from_le_bytes([10, 10, 10, 255]));
     }
 }
+
+#[test]
+fn indexed_cached_world_water_warp_uses_scoped_stride_in_each_raster_band() {
+    use qa_core::primitives::PlayerViewFlags;
+    use qa_render::cpu::RasterBands;
+    let mut assets = Assets::load().unwrap();
+    let palette = palette(&mut assets, false);
+    let mips: [Vec<u8>; 4] = std::array::from_fn(|mip| {
+        let width = 16 >> mip;
+        (0..width * width)
+            .map(|pixel| 10 + (pixel % width) as u8 + ((pixel / width) as u8) * 8)
+            .collect()
+    });
+    let image = assets
+        .register_indexed_image(
+            IndexedTexture::load(16, 16, std::array::from_fn(|i| mips[i].as_slice()), false)
+                .unwrap(),
+            palette,
+        )
+        .unwrap();
+    let material = material(&mut assets, image, false);
+    let world = world(
+        &mut assets,
+        2.,
+        material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut reference = CpuBackend::load_with_assets(320, 240, &assets).unwrap();
+    let baseline = packet(
+        &mut frontend,
+        &[(world, 0)],
+        Refdef {
+            viewport: Viewport {
+                width: 320,
+                height: 240,
+                ..Default::default()
+            },
+            ..view(palette)
+        },
+        &assets,
+    );
+    assert_eq!(reference.render(&baseline, &assets).rejected, 0);
+    assert!(reference.world_stats().spans > 0);
+    assert!(frontend.recycle(baseline).is_ok());
+    for bands in [RasterBands::One, RasterBands::Two] {
+        let mut output = CpuBackend::load_with_limits(
+            672,
+            392,
+            &assets,
+            CpuLimits {
+                bands,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for repeat in 0..2 {
+            let packet = packet(
+                &mut frontend,
+                &[(world, 0)],
+                Refdef {
+                    viewport: Viewport {
+                        x: 16,
+                        y: 12,
+                        width: 640,
+                        height: 360,
+                    },
+                    software_waterwarp: true,
+                    flags: PlayerViewFlags::UNDERWATER,
+                    ..view(palette)
+                },
+                &assets,
+            );
+            assert_eq!(output.render(&packet, &assets).rejected, 0);
+            assert!(output.world_stats().spans > 0);
+            assert_eq!(output.raster_config().bands, bands);
+            for (x, y, sx, sy) in [
+                (0, 0, 1, 1),
+                (100, 50, 51, 32),
+                (319, 239, 158, 158),
+                (639, 359, 316, 236),
+                (17, 211, 8, 141),
+                (500, 100, 247, 66),
+            ] {
+                assert_eq!(
+                    output.pixels()[((y + 12) * 672 + x + 16) as usize],
+                    reference.pixels()[(sy * 320 + sx) as usize],
+                    "{bands:?} repeat{repeat} pixel{x},{y}"
+                );
+            }
+            assert_eq!(output.pixels()[0], u32::from_le_bytes([0, 0, 0, 255]));
+            assert_eq!(
+                output.pixels()[391 * 672 + 671],
+                u32::from_le_bytes([0, 0, 0, 255])
+            );
+            assert!(frontend.recycle(packet).is_ok());
+        }
+    }
+}

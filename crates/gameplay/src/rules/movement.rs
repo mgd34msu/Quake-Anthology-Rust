@@ -331,7 +331,16 @@ pub struct WaterJumpPolicy {
     pub ground_clear: MovementTimer,
 }
 #[derive(Clone, Copy)]
+pub enum WaterHeight {
+    Camera,
+    Movement,
+    Fixed(f32),
+}
+#[derive(Clone, Copy)]
 pub struct SpecialMovement {
+    pub water_height: WaterHeight,
+    pub water_bounds_midpoint: bool,
+    pub water_feet_offset_first: bool,
     pub ladder: Option<LadderPolicy>,
     pub water_jump: Option<WaterJumpPolicy>,
     pub current_speed: Option<f32>,
@@ -370,6 +379,9 @@ const POINT_JUMP: WaterJumpPolicy = WaterJumpPolicy {
     ),
 };
 const NO_SPECIAL: SpecialMovement = SpecialMovement {
+    water_height: WaterHeight::Movement,
+    water_bounds_midpoint: false,
+    water_feet_offset_first: false,
     ladder: None,
     water_jump: None,
     current_speed: None,
@@ -387,8 +399,14 @@ const NO_SPECIAL: SpecialMovement = SpecialMovement {
     wall_ground: false,
 };
 const SPECIAL: [SpecialMovement; 5] = [
-    NO_SPECIAL,
     SpecialMovement {
+        water_height: WaterHeight::Camera,
+        water_bounds_midpoint: true,
+        ..NO_SPECIAL
+    },
+    SpecialMovement {
+        water_height: WaterHeight::Fixed(22.0),
+        water_bounds_midpoint: true,
         water_jump: Some(WaterJumpPolicy {
             probe: WaterJumpProbe::Points {
                 ahead: 24.0,
@@ -417,6 +435,9 @@ const SPECIAL: [SpecialMovement; 5] = [
         ..NO_SPECIAL
     },
     SpecialMovement {
+        water_height: WaterHeight::Movement,
+        water_bounds_midpoint: false,
+        water_feet_offset_first: true,
         ladder: Some(LadderPolicy {
             transient: false,
             ladder_only_mask: true,

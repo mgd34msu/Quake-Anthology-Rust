@@ -1227,7 +1227,7 @@ fn snapshot_viewer_on_a_plane_uses_native_clip_ties_independently_of_movement() 
         let player = &mut host.runtime.server.clients[client.0 as usize].player;
         assert_eq!(player.movement_rules, RuleSetId::QuakeWorld);
         player.body.position = Vec3::default();
-        player.view_offset = Vec3::default();
+        player.view.accept_offset(Vec3::default(), None);
         let world = visibility();
         let mut scratch = LeafScratch::new(world.node_count() + 1);
         let mut row = vec![0; world.pvs().row_bytes()];

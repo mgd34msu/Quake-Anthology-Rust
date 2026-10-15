@@ -415,7 +415,7 @@ fn rerelease_dead_and_gib_dimensions_are_native_even_with_n64_enabled() {
                 (
                     state.body.mins.0[2],
                     state.body.maxs.0[2],
-                    state.view_offset.0[2]
+                    state.movement.view_height
                 ),
                 (-24.0, 4.0, -2.0)
             );
@@ -424,7 +424,7 @@ fn rerelease_dead_and_gib_dimensions_are_native_even_with_n64_enabled() {
                 (
                     state.body.mins.0[2],
                     state.body.maxs.0[2],
-                    state.view_offset.0[2]
+                    state.movement.view_height
                 ),
                 (0.0, 16.0, 8.0)
             );

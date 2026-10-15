@@ -510,7 +510,7 @@ fn foreign_pmove_rereads_aliased_native_owner_after_its_first_scalar_boundary() 
             movement_rules: player.movement_rules,
             trace_rules: player.trace_rules,
             view_angles: player.view_angles,
-            view_offset: player.view_offset,
+            view: player.view,
             health: player.health,
             ..Default::default()
         };
@@ -629,7 +629,7 @@ fn foreign_walk_uses_one_ordinary_q3_pmove_with_independent_q2_trace() {
         movement: player.movement,
         body: player.body,
         view_angles: player.view_angles,
-        view_offset: player.view_offset,
+        view: player.view,
         health: player.health,
         ..Default::default()
     };

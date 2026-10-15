@@ -183,6 +183,7 @@ fn row_buffers(cpu: &mut CpuBackend, rows: std::ops::Range<u32>) -> Buffers<'_> 
     let first = rows.start as usize * cpu.frame.width as usize;
     let last = rows.end as usize * cpu.frame.width as usize;
     Buffers {
+        frame_width: cpu.frame.width,
         first_row: rows.start,
         frame_height: cpu.frame.height,
         pixels: &mut cpu.frame.pixels[first..last],
@@ -3066,6 +3067,7 @@ fn shared_depth_gate_validates_sample_before_using_draw_override() {
     let mut indices = [0];
     let mut palettes = [0];
     let buffers = Buffers {
+        frame_width: 1,
         first_row: 0,
         frame_height: 1,
         pixels: &mut pixels,

@@ -1508,7 +1508,7 @@ fn qw_hearing_distance_is_inclusive_uses_body_origin_and_does_not_leak_to_other_
             let client = remote(&mut runtime, Protocol::Quake2_34, 2000);
             let player = &mut runtime.server.clients[client.0 as usize].player;
             player.body.position = Vec3([listener, 0.0, 0.0]);
-            player.view_offset = view_offset;
+            player.view.accept_offset(view_offset, None);
             runtime.collision = Some(visibility_world::collision(
                 &runtime.geometry,
                 [Some(0), Some(1)],

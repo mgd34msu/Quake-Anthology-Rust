@@ -10,6 +10,7 @@ pub struct AppearanceCapabilities {
     pub weapon_model: bool,
     pub depth_hack: bool,
     pub fullbright: bool,
+    pub infrared_visible: bool,
     /// Use the current origin/old_origin frame path instead of interpolating
     /// origins: Q2 RF_FRAMELERP and rerelease RF_NO_ORIGIN_LERP.
     pub frame_lerp: bool,
@@ -41,6 +42,7 @@ struct NativeRules {
     weapon: u32,
     depth: u32,
     fullbright: u32,
+    infrared_visible: u32,
     translucent: u32,
     inline_translucent_alpha: Option<f32>,
     frame_lerp: u32,
@@ -75,6 +77,7 @@ const NEUTRAL: NativeRules = NativeRules {
     weapon: 0,
     depth: 0,
     fullbright: 0,
+    infrared_visible: 0,
     translucent: 0,
     inline_translucent_alpha: None,
     frame_lerp: 0,
@@ -110,6 +113,7 @@ const Q2: NativeRules = NativeRules {
     viewer: 2,
     weapon: 4,
     fullbright: 8,
+    infrared_visible: 0x8000,
     depth: 16,
     translucent: 32,
     inline_translucent_alpha: Some(0.25),
@@ -241,12 +245,28 @@ impl AliasPose {
         ]))
     }
 }
+// Original ref_soft/r_polyse.c infrared palette substitution.
+const INFRARED_MAP: [u8; 256] = [
+    79, 78, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 67, 66, 65, 64, 64, 65, 66, 67, 68, 69, 70, 71,
+    72, 73, 74, 75, 76, 77, 78, 79, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+    208, 208, 208, 208, 208, 208, 208, 208, 64, 66, 68, 70, 72, 74, 76, 78, 64, 65, 66, 67, 68, 69,
+    70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77,
+    78, 79, 64, 66, 68, 70, 72, 74, 76, 78, 68, 67, 66, 65, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
+    74, 75, 76, 76, 77, 77, 78, 78, 79, 79, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77,
+    78, 79, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 64, 65, 66, 67, 68, 69,
+    70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77,
+    78, 79, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 64, 65, 66, 67, 68, 69,
+    70, 71, 64, 65, 66, 67, 68, 69, 70, 71, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77,
+    78, 79, 208, 208, 64, 64, 70, 71, 72, 64, 66, 68, 70, 64, 65, 66, 67, 68,
+];
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelPresentation {
     pub pose: AliasPose,
     pub software_alias: bool,
     pub fullbright_light: [f32; 2],
     pub alpha_cutoffs: [f32; 2],
+    pub infrared_map: Option<&'static [u8; 256]>,
 }
 pub fn model_presentation(source: RuleSetId) -> ModelPresentation {
     let rules = RULES[source as usize];
@@ -259,6 +279,7 @@ pub fn model_presentation(source: RuleSetId) -> ModelPresentation {
         software_alias: rules.software_alias,
         fullbright_light: [128.0, 64.0],
         alpha_cutoffs: [0.33, 0.66],
+        infrared_map: (rules.infrared_visible != 0).then_some(&INFRARED_MAP),
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -375,6 +396,7 @@ impl AppearancePolicy {
             | rules.weapon
             | rules.depth
             | rules.fullbright
+            | rules.infrared_visible
             | rules.translucent
             | rules.frame_lerp
             | rules.old_frame;
@@ -389,6 +411,7 @@ impl AppearancePolicy {
             weapon_model: flags & rules.weapon != 0,
             depth_hack: flags & rules.depth != 0,
             fullbright: flags & rules.fullbright != 0,
+            infrared_visible: flags & rules.infrared_visible != 0,
             frame_lerp: flags & rules.frame_lerp != 0,
             alias_motion: flags & rules.frame_lerp != 0 && rules.alias_motion,
             beam_radius: (flags & rules.beam != 0).then(|| {

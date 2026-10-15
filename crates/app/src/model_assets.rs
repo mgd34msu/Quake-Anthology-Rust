@@ -1980,6 +1980,7 @@ fn alias_materials(
                     sort: if policy.translucent { 6.0 } else { 3.0 },
                     software_alias: model_policy.presentation.software_alias.then_some(
                         SoftwareAlias {
+                            infrared_map: model_policy.presentation.infrared_map,
                             fullbright_light: policy
                                 .fullbright
                                 .then_some(model_policy.presentation.fullbright_light),

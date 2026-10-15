@@ -138,6 +138,38 @@ fn current_movement_tuning_survives_rewinding_the_authoritative_baseline() {
 }
 
 #[test]
+fn native_camera_payload_survives_foreign_prediction_and_replay() {
+    use qa_core::primitives::PlayerViewFlags;
+
+    for rules in RuleSetId::ALL {
+        for height in [None, Some(22.0)] {
+            let mut authoritative = player(rules);
+            authoritative
+                .view
+                .accept_offset(Vec3([1.0, 2.0, 3.0]), height);
+            authoritative.view.fov_x = Some(75.0);
+            authoritative.view.screen_blend = [0.25, 0.5, 0.75, 0.125];
+            authoritative.view.damage_blend = [1.0, 0.0, 0.0, 0.5];
+            authoritative.view.flags =
+                PlayerViewFlags::UNDERWATER | PlayerViewFlags::NO_WEAPON_LERP;
+            let camera = authoritative.view;
+            let mut predicted = Prediction::new(player(rules));
+            predicted.apply_snapshot(&authoritative);
+            predicted.remember_snapshot(Some(Acknowledgement::Number(0)));
+            let mut history = CommandHistory::load(128, 0).unwrap();
+            for number in 1..=3 {
+                history.append(command(number, rules));
+            }
+            for _ in 0..2 {
+                assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 3);
+                assert_eq!(predicted.player.view, camera, "{rules:?}");
+            }
+            assert_eq!(authoritative.view, camera);
+        }
+    }
+}
+
+#[test]
 fn time_ack_before_an_exactly_full_window_replays_every_retained_command() {
     for rules in RuleSetId::ALL {
         let mut history = CommandHistory::load(3, 0).unwrap();

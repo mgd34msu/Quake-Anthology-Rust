@@ -410,3 +410,22 @@ fn inline_opacity_uses_native_brush_rules_independently_of_alias_alpha() {
         None
     );
 }
+
+#[test]
+fn infrared_eligibility_and_native_palette_are_selected_at_the_appearance_boundary() {
+    for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let mut appearance = EntityAppearance::default();
+        appearance.native.render_flags = 0x8000;
+        assert!(policy(source).project(&appearance).infrared_visible);
+        appearance.native.render_flags = 0;
+        assert!(!policy(source).project(&appearance).infrared_visible);
+        let map = model_presentation(source).infrared_map.unwrap();
+        assert_eq!((map[0], map[15], map[255]), (79, 64, 68));
+    }
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld, RuleSetId::Quake3] {
+        assert!(model_presentation(source).infrared_map.is_none());
+        let mut appearance = EntityAppearance::default();
+        appearance.native.render_flags = 0x8000;
+        assert!(!policy(source).project(&appearance).infrared_visible);
+    }
+}
