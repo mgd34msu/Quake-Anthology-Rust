@@ -51,6 +51,7 @@ fn snapshot_frames_for_protocol(protocol: qa_network::commands::packet::Protocol
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake3,
                     client: RuleSetId::Quake3,
                     movement: RuleSetId::Quake,
                     trace: RuleSetId::Quake3,

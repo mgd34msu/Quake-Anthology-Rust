@@ -297,6 +297,7 @@ fn local_close_retries_refused_control_without_creating_usercmd_and_retires_afte
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::Quake,
                 trace: RuleSetId::Quake2,

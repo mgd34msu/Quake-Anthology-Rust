@@ -64,6 +64,7 @@ fn host() -> (FrameHost, [ClientId; 2]) {
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: [RuleSetId::QuakeWorld, RuleSetId::Quake3][seat],
                     client: [RuleSetId::QuakeWorld, RuleSetId::Quake3][seat],
                     movement: [RuleSetId::Quake, RuleSetId::Quake2][seat],
                     trace: [RuleSetId::Quake3, RuleSetId::QuakeWorld][seat],
@@ -402,6 +403,7 @@ fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
                     fixture_fallback: false
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake3,
                     client: RuleSetId::Quake3,
                     movement: RuleSetId::Quake2,
                     trace: RuleSetId::Quake

@@ -58,7 +58,13 @@ fn host(protocol: Protocol, clients: usize) -> Result<(FrameHost, ClientId), Str
             entity: 0,
             fixture_fallback: false,
         },
-        qa_app::client_policy::ClientPolicy::select(Some(RuleSetId::QuakeWorld), None, None, None)?,
+        qa_app::client_policy::ClientPolicy::select(
+            Some(RuleSetId::QuakeWorld),
+            None,
+            None,
+            None,
+            None,
+        )?,
         protocol,
         0,
     )?;

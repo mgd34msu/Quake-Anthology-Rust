@@ -175,6 +175,7 @@ pub(super) fn wire_music_reaches_shared_paint() {
                     None,
                     Some(RuleSetId::QuakeWorld),
                     None,
+                    None,
                 )
                 .unwrap(),
                 protocol,

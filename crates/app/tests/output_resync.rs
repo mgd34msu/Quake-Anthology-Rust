@@ -54,7 +54,7 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
             .events
             .bind(OutputTarget::Presentation)
             .unwrap();
-        let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None).unwrap();
+        let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None, None).unwrap();
         let ids = std::array::from_fn::<_, 2, _>(|seat| {
             runtime
                 .connect_local(
@@ -250,15 +250,23 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
             duration_ms: 16,
             server_time_ms: 400,
             movement: [77.0, 0.0, 0.0],
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake2),
             ..Default::default()
         };
         assert!(host.runtime.send_local_command(stalled, &command, source.0));
         host.drain(&mut FrameResult::default());
+        let received = host.runtime.server.clients[stalled.0 as usize].command;
         assert_eq!(
-            host.runtime.server.clients[stalled.0 as usize]
-                .command
-                .movement[0],
-            77.0
+            received.movement[0],
+            if protocol == Protocol::Quake3_68 {
+                48.0
+            } else {
+                77.0
+            }
+        );
+        assert_eq!(
+            received.units,
+            qa_gameplay::rules::command_units(protocol.rule_set())
         );
         let before = host.runtime.snapshots[stalled.0 as usize]
             .as_ref()

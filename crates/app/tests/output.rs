@@ -644,6 +644,7 @@ fn configuration_reaches_client_only_through_reliable_packets_and_retires_on_ack
                     fixture_fallback: false,
                 },
                 qa_app::client_policy::ClientPolicy {
+                    input: RuleSetId::Quake3,
                     client: RuleSetId::Quake3,
                     movement: RuleSetId::Quake,
                     trace: RuleSetId::Quake2,

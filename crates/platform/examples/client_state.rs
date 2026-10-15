@@ -46,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("client order".into());
         }
         let client = &mut server.clients[slot];
+        client.input_rules = rules[slot % rules.len()];
         client.player.movement_rules = rules[slot % rules.len()];
         client.player.trace_rules = rules[slot % rules.len()];
         client.intent = CommandIntent {

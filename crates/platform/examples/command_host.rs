@@ -81,7 +81,7 @@ fn main() -> Result<(), String> {
     let mut locals = [None; SeatId::COUNT];
     for seat in SeatId::ALL {
         let slot = seat.index();
-        let policy = ClientPolicy::select(Some(roles[slot]), None, None, None)?;
+        let policy = ClientPolicy::select(Some(roles[slot]), None, None, None, None)?;
         let id = runtime.connect_local(
             seat,
             SpawnAnchor {

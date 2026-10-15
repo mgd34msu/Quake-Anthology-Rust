@@ -467,7 +467,7 @@ pub(super) fn remote_native_emitters_keep_the_module_entity_channel() {
                     entity: 0,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                ClientPolicy::select(Some(rules), None, None, None, None).unwrap(),
                 protocol,
                 0,
             )
@@ -608,6 +608,7 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
                     },
                     ClientPolicy::select(
                         Some(if seat == 0 { rules } else { RuleSetId::Quake3 }),
+                        None,
                         None,
                         None,
                         None,
@@ -810,7 +811,8 @@ pub(super) fn unsupported_resource_names_drop_only_the_unrepresentable_client_de
                     entity: 0,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(RuleSetId::Quake2Rerelease), None, None, None).unwrap(),
+                ClientPolicy::select(Some(RuleSetId::Quake2Rerelease), None, None, None, None)
+                    .unwrap(),
                 protocol,
                 u32::from(seat),
             )
@@ -904,7 +906,7 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
                     entity: 0,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                ClientPolicy::select(Some(rules), None, None, None, None).unwrap(),
                 protocol,
                 0,
             )
@@ -1031,7 +1033,7 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                     entity: 0,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                ClientPolicy::select(Some(rules), None, None, None, None).unwrap(),
                 protocol,
                 0,
             )
@@ -1332,7 +1334,7 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
                     entity: 0,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                ClientPolicy::select(Some(rules), None, None, None, None).unwrap(),
                 protocol,
                 0,
             )
@@ -1564,7 +1566,7 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
                     entity: 0,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                ClientPolicy::select(Some(rules), None, None, None, None).unwrap(),
                 protocol,
                 0,
             )
@@ -1600,7 +1602,7 @@ pub(super) fn split_seat_native_dupes_wait_for_ack_and_play_once() {
                     entity: 0,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                ClientPolicy::select(Some(rules), None, None, None, None).unwrap(),
                 protocol,
                 seat as u32,
             )

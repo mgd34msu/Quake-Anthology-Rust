@@ -100,6 +100,7 @@ fn fixture(
                         fixture_fallback: false,
                     },
                     ClientPolicy {
+                        input: protocol.rule_set(),
                         client: protocol.rule_set(),
                         movement: RuleSetId::QuakeWorld,
                         trace: RuleSetId::Quake,
@@ -678,6 +679,7 @@ fn independent_clients_and_reused_lifetime() {
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake2,
                 client: RuleSetId::Quake2,
                 movement: RuleSetId::QuakeWorld,
                 trace: RuleSetId::Quake,

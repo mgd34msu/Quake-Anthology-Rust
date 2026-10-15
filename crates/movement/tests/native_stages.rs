@@ -71,6 +71,7 @@ fn stopped_common_modes_do_not_commit_split_quake_control_or_integration() {
         for options in [control(Vec3([0.0, 90.0, 0.0]), 7.0), integrate(0.1)] {
             let result = pmove(
                 UserCmd {
+                    units: qa_gameplay::rules::command_units(RuleSetId::Quake),
                     movement: [127.0, 64.0, 32.0],
                     view_angles: Vec3([45.0, 180.0, 90.0]),
                     ..Default::default()
@@ -111,6 +112,7 @@ fn complete_and_native_control_share_raw_and_capped_velocity_and_scalar_order() 
         let mut complete = player(RuleSetId::Quake);
         let mut native = player(RuleSetId::Quake);
         let cmd = UserCmd {
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake),
             duration_ms: 16,
             duration_ns: 16_000_000,
             movement: axes,
@@ -193,6 +195,7 @@ fn native_control_keeps_raw_under_cap_wish_and_separate_integration() {
     let mut state = player(RuleSetId::Quake);
     state.movement.ducked = true;
     let command = UserCmd {
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake),
         movement: [3.0, 2.0, 6.0],
         buttons: buttons::JUMP | buttons::CROUCH,
         duration_ms: 1,
@@ -254,6 +257,7 @@ fn native_control_caps_raw_wish_and_uses_explicit_body_pitch_roll() {
         }
         pmove(
             UserCmd {
+                units: qa_gameplay::rules::command_units(RuleSetId::Quake),
                 movement: axes,
                 ..Default::default()
             },
@@ -276,6 +280,7 @@ fn native_reverse_gate_uses_absolute_module_time_and_strict_tie() {
         let mut state = player(RuleSetId::Quake);
         state.movement.teleport_hold_until = 10.0;
         let command = UserCmd {
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake),
             movement: [-12.0, 0.0, 4.0],
             server_time_ms: 1_000_000,
             ..Default::default()
@@ -300,6 +305,7 @@ fn native_integrate_rereads_shifted_aliases_without_duration_clamping() {
     let mut writes = Vec::new();
     let result = pmove(
         UserCmd {
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake),
             duration_ms: 1,
             duration_ns: 1,
             ..Default::default()
@@ -369,6 +375,7 @@ fn staging_failure_preserves_the_native_admitted_prefix() {
 #[test]
 fn foreign_control_is_noop_and_q3_acceleration_survives_native_readback() {
     let command = UserCmd {
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
         movement: [127.0, -33.0, 17.0],
         view_angles: Vec3([13.0, 11.0, 7.0]),
         server_time_ms: 150,
@@ -476,6 +483,7 @@ fn foreign_q2_final_snap_is_published_after_direct_native_motion() {
     let mut origin_x = Vec::new();
     let result = pmove(
         UserCmd {
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake2),
             movement: [50.0, 0.0, 0.0],
             ..Default::default()
         },
@@ -521,6 +529,7 @@ fn foreign_q2_final_snap_is_published_after_direct_native_motion() {
 #[test]
 fn slide_motion_publishes_its_finished_native_body_through_the_same_boundary() {
     let command = UserCmd {
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
         movement: [127.0, 0.0, 0.0],
         server_time_ms: 16,
         duration_ms: 16,

@@ -201,6 +201,7 @@ fn native_player_values_reach_client_and_hud_through_the_queued_snapshot() {
             None,
             Some(RuleSetId::QuakeWorld),
             Some(RuleSetId::Quake3),
+            None,
         )
         .unwrap();
         let id = runtime
@@ -311,6 +312,7 @@ fn registered_q3_player_values_reach_client_and_hud_through_session_packets() {
                 None,
                 Some(RuleSetId::QuakeWorld),
                 Some(RuleSetId::Quake2),
+                None,
             )
             .unwrap(),
             Protocol::Quake3_68,
@@ -511,8 +513,14 @@ fn untransmitted_server_attachments_do_not_modify_client_prediction() {
         (SeatId::FIRST, RuleSetId::Quake3, 0.0),
         (SeatId::new(1).unwrap(), RuleSetId::Quake, 128.0),
     ] {
-        let policy =
-            ClientPolicy::select(Some(rules), None, Some(rules), Some(RuleSetId::Quake3)).unwrap();
+        let policy = ClientPolicy::select(
+            Some(rules),
+            None,
+            Some(rules),
+            Some(RuleSetId::Quake3),
+            None,
+        )
+        .unwrap();
         let client = runtime
             .connect_local(
                 seat,
@@ -597,7 +605,7 @@ fn untransmitted_server_attachments_do_not_modify_client_prediction() {
 }
 
 #[test]
-fn server_set_angles_survive_q2_and_q3_client_prediction() {
+fn server_set_angles_survive_native_and_independent_input_prediction() {
     use qa_app::{WorldCollision, client_policy::ClientPolicy, map::SpawnAnchor};
     use qa_core::primitives::{Bounds, Vec3};
     use qa_network::commands::packet::Protocol;
@@ -619,12 +627,19 @@ fn server_set_angles_survive_q2_and_q3_client_prediction() {
         .unwrap();
     runtime.collision = Some(WorldCollision::new(&runtime.geometry, geometry, 0));
     let mut local = [None; SeatId::COUNT];
+    let native_module = ModuleId(7);
     let server_angles = [Vec3([22.5, 90.0, 0.0]), Vec3([-22.5, 135.0, 0.0])];
-    for (seat, rules, protocol) in [
-        (SeatId::FIRST, RuleSetId::Quake2, Protocol::Quake2_34),
+    for (seat, rules, input, protocol) in [
+        (
+            SeatId::FIRST,
+            RuleSetId::Quake2,
+            RuleSetId::Quake2,
+            Protocol::Quake2_34,
+        ),
         (
             SeatId::new(1).unwrap(),
             RuleSetId::Quake3,
+            RuleSetId::Quake,
             Protocol::Quake3_68,
         ),
     ] {
@@ -637,11 +652,20 @@ fn server_set_angles_survive_q2_and_q3_client_prediction() {
                     entity: seat.index() + 1,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                ClientPolicy::select(Some(rules), None, None, None, Some(input)).unwrap(),
                 protocol,
                 seat.index() as u32,
             )
             .unwrap();
+        if seat.index() == 1 {
+            assert!(runtime.server.bind_client_native(
+                client,
+                qa_core::primitives::NativeEntity {
+                    module: native_module,
+                    slot: 1,
+                },
+            ));
+        }
         let player = &mut runtime.server.clients[client.0 as usize].player;
         // Native teleport/set-angle adjusts delta_angles relative to the
         // client's unchanged raw command angles. Deliver it in a snapshot.
@@ -686,6 +710,83 @@ fn server_set_angles_survive_q2_and_q3_client_prediction() {
             );
         }
     }
+
+    let seat = SeatId::new(1).unwrap();
+    let client = local[seat.index()].unwrap();
+    for player in [
+        &mut host.runtime.server.clients[client.0 as usize].player,
+        &mut host.runtime.prediction[seat.index()].player,
+    ] {
+        player.movement.mode = qa_core::primitives::MovementMode::Frozen;
+        player.movement.grounded = true;
+        player.movement.ground = None;
+    }
+    let mut native = qa_core::primitives::NativePlayerTail::new(
+        RuleSetId::Quake3,
+        qa_core::primitives::ResourceNamespace::Module(native_module),
+    );
+    native.ground_number = Some(1022);
+    host.runtime.server.clients[client.0 as usize].player.native = Some(native);
+
+    // Publish the new movement state before asking command-history replay to
+    // extend its admitted view with client-side pitch drift.
+    source.time = 148;
+    host.frame(&mut source, true);
+    assert!(
+        host.runtime.prediction[seat.index()]
+            .player
+            .movement
+            .grounded
+    );
+    assert_eq!(
+        host.runtime.prediction[seat.index()].player.movement.mode,
+        qa_core::primitives::MovementMode::Frozen
+    );
+    host.runtime
+        .input
+        .set_view_angles(seat, Vec3([40.0, 0.0, 0.0]));
+    host.runtime.input.center_view(seat);
+    let baseline = &host.runtime.server.clients[client.0 as usize].player;
+    let mut expected = qa_core::primitives::PlayerState {
+        health: baseline.health,
+        movement_rules: baseline.movement_rules,
+        movement: baseline.movement,
+        view_angles: baseline.view_angles,
+        ..Default::default()
+    };
+    let command = qa_core::primitives::UserCmd {
+        view_angles: Vec3([40.0, 0.0, 0.0]),
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake),
+        ..Default::default()
+    };
+    let admission = qa_movement::predict_view_angles(command, &mut expected);
+    qa_movement::predict_pitch_drift(command, &mut expected, 40.0, 32.0, admission);
+
+    source.time = 164;
+    let frame = host.frame(&mut source, true);
+    assert!(matches!(
+        host.runtime.client_collision[client.0 as usize]
+            .as_mut()
+            .unwrap()
+            .trace(&host.runtime.geometry),
+        Err(qa_app::client_collision::ClientCollisionError::Waiting)
+    ));
+    assert_eq!(
+        frame.commands[seat.index()].view_angles,
+        Vec3([40.0, 0.0, 0.0])
+    );
+    assert_eq!(
+        frame.commands[seat.index()].units,
+        qa_gameplay::rules::command_units(RuleSetId::Quake)
+    );
+    assert_eq!(
+        host.runtime.prediction[seat.index()]
+            .player
+            .view_angles
+            .0
+            .map(f32::to_bits),
+        expected.view_angles.0.map(f32::to_bits)
+    );
 }
 
 #[test]
@@ -703,6 +804,7 @@ fn commands_server_second_packets_and_client_share_the_com_frame_path() {
             },
             qa_app::client_policy::ClientPolicy::select(
                 Some(RuleSetId::QuakeWorld),
+                None,
                 None,
                 None,
                 None,
@@ -879,6 +981,7 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     host.runtime.server.clients[bot.0 as usize]
         .player
         .movement_rules = RuleSetId::Quake2;
+    host.runtime.server.clients[bot.0 as usize].input_rules = RuleSetId::Quake2;
     host.runtime.server.clients[bot.0 as usize].intent = CommandIntent::moving([0.15, -0.1, 0.05]);
     let mut source = Source {
         time: 5_000,
@@ -905,6 +1008,10 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     assert_eq!(command.duration_ms, 20); // 50 Hz world, independent of client frame
     assert_eq!(command.server_time_ms, 5_020);
     assert_eq!(command.movement, [30.0, -20.0, 10.0]);
+    assert_eq!(
+        command.units,
+        qa_gameplay::rules::command_units(RuleSetId::Quake2)
+    );
     source.time += 5;
     let next = host.frame(&mut source, true);
     assert_eq!(next.commands[0].duration_ms, 5);

@@ -2691,6 +2691,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                         duration_ms: 300,
                         view_angles: qa_core::primitives::Vec3([90.0, -90.0, 180.0]),
                         movement: [123.75, -456.5, 200.0],
+                        units: qa_gameplay::rules::command_units(rules),
                         buttons: qa_core::primitives::buttons::ATTACK
                             | qa_core::primitives::buttons::USE
                             | qa_core::primitives::buttons::ANY,

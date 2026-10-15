@@ -130,6 +130,7 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
             };
             let result = qa_movement::pmove(
                 UserCmd {
+                    units: qa_gameplay::rules::command_units(movement_rules),
                     duration_ms: 16,
                     server_time_ms: 16,
                     movement: [127.0, 0.0, 0.0],

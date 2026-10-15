@@ -166,6 +166,7 @@ fn connect(host: &mut FrameHost, seat: SeatId, native_client: u32) -> ClientId {
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::Quake2,
                 trace: RuleSetId::Quake,

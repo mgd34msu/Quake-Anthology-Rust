@@ -43,6 +43,7 @@ fn packet_commands_for_abi(rerelease: bool) {
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::Quake,
                 trace: RuleSetId::Quake3,

@@ -12,6 +12,7 @@ pub struct Prediction {
     acknowledged: Option<Acknowledgement>,
     packet_acknowledged: Option<u64>,
     history_exhausted: bool,
+    view_angles: qa_movement::ViewAngleAdmission,
     pub history_resyncs: u64,
 }
 impl Prediction {
@@ -38,25 +39,26 @@ impl Prediction {
         self.acknowledged = None;
         self.packet_acknowledged = None;
         self.history_exhausted = false;
+        self.view_angles = Default::default();
     }
     pub fn remember_snapshot(&mut self, acknowledged: Option<Acknowledgement>) {
         copy_motion(&self.player, &mut self.baseline);
         self.baseline_valid = true;
         self.acknowledged = acknowledged;
         self.history_exhausted = false;
+        self.view_angles = Default::default();
     }
     pub fn replay(
         &mut self,
         history: &CommandHistory,
         trace: &mut dyn TraceServices,
     ) -> Result<usize, TraceError> {
+        self.view_angles = Default::default();
         let Some(latest) = history.get(0) else {
             return Ok(0);
         };
         if self.history_exhausted {
-            if self.player.prediction.angles {
-                qa_movement::predict_view_angles(*latest, &mut self.player);
-            }
+            self.advance_angles(*latest);
             return Ok(0);
         }
         if !self.baseline_valid || !self.player.prediction.position || self.acknowledged.is_none() {
@@ -76,9 +78,7 @@ impl Prediction {
             self.history_resyncs = self.history_resyncs.saturating_add(1);
             self.acknowledged = None;
             self.history_exhausted = true;
-            if self.player.prediction.angles {
-                qa_movement::predict_view_angles(*latest, &mut self.player);
-            }
+            self.advance_angles(*latest);
             return Ok(0);
         };
         self.acknowledged = number.map(Acknowledgement::Number);
@@ -95,22 +95,42 @@ impl Prediction {
         trace: &mut dyn TraceServices,
     ) -> Result<MovementResult, TraceError> {
         if !self.player.prediction.position {
-            if self.player.prediction.angles {
-                qa_movement::predict_view_angles(command, &mut self.player);
-            }
+            self.advance_angles(command);
             return Ok(MovementResult::default());
         }
+        self.view_angles = Default::default();
         let options = qa_movement::MoveOptions {
             keep_view_angles: !self.player.prediction.angles,
             ..Default::default()
         };
-        qa_movement::pmove(
+        let result = qa_movement::pmove(
             command,
             &mut self.player,
             trace,
             options,
             qa_movement::no_boundary,
-        )
+        )?;
+        self.view_angles = result.view_angles;
+        Ok(result)
+    }
+    /// An unavailable collision view still permits the native angle-only path.
+    pub fn advance_angles(&mut self, command: UserCmd) {
+        self.view_angles = if self.player.prediction.angles {
+            qa_movement::predict_view_angles(command, &mut self.player)
+        } else {
+            Default::default()
+        };
+    }
+    /// Drift extends only the angle projection that actually admitted this
+    /// frame's view, including locks observed before movement changed timers.
+    pub fn drift_pitch(&mut self, command: UserCmd, previous: f32, pitch: f32) {
+        qa_movement::predict_pitch_drift(
+            command,
+            &mut self.player,
+            previous,
+            pitch,
+            self.view_angles,
+        );
     }
 }
 

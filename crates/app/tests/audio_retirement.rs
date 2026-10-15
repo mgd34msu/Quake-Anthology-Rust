@@ -89,6 +89,7 @@ fn connect(runtime: &mut Runtime) -> Result<ClientId, String> {
             fixture_fallback: false,
         },
         ClientPolicy {
+            input: RuleSetId::QuakeWorld,
             client: RuleSetId::QuakeWorld,
             movement: RuleSetId::Quake2,
             trace: RuleSetId::Quake,

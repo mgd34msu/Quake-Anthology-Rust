@@ -56,6 +56,7 @@ fn shared_server_movement_transports_attached_clients_before_snapshot_copy() {
         (1, RuleSetId::Quake, LinkOrder::Head),
     ] {
         let client = &mut server.clients[slot];
+        client.input_rules = rules;
         client.player.movement_rules = rules;
         client.player.trace_rules = rules;
         client.link_order = order;
@@ -93,6 +94,7 @@ fn shared_server_movement_transports_attached_clients_before_snapshot_copy() {
             duration_ms: 16,
             server_time_ms: 16,
             movement: [127.0, 0.0, 0.0],
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
             ..Default::default()
         },
         qa_core::primitives::CommandExecution::PerCommand,
@@ -139,6 +141,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
         let connection = [Connection::Local, Connection::Remote, Connection::Bot][slot / 5];
         let id = server.connect(connection, ModuleId(2), None).unwrap();
         let client = &mut server.clients[slot];
+        client.input_rules = rules[slot % 5];
         client.player.movement_rules = rules[slot % 5];
         client.player.weapon_state = Some(qa_core::primitives::WeaponState {
             source: RuleSetId::Quake,
@@ -170,6 +173,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
                     duration_ms: 16,
                     server_time_ms: 16,
                     movement: [127.0, 0.0, 0.0],
+                    units: qa_gameplay::rules::command_units(rules[slot % 5]),
                     ..Default::default()
                 },
                 qa_core::primitives::CommandExecution::PerCommand,
@@ -223,6 +227,95 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
 }
 
 #[test]
+fn q2_bot_input_uses_the_human_builder_and_q3_movement_on_independent_trace_rules() {
+    use qa_input::UserCmdBuilder;
+
+    let cvars = qa_console::cvars::Cvars::new().unwrap();
+    let handles = qa_console::input_settings::InputHandles::load(&cvars).unwrap();
+    let mut server = Server::load(1, 8, 1, 0, 0, 0).unwrap();
+    let id = server.connect(Connection::Bot, ModuleId(2), None).unwrap();
+    let (store, geometry) = floor();
+    let mut scratch = store.scratch();
+    let client = &mut server.clients[id.0 as usize];
+    client.input_rules = RuleSetId::Quake2;
+    client.player.movement_rules = RuleSetId::Quake3;
+    client.player.trace_rules = RuleSetId::Quake2;
+    client.player.health = 100;
+    qa_movement::set_bounds(&mut client.player);
+    client.player.body.position = Vec3([0.0, 0.0, 24.125]);
+    client.player.movement.grounded = true;
+    client.intent = CommandIntent::moving([1.0, 0.0, 0.0]);
+    let entity = client.entity;
+    let mut human = Prediction::default();
+    human.player.health = client.player.health;
+    human.apply_snapshot(&client.player);
+    let mut normalized = Prediction::default();
+    normalized.player.health = client.player.health;
+    normalized.apply_snapshot(&client.player);
+    server
+        .entities
+        .columns
+        .set_body(entity.slot as usize, client.player.body);
+    assert!(server.area.link(
+        &server.entities,
+        entity,
+        LinkFlags::SOLID,
+        LinkOrder::Tail,
+        LinkIntent::Explicit,
+    ));
+
+    let duration = EventTime::from_milliseconds(16);
+    let command = UserCmdBuilder::build(
+        duration,
+        duration,
+        server.clients[id.0 as usize].intent,
+        handles.policy(&cvars, RuleSetId::Quake2),
+    );
+    assert_eq!(command.movement, [200.0, 0.0, 0.0]);
+    assert_eq!(
+        command.units,
+        qa_gameplay::rules::command_units(RuleSetId::Quake2)
+    );
+    server.build_bot_commands(EventTime(0), duration, |rules| {
+        handles.policy(&cvars, rules)
+    });
+    let bot = server.clients[id.0 as usize].command;
+    assert_eq!(bot.movement, command.movement);
+    assert_eq!(bot.units, command.units);
+    assert_eq!(bot.duration_ms, command.duration_ms);
+    assert_eq!(bot.duration_ns, command.duration_ns);
+    assert_eq!(bot.server_time_ms, command.server_time_ms);
+    assert_eq!(bot.view_angles, command.view_angles);
+    assert_eq!(
+        server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
+        1
+    );
+    let mut trace = WorldTrace::new(
+        &store,
+        geometry,
+        0,
+        &server.entities,
+        &server.area,
+        &mut scratch,
+        CollisionOwner::Lifetime(entity),
+    );
+    human.advance(command, &mut trace).unwrap();
+    let normalized_command = command.in_units(qa_gameplay::rules::command_units(RuleSetId::Quake3));
+    assert_eq!(normalized_command.movement, [127.0, 0.0, 0.0]);
+    normalized.advance(normalized_command, &mut trace).unwrap();
+    let client = &server.clients[id.0 as usize];
+    assert!(client.player.body.position.0[0] > 0.0);
+    assert_eq!(client.input_rules, RuleSetId::Quake2);
+    assert_eq!(client.player.movement_rules, RuleSetId::Quake3);
+    assert_eq!(client.player.trace_rules, RuleSetId::Quake2);
+    for prediction in [&human, &normalized] {
+        assert_eq!(client.player.body.position, prediction.player.body.position);
+        assert_eq!(client.player.body.velocity, prediction.player.body.velocity);
+        assert_eq!(client.player.movement, prediction.player.movement);
+    }
+}
+
+#[test]
 fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects() {
     let mut server = Server::load(2, 16, 1, 0, 0, 0).unwrap();
     let (store, geometry) = floor();
@@ -238,6 +331,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
         (obstacle, 48.0, RuleSetId::Quake2, LinkOrder::Head),
     ] {
         let client = &mut server.clients[id.0 as usize];
+        client.input_rules = rules;
         client.player.movement_rules = rules;
         client.player.trace_rules = rules;
         client.link_order = order;
@@ -299,6 +393,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
             duration_ms: 200,
             server_time_ms: 200,
             movement: [127.0, 0.0, 0.0],
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
             ..Default::default()
         },
         qa_core::primitives::CommandExecution::PerCommand,
@@ -395,6 +490,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         .connect(Connection::Local, ModuleId(2), None)
         .unwrap();
     let client = &mut server.clients[id.0 as usize];
+    client.input_rules = RuleSetId::Quake3;
     client.player.movement_rules = RuleSetId::Quake3;
     client.player.trace_rules = RuleSetId::Quake3;
     client.player.health = 100;
@@ -451,6 +547,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         duration_ms: 16,
         server_time_ms: 16,
         movement: [127.0, 0.0, 0.0],
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
         ..Default::default()
     };
     server.submit_command(
@@ -496,6 +593,7 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
             .ok_or("client slot")?;
         let client = &mut server.clients[id.0 as usize];
         client.player.view_weapon.frame = 29;
+        client.input_rules = RuleSetId::Quake3;
         client.player.movement_rules = RuleSetId::Quake3;
         client.player.trace_rules = trace_rules;
         client.player.health = 100;
@@ -591,6 +689,7 @@ fn q3_respawn_gate_matches_server_and_prediction_replay_for_humans_and_bots() {
         let mut server = Server::load(1, 8, 1, 0, 0, 0).unwrap();
         let id = server.connect(connection, ModuleId(2), None).unwrap();
         let client = &mut server.clients[id.0 as usize];
+        client.input_rules = RuleSetId::Quake3;
         client.player.movement_rules = RuleSetId::Quake3;
         client.player.trace_rules = RuleSetId::Quake2;
         client.player.health = 100;
@@ -641,6 +740,7 @@ fn q3_respawn_gate_matches_server_and_prediction_replay_for_humans_and_bots() {
                         duration_ms: 16,
                         server_time_ms: end.milliseconds() as i32,
                         movement: [0.0, 0.0, 127.0],
+                        units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
                         buttons: held,
                         ..Default::default()
                     },

@@ -65,7 +65,7 @@ fn host(protocol: Protocol) -> (FrameHost, ClientId) {
                 entity: 0,
                 fixture_fallback: false,
             },
-            ClientPolicy::select(Some(RuleSetId::Quake3), None, None, None).unwrap(),
+            ClientPolicy::select(Some(RuleSetId::Quake3), None, None, None, None).unwrap(),
             protocol,
             0,
         )
@@ -91,8 +91,80 @@ fn command(time: i32, movement: [f32; 3]) -> UserCmd {
         duration_ms: 16,
         server_time_ms: time,
         movement,
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
         ..Default::default()
     }
+}
+
+struct NoCollision;
+impl qa_movement::TraceServices for NoCollision {
+    fn trace(
+        &mut self,
+        _: qa_world::collision::TraceQuery,
+    ) -> Result<qa_world::collision::Trace, qa_world::collision::TraceError> {
+        panic!("noclip command must not trace")
+    }
+
+    fn point_contents(
+        &self,
+        _: Vec3,
+        _: qa_world::collision::EntityTracePolicy,
+    ) -> Result<qa_world::collision::Contents, qa_world::collision::TraceError> {
+        panic!("noclip command must not sample contents")
+    }
+}
+
+#[test]
+fn q2_input_is_canonicalized_once_for_q3_history_server_and_prediction() {
+    let (mut host, client) = host(Protocol::Quake3_68);
+    host.runtime.server.clients[client.0 as usize].input_rules = RuleSetId::Quake2;
+    let command = UserCmd {
+        duration_ms: 16,
+        server_time_ms: 16,
+        movement: [79.0, 0.0, 0.0],
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake2),
+        ..Default::default()
+    };
+    assert!(
+        host.runtime
+            .send_local_command(client, &command, EventTime::default())
+    );
+    let retained = *host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .commands
+        .as_ref()
+        .unwrap()
+        .history()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(retained.movement, [50.0, 0.0, 0.0]);
+    assert_eq!(
+        retained.units,
+        qa_gameplay::rules::command_units(RuleSetId::Quake3)
+    );
+
+    host.time = EventTime::from_milliseconds(16);
+    host.drain(&mut FrameResult::default());
+    let received = host.runtime.server.clients[client.0 as usize].command;
+    assert_eq!(received.movement, retained.movement);
+    assert_eq!(received.units, retained.units);
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .player
+            .body
+            .position
+            .0[0]
+            > 0.0
+    );
+
+    let prediction = &mut host.runtime.prediction[0];
+    prediction.player.movement.mode = MovementMode::Noclip;
+    prediction.advance(retained, &mut NoCollision).unwrap();
+    assert!(prediction.player.body.position.0[0] > 0.0);
 }
 
 #[test]

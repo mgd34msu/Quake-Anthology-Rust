@@ -165,6 +165,7 @@ fn fixture_program(vm: qa_compat::qvm::Vm) -> (Box<FrameHost>, ClientId) {
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::QuakeWorld,
                 trace: RuleSetId::Quake2,
@@ -941,6 +942,7 @@ fn q3_accepted_follow_flag_keeps_received_pose_when_prediction_has_a_nonzero_com
                 server_time_ms: 200,
                 duration_ms: 100,
                 movement: [127.0, 64.0, 32.0],
+                units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
                 view_angles: Vec3([45.0, 90.0, 10.0]),
                 buttons: buttons::JUMP,
                 ..Default::default()

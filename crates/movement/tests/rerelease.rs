@@ -18,6 +18,7 @@ fn player() -> PlayerState {
 }
 fn command(buttons: u32) -> UserCmd {
     UserCmd {
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake2Rerelease),
         duration_ms: 8,
         server_time_ms: 8,
         buttons,

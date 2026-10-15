@@ -7,6 +7,7 @@ use std::num::NonZeroU32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClientPolicy {
     pub client: RuleSetId,
+    pub input: RuleSetId,
     pub movement: RuleSetId,
     pub trace: RuleSetId,
 }
@@ -18,16 +19,22 @@ impl ClientPolicy {
     }
     fn parse(value: &str) -> Option<Self> {
         let mut fields = value.split(':');
-        let mut rule = || fields.next().and_then(RuleSetId::parse);
-        let policy = Self {
-            client: rule()?,
-            movement: rule()?,
-            trace: rule()?,
-        };
+        let client = RuleSetId::parse(fields.next()?)?;
+        let movement = RuleSetId::parse(fields.next()?)?;
+        let trace = RuleSetId::parse(fields.next()?)?;
+        let input = fields
+            .next()
+            .map(RuleSetId::parse)
+            .unwrap_or(Some(client))?;
         if fields.next().is_some() {
             return None;
         }
-        Some(policy)
+        Some(Self {
+            client,
+            input,
+            movement,
+            trace,
+        })
     }
 
     pub fn select(
@@ -35,12 +42,14 @@ impl ClientPolicy {
         stock_client: Option<RuleSetId>,
         explicit_movement: Option<RuleSetId>,
         explicit_trace: Option<RuleSetId>,
+        explicit_input: Option<RuleSetId>,
     ) -> Result<Self, &'static str> {
         let client = explicit_client
             .or(stock_client)
             .ok_or("unknown or ambiguous product needs --client-module q1/qw/q2/q2rr/q3")?;
         Ok(Self {
             client,
+            input: explicit_input.unwrap_or(client),
             movement: explicit_movement.unwrap_or(client),
             trace: explicit_trace.unwrap_or(client),
         })

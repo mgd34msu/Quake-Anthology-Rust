@@ -102,6 +102,7 @@ fn connected(protocol: Protocol) -> FrameHost {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap(),
             protocol,

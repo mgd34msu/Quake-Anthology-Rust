@@ -7,7 +7,9 @@ use qa_core::{
         PredictionPolicy, RuleSetId, UserCmd, Vec3,
     },
 };
-use qa_movement::{MoveOptions, TraceServices, no_boundary, pmove, predict_view_angles};
+use qa_movement::{
+    MoveOptions, TraceServices, no_boundary, pmove, predict_pitch_drift, predict_view_angles,
+};
 use qa_world::collision::{Contents, EntityTracePolicy, Trace, TraceError, TraceQuery};
 
 fn body_bits(body: Body) -> [[u32; 3]; 4] {
@@ -40,6 +42,215 @@ fn angle_offset_bits(offsets: AngleOffsets) -> [(u8, u32); 3] {
 }
 
 #[test]
+fn pitch_drift_retains_dead_q3_view_and_delta_words() {
+    for health in [0, -1] {
+        for mode in [
+            MovementMode::Walk,
+            MovementMode::Noclip,
+            MovementMode::Frozen,
+        ] {
+            let mut state = player(RuleSetId::Quake3, mode);
+            state.health = health;
+            state.view_angles = Vec3([-0.0, 133.25, -17.125]);
+            state.movement.delta_angles = AngleOffsets([
+                AngleOffset::Units(32768),
+                AngleOffset::Units(i32::MAX - 1),
+                AngleOffset::Degrees(-0.0),
+            ]);
+            let view = state.view_angles.0.map(f32::to_bits);
+            let offsets = angle_offset_bits(state.movement.delta_angles);
+            let command = UserCmd {
+                view_angles: Vec3([40.0, 5.0, 2.0]),
+                ..Default::default()
+            };
+            let admission = predict_view_angles(command, &mut state);
+            predict_pitch_drift(command, &mut state, 40.0, 32.0, admission);
+            assert_eq!(state.view_angles.0.map(f32::to_bits), view);
+            assert_eq!(angle_offset_bits(state.movement.delta_angles), offsets);
+        }
+    }
+}
+
+#[test]
+fn q3_pitch_drift_uses_native_short_projection_and_keeps_accepted_yaw_roll() {
+    for (health, mode) in [(100, MovementMode::Walk), (0, MovementMode::Spectator)] {
+        for pitch in [32.987f32, 90.0] {
+            let mut state = player(RuleSetId::Quake3, mode);
+            state.health = health;
+            state.view_angles = Vec3([40.0, 133.25, -0.0]);
+            state.movement.delta_angles = AngleOffsets([
+                AngleOffset::Units(123),
+                AngleOffset::Units(i32::MAX - 1),
+                AngleOffset::Units(i32::MIN + 1),
+            ]);
+            let admitted_command = UserCmd {
+                view_angles: Vec3([40.0, 133.25, -90.0]),
+                ..Default::default()
+            };
+            let admission = predict_view_angles(admitted_command, &mut state);
+            let command = UserCmd {
+                view_angles: Vec3([40.0, 5.0, 2.0]),
+                ..admitted_command
+            };
+            let accepted = state.view_angles;
+            let body = body_bits(state.body);
+            let mut expected = player(RuleSetId::Quake3, mode);
+            expected.health = health;
+            expected.movement.delta_angles = state.movement.delta_angles;
+            predict_view_angles(
+                UserCmd {
+                    view_angles: Vec3([pitch, 5.0, 2.0]),
+                    ..command
+                },
+                &mut expected,
+            );
+
+            predict_pitch_drift(command, &mut state, 40.0, pitch, admission);
+
+            assert_eq!(
+                state.view_angles.0[0].to_bits(),
+                expected.view_angles.0[0].to_bits()
+            );
+            assert_eq!(state.view_angles.0[1].to_bits(), accepted.0[1].to_bits());
+            assert_eq!(state.view_angles.0[2].to_bits(), accepted.0[2].to_bits());
+            assert_eq!(
+                angle_offset_bits(state.movement.delta_angles),
+                angle_offset_bits(expected.movement.delta_angles)
+            );
+            assert_eq!(body_bits(state.body), body);
+            if pitch == 90.0 {
+                assert_eq!(state.movement.delta_angles.0[0], AngleOffset::Units(-384));
+            } else {
+                assert_ne!(
+                    state.view_angles.0[0].to_bits(),
+                    (pitch + math::short_to_angle(123)).to_bits()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn intermission_pitch_drift_uses_the_same_view_lock_for_every_movement_role() {
+    for rules in RuleSetId::ALL {
+        for mode in [
+            MovementMode::Intermission,
+            MovementMode::SinglePlayerIntermission,
+        ] {
+            let mut state = player(rules, mode);
+            let view = state.view_angles.0.map(f32::to_bits);
+            let offsets = angle_offset_bits(state.movement.delta_angles);
+            let admission = predict_view_angles(UserCmd::default(), &mut state);
+            predict_pitch_drift(UserCmd::default(), &mut state, 40.0, 32.0, admission);
+            assert_eq!(state.view_angles.0.map(f32::to_bits), view);
+            assert_eq!(angle_offset_bits(state.movement.delta_angles), offsets);
+        }
+    }
+}
+
+#[test]
+fn raw_native_pitch_drift_assigns_the_exact_new_sample_including_signed_zero() {
+    for rules in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+    ] {
+        for (previous, pitch) in [(1.0, f32::from_bits(1)), (1.0, -0.0), (-0.0, 0.0)] {
+            let mut state = player(rules, MovementMode::Walk);
+            state.view_angles = Vec3([previous, 133.25, -0.0]);
+            state.movement.delta_angles = AngleOffsets([AngleOffset::Degrees(-0.0); 3]);
+            let command = UserCmd {
+                view_angles: state.view_angles,
+                ..Default::default()
+            };
+            let admission = predict_view_angles(command, &mut state);
+            let accepted = state.view_angles;
+            predict_pitch_drift(command, &mut state, previous, pitch, admission);
+            assert_eq!(
+                state.view_angles.0.map(f32::to_bits),
+                [pitch, accepted.0[1], accepted.0[2]].map(f32::to_bits)
+            );
+        }
+    }
+}
+
+#[test]
+fn bit_identical_raw_pitch_does_not_reproject_or_reclamp_accepted_q3_view() {
+    for raw in [-0.0, 40.0, f32::from_bits(0x7fc0_1234)] {
+        let mut state = player(RuleSetId::Quake3, MovementMode::Walk);
+        let admission = predict_view_angles(UserCmd::default(), &mut state);
+        state.view_angles = Vec3([f32::from_bits(0x7fc0_5678), -0.0, 133.25]);
+        state.movement.delta_angles = AngleOffsets([
+            AngleOffset::Units(i32::MAX - 1),
+            AngleOffset::Units(i32::MIN + 1),
+            AngleOffset::Degrees(-0.0),
+        ]);
+        let view = state.view_angles.0.map(f32::to_bits);
+        let offsets = angle_offset_bits(state.movement.delta_angles);
+        predict_pitch_drift(UserCmd::default(), &mut state, raw, raw, admission);
+        assert_eq!(state.view_angles.0.map(f32::to_bits), view);
+        assert_eq!(angle_offset_bits(state.movement.delta_angles), offsets);
+    }
+}
+
+#[test]
+fn actual_movement_admission_retains_a_teleport_pitch_lock_after_its_timer_expires() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let mut state = player(rules, MovementMode::Walk);
+        state.movement.timer = MovementTimer::TELEPORT;
+        state.movement.remaining_ms = 1;
+        let command = UserCmd {
+            units: qa_gameplay::rules::command_units(rules),
+            duration_ms: 16,
+            server_time_ms: 16,
+            view_angles: Vec3([40.0, 133.25, -90.0]),
+            ..Default::default()
+        };
+        let result = pmove(
+            command,
+            &mut state,
+            &mut support::FixtureWorld::default(),
+            MoveOptions::default(),
+            no_boundary,
+        )
+        .unwrap();
+        assert!(!state.movement.timer.contains(MovementTimer::TELEPORT));
+        assert_eq!(state.view_angles.0[0].to_bits(), 0.0f32.to_bits());
+        let accepted = state.view_angles.0.map(f32::to_bits);
+        let offsets = angle_offset_bits(state.movement.delta_angles);
+
+        predict_pitch_drift(command, &mut state, 40.0, 32.0, result.view_angles);
+
+        assert_eq!(state.view_angles.0.map(f32::to_bits), accepted, "{rules:?}");
+        assert_eq!(angle_offset_bits(state.movement.delta_angles), offsets);
+    }
+}
+
+#[test]
+fn angle_only_admission_keeps_the_native_raw_pitch_policy_during_teleport() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let mut state = player(rules, MovementMode::Walk);
+        state.movement.timer = MovementTimer::TELEPORT;
+        state.movement.remaining_ms = 1;
+        let command = UserCmd {
+            view_angles: Vec3([40.0, 133.25, -90.0]),
+            ..Default::default()
+        };
+        let admission = predict_view_angles(command, &mut state);
+        let accepted = state.view_angles;
+
+        predict_pitch_drift(command, &mut state, 40.0, 32.0, admission);
+
+        assert_eq!(state.view_angles.0[0].to_bits(), 32.0f32.to_bits());
+        assert_eq!(state.view_angles.0[1].to_bits(), accepted.0[1].to_bits());
+        assert_eq!(state.view_angles.0[2].to_bits(), accepted.0[2].to_bits());
+        assert!(state.movement.timer.contains(MovementTimer::TELEPORT));
+        assert_eq!(state.movement.remaining_ms, 1);
+    }
+}
+
+#[test]
 fn intermission_locks_controls_independently_of_movement_and_trace_roles() {
     for rules in RuleSetId::ALL {
         for mode in [
@@ -63,6 +274,7 @@ fn intermission_locks_controls_independently_of_movement_and_trace_roles() {
                 let view = state.view_angles.0.map(f32::to_bits);
                 let deltas = angle_offset_bits(state.movement.delta_angles);
                 let command = UserCmd {
+                    units: qa_gameplay::rules::command_units(rules),
                     server_time_ms: 150,
                     duration_ms: 150,
                     duration_ns: 150_000_000,
@@ -249,6 +461,7 @@ fn angle_only_uses_the_classic_unclamped_sum_and_changes_no_other_hot_state() {
         let movement = state.movement;
         let view_offset = state.view_offset;
         let command = UserCmd {
+            units: qa_gameplay::rules::command_units(rules),
             duration_ms: 250,
             server_time_ms: -1,
             movement: [127.0, 64.0, 32.0],
@@ -407,6 +620,7 @@ fn position_only_movement_uses_the_accepted_view_in_every_movement_mode() {
             let accepted = state.view_angles.0.map(f32::to_bits);
             let delta = state.movement.delta_angles;
             let command = UserCmd {
+                units: qa_gameplay::rules::command_units(rules),
                 duration_ms: 16,
                 server_time_ms: 16,
                 movement: [100.0, 0.0, 0.0],
@@ -468,6 +682,7 @@ fn failed_position_only_movement_preserves_accepted_view_and_delta_bits() {
         let view = state.view_angles.0.map(f32::to_bits);
         let result = pmove(
             UserCmd {
+                units: qa_gameplay::rules::command_units(rules),
                 duration_ms: 16,
                 server_time_ms: 16,
                 movement: [100.0, 0.0, 0.0],

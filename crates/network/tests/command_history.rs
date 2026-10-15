@@ -17,6 +17,7 @@ fn command(number: i32) -> UserCmd {
         duration_ms: 16,
         view_angles: Vec3([(number % 16) as f32 * 11.25, -45., 90.]),
         movement: [number as f32, -17., 0.],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::Quake),
         weapon: Some(WeaponId(1000 + number as u32)),
         ..UserCmd::default()
     }
@@ -260,10 +261,14 @@ fn native_receive_recovers_lost_moves_from_the_retained_commands() {
         let mut incoming = Commands::load(protocol, packet::Q3_MESSAGE_BYTES);
         let mut moves = Vec::new();
         for number in 1..=4 {
-            outgoing.record(command(number)).unwrap();
+            let command = UserCmd {
+                units: qa_gameplay::rules::command_units(protocol.rule_set()),
+                ..command(number)
+            };
+            outgoing.record(command).unwrap();
             let mut bytes = [0; packet::Q3_MESSAGE_BYTES];
             let length = outgoing
-                .encode(&command(number), weapon, &client, &mut bytes)
+                .encode(&command, weapon, &client, &mut bytes)
                 .unwrap();
             let time = EventTime::from_milliseconds(number as u64 * 16);
             let packet = client

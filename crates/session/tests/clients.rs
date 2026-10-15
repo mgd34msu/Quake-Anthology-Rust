@@ -428,6 +428,7 @@ fn admitted_module_clients_keep_the_command_span_for_native_leaf_preparation() {
         .unwrap();
     let engine = server.connect(Connection::Bot, ModuleId(8), None).unwrap();
     for client in &mut server.clients {
+        client.input_rules = RuleSetId::Quake3;
         client.player.movement_rules = RuleSetId::Quake3;
     }
     server.clients[module.0 as usize].module_movement = true;

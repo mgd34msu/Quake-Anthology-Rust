@@ -190,6 +190,7 @@ fn fixture(
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake2,
                     client: RuleSetId::Quake2,
                     movement: RuleSetId::Quake,
                     trace: RuleSetId::QuakeWorld,

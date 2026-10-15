@@ -23,12 +23,13 @@ fn player(rules: RuleSetId) -> PlayerState {
     qa_movement::set_bounds(&mut player);
     player
 }
-fn command(number: i32) -> UserCmd {
+fn command(number: i32, rules: RuleSetId) -> UserCmd {
     UserCmd {
         duration_ms: 16,
         duration_ns: 16_000_000,
         server_time_ms: number * 16,
         movement: [127., 19., 0.],
+        units: qa_gameplay::rules::command_units(rules),
         view_angles: Vec3([0., 45., 0.]),
         ..UserCmd::default()
     }
@@ -46,15 +47,17 @@ fn number_and_time_acknowledgements_replay_without_double_movement_for_every_rol
         for ack in [Acknowledgement::Number(1), Acknowledgement::ServerTime(16)] {
             let mut history = CommandHistory::load(8193, 0).unwrap();
             let mut authoritative = Prediction::new(player(rules));
-            history.append(command(1));
-            authoritative.advance(command(1), &mut FreeSpace).unwrap();
+            history.append(command(1, rules));
+            authoritative
+                .advance(command(1, rules), &mut FreeSpace)
+                .unwrap();
             let mut predicted = Prediction::new(player(rules));
             predicted.apply_snapshot(&authoritative.player);
             predicted.remember_snapshot(Some(ack));
             for number in 2..=4 {
-                history.append(command(number));
+                history.append(command(number, rules));
                 authoritative
-                    .advance(command(number), &mut FreeSpace)
+                    .advance(command(number, rules), &mut FreeSpace)
                     .unwrap();
             }
             assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 3);
@@ -62,8 +65,10 @@ fn number_and_time_acknowledgements_replay_without_double_movement_for_every_rol
             let first = motion(&predicted);
             assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 3);
             assert_eq!(motion(&predicted), first);
-            history.append(command(5));
-            authoritative.advance(command(5), &mut FreeSpace).unwrap();
+            history.append(command(5, rules));
+            authoritative
+                .advance(command(5, rules), &mut FreeSpace)
+                .unwrap();
             assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 4);
             assert_eq!(motion(&predicted), motion(&authoritative));
             assert_eq!(predicted.player.trace_rules, RuleSetId::Quake);
@@ -76,7 +81,7 @@ fn number_and_time_acknowledgements_replay_without_double_movement_for_every_rol
 fn exhausted_history_retains_authoritative_position_until_a_new_snapshot() {
     let mut history = CommandHistory::load(3, 0).unwrap();
     for number in 1..=5 {
-        history.append(command(number));
+        history.append(command(number, RuleSetId::Quake3));
     }
     let mut predicted = Prediction::new(player(RuleSetId::Quake3));
     predicted.player.body.position = Vec3([100., 20., 30.]);
@@ -85,7 +90,7 @@ fn exhausted_history_retains_authoritative_position_until_a_new_snapshot() {
     assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 0);
     assert_eq!(predicted.player.body.position, baseline);
     assert_eq!(predicted.history_resyncs, 1);
-    history.append(command(6));
+    history.append(command(6, RuleSetId::Quake3));
     assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 0);
     assert_eq!(predicted.player.body.position, baseline);
     assert_eq!(predicted.history_resyncs, 1);
@@ -100,7 +105,7 @@ fn absent_native_ack_and_new_lifetimes_keep_incremental_prediction() {
     let mut predicted = Prediction::new(player(RuleSetId::Quake3));
     predicted.remember_snapshot(None);
     for number in 1..=3 {
-        history.append(command(number));
+        history.append(command(number, RuleSetId::Quake3));
         assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 1);
     }
     assert!(predicted.player.body.position.0[0] > 0.0);
@@ -118,14 +123,14 @@ fn absent_native_ack_and_new_lifetimes_keep_incremental_prediction() {
 fn current_movement_tuning_survives_rewinding_the_authoritative_baseline() {
     for rules in RuleSetId::ALL {
         let mut history = CommandHistory::load(128, 0).unwrap();
-        history.append(command(1));
+        history.append(command(1, rules));
         let mut predicted = Prediction::new(player(rules));
         predicted.remember_snapshot(Some(Acknowledgement::Number(0)));
         predicted.player.movement.tuning.speed_multiplier = 0.25;
         let tuning = predicted.player.movement.tuning;
         let mut expected = Prediction::new(player(rules));
         expected.player.movement.tuning = tuning;
-        expected.advance(command(1), &mut FreeSpace).unwrap();
+        expected.advance(command(1, rules), &mut FreeSpace).unwrap();
         assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 1);
         assert_eq!(predicted.player.movement.tuning, tuning);
         assert_eq!(motion(&predicted), motion(&expected), "{rules:?}");
@@ -140,8 +145,10 @@ fn time_ack_before_an_exactly_full_window_replays_every_retained_command() {
         let mut predicted = Prediction::new(player(rules));
         predicted.remember_snapshot(Some(Acknowledgement::ServerTime(0)));
         for number in 1..=3 {
-            history.append(command(number));
-            expected.advance(command(number), &mut FreeSpace).unwrap();
+            history.append(command(number, rules));
+            expected
+                .advance(command(number, rules), &mut FreeSpace)
+                .unwrap();
         }
         assert_eq!(predicted.replay(&history, &mut FreeSpace).unwrap(), 3);
         assert_eq!(motion(&predicted), motion(&expected), "{rules:?}");

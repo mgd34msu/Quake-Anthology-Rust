@@ -701,6 +701,7 @@ fn connected_qw_heap() -> Result<(), String> {
             let command = UserCmd {
                 duration_ms: 20,
                 movement: [300., 0., 0.],
+                units: qa_gameplay::rules::command_units(RuleSetId::QuakeWorld),
                 ..Default::default()
             };
             let length = codec.encode(&command, |_| 0, &client.channel, &mut payload)?;

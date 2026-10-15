@@ -43,6 +43,7 @@ fn movement_preserves_module_owned_weapon_readiness_for_every_movement_role() {
             let mut world = support::FixtureWorld::default();
             pmove(
                 UserCmd {
+                    units: qa_gameplay::rules::command_units(rules),
                     duration_ms: 16,
                     server_time_ms: 16,
                     movement: [127.0, 0.0, 0.0],
@@ -177,6 +178,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
     let mut qw = player(RuleSetId::QuakeWorld);
     let result = pmove(
         UserCmd {
+            units: qa_gameplay::rules::command_units(RuleSetId::QuakeWorld),
             duration_ms: 101,
             movement: [320.0, 0.0, 0.0],
             ..Default::default()
@@ -191,6 +193,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
     for _ in 0..2 {
         pmove(
             UserCmd {
+                units: qa_gameplay::rules::command_units(RuleSetId::QuakeWorld),
                 duration_ms: 50,
                 movement: [320.0, 0.0, 0.0],
                 ..Default::default()
@@ -258,6 +261,7 @@ fn netquake_uses_precise_duration_and_module_owns_jump() {
     let mut state = player(RuleSetId::Quake);
     let mut world = support::FixtureWorld::default();
     let command = UserCmd {
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake),
         duration_ms: 11,
         duration_ns: 11_764_705,
         movement: [320.0, 0.0, 200.0],
@@ -286,6 +290,7 @@ fn classic_quantizes_while_rerelease_keeps_floating_state() {
     classic.body.position.0[0] = 0.06;
     rr.body.position.0[0] = 0.06;
     let command = UserCmd {
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake2),
         duration_ms: 16,
         movement: [300.0, 0.0, 0.0],
         ..Default::default()

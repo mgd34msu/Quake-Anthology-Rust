@@ -296,6 +296,7 @@ fn runtime(clients: usize) -> (Runtime, Vec<ClientId>) {
                         fixture_fallback: false,
                     },
                     ClientPolicy {
+                        input: RuleSetId::Quake3,
                         client: RuleSetId::Quake3,
                         movement: RuleSetId::Quake,
                         trace: RuleSetId::QuakeWorld,
@@ -450,6 +451,7 @@ fn retained_usercmds_reach_the_selected_module(program: impl Fn() -> Program) {
                 server_time_ms: number as i32,
                 view_angles: Vec3([90., 180., 270.]),
                 movement: [37., -19., 11.],
+                units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
                 buttons: buttons::ATTACK,
                 ..UserCmd::default()
             },
@@ -767,6 +769,7 @@ fn map_restart_clears_selected_notify_and_preserves_pending_server_command() {
             UserCmd {
                 movement: [12.0, 0.0, 0.0],
                 duration_ms: 20,
+                units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
                 ..UserCmd::default()
             },
             CommandExecution::PerCommand,
@@ -876,6 +879,7 @@ fn disconnect_and_slot_reuse_do_not_lend_a_new_connection() {
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::Quake2,
                 trace: RuleSetId::QuakeWorld,

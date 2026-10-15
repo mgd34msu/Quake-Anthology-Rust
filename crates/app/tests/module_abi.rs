@@ -654,6 +654,7 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
             server_time_ms: i32::MIN,
             view_angles: Vec3([90.0, -90.0, 360.0]),
             movement: [f32::MAX, -f32::MAX, 0.0],
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
             buttons: buttons::ATTACK | buttons::TALK | buttons::ANY | buttons::JUMP,
             weapon: Some(own),
             ..UserCmd::default()

@@ -65,8 +65,9 @@ fn player(rules: RuleSetId) -> PlayerState {
     state.inventory.collectibles = 13;
     state
 }
-fn command(ms: u16) -> UserCmd {
+fn command(rules: RuleSetId, ms: u16) -> UserCmd {
     UserCmd {
+        units: qa_gameplay::rules::command_units(rules),
         duration_ms: ms,
         server_time_ms: i32::from(ms),
         movement: [200.0, 3.0, 0.0],
@@ -120,7 +121,7 @@ fn every_selected_entry_rolls_back_the_command_on_trace_error() {
         world.fail_at = 1;
         assert_eq!(
             entry(rules)(
-                command(16),
+                command(rules, 16),
                 &mut state,
                 &mut world,
                 Default::default(),
@@ -143,7 +144,7 @@ fn qw_and_q3_roll_back_earlier_completed_substeps() {
         let mut baseline = player(rules);
         let mut baseline_world = FaultWorld::new(baseline.body.position);
         let first = pmove(
-            command(first_ms),
+            command(rules, first_ms),
             &mut baseline,
             &mut baseline_world,
             Default::default(),
@@ -158,7 +159,7 @@ fn qw_and_q3_roll_back_earlier_completed_substeps() {
         world.fail_at = baseline_world.trace_calls + 1;
         assert_eq!(
             pmove(
-                command(total_ms),
+                command(rules, total_ms),
                 &mut state,
                 &mut world,
                 Default::default(),
@@ -183,7 +184,7 @@ fn contents_failure_is_not_empty_water_and_restores_the_command() {
     world.fail_contents = true;
     assert_eq!(
         pmove(
-            command(16),
+            command(RuleSetId::Quake, 16),
             &mut state,
             &mut world,
             Default::default(),

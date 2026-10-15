@@ -29,6 +29,7 @@ fn simulation_duration_rules_keep_server_time_and_command_fields() {
             let command = prepare_command(
                 rule,
                 UserCmd {
+                    units: qa_gameplay::rules::command_units(rule),
                     duration_ms: raw,
                     server_time_ms: 5500,
                     movement: [200.0, -150.0, 10.0],
@@ -72,6 +73,7 @@ fn quakeworld_steps_discard_odd_remainders_at_each_split() {
 #[test]
 fn quakeworld_steps_keep_impulse_only_on_first_leaf_and_preserve_fields() {
     let command = UserCmd {
+        units: qa_gameplay::rules::command_units(RuleSetId::QuakeWorld),
         duration_ms: 255,
         duration_ns: 7,
         server_time_ms: -12345,
@@ -95,6 +97,7 @@ fn quakeworld_steps_keep_impulse_only_on_first_leaf_and_preserve_fields() {
         assert_eq!(step.duration_ms, 31);
         assert_eq!(step.impulse, if index == 0 { command.impulse } else { 0 });
         assert_eq!(step.server_time_ms, command.server_time_ms);
+        assert_eq!(step.units, command.units);
         assert_eq!(
             step.view_angles.0.map(f32::to_bits),
             command.view_angles.0.map(f32::to_bits)

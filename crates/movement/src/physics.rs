@@ -32,6 +32,13 @@ impl TraceServices for WorldTrace<'_> {
         WorldTrace::point_contents(self, point, rules, &[])
     }
 }
+/// Admission from the actual angle update, including locks whose timers can
+/// expire later in the same movement step.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ViewAngleAdmission {
+    policy: Option<ViewAnglePolicy>,
+    pitch_locked: bool,
+}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MovementResult {
     pub steps: u32,
@@ -41,6 +48,7 @@ pub struct MovementResult {
     pub jump_sound: bool,
     pub step_clip: bool,
     pub impact_delta: f32,
+    pub view_angles: ViewAngleAdmission,
 }
 /// Native providers split control from position integration. Ordinary callers
 /// execute the full command, retaining their existing duration policy.
@@ -102,14 +110,22 @@ where
     entry(player.movement_rules)(command, player, trace, options, &mut boundary)
 }
 
-fn update_view_angles(command: UserCmd, player: &mut PlayerState, policy: ViewAnglePolicy) {
+fn update_view_angles(
+    command: UserCmd,
+    player: &mut PlayerState,
+    policy: ViewAnglePolicy,
+) -> ViewAngleAdmission {
     if !player.movement.mode.allows_view_angles()
         || policy.lock_dead_non_spectator
             && player.health <= 0
             && player.movement.mode != MovementMode::Spectator
     {
-        return;
+        return ViewAngleAdmission::default();
     }
+    let mut admission = ViewAngleAdmission {
+        policy: Some(policy),
+        pitch_locked: false,
+    };
     if policy.short_angles {
         for i in 0..3 {
             let command_angle =
@@ -141,15 +157,46 @@ fn update_view_angles(command: UserCmd, player: &mut PlayerState, policy: ViewAn
         if player.movement.timer.contains(MovementTimer::TELEPORT) {
             player.view_angles.0[0] = 0.0;
             player.view_angles.0[2] = 0.0;
+            admission.pitch_locked = true;
         }
     }
+    admission
 }
 
 /// Angle-only prediction consumes the player's movement capability without
 /// advancing position, timers, traces or native memory boundaries.
-pub fn predict_view_angles(command: UserCmd, player: &mut PlayerState) {
+pub fn predict_view_angles(command: UserCmd, player: &mut PlayerState) -> ViewAngleAdmission {
     let policy = capabilities(player.movement_rules).view_angles.prediction;
-    update_view_angles(command, player, policy);
+    update_view_angles(command, player, policy)
+}
+
+/// Apply an input pitch transition through its admitted angle policy.
+/// Accepted yaw and roll belong to prediction, rather than raw local input.
+pub fn predict_pitch_drift(
+    mut command: UserCmd,
+    player: &mut PlayerState,
+    previous_raw_pitch: f32,
+    new_raw_pitch: f32,
+    admission: ViewAngleAdmission,
+) {
+    let Some(policy) = admission.policy else {
+        return;
+    };
+    if admission.pitch_locked || previous_raw_pitch.to_bits() == new_raw_pitch.to_bits() {
+        return;
+    }
+    let accepted = player.view_angles;
+    command.view_angles.0[0] = new_raw_pitch;
+    let applied = update_view_angles(command, player, policy).policy.is_some();
+    player.view_angles.0[1] = accepted.0[1];
+    player.view_angles.0[2] = accepted.0[2];
+    if applied
+        && !policy.short_angles
+        && !policy.circular_pitch
+        && accepted.0[0].to_bits() == previous_raw_pitch.to_bits()
+    {
+        player.view_angles.0[0] = new_raw_pitch;
+    }
 }
 
 fn with_rollback<E>(
@@ -1475,7 +1522,8 @@ impl Step<'_> {
         }
         let mut previous = self.player.body.position;
         if !self.options.keep_view_angles {
-            update_view_angles(self.command, self.player, self.parameters.angles);
+            self.result.view_angles =
+                update_view_angles(self.command, self.player, self.parameters.angles);
         }
         if self.parameters.special.ladder.is_none() {
             self.player.movement.ladder = false;
@@ -1628,6 +1676,7 @@ where
     E: From<TraceError>,
     B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
 {
+    let command = command.in_units(qa_gameplay::rules::command_units(rules));
     with_rollback(player, options.phase, |player| {
         let parameters = Parameters::load(rules, player);
         match options.phase {

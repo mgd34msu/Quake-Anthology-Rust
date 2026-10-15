@@ -237,6 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("bot slot ordering".into());
             }
             let client = &mut host.runtime.server.clients[slot];
+            client.input_rules = rules[slot % rules.len()];
             client.player.movement_rules = rules[slot % rules.len()];
             client.player.trace_rules = rules[slot % rules.len()];
             client.intent = CommandIntent {
@@ -349,7 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if command.duration_ms != 50
                     || command.server_time_ms
                         != host.runtime.server.world_time.milliseconds() as i32
-                    || command.movement != expected_bot_move(client.player.movement_rules, slot)
+                    || command.movement != expected_bot_move(client.input_rules, slot)
                     || command.buttons != buttons::ATTACK
                     || command.impulse != slot as u8
                     || command.weapon != Some(WeaponId(3))

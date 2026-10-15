@@ -55,6 +55,7 @@ impl InputHandles {
         };
         InputPolicy {
             rules,
+            units: qa_gameplay::rules::command_units(rules),
             speed,
             back_speed: if semantics.back_follows_forward {
                 vars.explicit_number(self.0[1], rules)

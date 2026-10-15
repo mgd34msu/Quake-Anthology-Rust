@@ -1081,6 +1081,7 @@ fn qw_move(
     let command = qa_core::primitives::UserCmd {
         duration_ms: 20,
         movement: [300., 0., 0.],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
         ..Default::default()
     };
     let mut payload = [0; 1400];
@@ -1267,6 +1268,7 @@ fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() 
     let command = qa_core::primitives::UserCmd {
         duration_ms: 20,
         movement: [300., 0., 0.],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
         ..Default::default()
     };
     let mut payload = [0; 1400];

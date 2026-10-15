@@ -1708,6 +1708,58 @@ impl SnapshotObservation {
     }
 }
 
+/// Numeric command dimensions. Speed references apply only when crossing to
+/// normalized input; two speed commands already use the same world units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CommandUnits {
+    Speed { normalized_reference: [f32; 3] },
+    Normalized { full_scale: [f32; 3] },
+}
+impl Default for CommandUnits {
+    fn default() -> Self {
+        Self::Speed {
+            normalized_reference: [320.0; 3],
+        }
+    }
+}
+impl CommandUnits {
+    pub fn project(self, movement: [f32; 3], destination: Self) -> [f32; 3] {
+        let native_normalized = matches!(self, Self::Normalized { .. });
+        let (source, target, normalized) = match (self, destination) {
+            (Self::Speed { .. }, Self::Speed { .. }) => return movement,
+            (
+                Self::Speed {
+                    normalized_reference,
+                },
+                Self::Normalized { full_scale },
+            ) => (normalized_reference, full_scale, true),
+            (
+                Self::Normalized { full_scale },
+                Self::Speed {
+                    normalized_reference,
+                },
+            ) => (full_scale, normalized_reference, false),
+            (Self::Normalized { full_scale: source }, Self::Normalized { full_scale: target }) => {
+                (source, target, true)
+            }
+        };
+        std::array::from_fn(|axis| {
+            if source[axis] == target[axis] && (!normalized || native_normalized) {
+                return movement[axis];
+            }
+            let value =
+                f64::from(movement[axis]) * f64::from(target[axis]) / f64::from(source[axis]);
+            if normalized {
+                value
+                    .clamp(-f64::from(target[axis]), f64::from(target[axis]))
+                    .trunc() as f32
+            } else {
+                value as f32
+            }
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UserCmd {
     pub duration_ms: u16,
@@ -1717,10 +1769,18 @@ pub struct UserCmd {
     pub view_angles: Vec3,
     /// Native float commands remain exact; wire codecs narrow at their boundary.
     pub movement: [f32; 3],
+    pub units: CommandUnits,
     pub buttons: u32,
     pub impulse: u8,
     pub light_level: u8,
     pub weapon: Option<WeaponId>,
+}
+impl UserCmd {
+    pub fn in_units(mut self, destination: CommandUnits) -> Self {
+        self.movement = self.units.project(self.movement, destination);
+        self.units = destination;
+        self
+    }
 }
 
 pub mod buttons {

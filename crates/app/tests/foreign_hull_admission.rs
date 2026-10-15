@@ -83,6 +83,7 @@ fn client_trace_role_admits_supplied_boxes_independently_of_movement_and_protoco
                     None,
                     Some(RuleSetId::Quake),
                     Some(rules),
+                    None,
                 )
                 .unwrap(),
                 Protocol::QuakeWorld28,

@@ -35,7 +35,7 @@ fn explicit_native_clients_use_protocol_limits_independently_of_common_capacity(
                     entity: 0,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(RuleSetId::Quake3), None, None, None).unwrap(),
+                ClientPolicy::select(Some(RuleSetId::Quake3), None, None, None, None).unwrap(),
                 protocol,
                 number,
             );
@@ -231,7 +231,7 @@ fn host(protocol: Protocol) -> (FrameHost, ClientId, ClientId, RemoteReceiver) {
                 entity: 0,
                 fixture_fallback: false,
             },
-            ClientPolicy::select(Some(RuleSetId::Quake3), None, None, None).unwrap(),
+            ClientPolicy::select(Some(RuleSetId::Quake3), None, None, None, None).unwrap(),
             protocol,
             0,
         )
@@ -829,6 +829,7 @@ fn queued_native_flags_select_position_and_angle_permissions_independently_of_mo
             duration_ms: 16,
             server_time_ms: 116,
             movement: [127.0, 0.0, 0.0],
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
             view_angles: Vec3([179.0, 0.0, -19.0]),
             ..Default::default()
         };

@@ -123,11 +123,20 @@ fn rerelease_preserves_native_float_fields_and_byte_button_table() {
 fn native_short_and_byte_codecs_narrow_independently_of_float_movement_role() {
     let common = UserCmd {
         movement: [32768.5, -32769.75, 1.25],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::Quake),
         ..Default::default()
     };
     assert_eq!(to_q1_move(&common).movement, [i16::MIN, i16::MAX, 1]);
     assert_eq!(to_qw_usercmd(&common).movement, [i16::MIN, i16::MAX, 1]);
     assert_eq!(to_q2_usercmd(&common).movement, [i16::MIN, i16::MAX, 1]);
-    assert_eq!(to_q3_usercmd(&common, 0).movement, [127, -128, 1]);
+    assert_eq!(to_q3_usercmd(&common, 0).movement, [127, -127, 0]);
+    let native_normalized = UserCmd {
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::Quake3),
+        ..common
+    };
+    assert_eq!(
+        to_q3_usercmd(&native_normalized, 0).movement,
+        [127, -128, 1]
+    );
     assert_eq!(to_q2_rr_usercmd(&common, 3).movement, [32768.5, -32769.75]);
 }

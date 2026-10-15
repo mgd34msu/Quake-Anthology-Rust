@@ -450,6 +450,7 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake3,
                     client: RuleSetId::Quake3,
                     movement: RuleSetId::Quake2,
                     trace: RuleSetId::QuakeWorld,
@@ -659,6 +660,7 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
                         fixture_fallback: false,
                     },
                     ClientPolicy {
+                        input: RuleSetId::Quake3,
                         client: RuleSetId::Quake3,
                         movement: RuleSetId::Quake2,
                         trace: RuleSetId::QuakeWorld,
@@ -853,6 +855,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake,
                     client: RuleSetId::Quake,
                     movement: RuleSetId::Quake3,
                     trace: RuleSetId::Quake2,
@@ -3621,6 +3624,7 @@ fn qc_client_host(
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement,
                 trace: RuleSetId::Quake3,
@@ -3831,6 +3835,7 @@ fn qw_client_lifecycle_uses_canonical_slot_shared_movement_and_packet_postthink_
     let command = UserCmd {
         duration_ms: 200,
         movement: [200.0, 0.0, 0.0],
+        units: qa_gameplay::rules::command_units(RuleSetId::QuakeWorld),
         ..Default::default()
     };
     let mut expected = PlayerState {
@@ -4025,6 +4030,7 @@ fn netquake_queued_client_runs_none_phases_and_shared_think_at_native_frame_time
     let command = UserCmd {
         duration_ms: 200,
         movement: [200.0, 0.0, 0.0],
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake),
         view_angles: Vec3([45.0, 90.0, 0.0]),
         buttons: buttons::ATTACK | buttons::JUMP,
         impulse: 9,
@@ -4323,6 +4329,7 @@ fn netquake_native_inventory_reaches_client_and_hud_through_queued_packets() {
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake3,
                     client: RuleSetId::Quake3,
                     movement: RuleSetId::Quake3,
                     trace: RuleSetId::Quake2,
@@ -4481,6 +4488,7 @@ fn qw_recovered_packet_stops_at_client_callback_trap_and_reconnects_cleanly() {
     let command = UserCmd {
         duration_ms: 100,
         movement: [200.0, 0.0, 0.0],
+        units: qa_gameplay::rules::command_units(RuleSetId::QuakeWorld),
         ..Default::default()
     };
     assert!(
@@ -4517,6 +4525,7 @@ fn qw_recovered_packet_stops_at_client_callback_trap_and_reconnects_cleanly() {
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::QuakeWorld,
                 trace: RuleSetId::Quake3,
@@ -4559,6 +4568,7 @@ fn qw_native_command_subdivision_precedes_foreign_q3_movement_limits() {
     let command = UserCmd {
         duration_ms: 250,
         movement: [200.0, 0.0, 0.0],
+        units: qa_gameplay::rules::command_units(RuleSetId::QuakeWorld),
         ..Default::default()
     };
     let leaves = qa_movement::quakeworld_steps(command).collect::<Vec<_>>();
@@ -4687,6 +4697,7 @@ fn netquake_noclip_control_precedes_frame_and_integrates_think_velocity_once() {
     tick(&mut host, 0);
     let command = UserCmd {
         movement: [3.0, 2.0, 6.0],
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake),
         buttons: buttons::JUMP | buttons::CROUCH,
         ..Default::default()
     };
@@ -4888,6 +4899,7 @@ fn netquake_foreign_noclip_preserves_substeps_and_final_native_snap() {
             .resolve(&host.console.cvars, rules, base);
         let command = UserCmd {
             movement: axes,
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake),
             ..Default::default()
         };
         let mut scratch = host.runtime.geometry.scratch();

@@ -171,6 +171,7 @@ fn local_host(
         None,
         None,
         None,
+        None,
     )?;
     let client = runtime.connect_local(
         qa_core::sys_events::SeatId::FIRST,
@@ -211,6 +212,7 @@ fn local_moves_submit_only_after_native_channel_packet_dispatch() -> Result<(), 
             server_time_ms: 16,
             view_angles: qa_core::primitives::Vec3([2.9, 0., 0.]),
             movement: [123., -127., 0.],
+            units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
             ..Default::default()
         };
         assert!(
@@ -230,7 +232,18 @@ fn local_moves_submit_only_after_native_channel_packet_dispatch() -> Result<(), 
             (1, 0)
         );
         let decoded = host.runtime.server.clients[0].command;
-        assert_eq!(decoded.movement, [123., -127., 0.]);
+        assert_eq!(
+            decoded.movement,
+            if protocol == Protocol::Quake3_68 {
+                [48., -50., 0.]
+            } else {
+                [123., -127., 0.]
+            }
+        );
+        assert_eq!(
+            decoded.units,
+            qa_gameplay::rules::command_units(protocol.rule_set())
+        );
         assert_eq!(
             decoded.duration_ms,
             if protocol == Protocol::NetQuake15 {
@@ -276,6 +289,7 @@ fn netquake_move_duration_uses_queued_server_frame_time_instead_of_packet_or_pac
     let command = qa_core::primitives::UserCmd {
         duration_ms: 16,
         movement: [1.0, 0.0, 0.0],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
         ..Default::default()
     };
     for (packet_ms, marker_ms, duration_ms) in [(41, 50, 50), (83, 90, 40)] {
@@ -519,6 +533,7 @@ fn old_connection_commands_cannot_mutate_a_reused_client_lifetime() -> Result<()
     let command = qa_core::primitives::UserCmd {
         duration_ms: 16,
         movement: [400.; 3],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
         ..Default::default()
     };
     assert!(
@@ -544,6 +559,7 @@ fn q3_duplicate_usercmd_time_does_not_submit_a_second_command() -> Result<(), St
         duration_ms: 16,
         server_time_ms: 16,
         movement: [127., 0., 0.],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
         ..Default::default()
     };
     let mut clock = Clock::default();
@@ -637,6 +653,7 @@ fn repro_connections_use_negotiated_qport_and_frame_clock_with_native_feedback()
         let command = qa_core::primitives::UserCmd {
             duration_ms: 17,
             movement: [123., -31., 0.],
+            units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
             ..Default::default()
         };
         assert!(

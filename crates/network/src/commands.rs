@@ -1,7 +1,7 @@
-//! Protocol/ABI projections. Movement values retain the decoded command units;
-//! The shared input builder owns speed scaling. Packet compression enters in R11.
+//! Native command units and field projections share the wire and module ABI boundaries.
 use qa_core::math::{AngleShortForm, angle_to_short, short_to_angle};
-use qa_core::primitives::{UserCmd, Vec3, WeaponId, buttons as b};
+use qa_core::primitives::{RuleSetId, UserCmd, Vec3, WeaponId, buttons as b};
+use qa_gameplay::rules::command_units;
 pub mod connection;
 pub mod delta;
 pub mod packet;
@@ -117,6 +117,7 @@ fn vertical_buttons(up: f32, jump_at: f32) -> u32 {
 }
 
 pub fn to_q1_move(command: &UserCmd) -> Q1Move {
+    let command = command.in_units(command_units(RuleSetId::Quake));
     Q1Move {
         view_angles: command.view_angles,
         movement: command.movement.map(|value| value as i32 as i16),
@@ -130,6 +131,7 @@ pub fn from_q1_move(command: Q1Move, duration_ms: u16, server_time_ms: i32) -> U
         server_time_ms,
         view_angles: command.view_angles,
         movement: command.movement.map(f32::from),
+        units: command_units(RuleSetId::Quake),
         buttons: from_buttons(u32::from(command.buttons), &Q1_BITS),
         impulse: command.impulse,
         ..UserCmd::default()
@@ -137,7 +139,8 @@ pub fn from_q1_move(command: Q1Move, duration_ms: u16, server_time_ms: i32) -> U
 }
 
 pub fn to_qw_usercmd(command: &UserCmd) -> QwCmd {
-    let q = to_q1_move(command);
+    let command = command.in_units(command_units(RuleSetId::QuakeWorld));
+    let q = to_q1_move(&command);
     QwCmd {
         msec: command.duration_ms.min(255) as u8,
         view_angles: q.view_angles,
@@ -147,7 +150,7 @@ pub fn to_qw_usercmd(command: &UserCmd) -> QwCmd {
     }
 }
 pub fn from_qw_usercmd(command: QwCmd, server_time_ms: i32) -> UserCmd {
-    from_q1_move(
+    let mut command = from_q1_move(
         Q1Move {
             view_angles: command.view_angles,
             movement: command.movement,
@@ -156,12 +159,15 @@ pub fn from_qw_usercmd(command: QwCmd, server_time_ms: i32) -> UserCmd {
         },
         u16::from(command.msec),
         server_time_ms,
-    )
+    );
+    command.units = command_units(RuleSetId::QuakeWorld);
+    command
 }
 
 pub fn to_q2_usercmd(command: &UserCmd) -> Q2Cmd {
+    let command = command.in_units(command_units(RuleSetId::Quake2));
     let mut movement = command.movement;
-    movement[2] = vertical(command, 200.0);
+    movement[2] = vertical(&command, 200.0);
     Q2Cmd {
         msec: command.duration_ms.min(255) as u8,
         angles: command
@@ -175,12 +181,13 @@ pub fn to_q2_usercmd(command: &UserCmd) -> Q2Cmd {
     }
 }
 pub fn from_q2_usercmd(command: Q2Cmd, server_time_ms: i32) -> UserCmd {
-    let vertical = vertical_buttons(f32::from(command.movement[2]), 0.0);
+    let vertical = vertical_buttons(f32::from(command.movement[2]), 10.0);
     UserCmd {
         duration_ms: u16::from(command.msec),
         server_time_ms,
         view_angles: Vec3(command.angles.map(|value| short_to_angle(i32::from(value)))),
         movement: command.movement.map(f32::from),
+        units: command_units(RuleSetId::Quake2),
         buttons: from_buttons(u32::from(command.buttons), &Q2_BITS) | vertical,
         impulse: command.impulse,
         light_level: command.light_level,
@@ -189,6 +196,7 @@ pub fn from_q2_usercmd(command: Q2Cmd, server_time_ms: i32) -> UserCmd {
 }
 
 pub fn to_q2_rr_usercmd(command: &UserCmd, server_frame: u32) -> Q2RrCmd {
+    let command = command.in_units(command_units(RuleSetId::Quake2Rerelease));
     let mut buttons = command.buttons;
     buttons |= vertical_buttons(command.movement[2], 0.0);
     Q2RrCmd {
@@ -205,6 +213,7 @@ pub fn from_q2_rr_usercmd(command: Q2RrCmd, server_time_ms: i32) -> UserCmd {
         server_time_ms,
         view_angles: command.angles,
         movement: [command.movement[0], command.movement[1], 0.0],
+        units: command_units(RuleSetId::Quake2Rerelease),
         buttons: from_buttons(u32::from(command.buttons), &Q2_RR_BITS),
         ..UserCmd::default()
     }
@@ -212,8 +221,9 @@ pub fn from_q2_rr_usercmd(command: Q2RrCmd, server_time_ms: i32) -> UserCmd {
 
 /// The registry supplies the original module's weapon number, not an ItemId cast.
 pub fn to_q3_usercmd(command: &UserCmd, weapon: u8) -> Q3Cmd {
+    let command = command.in_units(command_units(RuleSetId::Quake3));
     let mut movement = command.movement;
-    movement[2] = vertical(command, 127.0);
+    movement[2] = vertical(&command, 127.0);
     Q3Cmd {
         server_time: command.server_time_ms,
         angles: command
@@ -239,8 +249,43 @@ pub fn from_q3_usercmd(
         server_time_ms: command.server_time,
         view_angles: Vec3(command.angles.map(short_to_angle)),
         movement: command.movement.map(f32::from),
+        units: command_units(RuleSetId::Quake3),
         buttons: from_buttons(command.buttons, &Q3_BITS) | vertical,
         weapon,
         ..UserCmd::default()
     }
+}
+
+/// Retain movement and buttons representable by a local connection before
+/// appending its command history. Timing, angles and other common fields do
+/// not acquire the native packet's unrelated narrowing here.
+pub fn canonical_command(
+    protocol: packet::Protocol,
+    command: UserCmd,
+) -> Result<UserCmd, packet::Error> {
+    let decoded = match protocol {
+        packet::Protocol::NetQuake15 => from_q1_move(to_q1_move(&command), 0, 0),
+        packet::Protocol::QuakeWorld28 => from_qw_usercmd(to_qw_usercmd(&command), 0),
+        packet::Protocol::Quake2_34 => from_q2_usercmd(to_q2_usercmd(&command), 0),
+        packet::Protocol::Quake2Repro1038 => {
+            // The rerelease ABI retains floats, while protocol1038 narrows
+            // them through the same native delta descriptors as transmission.
+            let native = to_q2_rr_usercmd(&command, 0);
+            let mut bytes = [0; 32];
+            let mut writer =
+                crate::message::Writer::new(&mut bytes, crate::message::Encoding::Bytes);
+            delta::write_q2_repro(&mut writer, packet::ZERO_Q2_RR, native)?;
+            let mut reader =
+                crate::message::Reader::new(writer.bytes(), crate::message::Encoding::Bytes);
+            from_q2_rr_usercmd(delta::read_q2_repro(&mut reader, packet::ZERO_Q2_RR)?, 0)
+        }
+        packet::Protocol::Quake3_68 => {
+            from_q3_usercmd(to_q3_usercmd(&command, 0), 0, command.weapon)
+        }
+    };
+    let mut admitted = command;
+    admitted.movement = decoded.movement;
+    admitted.units = decoded.units;
+    admitted.buttons = decoded.buttons;
+    Ok(admitted)
 }

@@ -379,6 +379,7 @@ impl Runtime {
             self.loopback.clear_client(id);
             let client = &mut self.server.clients[id.0 as usize];
             client.client_rules = policy.client;
+            client.input_rules = policy.input;
             client.link_order = qa_gameplay::rules::link_order(policy.client);
             for player in [
                 &mut client.player,
@@ -686,9 +687,13 @@ impl Runtime {
         let Some(commands) = &mut connection.commands else {
             return false;
         };
+        let Ok(command) = qa_network::commands::canonical_command(commands.protocol, *command)
+        else {
+            return false;
+        };
         // CLIENT numbers advance on command production, including a command
         // retained while its preceding native packet flight is still pending.
-        let Ok(number) = commands.record(*command) else {
+        let Ok(number) = commands.record(command) else {
             return false;
         };
         // Retained fragments belong to their original encoded message. Drain
@@ -720,7 +725,7 @@ impl Runtime {
         };
         let registry = &self.catalog.registry;
         let Ok(length) = commands.encode(
-            command,
+            &command,
             |weapon| registry.command_weapon_number(weapon),
             &connection.channel,
             bytes,

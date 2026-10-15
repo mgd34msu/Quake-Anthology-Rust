@@ -1,9 +1,11 @@
 pub mod appearance;
 pub mod entities;
 pub mod feedback;
+mod input;
+pub use input::command_units;
 mod model;
-pub mod movement;
 pub mod motion;
+pub mod movement;
 pub mod sweep;
 pub use model::model_rules;
 pub mod presentation;

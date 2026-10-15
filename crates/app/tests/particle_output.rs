@@ -170,6 +170,7 @@ fn connect_local(runtime: &mut Runtime) -> ClientId {
                 None,
                 Some(RuleSetId::Quake3),
                 Some(RuleSetId::Quake2),
+                None,
             )
             .unwrap(),
             Protocol::NetQuake15,

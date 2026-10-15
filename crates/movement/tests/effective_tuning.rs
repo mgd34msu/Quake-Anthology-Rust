@@ -31,6 +31,7 @@ fn q2_air_acceleration_selects_its_native_coefficient_and_zero_branch() {
         state.movement.tuning.air_accelerate = Some(air);
         pmove(
             UserCmd {
+                units: qa_gameplay::rules::command_units(rules),
                 movement: [wish, 0.0, 0.0],
                 duration_ms,
                 server_time_ms: i32::from(duration_ms),
@@ -97,6 +98,7 @@ fn native_zero_multiplier_limits_reach_control_and_ordinary_gravity() {
     state.movement.tuning.max_speed = Some(MovementMagnitude::native(200.0, 0.0));
     pmove(
         UserCmd {
+            units: qa_gameplay::rules::command_units(RuleSetId::Quake),
             movement: [400.0, 0.0, 0.0],
             ..Default::default()
         },

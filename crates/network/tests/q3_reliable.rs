@@ -72,6 +72,7 @@ fn move_message(client: &mut Channel, server: &mut Channel, codec: &mut Commands
         server_time_ms: time,
         duration_ms: 16,
         movement: [127., -127., 0.],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::Quake3),
         ..UserCmd::default()
     };
     let maximum = client.native_payload_capacity().unwrap();
@@ -366,6 +367,7 @@ fn movement(time: i32) -> UserCmd {
         server_time_ms: time,
         duration_ms: 16,
         movement: [127., -127., 0.],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::Quake3),
         ..UserCmd::default()
     }
 }

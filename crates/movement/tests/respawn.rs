@@ -56,6 +56,7 @@ fn player(movement: RuleSetId, trace: RuleSetId) -> PlayerState {
 }
 fn command(end: i32, buttons: u32) -> UserCmd {
     UserCmd {
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
         duration_ms: 16,
         server_time_ms: end,
         movement: [0.0, 0.0, 127.0],

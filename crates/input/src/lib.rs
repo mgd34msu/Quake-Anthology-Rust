@@ -1,6 +1,8 @@
 //! One device binding table and usercmd builder, independent of map/game rules.
 use qa_core::{
-    primitives::{CommandProducer, ModuleId, RuleSetId, UserCmd, Vec3, WeaponId, buttons},
+    primitives::{
+        CommandProducer, CommandUnits, ModuleId, RuleSetId, UserCmd, Vec3, WeaponId, buttons,
+    },
     sys_events::{DeviceId, EventKind, EventTime, KeySource, MAX_INPUT_DEVICES, SeatId, SysEvent},
 };
 
@@ -171,6 +173,7 @@ impl Seat {
 #[derive(Clone, Copy, Debug)]
 pub struct InputPolicy {
     pub rules: RuleSetId,
+    pub units: CommandUnits,
     pub speed: [f32; 3],
     pub back_speed: f32,
     pub angle_speed: [f32; 2],
@@ -575,7 +578,8 @@ impl Input {
         self.seats[seat.index()].center = true;
     }
     /// NQ/QW render-view drift runs after command construction and prediction.
-    /// The caller supplies ground and ideal-pitch state independently of map.
+    /// Return the raw pitch transition, preserving accepted offsets without
+    /// changing native assignment rounding when the caller has no offset.
     pub fn drift_view(
         &mut self,
         seat: SeatId,
@@ -583,7 +587,7 @@ impl Input {
         policy: InputPolicy,
         player: &qa_core::primitives::PlayerState,
         forward: f32,
-    ) -> Option<Vec3> {
+    ) -> Option<(f32, f32)> {
         if !player.prediction.angles
             || !player.movement.mode.allows_view_angles()
             || !policy.pitch_drift()
@@ -593,6 +597,7 @@ impl Input {
         }
         let state = &mut self.seats[seat.index()];
         let rules = policy.command_rules();
+        let previous = state.angles.0[0];
         state.angles.0[0] = state.drift.advance(
             time,
             self.frame_span.seconds(),
@@ -615,7 +620,7 @@ impl Input {
                 delay: policy.center_delay,
             },
         );
-        Some(state.angles)
+        Some((previous, state.angles.0[0]))
     }
     pub fn binding(&self, control: u16) -> Option<&Binding> {
         self.bindings

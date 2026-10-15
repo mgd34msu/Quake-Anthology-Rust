@@ -77,6 +77,8 @@ pub struct Client {
     pub module: ModuleId,
     /// Selected client policy; the built-in gate does not imply a guest load.
     pub client_rules: RuleSetId,
+    /// Command construction and its cvar defaults are independent of physics.
+    pub input_rules: RuleSetId,
     /// Native spatial insertion order is independent of movement rules.
     pub link_order: LinkOrder,
     pub player: PlayerState,
@@ -119,6 +121,7 @@ impl Client {
         self.intent = CommandIntent::default();
         self.module = module;
         self.client_rules = RuleSetId::default();
+        self.input_rules = RuleSetId::default();
         self.link_order = LinkOrder::Tail;
     }
 }
@@ -213,6 +216,7 @@ impl Server {
                 },
                 module: ModuleId::default(),
                 client_rules: RuleSetId::default(),
+                input_rules: RuleSetId::default(),
                 link_order: LinkOrder::Tail,
                 player: PlayerState::with_capacity(items, powerups, values),
                 command: UserCmd::default(),
@@ -525,7 +529,7 @@ impl Server {
                 duration,
                 end,
                 client.intent,
-                policy(client.player.movement_rules),
+                policy(client.input_rules),
             );
             client.command = if module_moves {
                 command

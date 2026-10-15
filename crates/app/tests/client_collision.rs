@@ -639,7 +639,7 @@ fn queued_snapshot_collision_uses_wire_pose_while_server_moves_independently() {
                 entity: 0,
                 fixture_fallback: false,
             },
-            ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None).unwrap(),
+            ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None, None).unwrap(),
             Protocol::Quake2_34,
             0,
         )
@@ -962,7 +962,8 @@ fn queued_client_maxclients_and_snapshots_classify_each_split_client_independent
                     entity: 0,
                     fixture_fallback: false,
                 },
-                ClientPolicy::select(Some(RuleSetId::Quake2Rerelease), None, None, None).unwrap(),
+                ClientPolicy::select(Some(RuleSetId::Quake2Rerelease), None, None, None, None)
+                    .unwrap(),
                 protocol,
                 seat as u32,
             )
@@ -1091,6 +1092,7 @@ fn queued_q2_player_role_reaches_q3_collision_without_a_maxclients_row() {
                 None,
                 Some(RuleSetId::Quake2Rerelease),
                 Some(RuleSetId::Quake2Rerelease),
+                None,
             )
             .unwrap(),
             protocol,

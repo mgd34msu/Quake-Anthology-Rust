@@ -47,6 +47,13 @@ fn startup_seat_policy_preserves_independent_roles_and_rejects_invalid_fields() 
     let (seat, policy) = ClientPolicy::parse_seat("1:q2:q3:q1").unwrap();
     assert_eq!(seat.index(), 1);
     assert_eq!(policy.client, RuleSetId::Quake2);
+    assert_eq!(policy.input, RuleSetId::Quake2);
+    assert_eq!(policy.movement, RuleSetId::Quake3);
+    assert_eq!(policy.trace, RuleSetId::Quake);
+    let (seat, policy) = ClientPolicy::parse_seat("3:q2:q3:q1:qw").unwrap();
+    assert_eq!(seat.index(), 3);
+    assert_eq!(policy.client, RuleSetId::Quake2);
+    assert_eq!(policy.input, RuleSetId::QuakeWorld);
     assert_eq!(policy.movement, RuleSetId::Quake3);
     assert_eq!(policy.trace, RuleSetId::Quake);
     for value in [
@@ -54,6 +61,8 @@ fn startup_seat_policy_preserves_independent_roles_and_rejects_invalid_fields() 
         "-1:q1:q1:q1",
         "1:q1:q1",
         "1:q1:q1:q1:extra",
+        "1:q1:q1:q1:",
+        "1:q1:q1:q1:q3:qw",
         "1:q1:q1:bad",
     ] {
         assert!(ClientPolicy::parse_seat(value).is_err(), "{value}");
@@ -68,25 +77,83 @@ fn client_selection_requires_identity_and_defaults_each_role_independently() -> 
         (None, Some(RuleSetId::Quake2)),
         (Some(RuleSetId::Quake3), Some(RuleSetId::Quake2)),
     ] {
-        assert!(ClientPolicy::select(None, None, movement, trace).is_err());
+        for input in [None, Some(RuleSetId::QuakeWorld)] {
+            assert!(ClientPolicy::select(None, None, movement, trace, input).is_err());
+        }
     }
     for client in RuleSetId::ALL {
         for (explicit, stock) in [(Some(client), None), (None, Some(client))] {
-            let policy = ClientPolicy::select(explicit, stock, None, None)?;
+            let policy = ClientPolicy::select(explicit, stock, None, None, None)?;
             assert_eq!(
-                (policy.client, policy.movement, policy.trace),
-                (client, client, client)
+                (policy.client, policy.input, policy.movement, policy.trace),
+                (client, client, client, client)
             );
         }
         for stock in RuleSetId::ALL {
-            let policy = ClientPolicy::select(Some(client), Some(stock), None, None)?;
+            let policy = ClientPolicy::select(Some(client), Some(stock), None, None, None)?;
             assert_eq!(
-                (policy.client, policy.movement, policy.trace),
-                (client, client, client)
+                (policy.client, policy.input, policy.movement, policy.trace),
+                (client, client, client, client)
             );
         }
     }
     Ok(())
+}
+
+#[test]
+fn every_input_role_is_independent_of_client_movement_and_trace() -> Result<(), String> {
+    for client in RuleSetId::ALL {
+        for input in RuleSetId::ALL {
+            for movement in RuleSetId::ALL {
+                for trace in RuleSetId::ALL {
+                    let policy = ClientPolicy::select(
+                        Some(client),
+                        None,
+                        Some(movement),
+                        Some(trace),
+                        Some(input),
+                    )?;
+                    assert_eq!(
+                        (policy.client, policy.input, policy.movement, policy.trace),
+                        (client, input, movement, trace)
+                    );
+                    let (_, parsed) = ClientPolicy::parse_seat(&format!(
+                        "2:{}:{}:{}:{}",
+                        client.name(),
+                        movement.name(),
+                        trace.name(),
+                        input.name()
+                    ))?;
+                    assert_eq!(parsed, policy);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn input_seat_options_use_shared_validation_and_duplicate_rejection() {
+    use qa_app::options::{insert_seat_value, parse_seat_value};
+    let (seat, input) = parse_seat_value("2:qw", RuleSetId::parse).unwrap();
+    let mut inputs = [None; SeatId::COUNT];
+    let mut count = 1;
+    insert_seat_value(&mut inputs, &mut count, seat, input).unwrap();
+    assert_eq!(count, 3);
+    assert_eq!(inputs[2], Some(RuleSetId::QuakeWorld));
+    assert!(insert_seat_value(&mut inputs, &mut count, seat, RuleSetId::Quake3).is_err());
+    assert_eq!(inputs[2], Some(RuleSetId::QuakeWorld));
+    for invalid in [
+        "4:q1",
+        "-1:qw",
+        "seat:q3",
+        "1",
+        "1:",
+        "1:q1:qw",
+        "1:unknown",
+    ] {
+        assert!(parse_seat_value(invalid, RuleSetId::parse).is_err());
+    }
 }
 
 #[test]
@@ -106,7 +173,7 @@ fn foreign_movement_and_trace_overrides_do_not_select_native_clock_or_link_order
             RuleSetId::Quake3 => (fixed(50)?, LinkOrder::Head),
         };
         for foreign in RuleSetId::ALL {
-            let movement = ClientPolicy::select(None, Some(client), Some(foreign), None)?;
+            let movement = ClientPolicy::select(None, Some(client), Some(foreign), None, None)?;
             assert_eq!(
                 (movement.client, movement.movement, movement.trace),
                 (client, foreign, client)
@@ -116,7 +183,7 @@ fn foreign_movement_and_trace_overrides_do_not_select_native_clock_or_link_order
                 rate
             );
             assert_eq!(qa_gameplay::rules::link_order(movement.client), order);
-            let trace = ClientPolicy::select(None, Some(client), None, Some(foreign))?;
+            let trace = ClientPolicy::select(None, Some(client), None, Some(foreign), None)?;
             assert_eq!(
                 (trace.client, trace.movement, trace.trace),
                 (client, client, foreign)
@@ -161,6 +228,7 @@ fn q3_tick_period_and_low_rate_repair_use_the_client_view_in_every_console_diale
                 None,
                 Some(RuleSetId::Quake),
                 Some(RuleSetId::Quake2),
+                None,
             )?;
             assert_eq!(
                 qa_app::client_policy::tick_rate(policy.client, &mut cvars)?,
@@ -211,6 +279,7 @@ fn non_q3_clients_do_not_repair_q3_sv_fps() -> Result<(), String> {
                 None,
                 Some(RuleSetId::Quake3),
                 Some(RuleSetId::Quake3),
+                None,
             )?;
             assert_eq!(
                 qa_app::client_policy::tick_rate(policy.client, &mut cvars)?,
@@ -235,32 +304,37 @@ fn the_first_local_link_uses_client_order_and_snapshot_keeps_role_ids() -> Resul
     let choices = [
         (
             RuleSetId::Quake2,
+            RuleSetId::Quake,
             RuleSetId::QuakeWorld,
             RuleSetId::Quake3,
             LinkOrder::Tail,
         ),
         (
             RuleSetId::Quake3,
+            RuleSetId::Quake2Rerelease,
             RuleSetId::QuakeWorld,
             RuleSetId::Quake2,
             LinkOrder::Head,
         ),
         (
             RuleSetId::Quake2,
+            RuleSetId::Quake3,
             RuleSetId::QuakeWorld,
             RuleSetId::Quake,
             LinkOrder::Tail,
         ),
         (
             RuleSetId::Quake3,
+            RuleSetId::Quake2,
             RuleSetId::QuakeWorld,
             RuleSetId::QuakeWorld,
             LinkOrder::Head,
         ),
     ];
     let mut entities = Vec::new();
-    for (seat, (client, movement, trace, order)) in SeatId::ALL.into_iter().zip(choices) {
-        let policy = ClientPolicy::select(Some(client), None, Some(movement), Some(trace))?;
+    for (seat, (client, input, movement, trace, order)) in SeatId::ALL.into_iter().zip(choices) {
+        let policy =
+            ClientPolicy::select(Some(client), None, Some(movement), Some(trace), Some(input))?;
         let id = runtime.connect_local(
             seat,
             spawn,
@@ -270,6 +344,7 @@ fn the_first_local_link_uses_client_order_and_snapshot_keeps_role_ids() -> Resul
         )?;
         let connected = &runtime.server.clients[id.0 as usize];
         assert_eq!(connected.client_rules, client);
+        assert_eq!(connected.input_rules, input);
         assert_eq!(connected.player.movement_rules, movement);
         assert_eq!(connected.player.trace_rules, trace);
         assert_eq!(connected.link_order, order);

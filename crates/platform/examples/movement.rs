@@ -133,6 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .ok_or("client capacity")?;
         let client = &mut server.clients[slot];
+        client.input_rules = rules[slot % 5];
         client.player.movement_rules = rules[slot % 5];
         client.player.trace_rules = rules[slot % 5];
         qa_movement::set_bounds(&mut client.player);
@@ -191,7 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     EventTime(end.since(start)),
                     end,
                     intent,
-                    policies[client.player.movement_rules as usize],
+                    policies[client.input_rules as usize],
                 );
                 server.submit_command(
                     ClientId(slot as u32),

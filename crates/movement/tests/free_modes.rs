@@ -75,8 +75,9 @@ fn player(rules: RuleSetId, mode: MovementMode) -> PlayerState {
     state.movement.mode = mode;
     state
 }
-fn command(ms: u16, movement: [f32; 3], angles: Vec3) -> UserCmd {
+fn command(rules: RuleSetId, ms: u16, movement: [f32; 3], angles: Vec3) -> UserCmd {
     UserCmd {
+        units: qa_gameplay::rules::command_units(rules),
         duration_ms: ms,
         server_time_ms: i32::from(ms),
         movement,
@@ -91,7 +92,7 @@ fn netquake_complete_noclip_copies_exact_raw_under_cap_diagonal() {
     let previous = state.body.position;
     let mut world = World::new(state.trace_rules);
     let result = pmove(
-        command(16, [1.0, -1.0, 0.0], Vec3::default()),
+        command(RuleSetId::Quake, 16, [1.0, -1.0, 0.0], Vec3::default()),
         &mut state,
         &mut world,
         Default::default(),
@@ -122,7 +123,7 @@ fn q3_spectator_clips_while_noclip_uses_direct_motion_and_foreign_trace_rules() 
         state.body.velocity = Vec3([2000.0, 0.0, 0.0]);
         let mut world = World::new(state.trace_rules);
         let result = pmove(
-            command(16, [0.0; 3], Vec3::default()),
+            command(RuleSetId::Quake3, 16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
             Default::default(),
@@ -181,7 +182,7 @@ fn q3_spectator_ignores_body_contents_and_resets_foreign_stance_bounds() {
     state.body.velocity.0[0] = 2000.0;
     let mut world = SpectatorWorld(World::new(state.trace_rules));
     pmove(
-        command(16, [0.0; 3], Vec3::default()),
+        command(RuleSetId::Quake3, 16, [0.0; 3], Vec3::default()),
         &mut state,
         &mut world,
         Default::default(),
@@ -211,7 +212,7 @@ fn native_early_free_returns_clear_water_outputs_and_keep_native_ground_flags() 
         state.movement.water_contents = Contents::WATER.0;
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(8, [0.0; 3], Vec3::default()),
+            command(rules, 8, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
             Default::default(),
@@ -249,7 +250,7 @@ fn released_q3_free_jump_does_not_inject_upmove_into_later_substeps() {
         actual.movement.jump_held = true;
         let mut expected = player(RuleSetId::Quake3, mode);
         let mut world = World::new(actual.trace_rules);
-        let cmd = command(150, [0.0; 3], Vec3::default());
+        let cmd = command(RuleSetId::Quake3, 150, [0.0; 3], Vec3::default());
         let actual_result = pmove(
             cmd,
             &mut actual,
@@ -290,7 +291,7 @@ fn switching_to_a_role_without_ladders_clears_stale_state_in_walk_and_free_modes
             let mut expected = player(RuleSetId::Quake2Rerelease, mode);
             expected.movement_rules = rules;
             let mut world = World::new(actual.trace_rules);
-            let cmd = command(16, [127.0, 0.0, 0.0], Vec3::default());
+            let cmd = command(rules, 16, [127.0, 0.0, 0.0], Vec3::default());
             pmove(
                 cmd,
                 &mut actual,
@@ -327,7 +328,7 @@ fn classic_spectator_snaps_without_rejecting_a_position_beyond_a_wall() {
     state.body.position.0[0] = 220.0;
     let mut world = World::new(state.trace_rules);
     pmove(
-        command(100, [300.0, 0.0, 0.0], Vec3::default()),
+        command(RuleSetId::Quake2, 100, [300.0, 0.0, 0.0], Vec3::default()),
         &mut state,
         &mut world,
         Default::default(),
@@ -347,7 +348,12 @@ fn qw_spectator_has_an_independent_native_and_overridden_speed_cap() {
         state.movement.tuning.spectator_max_speed = spectator;
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(50, [1000.0, 0.0, 0.0], Vec3::default()),
+            command(
+                RuleSetId::QuakeWorld,
+                50,
+                [1000.0, 0.0, 0.0],
+                Vec3::default(),
+            ),
             &mut state,
             &mut world,
             Default::default(),
@@ -371,7 +377,12 @@ fn rerelease_free_modes_double_the_capped_speed_and_reset_native_flags() {
         state.movement.remaining_ms = 500;
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(100, [1000.0, 0.0, 0.0], Vec3::default()),
+            command(
+                RuleSetId::Quake2Rerelease,
+                100,
+                [1000.0, 0.0, 0.0],
+                Vec3::default(),
+            ),
             &mut state,
             &mut world,
             Default::default(),
@@ -409,7 +420,12 @@ fn rerelease_free_vertical_buttons_are_independent_and_ignore_raw_upmove() {
     ] {
         let mut state = player(RuleSetId::Quake2Rerelease, MovementMode::Noclip);
         let mut world = World::new(state.trace_rules);
-        let mut cmd = command(100, [0.0, 0.0, 99.0], Vec3::default());
+        let mut cmd = command(
+            RuleSetId::Quake2Rerelease,
+            100,
+            [0.0, 0.0, 99.0],
+            Vec3::default(),
+        );
         cmd.buttons = buttons;
         pmove(
             cmd,
@@ -452,7 +468,12 @@ fn rerelease_spectator_sends_world_only_queries_with_the_small_box() {
     state.body.position.0[0] = 220.0;
     let mut world = ScopeWorld(World::new(state.trace_rules));
     pmove(
-        command(100, [1000.0, 0.0, 0.0], Vec3::default()),
+        command(
+            RuleSetId::Quake2Rerelease,
+            100,
+            [1000.0, 0.0, 0.0],
+            Vec3::default(),
+        ),
         &mut state,
         &mut world,
         Default::default(),
@@ -475,7 +496,7 @@ fn pitched_forward_free_movement_uses_the_full_view_basis() {
         let mut state = player(rules, mode);
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(16, [forward, 0.0, 0.0], Vec3([45.0, 0.0, 0.0])),
+            command(rules, 16, [forward, 0.0, 0.0], Vec3([45.0, 0.0, 0.0])),
             &mut state,
             &mut world,
             Default::default(),
@@ -498,7 +519,12 @@ fn rolled_free_strafe_keeps_the_right_vectors_vertical_component() {
         let mut state = player(RuleSetId::Quake3, mode);
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(16, [0.0, 127.0, 0.0], Vec3([0.0, 0.0, 45.0])),
+            command(
+                RuleSetId::Quake3,
+                16,
+                [0.0, 127.0, 0.0],
+                Vec3([0.0, 0.0, 45.0]),
+            ),
             &mut state,
             &mut world,
             Default::default(),
@@ -548,7 +574,7 @@ fn q3_free_wish_scaling_keeps_each_native_operation_order() {
         state.movement.tuning.accelerate = Some(10.0);
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(16, axes, angles),
+            command(RuleSetId::Quake3, 16, axes, angles),
             &mut state,
             &mut world,
             Default::default(),
@@ -578,7 +604,7 @@ fn q3_free_friction_ignores_stale_ground_and_water_without_snapping_velocity() {
         state.movement.remaining_ms = 10;
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(16, [0.0; 3], Vec3::default()),
+            command(RuleSetId::Quake3, 16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
             Default::default(),
@@ -614,7 +640,7 @@ fn low_speed_native_free_modes_clear_the_correct_velocity_components() {
         state.body.velocity = Vec3([0.25, -0.25, 0.5]);
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(16, [0.0; 3], Vec3::default()),
+            command(rules, 16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
             Default::default(),
@@ -637,7 +663,7 @@ fn classic_spectator_applies_stop_friction_then_returns_without_integrating() {
             expected = math::narrow_eighth(expected);
         }
         pmove(
-            command(16, [0.0; 3], Vec3::default()),
+            command(rules, 16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
             Default::default(),
@@ -661,7 +687,7 @@ fn q3_flight_adds_native_flight_friction_and_keeps_ordinary_final_snapping() {
         let drop = ground_drop + 100.0 * 3.0 * dt;
         let velocity = 100.0 * ((100.0 - drop) / 100.0);
         pmove(
-            command(16, [0.0; 3], Vec3::default()),
+            command(RuleSetId::Quake3, 16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
             Default::default(),
@@ -688,7 +714,12 @@ fn talk_is_exclusive_in_every_q3_substep_and_preserves_view_angles() {
         let mut world = World::new(actual.trace_rules);
         let command = UserCmd {
             buttons: buttons::TALK | buttons::ATTACK | buttons::JUMP | buttons::CROUCH,
-            ..command(200, [127.0, 63.0, 127.0], Vec3([30.0, 60.0, 0.0]))
+            ..command(
+                RuleSetId::Quake3,
+                200,
+                [127.0, 63.0, 127.0],
+                Vec3([30.0, 60.0, 0.0]),
+            )
         };
         let actual_result = pmove(
             command,
@@ -733,7 +764,7 @@ fn other_movement_roles_do_not_inherit_q3_talk_exclusivity() {
         let mut actual = player(rules, MovementMode::Walk);
         let mut expected = player(rules, MovementMode::Walk);
         let mut world = World::new(actual.trace_rules);
-        let command = command(16, [300.0, 0.0, 0.0], Vec3::default());
+        let command = command(rules, 16, [300.0, 0.0, 0.0], Vec3::default());
         pmove(
             UserCmd {
                 buttons: buttons::TALK,
@@ -824,7 +855,7 @@ fn rerelease_slide_selects_a_secondary_plane_by_native_component_comparison() {
             secondary,
         };
         let result = pmove(
-            command(8, [0.0; 3], Vec3::default()),
+            command(RuleSetId::Quake2Rerelease, 8, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
             Default::default(),
@@ -866,7 +897,7 @@ fn rerelease_allsolid_slide_records_the_native_contact_before_returning() {
     state.body.velocity = Vec3([100.0, 0.0, -10.0]);
     state.movement.tuning.no_step = true;
     let result = pmove(
-        command(8, [0.0; 3], Vec3::default()),
+        command(RuleSetId::Quake2Rerelease, 8, [0.0; 3], Vec3::default()),
         &mut state,
         &mut SolidWorld,
         Default::default(),

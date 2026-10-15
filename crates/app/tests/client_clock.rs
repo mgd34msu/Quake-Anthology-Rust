@@ -83,6 +83,7 @@ fn connect(
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: client,
                 client,
                 movement,
                 trace: RuleSetId::QuakeWorld,

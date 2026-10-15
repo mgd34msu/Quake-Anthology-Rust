@@ -256,6 +256,7 @@ fn fixture_with(
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake3,
                     client: RuleSetId::Quake3,
                     movement: RuleSetId::Quake,
                     trace: RuleSetId::Quake2,
@@ -396,6 +397,7 @@ fn q3_queued_commands_use_native_zero_once_and_import_the_module_pose() {
                 server_time_ms: time,
                 duration_ms: 20,
                 movement: [forward, 0.0, 0.0],
+                units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
                 buttons: buttons::ATTACK,
                 ..Default::default()
             },
@@ -543,6 +545,7 @@ fn q3_client_registration_requires_server_exports_and_freezes_its_native_capacit
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::Quake,
                 trace: RuleSetId::Quake2,

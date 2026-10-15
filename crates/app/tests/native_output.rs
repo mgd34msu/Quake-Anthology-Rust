@@ -856,7 +856,7 @@ fn reliable_native_pages_retire_only_on_the_selected_peers_channel_ack() {
 #[test]
 fn native_layout_reaches_the_local_hud_through_channel_queue_and_client_ring() {
     let mut runtime = Runtime::load(1, []).unwrap();
-    let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None).unwrap();
+    let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None, None).unwrap();
     let id = runtime
         .connect_local(
             SeatId::FIRST,
@@ -908,6 +908,7 @@ fn separate_stats_and_set_angles_reach_client_state_only_through_queued_native_p
     for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
         let mut runtime = Runtime::load(1, []).unwrap();
         let policy = ClientPolicy {
+            input: RuleSetId::Quake2Rerelease,
             client: RuleSetId::Quake2Rerelease,
             movement: RuleSetId::Quake3,
             trace: RuleSetId::Quake2,
@@ -1251,7 +1252,7 @@ fn fragmented_rerelease_output_retries_exact_bytes_and_oversized_payloads_retire
 #[test]
 fn stalled_local_output_does_not_republish_unchanged_hud_records() {
     let mut runtime = Runtime::load(2, []).unwrap();
-    let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None).unwrap();
+    let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None, None).unwrap();
     let ids = std::array::from_fn::<_, 2, _>(|seat| {
         runtime
             .connect_local(
@@ -1375,7 +1376,7 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
 #[test]
 fn snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     let mut runtime = Runtime::load(1, []).unwrap();
-    let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None).unwrap();
+    let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None, None).unwrap();
     let id = runtime
         .connect_local(
             SeatId::FIRST,
@@ -1658,7 +1659,7 @@ fn resync_dupe_fixture(protocol: Protocol) -> (FrameHost, [ClientId; 2], ClientI
         .events
         .bind(OutputTarget::Presentation)
         .unwrap();
-    let policy = ClientPolicy::select(Some(protocol.rule_set()), None, None, None).unwrap();
+    let policy = ClientPolicy::select(Some(protocol.rule_set()), None, None, None, None).unwrap();
     let local = std::array::from_fn(|seat| {
         let id = runtime
             .connect_local(

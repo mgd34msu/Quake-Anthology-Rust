@@ -22,6 +22,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
             .connect(Connection::Bot, ModuleId((slot % 3) as u16), None)
             .unwrap();
         assert_eq!(id.0 as usize, slot);
+        server.clients[slot].input_rules = rules[slot % rules.len()];
         server.clients[slot].player.movement_rules = rules[slot % rules.len()];
         server.clients[slot].player.trace_rules = rules[slot % rules.len()];
         server.clients[slot].intent = CommandIntent {
@@ -44,11 +45,12 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
             EventTime(50_000_000),
             EventTime(5_050_000_000),
             client.intent,
-            handles.policy(&cvars, client.player.movement_rules),
+            handles.policy(&cvars, client.input_rules),
         );
         assert_eq!(client.command.duration_ms, 50);
         assert_eq!(client.command.server_time_ms, 5050);
         assert_eq!(client.command.movement, local.movement);
+        assert_eq!(client.command.units, local.units);
         assert_eq!(client.command.view_angles, local.view_angles);
         assert_eq!(client.command.buttons, local.buttons);
         assert_eq!(client.command.impulse, local.impulse);
@@ -66,6 +68,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     assert_eq!(server.clients[63].command.duration_ms, 77); // disconnected slot excluded
     let reused = server.connect(Connection::Bot, ModuleId(2), None).unwrap();
     assert_eq!(reused, id);
+    assert_eq!(server.clients[63].input_rules, RuleSetId::default());
     server.build_bot_commands(
         EventTime(5_100_000_000),
         EventTime(5_150_000_000),
@@ -77,7 +80,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
 }
 
 #[test]
-fn bot_duration_uses_movement_policy_instead_of_module_family() {
+fn bot_duration_uses_input_finish_and_movement_admission_instead_of_module_family() {
     let mut server = Server::load(4, 16, 1, 0, 0, 0).unwrap();
     let cvars = qa_console::cvars::Cvars::new().unwrap();
     let handles = qa_console::input_settings::InputHandles::load(&cvars).unwrap();
@@ -91,6 +94,7 @@ fn bot_duration_uses_movement_policy_instead_of_module_family() {
     .enumerate()
     {
         server.connect(connection, ModuleId(2), None).unwrap();
+        server.clients[slot].input_rules = rule;
         server.clients[slot].player.movement_rules = rule;
         server.clients[slot].player.trace_rules = rule;
         server.clients[slot].command.duration_ms = 7;

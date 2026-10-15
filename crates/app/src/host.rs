@@ -1840,7 +1840,11 @@ impl FrameHost {
         });
         let policies = {
             std::array::from_fn(|seat| {
-                let mut policy = self.input_handles.policy(&self.console.cvars, rules[seat]);
+                let input_rules = self.local_clients[seat]
+                    .map_or(qa_core::primitives::RuleSetId::default(), |id| {
+                        self.runtime.server.clients[id.0 as usize].input_rules
+                    });
+                let mut policy = self.input_handles.policy(&self.console.cvars, input_rules);
                 if self.local_clients[seat].is_some() {
                     policy.delta_pitch =
                         self.runtime.prediction[seat].player.movement.delta_angles.0[0].degrees();
@@ -1925,33 +1929,30 @@ impl FrameHost {
                 }
                 if let Some(view) = self.runtime.client_collision[id.0 as usize].as_mut() {
                     let prediction = &mut self.runtime.prediction[seat];
-                    let Ok(mut trace) = view.trace(&self.runtime.geometry) else {
-                        if prediction.player.prediction.angles {
-                            qa_movement::predict_view_angles(
-                                commands[seat],
-                                &mut prediction.player,
-                            );
-                        }
-                        continue;
-                    };
-                    let base = prediction.player.movement.tuning;
-                    prediction.player.movement.tuning = self.movement_handles.resolve(
-                        &self.console.cvars,
-                        prediction.player.movement_rules,
-                        base,
-                    );
-                    let result = if let Some(history) = self
-                        .runtime
-                        .network
-                        .get(*id, qa_core::loopback::Endpoint::Client)
-                        .and_then(|connection| connection.commands.as_ref())
-                        .and_then(|commands| commands.history())
-                    {
-                        prediction.replay(history, &mut trace)
+                    let result = if let Ok(mut trace) = view.trace(&self.runtime.geometry) {
+                        let base = prediction.player.movement.tuning;
+                        prediction.player.movement.tuning = self.movement_handles.resolve(
+                            &self.console.cvars,
+                            prediction.player.movement_rules,
+                            base,
+                        );
+                        let result = if let Some(history) = self
+                            .runtime
+                            .network
+                            .get(*id, qa_core::loopback::Endpoint::Client)
+                            .and_then(|connection| connection.commands.as_ref())
+                            .and_then(|commands| commands.history())
+                        {
+                            prediction.replay(history, &mut trace)
+                        } else {
+                            prediction.advance(commands[seat], &mut trace).map(|_| 1)
+                        };
+                        prediction.player.movement.tuning = base;
+                        result
                     } else {
-                        prediction.advance(commands[seat], &mut trace).map(|_| 1)
+                        prediction.advance_angles(commands[seat]);
+                        Ok(0)
                     };
-                    prediction.player.movement.tuning = base;
                     if let Err(error) = result {
                         let _ = self.runtime.server.events.console_formatted(format_args!(
                             "Prediction client {}: {error:?}\n",
@@ -1960,7 +1961,7 @@ impl FrameHost {
                         continue;
                     }
                     if let Some(seat_id) = SeatId::new(seat as u8)
-                        && let Some(angles) = self.runtime.input.drift_view(
+                        && let Some((previous, pitch)) = self.runtime.input.drift_view(
                             seat_id,
                             self.time,
                             policies[seat],
@@ -1968,7 +1969,7 @@ impl FrameHost {
                             commands[seat].movement[0],
                         )
                     {
-                        prediction.player.view_angles = angles;
+                        prediction.drift_pitch(commands[seat], previous, pitch);
                     }
                 }
             }

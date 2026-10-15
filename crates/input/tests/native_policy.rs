@@ -65,6 +65,71 @@ fn input() -> Input {
 }
 
 #[test]
+fn builder_marks_native_units_without_normalizing_configured_axis_speeds() {
+    use qa_core::primitives::{CommandIntent, CommandUnits};
+    for (rules, expected) in [
+        (
+            RuleSetId::Quake,
+            CommandUnits::Speed {
+                normalized_reference: [320.0; 3],
+            },
+        ),
+        (
+            RuleSetId::QuakeWorld,
+            CommandUnits::Speed {
+                normalized_reference: [320.0; 3],
+            },
+        ),
+        (
+            RuleSetId::Quake2,
+            CommandUnits::Speed {
+                normalized_reference: [200.0; 3],
+            },
+        ),
+        (
+            RuleSetId::Quake2Rerelease,
+            CommandUnits::Speed {
+                normalized_reference: [200.0; 3],
+            },
+        ),
+        (
+            RuleSetId::Quake3,
+            CommandUnits::Normalized {
+                full_scale: [127.0; 3],
+            },
+        ),
+    ] {
+        let mut policy = support::catalog_policy(rules);
+        policy.speed = [100.0, 350.0, 75.0];
+        policy.back_speed = 80.0;
+        policy.always_run = false;
+        let command = qa_input::UserCmdBuilder::build(
+            EventTime::from_milliseconds(16),
+            EventTime::from_milliseconds(16),
+            CommandIntent {
+                movement: [[1.0, 0.0], [0.0; 2], [0.0; 2]],
+                ..Default::default()
+            },
+            policy,
+        );
+        assert_eq!(command.units, expected);
+        if rules != RuleSetId::Quake3 {
+            assert_eq!(command.movement, [100.0, 0.0, 0.0]);
+        }
+        if rules == RuleSetId::Quake2 {
+            assert_eq!(
+                command
+                    .in_units(CommandUnits::Normalized {
+                        full_scale: [127.0; 3]
+                    })
+                    .movement,
+                [63.0, 0.0, 0.0]
+            );
+        }
+    }
+}
+
+#[test]
 fn quake3_uses_integer_event_milliseconds_for_keyboard_angles_and_mouse_acceleration() {
     let mut input = input();
     let mut policy = support::catalog_policy(RuleSetId::Quake3);

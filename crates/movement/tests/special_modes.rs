@@ -133,8 +133,9 @@ fn player(rules: RuleSetId) -> PlayerState {
     player.body.position = Vec3([0.0, 0.0, 64.0]);
     player
 }
-fn command(ms: u16, movement: [f32; 3], pitch: f32) -> UserCmd {
+fn command(rules: RuleSetId, ms: u16, movement: [f32; 3], pitch: f32) -> UserCmd {
     UserCmd {
+        units: qa_gameplay::rules::command_units(rules),
         duration_ms: ms,
         server_time_ms: i32::from(ms),
         movement,
@@ -151,7 +152,7 @@ fn classic_ladder_uses_signed_pitch_and_vertical_controls_before_acceleration() 
         world.ladder = true;
         let forward = if up == 0.0 { 300.0 } else { 0.0 };
         pmove(
-            command(8, [forward, 0.0, up], pitch),
+            command(RuleSetId::Quake2, 8, [forward, 0.0, up], pitch),
             &mut state,
             &mut world,
             Default::default(),
@@ -173,7 +174,7 @@ fn ladder_idle_braking_uses_ground_friction_and_approaches_zero() {
         let mut world = World::new(state.trace_rules);
         world.ladder = true;
         pmove(
-            command(8, [0.0; 3], 0.0),
+            command(rules, 8, [0.0; 3], 0.0),
             &mut state,
             &mut world,
             Default::default(),
@@ -204,7 +205,7 @@ fn classic_ladder_flag_is_transient_but_rerelease_retains_it_during_a_native_tim
         let mut world = World::new(state.trace_rules);
         world.ladder = true;
         pmove(
-            command(8, [0.0; 3], 0.0),
+            command(rules, 8, [0.0; 3], 0.0),
             &mut state,
             &mut world,
             Default::default(),
@@ -222,7 +223,7 @@ fn rerelease_ladder_strafe_projects_onto_the_ladder_plane_and_stops_at_waist_wat
     let mut world = World::new(state.trace_rules);
     world.ladder = true;
     pmove(
-        command(8, [0.0, 100.0, 0.0], 0.0),
+        command(RuleSetId::Quake2Rerelease, 8, [0.0, 100.0, 0.0], 0.0),
         &mut state,
         &mut world,
         Default::default(),
@@ -236,7 +237,7 @@ fn rerelease_ladder_strafe_projects_onto_the_ladder_plane_and_stops_at_waist_wat
     let mut submerged = player(RuleSetId::Quake2Rerelease);
     world.water = true;
     pmove(
-        command(8, [0.0, 100.0, 0.0], 0.0),
+        command(RuleSetId::Quake2Rerelease, 8, [0.0, 100.0, 0.0], 0.0),
         &mut submerged,
         &mut world,
         Default::default(),
@@ -255,7 +256,7 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
     let mut world = World::new(dry.trace_rules);
     world.ladder = true;
     pmove(
-        command(8, [0.0; 3], 0.0),
+        command(RuleSetId::Quake2, 8, [0.0; 3], 0.0),
         &mut dry,
         &mut world,
         Default::default(),
@@ -264,7 +265,7 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
     .expect("valid movement query");
     world.water = true;
     pmove(
-        command(8, [0.0; 3], 0.0),
+        command(RuleSetId::Quake2, 8, [0.0; 3], 0.0),
         &mut wet,
         &mut world,
         Default::default(),
@@ -276,7 +277,7 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
     world.ladder = false;
     world.current = true;
     pmove(
-        command(8, [0.0; 3], 0.0),
+        command(RuleSetId::Quake2, 8, [0.0; 3], 0.0),
         &mut current,
         &mut world,
         Default::default(),
@@ -291,7 +292,7 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
     world.current = false;
     world.ground_current = true;
     pmove(
-        command(8, [0.0; 3], 0.0),
+        command(RuleSetId::Quake2, 8, [0.0; 3], 0.0),
         &mut conveyor,
         &mut world,
         Default::default(),
@@ -309,7 +310,7 @@ fn q2_and_q3_water_jump_preserve_their_impulses_timer_phase_and_gravity_order() 
         world.water = true;
         world.ledge_points = true;
         pmove(
-            command(8, [0.0; 3], 0.0),
+            command(rules, 8, [0.0; 3], 0.0),
             &mut state,
             &mut world,
             Default::default(),
@@ -355,7 +356,7 @@ fn water_jump_ignores_input_and_cancels_native_timers_on_descent() {
         state.movement.remaining_ms = 500;
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(16, [-300.0, 100.0, 127.0], 0.0),
+            command(rules, 16, [-300.0, 100.0, 127.0], 0.0),
             &mut state,
             &mut world,
             Default::default(),
@@ -377,7 +378,7 @@ fn qw_water_jump_uses_seconds_and_only_held_jump_decrements_the_native_clock() {
         world.water = true;
         world.water_height = 70.0;
         world.ledge_points = true;
-        let mut cmd = command(8, [300.0, 0.0, 0.0], 0.0);
+        let mut cmd = command(RuleSetId::QuakeWorld, 8, [300.0, 0.0, 0.0], 0.0);
         cmd.buttons = if held { buttons::JUMP } else { 0 };
         pmove(
             cmd,
@@ -402,7 +403,7 @@ fn qw_water_jump_uses_seconds_and_only_held_jump_decrements_the_native_clock() {
     world.water_height = 70.0;
     world.ledge_points = true;
     pmove(
-        command(8, [0.0; 3], 0.0),
+        command(RuleSetId::QuakeWorld, 8, [0.0; 3], 0.0),
         &mut state,
         &mut world,
         Default::default(),
@@ -419,7 +420,7 @@ fn rerelease_water_jump_preview_accepts_a_dry_ledge_and_keeps_live_contacts_isol
     world.water = true;
     world.shelf = Some(80.0);
     let result = pmove(
-        command(8, [300.0, 0.0, 0.0], 0.0),
+        command(RuleSetId::Quake2Rerelease, 8, [300.0, 0.0, 0.0], 0.0),
         &mut state,
         &mut world,
         Default::default(),
@@ -451,7 +452,12 @@ fn rerelease_water_jump_rejects_no_intent_forbidden_water_and_missing_or_wet_flo
         world.no_waterjump = no_waterjump;
         world.shelf = shelf;
         pmove(
-            command(8, [if intent { 300.0 } else { 0.0 }, 0.0, 0.0], 0.0),
+            command(
+                RuleSetId::Quake2Rerelease,
+                8,
+                [if intent { 300.0 } else { 0.0 }, 0.0, 0.0],
+                0.0,
+            ),
             &mut state,
             &mut world,
             Default::default(),
@@ -468,7 +474,7 @@ fn q3_native_movement_does_not_acquire_ladder_behavior_from_foreign_geometry() {
     let mut world = World::new(state.trace_rules);
     world.ladder = true;
     pmove(
-        command(8, [127.0, 0.0, 0.0], 0.0),
+        command(RuleSetId::Quake3, 8, [127.0, 0.0, 0.0], 0.0),
         &mut state,
         &mut world,
         Default::default(),
@@ -491,7 +497,7 @@ fn landing_from_water_jump_keeps_the_new_native_landing_cooldown() {
         state.movement.remaining_ms = 500;
         let mut world = World::new(state.trace_rules);
         pmove(
-            command(8, [0.0; 3], 0.0),
+            command(rules, 8, [0.0; 3], 0.0),
             &mut state,
             &mut world,
             Default::default(),
@@ -519,7 +525,7 @@ fn rerelease_swim_buttons_accelerate_without_a_jump_impulse_and_crouch_wins() {
         let mut world = World::new(state.trace_rules);
         world.water = true;
         world.water_height = 100.0;
-        let mut cmd = command(8, [0.0, 0.0, 99.0], 0.0);
+        let mut cmd = command(RuleSetId::Quake2Rerelease, 8, [0.0, 0.0, 99.0], 0.0);
         cmd.buttons = buttons;
         pmove(
             cmd,
@@ -537,7 +543,7 @@ fn rerelease_swim_buttons_accelerate_without_a_jump_impulse_and_crouch_wins() {
     world.water = true;
     world.water_height = 100.0;
     pmove(
-        command(8, [0.0; 3], 0.0),
+        command(RuleSetId::Quake2Rerelease, 8, [0.0; 3], 0.0),
         &mut state,
         &mut world,
         Default::default(),
@@ -589,7 +595,7 @@ fn native_q2_water_speed_caps_do_not_reuse_the_air_duck_cap() {
         world.water = true;
         world.water_height = 100.0;
         let mut world = LowCeiling(world);
-        let mut cmd = command(8, [300.0, 0.0, 0.0], 0.0);
+        let mut cmd = command(rules, 8, [300.0, 0.0, 0.0], 0.0);
         cmd.buttons = buttons::CROUCH;
         let mut direction = Vec3([300.0, 0.0, -200.0]);
         math::normalize(&mut direction);

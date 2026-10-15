@@ -82,8 +82,9 @@ fn settings_follow_the_actual_product_with_foreign_bsp_syntax() -> Result<(), St
             .map_err(|e| format!("{e:?}"))?;
         let input = map::read(&vfs, "foreign")?;
         assert_eq!(input.client_rules, None);
-        assert!(ClientPolicy::select(None, input.client_rules, None, None).is_err());
-        let policy = ClientPolicy::select(Some(RuleSetId::Quake), input.client_rules, None, None)?;
+        assert!(ClientPolicy::select(None, input.client_rules, None, None, None).is_err());
+        let policy =
+            ClientPolicy::select(Some(RuleSetId::Quake), input.client_rules, None, None, None)?;
         assert_eq!(input.profile_product(policy.client), "q1/custom");
         assert_eq!(
             input.profile_product(RuleSetId::Quake2Rerelease),

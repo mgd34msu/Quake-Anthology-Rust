@@ -28,6 +28,7 @@ fn main() -> Result<(), &'static str> {
         for frame in 0..192 {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
             let mut command = UserCmd {
+                units: qa_gameplay::rules::command_units(rules),
                 duration_ms: 8 + (seed % 17) as u16,
                 movement: [
                     if scenario < 2 {

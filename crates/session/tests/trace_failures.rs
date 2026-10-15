@@ -71,6 +71,7 @@ fn failed_client_is_consumed_once_and_healthy_client_commits() {
                 duration_ms: 16,
                 server_time_ms: 16,
                 movement: [127.0, 0.0, 0.0],
+                units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
                 ..Default::default()
             },
             CommandExecution::PerCommand,

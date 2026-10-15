@@ -330,6 +330,7 @@ fn host_with_initializer(
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake3,
                     client: RuleSetId::Quake3,
                     movement: RuleSetId::Quake,
                     trace: RuleSetId::QuakeWorld,
@@ -1048,6 +1049,7 @@ fn qvm_pointer_checks_and_retained_window() {
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::Quake2,
                 trace: RuleSetId::Quake,
@@ -1391,6 +1393,7 @@ fn rejected_gamestate_preserves_accepted_client_and_reuse_starts_empty() {
                     fixture_fallback: false
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake3,
                     client: RuleSetId::Quake3,
                     movement: RuleSetId::Quake2,
                     trace: RuleSetId::Quake

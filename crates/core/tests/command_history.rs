@@ -8,6 +8,7 @@ fn command(index: i32) -> UserCmd {
         server_time_ms: index,
         view_angles: Vec3([index as f32, 20.0, -30.0]),
         movement: [123.0, -44.0, 17.0],
+        units: Default::default(),
         weapon: Some(WeaponId(index as u32)),
         duration_ms: 8,
         duration_ns: 8_000_000,

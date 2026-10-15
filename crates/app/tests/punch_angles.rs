@@ -63,6 +63,7 @@ fn fixture(protocol: Protocol, presentation: RuleSetId) -> (FrameHost, Source, C
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: presentation,
                 client: presentation,
                 movement: RuleSetId::Quake3,
                 trace: RuleSetId::QuakeWorld,

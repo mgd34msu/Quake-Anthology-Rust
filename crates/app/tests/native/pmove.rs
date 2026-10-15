@@ -161,6 +161,7 @@ pub(super) fn commands_move_a_native_client_once() {
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: rules,
                     client: rules,
                     movement: rules,
                     trace: RuleSetId::Quake3,
@@ -447,6 +448,7 @@ pub(super) fn commands_move_a_native_client_once() {
             } else {
                 [200.0, 0.0, 0.0]
             },
+            units: qa_gameplay::rules::command_units(rules),
             ..Default::default()
         };
         if raw_255_ms {

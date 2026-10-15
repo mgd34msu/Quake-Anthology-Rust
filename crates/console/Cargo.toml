@@ -9,4 +9,5 @@ lookup-tracking = []
 
 [dependencies]
 qa-core = { path = "../core" }
+qa-gameplay = { path = "../gameplay" }
 qa-input = { path = "../input" }

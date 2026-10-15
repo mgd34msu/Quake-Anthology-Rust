@@ -1,6 +1,9 @@
-use qa_core::primitives::{
-    AngleOffset, AngleOffsets, Body, MovementMode, MovementTimer, PlayerState, PredictionPolicy,
-    RuleSetId, UserCmd, Vec3,
+use qa_core::{
+    command_history::{Acknowledgement, CommandHistory},
+    primitives::{
+        AngleOffset, AngleOffsets, Body, MovementMode, MovementTimer, PlayerState,
+        PredictionPolicy, RuleSetId, UserCmd, Vec3,
+    },
 };
 use qa_movement::TraceServices;
 use qa_session::prediction::Prediction;
@@ -16,13 +19,22 @@ impl TraceServices for NoQueries {
     }
 }
 
+struct FreeSpace;
+impl TraceServices for FreeSpace {
+    fn trace(&mut self, query: TraceQuery) -> Result<Trace, TraceError> {
+        Ok(Trace::clear(query.end))
+    }
+    fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Result<Contents, TraceError> {
+        Ok(Contents::EMPTY)
+    }
+}
+
 fn body_bits(body: Body) -> [[u32; 3]; 4] {
     [body.position, body.velocity, body.mins, body.maxs].map(|v| v.0.map(f32::to_bits))
 }
 
 #[test]
 fn intermission_lock_survives_angle_only_and_exhausted_history_prediction() {
-    use qa_core::command_history::{Acknowledgement, CommandHistory};
     for rules in RuleSetId::ALL {
         for mode in [
             MovementMode::Intermission,
@@ -104,6 +116,7 @@ fn angles_only_prediction_uses_native_unclamped_command_delta_without_movement()
                         duration_ms: 16,
                         server_time_ms: 100,
                         movement: [127.0, 64.0, 32.0],
+                        units: qa_gameplay::rules::command_units(rules),
                         view_angles: command_angles,
                         ..Default::default()
                     },
@@ -188,6 +201,7 @@ fn disabled_angles_move_using_the_accepted_view_without_mutating_delta_pitch() {
         duration_ms: 16,
         server_time_ms: 16,
         movement: [127.0, 0.0, 0.0],
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
         view_angles: Vec3([180.0, 0.0, 17.0]),
         ..Default::default()
     };
@@ -233,6 +247,7 @@ fn both_disabled_preserves_every_hot_field_even_with_a_nonzero_command() {
                 duration_ms: 100,
                 server_time_ms: 200,
                 movement: [127.0; 3],
+                units: qa_gameplay::rules::command_units(RuleSetId::default()),
                 view_angles: Vec3([90.0; 3]),
                 ..Default::default()
             },
@@ -245,4 +260,168 @@ fn both_disabled_preserves_every_hot_field_even_with_a_nonzero_command() {
         prediction.player.view_angles.0.map(f32::to_bits),
         view.0.map(f32::to_bits)
     );
+}
+
+fn teleport_prediction(rules: RuleSetId, policy: PredictionPolicy) -> Prediction {
+    let mut player = PlayerState {
+        movement_rules: rules,
+        trace_rules: RuleSetId::QuakeWorld,
+        health: 100,
+        prediction: policy,
+        view_angles: Vec3([-0.0, 133.25, -17.125]),
+        ..Default::default()
+    };
+    qa_movement::set_bounds(&mut player);
+    player.body.position = Vec3([17.125, -0.0, 137.0]);
+    player.movement.mode = MovementMode::Walk;
+    player.movement.delta_angles = AngleOffsets([
+        AngleOffset::Degrees(7.25),
+        AngleOffset::Degrees(11.5),
+        AngleOffset::Degrees(-5.0),
+    ]);
+    player.movement.timer = MovementTimer::TELEPORT;
+    player.movement.remaining_ms = 8;
+    Prediction::new(player)
+}
+
+fn teleport_command(rules: RuleSetId) -> UserCmd {
+    UserCmd {
+        duration_ms: 16,
+        duration_ns: 16_000_000,
+        server_time_ms: 16,
+        view_angles: Vec3([40.0, 13.25, 17.125]),
+        units: qa_gameplay::rules::command_units(rules),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn q2_pitch_drift_keeps_the_lock_admitted_before_movement_expired_teleport() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        for replay in [false, true] {
+            let mut prediction = teleport_prediction(
+                rules,
+                PredictionPolicy {
+                    position: true,
+                    angles: true,
+                },
+            );
+            let command = teleport_command(rules);
+            if replay {
+                prediction.remember_snapshot(Some(Acknowledgement::Number(0)));
+                let mut history = CommandHistory::load(2, 0).unwrap();
+                history.append(command);
+                assert_eq!(prediction.replay(&history, &mut FreeSpace).unwrap(), 1);
+            } else {
+                assert!(prediction.advance(command, &mut FreeSpace).unwrap().steps > 0);
+            }
+            assert_eq!(prediction.player.movement.remaining_ms, 0, "{rules:?}");
+            assert!(
+                !prediction
+                    .player
+                    .movement
+                    .timer
+                    .contains(MovementTimer::TELEPORT)
+            );
+            assert_eq!(prediction.player.view_angles.0[0], 0.0);
+            assert_eq!(prediction.player.view_angles.0[2], 0.0);
+            let view = prediction.player.view_angles.0.map(f32::to_bits);
+            let body = body_bits(prediction.player.body);
+            let movement = prediction.player.movement;
+
+            prediction.drift_pitch(command, 40.0, 100.5);
+
+            assert_eq!(prediction.player.view_angles.0.map(f32::to_bits), view);
+            assert_eq!(body_bits(prediction.player.body), body);
+            assert_eq!(prediction.player.movement, movement);
+        }
+    }
+}
+
+#[test]
+fn q2_angle_only_and_exhausted_history_drift_keep_the_raw_angle_admission() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        for exhausted in [false, true] {
+            let mut prediction = teleport_prediction(
+                rules,
+                PredictionPolicy {
+                    position: exhausted,
+                    angles: true,
+                },
+            );
+            let command = teleport_command(rules);
+            let body = body_bits(prediction.player.body);
+            let movement = prediction.player.movement;
+            let mut history = CommandHistory::load(1, 0).unwrap();
+            if exhausted {
+                prediction.remember_snapshot(Some(Acknowledgement::Number(0)));
+                history.append(command);
+                history.append(UserCmd {
+                    server_time_ms: 32,
+                    ..command
+                });
+                assert_eq!(prediction.replay(&history, &mut NoQueries).unwrap(), 0);
+                assert_eq!(prediction.history_resyncs, 1);
+            } else {
+                prediction.advance(command, &mut NoQueries).unwrap();
+            }
+            assert_eq!(prediction.player.view_angles.0[0], 47.25);
+            let accepted = prediction.player.view_angles;
+
+            prediction.drift_pitch(command, 40.0, 100.5);
+
+            assert_eq!(
+                prediction.player.view_angles.0.map(f32::to_bits),
+                [107.75, accepted.0[1], accepted.0[2]].map(f32::to_bits),
+                "{rules:?} exhausted={exhausted}"
+            );
+            assert_eq!(body_bits(prediction.player.body), body);
+            assert_eq!(prediction.player.movement, movement);
+            if exhausted {
+                // A later frame stays on the raw-angle fallback until a new
+                // authoritative snapshot provides an admitted history window.
+                assert_eq!(prediction.replay(&history, &mut NoQueries).unwrap(), 0);
+                prediction.drift_pitch(command, 40.0, 100.5);
+                assert_eq!(prediction.player.view_angles.0[0], 107.75);
+                assert_eq!(prediction.history_resyncs, 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn q2_disabled_angles_are_not_changed_by_drift_after_advance_or_replay() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        for position in [false, true] {
+            for replay in [false, true] {
+                let mut prediction = teleport_prediction(
+                    rules,
+                    PredictionPolicy {
+                        position,
+                        angles: false,
+                    },
+                );
+                let command = teleport_command(rules);
+                let view = prediction.player.view_angles.0.map(f32::to_bits);
+                let delta = prediction.player.movement.delta_angles;
+                if replay {
+                    prediction.remember_snapshot(Some(Acknowledgement::Number(0)));
+                    let mut history = CommandHistory::load(2, 0).unwrap();
+                    history.append(command);
+                    assert_eq!(prediction.replay(&history, &mut FreeSpace).unwrap(), 1);
+                } else {
+                    prediction.advance(command, &mut FreeSpace).unwrap();
+                }
+                let body = body_bits(prediction.player.body);
+                let movement = prediction.player.movement;
+
+                prediction.drift_pitch(command, 40.0, 100.5);
+
+                assert_eq!(prediction.player.view_angles.0.map(f32::to_bits), view);
+                assert_eq!(prediction.player.movement.delta_angles, delta);
+                assert_eq!(body_bits(prediction.player.body), body);
+                assert_eq!(prediction.player.movement, movement);
+            }
+        }
+    }
 }

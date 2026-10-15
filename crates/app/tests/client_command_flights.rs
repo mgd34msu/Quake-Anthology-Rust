@@ -45,6 +45,7 @@ fn runtime() -> (Runtime, [ClientId; 2]) {
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake3,
                     client: RuleSetId::Quake3,
                     movement: RuleSetId::Quake3,
                     trace: RuleSetId::Quake3,
@@ -85,6 +86,7 @@ fn movement(time: i32) -> UserCmd {
         server_time_ms: time,
         duration_ms: 16,
         movement: [127., -127., 0.],
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
         ..UserCmd::default()
     }
 }
@@ -102,6 +104,7 @@ fn native_control_submission_does_not_complete_an_unsent_move() {
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake,
                 client: RuleSetId::Quake,
                 movement: RuleSetId::Quake,
                 trace: RuleSetId::Quake,
@@ -152,7 +155,10 @@ fn native_control_submission_does_not_complete_an_unsent_move() {
             .unwrap() else {
                 panic!("expected command after control");
             };
-            assert_eq!(command.movement, [127, -127, 0]);
+            assert_eq!(
+                command.movement,
+                qa_network::commands::to_q1_move(&movement(16)).movement
+            );
         }
     }
     assert_eq!(

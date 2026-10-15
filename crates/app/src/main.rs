@@ -46,6 +46,8 @@ fn run() -> Result<(), String> {
     let mut cpu_bands = None;
     let mut map_name = None;
     let mut movement_rules = None;
+    let mut input_rules = None;
+    let mut seat_input_rules = [None; SeatId::COUNT];
     let mut presentation_rules = None;
     let mut seat_presentations = [None; SeatId::COUNT];
     let mut trace_rules = None;
@@ -152,6 +154,19 @@ fn run() -> Result<(), String> {
                         .ok_or("unknown movement rule set")?,
                 );
             }
+            "--input-rules" => {
+                input_rules = Some(
+                    RuleSetId::parse(&args.next().ok_or("--input-rules needs q1/qw/q2/q2rr/q3")?)
+                        .ok_or("unknown input rule set")?,
+                );
+            }
+            "--seat-input-rules" => {
+                let value = args
+                    .next()
+                    .ok_or("--seat-input-rules needs seat:q1/qw/q2/q2rr/q3")?;
+                let (seat, rules) = parse_seat_value(&value, RuleSetId::parse)?;
+                insert_seat_value(&mut seat_input_rules, &mut seat_count, seat, rules)?;
+            }
             "--presentation" => {
                 presentation_rules = Some(
                     RuleSetId::parse(&args.next().ok_or("--presentation needs q1/qw/q2/q2rr/q3")?)
@@ -185,7 +200,7 @@ fn run() -> Result<(), String> {
                 let (seat, policy) = ClientPolicy::parse_seat(
                     &args
                         .next()
-                        .ok_or("--seat-policy needs seat:client:movement:trace")?,
+                        .ok_or("--seat-policy needs seat:client:movement:trace[:input]")?,
                 )?;
                 insert_seat_value(&mut seat_policies, &mut seat_count, seat, policy)?;
             }
@@ -347,6 +362,8 @@ fn run() -> Result<(), String> {
         return Err("--cpu-bands requires --renderer cpu".into());
     }
     if (movement_rules.is_some()
+        || input_rules.is_some()
+        || seat_input_rules.iter().any(Option::is_some)
         || presentation_rules.is_some()
         || seat_presentations.iter().any(Option::is_some)
         || trace_rules.is_some()
@@ -354,7 +371,7 @@ fn run() -> Result<(), String> {
         || seat_policies.iter().any(Option::is_some))
         && map_name.is_none()
     {
-        return Err("movement, trace and presentation roles need a loaded --map".into());
+        return Err("input, movement, trace and presentation roles need a loaded --map".into());
     }
     if max_clients < seat_count {
         return Err("client capacity must cover the local seats".into());
@@ -369,6 +386,7 @@ fn run() -> Result<(), String> {
                 input.client_rules,
                 movement_rules,
                 trace_rules,
+                input_rules,
             )?
         };
         Some((input, policy))
@@ -519,7 +537,8 @@ fn run() -> Result<(), String> {
         }
         for (index, slot) in local_clients.iter_mut().enumerate().take(seat_count) {
             let seat = SeatId::new(index as u8).ok_or("invalid local seat")?;
-            let policy = seat_policies[index].unwrap_or(policy);
+            let mut policy = seat_policies[index].unwrap_or(policy);
+            policy.input = seat_input_rules[index].unwrap_or(policy.input);
             let rules = policy.movement;
             let traces = policy.trace;
             let spawn = loaded.spawns[index];

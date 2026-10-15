@@ -8,6 +8,32 @@ use qa_core::{
 use qa_input::{Action, Input};
 
 #[test]
+fn unchanged_drift_transition_preserves_both_native_signed_zero_samples() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut input = Input::load();
+        input.set_view_angles(SeatId::FIRST, Vec3([-0.0, 5.0, 2.0]));
+        let player = PlayerState {
+            view_angles: Vec3([17.0, 95.0, 12.0]),
+            ..Default::default()
+        };
+        let (previous, pitch) = input
+            .drift_view(
+                SeatId::FIRST,
+                EventTime::from_milliseconds(16),
+                support::catalog_policy(rules),
+                &player,
+                0.0,
+            )
+            .unwrap();
+        assert_eq!(
+            [previous, pitch].map(f32::to_bits),
+            [(-0.0f32).to_bits(); 2]
+        );
+        assert_eq!(player.view_angles, Vec3([17.0, 95.0, 12.0]));
+    }
+}
+
+#[test]
 fn intermission_cannot_be_replaced_by_quake_render_pitch_drift() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         for mode in [
@@ -40,9 +66,8 @@ fn intermission_cannot_be_replaced_by_quake_render_pitch_drift() {
             assert_eq!(
                 input
                     .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
-                    .unwrap()
-                    .0[0],
-                32.0,
+                    .unwrap(),
+                (40.0, 32.0),
             );
         }
     }
@@ -132,19 +157,18 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
         assert_eq!(
             input
                 .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
-                .unwrap()
-                .0[0],
-            32.0
+                .unwrap(),
+            (40.0, 32.0)
         );
         player.movement.grounded = false;
         let time = EventTime(32_000_000);
-        input.build_frame_with_policy(time, &[policy; SeatId::COUNT]);
+        let command = input.build_frame_with_policy(time, &[policy; SeatId::COUNT])[0];
+        assert_eq!(command.view_angles.0[0], 32.0);
         assert_eq!(
             input
                 .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
-                .unwrap()
-                .0[0],
-            32.0
+                .unwrap(),
+            (32.0, 32.0)
         );
         player.movement.grounded = true;
         input.center_view(SeatId::FIRST);
@@ -158,9 +182,8 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
         assert_eq!(
             input
                 .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
-                .unwrap()
-                .0[0],
-            expected
+                .unwrap(),
+            (32.0, expected)
         );
         input.button(
             SeatId::FIRST,
@@ -175,13 +198,13 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
         );
         input.center_view(SeatId::FIRST);
         let time = EventTime(80_000_000);
-        input.build_frame_with_policy(time, &[policy; SeatId::COUNT]);
+        let command = input.build_frame_with_policy(time, &[policy; SeatId::COUNT])[0];
+        assert_eq!(command.view_angles.0[0], expected);
         assert_eq!(
             input
                 .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
-                .unwrap()
-                .0[0],
-            expected
+                .unwrap(),
+            (expected, expected)
         );
     }
 }

@@ -747,7 +747,10 @@ fn binding_capture_releases_and_atomic_catchers(native: bool) {
         vec![key(keyboard, 26, true, false)],
         vec![],
     );
-    assert!(acquired.commands[0].movement[0] > 0.0);
+    // Q3 samples elapsed key time, so a press at the command endpoint first
+    // proves acquisition on the following held frame.
+    assert_eq!(acquired.commands[0].movement[0], 0.0);
+    assert!(frame(&mut host, &mut source, vec![], vec![]).commands[0].movement[0] > 0.0);
     catch(&mut host, 0, true, key_catchers::UI);
     write(&mut host, 0, true, CLEAR_ON_UP, 1);
     let released = frame(

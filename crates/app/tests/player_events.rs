@@ -224,6 +224,7 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>) {
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::QuakeWorld,
                 trace: RuleSetId::Quake2,
@@ -762,6 +763,7 @@ fn follow_and_reused_connection_lifetimes_baseline_without_replaying_old_events(
                 fixture_fallback: false,
             },
             ClientPolicy {
+                input: RuleSetId::Quake3,
                 client: RuleSetId::Quake3,
                 movement: RuleSetId::QuakeWorld,
                 trace: RuleSetId::Quake2,

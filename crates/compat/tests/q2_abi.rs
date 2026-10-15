@@ -7,6 +7,7 @@ fn game_command_layouts_preserve_native_offsets_widths_and_float_bits() {
         duration_ms: 300,
         view_angles: Vec3([90.0, -90.0, 180.0]),
         movement: [123.75, -456.5, 200.0],
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake2),
         buttons: buttons::ATTACK | buttons::USE | buttons::ANY,
         impulse: 17,
         light_level: 42,
@@ -92,6 +93,7 @@ fn game_command_layouts_preserve_native_offsets_widths_and_float_bits() {
         assert!(client_layout(rules).is_none());
     }
     let mut command = UserCmd::default();
+    command.units = qa_gameplay::rules::command_units(RuleSetId::Quake2Rerelease);
     command.view_angles = Vec3([-0.0, f32::from_bits(0x7fc12345), f32::INFINITY]);
     command.movement = [-0.0, f32::from_bits(1), 0.0];
     let layout = client_layout(RuleSetId::Quake2Rerelease).unwrap();
@@ -109,4 +111,52 @@ fn game_command_layouts_preserve_native_offsets_widths_and_float_bits() {
         );
     }
     assert_eq!(memory.read(24, 4).unwrap(), u32::MAX.to_le_bytes());
+}
+
+#[test]
+fn q3_normalized_commands_enter_both_q2_abis_as_native_speed_units() {
+    let command = UserCmd {
+        units: qa_gameplay::rules::command_units(RuleSetId::Quake3),
+        movement: [127., -127., 0.],
+        duration_ms: 16,
+        ..Default::default()
+    };
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let layout = client_layout(rules).unwrap();
+        let mut memory = ModuleMemory::load(0, 28, &[]).unwrap();
+        layout.write_command(&mut memory, 0, &command, 5).unwrap();
+        let received = layout.read_command(&memory, 0, 123).unwrap();
+        assert_eq!(received.movement, [200., -200., 0.]);
+        assert_eq!(received.units, qa_gameplay::rules::command_units(rules));
+    }
+}
+
+#[test]
+fn q3_usercmd_memory_writer_keeps_projected_speed_separate_from_native_signed_bytes() {
+    for (units, movement, expected) in [
+        (
+            qa_gameplay::rules::command_units(RuleSetId::Quake),
+            [200., -200., 0.],
+            [79u8, (-79i8) as u8, 0],
+        ),
+        (
+            qa_gameplay::rules::command_units(RuleSetId::Quake3),
+            [127., -128., 0.],
+            [127, (-128i8) as u8, 0],
+        ),
+    ] {
+        let command = UserCmd {
+            units,
+            movement,
+            server_time_ms: 1234,
+            ..Default::default()
+        };
+        let mut memory = ModuleMemory::load(0, 24, &[]).unwrap();
+        memory
+            .write_q3_usercmd(0, qa_network::commands::to_q3_usercmd(&command, 9))
+            .unwrap();
+        assert_eq!(memory.read(0, 4).unwrap(), 1234i32.to_le_bytes());
+        assert_eq!(memory.read(20, 1).unwrap(), [9]);
+        assert_eq!(memory.read(21, 3).unwrap(), expected);
+    }
 }

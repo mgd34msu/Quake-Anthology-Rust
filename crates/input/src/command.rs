@@ -97,6 +97,7 @@ impl UserCmdBuilder {
             server_time_ms: time.milliseconds() as i32,
             view_angles: intent.view_angles,
             movement,
+            units: policy.units,
             buttons,
             impulse: intent.impulse,
             weapon: intent.weapon,

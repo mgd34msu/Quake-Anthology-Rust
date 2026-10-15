@@ -58,6 +58,7 @@ fn q2_repro_float_abi_uses_native_widths_and_drops_unrepresented_fields() -> Res
     let engine = qa_core::primitives::UserCmd {
         buttons: qa_core::primitives::buttons::ATTACK | qa_core::primitives::buttons::HOLSTER,
         movement: [12.25, -31.75, 200.],
+        units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::Quake2Rerelease),
         duration_ms: 300,
         impulse: 129,
         light_level: 211,

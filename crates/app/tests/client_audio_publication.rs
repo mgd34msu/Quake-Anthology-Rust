@@ -89,6 +89,7 @@ fn fixture(count: usize) -> (Box<FrameHost>, Vec<ClientId>) {
                     fixture_fallback: false,
                 },
                 ClientPolicy {
+                    input: RuleSetId::Quake2Rerelease,
                     client: RuleSetId::Quake2Rerelease,
                     movement: RuleSetId::Quake,
                     trace: RuleSetId::QuakeWorld,

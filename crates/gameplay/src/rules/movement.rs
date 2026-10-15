@@ -1,7 +1,7 @@
 //! Movement capability data; the one movement executor consumes this table.
 use qa_core::primitives::{Bounds, MovementMode, MovementTimer, RuleSetId, Vec3, buttons};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ViewAnglePolicy {
     pub short_angles: bool,
     pub signed_pitch_limit: bool,
