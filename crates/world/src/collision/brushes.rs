@@ -427,7 +427,7 @@ pub(super) fn trace_brushes(
     let query = work.query;
     let mut trace = Trace::clear(query.end);
     for &brush in brushes {
-        if !brush.contents.intersects(query.mask) {
+        if !brush.contents.intersects(query.effective_mask()) {
             continue;
         }
         if query.start == query.end {

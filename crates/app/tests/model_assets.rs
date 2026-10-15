@@ -2317,8 +2317,13 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
             vec![],
             vec![],
             vec![],
-            vec![qa_world::collision::hulls::HullModel { roots: [-1; 3] }],
+            vec![qa_world::collision::hulls::HullModel {
+                roots: [-1; 3],
+                brushes: Default::default(),
+            }],
             vec![expected],
+            None,
+            Default::default(),
         )
         .unwrap();
     let native_bounds = collision.model_bounds(geometry, 0).unwrap();

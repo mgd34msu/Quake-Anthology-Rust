@@ -29,11 +29,16 @@ fn half_space_runtime() -> qa_app::Runtime {
             vec![Plane::oriented(Vec3::axis(0, 1.0), 0.0)],
             vec![node],
             vec![node],
-            vec![HullModel { roots: [0; 3] }],
+            vec![HullModel {
+                roots: [0; 3],
+                brushes: Default::default(),
+            }],
             vec![Bounds {
                 mins: Vec3([-1024.0; 3]),
                 maxs: Vec3([1024.0; 3]),
             }],
+            None,
+            Default::default(),
         )
         .unwrap();
     runtime.collision = Some(qa_app::WorldCollision::new(&runtime.geometry, geometry, 0));

@@ -425,6 +425,24 @@ pub struct TraceQuery<'a> {
 }
 
 impl TraceQuery<'_> {
+    /// Derive implicit sized clipping from the executed shape, preserving
+    /// explicitly requested contents even for a zero-size point query.
+    pub fn effective_mask(self) -> Contents {
+        let sized = self.mins != self.maxs
+            || self
+                .capsule
+                .is_some_and(|capsule| capsule.radius != 0.0 || capsule.offset != Vec3::default());
+        if sized
+            && self
+                .mask
+                .intersects(Contents::SOLID | Contents::PLAYER_CLIP | Contents::MONSTER_CLIP)
+        {
+            self.mask | Contents::VOLUME_CLIP
+        } else {
+            self.mask
+        }
+    }
+
     pub fn with_capsule(mut self) -> Self {
         self.capsule = Some(qa_core::primitives::Capsule::from_bounds(
             qa_core::primitives::Bounds {

@@ -553,6 +553,37 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
                 children: node.children.map(drawing_child),
             })
             .collect();
+        let authored = map
+            .authored_brushes
+            .then(|| {
+                map.brushes
+                    .iter()
+                    .map(|brush| {
+                        let sides = map
+                            .brush_sides
+                            .get(brush.sides.range())
+                            .ok_or("authored brush side range")?;
+                        let first = sides.first().ok_or("authored brush has no sides")?.plane;
+                        for (offset, side) in sides.iter().enumerate() {
+                            if Some(side.plane)
+                                != first.checked_add(
+                                    u32::try_from(offset).map_err(|_| "authored side count")?,
+                                )
+                            {
+                                return Err("authored brush plane order");
+                            }
+                        }
+                        Ok(Brush {
+                            sides: qa_core::primitives::IndexSpan {
+                                first,
+                                count: brush.sides.count,
+                            },
+                            contents: Contents::from_q1(brush.contents, Contents::SOLID),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, &str>>()
+            })
+            .transpose()?;
         let models = map
             .models
             .iter()
@@ -562,6 +593,7 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
                     model.headnodes[1],
                     model.headnodes[2],
                 ],
+                brushes: model.brushes,
             })
             .collect();
         let geometry = store
@@ -571,9 +603,18 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
                 map.clipnodes.clone(),
                 models,
                 bounds,
+                authored,
+                qa_world::collision::HullPositionLimits::default(),
             )
             .map_err(|e| format!("Q1 collision: {e:?}"))?;
-        return Ok((geometry, 0));
+        return Ok((
+            geometry,
+            if map.authored_brushes {
+                map.brushes.len()
+            } else {
+                0
+            },
+        ));
     }
     // Brush numbers and ordered leaf references belong to the loaded map.
     // Model roots select membership; unplaced inline models are never part

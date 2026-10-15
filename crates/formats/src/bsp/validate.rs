@@ -41,6 +41,7 @@ fn trees(count: usize, children: impl Fn(usize) -> [i32; 2]) -> Result<(), Forma
 pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
     let format = map.bsp.format;
     let rules = format.rule_set();
+    let native_planes = map.bsp.bytes(Planes).len() / map.bsp.stride(Planes);
     if map.models.is_empty() {
         return Err(FormatError::InvalidReference("world model", 0));
     }
@@ -86,7 +87,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
     }
     let lighting = map.bsp.bytes(Lighting);
     for (i, face) in map.faces.iter().enumerate() {
-        index(i64::from(face.plane), map.planes.len(), "face plane", i)?;
+        index(i64::from(face.plane), native_planes, "face plane", i)?;
         index(
             i64::from(face.texture_info),
             map.texture_info.len(),
@@ -145,13 +146,13 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
         }
     }
     for (i, node) in map.nodes.iter().enumerate() {
-        index(i64::from(node.plane), map.planes.len(), "node plane", i)?;
+        index(i64::from(node.plane), native_planes, "node plane", i)?;
         range(node.faces, map.faces.len(), "node faces", i)?;
         child(node.children[0], map, i)?;
         child(node.children[1], map, i)?;
     }
     for (i, node) in map.clipnodes.iter().enumerate() {
-        index(i64::from(node.plane), map.planes.len(), "clipnode plane", i)?;
+        index(i64::from(node.plane), native_planes, "clipnode plane", i)?;
         for &value in &node.children {
             if value >= 0 {
                 index(i64::from(value), map.clipnodes.len(), "clipnode child", i)?;
@@ -180,14 +181,14 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
             index(i64::from(shader), map.shaders.len(), "side shader", i)?;
         }
     }
-    let extra_brushes = map.extensions.iter().any(|e| e.name == b"BRUSHLIST");
     for (i, model) in map.models.iter().enumerate() {
         if !model.membership_from_tree {
             range(model.faces, faces, "model faces", i)?;
         }
-        if format.modern_q3() {
+        if format.modern_q3() || map.authored_brushes {
             range(model.brushes, map.brushes.len(), "model brushes", i)?;
-        } else {
+        }
+        if !format.modern_q3() {
             child(model.headnodes[0], map, i)?;
         }
         if matches!(rules, RuleSetId::Quake) {
@@ -197,7 +198,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
                 return Err(FormatError::InvalidReference("model visleafs", i));
             }
             for &root in &model.headnodes[1..] {
-                if root >= 0 && (!map.clipnodes.is_empty() || !extra_brushes) {
+                if root >= 0 && !map.authored_brushes {
                     index(i64::from(root), map.clipnodes.len(), "model clip root", i)?;
                 }
             }

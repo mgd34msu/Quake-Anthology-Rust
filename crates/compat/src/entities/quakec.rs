@@ -1466,8 +1466,8 @@ impl EntityProjection {
         };
         let water_level = integer(layout.motion.water_level)?
             .map(|level| if level < 0 { 0 } else { level as u8 });
-        let water_contents =
-            integer(layout.motion.water_type)?.map(|contents| Contents::from_q1(contents).0);
+        let water_contents = integer(layout.motion.water_type)?
+            .map(|contents| Contents::from_q1(contents, Contents::EMPTY).0);
         let flags = layout
             .flags
             .map(|_| layout.flags(memory, address))

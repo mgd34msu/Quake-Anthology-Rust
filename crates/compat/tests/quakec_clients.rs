@@ -1011,7 +1011,10 @@ fn native_frame_import_maps_foreign_mode_water_and_ground_without_changing_roles
                     assert!(player.movement.grounded);
                     assert_eq!(player.movement.ground, Some(ground));
                     assert_eq!(player.movement.water_level, 1);
-                    assert_eq!(player.movement.water_contents, Contents::from_q1(-4).0);
+                    assert_eq!(
+                        player.movement.water_contents,
+                        Contents::from_q1(-4, Contents::EMPTY).0
+                    );
                     assert_eq!(player.movement.teleport_hold_until, 10.25);
                     assert_eq!(player.movement.water_jump_seconds, 7.0);
                 }

@@ -489,8 +489,13 @@ fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
                         vec![plane],
                         vec![node],
                         vec![node],
-                        vec![HullModel { roots: [0; 3] }],
+                        vec![HullModel {
+                            roots: [0; 3],
+                            brushes: Default::default(),
+                        }],
                         vec![bounds],
+                        None,
+                        Default::default(),
                     )
                     .unwrap()
             } else {

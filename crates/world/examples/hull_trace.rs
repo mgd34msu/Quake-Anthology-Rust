@@ -93,11 +93,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             planes,
             drawing,
             clips,
-            vec![HullModel { roots }],
+            vec![HullModel {
+                roots,
+                brushes: Default::default(),
+            }],
             vec![Bounds {
                 mins: Vec3([-65536.0; 3]),
                 maxs: Vec3([65536.0; 3]),
             }],
+            None,
+            Default::default(),
         )
         .map_err(|err| format!("hull load: {err:?}"))?;
     let mut scratch = hulls.scratch();

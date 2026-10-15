@@ -1,10 +1,11 @@
 use super::{AllSolid, Contents, Trace, TraceError, TraceQuery, position};
 pub use qa_core::primitives::ClipNode;
-use qa_core::primitives::{Axis, Plane, PointLeafRules, Vec3};
+use qa_core::primitives::{Axis, IndexSpan, Plane, PointLeafRules, Vec3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct HullModel {
     pub roots: [i32; 3],
+    pub brushes: IndexSpan,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -49,10 +50,14 @@ impl Hull<'_> {
     }
 
     fn blocked(&self, point: Vec3, node: i32, mask: Contents) -> bool {
-        Contents::from_q1(self.point_contents(point, node)).0 & mask.0 != 0
+        Contents::from_q1(self.point_contents(point, node), Contents::EMPTY).0 & mask.0 != 0
     }
 
     pub(crate) fn trace(&self, query: TraceQuery, stack: &mut [Frame]) -> Trace {
+        let query = TraceQuery {
+            mask: query.effective_mask(),
+            ..query
+        };
         let TraceQuery {
             start,
             end,
@@ -77,9 +82,9 @@ impl Hull<'_> {
             let mut frame = stack[index];
             if !frame.awaiting_near {
                 if frame.node < 0 {
-                    if Contents::from_q1(frame.node).0 & mask.0 != 0 {
+                    if Contents::from_q1(frame.node, Contents::EMPTY).0 & mask.0 != 0 {
                         trace.start_solid = true;
-                        enclosed = Contents::from_q1(frame.node);
+                        enclosed = Contents::from_q1(frame.node, Contents::EMPTY);
                     } else {
                         trace.all_solid = false;
                         if frame.node == -1 {
@@ -145,7 +150,8 @@ impl Hull<'_> {
                 trace.plane.axis = None;
                 trace.plane.encoding = None;
             }
-            trace.contents = Contents::from_q1(self.point_contents(frame.mid, frame.far));
+            trace.contents =
+                Contents::from_q1(self.point_contents(frame.mid, frame.far), Contents::EMPTY);
             while self.blocked(frame.mid, self.root, mask) {
                 // The original compound assignment also uses an unsuffixed double.
                 frame.fraction = (f64::from(frame.fraction) - 0.1) as f32;
@@ -190,13 +196,28 @@ fn validate(nodes: &[ClipNode], plane_count: usize) -> Result<Box<[usize]>, Hull
     })
 }
 
+enum Positions {
+    Unprepared,
+    Derived(position::Data),
+    Authored(position::Data),
+}
+
+impl Positions {
+    fn data(&self) -> Option<&position::Data> {
+        match self {
+            Self::Unprepared => None,
+            Self::Derived(data) | Self::Authored(data) => Some(data),
+        }
+    }
+}
+
 pub(super) struct Q1Hulls {
     planes: Box<[Plane]>,
     drawing: Box<[ClipNode]>,
     clips: Box<[ClipNode]>,
     stack_capacity: usize,
     drawing_depth: usize,
-    positions: Option<position::Data>,
+    positions: Positions,
 }
 
 /// Per-caller traversal state, allocated from its immutable geometry at load.
@@ -223,6 +244,7 @@ impl Q1Hulls {
         drawing: Vec<ClipNode>,
         clips: Vec<ClipNode>,
         models: &[HullModel],
+        authored: bool,
     ) -> Result<Self, HullError> {
         if models.is_empty() {
             return Err(HullError::EmptyModels);
@@ -244,6 +266,9 @@ impl Q1Hulls {
         let mut position_depth = 0;
         for model in models {
             for (index, root) in model.roots.iter().enumerate() {
+                if authored && index != 0 {
+                    continue;
+                }
                 let depths = if index == 0 {
                     &drawing_depth
                 } else {
@@ -264,7 +289,7 @@ impl Q1Hulls {
             clips: clips.into_boxed_slice(),
             stack_capacity: depth + 1,
             drawing_depth: position_depth,
-            positions: None,
+            positions: Positions::Unprepared,
         })
     }
 
@@ -273,17 +298,21 @@ impl Q1Hulls {
     }
 
     pub(crate) fn has_positions(&self) -> bool {
-        self.positions.is_some()
+        self.positions.data().is_some()
+    }
+
+    pub(crate) fn is_authored(&self) -> bool {
+        matches!(self.positions, Positions::Authored(_))
     }
     pub(crate) fn position_rows(&self) -> usize {
         self.positions
-            .as_ref()
+            .data()
             .map_or(0, position::Data::scratch_rows)
     }
 
     pub(crate) fn position_contacts(&self) -> usize {
         self.positions
-            .as_ref()
+            .data()
             .map_or(0, position::Data::scratch_contacts)
     }
 
@@ -304,7 +333,11 @@ impl Q1Hulls {
     }
 
     pub(crate) fn publish_positions(&mut self, data: position::Data) {
-        self.positions = Some(data);
+        self.positions = Positions::Derived(data);
+    }
+
+    pub(crate) fn publish_authored(&mut self, data: position::Data) {
+        self.positions = Positions::Authored(data);
     }
 
     pub(crate) fn trace_position(
@@ -316,9 +349,20 @@ impl Q1Hulls {
         scratch: &mut position::Scratch,
     ) -> Result<Trace, position::Failure> {
         self.positions
-            .as_ref()
+            .data()
             .ok_or(position::Failure::Input)?
             .trace(&self.planes, cells, query, origin, axes, scratch)
+    }
+
+    pub(crate) fn authored_contents(
+        &self,
+        cells: IndexSpan,
+        point: Vec3,
+    ) -> Result<Contents, position::Failure> {
+        self.positions
+            .data()
+            .ok_or(position::Failure::Input)?
+            .point_contents(&self.planes, cells, point)
     }
 
     pub(crate) fn point_contents(&self, model: HullModel, point: Vec3) -> Contents {
@@ -329,6 +373,7 @@ impl Q1Hulls {
                 root: model.roots[0],
             }
             .point_contents(point, model.roots[0]),
+            Contents::EMPTY,
         )
     }
 

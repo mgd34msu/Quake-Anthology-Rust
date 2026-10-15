@@ -149,7 +149,16 @@ fn hull_model(store: &mut CollisionStore) -> GeometryId {
             }],
             vec![node],
             vec![node],
-            vec![HullModel { roots: [-1; 3] }, HullModel { roots: [0; 3] }],
+            vec![
+                HullModel {
+                    roots: [-1; 3],
+                    brushes: Default::default(),
+                },
+                HullModel {
+                    roots: [0; 3],
+                    brushes: Default::default(),
+                },
+            ],
             vec![
                 Bounds {
                     mins: Vec3([-512.0; 3]),
@@ -160,6 +169,8 @@ fn hull_model(store: &mut CollisionStore) -> GeometryId {
                     maxs: Vec3([64.0; 3]),
                 },
             ],
+            None,
+            Default::default(),
         )
         .unwrap()
 }

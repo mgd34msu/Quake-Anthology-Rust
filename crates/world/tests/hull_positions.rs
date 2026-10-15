@@ -16,7 +16,10 @@ fn load_geometry(
     let mut store = CollisionStore::new();
     let models: Vec<_> = roots
         .into_iter()
-        .map(|root| HullModel { roots: [root; 3] })
+        .map(|root| HullModel {
+            roots: [root; 3],
+            brushes: Default::default(),
+        })
         .collect();
     let bounds = vec![
         Bounds {
@@ -26,7 +29,15 @@ fn load_geometry(
         models.len()
     ];
     let id = store
-        .load_hulls(planes, nodes.clone(), nodes, models, bounds)
+        .load_hulls(
+            planes,
+            nodes.clone(),
+            nodes,
+            models,
+            bounds,
+            None,
+            Default::default(),
+        )
         .expect("native geometry");
     (store, id)
 }
@@ -1183,8 +1194,13 @@ fn caller_admission_covers_every_loaded_hull_and_keeps_empty_tables_admitted() {
             vec![Plane::oriented(Vec3::axis(0, 1.0), 2.0)],
             vec![node],
             vec![node],
-            vec![HullModel { roots: [0; 3] }],
+            vec![HullModel {
+                roots: [0; 3],
+                brushes: Default::default(),
+            }],
             vec![bounds],
+            None,
+            Default::default(),
         )
         .unwrap();
     let empty = store
@@ -1192,8 +1208,13 @@ fn caller_admission_covers_every_loaded_hull_and_keeps_empty_tables_admitted() {
             vec![],
             vec![],
             vec![],
-            vec![HullModel { roots: [-1; 3] }],
+            vec![HullModel {
+                roots: [-1; 3],
+                brushes: Default::default(),
+            }],
             vec![bounds],
+            None,
+            Default::default(),
         )
         .unwrap();
     assert!(

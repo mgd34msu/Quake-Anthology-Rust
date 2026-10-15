@@ -244,7 +244,7 @@ impl<'a> WorldTrace<'a> {
                 .entity_rules
                 .filtering
                 .contains(EntityTraceFlags::CONTENTS_MASK)
-                && !query.mask.intersects(fields.contents)
+                && !query.effective_mask().intersects(fields.contents)
             {
                 continue;
             }

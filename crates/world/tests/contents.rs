@@ -18,17 +18,17 @@ fn q3_contents_preserve_native_words_and_project_combined_volumes() {
     assert_eq!(Contents::PROJECTILE.to_q3(), 0);
     assert_eq!(Contents::from_q2(0x10000000).to_q3(), 0x20000000);
     for native in -14..=-9 {
-        assert_eq!(Contents::from_q1(native).to_q3(), 32);
+        assert_eq!(Contents::from_q1(native, Contents::EMPTY).to_q3(), 32);
     }
 }
 
 #[test]
 fn quake_point_contents_keeps_native_values_and_strips_currents() {
     for native in -6..=-1 {
-        assert_eq!(Contents::from_q1(native).to_q1(), native);
+        assert_eq!(Contents::from_q1(native, Contents::EMPTY).to_q1(), native);
     }
     for native in -14..=-9 {
-        assert_eq!(Contents::from_q1(native).to_q1(), -3);
+        assert_eq!(Contents::from_q1(native, Contents::EMPTY).to_q1(), -3);
     }
     assert_eq!((Contents::WATER | Contents::SLIME).to_q1(), -4);
     assert_eq!((Contents::SLIME | Contents::LAVA).to_q1(), -5);
@@ -50,13 +50,22 @@ fn auxiliary_contents_survives_native_q2_conversion_and_masks() {
 
 #[test]
 fn native_contents_convert_into_distinct_engine_bits() {
-    assert_eq!(Contents::from_q1(-2), Contents::SOLID);
-    assert_eq!(Contents::from_q1(-3), Contents::from_q2(32));
-    assert_eq!(Contents::from_q1(-4), Contents::from_q3(16));
-    assert_eq!(Contents::from_q1(-5), Contents::LAVA);
-    assert_eq!(Contents::from_q1(-6), Contents::SKY);
+    assert_eq!(Contents::from_q1(-2, Contents::EMPTY), Contents::SOLID);
+    assert_eq!(
+        Contents::from_q1(-3, Contents::EMPTY),
+        Contents::from_q2(32)
+    );
+    assert_eq!(
+        Contents::from_q1(-4, Contents::EMPTY),
+        Contents::from_q3(16)
+    );
+    assert_eq!(Contents::from_q1(-5, Contents::EMPTY), Contents::LAVA);
+    assert_eq!(Contents::from_q1(-6, Contents::EMPTY), Contents::SKY);
     assert_ne!(Contents::SKY, Contents::SOLID);
-    assert_eq!(Contents::from_q1(-9), Contents::from_q2(32 | 0x40000));
+    assert_eq!(
+        Contents::from_q1(-9, Contents::EMPTY),
+        Contents::from_q2(32 | 0x40000)
+    );
     assert_eq!(Contents::from_q2(0x20000000), Contents::LADDER);
     assert_eq!(Contents::from_q3(0x20000000), Contents(0x20000000));
     assert_eq!(Contents::from_q2(2), Contents::WINDOW);
@@ -84,7 +93,7 @@ fn q2_contents_roundtrip_all_bits_and_mixed_words_without_aliases() {
     assert_eq!(Contents::from_q2(u32::MAX).to_q2(), u32::MAX);
     for token in -14..=-9 {
         assert_eq!(
-            Contents::from_q1(token).to_q2(),
+            Contents::from_q1(token, Contents::EMPTY).to_q2(),
             32 | (1 << (18 + (-9 - token)))
         );
     }
