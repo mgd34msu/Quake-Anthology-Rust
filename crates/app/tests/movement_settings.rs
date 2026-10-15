@@ -25,6 +25,7 @@ fn host() -> (FrameHost, ClientId) {
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable::flags(vec![]),
             BrushTree::direct(0).unwrap(),
             vec![Bounds {

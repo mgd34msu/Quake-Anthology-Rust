@@ -90,6 +90,7 @@ fn geometry(runtime: &mut Runtime, sizes: [f32; 2]) -> GeometryId {
     let mut leaves = vec![CollisionLeaf {
         stored_contents: None,
         brushes: IndexSpan::default(),
+        patches: Default::default(),
     }];
     let mut models = vec![ModelRoot::Leaf(0)];
     let mut bounds = vec![Bounds {
@@ -119,6 +120,7 @@ fn geometry(runtime: &mut Runtime, sizes: [f32; 2]) -> GeometryId {
                 first: brush,
                 count: 1,
             },
+            patches: Default::default(),
         });
         models.push(ModelRoot::Leaf(leaves.len() as u32 - 1));
         bounds.push(Bounds {
@@ -132,6 +134,7 @@ fn geometry(runtime: &mut Runtime, sizes: [f32; 2]) -> GeometryId {
         .load_brushes(
             planes,
             brushes,
+            Vec::new(),
             surfaces,
             BrushTree {
                 planes: vec![],
@@ -139,6 +142,7 @@ fn geometry(runtime: &mut Runtime, sizes: [f32; 2]) -> GeometryId {
                 leaves,
                 leaf_brushes: vec![0, 1],
                 models,
+                leaf_patches: Vec::new(),
             },
             bounds,
         )

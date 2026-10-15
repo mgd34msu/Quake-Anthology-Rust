@@ -18,6 +18,7 @@ fn contact_rows_keep_exact_names_native_fields_and_resource_lifetimes() -> Resul
                 sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
+            Vec::new(),
             SurfaceTable {
                 records: vec![SurfaceInput {
                     name,
@@ -78,6 +79,7 @@ fn invalid_surface_indices_do_not_publish_geometry() -> Result<(), StoreError> {
             store.load_brushes(
                 vec![wall_plane()],
                 Vec::new(),
+                Vec::new(),
                 SurfaceTable {
                     records: vec![SurfaceInput::unnamed(SurfaceFlags::default())],
                     sides
@@ -130,16 +132,20 @@ fn add_brush(store: &mut CollisionStore) -> Result<GeometryId, StoreError> {
             sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
             contents: Contents::SOLID,
         }],
+        Vec::new(),
         qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags(77)]),
         BrushTree {
+            leaf_patches: Default::default(),
             planes: Vec::new(),
             nodes: Vec::new(),
             leaves: vec![
                 CollisionLeaf {
+                    patches: Default::default(),
                     stored_contents: None,
                     brushes: qa_core::primitives::IndexSpan { first: 0, count: 0 },
                 },
                 CollisionLeaf {
+                    patches: Default::default(),
                     stored_contents: None,
                     brushes: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 },
@@ -384,6 +390,7 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
             store.load_brushes(
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 qa_world::collision::surfaces::SurfaceTable::flags(Vec::new()),
                 BrushTree::direct(0).map_err(StoreError::Brush)?,
                 vec![invalid]
@@ -397,6 +404,7 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
         store.load_brushes(
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(Vec::new()),
             BrushTree::direct(0).map_err(StoreError::Brush)?,
             Vec::new()
@@ -407,6 +415,7 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
     bad_tree.models[0] = ModelRoot::Leaf(1);
     assert!(matches!(
         store.load_brushes(
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(Vec::new()),

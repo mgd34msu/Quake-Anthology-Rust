@@ -136,6 +136,7 @@ pub(super) fn commands_move_a_native_client_once() {
             .load_brushes(
                 vec![],
                 vec![],
+                Vec::new(),
                 qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
                 qa_world::collision::brushes::BrushTree {
                     planes: vec![],
@@ -143,9 +144,11 @@ pub(super) fn commands_move_a_native_client_once() {
                     leaves: vec![qa_world::collision::brushes::CollisionLeaf {
                         stored_contents: None,
                         brushes: qa_core::primitives::IndexSpan { first: 0, count: 0 },
+                        patches: Default::default(),
                     }],
                     leaf_brushes: vec![],
                     models: vec![qa_world::collision::brushes::ModelRoot::Leaf(0)],
+                    leaf_patches: Vec::new(),
                 },
                 vec![bounds],
             )
@@ -505,6 +508,7 @@ pub(super) fn commands_move_a_native_client_once() {
                     world.geometry,
                     0,
                     &mut world.scratch,
+                    qa_core::primitives::PatchClip::All,
                     None,
                     None,
                     |_, error| panic!("movement failed: {error:?}"),
@@ -555,6 +559,7 @@ pub(super) fn commands_move_a_native_client_once() {
                 world.geometry,
                 0,
                 &mut world.scratch,
+                qa_core::primitives::PatchClip::All,
                 None,
                 None,
                 |_, error| panic!("movement failed: {error:?}"),

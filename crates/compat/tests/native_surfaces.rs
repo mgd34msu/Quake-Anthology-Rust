@@ -14,6 +14,7 @@ fn native_surfaces_reserve_exact_load_rows_and_keep_both_q2_layouts() {
             .load_brushes(
                 vec![],
                 vec![],
+                Vec::new(),
                 SurfaceTable {
                     records: vec![
                         SurfaceInput {
@@ -99,6 +100,7 @@ fn native_surfaces_keep_geometry_offsets_and_reject_reused_generations() {
             .load_brushes(
                 vec![],
                 vec![],
+                Vec::new(),
                 SurfaceTable {
                     records: names
                         .iter()

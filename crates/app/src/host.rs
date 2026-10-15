@@ -265,6 +265,7 @@ pub struct FrameHost {
     timescale: CvarHandle,
     input_handles: qa_console::input_settings::InputHandles,
     pub(crate) movement_handles: qa_console::movement::MovementHandles,
+    pub(crate) collision_handles: qa_console::collision::CollisionHandles,
     notify_time: CvarHandle,
     center_time: CvarHandle,
     pub(crate) team_chats_only: CvarHandle,
@@ -497,6 +498,7 @@ impl FrameHost {
         let timescale = console.cvars.find("timescale").ok_or("missing timescale")?;
         let input_handles = qa_console::input_settings::InputHandles::load(&console.cvars)?;
         let movement_handles = qa_console::movement::MovementHandles::bind(&console.cvars)?;
+        let collision_handles = qa_console::collision::CollisionHandles::bind(&console.cvars)?;
         let notify_time = console
             .cvars
             .find("con_notifytime")
@@ -564,6 +566,7 @@ impl FrameHost {
             timescale,
             input_handles,
             movement_handles,
+            collision_handles,
             notify_time,
             center_time,
             team_chats_only,
@@ -1933,7 +1936,10 @@ impl FrameHost {
                 }
                 if let Some(view) = self.runtime.client_collision[id.0 as usize].as_mut() {
                     let prediction = &mut self.runtime.prediction[seat];
-                    let result = if let Ok(mut trace) = view.trace(&self.runtime.geometry) {
+                    let result = if let Ok(mut trace) = view.trace(
+                        &self.runtime.geometry,
+                        self.collision_handles.resolve(&self.console.cvars),
+                    ) {
                         let base = prediction.player.movement.tuning;
                         prediction.player.movement.tuning = self.movement_handles.resolve(
                             &self.console.cvars,

@@ -2940,6 +2940,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 let mut leaves = vec![CollisionLeaf {
                     stored_contents: None,
                     brushes: IndexSpan::default(),
+                    patches: Default::default(),
                 }];
                 let models = models.map(|model| {
                     let Some(model) = model else {
@@ -2964,6 +2965,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                             first: brush,
                             count: 1,
                         },
+                        patches: Default::default(),
                     });
                     ModelRoot::Leaf(leaves.len() as u32 - 1)
                 });
@@ -2974,6 +2976,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     .load_brushes(
                         planes,
                         brushes,
+                        Vec::new(),
                         surfaces,
                         BrushTree {
                             planes: vec![],
@@ -2981,6 +2984,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                             leaves,
                             leaf_brushes,
                             models: models.to_vec(),
+                            leaf_patches: Vec::new(),
                         },
                         vec![bounds; 3],
                     )

@@ -192,6 +192,7 @@ impl Fixture {
             .load_brushes(
                 vec![],
                 vec![],
+                Vec::new(),
                 qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
                 qa_world::collision::brushes::BrushTree::direct(0).unwrap(),
                 vec![qa_core::primitives::Bounds {
@@ -228,6 +229,7 @@ impl Fixture {
                     sides: IndexSpan { first: 0, count: 6 },
                     contents: Contents::SOLID,
                 }],
+                Vec::new(),
                 SurfaceTable::flags(vec![SurfaceFlags::from_q3(0x2002); 6]),
                 BrushTree {
                     planes: vec![],
@@ -236,14 +238,17 @@ impl Fixture {
                         CollisionLeaf {
                             stored_contents: None,
                             brushes: IndexSpan::default(),
+                            patches: Default::default(),
                         },
                         CollisionLeaf {
                             stored_contents: None,
                             brushes: IndexSpan { first: 0, count: 1 },
+                            patches: Default::default(),
                         },
                     ],
                     leaf_brushes: vec![0],
                     models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
+                    leaf_patches: Vec::new(),
                 },
                 vec![
                     Bounds {

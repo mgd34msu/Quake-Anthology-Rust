@@ -195,6 +195,7 @@ fn install_motion_models(runtime: &mut Runtime, floor: bool, pusher: bool) -> Ge
     let mut leaves = vec![CollisionLeaf {
         stored_contents: None,
         brushes: brush_span,
+        patches: Default::default(),
     }];
     let mut models = vec![ModelRoot::Leaf(0)];
     let mut bounds = vec![Bounds {
@@ -224,6 +225,7 @@ fn install_motion_models(runtime: &mut Runtime, floor: bool, pusher: bool) -> Ge
         leaves.push(CollisionLeaf {
             stored_contents: None,
             brushes: IndexSpan { first, count: 1 },
+            patches: Default::default(),
         });
         models.push(ModelRoot::Leaf(1));
         bounds.push(Bounds {
@@ -236,6 +238,7 @@ fn install_motion_models(runtime: &mut Runtime, floor: bool, pusher: bool) -> Ge
         .load_brushes(
             planes,
             brushes,
+            Vec::new(),
             SurfaceTable::flags(surfaces),
             BrushTree {
                 planes: vec![],
@@ -243,6 +246,7 @@ fn install_motion_models(runtime: &mut Runtime, floor: bool, pusher: bool) -> Ge
                 leaves,
                 leaf_brushes,
                 models,
+                leaf_patches: Vec::new(),
             },
             bounds,
         )
@@ -263,6 +267,7 @@ fn install_water_world(runtime: &mut Runtime) -> GeometryId {
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable::flags(vec![]),
             BrushTree {
                 planes: vec![],
@@ -270,9 +275,11 @@ fn install_water_world(runtime: &mut Runtime) -> GeometryId {
                 leaves: vec![CollisionLeaf {
                     stored_contents: Some(Contents::WATER),
                     brushes: IndexSpan::default(),
+                    patches: Default::default(),
                 }],
                 leaf_brushes: vec![],
                 models: vec![ModelRoot::Leaf(0)],
+                leaf_patches: Vec::new(),
             },
             vec![Bounds {
                 mins: Vec3([-512.0; 3]),
@@ -3694,6 +3701,7 @@ fn qc_client_host(
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable::flags(vec![]),
             BrushTree {
                 planes: vec![],
@@ -3701,9 +3709,11 @@ fn qc_client_host(
                 leaves: vec![CollisionLeaf {
                     stored_contents: None,
                     brushes: IndexSpan { first: 0, count: 0 },
+                    patches: Default::default(),
                 }],
                 leaf_brushes: vec![],
                 models: vec![ModelRoot::Leaf(0)],
+                leaf_patches: Vec::new(),
             },
             vec![Bounds {
                 mins: Vec3([-512.0; 3]),
@@ -3987,6 +3997,7 @@ fn qw_client_lifecycle_uses_canonical_slot_shared_movement_and_packet_postthink_
             geometry,
             0,
             &mut world.scratch,
+            qa_core::primitives::PatchClip::All,
             None,
             None,
             |_, error| panic!("{error:?}")
@@ -4167,6 +4178,7 @@ fn netquake_queued_client_runs_none_phases_and_shared_think_at_native_frame_time
             geometry,
             0,
             &mut world.scratch,
+            qa_core::primitives::PatchClip::All,
             None,
             None,
             |_, error| panic!("{error:?}")
@@ -4943,6 +4955,7 @@ fn netquake_noclip_control_precedes_frame_and_integrates_think_velocity_once() {
             geometry,
             0,
             &mut world.scratch,
+            qa_core::primitives::PatchClip::All,
             None,
             None,
             |_, error| panic!("{error:?}")
@@ -5164,6 +5177,7 @@ fn netquake_foreign_noclip_preserves_substeps_and_final_native_snap() {
                 geometry,
                 0,
                 &mut world.scratch,
+                qa_core::primitives::PatchClip::All,
                 None,
                 None,
                 |_, error| panic!("{error:?}")

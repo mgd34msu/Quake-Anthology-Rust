@@ -301,6 +301,7 @@ fn native_walk_fly_toss_and_bounce_integrate_after_one_due_think() {
                 geometry,
                 0,
                 &mut world.scratch,
+                qa_core::primitives::PatchClip::All,
                 None,
                 None,
                 |_, error| panic!("{error:?}")
@@ -709,6 +710,7 @@ fn foreign_walk_uses_one_ordinary_q3_pmove_with_independent_q2_trace() {
             geometry,
             0,
             &mut world.scratch,
+            qa_core::primitives::PatchClip::All,
             None,
             None,
             |_, error| panic!("{error:?}")

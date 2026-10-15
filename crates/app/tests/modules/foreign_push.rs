@@ -163,6 +163,7 @@ fn geometry(runtime: &mut Runtime, size: f32) -> qa_core::primitives::GeometryId
                 sides: IndexSpan { first: 0, count: 6 },
                 contents: Contents::SOLID,
             }],
+            Vec::new(),
             SurfaceTable::flags(vec![SurfaceFlags::default(); 6]),
             BrushTree {
                 planes: vec![],
@@ -171,14 +172,17 @@ fn geometry(runtime: &mut Runtime, size: f32) -> qa_core::primitives::GeometryId
                     CollisionLeaf {
                         stored_contents: None,
                         brushes: IndexSpan::default(),
+                        patches: Default::default(),
                     },
                     CollisionLeaf {
                         stored_contents: None,
                         brushes: IndexSpan { first: 0, count: 1 },
+                        patches: Default::default(),
                     },
                 ],
                 leaf_brushes: vec![0],
                 models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
+                leaf_patches: Vec::new(),
             },
             vec![
                 Bounds {

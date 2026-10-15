@@ -255,6 +255,7 @@ fn q3_brush_model_publication_and_live_queries_use_owner_geometry() {
                     sides: IndexSpan { first: 0, count: 6 },
                     contents: Contents::SOLID,
                 }],
+                Vec::new(),
                 SurfaceTable::flags(vec![SurfaceFlags::default(); 6]),
                 BrushTree {
                     planes: Vec::new(),
@@ -263,14 +264,17 @@ fn q3_brush_model_publication_and_live_queries_use_owner_geometry() {
                         CollisionLeaf {
                             stored_contents: None,
                             brushes: IndexSpan::default(),
+                            patches: Default::default(),
                         },
                         CollisionLeaf {
                             stored_contents: None,
                             brushes: IndexSpan { first: 0, count: 1 },
+                            patches: Default::default(),
                         },
                     ],
                     leaf_brushes: vec![0],
                     models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
+                    leaf_patches: Vec::new(),
                 },
                 vec![
                     Bounds {

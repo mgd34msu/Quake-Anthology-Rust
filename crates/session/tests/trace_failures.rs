@@ -23,6 +23,7 @@ fn floor(store: &mut CollisionStore) -> qa_core::primitives::GeometryId {
                 sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
+            Vec::new(),
             qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),
             BrushTree::direct(1).unwrap(),
             vec![Bounds {
@@ -146,7 +147,16 @@ fn failed_native_collider_read_rejects_pending_motion_before_body_or_link_commit
     );
     let view = FailedRead(Cell::new(false));
     assert!(matches!(
-        server.move_pending_client(client, &store, geometry, 0, &mut scratch, None, Some(&view)),
+        server.move_pending_client(
+            client,
+            &store,
+            geometry,
+            0,
+            &mut scratch,
+            qa_core::primitives::PatchClip::All,
+            None,
+            Some(&view)
+        ),
         Err(TraceError::Entity)
     ));
     assert!(view.failed());
@@ -161,7 +171,16 @@ fn failed_native_collider_read_rejects_pending_motion_before_body_or_link_commit
     );
     assert_eq!(server.area.bounds(entity), before_link);
     assert_eq!(
-        server.move_pending_client(client, &store, geometry, 0, &mut scratch, None, Some(&view)),
+        server.move_pending_client(
+            client,
+            &store,
+            geometry,
+            0,
+            &mut scratch,
+            qa_core::primitives::PatchClip::All,
+            None,
+            Some(&view)
+        ),
         Ok(0)
     );
 }
@@ -251,6 +270,7 @@ fn failed_client_is_consumed_once_and_healthy_client_commits() {
             geometry,
             0,
             &mut scratch,
+            qa_core::primitives::PatchClip::All,
             None,
             None,
             |id, error| rejected.push((id, error))
@@ -284,6 +304,7 @@ fn failed_client_is_consumed_once_and_healthy_client_commits() {
             geometry,
             0,
             &mut scratch,
+            qa_core::primitives::PatchClip::All,
             None,
             None,
             |id, error| rejected.push((id, error))

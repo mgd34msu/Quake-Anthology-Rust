@@ -309,6 +309,7 @@ fn suspended_producer_is_live_after_its_nested_export_returns() {
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable::flags(vec![]),
             BrushTree::direct(0).unwrap(),
             vec![Bounds {

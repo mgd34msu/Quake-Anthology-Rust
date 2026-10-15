@@ -3,6 +3,7 @@ use super::{
     TraceError, TraceQuery,
     brushes::{Brush, BrushMap, BrushTree, GeometryError, ModelRoot},
     hulls::{HullError, HullModel, HullScratch, Q1Hulls},
+    patches::PatchInput,
     position,
     surfaces::{SurfaceTable, SurfaceView},
     tree::BrushScratch,
@@ -131,13 +132,14 @@ impl CollisionStore {
         &mut self,
         side_planes: Vec<Plane>,
         brushes: Vec<Brush>,
+        patches: Vec<PatchInput>,
         surfaces: SurfaceTable<'_>,
         tree: BrushTree,
         bounds: Vec<Bounds>,
     ) -> Result<GeometryId, StoreError> {
         validate_bounds(tree.models.len(), &bounds)?;
-        let (geometry, models) =
-            BrushMap::load_tree(side_planes, brushes, surfaces, tree).map_err(StoreError::Brush)?;
+        let (geometry, models) = BrushMap::load_tree(side_planes, brushes, patches, surfaces, tree)
+            .map_err(StoreError::Brush)?;
         let models = models
             .into_iter()
             .zip(bounds)
@@ -353,10 +355,11 @@ impl CollisionStore {
         true
     }
 
-    fn scratch_dimensions(&self) -> (usize, usize, usize, usize, usize) {
+    fn scratch_dimensions(&self) -> (usize, usize, usize, usize, usize, usize) {
         let mut hull_depth = 0;
         let mut brush_depth = 0;
         let mut brushes = 0;
+        let mut patch_planes = 0;
         let mut positions = 0;
         let mut contacts = 0;
         for resource in self.slots.iter().filter_map(|slot| slot.resource.as_ref()) {
@@ -367,20 +370,29 @@ impl CollisionStore {
                     contacts = contacts.max(geometry.position_contacts());
                 }
                 Geometry::Brushes(geometry) => {
-                    let (depth, count) = geometry.scratch_capacity();
+                    let (depth, count, planes) = geometry.scratch_capacity();
                     brush_depth = brush_depth.max(depth);
                     brushes = brushes.max(count);
+                    patch_planes = patch_planes.max(planes);
                 }
             }
         }
-        (hull_depth, brush_depth, brushes, positions, contacts)
+        (
+            hull_depth,
+            brush_depth,
+            brushes,
+            positions,
+            contacts,
+            patch_planes,
+        )
     }
 
     fn make_scratch(&self, position_capacity: usize) -> TraceScratch {
-        let (hull_depth, brush_depth, brushes, positions, contacts) = self.scratch_dimensions();
+        let (hull_depth, brush_depth, brushes, positions, contacts, patch_planes) =
+            self.scratch_dimensions();
         TraceScratch {
             hulls: HullScratch::new(hull_depth),
-            brushes: BrushScratch::new(brush_depth, brushes, position_capacity),
+            brushes: BrushScratch::new(brush_depth, brushes, position_capacity, patch_planes),
             position: position::Scratch::new(positions, contacts),
         }
     }

@@ -385,6 +385,32 @@ pub enum CollisionShape {
     },
 }
 
+/// Caller-selected curved-surface clipping, independent of geometry provenance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PatchClip {
+    Disabled,
+    Volumes,
+    #[default]
+    All,
+}
+impl PatchClip {
+    pub const fn from_flags(enabled: bool, points: bool) -> Self {
+        if !enabled {
+            Self::Disabled
+        } else if points {
+            Self::All
+        } else {
+            Self::Volumes
+        }
+    }
+    pub const fn enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+    pub const fn points(self) -> bool {
+        matches!(self, Self::All)
+    }
+}
+
 /// A swept capsule is a sphere around a centered line segment. Its native
 /// vertical size comes from the supplied X and Z extents, independently of
 /// the map or movement role. Model transforms may rotate its segment.

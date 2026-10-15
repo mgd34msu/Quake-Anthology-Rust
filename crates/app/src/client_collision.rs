@@ -418,6 +418,7 @@ impl ClientCollision {
     pub fn trace<'a>(
         &'a mut self,
         store: &'a CollisionStore,
+        patches: qa_core::primitives::PatchClip,
     ) -> Result<WorldTrace<'a>, ClientCollisionError> {
         if !self.valid {
             return Err(ClientCollisionError::Waiting);
@@ -436,6 +437,7 @@ impl ClientCollision {
             &mut self.scratch,
             pass,
         )
+        .with_patch_clip(patches)
         .with_candidates(&self.ordered))
     }
 }

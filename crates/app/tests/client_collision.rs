@@ -61,6 +61,7 @@ impl Fixture {
                     sides: IndexSpan { first: 0, count: 6 },
                     contents: Contents::SOLID,
                 }],
+                Vec::new(),
                 SurfaceTable::flags(vec![SurfaceFlags::default(); 6]),
                 BrushTree {
                     planes: vec![],
@@ -69,14 +70,17 @@ impl Fixture {
                         CollisionLeaf {
                             stored_contents: None,
                             brushes: IndexSpan::default(),
+                            patches: Default::default(),
                         },
                         CollisionLeaf {
                             stored_contents: None,
                             brushes: IndexSpan { first: 0, count: 1 },
+                            patches: Default::default(),
                         },
                     ],
                     leaf_brushes: vec![0],
                     models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
+                    leaf_patches: Vec::new(),
                 },
                 vec![
                     Bounds {
@@ -158,7 +162,7 @@ impl Fixture {
     }
     fn trace(&self, view: &mut ClientCollision) -> Trace {
         let policy = qa_world::collision::trace_policy(self.protocol.rule_set());
-        view.trace(&self.store)
+        view.trace(&self.store, qa_core::primitives::PatchClip::All)
             .unwrap()
             .trace(TraceQuery {
                 mask: Contents::SOLID | Contents::BODY,
@@ -236,7 +240,7 @@ fn accept_local_frames(host: &mut qa_app::host::FrameHost) {
 
 fn player_mask_trace(view: &mut ClientCollision, store: &CollisionStore, players: bool) -> Trace {
     let policy = qa_world::collision::trace_policy(RuleSetId::Quake2Rerelease);
-    view.trace(store)
+    view.trace(store, qa_core::primitives::PatchClip::All)
         .unwrap()
         .trace(TraceQuery {
             mask: Contents::SOLID
@@ -406,7 +410,7 @@ fn removal_reset_and_ordinal_reuse_create_client_lifetimes() {
     view.reset();
     assert_eq!(view.entity(7), None);
     assert!(matches!(
-        view.trace(&fixture.store),
+        view.trace(&fixture.store, qa_core::primitives::PatchClip::All),
         Err(ClientCollisionError::Waiting)
     ));
     view.synchronize(
@@ -468,7 +472,7 @@ fn unknown_or_stale_world_rejects_only_its_client_without_server_fallback() {
         Err(ClientCollisionError::Geometry)
     );
     assert!(matches!(
-        healthy.trace(&fixture.store),
+        healthy.trace(&fixture.store, qa_core::primitives::PatchClip::All),
         Err(ClientCollisionError::Waiting)
     ));
     assert_eq!(healthy.entity(7), None);
@@ -721,7 +725,7 @@ fn queued_snapshot_collision_uses_wire_pose_while_server_moves_independently() {
         host.runtime.client_collision[client.0 as usize]
             .as_mut()
             .unwrap()
-            .trace(&host.runtime.geometry),
+            .trace(&host.runtime.geometry, qa_core::primitives::PatchClip::All),
         Err(ClientCollisionError::Waiting)
     ));
     host.queue
@@ -758,7 +762,7 @@ fn queued_snapshot_collision_uses_wire_pose_while_server_moves_independently() {
         .unwrap();
     let accepted = view.entity(7).unwrap();
     let first = view
-        .trace(&host.runtime.geometry)
+        .trace(&host.runtime.geometry, qa_core::primitives::PatchClip::All)
         .unwrap()
         .trace(query())
         .unwrap();
@@ -770,7 +774,7 @@ fn queued_snapshot_collision_uses_wire_pose_while_server_moves_independently() {
     );
     host.runtime.server.entities.columns.position[server.slot as usize] = Vec3([-1000., 0., 0.]);
     let second = view
-        .trace(&host.runtime.geometry)
+        .trace(&host.runtime.geometry, qa_core::primitives::PatchClip::All)
         .unwrap()
         .trace(query())
         .unwrap();

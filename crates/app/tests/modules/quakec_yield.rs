@@ -152,6 +152,7 @@ fn fixture(rules: RuleSetId) -> Fixture {
         .load_brushes(
             vec![],
             vec![],
+            Vec::new(),
             SurfaceTable::flags(vec![]),
             BrushTree {
                 planes: vec![],
@@ -159,9 +160,11 @@ fn fixture(rules: RuleSetId) -> Fixture {
                 leaves: vec![CollisionLeaf {
                     stored_contents: None,
                     brushes: IndexSpan::default(),
+                    patches: Default::default(),
                 }],
                 leaf_brushes: vec![],
                 models: vec![ModelRoot::Leaf(0)],
+                leaf_patches: Vec::new(),
             },
             vec![Bounds {
                 mins: Vec3([-512.0; 3]),

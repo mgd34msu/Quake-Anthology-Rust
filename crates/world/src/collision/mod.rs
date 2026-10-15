@@ -3,6 +3,7 @@ pub mod brushes;
 pub mod capsules;
 pub mod contents;
 pub mod hulls;
+pub mod patches;
 mod position;
 pub mod scene;
 pub mod store;
@@ -11,6 +12,7 @@ pub mod tree;
 
 pub use contents::Contents;
 pub use position::HullPositionLimits;
+pub use qa_core::primitives::PatchClip;
 use qa_core::primitives::{
     CollisionOwner, EntityId, GeometryId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
 };
@@ -216,6 +218,7 @@ pub enum HullShape {
 /// These are engine query values, not fields of any legacy wire protocol.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TraceRules {
+    pub patches: PatchClip,
     pub hull_shape: HullShape,
     /// Plane distances and stored fractions stay f32; the native epsilon
     /// expression's precision is selected independently below.
@@ -240,6 +243,7 @@ impl TraceRules {
     /// Q1/QW hull contact and Q2 convex clipping use the same contact epsilon.
     /// Convex brushes are a shared extension for Q1 callers, not Q1 topology.
     pub const LEGACY: Self = Self {
+        patches: PatchClip::All,
         hull_shape: HullShape::CompiledWidth,
         contact_epsilon: 0.03125,
         fraction_binary32: false,
@@ -256,6 +260,7 @@ impl TraceRules {
         secondary_contact: false,
     };
     pub const ARENA: Self = Self {
+        patches: PatchClip::All,
         hull_shape: HullShape::ExactBox,
         contact_epsilon: 0.125,
         fraction_binary32: false,
