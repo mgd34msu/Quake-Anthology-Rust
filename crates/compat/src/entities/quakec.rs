@@ -716,7 +716,15 @@ impl EntityProjection {
         if value == 0 {
             return Ok(CollisionOwner::None);
         }
-        let native = layout.identity(memory, module, value)?;
+        self.quakec_entity_owner(memory, module, value)
+    }
+    pub(crate) fn quakec_entity_owner(
+        &self,
+        memory: &ModuleMemory<'_>,
+        module: ModuleId,
+        value: u32,
+    ) -> Result<CollisionOwner, CallError> {
+        let native = self.quakec_layout()?.identity(memory, module, value)?;
         Ok(self
             .quakec_foreign_entity(native.slot as usize)
             .map_or(CollisionOwner::Native(native), CollisionOwner::Lifetime))
@@ -1758,12 +1766,7 @@ impl EntityProjection {
         pass: u32,
     ) -> Result<(QuakeCTraceView<'a, 'memory>, CollisionOwner), CallError> {
         self.quakec_validate_owner(context.module)?;
-        let native = self
-            .quakec_layout()?
-            .identity(memory, context.module, pass)?;
-        let pass = self
-            .quakec_foreign_entity(native.slot as usize)
-            .map_or(CollisionOwner::Native(native), CollisionOwner::Lifetime);
+        let pass = self.quakec_entity_owner(memory, context.module, pass)?;
         Ok((
             QuakeCTraceView {
                 memory,

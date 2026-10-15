@@ -299,6 +299,9 @@ impl PushHost for Host {
     fn ground_owner(&mut self, owner: CollisionOwner) -> Result<CollisionOwner, PhysicsError> {
         Ok(self.meta[self.slot(owner)?].ground)
     }
+    fn same_owner(&self, left: CollisionOwner, right: CollisionOwner) -> bool {
+        self.entities.same_owner(left, right)
+    }
     fn test_position(&mut self, owner: CollisionOwner) -> Result<bool, PhysicsError> {
         let s = self.slot(owner)?;
         Ok(self
@@ -354,6 +357,25 @@ impl PushHost for Host {
             callback(self);
         }
         Ok(())
+    }
+}
+
+#[test]
+fn canonical_ground_owner_carries_a_rider_outside_the_pushers_bounds() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut host = Host::new(source, &[]);
+        let pusher = host.entities.id_at(1).unwrap();
+        let CollisionOwner::Native(native_pusher) = native(1) else {
+            unreachable!()
+        };
+        host.entities.columns.native_entity[pusher.slot as usize] = Some(native_pusher);
+        let rider = host.add(Vec3([0.0, 0.0, 20.0]), 3.0, 2.0);
+        host.meta[rider].ground = CollisionOwner::Lifetime(pusher);
+        host.run(8, 1.0).unwrap();
+        assert_eq!(
+            host.entities.columns.position[rider],
+            Vec3([5.0, 0.0, 20.0])
+        );
     }
 }
 

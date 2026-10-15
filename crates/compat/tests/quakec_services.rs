@@ -1615,6 +1615,106 @@ fn push_native_scan_includes_clients_freed_rows_and_later_spawns() {
 }
 
 #[test]
+fn push_ground_decodes_foreign_aliases_without_rebinding_stale_lifetimes() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let rider = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let ordinal = vm.entity_number(rider).unwrap() as i32;
+            let foreign = alias_actor(calls, ModuleId(2), 7);
+            let alias = vm
+                .admit_entity(&calls.services.server.entities, calls.context, foreign)
+                .unwrap();
+            let weak = CollisionOwner::Native(NativeEntity {
+                module: ModuleId(2),
+                slot: 7,
+            });
+            write(&mut vm, rider, b"groundentity", &[alias.offset()]);
+            write(&mut vm, rider, b"owner", &[alias.offset()]);
+            // Entity-word interpretation never executes an unrelated model read.
+            write(&mut vm, rider, b"model", &[u32::MAX]);
+            let ground = vm.push_ground(calls.context, rider).unwrap();
+            assert_eq!(ground, CollisionOwner::Lifetime(foreign));
+            assert!(calls.services.server.entities.same_owner(ground, weak));
+            assert_eq!(
+                vm.with_trace_view(calls.context, rider, |view, pass| {
+                    assert_eq!(
+                        pass,
+                        CollisionOwner::Native(NativeEntity {
+                            module: calls.context.module,
+                            slot: ordinal,
+                        })
+                    );
+                    Ok(view.owner(ordinal))
+                })
+                .unwrap(),
+                Some(ground)
+            );
+            assert_eq!(
+                vm.with_trace_view(calls.context, alias.offset(), |_, pass| Ok(pass))
+                    .unwrap(),
+                ground
+            );
+            assert!(
+                calls
+                    .services
+                    .server
+                    .free_entity(foreign, calls.context.clock)
+            );
+            calls.context.clock = ThinkTime::Seconds(100.0);
+            let replacement = alias_actor(calls, ModuleId(2), 7);
+            assert_eq!(replacement.slot, foreign.slot);
+            assert_ne!(replacement, foreign);
+            assert_eq!(vm.push_ground(calls.context, rider).unwrap(), ground);
+            assert!(!calls.services.server.entities.same_owner(ground, weak));
+            assert!(!calls.services.server.entities.same_owner(ground, ground));
+            assert!(
+                calls
+                    .services
+                    .server
+                    .entities
+                    .same_owner(CollisionOwner::Lifetime(replacement), weak)
+            );
+            vm.release_entity(alias).unwrap();
+
+            write(&mut vm, rider, b"groundentity", &[0]);
+            write(&mut vm, rider, b"owner", &[0]);
+            let world = CollisionOwner::Native(NativeEntity {
+                module: calls.context.module,
+                slot: 0,
+            });
+            assert_eq!(vm.push_ground(calls.context, rider).unwrap(), world);
+            assert!(
+                !calls
+                    .services
+                    .server
+                    .entities
+                    .same_owner(world, CollisionOwner::None)
+            );
+            assert_eq!(
+                vm.with_trace_view(calls.context, rider, |view, _| Ok(view.owner(ordinal)))
+                    .unwrap(),
+                Some(CollisionOwner::None)
+            );
+            let anonymous = alias_actor(calls, ModuleId(3), 4);
+            calls.services.server.entities.columns.native_entity[anonymous.slot as usize] = None;
+            let alias = vm
+                .admit_entity(&calls.services.server.entities, calls.context, anonymous)
+                .unwrap();
+            write(&mut vm, rider, b"groundentity", &[alias.offset()]);
+            let ground = vm.push_ground(calls.context, rider).unwrap();
+            assert_eq!(ground, CollisionOwner::Lifetime(anonymous));
+            assert!(calls.services.server.entities.same_owner(ground, ground));
+            assert_eq!(calls.services.server.entities.native_owner(ground), None);
+            vm.release_entity(alias).unwrap();
+
+            write(&mut vm, rider, b"groundentity", &[1]);
+            assert_eq!(vm.push_ground(calls.context, rider), Err(CallError::Memory));
+        });
+    }
+}
+
+#[test]
 fn push_origin_rollback_keeps_freed_backing_and_refreshes_only_current_lifetime() {
     use qa_session::physics::{MotionWrite, PushNumber};
     with_services(RuleSetId::Quake, |calls| {

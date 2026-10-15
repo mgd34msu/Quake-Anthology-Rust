@@ -3,6 +3,69 @@ use qa_core::primitives::{EntityId, ModuleId, NativeEntity};
 use qa_world::entities::{AllocationPolicy, EntityTable};
 
 #[test]
+fn collision_owner_comparison_preserves_live_lifetimes_weak_reuse_and_world_zero() {
+    use qa_core::primitives::CollisionOwner;
+
+    let mut table = EntityTable::new(3, 1).unwrap();
+    let old = table
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(7),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let lifetime = CollisionOwner::Lifetime(old);
+    let native = NativeEntity {
+        module: ModuleId(7),
+        slot: 23,
+    };
+    let weak = CollisionOwner::Native(native);
+    assert!(table.same_owner(lifetime, lifetime));
+    assert_eq!(table.native_owner(lifetime), None);
+    assert!(!table.same_owner(lifetime, CollisionOwner::None));
+    assert!(!table.same_owner(CollisionOwner::None, CollisionOwner::None));
+    table.columns.native_entity[old.slot as usize] = Some(native);
+    assert_eq!(table.native_owner(lifetime), Some(native));
+    assert!(table.same_owner(lifetime, weak));
+    assert!(table.same_owner(weak, lifetime));
+    assert!(!table.same_owner(
+        lifetime,
+        CollisionOwner::Native(NativeEntity {
+            module: ModuleId(8),
+            slot: native.slot,
+        })
+    ));
+    let world = CollisionOwner::Native(NativeEntity {
+        module: ModuleId(7),
+        slot: 0,
+    });
+    assert!(table.same_owner(world, world));
+    assert!(!table.same_owner(world, CollisionOwner::None));
+    assert!(!table.same_owner(CollisionOwner::None, world));
+
+    assert!(table.release(old, ThinkTime::Seconds(0.0)));
+    assert_eq!(table.native_owner(lifetime), None);
+    assert!(!table.same_owner(lifetime, lifetime));
+    assert!(!table.same_owner(lifetime, weak));
+    assert!(table.same_owner(weak, weak));
+    let new = table
+        .allocate(
+            ThinkTime::Seconds(1.0),
+            ModuleId(7),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    assert_eq!(new.slot, old.slot);
+    assert_ne!(new, old);
+    table.columns.native_entity[new.slot as usize] = Some(native);
+    assert!(table.same_owner(CollisionOwner::Lifetime(new), weak));
+    assert!(!table.same_owner(lifetime, weak));
+    assert!(!table.same_owner(lifetime, CollisionOwner::Lifetime(new)));
+}
+
+#[test]
 fn captured_native_reference_authenticates_its_pair_before_callbacks() {
     use qa_core::primitives::{NativeEntityRef, ResourceNamespace};
 
