@@ -54,6 +54,130 @@ fn assert_admitted(host: &FrameHost) {
 }
 
 #[test]
+fn native_walk_and_toss_contact_anonymous_blockers_and_publish_nonzero_other() {
+    use qa_world::{
+        area::{LinkFlags, LinkIntent},
+        collision::Contents,
+    };
+    for (mode, velocity, position, mins, maxs) in [
+        (
+            3.0,
+            Vec3([200.0, 0.0, 0.0]),
+            Vec3([18.0, 0.0, 0.0]),
+            Vec3([-1.0, -100.0, -100.0]),
+            Vec3([1.0, 100.0, 100.0]),
+        ),
+        (
+            6.0,
+            Vec3([0.0, 0.0, -200.0]),
+            Vec3([0.0, 0.0, -30.0]),
+            Vec3([-100.0, -100.0, -4.0]),
+            Vec3([100.0, 100.0, 4.0]),
+        ),
+    ] {
+        let mut vm = mode_vm(mode, velocity, false);
+        vm.image.globals[112] = 57;
+        vm.image.globals[113] = 6;
+        append_begin(&mut vm, &[(Address, 34, 112, 90), (StorePF, 113, 90, 0)]);
+        replace_client_function(
+            &mut vm,
+            6,
+            &[
+                (LoadV, 36, 110, 150),
+                (StoreEnt, 36, 153, 0),
+                (Return, 150, 0, 0),
+            ],
+        );
+        replace_client_function(&mut vm, 4, &[(Return, 153, 0, 0)]);
+        if mode == 6.0 {
+            vm.image.globals[114] = 56;
+            replace_client_function(
+                &mut vm,
+                5,
+                &[
+                    (LoadEnt, 34, 114, 154),
+                    (LoadV, 154, 110, 150),
+                    (Return, 150, 0, 0),
+                ],
+            );
+        } else {
+            replace_client_function(&mut vm, 5, &[(Return, 150, 0, 0)]);
+        }
+        let (mut host, id, _, entity, _) =
+            qc_client_host(RuleSetId::Quake, RuleSetId::Quake, vm, &[]);
+        host.connect_module_client(ModuleId(1), id, b"\\name\\anonymous blocker")
+            .unwrap();
+        let blocker = host
+            .runtime
+            .server
+            .entities
+            .allocate(
+                ThinkTime::Seconds(0.0),
+                ModuleId(9),
+                AllocationPolicy::EDICT,
+            )
+            .unwrap()
+            .id;
+        let columns = &mut host.runtime.server.entities.columns;
+        columns.set_body(
+            blocker.slot as usize,
+            Body {
+                position,
+                mins,
+                maxs,
+                ..Default::default()
+            },
+        );
+        columns.collision_shape[blocker.slot as usize] = CollisionShape::Box;
+        columns.collision_contents[blocker.slot as usize] = Contents::SOLID.0;
+        assert!(columns.native_entity[blocker.slot as usize].is_none());
+        assert!(host.runtime.server.area.link(
+            &host.runtime.server.entities,
+            blocker,
+            LinkFlags::SOLID,
+            qa_gameplay::rules::link_order(RuleSetId::Quake),
+            LinkIntent::Explicit
+        ));
+        let bounds = host.runtime.server.area.bounds(blocker).unwrap();
+        tick(&mut host, 0);
+        tick(&mut host, 20);
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC(position.0.map(f32::to_bits)))
+        );
+        let columns = &host.runtime.server.entities.columns;
+        if mode == 3.0 {
+            assert!(columns.position[entity.slot as usize].0[0] > 0.0);
+            assert!(columns.position[entity.slot as usize].0[0] < 1.0);
+        } else {
+            assert_ne!(columns.flags[entity.slot as usize] & 512, 0);
+            assert_eq!(columns.velocity[entity.slot as usize], Vec3::default());
+        }
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(4)),
+            ThinkTime::Seconds(7.02),
+        )
+        .unwrap();
+        let Some(ModuleResult::QuakeC(words)) =
+            host.module_counts(ModuleId(1)).unwrap().last_result
+        else {
+            unreachable!()
+        };
+        assert_ne!(words[0], 0);
+        if mode == 6.0 {
+            assert_eq!(words[1], words[0]);
+        }
+        assert_eq!(host.runtime.server.area.bounds(blocker), Some(bounds));
+        assert_eq!(
+            host.runtime.server.entities.columns.position[blocker.slot as usize],
+            position
+        );
+        assert_admitted(&host);
+    }
+}
+
+#[test]
 fn native_provider_publication_sets_current_player_mode_and_preserves_spectator() {
     for (mode, expected) in [
         (0.0, MovementMode::Frozen),

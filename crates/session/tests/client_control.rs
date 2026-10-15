@@ -1,6 +1,6 @@
 use qa_core::{
     math,
-    primitives::{EntityId, ModuleId, NativeEntityRef, RuleSetId, ThinkTime, UserCmd, Vec3},
+    primitives::{EntityId, ModuleId, RuleSetId, ThinkTime, UserCmd, Vec3},
 };
 use qa_gameplay::rules::motion::client_motion_rules;
 use qa_movement::ControlStart;
@@ -11,7 +11,7 @@ use qa_session::physics::{
 };
 use qa_world::{
     collision::{QuakeTraceKind, Trace},
-    entities::{AllocationPolicy, EntityTable},
+    entities::{AllocationPolicy, EntityReference, EntityTable},
 };
 
 #[derive(Debug, PartialEq)]
@@ -167,7 +167,7 @@ impl MotionHost for Host {
     ) -> Result<Option<EntityId>, Self::Error> {
         panic!("control has no impact")
     }
-    fn ground(&mut self, _: EntityId, _: Option<NativeEntityRef>) -> Result<(), Self::Error> {
+    fn ground(&mut self, _: EntityId, _: Option<EntityReference>) -> Result<(), Self::Error> {
         panic!("control does not assign ground")
     }
     fn sound(&mut self, _: EntityId, _: &[u8]) -> Result<(), Self::Error> {

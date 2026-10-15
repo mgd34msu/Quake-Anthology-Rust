@@ -5663,6 +5663,115 @@ fn qc_walkmove_anonymous_common_box_blocks_without_needing_native_ground() {
 }
 
 #[test]
+fn qc_walkmove_lands_on_anonymous_ground_and_reads_its_pose_through_nonzero_alias() {
+    use qa_world::{
+        area::{LinkFlags, LinkIntent},
+        collision::Contents,
+    };
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 0, 0, 0)]);
+        let walk = code.builtin(32);
+        let root = code.function(&[
+            (StoreEnt, 64, 34, 0),
+            (StoreF, 63, 4, 0),
+            (StoreF, 71, 7, 0),
+            (Call2, 58, 0, 0),
+            (StoreF, 1, 90, 0),
+            (LoadEnt, 34, 72, 91),
+            (LoadV, 91, 73, 100),
+            (StoreF, 100, 92, 0),
+            (Return, 90, 0, 0),
+        ]);
+        let mut vm = code.motion_vm();
+        vm.image.globals[58] = walk;
+        vm.image.globals[63] = 0;
+        vm.image.globals[64] = 2 * vm.stride as u32;
+        vm.image.globals[71] = 10.0f32.to_bits();
+        vm.image.globals[72] = 43;
+        vm.image.globals[73] = 0;
+        write(&mut vm, 2, b"flags", 512.0f32.to_bits());
+        write(&mut vm, 2, b"solid", 2.0f32.to_bits());
+        write_vector(&mut vm, 2, b"origin", Vec3([0.0, 0.0, 2.0]));
+        write_vector(&mut vm, 2, b"mins", Vec3([-1.0; 3]));
+        write_vector(&mut vm, 2, b"maxs", Vec3([1.0; 3]));
+        let mut runtime = Runtime::load(1, []).unwrap();
+        // Native CheckBottom ignores box entities. The world floor supports
+        // this one-unit anonymous step while the full-body sweep hits the step.
+        install_motion_world(&mut runtime, true);
+        let (mut request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            (0..code.functions.len() as u32).collect(),
+            frame,
+            100,
+            &[(2, 0.0, 0.0, 0)],
+        );
+        request.context.trace_rules = rules;
+        let mut host = load(runtime, vec![request]);
+        let floor = host
+            .runtime
+            .server
+            .entities
+            .allocate(
+                ThinkTime::Seconds(0.0),
+                ModuleId(9),
+                AllocationPolicy::EDICT,
+            )
+            .unwrap()
+            .id;
+        let columns = &mut host.runtime.server.entities.columns;
+        columns.set_body(
+            floor.slot as usize,
+            Body {
+                position: Vec3([25.0, 0.0, 1.0]),
+                mins: Vec3([-100.0, -100.0, -8.0]),
+                maxs: Vec3([100.0, 100.0, 0.0]),
+                ..Default::default()
+            },
+        );
+        columns.collision_shape[floor.slot as usize] = CollisionShape::Box;
+        columns.collision_contents[floor.slot as usize] = Contents::SOLID.0;
+        assert!(columns.native_entity[floor.slot as usize].is_none());
+        assert!(host.runtime.server.area.link(
+            &host.runtime.server.entities,
+            floor,
+            LinkFlags::SOLID,
+            qa_gameplay::rules::link_order(rules),
+            LinkIntent::Explicit
+        ));
+        let bounds = host.runtime.server.area.bounds(floor).unwrap();
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(root)),
+            ThinkTime::Seconds(5.0),
+        )
+        .unwrap();
+        let Some(ModuleResult::QuakeC(words)) =
+            host.module_counts(ModuleId(1)).unwrap().last_result
+        else {
+            unreachable!()
+        };
+        assert_eq!(words[0], 1.0f32.to_bits());
+        assert_ne!(words[1], 0);
+        assert_eq!(words[2], 25.0f32.to_bits());
+        assert_eq!(
+            host.runtime.server.entities.columns.position[ids[0].slot as usize].0[0],
+            10.0
+        );
+        assert_ne!(
+            host.runtime.server.entities.columns.flags[ids[0].slot as usize] & 512,
+            0
+        );
+        assert_eq!(host.runtime.server.area.bounds(floor), Some(bounds));
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
+    }
+}
+
+#[test]
 fn qc_movetogoal_mobility_rejection_only_clears_scalar_return_without_random() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         let mut code = Code::new();

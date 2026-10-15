@@ -251,12 +251,10 @@ struct Host<'a> {
     host: &'a mut FrameHost,
     module: ModuleId,
     native: u32,
-    mover: NativeEntityRef,
+    mover: EntityReference,
     time: ThinkTime,
     client: Option<(ClientId, EntityId)>,
     trace_rules: Option<RuleSetId>,
-    captured_mover: EntityReference,
-    captured_hit: Option<EntityReference>,
 }
 impl<'a> Host<'a> {
     fn new(
@@ -266,13 +264,7 @@ impl<'a> Host<'a> {
         time: ThinkTime,
     ) -> Result<Self, ClientCommandError> {
         let native = native_offset(host, module, entity)?;
-        let mover = contacts::reference(host, entity)?;
-        let captured_mover = host
-            .runtime
-            .server
-            .entities
-            .capture_reference(entity)
-            .ok_or(ClientCommandError::InvalidSlot)?;
+        let mover = contacts::capture(host, entity)?;
         Ok(Self {
             host,
             module,
@@ -281,8 +273,6 @@ impl<'a> Host<'a> {
             time,
             client: None,
             trace_rules: None,
-            captured_mover,
-            captured_hit: None,
         })
     }
     fn client(
@@ -333,7 +323,12 @@ impl<'a> Host<'a> {
         if self.client.is_some() {
             return Ok(self.client_entity());
         }
-        contacts::current(self.host, self.mover)
+        Ok(self
+            .host
+            .runtime
+            .server
+            .entities
+            .resolve_reference(self.mover))
     }
     fn edit<R>(
         &mut self,
@@ -400,7 +395,7 @@ impl<'a> Host<'a> {
         }
         let ground = trace
             .entity
-            .map(|hit| contacts::reference(self.host, hit))
+            .map(|hit| contacts::capture(self.host, hit))
             .transpose()?;
         Ok(MotionTrace { trace, ground })
     }
@@ -673,10 +668,6 @@ impl MotionHost for Host<'_> {
             Some((body.mins, body.maxs)),
             kind,
         )?;
-        self.captured_hit = trace
-            .trace
-            .entity
-            .and_then(|hit| self.host.runtime.server.entities.capture_reference(hit));
         Ok(trace)
     }
     fn relink(&mut self, entity: EntityId) -> Result<Option<EntityId>, Self::Error> {
@@ -692,28 +683,22 @@ impl MotionHost for Host<'_> {
         _: Option<EntityId>,
         trace: &MotionTrace,
     ) -> Result<Option<EntityId>, Self::Error> {
-        let native = trace.ground.ok_or(ClientCommandError::InvalidSlot)?;
+        let obstacle = trace.ground.ok_or(ClientCommandError::InvalidSlot)?;
         let mover_entity = self.current()?;
         contacts::impact(
             self.host,
             self.module,
             mover_entity,
             self.mover,
-            native,
+            obstacle,
             self.time,
-            (
-                Some(self.captured_mover),
-                self.captured_hit.filter(|captured| {
-                    captured.reference() == native && Some(captured.entity()) == trace.trace.entity
-                }),
-            ),
         )?;
         self.current()
     }
     fn ground(
         &mut self,
         entity: EntityId,
-        ground: Option<NativeEntityRef>,
+        ground: Option<EntityReference>,
     ) -> Result<(), Self::Error> {
         let ground = ground.ok_or(ClientCommandError::InvalidSlot)?;
         self.write_field(entity, MotionField::Ground(ground))

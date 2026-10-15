@@ -1,5 +1,5 @@
 use super::{MotionFrame, MotionHost, MotionTrace, MotionWrite, PhysicsError};
-use qa_core::primitives::{Body, EntityId, NativeEntityRef, Vec3};
+use qa_core::primitives::{Body, EntityId, Vec3};
 use qa_gameplay::rules::{motion::StepRules, sweep::LegacySweepRules};
 use qa_movement::{SweepHost, SweepResult};
 use qa_world::collision::{QuakeTraceKind, Trace};
@@ -92,7 +92,7 @@ struct MotionSweepHost<'a, H> {
 
 impl<H: MotionHost> SweepHost for MotionSweepHost<'_, H> {
     type Error = H::Error;
-    type Hit = Option<NativeEntityRef>;
+    type Hit = Option<qa_world::entities::EntityReference>;
 
     fn read(&mut self) -> Result<Option<Body>, Self::Error> {
         let Some(entity) = self.current else {

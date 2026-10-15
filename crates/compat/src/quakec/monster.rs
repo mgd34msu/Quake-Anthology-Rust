@@ -9,6 +9,7 @@ use qa_session::physics::{
 use qa_world::collision::{
     EntityTracePolicy, QuakeTraceKind, TraceQuery, TraceRules, trace_policy,
 };
+use qa_world::entities::EntityReference;
 
 #[derive(Debug)]
 pub(crate) struct WalkAfterTouch {
@@ -148,24 +149,16 @@ impl MonsterHost for Host<'_, '_> {
                 query.pass = pass;
                 (ENGINE_CALLS.trace)(services, query, Some(view))
             })?;
-        let ground = trace.entity.and_then(|hit| {
-            // The collision store's world hit is the common world slot. Its
-            // native pointer is this QC module's explicit world ordinal zero.
-            if Some(hit) == self.services.server.entities.id_at(0) {
-                return Some(NativeEntityRef::entity(
-                    ResourceNamespace::Module(self.context.module),
-                    0,
-                ));
-            }
-            // Blocking/support traces do not need a native ground pointer.
-            // The solver requires this only on a supported landing write.
-            let slot = self.services.server.entities.resolve(hit)?;
-            let native = self.services.server.entities.columns.native_entity[slot]?;
-            Some(NativeEntityRef::entity(
-                ResourceNamespace::Module(native.module),
-                u32::try_from(native.slot).ok()?,
-            ))
-        });
+        let ground = trace
+            .entity
+            .map(|hit| {
+                self.services
+                    .server
+                    .entities
+                    .capture_reference(hit)
+                    .ok_or(CallError::Entity)
+            })
+            .transpose()?;
         Ok(MotionTrace { trace, ground })
     }
     fn write_origin(&mut self, axis: usize, value: f32) -> Result<(), CallError> {
@@ -174,12 +167,10 @@ impl MonsterHost for Host<'_, '_> {
     fn write_flags(&mut self, flags: u32) -> Result<(), CallError> {
         self.store(Scalar::Flags, (flags as i32 as f32).to_bits())
     }
-    fn write_ground(&mut self, ground: NativeEntityRef) -> Result<(), CallError> {
-        let admitted =
+    fn write_ground(&mut self, ground: EntityReference) -> Result<(), CallError> {
+        let native =
             self.vm
-                .admit_reference(&self.services.server.entities, self.context, ground)?;
-        let native = admitted.offset();
-        self.vm.release_entity(admitted)?;
+                .captured_entity_offset(&self.services.server.entities, self.context, ground)?;
         self.store(Scalar::Ground, native)
     }
 }

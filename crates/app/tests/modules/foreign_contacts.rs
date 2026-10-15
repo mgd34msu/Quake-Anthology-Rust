@@ -25,6 +25,17 @@ mod service_program;
 const A: ModuleId = ModuleId(1);
 const B: ModuleId = ModuleId(2);
 const NATIVE: ModuleId = ModuleId(3);
+
+fn admit(
+    host: &mut FrameHost,
+    recipient: ModuleId,
+    reference: NativeEntityRef,
+) -> Result<AdmittedEntity, ClientCommandError> {
+    super::super::edit_quakec(host, recipient, |vm, services, context| {
+        vm.admit_reference(&services.server.entities, context, reference)
+    })
+}
+
 const FIELDS: &[(u16, u16, &[u8])] = &[
     (3, 0, b"origin"),
     (3, 3, b"velocity"),
@@ -297,13 +308,15 @@ fn inspect(host: &mut FrameHost, module: ModuleId, callback: u32) -> [u32; 3] {
 #[test]
 fn foreign_qc_touch_uses_recipient_clock_stable_alias_and_private_words() {
     let (mut host, [a, b, _], stride) = fixture();
+    let b_capture = capture(&host, b).unwrap();
+
     let count = host.runtime.server.entities.len();
-    let other = reference(&host, a).unwrap();
+    let other = capture(&host, a).unwrap();
     let expected = host.module_row(B).unwrap().time(host.time).seconds() as f32;
     touch(
         &mut host,
         A,
-        b,
+        b_capture,
         other,
         Some(ThinkTime::Seconds(42.0)),
         false,
@@ -326,7 +339,7 @@ fn foreign_qc_touch_uses_recipient_clock_stable_alias_and_private_words() {
     touch(
         &mut host,
         A,
-        b,
+        b_capture,
         other,
         Some(ThinkTime::Seconds(42.0)),
         false,
@@ -342,12 +355,15 @@ fn foreign_qc_touch_uses_recipient_clock_stable_alias_and_private_words() {
 #[test]
 fn foreign_contact_dedup_uses_invoking_batch_canonical_slots() {
     let (mut host, [a, b, _], _) = fixture();
-    let other = reference(&host, a).unwrap();
+    let a_capture = capture(&host, a).unwrap();
+    let b_capture = capture(&host, b).unwrap();
+
+    let other = capture(&host, a).unwrap();
     host.module_row_mut(A).unwrap().client_contacts.begin();
-    touch(&mut host, A, a, other, None, true, false).unwrap();
-    touch(&mut host, A, b, other, None, true, false).unwrap();
+    touch(&mut host, A, a_capture, other, None, true, false).unwrap();
+    touch(&mut host, A, b_capture, other, None, true, false).unwrap();
     let calls = host.module_counts(B).unwrap().calls;
-    touch(&mut host, A, b, other, None, true, false).unwrap();
+    touch(&mut host, A, b_capture, other, None, true, false).unwrap();
     assert_eq!(host.module_counts(B).unwrap().calls, calls);
     let stamps = &host.module_row(A).unwrap().client_contacts;
     assert!(stamps.contains(a.slot as usize));
@@ -359,6 +375,158 @@ fn foreign_contact_dedup_uses_invoking_batch_canonical_slots() {
             .client_contacts
             .contains(b.slot as usize)
     );
+}
+
+#[test]
+fn qw_contact_dedup_keeps_captured_slot_when_callback_reuses_native_at_another_slot() {
+    use qa_formats::program::quakec::Statement;
+    let image = program(Vec3::default()).image;
+    let mut vm = Vm::load(
+        image,
+        Layout {
+            entities: 64,
+            header_bytes: 16,
+            extra_string_bytes: 64,
+            state_step: 0.1,
+            random_seed: 1,
+        },
+    )
+    .unwrap();
+    let stride = vm.stride as u32;
+    vm.image.globals[85] = 30;
+    vm.image.globals[86] = 6;
+    vm.image.globals[87] = 34 * stride;
+    vm.image.globals[88] = 24;
+    vm.image.globals[89] = 2.0f32.to_bits();
+    vm.image.functions[13].first_statement = vm.image.statements.len() as i32;
+    let mut statements = vm.image.statements.to_vec();
+    statements.extend(
+        [
+            (StoreEnt, 34, 4, 0),
+            (Call1, 65, 0, 0),
+            (StoreEnt, 87, 4, 0),
+            (Call1, 65, 0, 0),
+            (Call0, 66, 0, 0),
+            (StoreEnt, 1, 84, 0),
+            (Address, 84, 85, 90),
+            (StorePF, 86, 90, 0),
+            (Address, 84, 88, 90),
+            (StorePF, 89, 90, 0),
+            (Return, 84, 0, 0),
+        ]
+        .map(|(opcode, a, b, c)| Statement {
+            opcode,
+            source_opcode: opcode as u16,
+            operands: [a, b, c],
+        }),
+    );
+    vm.image.statements = statements.into_boxed_slice();
+    let mut runtime = Runtime::load(1, []).unwrap();
+    // QW reserves 1..=32. Releasing this unrelated common slot between native
+    // spawns gives native 34 the lower slot without borrowing either QC body.
+    let filler = runtime
+        .server
+        .entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(9),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let (request, _) = request(
+        &mut runtime,
+        A,
+        Program::quakec(vm, None),
+        (0..14).collect(),
+        RuleSetId::QuakeWorld,
+    );
+    let anchor = request.anchor;
+    let console = Console::new(Context::default()).unwrap();
+    let mut host =
+        FrameHost::load_modules(console, runtime, TickRate::FrameDriven, vec![request]).unwrap();
+    assert_eq!(inspect(&mut host, A, 12)[0], 33 * stride);
+    let original = host
+        .runtime
+        .server
+        .entities
+        .find_native(
+            NativeEntity {
+                module: A,
+                slot: 33,
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        host.runtime
+            .server
+            .free_entity(filler, ThinkTime::Seconds(0.0))
+    );
+    assert_eq!(inspect(&mut host, A, 12)[0], 34 * stride);
+    let earlier = host
+        .runtime
+        .server
+        .entities
+        .find_native(
+            NativeEntity {
+                module: A,
+                slot: 34,
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(earlier.slot, filler.slot);
+    assert!(earlier.slot < original.slot);
+    super::super::edit_quakec(&mut host, A, |vm, services, context| {
+        for (native, callback) in [(33, 13), (34, 0)] {
+            let base = native * vm.stride as u32;
+            let solid = vm.field_address(base, 24, 1).unwrap();
+            vm.entities
+                .write_word(solid, 2.0f32.to_bits() as i32)
+                .unwrap();
+            let touch = vm.field_address(base, 30, 1).unwrap();
+            vm.entities.write_word(touch, callback).unwrap();
+        }
+        vm.project_entities(services, context)
+    })
+    .unwrap();
+    let target = capture(&host, original).unwrap();
+    let other = capture(&host, anchor).unwrap();
+    host.module_row_mut(A).unwrap().client_contacts.begin();
+    touch(&mut host, A, target, other, None, true, false).unwrap();
+    let replacement = host
+        .runtime
+        .server
+        .entities
+        .resolve_reference(target)
+        .unwrap();
+    assert_eq!(replacement.slot, earlier.slot);
+    assert_ne!(replacement, original);
+    let Program::QuakeC(qc) = &host.module_row(A).unwrap().request.program else {
+        unreachable!()
+    };
+    assert_eq!(
+        qc.vm.touch_callback(33 * stride, false).unwrap(),
+        Some(CallbackId(6))
+    );
+    let calls = host.module_counts(A).unwrap().calls;
+    assert!(
+        host.module_row(A)
+            .unwrap()
+            .client_contacts
+            .contains(original.slot as usize)
+    );
+    assert!(
+        !host
+            .module_row(A)
+            .unwrap()
+            .client_contacts
+            .contains(replacement.slot as usize)
+    );
+    touch(&mut host, A, target, other, None, true, false).unwrap();
+    assert_eq!(host.module_counts(A).unwrap().calls, calls);
+    assert_eq!(host.module_counts(A).unwrap().traps, 0);
 }
 
 #[test]
@@ -404,12 +572,8 @@ fn foreign_impact_pins_weak_other_before_first_callback_retires_mover() {
     let (mut host, [a, b, _], stride) = fixture();
     set_touch(&mut host, A, 5);
     set_touch(&mut host, B, 6);
-    let mover = reference(&host, a).unwrap();
-    let obstacle = reference(&host, b).unwrap();
-    let captured = (
-        host.runtime.server.entities.capture_reference(a),
-        host.runtime.server.entities.capture_reference(b),
-    );
+    let mover = capture(&host, a).unwrap();
+    let obstacle = capture(&host, b).unwrap();
     impact(
         &mut host,
         A,
@@ -417,7 +581,6 @@ fn foreign_impact_pins_weak_other_before_first_callback_retires_mover() {
         mover,
         obstacle,
         ThinkTime::Seconds(42.0),
-        captured,
     )
     .unwrap();
     assert!(host.runtime.server.entities.resolve(a).is_none());
@@ -447,12 +610,8 @@ fn foreign_impact_with_no_touch_ignores_full_recipient_alias_capacity() {
     let foreign = reference(&host, native).unwrap();
     let held_a = admit(&mut host, A, foreign).unwrap();
     let held_b = admit(&mut host, B, foreign).unwrap();
-    let mover = reference(&host, a).unwrap();
-    let obstacle = reference(&host, b).unwrap();
-    let captured = (
-        host.runtime.server.entities.capture_reference(a),
-        host.runtime.server.entities.capture_reference(b),
-    );
+    let mover = capture(&host, a).unwrap();
+    let obstacle = capture(&host, b).unwrap();
     impact(
         &mut host,
         A,
@@ -460,7 +619,6 @@ fn foreign_impact_with_no_touch_ignores_full_recipient_alias_capacity() {
         mover,
         obstacle,
         ThinkTime::Seconds(42.0),
-        captured,
     )
     .unwrap();
     release(&mut host, held_a).unwrap();
@@ -488,12 +646,8 @@ fn foreign_impact_runs_mover_touch_when_no_touch_recipient_has_full_alias_capaci
     set_touch(&mut host, B, 0);
     let foreign = reference(&host, native).unwrap();
     let held = admit(&mut host, B, foreign).unwrap();
-    let mover = reference(&host, a).unwrap();
-    let obstacle = reference(&host, b).unwrap();
-    let captured = (
-        host.runtime.server.entities.capture_reference(a),
-        host.runtime.server.entities.capture_reference(b),
-    );
+    let mover = capture(&host, a).unwrap();
+    let obstacle = capture(&host, b).unwrap();
     let calls = host.module_counts(B).unwrap().calls;
     impact(
         &mut host,
@@ -502,7 +656,6 @@ fn foreign_impact_runs_mover_touch_when_no_touch_recipient_has_full_alias_capaci
         mover,
         obstacle,
         ThinkTime::Seconds(42.0),
-        captured,
     )
     .unwrap();
     assert_eq!(
@@ -526,12 +679,8 @@ fn foreign_reciprocal_impact_rebinds_other_after_first_callback_reuses_native_ro
     host.time = EventTime::from_milliseconds(0);
     set_touch(&mut host, A, 13);
     set_touch(&mut host, B, 2);
-    let mover = reference(&host, old_mover).unwrap();
-    let obstacle_ref = reference(&host, obstacle).unwrap();
-    let captured = (
-        host.runtime.server.entities.capture_reference(old_mover),
-        host.runtime.server.entities.capture_reference(obstacle),
-    );
+    let mover = capture(&host, old_mover).unwrap();
+    let obstacle_ref = capture(&host, obstacle).unwrap();
     impact(
         &mut host,
         A,
@@ -539,10 +688,14 @@ fn foreign_reciprocal_impact_rebinds_other_after_first_callback_reuses_native_ro
         mover,
         obstacle_ref,
         ThinkTime::Seconds(0.0),
-        captured,
     )
     .unwrap();
-    let replacement = current(&host, mover).unwrap().unwrap();
+    let replacement = host
+        .runtime
+        .server
+        .entities
+        .resolve_reference(mover)
+        .unwrap();
     assert_ne!(replacement, old_mover);
     assert!(host.runtime.server.entities.resolve(old_mover).is_none());
     let Some(super::super::ModuleResult::QuakeC(words)) =
@@ -616,15 +769,17 @@ fn native_private_trigger_is_counted_without_hiding_later_qc_recipient() {
 #[test]
 fn qc_contact_reads_published_native_body_without_importing_alias_back() {
     let (mut host, [_, b, native], _) = fixture();
+    let b_capture = capture(&host, b).unwrap();
+
     let count = host.runtime.server.entities.len();
-    let other = reference(&host, native).unwrap();
+    let other = capture(&host, native).unwrap();
     let body = host
         .runtime
         .server
         .entities
         .columns
         .body(native.slot as usize);
-    touch(&mut host, A, b, other, None, false, false).unwrap();
+    touch(&mut host, A, b_capture, other, None, false, false).unwrap();
     assert_eq!(
         inspect(&mut host, B, 3),
         [70.0f32, 80.0, 90.0].map(f32::to_bits)
@@ -649,14 +804,17 @@ fn qc_contact_reads_published_native_body_without_importing_alias_back() {
 #[test]
 fn rejected_prepared_foreign_touch_releases_its_alias_lease() {
     let (mut host, [a, b, native], stride) = fixture();
-    let other = reference(&host, a).unwrap();
-    let prepared = prepare_touch(&mut host, A, b, other, None, false, false)
+    let b_capture = capture(&host, b).unwrap();
+
+    let other = capture(&host, a).unwrap();
+    let prepared = prepare_touch(&mut host, A, b_capture, other, None, false, false)
         .unwrap()
         .unwrap();
     host.runtime.server.entities.columns.owner[b.slot as usize] = NATIVE;
     assert!(prepared.invoke(&mut host).is_err());
     host.runtime.server.entities.columns.owner[b.slot as usize] = B;
-    let native = reference(&host, native).unwrap();
+    let native_capture = capture(&host, native).unwrap();
+    let native = native_capture.reference().unwrap();
     assert!(matches!(
         admit(&mut host, B, native),
         Err(ClientCommandError::Usercmd(
@@ -667,7 +825,7 @@ fn rejected_prepared_foreign_touch_releases_its_alias_lease() {
     let next = admit(&mut host, B, native).unwrap();
     assert_eq!(next.offset(), 3 * stride);
     release(&mut host, next).unwrap();
-    touch(&mut host, A, b, native, None, false, false).unwrap();
+    touch(&mut host, A, b_capture, native_capture, None, false, false).unwrap();
     assert_eq!(
         inspect(&mut host, B, 3),
         [70.0f32, 80.0, 90.0].map(f32::to_bits)
@@ -680,12 +838,8 @@ fn captured_retired_foreign_mover_keeps_weak_other_at_reciprocal_impact() {
     for reuse in [false, true] {
         let (mut host, [a, b, _], stride) = fixture();
         set_touch(&mut host, B, 6);
-        let mover = reference(&host, a).unwrap();
-        let obstacle = reference(&host, b).unwrap();
-        let captured = (
-            host.runtime.server.entities.capture_reference(a),
-            host.runtime.server.entities.capture_reference(b),
-        );
+        let mover = capture(&host, a).unwrap();
+        let obstacle = capture(&host, b).unwrap();
         assert!(host.runtime.server.free_entity(a, ThinkTime::Seconds(0.0)));
         let replacement = if reuse {
             let id = host
@@ -708,7 +862,6 @@ fn captured_retired_foreign_mover_keeps_weak_other_at_reciprocal_impact() {
             mover,
             obstacle,
             ThinkTime::Seconds(42.0),
-            captured,
         )
         .unwrap();
         let Some(super::super::ModuleResult::QuakeC(words)) =
@@ -727,4 +880,141 @@ fn captured_retired_foreign_mover_keeps_weak_other_at_reciprocal_impact() {
             replacement
         );
     }
+}
+
+fn anonymous(host: &mut FrameHost, position: Vec3) -> EntityId {
+    let entity = host
+        .runtime
+        .server
+        .entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(9),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    host.runtime.server.entities.columns.set_body(
+        entity.slot as usize,
+        Body {
+            position,
+            mins: Vec3([-1.0; 3]),
+            maxs: Vec3([1.0; 3]),
+            ..Default::default()
+        },
+    );
+    assert!(host.runtime.server.entities.columns.native_entity[entity.slot as usize].is_none());
+    entity
+}
+
+#[test]
+fn impact_admits_anonymous_other_pose_and_skips_its_absent_native_callback() {
+    let (mut host, [actor, _, _], stride) = fixture();
+    let pose = Vec3([15.0, 25.0, 35.0]);
+    let obstacle = anonymous(&mut host, pose);
+    let mover = capture(&host, actor).unwrap();
+    let other = capture(&host, obstacle).unwrap();
+    assert_eq!(other.reference(), None);
+    let entities = host.runtime.server.entities.len();
+    impact(
+        &mut host,
+        A,
+        Some(actor),
+        mover,
+        other,
+        ThinkTime::Seconds(42.0),
+    )
+    .unwrap();
+    assert_eq!(
+        host.module_counts(A).unwrap().last_result,
+        Some(super::super::ModuleResult::QuakeC([
+            2 * stride,
+            3 * stride,
+            42.0f32.to_bits()
+        ]))
+    );
+    assert_eq!(inspect(&mut host, A, 3), pose.0.map(f32::to_bits));
+    assert_eq!(
+        host.runtime.server.entities.columns.position[obstacle.slot as usize],
+        pose
+    );
+    assert_eq!(host.runtime.server.entities.len(), entities);
+    assert_eq!(host.module_counts(A).unwrap().unsupported_contacts, 0);
+    assert_eq!(host.module_counts(A).unwrap().traps, 0);
+}
+
+#[test]
+fn retired_anonymous_other_traps_on_read_without_retargeting_reused_common_slot() {
+    let (mut host, [_, recipient, _], stride) = fixture();
+    let recipient_capture = capture(&host, recipient).unwrap();
+
+    let old = anonymous(&mut host, Vec3([15.0, 25.0, 35.0]));
+    let original = capture(&host, old).unwrap();
+    let prepared = prepare_touch(
+        &mut host,
+        A,
+        recipient_capture,
+        original,
+        None,
+        false,
+        false,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        host.runtime
+            .server
+            .free_entity(old, ThinkTime::Seconds(0.0))
+    );
+    let fresh_pose = Vec3([55.0, 65.0, 75.0]);
+    let fresh = anonymous(&mut host, fresh_pose);
+    assert_eq!(fresh.slot, old.slot);
+    assert_ne!(fresh, old);
+    assert_eq!(
+        host.runtime.server.entities.resolve_reference(original),
+        None
+    );
+    assert!(prepared.invoke(&mut host).is_err());
+    assert_eq!(host.module_counts(B).unwrap().traps, 1);
+    let Program::QuakeC(qc) = &host.module_row(B).unwrap().request.program else {
+        unreachable!()
+    };
+    let other = qc.vm.image.globals[71];
+    assert_eq!(other, 3 * stride);
+    assert_eq!(
+        qc.vm
+            .resolve_entity(&host.runtime.server.entities, B, other)
+            .unwrap(),
+        None
+    );
+    let current = capture(&host, fresh).unwrap();
+    touch(&mut host, A, recipient_capture, current, None, false, false).unwrap();
+    assert_eq!(inspect(&mut host, B, 3), fresh_pose.0.map(f32::to_bits));
+    assert_eq!(host.module_counts(B).unwrap().traps, 1);
+}
+
+#[test]
+fn anonymous_published_callback_is_resolved_before_missing_native_self_is_counted() {
+    let (mut host, [actor, _, _], _) = fixture();
+    let obstacle = anonymous(&mut host, Vec3([15.0, 25.0, 35.0]));
+    host.runtime.server.entities.columns.owner[obstacle.slot as usize] = B;
+    host.runtime.server.entities.columns.touch[obstacle.slot as usize] = Some(CallbackId(2));
+    let mover = capture(&host, actor).unwrap();
+    let other = capture(&host, obstacle).unwrap();
+    impact(
+        &mut host,
+        A,
+        Some(actor),
+        mover,
+        other,
+        ThinkTime::Seconds(42.0),
+    )
+    .unwrap();
+    assert_eq!(host.module_counts(A).unwrap().unsupported_contacts, 1);
+    assert_eq!(
+        inspect(&mut host, A, 3),
+        [15.0f32, 25.0, 35.0].map(f32::to_bits)
+    );
+    host.runtime.server.entities.columns.touch[obstacle.slot as usize] = Some(CallbackId(u32::MAX));
+    assert!(resolve_touch(&mut host, A, obstacle, None, None, false).is_err());
 }
