@@ -4,13 +4,12 @@ use crate::{
     host::{FrameHost, Provider},
 };
 use qa_compat::{
-    abi::{CallTable, QUAKEC, QuakeCCalls, UnknownCalls},
+    abi::{CallTable, UnknownCalls},
     quakec, qvm,
     services::{CallContext, ServiceStorage, SignonCursor},
 };
 use qa_core::primitives::{
-    CallbackCall, CallbackId, ClientCallback, ClientId, EntityId, IndexSpan, ModuleId, Motion,
-    RuleSetId, ThinkTime,
+    CallbackCall, CallbackId, ClientId, EntityId, IndexSpan, ModuleId, Motion, RuleSetId, ThinkTime,
 };
 use qa_session::{
     dispatch::{
@@ -73,14 +72,6 @@ impl Program {
             vm: Box::new(vm),
             map,
         })
-    }
-    fn entry(&self) -> fn(&mut FrameHost, ModuleId, u32, CallbackCall) -> ModuleDispatch {
-        match self {
-            Self::Qvm { .. } => word_entry,
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            Self::Native { .. } => word_entry,
-            Self::QuakeC(_) => quakec_entry,
-        }
     }
     fn imports(&self) -> Option<&'static CallTable> {
         match self {
@@ -445,7 +436,7 @@ impl FrameHost {
                 Program::Qvm { vm, .. } => vm.activation_capacity(),
                 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                 Program::Native { vm, .. } => vm.activation_capacity(),
-                Program::QuakeC(_) => 0,
+                Program::QuakeC(qc) => qc.vm.activation_capacity(),
             };
             total.checked_add(count).ok_or("module execution capacity")
         })?;
@@ -469,7 +460,7 @@ impl FrameHost {
                     .iter()
                     .map(|&entry| FunctionBinding {
                         entry,
-                        call: m.program.entry(),
+                        call: execution::start,
                     })
                     .collect(),
             )
@@ -558,7 +549,7 @@ impl FrameHost {
                     request.context.module,
                     FunctionBinding {
                         entry: u32::MAX,
-                        call: quakec_entry,
+                        call: execution::start,
                     },
                 );
                 if let Some(map) = &qc.map {
@@ -1681,15 +1672,6 @@ fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context.clock = time;
     context
 }
-fn word_entry(
-    host: &mut FrameHost,
-    module: ModuleId,
-    entry: u32,
-    call: CallbackCall<'_>,
-) -> ModuleDispatch {
-    execution::start(host, module, entry, call)
-}
-
 fn native_self(
     runtime: &Runtime,
     entity: EntityId,
@@ -1706,145 +1688,4 @@ fn native_self(
         u32::try_from(native.slot).ok()?,
     );
     vm.weak_entity_offset(module, reference).ok()
-}
-fn quakec_entry(
-    host: &mut FrameHost,
-    module: ModuleId,
-    entry: u32,
-    call: CallbackCall,
-) -> ModuleDispatch {
-    ModuleDispatch::Completed(quakec_entry_complete(host, module, entry, call))
-}
-fn quakec_entry_complete(
-    host: &mut FrameHost,
-    module: ModuleId,
-    entry: u32,
-    call: CallbackCall,
-) -> bool {
-    let platform_time = host.runtime.input_time;
-    let phase = match call {
-        CallbackCall::Think { .. } => quakec::CallPhase::Think,
-        CallbackCall::Spawn { .. } => quakec::CallPhase::Spawn,
-        _ => quakec::CallPhase::Export,
-    };
-    let think = phase == quakec::CallPhase::Think;
-    let (entity, time) = match call {
-        CallbackCall::Think { entity, time }
-        | CallbackCall::Spawn { entity, time }
-        | CallbackCall::Export { entity, time, .. }
-        | CallbackCall::Client { entity, time, .. } => (entity, time),
-        CallbackCall::Touch { entity, time, .. } => {
-            let Some(row) = host.module_row(module) else {
-                return false;
-            };
-            (entity, time.unwrap_or_else(|| row.time(host.time)))
-        }
-        _ => return false,
-    };
-    let Some((row, storage)) = host
-        .modules
-        .as_mut()
-        .and_then(|modules| modules.parts_mut(module))
-    else {
-        return false;
-    };
-    if !row.state.can_invoke() {
-        return false;
-    }
-    let Program::QuakeC(qc) = &mut row.request.program else {
-        return false;
-    };
-    if motion::sync_attachments(
-        &mut qc.vm,
-        &mut host.runtime.server.entities,
-        row.request.context,
-    )
-    .is_err()
-    {
-        row.counts.rejected += 1;
-        return false;
-    }
-    let native = native_self(&host.runtime, entity, module, &qc.vm);
-    let world = native_self(&host.runtime, row.request.anchor, module, &qc.vm);
-    let prepared = match call {
-        CallbackCall::Client { event, .. } => native
-            .ok_or(qa_compat::services::CallError::Entity)
-            .and_then(|native| qc.vm.prepare_client_call(event, native, time)),
-        CallbackCall::Touch { other, time, .. } => native
-            .ok_or(qa_compat::services::CallError::Entity)
-            .and_then(|native| {
-                let other = qc.vm.weak_entity_offset(module, other)?;
-                qc.vm.prepare_touch_call(native, other, time)
-            }),
-        _ => qc
-            .vm
-            .prepare_call(native, world, time, phase)
-            .map(|()| quakec::ClientCallRestore::default())
-            .map_err(|_| qa_compat::services::CallError::Memory),
-    };
-    let Ok(restore) = prepared else {
-        return false;
-    };
-    let mut services = host
-        .runtime
-        .engine_services(&mut host.console, storage, &mut row.scratch);
-    let mut calls = QuakeCCalls {
-        services: &mut services,
-        table: &QUAKEC,
-        // ED_Alloc/ED_Free use sv.time, while QC global time is the chosen
-        // think time and can lie ahead within this native physics frame.
-        context: if think {
-            row.request.context
-        } else {
-            context(row.request.context, time)
-        },
-        platform_time,
-        developer: host.developer,
-        unknown: &mut row.unknown,
-    };
-    row.counts.calls += 1;
-    let execution = qc
-        .vm
-        .call(&mut calls, entry, row.request.instruction_budget, false);
-    let restored = qc.vm.finish_client_call(restore);
-    let velocity = if execution.is_ok()
-        && restored.is_ok()
-        && row.request.context.native_rules == RuleSetId::Quake
-        && matches!(
-            call,
-            CallbackCall::Client {
-                event: ClientCallback::BeforeMove,
-                ..
-            }
-        ) {
-        (|| {
-            let native = native.ok_or(qa_compat::services::CallError::Entity)?;
-            let maximum = qc.vm.max_velocity(calls.services.cvars)?;
-            motion::check_velocity(
-                &mut qc.vm,
-                calls.services,
-                calls.context,
-                native,
-                entity,
-                maximum,
-            )?;
-            Ok::<(), qa_compat::services::CallError>(())
-        })()
-    } else {
-        Ok(())
-    };
-    // VM-owned entvars are visible after the call, including admitted writes
-    // preceding a call-scoped trap. Importing pose never implicitly relinks.
-    let projection = if think {
-        qc.vm.project_dirty_entities(calls.services, calls.context)
-    } else {
-        qc.vm.project_entities(calls.services, calls.context)
-    };
-    let result = execution.map_err(|_| ()).and_then(|value| {
-        restored.and(velocity).map_err(|_| ())?;
-        projection
-            .map(|()| ModuleResult::QuakeC(value))
-            .map_err(|_| ())
-    });
-    row.counts.record(result)
 }

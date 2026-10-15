@@ -198,6 +198,46 @@ fn support_vm(
 }
 
 #[test]
+fn owned_builtin_import_uses_stopped_arguments_and_native_return_widths() {
+    use qa_compat::{abi::QcImportStep, quakec::Step};
+    let tail = [0x1234_5678, 0x7fc2_3456];
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(source, |calls| {
+            for (number, input, expected) in [
+                (
+                    12,
+                    [3.0f32, 4.0, 12.0],
+                    [13.0f32.to_bits(), tail[0], tail[1]],
+                ),
+                (9, [0.0, 2.0, 0.0], [0, 1.0f32.to_bits(), 0]),
+                (13, [0.0, 1.0, 0.0], [90.0f32.to_bits(), tail[0], tail[1]]),
+            ] {
+                let mut vm = support_vm(
+                    number,
+                    &[(Opcode::Call1, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+                    FIELDS,
+                );
+                let raw = input.map(f32::to_bits);
+                parameters(&mut vm, &[&raw]);
+                vm.image.globals[1..4].copy_from_slice(&[0xdead_beef, tail[0], tail[1]]);
+                let mut run = vm.begin_root(1, 64, false).unwrap();
+                let Step::Builtin(builtin) = vm.advance(&mut run).unwrap() else {
+                    panic!("expected an executed builtin");
+                };
+                vm.image.globals[4..7].fill(99.0f32.to_bits());
+                assert!(matches!(
+                    calls.import(&mut vm, &builtin).unwrap(),
+                    QcImportStep::Returned
+                ));
+                assert_eq!(builtin.arguments(), &[raw]);
+                assert_eq!(vm.resume(&mut run), Ok(Step::Returned(expected)));
+                assert!(!vm.is_running());
+            }
+        });
+    }
+}
+
+#[test]
 fn changeyaw_executes_native_ties_clamps_and_only_the_yaw_scalar_without_body_requirements() {
     let fields = [
         (3, 0, b"angles".as_slice()),

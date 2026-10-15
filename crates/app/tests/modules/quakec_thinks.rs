@@ -4472,6 +4472,103 @@ fn values_of_items(player: &PlayerState, items: [ItemId; 4]) -> [i32; 4] {
 }
 
 #[test]
+fn qc_trap_publishes_admitted_entvar_writes_and_the_next_call_remains_healthy() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 70, 0, 0)]);
+        let failing = code.function(&[
+            (Address, 34, 53, 90),
+            (StorePV, 80, 90, 0),
+            (Call0, 91, 0, 0),
+            (Return, 70, 0, 0),
+        ]);
+        let inspect = code.function(&[(LoadV, 34, 53, 94), (Return, 94, 0, 0)]);
+        let mut vm = code.vm();
+        let position = Vec3([11.0, 22.0, 33.0]);
+        vm.image.globals[80..83].copy_from_slice(&position.0.map(f32::to_bits));
+        vm.image.globals[91] = u32::MAX;
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let (request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            vec![frame, failing, inspect],
+            frame,
+            100,
+            &[(2, 0.0, 0.0, 0)],
+        );
+        let mut host = load(runtime, vec![request]);
+        let call = CallbackCall::Export {
+            entity: ids[0],
+            time: ThinkTime::Seconds(5.0),
+            arguments: [0; 9],
+            client: None,
+            command: CommandArgs::default(),
+        };
+        assert!(host.call_module(CallbackId(1), call).is_err());
+        assert_eq!(
+            host.runtime.server.entities.columns.position[ids[0].slot as usize],
+            position
+        );
+        assert!(host.runtime.server.area.bounds(ids[0]).is_none());
+        host.call_module(CallbackId(2), call).unwrap();
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC(position.0.map(f32::to_bits)))
+        );
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 1);
+        assert_eq!(
+            host.module_state(ModuleId(1)),
+            Some(qa_app::modules::State::Running)
+        );
+    }
+}
+
+#[test]
+fn qc_failed_entry_restores_prepared_disconnect_globals_before_the_next_call() {
+    let mut vm = qc_client_vm();
+    // NewParameters reads the retained globals without preparing self/time.
+    let inspect = vm.image.functions[1].first_statement as usize;
+    vm.image.statements[inspect].opcode = Return;
+    vm.image.statements[inspect].source_opcode = Return as u16;
+    vm.image.statements[inspect].operands = [34, 0, 0];
+    // A builtin cannot be entered as a bytecode callback. Preparation still
+    // happens before the runner rejects this selected entry.
+    vm.image.functions[6].first_statement = -12;
+    let (mut host, id, _, canonical, _) =
+        qc_client_host(RuleSetId::Quake, RuleSetId::Quake3, vm, &[]);
+    host.connect_module_client(ModuleId(1), id, b"\\name\\restore")
+        .unwrap();
+    host.call_module_export(
+        ModuleId(1),
+        Export::clocked(CallbackId(7)),
+        ThinkTime::Seconds(5.0),
+    )
+    .unwrap();
+    let client_call = |event| CallbackCall::Client {
+        entity: canonical,
+        client: id,
+        event,
+        time: ThinkTime::Seconds(99.0),
+        arguments: [0; 9],
+        command: CommandArgs::default(),
+    };
+    assert!(
+        host.call_module(CallbackId(6), client_call(ClientCallback::Disconnect))
+            .is_err()
+    );
+    host.call_module(CallbackId(1), client_call(ClientCallback::NewParameters))
+        .unwrap();
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::QuakeC([0, 5.0f32.to_bits(), 0]))
+    );
+    assert!(host.runtime.server.clients[id.0 as usize].is_active());
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 1);
+}
+
+#[test]
 fn qw_recovered_packet_stops_at_client_callback_trap_and_reconnects_cleanly() {
     use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
     use qa_core::loopback::Endpoint;

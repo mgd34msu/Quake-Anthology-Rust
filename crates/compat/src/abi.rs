@@ -12,7 +12,9 @@ use std::fmt::Write;
 
 mod callbacks;
 mod client_sound;
+mod qc;
 pub use callbacks::{CallbackRequest, HostRequest, ImportContinuation, ImportStep};
+pub use qc::{QcImportContinuation, QcImportStep};
 
 #[derive(Clone, Copy)]
 pub enum Addresses {
@@ -842,99 +844,6 @@ pub struct QuakeCCalls<'a, 'engine> {
     pub platform_time: EventTime,
     pub developer: qa_core::primitives::CvarHandle,
     pub unknown: &'a mut UnknownCalls,
-}
-impl quakec::Builtins for QuakeCCalls<'_, '_> {
-    fn call(&mut self, vm: &mut quakec::Vm, number: u32, argc: usize) -> Result<(), quakec::Trap> {
-        // Unsupported native builtins trap only when executed; they never
-        // inherit the Q3 convention of reporting an unknown import as zero.
-        let Some(entry) = self.table.entries.get(number as usize).copied().flatten() else {
-            self.unknown
-                .report(self.services, self.context.module, number, "QuakeC builtin");
-            return Err(quakec::Trap::Builtin);
-        };
-        let signature = entry.quakec.ok_or(quakec::Trap::Builtin)?;
-        if argc > 8 {
-            return Err(quakec::Trap::Builtin);
-        }
-        if matches!(signature.argc, QcArgc::Fixed(expected) if argc != expected) {
-            return Err(quakec::Trap::Builtin);
-        }
-        let mut arguments = [0u64; 24];
-        let mut words = 0;
-        let quakeworld = self.context.native_rules == qa_core::primitives::RuleSetId::QuakeWorld;
-        let string_start = signature.args.string_start(quakeworld);
-        for index in 0..argc {
-            for component in 0..signature.args.width(index) {
-                let mut word = *vm
-                    .image
-                    .globals
-                    .get(4 + index * 3 + component)
-                    .ok_or(quakec::Trap::Memory)?;
-                if component == 0 && signature.args.string(index, string_start) {
-                    vm.string(word as i32)?;
-                }
-                if index == 0 && matches!(signature.args, QcArgs::ClientStrings { .. }) {
-                    word = vm.entity_number(word)?;
-                }
-                arguments[words] = u64::from(word);
-                words += 1;
-            }
-        }
-        if signature.developer_nq_only
-            && !quakeworld
-            && self.services.cvars.value(self.developer) == 0.0
-        {
-            return Ok(());
-        }
-        let value = if let Handler::QuakeC(entry) = entry.handler {
-            entry(self, vm, &arguments[..words]).map_err(|_| quakec::Trap::Builtin)?
-        } else {
-            let mut invocation = Invocation {
-                services: self.services,
-                memory: &mut vm.strings,
-                native_cvars: None,
-                native_resources: None,
-                native_entities: None,
-                native_surfaces: None,
-                native_command: None,
-                native_configs: None,
-                native_pmove: None,
-                native_player: None,
-                context: self.context,
-                platform_time: self.platform_time,
-                command: &[],
-                addresses: Addresses::Native {
-                    abi: qa_platform::native::NativeAbi::SystemV,
-                    pointer_bytes: 8,
-                },
-                arguments: &arguments[..words],
-            };
-            entry
-                .invoke(&mut invocation, string_start)
-                .map_err(|_| quakec::Trap::Builtin)?
-        };
-        match value {
-            CallValue::Word(value) => {
-                if signature.returns {
-                    *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = value as u32;
-                }
-            }
-            CallValue::TemporaryString(offset, length) => {
-                vm.register_temporary_string(length);
-                if signature.returns {
-                    *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = offset;
-                }
-            }
-            CallValue::Vector(vector) => {
-                if signature.returns {
-                    vm.write_global_vector(1, vector)?;
-                }
-            }
-            CallValue::Basis(basis) => vm.write_basis(basis)?,
-            CallValue::Host(..) => return Err(quakec::Trap::Builtin),
-        }
-        Ok(())
-    }
 }
 
 fn qc_word(arguments: &[u64], index: usize) -> Result<u32, CallError> {

@@ -6,11 +6,15 @@ use crate::{
 };
 use qa_core::{bits::BitSet, primitives::Vec3, random::Random};
 use qa_formats::program::quakec::{Image, Opcode};
+use std::sync::Arc;
 
 mod client;
+mod continuation;
 mod map;
 pub(crate) mod sound;
 pub use client::ClientCallRestore;
+use continuation::{ActiveRun, RunState, Settings};
+pub use continuation::{BuiltinCall, Run, Step};
 pub use map::{MapAdmission, MapFields};
 pub use qa_session::physics::MotionState;
 
@@ -25,6 +29,7 @@ pub enum Trap {
     Builtin,
     Budget,
     World,
+    Continuation,
 }
 impl From<MemoryError> for Trap {
     fn from(_: MemoryError) -> Self {
@@ -33,6 +38,9 @@ impl From<MemoryError> for Trap {
 }
 pub trait Builtins {
     fn call(&mut self, vm: &mut Vm, number: u32, argc: usize) -> Result<(), Trap>;
+    fn stopped(&mut self, vm: &mut Vm, call: &BuiltinCall) -> Result<(), Trap> {
+        self.call(vm, call.number, call.argc())
+    }
 }
 
 /// Native edict ABI data, supplied independently of the map and movement.
@@ -161,6 +169,10 @@ pub struct Vm {
     string_used: usize,
     string_limit: usize,
     temporary_used: usize,
+    run_owner: Arc<()>,
+    next_run: u64,
+    active_run: Option<ActiveRun>,
+    settings: Settings,
 }
 impl Vm {
     pub fn load(image: Image, layout: Layout) -> Result<Self, Trap> {
@@ -283,6 +295,10 @@ impl Vm {
             string_used,
             string_limit,
             temporary_used: 0,
+            run_owner: Arc::new(()),
+            next_run: 0,
+            active_run: None,
+            settings: Settings::default(),
         })
     }
     pub fn random_word(&mut self) -> u32 {
@@ -786,28 +802,20 @@ impl Vm {
         budget: u64,
         hooks: bool,
     ) -> Result<[u32; 3], Trap> {
-        if hooks {
-            self.enter::<true>(builtins, function, budget)
-        } else {
-            self.enter::<false>(builtins, function, budget)
+        let mut run = self.begin_root(function, budget, hooks)?;
+        let mut step = self.advance(&mut run)?;
+        loop {
+            match step {
+                Step::Returned(value) => return Ok(value),
+                Step::Builtin(call) => {
+                    if let Err(error) = builtins.stopped(self, &call) {
+                        self.abort(&mut run)?;
+                        return Err(error);
+                    }
+                    step = self.resume(&mut run)?;
+                }
+            }
         }
-    }
-    fn enter<const HOOKS: bool>(
-        &mut self,
-        builtins: &mut impl Builtins,
-        function: u32,
-        budget: u64,
-    ) -> Result<[u32; 3], Trap> {
-        let saved = self.depth;
-        let saved_statement = self.statement;
-        let saved_argc = self.argc;
-        let result = self.run::<HOOKS>(builtins, function, budget);
-        while self.depth > saved {
-            self.leave();
-        }
-        self.statement = saved_statement;
-        self.argc = saved_argc;
-        result
     }
     fn push(&mut self, function: usize, return_pc: usize) -> Result<usize, Trap> {
         let f = self
@@ -853,20 +861,14 @@ impl Vm {
             .copy_from_slice(&self.locals[self.locals_used..self.locals_used + f.locals]);
         frame.return_pc
     }
-    fn run<const HOOKS: bool>(
-        &mut self,
-        builtins: &mut impl Builtins,
-        function: u32,
-        mut budget: u64,
-    ) -> Result<[u32; 3], Trap> {
+    fn run<const HOOKS: bool>(&mut self, state: &mut RunState) -> Result<Step, Trap> {
         use Opcode::*;
-        let exit_depth = self.depth;
-        let mut pc = self.push(function as usize, 0)?;
+        let mut pc = state.pc;
         loop {
-            if budget <= 1 {
+            if self.settings.remaining <= 1 {
                 return Err(Trap::Budget);
             }
-            budget -= 1;
+            self.settings.remaining -= 1;
             let index = pc;
             let statement = *self.image.statements.get(index).ok_or(Trap::Statement)?;
             pc += 1;
@@ -886,12 +888,12 @@ impl Vm {
                         self.image.globals[1 + i] = self.image.globals[a + i];
                     }
                     pc = self.leave();
-                    if self.depth == exit_depth {
-                        return Ok([
+                    if self.depth == state.exit_depth {
+                        return Ok(Step::Returned([
                             self.image.globals[1],
                             self.image.globals[2],
                             self.image.globals[3],
-                        ]);
+                        ]));
                     }
                 }
                 If | IfNot => {
@@ -914,7 +916,10 @@ impl Vm {
                     }
                     if f.first_statement < 0 {
                         self.statement = index;
-                        builtins.call(self, f.first_statement.wrapping_neg() as u32, self.argc)?;
+                        let number = f.first_statement.wrapping_neg() as u32;
+                        let call = BuiltinCall::capture(self, number, self.argc)?;
+                        state.pc = pc;
+                        return Ok(Step::Builtin(call));
                     } else {
                         pc = self.push(target, pc)?;
                     }

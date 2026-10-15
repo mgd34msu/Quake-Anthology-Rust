@@ -1,13 +1,18 @@
 //! Synchronous module calls use one load-reserved, iterative activation stack.
-use super::{Module, ModuleResult, Program, State, context};
+use super::{Module, ModuleResult, Program, State, context, motion, native_self};
 use crate::host::FrameHost;
 use qa_compat::{
-    abi::{HostRequest, ImportContinuation, ImportStep, QvmCalls},
-    qvm,
-    services::{CallContext, CallError as ServiceError, ClientConnection},
+    abi::{
+        HostRequest, ImportContinuation, ImportStep, QUAKEC, QcImportContinuation, QcImportStep,
+        QuakeCCalls, QvmCalls,
+    },
+    quakec, qvm,
+    services::{CallContext, CallError as ServiceError, ClientConnection, EngineServices},
 };
 use qa_core::{
-    primitives::{CallbackCall, ClientId, CommandArgs, EntityId, ModuleId},
+    primitives::{
+        CallbackCall, ClientCallback, ClientId, CommandArgs, EntityId, ModuleId, RuleSetId,
+    },
     sys_events::EventTime,
 };
 use qa_input::{DispatchCursor, DispatchResume, DispatchStep, InputCapture};
@@ -41,17 +46,43 @@ impl CallOutcome<FrameHost> for ModuleDispatch {
 #[derive(Clone, Copy)]
 pub(super) struct GuestStart {
     module: ModuleId,
-    entity: EntityId,
+    call: CallbackCall<'static>,
     anchor: EntityId,
     entry: u32,
-    words: [u64; 9],
     context: CallContext,
     platform_time: EventTime,
-    native_player: Option<ClientId>,
     connection: Option<(ClientId, EntityId)>,
 }
 
+impl GuestStart {
+    fn words(self) -> [u64; 9] {
+        match self.call {
+            CallbackCall::Think { time, .. } => {
+                let mut words = [0; 9];
+                words[0] = time.milliseconds() as u64;
+                words
+            }
+            CallbackCall::Export { arguments, .. } | CallbackCall::Client { arguments, .. } => {
+                arguments
+            }
+            _ => [0; 9],
+        }
+    }
+    fn native_player(self) -> Option<ClientId> {
+        match self.call {
+            CallbackCall::Export { client, .. } => client,
+            CallbackCall::Client { client, .. } => Some(client),
+            _ => None,
+        }
+    }
+}
+
 enum Backend {
+    QuakeC {
+        run: Option<quakec::Run>,
+        restore: Option<quakec::ClientCallRestore>,
+        native: Option<u32>,
+    },
     Qvm {
         run: qvm::Run,
         outer: bool,
@@ -63,6 +94,7 @@ enum Backend {
     },
 }
 enum ReplyPoint {
+    QuakeC(QcImportContinuation),
     Qvm(ImportContinuation),
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     Native,
@@ -132,51 +164,94 @@ pub(super) fn start(
     entry: u32,
     call: CallbackCall<'_>,
 ) -> ModuleDispatch {
-    let (time, words, native_player) = match call {
-        CallbackCall::Think { time, .. } => {
-            let mut words = [0; 9];
-            words[0] = time.milliseconds() as u64;
-            (time, words, None)
-        }
-        CallbackCall::Export {
-            time,
-            arguments,
-            client,
-            ..
-        } => (time, arguments, client),
-        CallbackCall::Client {
-            time,
-            arguments,
-            client,
-            ..
-        } => (time, arguments, Some(client)),
-        _ => return ModuleDispatch::Completed(false),
-    };
     let Some(row) = host.module_row(module) else {
         return ModuleDispatch::Completed(false);
     };
-    if !row.state.can_invoke() || matches!(row.request.program, Program::QuakeC(_)) {
+    if !row.state.can_invoke() {
         return ModuleDispatch::Completed(false);
     }
+    // Command tokens remain in complete()'s external lease. The activation owns
+    // only the numeric callback metadata needed across stopped guest borrows.
+    let (call, time) = match call {
+        CallbackCall::Think { entity, time } => (CallbackCall::Think { entity, time }, time),
+        CallbackCall::Spawn { entity, time }
+            if matches!(row.request.program, Program::QuakeC(_)) =>
+        {
+            (CallbackCall::Spawn { entity, time }, time)
+        }
+        CallbackCall::Touch {
+            entity,
+            other,
+            time,
+        } if matches!(row.request.program, Program::QuakeC(_)) => (
+            CallbackCall::Touch {
+                entity,
+                other,
+                time,
+            },
+            time.unwrap_or_else(|| row.time(host.time)),
+        ),
+        CallbackCall::Export {
+            entity,
+            time,
+            arguments,
+            client,
+            ..
+        } => (
+            CallbackCall::Export {
+                entity,
+                time,
+                arguments,
+                client,
+                command: CommandArgs::default(),
+            },
+            time,
+        ),
+        CallbackCall::Client {
+            entity,
+            client,
+            event,
+            time,
+            arguments,
+            ..
+        } => (
+            CallbackCall::Client {
+                entity,
+                client,
+                event,
+                time,
+                arguments,
+                command: CommandArgs::default(),
+            },
+            time,
+        ),
+        _ => return ModuleDispatch::Completed(false),
+    };
     let start = GuestStart {
         module,
-        entity: call.entity(),
+        call,
         anchor: row.request.anchor,
         entry,
-        words,
-        context: context(row.request.context, time),
+        // ED_Alloc/ED_Free use the module frame clock. A think's QC global
+        // time instead contains its selected nextthink time.
+        context: if matches!(row.request.program, Program::QuakeC(_))
+            && matches!(call, CallbackCall::Think { .. })
+        {
+            row.request.context
+        } else {
+            context(row.request.context, time)
+        },
         platform_time: host.runtime.input_time,
-        native_player,
         connection: row.client_connection,
     };
-    if valid(host, start) {
+    if valid(host, start, true) {
         ModuleDispatch::Guest(start)
     } else {
         ModuleDispatch::Completed(false)
     }
 }
 
-fn valid(host: &FrameHost, start: GuestStart) -> bool {
+fn valid(host: &FrameHost, start: GuestStart, live_self: bool) -> bool {
     let Some(row) = host.module_row(start.module) else {
         return false;
     };
@@ -186,7 +261,10 @@ fn valid(host: &FrameHost, start: GuestStart) -> bool {
     {
         return false;
     }
-    for entity in [start.anchor, start.entity] {
+    for entity in [Some(start.anchor), live_self.then_some(start.call.entity())]
+        .into_iter()
+        .flatten()
+    {
         let Some(slot) = host.runtime.server.entities.resolve(entity) else {
             return false;
         };
@@ -194,8 +272,20 @@ fn valid(host: &FrameHost, start: GuestStart) -> bool {
             return false;
         }
     }
+    if let CallbackCall::Client { entity, client, .. } = start.call
+        && host
+            .runtime
+            .server
+            .clients
+            .get(client.0 as usize)
+            .is_none_or(|client| client.connection.is_none() || client.entity != entity)
+    {
+        return false;
+    }
     if let Some((id, lifetime)) = start.connection {
-        if start.native_player.is_some_and(|requested| requested != id)
+        if start
+            .native_player()
+            .is_some_and(|requested| requested != id)
             || host
                 .runtime
                 .server
@@ -214,6 +304,15 @@ fn valid(host: &FrameHost, start: GuestStart) -> bool {
         }
     }
     true
+}
+
+fn valid_frame(host: &FrameHost, start: GuestStart, backend: Option<&Backend>) -> bool {
+    // QC keeps native self as a weak edict offset. A trigger may free it while
+    // the suspended function remains executable. Its module anchor and selected
+    // client lifetime still authorize every resume; entry validation was strong.
+    let live_self = !matches!(backend, Some(Backend::QuakeC { .. }))
+        || matches!(start.call, CallbackCall::Client { .. });
+    valid(host, start, live_self)
 }
 
 fn drive(host: &mut FrameHost, start: GuestStart, command: CommandArgs<'_>) -> bool {
@@ -235,7 +334,7 @@ fn drive(host: &mut FrameHost, start: GuestStart, command: CommandArgs<'_>) -> b
             .pending
             .as_ref()
             .is_some_and(|pending| matches!(pending.operation, Operation::Cleanup { .. }));
-        let finished = if !cleanup && !valid(host, frame.start) {
+        let finished = if !cleanup && !valid_frame(host, frame.start, frame.backend.as_ref()) {
             cancel(host, &mut frame, command);
             completing(host, &mut frame, Err(()));
             None
@@ -285,13 +384,14 @@ fn drive(host: &mut FrameHost, start: GuestStart, command: CommandArgs<'_>) -> b
                     {
                         let start = GuestStart {
                             module,
-                            entity: row.request.anchor,
+                            call: CallbackCall::Think {
+                                entity: row.request.anchor,
+                                time: row.request.context.clock,
+                            },
                             anchor: row.request.anchor,
                             entry: 0,
-                            words: [0; 9],
                             context: row.request.context,
                             platform_time: host.runtime.input_time,
-                            native_player: None,
                             connection: row.client_connection,
                         };
                         let mut cleanup = Activation::new(start, true);
@@ -494,7 +594,7 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                     return OperationStep::FailedInput(module);
                 }
                 *recipient = None;
-                if !valid(host, frame.start) {
+                if !valid_frame(host, frame.start, frame.backend.as_ref()) {
                     return OperationStep::Abort;
                 }
             }
@@ -588,6 +688,58 @@ fn advance(
         .and_then(|modules| modules.parts_mut(start.module))
         .ok_or(())?;
     let entering = frame.backend.is_none();
+    if entering && let Program::QuakeC(qc) = &mut row.request.program {
+        // A nested callback must observe its suspended parent's native stores,
+        // including attached poses not yet published to the common columns.
+        if !qc.vm.is_running()
+            && motion::sync_attachments(
+                &mut qc.vm,
+                &mut host.runtime.server.entities,
+                row.request.context,
+            )
+            .is_err()
+        {
+            row.counts.rejected += 1;
+            return Err(());
+        }
+        let native = native_self(&host.runtime, start.call.entity(), start.module, &qc.vm);
+        let world = native_self(&host.runtime, start.anchor, start.module, &qc.vm);
+        let prepared = match start.call {
+            CallbackCall::Client { event, time, .. } => native
+                .ok_or(ServiceError::Entity)
+                .and_then(|native| qc.vm.prepare_client_call(event, native, time)),
+            CallbackCall::Touch { other, time, .. } => {
+                native.ok_or(ServiceError::Entity).and_then(|native| {
+                    let other = qc.vm.weak_entity_offset(start.module, other)?;
+                    qc.vm.prepare_touch_call(native, other, time)
+                })
+            }
+            CallbackCall::Think { time, .. }
+            | CallbackCall::Spawn { time, .. }
+            | CallbackCall::Export { time, .. } => qc
+                .vm
+                .prepare_call(
+                    native,
+                    world,
+                    time,
+                    match start.call {
+                        CallbackCall::Think { .. } => quakec::CallPhase::Think,
+                        CallbackCall::Spawn { .. } => quakec::CallPhase::Spawn,
+                        _ => quakec::CallPhase::Export,
+                    },
+                )
+                .map(|()| quakec::ClientCallRestore::default())
+                .map_err(|_| ServiceError::Memory),
+            _ => return Err(()),
+        };
+        frame.backend = Some(Backend::QuakeC {
+            run: None,
+            restore: Some(prepared.map_err(|_| ())?),
+            native,
+        });
+        row.counts.calls += 1;
+        frame.counted = true;
+    }
     let (mut services, mut client_view, mut composer, models) = host.runtime.engine_service_parts(
         &mut host.console,
         storage,
@@ -613,7 +765,7 @@ fn advance(
     services.client_connection = client_view
         .as_mut()
         .map(|view| view as &mut dyn ClientConnection);
-    if entering {
+    if entering && !matches!(row.request.program, Program::QuakeC(_)) {
         row.counts.calls += 1;
         frame.counted = true;
     }
@@ -634,7 +786,7 @@ fn advance(
                 }
                 let mut words = [0; 10];
                 words[0] = start.entry as i32;
-                for (to, word) in words[1..].iter_mut().zip(start.words) {
+                for (to, word) in words[1..].iter_mut().zip(start.words()) {
                     *to = word as u32 as i32;
                 }
                 let run = vm
@@ -651,7 +803,6 @@ fn advance(
                         .resume_import(vm, continuation, value)
                         .map_err(|_| ())?,
                 ),
-                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                 Some(_) => return Err(()),
                 None => None,
             };
@@ -700,13 +851,13 @@ fn advance(
                 platform_time: start.platform_time,
                 command: command.argv,
                 raw_args: command.raw,
-                native_player: start.native_player,
+                native_player: start.native_player(),
                 unknown: &mut row.unknown,
             };
             let result = (|| {
                 if entering {
                     frame.backend = Some(Backend::Native {
-                        run: vm.begin(&mut calls, start.entry, &start.words)?,
+                        run: vm.begin(&mut calls, start.entry, &start.words())?,
                         pending: None,
                     });
                 }
@@ -750,7 +901,71 @@ fn advance(
                 }
             }
         }
-        Program::QuakeC(_) => Err(()),
+        Program::QuakeC(qc) => {
+            let mut calls = QuakeCCalls {
+                services: &mut services,
+                table: &QUAKEC,
+                context: start.context,
+                platform_time: start.platform_time,
+                developer: host.developer,
+                unknown: &mut row.unknown,
+            };
+            if entering {
+                let run = if qc.vm.is_running() {
+                    qc.vm
+                        .begin_callback(start.entry, row.request.instruction_budget, false)
+                } else {
+                    qc.vm
+                        .begin_root(start.entry, row.request.instruction_budget, false)
+                }
+                .map_err(|_| ())?;
+                let Some(Backend::QuakeC { run: saved, .. }) = frame.backend.as_mut() else {
+                    return Err(());
+                };
+                *saved = Some(run);
+            }
+            let Some(Backend::QuakeC { run: Some(run), .. }) = frame.backend.as_mut() else {
+                return Err(());
+            };
+            let mut imported = match frame.reply.take() {
+                Some((ReplyPoint::QuakeC(continuation), value)) => Some(
+                    calls
+                        .resume_import(&mut qc.vm, continuation, value)
+                        .map_err(|_| ())?,
+                ),
+                Some(_) => return Err(()),
+                None => None,
+            };
+            let mut step = None;
+            loop {
+                if let Some(import) = imported.take() {
+                    match import {
+                        // The ABI wrote only the return cells in this builtin's
+                        // signature. Void imports and return-vector tails survive.
+                        QcImportStep::Returned => step = Some(qc.vm.resume(run).map_err(|_| ())?),
+                        QcImportStep::Host {
+                            request,
+                            continuation,
+                        } => {
+                            return Ok(GuestStep::Host(request, ReplyPoint::QuakeC(continuation)));
+                        }
+                    }
+                }
+                match step
+                    .take()
+                    .map_or_else(|| qc.vm.advance(run), Ok)
+                    .map_err(|_| ())?
+                {
+                    quakec::Step::Builtin(builtin) => {
+                        imported = Some(calls.import(&mut qc.vm, &builtin).map_err(|_| ())?);
+                    }
+                    quakec::Step::Returned(value) => {
+                        finish_quakec(&mut qc.vm, calls.services, frame, true)?;
+                        return Ok(GuestStep::Returned(ModuleResult::QuakeC(value)));
+                    }
+                }
+            }
+        }
     })();
     let termination = services
         .client_connection
@@ -758,6 +973,58 @@ fn advance(
         .and_then(|view| view.disconnected());
     frame.termination = frame.termination.or(termination);
     result
+}
+
+fn finish_quakec(
+    vm: &mut quakec::Vm,
+    services: &mut EngineServices<'_>,
+    frame: &mut Activation,
+    success: bool,
+) -> Result<(), ()> {
+    let Some(Backend::QuakeC {
+        restore, native, ..
+    }) = frame.backend.as_mut()
+    else {
+        return Err(());
+    };
+    let Some(restore) = restore.take() else {
+        return Ok(());
+    };
+    let start = frame.start;
+    let restored = vm.finish_client_call(restore);
+    let velocity = if success
+        && restored.is_ok()
+        && start.context.native_rules == RuleSetId::Quake
+        && matches!(
+            start.call,
+            CallbackCall::Client {
+                event: ClientCallback::BeforeMove,
+                ..
+            }
+        ) {
+        (|| {
+            let native = native.ok_or(ServiceError::Entity)?;
+            let maximum = vm.max_velocity(services.cvars)?;
+            motion::check_velocity(
+                vm,
+                services,
+                start.context,
+                native,
+                start.call.entity(),
+                maximum,
+            )
+        })()
+    } else {
+        Ok(())
+    };
+    // Publish admitted writes even after a trap or cancellation. Nested QC
+    // callbacks finish this boundary before the suspended host operation resumes.
+    let projection = if matches!(start.call, CallbackCall::Think { .. }) {
+        vm.project_dirty_entities(services, start.context)
+    } else {
+        vm.project_entities(services, start.context)
+    };
+    restored.and(velocity).and(projection).map_err(|_| ())
 }
 
 fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>) {
@@ -797,6 +1064,12 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>
         .engine_services(&mut host.console, storage, &mut row.scratch);
     services.storage.abort_client_callbacks(frame.start.module);
     match (&mut row.request.program, frame.backend.as_mut()) {
+        (Program::QuakeC(qc), Some(Backend::QuakeC { run, .. })) => {
+            if let Some(run) = run {
+                let _ = qc.vm.abort(run);
+            }
+            let _ = finish_quakec(&mut qc.vm, &mut services, frame, false);
+        }
         (Program::Qvm { vm, .. }, Some(Backend::Qvm { run, .. })) => {
             let _ = vm.abort(run);
         }
@@ -809,7 +1082,7 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>
                 platform_time: frame.start.platform_time,
                 command: command.argv,
                 raw_args: command.raw,
-                native_player: frame.start.native_player,
+                native_player: frame.start.native_player(),
                 unknown: &mut row.unknown,
             };
             if vm.is_active() {
