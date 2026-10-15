@@ -168,7 +168,7 @@ fn human(host: &mut FrameHost, commands: &str) {
     host.console.append(commands, Context::default()).unwrap();
 }
 fn run_commands(host: &mut FrameHost) {
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
 }
 struct Source {
     time: EventTime,

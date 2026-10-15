@@ -51,7 +51,7 @@ fn rejected_release_closes_executed_press_at_its_original_time() {
     push(&mut host, EventKind::Time, 0);
     key(&mut host, 26, true, false, 10);
     host.drain(&mut Default::default());
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     assert_eq!(forward(&mut host, 20), 100.0);
     host.console
         .append(
@@ -61,7 +61,7 @@ fn rejected_release_closes_executed_press_at_its_original_time() {
         .unwrap();
     key(&mut host, 26, false, false, 30);
     host.drain(&mut Default::default());
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     assert_eq!(host.runtime.server.events.rejected_publications(), 1);
     assert_eq!(forward(&mut host, 40), 100.0);
     assert_eq!(forward(&mut host, 60), 0.0);
@@ -82,7 +82,7 @@ fn rejected_release_cancels_press_still_queued_in_the_same_drain() {
     key(&mut host, 26, true, false, 10);
     key(&mut host, 26, false, false, 20);
     host.drain(&mut Default::default());
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     assert_eq!(host.runtime.server.events.rejected_publications(), 1);
     assert_eq!(forward(&mut host, 40), 0.0);
     assert_eq!(forward(&mut host, 60), 0.0);
@@ -95,7 +95,7 @@ fn admitted_quick_tap_keeps_the_native_elapsed_interval() {
     key(&mut host, 26, true, false, 10);
     key(&mut host, 26, false, false, 20);
     host.drain(&mut Default::default());
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     assert_eq!(forward(&mut host, 40), 50.0);
     assert_eq!(forward(&mut host, 60), 0.0);
     assert_eq!(host.runtime.server.events.rejected_publications(), 0);
@@ -128,7 +128,7 @@ fn queued_window_text_reaches_the_one_console_and_repeat_edits_do_not_move() {
     key(&mut host, 40, true, false, 6);
     push(&mut host, EventKind::Time, 20);
     host.drain(&mut Default::default());
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     assert_eq!(host.console.editor.seat(), Some(SeatId::FIRST));
     assert_eq!(
         host.console
@@ -153,7 +153,7 @@ fn queued_window_text_reaches_the_one_console_and_repeat_edits_do_not_move() {
     push(&mut host, EventKind::Time, 40);
     host.drain(&mut Default::default());
     // Both native and custom bindings now execute through the queued console.
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     let command = host.runtime.input.build_frame_with_policy(
         EventTime::from_milliseconds(40),
         &[input_handles.policy(&host.console.cvars, qa_core::primitives::RuleSetId::Quake2);

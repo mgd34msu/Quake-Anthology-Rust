@@ -51,6 +51,7 @@ const fn decode_table() -> [(u16, u8); 2048] {
 const DECODE: [(u16, u8); 2048] = decode_table();
 
 pub const COMMAND_STRING_BYTES: usize = 1024;
+pub const LEGACY_STRING_BYTES: usize = 2048;
 
 pub(crate) const Q3_MAX_BYTE_BITS: usize = {
     let mut maximum = 0;
@@ -93,7 +94,7 @@ impl StringPolicy {
     /// NQ/QW/Q2 MSG_ReadChar strings: 0xff terminates, and a full native
     /// 2048-byte buffer stops before reading the next byte.
     pub const LEGACY: Self = Self {
-        maximum: 2047,
+        maximum: LEGACY_STRING_BYTES - 1,
         signed_terminator: true,
         stop_at_limit: true,
         sanitize: false,

@@ -643,7 +643,7 @@ fn run() -> Result<(), String> {
             spec.rules.name(),
         );
     }
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     // Synchronous native precache owns the same assets and metadata that CLIENT
     // will read after startup. Configure every module's independent profile first.
     let mut profiles = [None; 5];

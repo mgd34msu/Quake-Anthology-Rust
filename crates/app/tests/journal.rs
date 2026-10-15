@@ -113,7 +113,7 @@ fn connected(protocol: Protocol) -> FrameHost {
     host.console
         .append("bind w +forward\n", Context::default())
         .unwrap();
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     host
 }
 

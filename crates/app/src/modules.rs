@@ -31,6 +31,7 @@ pub use clients::{ClientCommandError, ClientLifecycleInfo};
 mod cues;
 mod execution;
 mod input;
+pub(crate) use execution::ExecutionSlot;
 use execution::ModuleDispatch;
 mod map_start;
 mod motion;
@@ -242,6 +243,15 @@ impl Counts {
         }
     }
 }
+impl ModuleResult {
+    fn claims_command(self) -> bool {
+        match self {
+            Self::Qvm(value) => value != 0,
+            Self::Native(value) => value != 0,
+            Self::QuakeC(_) => false,
+        }
+    }
+}
 struct Module {
     request: ModuleRequest,
     scratch: qa_world::collision::TraceScratch,
@@ -269,10 +279,22 @@ struct Module {
     produces_client_audio: bool,
     produces_client_view: bool,
     input: Option<qa_compat::abi::ClientInputExports>,
+    command: Option<execution::CommandBinding>,
     scene_role: crate::renderer::native::SceneRole,
     collision_role: qa_compat::services::ClientCollision,
 }
 impl Module {
+    fn ready_for_callback(&self, active: bool) -> bool {
+        self.state == State::Running
+            || (active
+                && self.state == State::Pending
+                && match &self.request.program {
+                    Program::Qvm { vm, .. } => vm.is_active(),
+                    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                    Program::Native { vm, .. } => vm.is_active(),
+                    Program::QuakeC(_) => false,
+                })
+    }
     fn retain_active_batch(batch: &mut Option<ClientId>, server: &qa_session::clients::Server) {
         *batch = batch.filter(|id| {
             server
@@ -295,7 +317,6 @@ pub struct Modules {
     storage: ServiceStorage,
     signon: Box<[SignonCursor]>,
     input: [input::Recipients; qa_core::sys_events::SeatId::COUNT],
-    execution: Box<[Option<execution::Activation>]>,
 }
 impl Modules {
     pub(crate) fn has_module(&self, module: ModuleId) -> bool {
@@ -434,6 +455,30 @@ impl FrameHost {
         world_rate: TickRate,
         requests: Vec<ModuleRequest>,
     ) -> Result<Self, String> {
+        let mut requests = requests;
+        for request in &mut requests {
+            if std::iter::once(request.frame)
+                .chain(request.prepare.iter().copied())
+                .chain(request.initialize.iter().copied())
+                .chain(request.shutdown.iter().copied())
+                .chain(request.api.map(ApiCheck::export))
+                .any(|export| export.callback.0 as usize >= request.entries.len())
+            {
+                return Err("invalid module binding".into());
+            }
+            if let Some(export) = request
+                .program
+                .imports()
+                .and_then(|table| table.command_export())
+                && !request.entries.contains(&export.entry)
+            {
+                request
+                    .entries
+                    .try_reserve(1)
+                    .map_err(|_| "module command entry reservation")?;
+                request.entries.push(export.entry);
+            }
+        }
         runtime.prepare_traces(requests.iter().map(|request| request.context.trace_rules))?;
         let providers = requests
             .iter()
@@ -485,15 +530,12 @@ impl FrameHost {
         // A completed backend may wait for one claimed client-lifetime or
         // failed-module cleanup. These owners cannot be claimed twice.
         let execution_capacity = execution_capacity
-            .checked_add(host.runtime.server.clients.len())
+            .checked_mul(2)
+            .and_then(|capacity| capacity.checked_add(host.runtime.server.clients.len()))
             .and_then(|capacity| capacity.checked_add(requests.len()))
+            .and_then(|capacity| capacity.checked_add(1))
             .ok_or("module cleanup execution capacity")?;
-        let mut execution = Vec::new();
-        execution
-            .try_reserve_exact(execution_capacity)
-            .map_err(|_| "module execution reservation")?;
-        execution.resize_with(execution_capacity, || None);
-        let execution = execution.into_boxed_slice();
+        let execution = execution::ExecutionSlot::reserve(execution_capacity)?;
         let mut functions = FunctionTable::load(requests.iter().map(|m| {
             (
                 m.context.module,
@@ -546,15 +588,6 @@ impl FrameHost {
                 .resolve(request.anchor)
                 .ok_or("stale module anchor")?;
             if host.runtime.server.entities.columns.owner[entity] != request.context.module
-                || request.frame.callback.0 as usize >= request.entries.len()
-                || request
-                    .prepare
-                    .iter()
-                    .chain(&request.initialize)
-                    .chain(&request.shutdown)
-                    .copied()
-                    .chain(request.api.map(ApiCheck::export))
-                    .any(|export| export.callback.0 as usize >= request.entries.len())
                 || request.instruction_budget == 0
             {
                 return Err("invalid module binding".into());
@@ -754,6 +787,7 @@ impl FrameHost {
             let consumes_server_commands = request.program.consumes_server_commands();
             let produces_client_audio = request.program.produces_client_audio();
             let produces_client_view = request.program.produces_client_view();
+            let command = execution::CommandBinding::load(&request)?;
             let input = request
                 .program
                 .imports()
@@ -837,6 +871,7 @@ impl FrameHost {
                 produces_client_audio,
                 produces_client_view,
                 input,
+                command,
                 scene_role: Default::default(),
                 collision_role: Default::default(),
                 clock,
@@ -864,8 +899,8 @@ impl FrameHost {
             storage,
             signon,
             input,
-            execution,
         });
+        host.execution = execution;
         host.bind_client_presentation()?;
         host.configure_output_resources();
         host.update_console_policy(false);

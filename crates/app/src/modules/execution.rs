@@ -3,16 +3,21 @@ use super::{Module, ModuleResult, Program, State, contacts, context, motion, nat
 use crate::host::FrameHost;
 use qa_compat::{
     abi::{
-        HostRequest, ImportContinuation, ImportStep, QUAKEC, QcImportContinuation, QcImportStep,
-        QuakeCCalls, QvmCalls,
+        ArgumentSelection, CommandRole, HostRequest, ImportContinuation, ImportStep, QUAKEC,
+        QcImportContinuation, QcImportStep, QuakeCCalls, QvmCalls,
     },
     quakec, qvm,
     services::{CallContext, CallError as ServiceError, ClientConnection, EngineServices},
 };
+use qa_console::{
+    command_text::{Arguments, ParsedCommand},
+    commands::{CommandReply, CommandRun, CommandStep},
+    views::Context as ConsoleContext,
+};
 use qa_core::{
     primitives::{
-        CallbackCall, ClientCallback, ClientId, CommandArgs, EntityId, ModuleId, ResourceNamespace,
-        RuleSetId,
+        CallbackCall, CallbackId, ClientCallback, ClientId, CommandArgs, EntityId, ModuleId,
+        ResourceNamespace, RuleSetId,
     },
     sys_events::EventTime,
 };
@@ -21,16 +26,16 @@ use qa_session::dispatch::CallOutcome;
 use std::sync::Arc;
 
 pub(super) enum ModuleDispatch {
-    Completed(bool),
+    Completed(ExecutionResult),
     Guest(GuestStart),
 }
 impl CallOutcome<FrameHost> for ModuleDispatch {
     fn rejected() -> Self {
-        Self::Completed(false)
+        Self::Completed(Err(()))
     }
     fn complete(self, host: &mut FrameHost, call: CallbackCall<'_>) -> bool {
         match self {
-            Self::Completed(accepted) => accepted,
+            Self::Completed(result) => result.is_ok(),
             Self::Guest(start) => {
                 let command = match call {
                     CallbackCall::Export { command, .. } | CallbackCall::Client { command, .. } => {
@@ -38,7 +43,7 @@ impl CallOutcome<FrameHost> for ModuleDispatch {
                     }
                     _ => CommandArgs::default(),
                 };
-                drive(host, Activation::new(start, false), command)
+                drive(host, Frame::Guest(Activation::new(start, false)), command).is_ok()
             }
         }
     }
@@ -124,6 +129,95 @@ enum Operation {
         time: EventTime,
         recipient: Option<ModuleId>,
     },
+    Console {
+        context: ConsoleContext,
+        text: Option<u64>,
+        waiting: bool,
+    },
+}
+type ExecutionResult = Result<Option<ModuleResult>, ()>;
+
+#[derive(Clone, Copy)]
+enum ArgSource {
+    Ambient,
+    Console(usize),
+}
+pub(crate) struct ExecutionSlot {
+    frame: Option<Frame>,
+    command: ParsedCommand,
+}
+impl ExecutionSlot {
+    pub(crate) fn reserve(capacity: usize) -> Result<Box<[Self]>, String> {
+        capacity
+            .checked_mul(std::mem::size_of::<Self>())
+            .ok_or("execution byte capacity")?;
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(capacity)
+            .map_err(|_| "execution reservation")?;
+        slots.resize_with(capacity, || Self {
+            frame: None,
+            command: ParsedCommand::default(),
+        });
+        Ok(slots.into_boxed_slice())
+    }
+}
+enum Frame {
+    Guest(Activation),
+    Console(ConsoleActivation),
+}
+impl Frame {
+    fn child(&mut self, result: ExecutionResult) {
+        match self {
+            Self::Guest(frame) => frame.child = Some(result),
+            Self::Console(frame) => frame.child = Some(result),
+        }
+    }
+}
+struct ConsoleActivation {
+    run: CommandRun,
+    fallback: Option<FallbackRun>,
+    child: Option<ExecutionResult>,
+    owner: Option<GuestStart>,
+}
+impl ConsoleActivation {
+    fn new(run: CommandRun) -> Self {
+        Self {
+            run,
+            fallback: None,
+            child: None,
+            owner: None,
+        }
+    }
+}
+struct FallbackRun {
+    tier: u8,
+    next: usize,
+    client: Option<(ClientId, EntityId, bool)>,
+}
+pub(super) struct CommandBinding {
+    role: CommandRole,
+    callback: CallbackId,
+}
+impl CommandBinding {
+    pub(super) fn load(request: &super::ModuleRequest) -> Result<Option<Self>, String> {
+        let Some(export) = request
+            .program
+            .imports()
+            .and_then(|table| table.command_export())
+        else {
+            return Ok(None);
+        };
+        let index = request
+            .entries
+            .iter()
+            .position(|&entry| entry == export.entry)
+            .ok_or("missing command export")?;
+        Ok(Some(Self {
+            role: export.role,
+            callback: CallbackId(u32::try_from(index).map_err(|_| "command callback capacity")?),
+        }))
+    }
 }
 pub(super) struct Activation {
     start: GuestStart,
@@ -131,7 +225,9 @@ pub(super) struct Activation {
     counted: bool,
     pending: Option<Pending>,
     reply: Option<(ReplyPoint, u64)>,
-    child: Option<bool>,
+    child: Option<ExecutionResult>,
+    arguments: ArgSource,
+    argument_selection: ArgumentSelection,
     input_callback: bool,
     termination: Option<qa_compat::services::ClientTermination>,
     admitted: Option<quakec::AdmittedEntity>,
@@ -145,6 +241,8 @@ impl Activation {
             pending: None,
             reply: None,
             child: None,
+            arguments: ArgSource::Ambient,
+            argument_selection: ArgumentSelection::RetainedClient,
             input_callback,
             termination: None,
             admitted: None,
@@ -163,6 +261,19 @@ enum OperationStep {
     Abort,
     FailedInput(ModuleId),
     Finished(Result<ModuleResult, ()>),
+    Console {
+        context: ConsoleContext,
+        text: Option<u64>,
+    },
+}
+enum FrameStep {
+    Continue,
+    Guest(Activation),
+    Console {
+        context: ConsoleContext,
+        text: Option<u64>,
+    },
+    Finished(ExecutionResult),
 }
 
 pub(super) fn start(
@@ -172,10 +283,10 @@ pub(super) fn start(
     call: CallbackCall<'_>,
 ) -> ModuleDispatch {
     let Some(row) = host.module_row(module) else {
-        return ModuleDispatch::Completed(false);
+        return ModuleDispatch::Completed(Err(()));
     };
     if !row.state.can_invoke() {
-        return ModuleDispatch::Completed(false);
+        return ModuleDispatch::Completed(Err(()));
     }
     // Command tokens remain in complete()'s external lease. The activation owns
     // only the numeric callback metadata needed across stopped guest borrows.
@@ -263,7 +374,7 @@ pub(super) fn start(
             },
             time,
         ),
-        _ => return ModuleDispatch::Completed(false),
+        _ => return ModuleDispatch::Completed(Err(())),
     };
     let start = GuestStart {
         module,
@@ -285,7 +396,7 @@ pub(super) fn start(
     if valid(host, start, true) {
         ModuleDispatch::Guest(start)
     } else {
-        ModuleDispatch::Completed(false)
+        ModuleDispatch::Completed(Err(()))
     }
 }
 
@@ -353,175 +464,548 @@ fn valid_frame(host: &FrameHost, start: GuestStart, backend: Option<&Backend>) -
     valid(host, start, live_self)
 }
 
-fn drive(host: &mut FrameHost, frame: Activation, command: CommandArgs<'_>) -> bool {
-    let Some(modules) = host.modules.as_mut() else {
-        return false;
-    };
-    let mut arena = std::mem::take(&mut modules.execution);
-    if arena.is_empty() {
-        modules.execution = arena;
-        return false;
+impl FrameHost {
+    /// Both Com_Frame command phases and startup use the owned module driver.
+    pub fn execute_commands(&mut self) {
+        let _ = drive(
+            self,
+            Frame::Console(ConsoleActivation::new(CommandRun::drain())),
+            CommandArgs::default(),
+        );
     }
-    arena[0] = Some(frame);
+}
+
+fn arguments<'a>(
+    arena: &'a [ExecutionSlot],
+    source: ArgSource,
+    root: CommandArgs<'a>,
+) -> Option<Arguments<'a>> {
+    match source {
+        ArgSource::Ambient => Some(Arguments::from_command(root)),
+        ArgSource::Console(index) => Some(arena.get(index)?.command.arguments()),
+    }
+}
+
+fn drive(host: &mut FrameHost, frame: Frame, command: CommandArgs<'_>) -> ExecutionResult {
+    let mut arena = std::mem::take(&mut host.execution);
+    if arena.is_empty() {
+        host.execution = arena;
+        return Err(());
+    }
+    arena[0].frame = Some(frame);
     let mut depth = 1;
     let result = loop {
-        let Some(mut frame) = arena[depth - 1].take() else {
-            break false;
+        let index = depth - 1;
+        let Some(mut frame) = arena[index].frame.take() else {
+            break Err(());
         };
-        let cleanup = frame
-            .pending
-            .as_ref()
-            .is_some_and(|pending| matches!(pending.operation, Operation::Cleanup { .. }));
-        let finished = if !cleanup && !valid_frame(host, frame.start, frame.backend.as_ref()) {
-            cancel(host, &mut frame, command);
-            completing(host, &mut frame, Err(()));
-            None
-        } else if frame.pending.is_some() {
-            match operation(host, &mut frame) {
-                OperationStep::Continue => None,
-                OperationStep::Reply => {
-                    if let Some(Pending {
-                        point: Some(point), ..
-                    }) = frame.pending.take()
-                    {
-                        frame.reply = Some((point, 0));
-                        None
-                    } else {
-                        cancel(host, &mut frame, command);
-                        completing(host, &mut frame, Err(()));
-                        None
+        let step = match &mut frame {
+            Frame::Guest(guest) => match arguments(&arena, guest.arguments, command) {
+                Some(command) => guest_step(host, guest, command),
+                None => {
+                    cancel(host, guest, Arguments::default());
+                    completing(host, guest, Err(()));
+                    FrameStep::Continue
+                }
+            },
+            Frame::Console(console) => {
+                console_step(host, console, &mut arena[index].command, index)
+            }
+        };
+        match step {
+            FrameStep::Continue => arena[index].frame = Some(frame),
+            FrameStep::Guest(guest) => {
+                if depth == arena.len() {
+                    frame.child(Err(()));
+                    arena[index].frame = Some(frame);
+                } else {
+                    arena[index].frame = Some(frame);
+                    arena[depth].frame = Some(Frame::Guest(guest));
+                    depth += 1;
+                }
+            }
+            FrameStep::Console { context, text } => {
+                if depth == arena.len() {
+                    frame.child(Err(()));
+                    arena[index].frame = Some(frame);
+                    continue;
+                }
+                let captured = match &mut frame {
+                    Frame::Guest(guest) => {
+                        capture_command(host, guest, text, &mut arena[depth].command)
                     }
-                }
-                OperationStep::Call(ModuleDispatch::Completed(accepted)) => {
-                    frame.child = Some(accepted);
-                    None
-                }
-                OperationStep::Call(ModuleDispatch::Guest(start)) => {
-                    if depth == arena.len() {
-                        // The reserved envelope follows actual backend stack limits.
-                        // A missing slot is never another arbitrary guest depth cap.
-                        frame.child = Some(false);
-                    } else {
-                        let input = frame.pending.as_ref().is_some_and(|pending| {
-                            matches!(pending.operation, Operation::Clear { .. })
-                        });
-                        arena[depth - 1] = Some(frame);
-                        arena[depth] = Some(Activation::new(start, input));
-                        depth += 1;
-                        continue;
-                    }
-                    None
-                }
-                OperationStep::Abort => {
-                    cancel(host, &mut frame, command);
-                    completing(host, &mut frame, Err(()));
-                    None
-                }
-                OperationStep::FailedInput(module) => {
-                    if let Some(row) = host.module_row(module).filter(|row| row.state.can_invoke())
-                    {
-                        let start = GuestStart {
-                            module,
-                            call: CallbackCall::Think {
-                                entity: row.request.anchor,
-                                time: row.request.context.clock,
-                                prepared_native: None,
-                            },
-                            anchor: row.request.anchor,
-                            entry: 0,
-                            context: row.request.context,
-                            platform_time: host.runtime.input_time,
-                            connection: row.client_connection,
+                    Frame::Console(_) => Err(()),
+                };
+                match captured {
+                    Ok(nonempty) => {
+                        let run = if nonempty {
+                            CommandRun::single(context)
+                        } else {
+                            CommandRun::drain()
                         };
-                        let mut cleanup = Activation::new(start, true);
-                        completing(host, &mut cleanup, Err(()));
-                        if depth < arena.len() {
-                            arena[depth - 1] = Some(frame);
-                            arena[depth] = Some(cleanup);
-                            depth += 1;
-                            continue;
+                        arena[index].frame = Some(frame);
+                        let mut console = ConsoleActivation::new(run);
+                        if let Some(Frame::Guest(guest)) = arena[index].frame.as_ref() {
+                            console.owner = Some(guest.start);
                         }
+                        arena[depth].frame = Some(Frame::Console(console));
+                        depth += 1;
                     }
-                    frame.child = Some(false);
-                    None
-                }
-                OperationStep::Finished(result) => Some(finish(host, &frame, result)),
-            }
-        } else {
-            match advance(host, &mut frame, command) {
-                Ok(GuestStep::Host(request, point)) => {
-                    let operation = match request {
-                        HostRequest::Callback(request) => Ok(Operation::Callback(Some(request))),
-                        HostRequest::TouchTriggers { mover, time }
-                            if mover.namespace == ResourceNamespace::Module(frame.start.module) =>
-                        {
-                            contacts::TriggerRun::begin(host, mover, time)
-                                .map(|run| Operation::Triggers { run, touch: None })
-                                .map_err(|_| ())
-                        }
-                        HostRequest::TouchTriggers { .. } => Err(()),
-                        HostRequest::ClearKeys {
-                            seat,
-                            context,
-                            time,
-                        } => Ok(Operation::Clear {
-                            cursor: Some(DispatchCursor::clear_seat(seat, time)),
-                            resume: None,
-                            context,
-                            time,
-                            recipient: None,
-                        }),
-                    };
-                    if let Ok(operation) = operation {
-                        frame.pending = Some(Pending {
-                            point: Some(point),
-                            operation,
-                        });
-                    } else {
-                        // A rejected host operation still owns the builtin's
-                        // saved globals until cancellation consumes its reply.
-                        frame.reply = Some((point, 0));
-                        cancel(host, &mut frame, command);
-                        completing(host, &mut frame, Err(()));
+                    Err(()) => {
+                        frame.child(Err(()));
+                        arena[index].frame = Some(frame);
                     }
-                    None
-                }
-                Ok(GuestStep::Returned(value)) => {
-                    completing(host, &mut frame, Ok(value));
-                    None
-                }
-                Err(()) => {
-                    cancel(host, &mut frame, command);
-                    completing(host, &mut frame, Err(()));
-                    None
                 }
             }
-        };
-        if let Some(accepted) = finished {
-            depth -= 1;
-            if depth == 0 {
-                break accepted;
+            FrameStep::Finished(result) => {
+                arena[index].command.clear();
+                depth -= 1;
+                if depth == 0 {
+                    break result;
+                }
+                let Some(parent) = arena[depth - 1].frame.as_mut() else {
+                    break Err(());
+                };
+                parent.child(result);
             }
-            if let Some(parent) = arena[depth - 1].as_mut() {
-                parent.child = Some(accepted);
-            }
-        } else {
-            arena[depth - 1] = Some(frame);
         }
     };
-    // Every exceptional exit drains owned tokens in LIFO order before returning
-    // the one reserved arena. Ordinary errors take the same completion path.
+    // Drain all owned guest tokens before returning this same arena. Console
+    // scratch stays in its slot until every borrowing child has unwound.
     while depth != 0 {
         depth -= 1;
-        if let Some(mut frame) = arena[depth].take() {
+        if let Some(Frame::Guest(mut frame)) = arena[depth].frame.take() {
+            let command = arguments(&arena, frame.arguments, command).unwrap_or_default();
             cancel(host, &mut frame, command);
             finish(host, &frame, Err(()));
         }
+        arena[depth].command.clear();
     }
-    if let Some(modules) = host.modules.as_mut() {
-        modules.execution = arena;
-    }
+    host.execution = arena;
     result
+}
+
+fn guest_step(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'_>) -> FrameStep {
+    let cleanup = frame
+        .pending
+        .as_ref()
+        .is_some_and(|pending| matches!(pending.operation, Operation::Cleanup { .. }));
+    if !cleanup && !valid_frame(host, frame.start, frame.backend.as_ref()) {
+        cancel(host, frame, command);
+        completing(host, frame, Err(()));
+        return FrameStep::Continue;
+    }
+    if frame.pending.is_some() {
+        return match operation(host, frame) {
+            OperationStep::Continue => FrameStep::Continue,
+            OperationStep::Reply => {
+                if let Some(Pending {
+                    point: Some(point), ..
+                }) = frame.pending.take()
+                {
+                    frame.reply = Some((point, 0));
+                } else {
+                    cancel(host, frame, command);
+                    completing(host, frame, Err(()));
+                }
+                FrameStep::Continue
+            }
+            OperationStep::Call(ModuleDispatch::Completed(result)) => {
+                frame.child = Some(result);
+                FrameStep::Continue
+            }
+            OperationStep::Call(ModuleDispatch::Guest(start)) => {
+                let input = frame
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| matches!(pending.operation, Operation::Clear { .. }));
+                let mut child = Activation::new(start, input);
+                child.arguments = frame.arguments;
+                child.argument_selection = match frame.arguments {
+                    ArgSource::Ambient => ArgumentSelection::RetainedClient,
+                    ArgSource::Console(_) => ArgumentSelection::Caller,
+                };
+                FrameStep::Guest(child)
+            }
+            OperationStep::Abort => {
+                cancel(host, frame, command);
+                completing(host, frame, Err(()));
+                FrameStep::Continue
+            }
+            OperationStep::FailedInput(module) => {
+                if let Some(row) = host.module_row(module).filter(|row| row.state.can_invoke()) {
+                    let start = GuestStart {
+                        module,
+                        call: CallbackCall::Think {
+                            entity: row.request.anchor,
+                            time: row.request.context.clock,
+                            prepared_native: None,
+                        },
+                        anchor: row.request.anchor,
+                        entry: 0,
+                        context: row.request.context,
+                        platform_time: host.runtime.input_time,
+                        connection: row.client_connection,
+                    };
+                    let mut cleanup = Activation::new(start, true);
+                    cleanup.arguments = frame.arguments;
+                    completing(host, &mut cleanup, Err(()));
+                    return FrameStep::Guest(cleanup);
+                }
+                frame.child = Some(Err(()));
+                FrameStep::Continue
+            }
+            OperationStep::Finished(result) => FrameStep::Finished(finish(host, frame, result)),
+            OperationStep::Console { context, text } => FrameStep::Console { context, text },
+        };
+    }
+    match advance(host, frame, command) {
+        Ok(GuestStep::Host(request, point)) => {
+            let operation = match request {
+                HostRequest::Callback(request) => Ok(Operation::Callback(Some(request))),
+                HostRequest::TouchTriggers { mover, time }
+                    if mover.namespace == ResourceNamespace::Module(frame.start.module) =>
+                {
+                    contacts::TriggerRun::begin(host, mover, time)
+                        .map(|run| Operation::Triggers { run, touch: None })
+                        .map_err(|_| ())
+                }
+                HostRequest::TouchTriggers { .. } => Err(()),
+                HostRequest::ClearKeys {
+                    seat,
+                    context,
+                    time,
+                } => Ok(Operation::Clear {
+                    cursor: Some(DispatchCursor::clear_seat(seat, time)),
+                    resume: None,
+                    context,
+                    time,
+                    recipient: None,
+                }),
+                HostRequest::ExecuteNow { context, text } => Ok(Operation::Console {
+                    context,
+                    text,
+                    waiting: false,
+                }),
+            };
+            if let Ok(operation) = operation {
+                frame.pending = Some(Pending {
+                    point: Some(point),
+                    operation,
+                });
+            } else {
+                frame.reply = Some((point, 0));
+                cancel(host, frame, command);
+                completing(host, frame, Err(()));
+            }
+        }
+        Ok(GuestStep::Returned(value)) => completing(host, frame, Ok(value)),
+        Err(()) => {
+            cancel(host, frame, command);
+            completing(host, frame, Err(()));
+        }
+    }
+    FrameStep::Continue
+}
+
+fn capture_command(
+    host: &mut FrameHost,
+    frame: &mut Activation,
+    text: Option<u64>,
+    scratch: &mut ParsedCommand,
+) -> Result<bool, ()> {
+    scratch.clear();
+    let Some(pointer) = text else {
+        return Ok(false);
+    };
+    let row = host.module_row_mut(frame.start.module).ok_or(())?;
+    match (
+        &mut row.request.program,
+        frame.backend.as_ref(),
+        frame
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.point.as_ref()),
+    ) {
+        (Program::Qvm { vm, .. }, Some(Backend::Qvm { .. }), Some(ReplyPoint::Qvm(_))) => {
+            let text = vm
+                .memory
+                .cstring(vm.masked_address(pointer as i32))
+                .map_err(|_| ())?;
+            scratch.set_raw(text).map_err(|_| ())?;
+            Ok(!text.is_empty())
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        (
+            Program::Native { vm, .. },
+            Some(Backend::Native {
+                run,
+                pending: Some(pending),
+            }),
+            Some(ReplyPoint::Native),
+        ) => vm
+            .copy_import_command(run, pending, pointer, scratch)
+            .map_err(|_| ()),
+        _ => Err(()),
+    }
+}
+
+impl FallbackRun {
+    fn new(host: &FrameHost, context: ConsoleContext) -> Self {
+        let client = host.local_clients[context.seat.index()].and_then(|id| {
+            let client = host.runtime.server.clients.get(id.0 as usize)?;
+            Some((id, client.entity, client.is_active()))
+        });
+        Self {
+            tier: 0,
+            next: 0,
+            client,
+        }
+    }
+    fn current(&self, host: &FrameHost, context: ConsoleContext) -> bool {
+        host.local_clients[context.seat.index()] == self.client.map(|(id, _, _)| id)
+            && self.client.is_none_or(|(id, lifetime, active)| {
+                host.runtime
+                    .server
+                    .clients
+                    .get(id.0 as usize)
+                    .is_some_and(|client| client.is_active() == active && client.entity == lifetime)
+                    && (!active
+                        || (host.runtime.server.entities.resolve(lifetime).is_some()
+                            && host
+                                .runtime
+                                .snapshots
+                                .get(id.0 as usize)
+                                .and_then(Option::as_ref)
+                                .is_none_or(|snapshot| !snapshot.presentation_closed())))
+            })
+    }
+    fn next(&mut self, host: &mut FrameHost, context: ConsoleContext) -> Option<ModuleDispatch> {
+        use qa_core::sys_events::key_catchers;
+        if !self.current(host, context) {
+            return None;
+        }
+        loop {
+            let role = match self.tier {
+                0 => CommandRole::Cgame,
+                1 => CommandRole::Server,
+                2 => CommandRole::Ui,
+                _ => return None,
+            };
+            let candidate = if role == CommandRole::Server {
+                let modules = host.modules.as_ref()?;
+                let selected = self
+                    .client
+                    .filter(|(_, _, active)| *active)
+                    .and_then(|(id, _, _)| host.runtime.server.clients.get(id.0 as usize))
+                    .map(|client| client.module);
+                let mut selected_row = None;
+                while self.next < modules.rows.len() {
+                    let index = self.next;
+                    self.next += 1;
+                    let Some(row) = modules.rows[index].as_ref() else {
+                        continue;
+                    };
+                    let module = row.request.context.module;
+                    if selected.is_some_and(|selected| selected != module)
+                        || row.request.phase != super::Phase::Server
+                        || !row.ready_for_callback(true)
+                        || row
+                            .command
+                            .as_ref()
+                            .is_none_or(|command| command.role != role)
+                    {
+                        continue;
+                    }
+                    selected_row = Some((module, row.time(host.time)));
+                    break;
+                }
+                selected_row
+            } else {
+                let catcher = if role == CommandRole::Ui {
+                    key_catchers::UI
+                } else {
+                    key_catchers::CGAME
+                };
+                let candidates = host.client_module_candidates(context.seat, catcher);
+                let mut selected = None;
+                while self.next < candidates.len() {
+                    let index = self.next;
+                    self.next += 1;
+                    let Some(module) = candidates[index] else {
+                        continue;
+                    };
+                    if candidates[..index].contains(&Some(module)) {
+                        continue;
+                    }
+                    let Some(row) = host.module_row(module) else {
+                        continue;
+                    };
+                    if row
+                        .command
+                        .as_ref()
+                        .is_none_or(|command| command.role != role)
+                    {
+                        continue;
+                    }
+                    if let Some(time) = host.client_module_time(module, context.seat, true) {
+                        selected = Some((module, time));
+                        // One selected CLIENT owner per native tier.
+                        self.next = candidates.len();
+                        break;
+                    }
+                }
+                selected
+            };
+            if let Some((module, time)) = candidate {
+                let row = host.module_row(module)?;
+                let callback = row.command.as_ref()?.callback;
+                let mut arguments = [0; 9];
+                if role == CommandRole::Ui {
+                    arguments[0] = host.time.milliseconds();
+                }
+                let call = CallbackCall::Export {
+                    entity: row.request.anchor,
+                    time,
+                    arguments,
+                    client: None,
+                    command: CommandArgs::default(),
+                };
+                let functions = Arc::clone(&host.modules.as_ref()?.functions);
+                return Some(
+                    functions
+                        .dispatch(host, callback, call)
+                        .unwrap_or(ModuleDispatch::Completed(Err(()))),
+                );
+            }
+            self.tier += 1;
+            self.next = 0;
+        }
+    }
+}
+
+fn forward_command(
+    host: &mut FrameHost,
+    fallback: &FallbackRun,
+    context: ConsoleContext,
+    command: &ParsedCommand,
+) -> bool {
+    let arguments = command.arguments();
+    let text = if context.source == RuleSetId::Quake3 {
+        // CL_ForwardCommandToServer applies console semantics before selecting
+        // the connection's independently negotiated native string encoding.
+        match arguments.get_bytes(0).first() {
+            Some(b'-') => return true,
+            Some(b'+') => return false,
+            _ => {}
+        }
+        if arguments.len() == 1 {
+            arguments.get_bytes(0)
+        } else {
+            command.raw_bytes()
+        }
+    } else {
+        command.raw_bytes()
+    };
+    if !fallback.current(host, context) {
+        return false;
+    }
+    let Some((id, _, true)) = fallback.client else {
+        return false;
+    };
+    let Some(connection) = host
+        .runtime
+        .network
+        .get_mut(id, qa_core::loopback::Endpoint::Client)
+    else {
+        return false;
+    };
+    let Some(protocol) = connection
+        .commands
+        .as_ref()
+        .map(|commands| commands.protocol)
+    else {
+        return false;
+    };
+    connection
+        .channel
+        .queue_client_command(protocol, text)
+        .is_ok()
+}
+
+fn console_step(
+    host: &mut FrameHost,
+    frame: &mut ConsoleActivation,
+    scratch: &mut ParsedCommand,
+    index: usize,
+) -> FrameStep {
+    if frame.owner.is_some_and(|owner| !valid(host, owner, true)) {
+        return FrameStep::Finished(Err(()));
+    }
+    if host.runtime.quit {
+        return FrameStep::Finished(Ok(None));
+    }
+    if frame.fallback.is_some()
+        && frame.run.context().producer.is_some_and(|producer| {
+            !qa_console::commands::Host::command_producer_live(&host.runtime, producer)
+        })
+    {
+        frame.fallback = None;
+        frame.child = None;
+    }
+    if frame
+        .fallback
+        .as_ref()
+        .is_some_and(|fallback| !fallback.current(host, frame.run.context()))
+    {
+        frame.fallback = None;
+        frame.child = None;
+        frame.run.reply(CommandReply::Unhandled);
+    }
+    if let Some(result) = frame.child.take() {
+        if result
+            .ok()
+            .flatten()
+            .is_some_and(ModuleResult::claims_command)
+        {
+            frame.fallback = None;
+            frame.run.reply(CommandReply::Handled);
+        }
+    }
+    if let Some(fallback) = frame.fallback.as_mut() {
+        if let Some(outcome) = fallback.next(host, frame.run.context()) {
+            return match outcome {
+                ModuleDispatch::Completed(result) => {
+                    frame.child = Some(result);
+                    FrameStep::Continue
+                }
+                ModuleDispatch::Guest(start) => {
+                    let mut guest = Activation::new(start, false);
+                    guest.arguments = ArgSource::Console(index);
+                    guest.argument_selection = ArgumentSelection::Caller;
+                    FrameStep::Guest(guest)
+                }
+            };
+        }
+        let forwarded = forward_command(host, fallback, frame.run.context(), scratch);
+        frame.fallback = None;
+        frame.run.reply(if forwarded {
+            CommandReply::Handled
+        } else {
+            CommandReply::Unhandled
+        });
+    }
+    match host
+        .console
+        .step(&mut host.runtime, &mut frame.run, scratch)
+    {
+        CommandStep::Continue => FrameStep::Continue,
+        CommandStep::Done => FrameStep::Finished(Ok(None)),
+        CommandStep::Fallback => {
+            frame.fallback = Some(FallbackRun::new(host, frame.run.context()));
+            FrameStep::Continue
+        }
+    }
 }
 
 fn completing(host: &mut FrameHost, frame: &mut Activation, mut result: Result<ModuleResult, ()>) {
@@ -567,7 +1051,7 @@ fn disconnect(
     Some(OperationStep::Call(
         functions
             .dispatch(host, callback, call)
-            .unwrap_or(ModuleDispatch::Completed(false)),
+            .unwrap_or(ModuleDispatch::Completed(Err(()))),
     ))
 }
 
@@ -576,6 +1060,23 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
         return OperationStep::Abort;
     };
     match &mut pending.operation {
+        Operation::Console {
+            context,
+            text,
+            waiting,
+        } => {
+            if !*waiting {
+                *waiting = true;
+                OperationStep::Console {
+                    context: *context,
+                    text: *text,
+                }
+            } else if matches!(frame.child.take(), Some(Ok(_))) {
+                OperationStep::Reply
+            } else {
+                OperationStep::Abort
+            }
+        }
         Operation::Callback(request) => {
             if let Some(request) = request.take() {
                 let Some(modules) = host.modules.as_ref() else {
@@ -585,9 +1086,9 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                 OperationStep::Call(
                     functions
                         .dispatch_resolved(host, request.target, request.call)
-                        .unwrap_or(ModuleDispatch::Completed(false)),
+                        .unwrap_or(ModuleDispatch::Completed(Err(()))),
                 )
-            } else if frame.child.take() == Some(true) {
+            } else if matches!(frame.child.take(), Some(Ok(_))) {
                 return OperationStep::Reply;
             } else {
                 return OperationStep::Abort;
@@ -598,7 +1099,7 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                 let Some(completed) = touch.take() else {
                     return OperationStep::Abort;
                 };
-                if completed.complete(host, accepted).is_err() {
+                if completed.complete(host, accepted.is_ok()).is_err() {
                     return OperationStep::Abort;
                 }
             }
@@ -677,7 +1178,9 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
             recipient,
         } => {
             if let Some(accepted) = frame.child.take() {
-                if !accepted && let Some(module) = recipient.take() {
+                if accepted.is_err()
+                    && let Some(module) = recipient.take()
+                {
                     return OperationStep::FailedInput(module);
                 }
                 *recipient = None;
@@ -709,7 +1212,7 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                         OperationStep::Call(
                             functions
                                 .dispatch(host, callback, call)
-                                .unwrap_or(ModuleDispatch::Completed(false)),
+                                .unwrap_or(ModuleDispatch::Completed(Err(()))),
                         )
                     } else {
                         OperationStep::Continue
@@ -759,7 +1262,7 @@ fn input_resume(
 fn advance(
     host: &mut FrameHost,
     frame: &mut Activation,
-    command: CommandArgs<'_>,
+    command: Arguments<'_>,
 ) -> Result<GuestStep, ()> {
     let start = frame.start;
     let Some(functions) = host
@@ -913,7 +1416,8 @@ fn advance(
                 table: imports,
                 context: start.context,
                 platform_time: start.platform_time,
-                command: qa_console::command_text::Arguments::from_command(command),
+                command,
+                argument_selection: &mut frame.argument_selection,
                 unknown: &mut row.unknown,
             };
             if entering {
@@ -986,7 +1490,8 @@ fn advance(
                 table: imports,
                 context: start.context,
                 platform_time: start.platform_time,
-                command: qa_console::command_text::Arguments::from_command(command),
+                command,
+                argument_selection: &mut frame.argument_selection,
                 native_player: start.native_player(),
                 unknown: &mut row.unknown,
             };
@@ -1182,7 +1687,7 @@ fn finish_quakec(
     restored.and(velocity).and(projection).map_err(|_| ())
 }
 
-fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>) {
+fn cancel(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'_>) {
     let point = frame
         .pending
         .as_mut()
@@ -1276,7 +1781,8 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>
                 table: imports,
                 context: frame.start.context,
                 platform_time: frame.start.platform_time,
-                command: qa_console::command_text::Arguments::from_command(command),
+                command,
+                argument_selection: &mut frame.argument_selection,
                 native_player: frame.start.native_player(),
                 unknown: &mut row.unknown,
             };
@@ -1291,7 +1797,11 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>
     }
 }
 
-fn finish(host: &mut FrameHost, frame: &Activation, result: Result<ModuleResult, ()>) -> bool {
+fn finish(
+    host: &mut FrameHost,
+    frame: &Activation,
+    result: Result<ModuleResult, ()>,
+) -> ExecutionResult {
     let accepted = if let Some(row) = host.module_row_mut(frame.start.module) {
         if frame.counted {
             row.counts.record(result)
@@ -1308,7 +1818,7 @@ fn finish(host: &mut FrameHost, frame: &Activation, result: Result<ModuleResult,
     {
         Module::retain_active_batch(&mut row.client_batch, &host.runtime.server);
     }
-    accepted
+    if accepted { result.map(Some) } else { Err(()) }
 }
 
 #[cfg(test)]

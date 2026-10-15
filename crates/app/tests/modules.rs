@@ -1949,7 +1949,7 @@ fn quakec_broadcast_and_localcmd_share_output_and_deferred_commands() {
         expected.extend(text);
         expected.push(0);
         assert_eq!(&wire[..size], expected);
-        host.console.execute_frame(&mut host.runtime);
+        host.execute_commands();
         assert_eq!(host.console.cvars.value_in(fov, rules), 111.0);
         assert!(host.console.idle());
     }

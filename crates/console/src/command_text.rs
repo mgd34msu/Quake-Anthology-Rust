@@ -65,6 +65,9 @@ impl ParsedCommand {
     pub fn arguments(&self) -> Arguments<'_> {
         self.tokens.arguments(self.line.as_bytes())
     }
+    pub fn raw_bytes(&self) -> &[u8] {
+        self.line.as_bytes()
+    }
 }
 impl Tokens {
     fn arguments<'a>(&'a self, text: &'a [u8]) -> Arguments<'a> {

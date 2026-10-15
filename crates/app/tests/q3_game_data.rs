@@ -93,6 +93,7 @@ impl Fixture {
             },
             platform_time: EventTime(0),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut self.unknown,
         };
         calls.begin_call(&mut self.vm)?;
@@ -118,6 +119,7 @@ impl Fixture {
             context,
             platform_time: EventTime(0),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut self.unknown,
         };
         self.vm.call(&mut calls, [0; 10], 100, true)

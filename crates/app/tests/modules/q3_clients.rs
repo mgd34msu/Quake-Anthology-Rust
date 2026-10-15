@@ -627,7 +627,7 @@ fn q3_client_registration_requires_server_exports_and_freezes_its_native_capacit
         ..Default::default()
     };
     host.console.append("sv_maxclients 3\n", context).unwrap();
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     assert_eq!(host.client_info(MODULE).unwrap().clients, 2);
     host.connect_module_client(MODULE, client, b"\\name\\healthy")
         .unwrap();

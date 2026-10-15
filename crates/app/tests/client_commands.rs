@@ -600,7 +600,7 @@ fn selected_commands_use_one_session_service(program: impl Fn() -> Program) {
         Some(&b"alpha beta extra"[..])
     );
     assert_eq!(probe(&mut host, 0, 0, 2), 1);
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     assert!(!host.runtime.quit);
     assert_ne!(
         host.console
@@ -1159,7 +1159,7 @@ fn fallback_commands_publish_once_to_the_selected_local_display_and_hud() {
         .hud
         .clear_messages(&mut host.runtime.server.events.texts);
     assert!(host.runtime.server.events.texts.get(first_center).is_none());
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     assert!(!host.runtime.quit);
     assert_ne!(
         host.console

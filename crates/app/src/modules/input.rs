@@ -40,7 +40,22 @@ struct Recipient {
 
 impl FrameHost {
     fn input_recipient(&self, seat: SeatId, catcher: u32, active: bool) -> Option<Recipient> {
-        let defaults = self.modules.as_ref()?.input[seat.index()];
+        self.client_module_candidates(seat, catcher)
+            .into_iter()
+            .flatten()
+            .find_map(|module| self.input_binding(module, seat, catcher, active))
+    }
+
+    pub(super) fn client_module_candidates(
+        &self,
+        seat: SeatId,
+        catcher: u32,
+    ) -> [Option<ModuleId>; 3] {
+        let defaults = self
+            .modules
+            .as_ref()
+            .map(|modules| modules.input[seat.index()])
+            .unwrap_or_default();
         let fallback = if catcher == key_catchers::UI {
             defaults.ui
         } else {
@@ -49,7 +64,9 @@ impl FrameHost {
         let view = (catcher == key_catchers::CGAME)
             .then(|| {
                 let client = self.local_clients[seat.index()]?;
-                self.runtime.snapshots[client.0 as usize]
+                self.runtime
+                    .snapshots
+                    .get(client.0 as usize)?
                     .as_ref()?
                     .client_view_owner()
                     .map(|(module, _)| module)
@@ -60,9 +77,6 @@ impl FrameHost {
             view,
             fallback,
         ]
-        .into_iter()
-        .flatten()
-        .find_map(|module| self.input_binding(module, seat, catcher, active))
     }
 
     fn input_binding(
@@ -74,18 +88,27 @@ impl FrameHost {
     ) -> Option<Recipient> {
         let row = self.module_row(module)?;
         let input = row.input?;
-        let initializing = active
-            && row.state == State::Pending
-            && match &row.request.program {
-                super::Program::Qvm { vm, .. } => vm.is_active(),
-                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-                super::Program::Native { vm, .. } => vm.is_active(),
-                super::Program::QuakeC(_) => false,
-            };
-        if (row.state != State::Running && !initializing)
+        if input.catcher != catcher {
+            return None;
+        }
+        let time = self.client_module_time(module, seat, active)?;
+        Some(Recipient {
+            module,
+            input,
+            time,
+        })
+    }
+
+    pub(super) fn client_module_time(
+        &self,
+        module: ModuleId,
+        seat: SeatId,
+        active: bool,
+    ) -> Option<ThinkTime> {
+        let row = self.module_row(module)?;
+        if !row.ready_for_callback(active)
             || row.request.phase != Phase::Client
             || row.request.context.console.seat != seat
-            || input.catcher != catcher
             || self
                 .runtime
                 .server
@@ -109,11 +132,7 @@ impl FrameHost {
         } else {
             row.time(self.time)
         };
-        Some(Recipient {
-            module,
-            input,
-            time,
-        })
+        Some(time)
     }
 
     fn input_export(&mut self, recipient: Recipient, callback: u32, words: &[u64]) {

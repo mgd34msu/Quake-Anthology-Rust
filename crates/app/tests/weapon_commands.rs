@@ -154,6 +154,7 @@ fn abi_call(
                     },
                     platform_time: host.time,
                     command: Default::default(),
+                    argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                     addresses,
                     arguments: &args,
                 },

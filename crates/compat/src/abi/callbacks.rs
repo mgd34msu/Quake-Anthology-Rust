@@ -10,6 +10,10 @@ pub struct CallbackRequest {
 
 #[derive(Clone, Copy, Debug)]
 pub enum HostRequest {
+    ExecuteNow {
+        context: qa_console::views::Context,
+        text: Option<u64>,
+    },
     Callback(CallbackRequest),
     ClearKeys {
         seat: qa_core::sys_events::SeatId,

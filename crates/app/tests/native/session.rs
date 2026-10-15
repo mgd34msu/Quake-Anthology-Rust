@@ -3154,6 +3154,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context,
                         platform_time: EventTime(0),
                         command: Default::default(),
+                        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                         unknown: &mut unknown,
                     },
                     0,
@@ -3237,6 +3238,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context,
                         platform_time: EventTime(0),
                         command: Default::default(),
+                        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                         unknown: &mut unknown,
                     },
                     run,
@@ -3316,6 +3318,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context,
                         platform_time: EventTime(0),
                         command: Default::default(),
+                        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                         unknown: &mut unknown,
                     },
                     run,
@@ -3490,6 +3493,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                                 },
                             },
                         ),
+                        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                         unknown: &mut unknown,
                     },
                     run,
@@ -4795,6 +4799,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context: sound_context,
                         platform_time: EventTime(0),
                         command: Default::default(),
+                        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                         unknown: &mut unknown,
                     },
                     run,
@@ -5063,6 +5068,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context,
                         platform_time: EventTime(0),
                         command: Default::default(),
+                        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                         unknown: &mut unknown,
                     },
                     run,
@@ -5788,6 +5794,7 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
 }
 
 mod commands;
+mod console_commands;
 #[path = "observations.rs"]
 mod observations;
 #[path = "pmove.rs"]
@@ -5803,6 +5810,10 @@ pub fn run() {
     }
     if std::env::args().any(|arg| arg == "--command-lifetimes") {
         command_lifetimes::run();
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--console-commands") {
+        console_commands::run();
         return;
     }
     if std::env::args().any(|arg| arg == "--q3-game-data") {
@@ -5863,6 +5874,7 @@ pub fn run() {
         return;
     }
     command_lifetimes::run();
+    console_commands::run();
     appearance::native_appearance_uses_common_lifetimes_and_player_state();
     pmove::commands_move_a_native_client_once();
     commands::packet_commands_keep_native_order_and_borrowed_arguments();

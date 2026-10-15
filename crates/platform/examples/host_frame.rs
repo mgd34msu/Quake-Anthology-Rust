@@ -254,7 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .input
             .assign(DeviceId::Controller(42), SeatId::ALL[1]);
         host.console.append_line("alias +edge +attack; alias -edge -attack; bind w +forward; bind g \"+jump; echo binding\"; bind h +edge; bind JOY1 +moveleft", Context::default()).map_err(|_| "initial binds")?;
-        host.console.execute_frame(&mut host.runtime);
+        host.execute_commands();
     }
     // Resolve the fidelity checks before timing; names are command-boundary
     // lookups inside Console, never lookups in the idle frame consumer.

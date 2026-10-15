@@ -129,6 +129,7 @@ impl Fixture {
                 context: Self::context(),
                 platform_time: EventTime(42),
                 command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                 addresses: mode,
                 arguments,
             },
@@ -300,6 +301,7 @@ fn executed_qvm_observes_boolean_existence_and_preserves_guest_data() {
             context: Fixture::context(),
             platform_time: EventTime(42),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         };
         assert_eq!(vm.call(&mut calls, [0; 10], 1000, false), Ok(73));

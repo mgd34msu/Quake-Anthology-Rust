@@ -354,7 +354,7 @@ fn foreign_walk_uses_one_ordinary_q3_pmove_with_independent_q2_trace() {
             },
         )
         .unwrap();
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     host.runtime.server.clients[id.0 as usize]
         .player
         .trace_rules = RuleSetId::Quake2;

@@ -229,6 +229,7 @@ impl QuakeCCalls<'_, '_> {
             context: self.context,
             platform_time: self.platform_time,
             command: Default::default(),
+            argument_selection: &mut super::ArgumentSelection::RetainedClient,
             addresses: Addresses::Native {
                 abi: qa_platform::native::NativeAbi::SystemV,
                 pointer_bytes: 8,

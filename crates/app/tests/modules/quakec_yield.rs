@@ -316,7 +316,7 @@ fn qc_host_yield_publishes_unrelated_dirty_body_without_relinking_it() {
         let relinks = host.runtime.server.area.relinks;
         let mut frame = activation(&mut host, publish, ids[0]);
         let GuestStep::Host(request, point) =
-            advance(&mut host, &mut frame, CommandArgs::default()).unwrap()
+            advance(&mut host, &mut frame, Arguments::default()).unwrap()
         else {
             panic!("walkmove must yield before its trigger callback");
         };
@@ -361,7 +361,7 @@ fn qc_host_yield_publishes_unrelated_dirty_body_without_relinking_it() {
                 touch: None,
             },
         });
-        assert!(drive(&mut host, frame, CommandArgs::default()));
+        assert!(drive(&mut host, Frame::Guest(frame), CommandArgs::default()).is_ok());
         assert_eq!(
             host.module_counts(MODULE).unwrap().last_result,
             Some(ModuleResult::QuakeC([
@@ -390,7 +390,7 @@ fn qc_rejected_host_publication_consumes_continuation_before_cancel_and_recovers
         } = fixture(rules);
         let bounds = host.runtime.server.area.bounds(ids[2]).unwrap();
         let mut frame = activation(&mut host, malformed, ids[0]);
-        assert!(advance(&mut host, &mut frame, CommandArgs::default()).is_err());
+        assert!(advance(&mut host, &mut frame, Arguments::default()).is_err());
         assert!(frame.pending.is_none());
         assert!(frame.reply.is_none());
         // A successfully imported prefix survives the later malformed row.
@@ -408,14 +408,14 @@ fn qc_rejected_host_publication_consumes_continuation_before_cancel_and_recovers
         // The yielded import is already consumed. Cancellation must not apply
         // its saved self a second time over a later scalar value.
         qc.vm.image.globals[34] = SENTINEL as u32 * stride;
-        cancel(&mut host, &mut frame, CommandArgs::default());
+        cancel(&mut host, &mut frame, Arguments::default());
         let Program::QuakeC(qc) = &host.module_row(MODULE).unwrap().request.program else {
             unreachable!()
         };
         assert!(!qc.vm.is_running());
         assert_eq!(qc.vm.image.globals[34], SENTINEL as u32 * stride);
         completing(&mut host, &mut frame, Err(()));
-        assert!(!drive(&mut host, frame, CommandArgs::default()));
+        assert!(!drive(&mut host, Frame::Guest(frame), CommandArgs::default()).is_ok());
         host.call_module(repair, call(ids[0])).unwrap();
         assert_eq!(
             host.module_counts(MODULE).unwrap().last_result,
