@@ -4,14 +4,34 @@ use qa_world::entities::EntityTable;
 
 /// A native function, QC function or foreign export binds its boundary adapter
 /// once in a numeric module table, without resource-name lookup during calls.
-pub struct FunctionBinding<C> {
+pub struct FunctionBinding<C, R = bool> {
     pub entry: u32,
-    pub call: fn(&mut C, ModuleId, u32, CallbackCall) -> bool,
+    pub call: fn(&mut C, ModuleId, u32, CallbackCall<'_>) -> R,
 }
 
-pub struct FunctionTable<C> {
+pub struct FunctionTable<C, R = bool> {
     modules: Box<[Option<ModuleBinding>]>,
-    functions: Box<[ResolvedFunction<C>]>,
+    functions: Box<[ResolvedFunction<C, R>]>,
+}
+
+/// A callback may finish immediately or return owned execution state. The
+/// synchronous entry completes that state before treating the call as accepted.
+/// Borrowed arguments remain with the caller rather than inside the outcome.
+pub trait CallOutcome<C>: Sized {
+    fn rejected() -> Self;
+    fn complete(self, world: &mut C, call: CallbackCall<'_>) -> bool;
+}
+
+impl<C> CallOutcome<C> for bool {
+    #[inline]
+    fn rejected() -> Self {
+        false
+    }
+
+    #[inline]
+    fn complete(self, _world: &mut C, _call: CallbackCall<'_>) -> bool {
+        self
+    }
 }
 
 /// A checked callback in the immutable loaded table. Guest adapters consume
@@ -45,8 +65,8 @@ pub trait CallbackResolver {
     ) -> Result<ResolvedCall, CallError>;
 }
 
-struct ResolvedFunction<C> {
-    function: FunctionBinding<C>,
+struct ResolvedFunction<C, R> {
+    function: FunctionBinding<C, R>,
     module: ModuleId,
     timing: ThinkRules,
 }
@@ -163,16 +183,16 @@ pub enum CallError {
     Rejected,
 }
 
-impl<C: ThinkWorld> FunctionTable<C> {
+impl<C: ThinkWorld, R: CallOutcome<C>> FunctionTable<C, R> {
     pub fn load(
-        modules: impl IntoIterator<Item = (ModuleId, RuleSetId, Vec<FunctionBinding<C>>)>,
+        modules: impl IntoIterator<Item = (ModuleId, RuleSetId, Vec<FunctionBinding<C, R>>)>,
     ) -> Result<Self, TableError> {
         let mut tables = Vec::new();
         // Path zero is the unbound/missing-module marker, never a live entry.
         let mut resolved = vec![ResolvedFunction {
             function: FunctionBinding {
                 entry: 0,
-                call: |_, _, _, _| false,
+                call: |_, _, _, _| R::rejected(),
             },
             module: ModuleId::default(),
             timing: ThinkRules::load(RuleSetId::Quake3),
@@ -208,7 +228,7 @@ impl<C: ThinkWorld> FunctionTable<C> {
             resolved.push(ResolvedFunction {
                 function: FunctionBinding {
                     entry: 0,
-                    call: |_, _, _, _| false,
+                    call: |_, _, _, _| R::rejected(),
                 },
                 module,
                 timing: ThinkRules::load(timing),
@@ -230,7 +250,7 @@ impl<C: ThinkWorld> FunctionTable<C> {
     /// Install a module's load-selected rejected-call adapter without adding
     /// another timing path. QC must clear native nextthink even when the due
     /// native function is missing; other hosts retain their default rejection.
-    pub fn bind_missing(&mut self, module: ModuleId, function: FunctionBinding<C>) -> bool {
+    pub fn bind_missing(&mut self, module: ModuleId, function: FunctionBinding<C, R>) -> bool {
         let Some(binding) = self.binding(module) else {
             return false;
         };
@@ -280,15 +300,66 @@ impl<C: ThinkWorld> FunctionTable<C> {
         })
     }
 
+    /// Start the checked callback without completing its owned outcome.
+    pub fn dispatch(
+        &self,
+        world: &mut C,
+        callback: CallbackId,
+        call: CallbackCall<'_>,
+    ) -> Result<R, CallError> {
+        let resolved = self.resolve(world.entities(), callback, call.entity())?;
+        self.dispatch_resolved(world, resolved, call)
+    }
+
+    /// Revalidate a previously resolved callback after an intervening call may
+    /// have changed its entity lifetime or owner. The current table remains the
+    /// authority for both its internal path and native entry.
+    pub fn dispatch_resolved(
+        &self,
+        world: &mut C,
+        resolved: ResolvedCall,
+        call: CallbackCall<'_>,
+    ) -> Result<R, CallError> {
+        if call.entity() != resolved.entity {
+            return Err(CallError::StaleEntity);
+        }
+        let entities = world.entities();
+        let slot = entities
+            .resolve(resolved.entity)
+            .ok_or(CallError::StaleEntity)?;
+        if entities.columns.owner[slot] != resolved.module {
+            return Err(CallError::MissingModule);
+        }
+        let binding = self
+            .binding(resolved.module)
+            .ok_or(CallError::MissingModule)?;
+        // The module's final slot is its existing rejected-call adapter. Due
+        // thinks may execute it after clearing nextthink, even for null funcs.
+        if resolved.path < binding.first || resolved.path > binding.missing {
+            return Err(CallError::MissingFunction);
+        }
+        let function = self
+            .functions
+            .get(resolved.path as usize)
+            .filter(|function| {
+                function.module == resolved.module && function.function.entry == resolved.entry
+            })
+            .ok_or(CallError::MissingFunction)?;
+        Ok((function.function.call)(
+            world,
+            resolved.module,
+            resolved.entry,
+            call,
+        ))
+    }
+
     pub fn invoke(
         &self,
         world: &mut C,
         callback: CallbackId,
-        call: CallbackCall,
+        call: CallbackCall<'_>,
     ) -> Result<(), CallError> {
-        let resolved = self.resolve(world.entities(), callback, call.entity())?;
-        let function = &self.functions[resolved.path as usize].function;
-        if (function.call)(world, resolved.module, resolved.entry, call) {
+        if self.dispatch(world, callback, call)?.complete(world, call) {
             Ok(())
         } else {
             Err(CallError::Rejected)
@@ -296,7 +367,7 @@ impl<C: ThinkWorld> FunctionTable<C> {
     }
 }
 
-impl<C: ThinkWorld> CallbackResolver for FunctionTable<C> {
+impl<C: ThinkWorld, R: CallOutcome<C>> CallbackResolver for FunctionTable<C, R> {
     fn resolve_callback(
         &self,
         entities: &EntityTable,
@@ -338,9 +409,9 @@ pub struct ThinkResult {
 /// Run one current entity lifetime. A due deadline is cleared independently of
 /// its callback. QW repeats successful reschedules before the next source slot;
 /// rejection or lifetime removal stops that entity, without a synthetic cap.
-pub fn run_think<C: ThinkWorld>(
+pub fn run_think<C: ThinkWorld, R: CallOutcome<C>>(
     world: &mut C,
-    table: &FunctionTable<C>,
+    table: &FunctionTable<C, R>,
     entity: EntityId,
     clock: impl FnMut(ModuleId) -> Option<ThinkFrame>,
 ) -> ThinkResult {
@@ -352,9 +423,9 @@ pub fn run_think<C: ThinkWorld>(
 /// The callback boundary may resolve a new live handle for the same native
 /// row. The supplied resolver runs only after an accepted call; this remains
 /// the sole timing/repetition loop and never makes a stale handle live again.
-pub fn run_think_with_rebind<C: ThinkWorld>(
+pub fn run_think_with_rebind<C: ThinkWorld, R: CallOutcome<C>>(
     world: &mut C,
-    table: &FunctionTable<C>,
+    table: &FunctionTable<C, R>,
     mut entity: EntityId,
     mut clock: impl FnMut(ModuleId) -> Option<ThinkFrame>,
     mut rebind: impl FnMut(&mut C, EntityId) -> Option<EntityId>,
@@ -393,12 +464,16 @@ pub fn run_think_with_rebind<C: ThinkWorld>(
             }
         };
         entities.columns.next_think[slot] = None;
-        let accepted = (functions.function.call)(
-            world,
+        let call = CallbackCall::Think { entity, time };
+        let resolved = ResolvedCall {
+            entity,
             module,
-            functions.function.entry,
-            CallbackCall::Think { entity, time },
-        );
+            path: binding.path,
+            entry: functions.function.entry,
+        };
+        let accepted = table
+            .dispatch_resolved(world, resolved, call)
+            .is_ok_and(|outcome| outcome.complete(world, call));
         if !accepted {
             result.current_entity = world.entities().resolve(entity).map(|_| entity);
             result.rejected = result.rejected.saturating_add(1);
@@ -418,9 +493,9 @@ pub fn run_think_with_rebind<C: ThinkWorld>(
 
 /// Serial source-slot order; each entity resolves its owning module's frame.
 /// Placement among native physics operations belongs to the module caller.
-pub fn run_thinks<C: ThinkWorld>(
+pub fn run_thinks<C: ThinkWorld, R: CallOutcome<C>>(
     world: &mut C,
-    table: &FunctionTable<C>,
+    table: &FunctionTable<C, R>,
     mut clock: impl FnMut(ModuleId) -> Option<ThinkFrame>,
 ) -> DispatchStats {
     let mut stats = DispatchStats::default();
