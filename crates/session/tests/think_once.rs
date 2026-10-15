@@ -5,6 +5,7 @@ struct World {
     entities: EntityTable,
     subject: NativeEntityRef,
     callback: Option<CallbackId>,
+    module_binding: ModuleBinding,
     prepares: u32,
     calls: Vec<u32>,
     fail: bool,
@@ -25,7 +26,7 @@ impl ThinkWorld for World {
         }
         Ok(Some(PreparedNativeThink {
             subject: subject.unwrap_or(self.subject),
-            callback: self.callback,
+            binding: self.module_binding.think(self.callback),
         }))
     }
 }
@@ -46,6 +47,7 @@ fn fixture() -> (World, FunctionTable<World>, EntityId) {
         entities: EntityTable::new(8, 1).unwrap(),
         subject: NativeEntityRef::entity(ResourceNamespace::Module(ModuleId(1)), 5),
         callback: Some(CallbackId(1)),
+        module_binding: ModuleBinding::default(),
         prepares: 0,
         calls: Vec::new(),
         fail: false,
@@ -74,6 +76,7 @@ fn fixture() -> (World, FunctionTable<World>, EntityId) {
         ],
     )])
     .unwrap();
+    w.module_binding = t.module_binding(ModuleId(1));
     assert!(t.bind_think(&mut w.entities, id, Some(CallbackId(0))));
     assert!(t.bind_missing(
         ModuleId(1),
@@ -151,4 +154,71 @@ fn preparation_failure_clears_only_the_admitted_common_deadline() {
     assert_eq!(w.prepares, 1);
     assert!(w.calls.is_empty());
     assert_eq!(w.entities.columns.next_think[id.slot as usize], None);
+}
+
+#[test]
+fn invalid_cached_native_function_reaches_missing_adapter_but_direct_callback_rejects() {
+    let (mut w, t, id) = fixture();
+    w.callback = Some(CallbackId(u32::MAX));
+    let binding = w.module_binding.think(w.callback);
+    let resolved = t.resolve_binding(&w.entities, binding, id).unwrap();
+    assert_eq!(resolved.entry(), 99);
+    assert_eq!(
+        t.resolve(&w.entities, CallbackId(u32::MAX), id),
+        Err(CallError::MissingFunction)
+    );
+    let result = run_think(&mut w, &t, id, |_| {
+        Some(ThinkFrame::Seconds {
+            now: 1.0,
+            step: 0.1,
+        })
+    });
+    assert_eq!(result.rejected, 1);
+    assert_eq!(w.prepares, 1);
+    assert_eq!(w.calls, [99]);
+}
+
+#[test]
+fn cached_binding_cannot_cross_module_ranges_or_revive_a_stale_lifetime() {
+    let (mut w, t, id) = fixture();
+    let cached = w.module_binding.think(Some(CallbackId(1)));
+    let wrong_path = ThinkBinding {
+        path: u32::MAX,
+        ..cached
+    };
+    assert_eq!(
+        t.resolve_binding(&w.entities, wrong_path, id),
+        Err(CallError::MissingFunction)
+    );
+    let foreign_table = FunctionTable::load([
+        (
+            ModuleId(2),
+            RuleSetId::Quake,
+            vec![FunctionBinding {
+                entry: 33,
+                call: invoke,
+            }],
+        ),
+        (
+            ModuleId(1),
+            RuleSetId::Quake,
+            vec![FunctionBinding {
+                entry: 44,
+                call: invoke,
+            }],
+        ),
+    ])
+    .unwrap();
+    let foreign = foreign_table
+        .module_binding(ModuleId(2))
+        .think(Some(CallbackId(0)));
+    assert_eq!(
+        foreign_table.resolve_binding(&w.entities, foreign, id),
+        Err(CallError::MissingFunction)
+    );
+    assert!(w.entities.release(id, ThinkTime::Seconds(2.0)));
+    assert_eq!(
+        t.resolve_binding(&w.entities, cached, id),
+        Err(CallError::StaleEntity)
+    );
 }

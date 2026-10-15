@@ -30,18 +30,17 @@ impl From<PhysicsError> for ClientCommandError {
 /// across scalar stores, which may refresh overlapping native fields.
 pub(super) fn sync_attachments(
     vm: &mut Vm,
-    server: &mut qa_session::clients::Server,
+    services: &mut EngineServices<'_>,
     context: CallContext,
 ) -> Result<(), CallError> {
-    server.commit_attachments();
-    let entities = &mut server.entities;
-    for index in 0..entities.attachment_ids().len() {
-        let entity = entities.attachment_ids()[index];
-        let Some(slot) = entities.resolve(entity) else {
+    services.server.commit_attachments();
+    for index in 0..services.server.entities.attachment_ids().len() {
+        let entity = services.server.entities.attachment_ids()[index];
+        let Some(slot) = services.server.entities.resolve(entity) else {
             continue;
         };
-        let Some(native) =
-            entities.columns.native_entity[slot].filter(|native| native.module == context.module)
+        let Some(native) = services.server.entities.columns.native_entity[slot]
+            .filter(|native| native.module == context.module)
         else {
             continue;
         };
@@ -50,12 +49,22 @@ pub(super) fn sync_attachments(
             u32::try_from(native.slot).map_err(|_| CallError::Entity)?,
         );
         let offset = vm.weak_entity_offset(context.module, reference)?;
-        let position = entities.columns.position[slot];
+        let position = services.server.entities.columns.position[slot];
         for axis in 0..3 {
-            let slot = entities.resolve(entity).ok_or(CallError::Entity)?;
-            entities.columns.position[slot].0[axis] = position.0[axis];
-            vm.write_motion(entities, context, offset, MotionWrite::Origin(axis))?;
+            let slot = services
+                .server
+                .entities
+                .resolve(entity)
+                .ok_or(CallError::Entity)?;
+            services.server.entities.columns.position[slot].0[axis] = position.0[axis];
+            vm.write_motion(
+                &mut services.server.entities,
+                context,
+                offset,
+                MotionWrite::Origin(axis),
+            )?;
         }
+        vm.publish_link_bounds(services, context, offset)?;
     }
     Ok(())
 }
@@ -365,7 +374,7 @@ impl PushHost for Host<'_> {
         let reference = self.reference(owner)?;
         self.edit_owner(owner, |vm, services, context, native| {
             vm.relink_entity(services, context, native)?;
-            sync_attachments(vm, services.server, context)
+            sync_attachments(vm, services, context)
         })?;
         if touch && let Some(entity) = contacts::current(self.host, reference)? {
             contacts::triggers(self.host, self.module, entity, self.time)?;
@@ -392,8 +401,8 @@ impl PushHost for Host<'_> {
     ) -> Result<(), Self::Error> {
         let subject = self.reference(pusher)?;
         let other = self.reference(blocker)?;
-        let callback = self.edit_owner(pusher, |vm, _, _, native| vm.blocked_callback(native))?;
-        let Some(callback) = callback else {
+        let binding = self.edit_owner(pusher, |vm, _, _, native| vm.blocked_binding(native))?;
+        let Some(binding) = binding else {
             return Ok(());
         };
         let anchor = self
@@ -410,7 +419,7 @@ impl PushHost for Host<'_> {
             .map(|modules| Arc::clone(&modules.functions))
             .ok_or(ClientCommandError::MissingModule)?;
         let resolved = functions
-            .resolve(&self.host.runtime.server.entities, callback, entity)
+            .resolve_binding(&self.host.runtime.server.entities, binding, entity)
             .map_err(ClientCommandError::Dispatch)?;
         let call = CallbackCall::Blocked {
             entity,
@@ -559,7 +568,7 @@ impl MotionHost for Host<'_> {
     fn relink(&mut self, entity: EntityId) -> Result<Option<EntityId>, Self::Error> {
         self.edit(entity, |vm, services, context, native| {
             vm.relink_entity(services, context, native)?;
-            sync_attachments(vm, services.server, context)
+            sync_attachments(vm, services, context)
         })?;
         contacts::triggers(self.host, self.module, entity, self.time)?;
         self.current()

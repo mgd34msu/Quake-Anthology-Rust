@@ -1709,21 +1709,40 @@ fn push_callback_preparation_keeps_native_alias_order_and_current_function() {
             ],
         )])
         .unwrap();
-        vm.bind_thinks(table.module_binding(calls.context.module), &[1, 2]);
+        let module = table.module_binding(calls.context.module);
+        vm.bind_thinks(module, &[1, 2]);
         let native = vm.spawn_entity(calls.services, calls.context).unwrap();
         write(&mut vm, native, b"think", &[2]);
         write(&mut vm, native, b"nextthink", &[1.0f32.to_bits()]);
         assert_eq!(
             vm.prepare_think(native, ThinkTime::Seconds(9.0)),
-            Ok(Some(CallbackId(1)))
+            Ok(module.think(Some(CallbackId(1))))
         );
         assert_eq!(read(&vm, native, b"nextthink", 1), [0]);
         // time, self, other => the aliased final word is native world0.
         assert_eq!(vm.image.globals[34], 0);
         write(&mut vm, native, b"blocked", &[1]);
-        assert_eq!(vm.blocked_callback(native), Ok(Some(CallbackId(0))));
+        assert_eq!(
+            vm.blocked_binding(native),
+            Ok(Some(module.think(Some(CallbackId(0)))))
+        );
         write(&mut vm, native, b"blocked", &[2]);
-        assert_eq!(vm.blocked_callback(native), Ok(Some(CallbackId(1))));
+        assert_eq!(
+            vm.blocked_binding(native),
+            Ok(Some(module.think(Some(CallbackId(1)))))
+        );
+        for function in [3, u32::MAX] {
+            write(&mut vm, native, b"blocked", &[function]);
+            assert_eq!(
+                vm.blocked_binding(native),
+                Ok(Some(ThinkBinding {
+                    callback: Some(CallbackId(function)),
+                    ..module.think(None)
+                }))
+            );
+        }
+        write(&mut vm, native, b"blocked", &[0]);
+        assert_eq!(vm.blocked_binding(native), Ok(None));
         vm.prepare_blocked(0, native).unwrap();
         assert_eq!(vm.image.globals[34], native);
     });
@@ -1738,9 +1757,26 @@ fn push_think_clears_aliased_deadline_before_selecting_function() {
             .map(|(kind, offset, name)| (kind, if name == b"think" { 34 } else { offset }, name))
             .collect();
         let mut vm = seed_vm(calls, vm_with_definitions(8, GLOBALS, &fields));
+        let table = qa_session::dispatch::FunctionTable::<qa_session::clients::Server>::load([(
+            calls.context.module,
+            RuleSetId::Quake,
+            vec![qa_session::dispatch::FunctionBinding {
+                entry: 1,
+                call: |_, _, _, _| true,
+            }],
+        )])
+        .unwrap();
+        let module = table.module_binding(calls.context.module);
+        vm.bind_thinks(module, &[1]);
         let native = vm.spawn_entity(calls.services, calls.context).unwrap();
         write(&mut vm, native, b"think", &[1]);
-        assert_eq!(vm.prepare_think(native, ThinkTime::Seconds(6.0)), Ok(None));
+        assert_eq!(
+            vm.prepare_think(native, ThinkTime::Seconds(6.0)),
+            Ok(ThinkBinding {
+                callback: Some(CallbackId(0)),
+                ..module.think(None)
+            })
+        );
         assert_eq!(read(&vm, native, b"think", 1), [0]);
         assert_eq!(vm.image.globals[35], 6.0f32.to_bits());
         assert_eq!(vm.image.globals[34], native);
@@ -1766,10 +1802,15 @@ fn think_deadline_clear_publishes_aliased_origin_even_without_an_executed_callba
             }],
         )])
         .unwrap();
-        vm.bind_thinks(table.module_binding(calls.context.module), &[1]);
+        let module = table.module_binding(calls.context.module);
+        vm.bind_thinks(module, &[1]);
         let native = vm.spawn_entity(calls.services, calls.context).unwrap();
         let id = entity(calls, &vm, native);
-        for (function, expected) in [(0, Ok(None)), (u32::MAX, Err(CallError::Entity))] {
+        for function in [0, 3, u32::MAX] {
+            let expected = Ok(ThinkBinding {
+                callback: Some(CallbackId(function)),
+                ..module.think(None)
+            });
             write(
                 &mut vm,
                 native,
@@ -2707,6 +2748,228 @@ fn explicit_pose_size_and_item_link_use_shared_bounds_without_implicit_relinks()
         assert_eq!(calls.call(&mut vm, 4, 3), Err(Trap::Builtin));
         assert_eq!(read(&vm, value, b"mins", 3), mins);
         assert_eq!(calls.services.server.area.bounds(id), Some(bounds));
+    });
+}
+
+#[test]
+fn rejected_native_link_keeps_successful_origin_stores_dirty() {
+    with_services(RuleSetId::Quake, |calls| {
+        let fields: Vec<_> = FIELDS
+            .iter()
+            .copied()
+            .map(|(kind, offset, name)| (if name == b"absmax" { 1 } else { kind }, offset, name))
+            .collect();
+        let mut vm = seed_vm(calls, vm_with_definitions(8, GLOBALS, &fields));
+        let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let id = entity(calls, &vm, native);
+        vm.project_entities(calls.services, calls.context).unwrap();
+        let origin = [42.0f32, 7.0, 3.0].map(f32::to_bits);
+        parameters(&mut vm, &[&[native], &origin]);
+        assert_eq!(calls.call(&mut vm, 2, 2), Err(Trap::Builtin));
+        assert_eq!(read(&vm, native, b"origin", 3), origin);
+        assert_eq!(calls.services.server.area.bounds(id), None);
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
+        assert_eq!(
+            calls.services.server.entities.columns.position[id.slot as usize],
+            Vec3([42.0, 7.0, 3.0])
+        );
+    });
+}
+
+#[test]
+fn linked_bounds_refresh_selected_aliases_and_retain_unrelated_pending_rows() {
+    use qa_session::dispatch::{FunctionBinding, FunctionTable};
+    use qa_session::physics::{MotionWrite, PushNumber};
+    use qa_world::area::LinkFlags;
+    for explicit_link in [false, true] {
+        with_services(RuleSetId::Quake, |calls| {
+            let fields: Vec<_> = FIELDS
+                .iter()
+                .copied()
+                .map(|(kind, offset, name)| {
+                    let offset = match name {
+                        b"absmin" => 0,
+                        b"absmax" => 34,
+                        _ => offset,
+                    };
+                    (kind, offset, name)
+                })
+                .collect();
+            let mut vm = seed_vm(calls, vm_with_definitions(8, GLOBALS, &fields));
+            let table = FunctionTable::<qa_session::clients::Server>::load([(
+                calls.context.module,
+                RuleSetId::Quake,
+                vec![FunctionBinding {
+                    entry: 1,
+                    call: |_, _, _, _| true,
+                }],
+            )])
+            .unwrap();
+            let module = table.module_binding(calls.context.module);
+            vm.bind_thinks(module, &[1]);
+            let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let id = entity(calls, &vm, native);
+            let pending = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let pending_id = entity(calls, &vm, pending);
+            write(
+                &mut vm,
+                native,
+                b"mins",
+                &[-2.0f32, -3.0, -4.0].map(f32::to_bits),
+            );
+            write(
+                &mut vm,
+                native,
+                b"maxs",
+                &[2.0f32, 3.0, 4.0].map(f32::to_bits),
+            );
+            write(
+                &mut vm,
+                native,
+                b"origin",
+                &[10.0f32, 20.0, 30.0].map(f32::to_bits),
+            );
+            write(&mut vm, native, b"solid", &[2.0f32.to_bits()]);
+            write(&mut vm, native, b"think", &[1]);
+            vm.project_entities(calls.services, calls.context).unwrap();
+
+            // A successful guest scalar store remains pending on another row.
+            // Its invalid model must not be read by selected-row publication.
+            vm.image.globals[28] = 77.0f32.to_bits();
+            vm.image.globals[31] = vm
+                .field_address(pending, vm.image.field(b"origin").unwrap() as u32, 1)
+                .unwrap() as u32;
+            vm.call(calls, 6, 100, false).unwrap();
+            write(&mut vm, pending, b"model", &[u32::MAX]);
+            assert_eq!(
+                calls.services.server.entities.columns.position[pending_id.slot as usize],
+                Vec3::default()
+            );
+
+            if explicit_link {
+                vm.relink_entity(calls.services, calls.context, native)
+                    .unwrap();
+            } else {
+                (ENGINE_CALLS.link)(calls.services, calls.context, id, LinkFlags::SOLID).unwrap();
+                let relinks = calls.services.server.area.relinks;
+                vm.publish_link_bounds(calls.services, calls.context, native)
+                    .unwrap();
+                assert_eq!(calls.services.server.area.relinks, relinks);
+            }
+            let bounds = calls.services.server.area.bounds(id).unwrap();
+            assert_eq!(bounds.mins, Vec3([7.0, 16.0, 25.0]));
+            assert_eq!(bounds.maxs, Vec3([13.0, 24.0, 35.0]));
+            let columns = &calls.services.server.entities.columns;
+            assert_eq!(columns.position[id.slot as usize], bounds.mins);
+            assert_eq!(
+                columns.next_think[id.slot as usize],
+                Some(ThinkTime::Seconds(13.0))
+            );
+            assert_eq!(
+                columns.think_binding(id.slot as usize),
+                ThinkBinding {
+                    callback: Some(CallbackId(24.0f32.to_bits())),
+                    ..module.think(None)
+                }
+            );
+            assert_eq!(columns.position[pending_id.slot as usize], Vec3::default());
+
+            // Both rows retain their dirty membership after local projection.
+            // Alter host bytes without making a second guest store to prove it.
+            write(&mut vm, native, b"frame", &[11.0f32.to_bits()]);
+            write(&mut vm, pending, b"model", &[0]);
+            vm.project_dirty_entities(calls.services, calls.context)
+                .unwrap();
+            assert_eq!(
+                calls.services.server.entities.columns.appearance[id.slot as usize].frame,
+                11
+            );
+            assert_eq!(
+                calls.services.server.entities.columns.position[pending_id.slot as usize],
+                Vec3([77.0, 0.0, 0.0])
+            );
+
+            // Retained freed backing still accepts native scalar rollback, but
+            // has no area bounds to publish and must not acquire a new link.
+            vm.remove_entity(calls.services, calls.context, native)
+                .unwrap();
+            vm.push_store(
+                &mut calls.services.server.entities,
+                calls.context,
+                native,
+                PushNumber::Motion(MotionWrite::Origin(0)),
+                91.0,
+            )
+            .unwrap();
+            let relinks = calls.services.server.area.relinks;
+            vm.publish_link_bounds(calls.services, calls.context, native)
+                .unwrap();
+            assert_eq!(calls.services.server.area.relinks, relinks);
+            assert_eq!(read(&vm, native, b"origin", 1), [91.0f32.to_bits()]);
+        });
+    }
+}
+
+#[test]
+fn native_origin_stores_import_aliased_deadline_and_function_through_dirty_rows() {
+    use qa_session::dispatch::{FunctionBinding, FunctionTable};
+    use qa_session::physics::MotionWrite;
+    with_services(RuleSetId::Quake, |calls| {
+        let fields: Vec<_> = FIELDS
+            .iter()
+            .copied()
+            .map(|(kind, offset, name)| (kind, if name == b"origin" { 34 } else { offset }, name))
+            .collect();
+        let mut vm = seed_vm(calls, vm_with_definitions(8, GLOBALS, &fields));
+        let table = FunctionTable::<qa_session::clients::Server>::load([(
+            calls.context.module,
+            RuleSetId::Quake,
+            vec![
+                FunctionBinding {
+                    entry: 1,
+                    call: |_, _, _, _| true,
+                },
+                FunctionBinding {
+                    entry: 2,
+                    call: |_, _, _, _| true,
+                },
+            ],
+        )])
+        .unwrap();
+        let module = table.module_binding(calls.context.module);
+        vm.bind_thinks(module, &[1, 2]);
+        let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let id = entity(calls, &vm, native);
+        write(&mut vm, native, b"think", &[1]);
+        vm.project_entities(calls.services, calls.context).unwrap();
+        calls.services.server.entities.columns.position[id.slot as usize].0[0] = 5.0;
+        vm.write_motion(
+            &mut calls.services.server.entities,
+            calls.context,
+            native,
+            MotionWrite::Origin(0),
+        )
+        .unwrap();
+        calls.services.server.entities.columns.position[id.slot as usize].0[1] = f32::from_bits(2);
+        vm.write_motion(
+            &mut calls.services.server.entities,
+            calls.context,
+            native,
+            MotionWrite::Origin(1),
+        )
+        .unwrap();
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
+        let columns = &calls.services.server.entities.columns;
+        assert_eq!(
+            columns.next_think[id.slot as usize],
+            Some(ThinkTime::Seconds(5.0))
+        );
+        assert_eq!(
+            columns.think_binding(id.slot as usize),
+            module.think(Some(CallbackId(1)))
+        );
     });
 }
 

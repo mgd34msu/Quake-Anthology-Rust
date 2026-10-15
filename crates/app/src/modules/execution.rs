@@ -771,11 +771,14 @@ fn advance(
                     ..
                 }
             )
-            && motion::sync_attachments(&mut qc.vm, &mut host.runtime.server, row.request.context)
-                .is_err()
         {
-            row.counts.rejected += 1;
-            return Err(());
+            let mut services =
+                host.runtime
+                    .engine_services(&mut host.console, storage, &mut row.scratch);
+            if motion::sync_attachments(&mut qc.vm, &mut services, row.request.context).is_err() {
+                row.counts.rejected += 1;
+                return Err(());
+            }
         }
         let native = match start.call {
             CallbackCall::Think {

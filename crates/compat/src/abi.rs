@@ -910,14 +910,17 @@ fn qc_set_origin(
     vm: &mut quakec::Vm,
     arguments: &[u64],
 ) -> Result<CallValue, CallError> {
-    vm.projection.quakec_set_origin(
-        c.services,
-        &mut vm.entities,
-        &vm.strings,
-        c.context,
-        qc_word(arguments, 0)?,
-        qc_vector(arguments, 1)?,
-    )?;
+    vm.with_entity_stores(|projection, memory, strings, store| {
+        projection.quakec_set_origin(
+            c.services,
+            memory,
+            strings,
+            c.context,
+            qc_word(arguments, 0)?,
+            qc_vector(arguments, 1)?,
+            store,
+        )
+    })?;
     Ok(CallValue::Word(0))
 }
 fn qc_change_yaw(
@@ -1015,14 +1018,17 @@ fn qc_set_size(
         mins: qc_vector(arguments, 1)?,
         maxs: qc_vector(arguments, 4)?,
     };
-    vm.projection.quakec_set_size(
-        c.services,
-        &mut vm.entities,
-        &vm.strings,
-        c.context,
-        qc_word(arguments, 0)?,
-        bounds,
-    )?;
+    vm.with_entity_stores(|projection, memory, strings, store| {
+        projection.quakec_set_size(
+            c.services,
+            memory,
+            strings,
+            c.context,
+            qc_word(arguments, 0)?,
+            bounds,
+            store,
+        )
+    })?;
     Ok(CallValue::Word(0))
 }
 fn qc_set_model(
@@ -1030,14 +1036,17 @@ fn qc_set_model(
     vm: &mut quakec::Vm,
     arguments: &[u64],
 ) -> Result<CallValue, CallError> {
-    vm.projection.quakec_set_model(
-        c.services,
-        &mut vm.entities,
-        &vm.strings,
-        c.context,
-        qc_word(arguments, 0)?,
-        qc_word(arguments, 1)?,
-    )?;
+    vm.with_entity_stores(|projection, memory, strings, store| {
+        projection.quakec_set_model(
+            c.services,
+            memory,
+            strings,
+            c.context,
+            qc_word(arguments, 0)?,
+            qc_word(arguments, 1)?,
+            store,
+        )
+    })?;
     Ok(CallValue::Word(0))
 }
 fn lightstyle(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

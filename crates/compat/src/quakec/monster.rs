@@ -257,13 +257,9 @@ impl Vm {
     ) -> Result<GoalStep, CallError> {
         if let GoalStep::Link(cursor) = &step {
             let native = self.weak_entity_offset(context.module, cursor.actor())?;
-            self.projection.quakec_link(
-                services,
-                &mut self.entities,
-                &self.strings,
-                context,
-                native,
-            )?;
+            self.with_entity_stores(|projection, memory, strings, store| {
+                projection.quakec_link(services, memory, strings, context, native, store)
+            })?;
         }
         Ok(step)
     }
@@ -295,13 +291,9 @@ impl Vm {
         let StepMove::Moved(post) = outcome else {
             return Ok(WalkMove::Blocked(restore));
         };
-        self.projection.quakec_link(
-            services,
-            &mut self.entities,
-            &self.strings,
-            context,
-            native,
-        )?;
+        self.with_entity_stores(|projection, memory, strings, store| {
+            projection.quakec_link(services, memory, strings, context, native, store)
+        })?;
         let ordinal = self.entity_number(native).map_err(|_| CallError::Memory)?;
         Ok(WalkMove::Moved(WalkAfterTouch {
             mover: NativeEntityRef::entity(ResourceNamespace::Module(context.module), ordinal),

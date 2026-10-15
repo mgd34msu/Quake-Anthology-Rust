@@ -221,6 +221,46 @@ impl AreaGrid {
             .map(|link| link.bounds)
     }
 
+    /// Move an existing body's spatial identity without relinking it. Native
+    /// client backing can outlive its connection; its bounds and list position
+    /// stay unchanged when the connection's common lifetime ends.
+    pub fn transfer_link(&mut self, table: &EntityTable, from: EntityId, to: EntityId) -> bool {
+        if table.resolve(from).is_none()
+            || table.resolve(to).is_none()
+            || to.slot == 0
+            || from.slot == to.slot
+            || self
+                .links
+                .get(to.slot as usize)
+                .is_none_or(|link| link.id.is_some())
+        {
+            return false;
+        }
+        let Some(mut link) = self
+            .links
+            .get(from.slot as usize)
+            .copied()
+            .filter(|link| link.id == Some(from))
+        else {
+            return false;
+        };
+        let node = &mut self.nodes[link.node as usize];
+        if link.previous == NONE {
+            node.head = to.slot;
+        } else {
+            self.links[link.previous as usize].next = to.slot;
+        }
+        if link.next == NONE {
+            node.tail = to.slot;
+        } else {
+            self.links[link.next as usize].previous = to.slot;
+        }
+        link.id = Some(to);
+        self.links[to.slot as usize] = link;
+        self.links[from.slot as usize] = Link::default();
+        true
+    }
+
     pub fn link(
         &mut self,
         table: &EntityTable,

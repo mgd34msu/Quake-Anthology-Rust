@@ -19,6 +19,48 @@ use continuation::{ActiveRun, RunState, Settings};
 pub use continuation::{BuiltinCall, Run, Step};
 pub use map::{MapAdmission, MapFields};
 pub use qa_session::physics::MotionState;
+pub(crate) type EntityStore<'a> = dyn for<'memory> FnMut(
+        &mut ModuleMemory<'memory>,
+        u64,
+        u32,
+    ) -> Result<(), crate::services::CallError>
+    + 'a;
+
+fn mark_entity_rows(
+    dirty: &mut BitSet,
+    slots: &mut [usize],
+    count: &mut usize,
+    first: usize,
+    last: usize,
+) {
+    for slot in first..=last {
+        if dirty.insert(slot) {
+            slots[*count] = slot;
+            *count += 1;
+        }
+    }
+}
+
+fn store_entity_word(
+    memory: &mut ModuleMemory<'_>,
+    dirty: &mut BitSet,
+    slots: &mut [usize],
+    count: &mut usize,
+    stride: usize,
+    address: u64,
+    word: u32,
+) -> Result<(), Trap> {
+    memory.write_word(address, word as i32)?;
+    // StoreP accepts an unaligned word crossing a native row boundary.
+    mark_entity_rows(
+        dirty,
+        slots,
+        count,
+        address as usize / stride,
+        (address as usize + 3) / stride,
+    );
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trap {
@@ -548,13 +590,9 @@ impl Vm {
             .self_global
             .ok_or(crate::services::CallError::Memory)?;
         let entity = self.image.globals[global];
-        let dropped = self.projection.quakec_drop_to_floor(
-            services,
-            &mut self.entities,
-            &self.strings,
-            context,
-            entity,
-        )?;
+        let dropped = self.with_entity_stores(|projection, memory, strings, store| {
+            projection.quakec_drop_to_floor(services, memory, strings, context, entity, store)
+        })?;
         if dropped {
             let slot = entity as usize / self.stride;
             self.mark_entity_rows(slot, slot);
@@ -642,8 +680,9 @@ impl Vm {
         value: u32,
         stage: qa_session::physics::MotionWrite,
     ) -> Result<(), crate::services::CallError> {
-        self.projection
-            .quakec_write_motion(entities, &mut self.entities, context, value, stage)
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_write_motion(entities, memory, context, value, stage, store)
+        })
     }
     /// Finish the existing native explicit relink without trigger touches;
     /// native world0 only publishes its pose.
@@ -653,12 +692,43 @@ impl Vm {
         context: crate::services::CallContext,
         value: u32,
     ) -> Result<(), crate::services::CallError> {
-        self.projection.quakec_relink_entity(
-            services,
+        self.with_entity_stores(|projection, memory, strings, store| {
+            projection.quakec_relink_entity(services, memory, strings, context, value, store)
+        })
+    }
+    /// Publish the already committed area bounds without relinking or moving.
+    pub fn publish_link_bounds(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        value: u32,
+    ) -> Result<(), crate::services::CallError> {
+        self.with_entity_stores(|projection, memory, strings, store| {
+            projection.quakec_publish_link_bounds(services, memory, strings, context, value, store)
+        })
+    }
+    pub(crate) fn with_entity_stores<R>(
+        &mut self,
+        call: impl FnOnce(
+            &mut crate::entities::EntityProjection,
+            &mut ModuleMemory<'static>,
+            &ModuleMemory<'static>,
+            &mut EntityStore<'_>,
+        ) -> Result<R, crate::services::CallError>,
+    ) -> Result<R, crate::services::CallError> {
+        let stride = self.stride;
+        let dirty = &mut self.dirty_entities;
+        let slots = &mut self.dirty_slots;
+        let count = &mut self.dirty_count;
+        let mut store = |memory: &mut ModuleMemory<'_>, address, word| {
+            store_entity_word(memory, dirty, slots, count, stride, address, word)
+                .map_err(|_| crate::services::CallError::Memory)
+        };
+        call(
+            &mut self.projection,
             &mut self.entities,
             &self.strings,
-            context,
-            value,
+            &mut store,
         )
     }
     /// Import bytecode field stores without replacing explicit native relinks.
@@ -702,21 +772,24 @@ impl Vm {
         Ok(())
     }
     fn store_entity_word(&mut self, address: u64, word: u32) -> Result<(), Trap> {
-        self.entities.write_word(address, word as i32)?;
-        // StoreP accepts native pointers, including an unaligned word crossing
-        // a row boundary. Retain every successfully written row on later traps.
-        let first = address as usize / self.stride;
-        let last = (address as usize + 3) / self.stride;
-        self.mark_entity_rows(first, last);
-        Ok(())
+        store_entity_word(
+            &mut self.entities,
+            &mut self.dirty_entities,
+            &mut self.dirty_slots,
+            &mut self.dirty_count,
+            self.stride,
+            address,
+            word,
+        )
     }
     fn mark_entity_rows(&mut self, first: usize, last: usize) {
-        for slot in first..=last {
-            if self.dirty_entities.insert(slot) {
-                self.dirty_slots[self.dirty_count] = slot;
-                self.dirty_count += 1;
-            }
-        }
+        mark_entity_rows(
+            &mut self.dirty_entities,
+            &mut self.dirty_slots,
+            &mut self.dirty_count,
+            first,
+            last,
+        );
     }
     pub(crate) fn write_trace(
         &mut self,

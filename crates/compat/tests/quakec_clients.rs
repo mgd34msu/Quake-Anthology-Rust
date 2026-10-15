@@ -1931,7 +1931,7 @@ fn native_nonclient_motion_decodes_loaded_phase_and_keeps_current_raw_mode() {
                 (6.0, Motion::Toss),
                 (9.0, Motion::FlyMissile),
                 (10.0, Motion::Bounce),
-                (7.0, Motion::Unsupported),
+                (7.0, Motion::Push),
             ] {
                 number(vm, native, b"movetype", raw);
                 vm.project_entities(services, context).unwrap();

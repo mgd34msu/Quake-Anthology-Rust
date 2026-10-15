@@ -409,14 +409,14 @@ impl ThinkWorld for FrameHost {
             .map_err(|_| CallError::Rejected)?;
         edit_quakec(self, module, |vm, services, context| {
             if !vm.is_running() {
-                motion::sync_attachments(vm, services.server, context)?;
+                motion::sync_attachments(vm, services, context)?;
             }
             let native = vm.weak_entity_offset(context.module, subject)?;
-            let callback = vm.prepare_think(native, time);
-            let published = vm.project_dirty_entities(services, context);
+            let binding = vm.prepare_think(native, time);
+            let published = vm.project_entity(services, context, native);
             Ok(PreparedNativeThink {
                 subject,
-                callback: callback.and_then(|callback| published.map(|()| callback))?,
+                binding: binding.and_then(|binding| published.map(|()| binding))?,
             })
         })
         .map(Some)

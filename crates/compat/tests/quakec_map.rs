@@ -359,6 +359,7 @@ fn spawn_updates_only_self_while_export_and_think_keep_their_native_globals() {
     assert_eq!(vm.image.globals[35], 7.25f32.to_bits());
     assert_eq!(vm.image.globals[36], 99);
     assert_eq!(read(&vm, entity, b"nextthink", 1), [2.0f32.to_bits()]);
+    bind(&mut vm, &[1]);
     vm.prepare_call(
         Some(entity),
         Some(0),

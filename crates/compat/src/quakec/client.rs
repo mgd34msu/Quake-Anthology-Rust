@@ -433,14 +433,10 @@ impl Vm {
     ) -> Result<(), CallError> {
         self.client_globals.require_packet_movement()?;
         self.sync_client_globals()?;
-        self.projection.quakec_write_client(
-            services,
-            &mut self.entities,
-            &self.strings,
-            context,
-            native,
-            offset,
-        )
+        self.with_entity_stores(|projection, memory, strings, store| {
+            projection
+                .quakec_write_client(services, memory, strings, context, native, offset, store)
+        })
     }
     pub fn touch_callback(
         &self,

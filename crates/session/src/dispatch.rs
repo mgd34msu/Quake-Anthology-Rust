@@ -293,12 +293,34 @@ impl<C: ThinkWorld, R: CallOutcome<C>> FunctionTable<C, R> {
         if callback.0 >= binding.count {
             return Err(CallError::MissingFunction);
         }
-        let path = binding.first + callback.0;
+        self.resolve_binding(entities, binding.think(Some(callback)), entity)
+    }
+
+    /// Resolve an already cached native binding, including the module's
+    /// rejected-call slot for null or invalid native function words.
+    pub fn resolve_binding(
+        &self,
+        entities: &EntityTable,
+        cached: ThinkBinding,
+        entity: EntityId,
+    ) -> Result<ResolvedCall, CallError> {
+        let slot = entities.resolve(entity).ok_or(CallError::StaleEntity)?;
+        let module = entities.columns.owner[slot];
+        let binding = self.binding(module).ok_or(CallError::MissingModule)?;
+        let path = cached.path;
+        if path < binding.first || path > binding.missing {
+            return Err(CallError::MissingFunction);
+        }
+        let function = self
+            .functions
+            .get(path as usize)
+            .filter(|function| function.module == module)
+            .ok_or(CallError::MissingFunction)?;
         Ok(ResolvedCall {
             entity,
             module,
             path,
-            entry: self.functions[path as usize].function.entry,
+            entry: function.function.entry,
         })
     }
 
@@ -387,7 +409,7 @@ impl<C: ThinkWorld, R: CallOutcome<C>> CallbackResolver for FunctionTable<C, R> 
 
 pub struct PreparedNativeThink {
     pub subject: NativeEntityRef,
-    pub callback: Option<CallbackId>,
+    pub binding: ThinkBinding,
 }
 
 pub trait ThinkWorld {
@@ -435,34 +457,23 @@ pub fn call_think_once<C: ThinkWorld, R: CallOutcome<C>>(
     let execute = (|| {
         let entities = world.entities();
         let slot = entities.resolve(entity)?;
-        let module = entities.columns.owner[slot];
         let fallback = entities.columns.think_binding(slot);
         if subject.is_none() {
             entities.columns.next_think[slot] = None;
         }
         let prepared = world.prepare_native_think(entity, subject, time).ok()?;
         let (binding, native) = match prepared {
-            Some(prepared) => (
-                table.binding(module)?.think(prepared.callback),
-                Some(prepared.subject),
-            ),
+            Some(prepared) => (prepared.binding, Some(prepared.subject)),
             None if subject.is_none() => (fallback, None),
             None => return None,
         };
-        let functions = table
-            .functions
-            .get(binding.path as usize)
-            .filter(|_| binding.path != 0)?;
+        let resolved = table
+            .resolve_binding(world.entities(), binding, entity)
+            .ok()?;
         let call = CallbackCall::Think {
             entity,
             time,
             prepared_native: native,
-        };
-        let resolved = ResolvedCall {
-            entity,
-            module,
-            path: binding.path,
-            entry: functions.function.entry,
         };
         Some(
             table

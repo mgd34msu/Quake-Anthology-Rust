@@ -1,7 +1,9 @@
 //! Weak native PUSH fields use the existing checked edict scalar boundary.
 use super::{Scalar, Vm};
 use crate::services::{CallContext, CallError, ENGINE_CALLS, EngineServices};
-use qa_core::primitives::{NativeEntity, NativeEntityRef, ResourceNamespace, ThinkTime};
+use qa_core::primitives::{
+    NativeEntity, NativeEntityRef, ResourceNamespace, ThinkBinding, ThinkTime,
+};
 use qa_session::physics::PushNumber;
 use qa_world::{
     collision::{QuakeTraceKind, TraceQuery, trace_policy},
@@ -132,11 +134,15 @@ impl Vm {
     }
     /// Resolve after restore-trigger callbacks, rather than caching a selector
     /// before a callback may change it. No liveness is implied by this pointer.
-    pub fn blocked_callback(
-        &self,
-        value: u32,
-    ) -> Result<Option<qa_core::primitives::CallbackId>, CallError> {
-        self.projection.quakec_function(&self.entities, value, true)
+    pub fn blocked_binding(&self, value: u32) -> Result<Option<ThinkBinding>, CallError> {
+        let word = self
+            .projection
+            .quakec_function_word(&self.entities, value, true)?;
+        if word == 0 {
+            Ok(None)
+        } else {
+            self.projection.quakec_function_binding(word).map(Some)
+        }
     }
     /// Native blocked calls leave time unchanged and intentionally do not save
     /// or restore either entity global. Assignment order matters for aliases.
@@ -161,7 +167,7 @@ impl Vm {
         &mut self,
         value: u32,
         time: ThinkTime,
-    ) -> Result<Option<qa_core::primitives::CallbackId>, CallError> {
+    ) -> Result<ThinkBinding, CallError> {
         let deadline =
             self.projection
                 .quakec_scalar_store(&self.entities, value, Scalar::NextThink)?;
@@ -176,7 +182,9 @@ impl Vm {
         if let Some(other_at) = self.call_fields.other_global {
             self.image.globals[other_at] = 0;
         }
-        self.projection
-            .quakec_function(&self.entities, value, false)
+        let word = self
+            .projection
+            .quakec_function_word(&self.entities, value, false)?;
+        self.projection.quakec_function_binding(word)
     }
 }

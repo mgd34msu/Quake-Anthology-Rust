@@ -98,6 +98,10 @@ impl Code {
             (StoreV, 100, 7, 0),
             (StoreV, 103, 10, 0),
             (Call3, 83, 0, 0),
+            (StoreEnt, 86, 4, 0),
+            (StoreV, 100, 7, 0),
+            (StoreV, 103, 10, 0),
+            (Call3, 83, 0, 0),
             (Return, 0, 0, 0),
         ]);
         (size, link)
@@ -1280,7 +1284,10 @@ fn state_reaches_provider_none_phase_with_native_clock_clear_and_world_context()
             host.runtime.server.entities.columns.appearance[slot].frame,
             9
         );
-        assert_eq!(host.runtime.server.entities.columns.next_think[slot], None);
+        assert_eq!(
+            host.runtime.server.entities.columns.next_think[slot],
+            Some(ThinkTime::Seconds(0.0))
+        );
         assert_eq!(
             host.runtime.server.entities.columns.think_function(slot),
             Some(CallbackId(0))
@@ -1329,7 +1336,7 @@ fn nq_runs_once_and_qw_repeats_reschedules_through_the_same_dispatcher() {
             let due = (f64::from(0.1f32) + 0.1) as f32;
             assert_eq!(deadline, Some(ThinkTime::Seconds(f64::from(due))));
         } else {
-            assert_eq!(deadline, None);
+            assert_eq!(deadline, Some(ThinkTime::Seconds(0.0)));
             let first_due = (f64::from(0.25f32) + 0.1) as f32;
             let second_due = (f64::from(first_due) + 0.1) as f32;
             assert_eq!(
@@ -1363,7 +1370,7 @@ fn native_edict_order_is_independent_of_common_slots_and_other_physics_is_not_sc
             (41, 0.0, 0.05, think),
             (40, 0.0, 0.05, think),
             (43, 3.0, 0.05, think), // WALK belongs to a later motion slice.
-            (44, 7.0, 0.05, think), // PUSH: ltime controls its due phase.
+            (44, 7.0, 0.05, think), // PUSH executes its own phase and rejects missing ltime.
         ],
     );
     let mut host = load(runtime, vec![request]);
@@ -1390,8 +1397,9 @@ fn native_edict_order_is_independent_of_common_slots_and_other_physics_is_not_sc
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
     assert_eq!(
         host.module_counts(ModuleId(1)).unwrap().unsupported_physics,
-        2
+        1
     );
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 1);
 }
 
 #[test]
@@ -1551,7 +1559,7 @@ fn full_width_invalid_native_function_rejects_only_its_due_entity() {
     );
     assert_eq!(
         host.runtime.server.entities.columns.next_think[ids[0].slot as usize],
-        None
+        Some(ThinkTime::Seconds(0.0))
     );
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 1);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
@@ -1854,7 +1862,7 @@ fn noclip_reads_think_pose_changes_and_uses_native_float_arithmetic() {
             (Address, 34, 53, 61),
             (StorePV, 89, 61, 0),
             // The selected NOCLIP phase continues even if think changes
-            // movetype. The next native pass selects unsupported PUSH.
+            // movetype. The next native pass selects PUSH.
             (Address, 34, 57, 61),
             (StorePF, 71, 61, 0),
             (Return, 70, 0, 0),
@@ -1933,8 +1941,10 @@ fn noclip_reads_think_pose_changes_and_uses_native_float_arithmetic() {
         );
         assert_eq!(
             host.module_counts(ModuleId(1)).unwrap().unsupported_physics,
-            1
+            0
         );
+        // The next captured PUSH phase executes and rejects missing ltime.
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 1);
     }
 }
 
@@ -6313,6 +6323,8 @@ fn push_fixture(
     vm.image.globals[93] = 1.0f32.to_bits();
     vm.image.globals[94] = 2.0f32.to_bits();
     vm.image.globals[95] = 42.0f32.to_bits();
+    vm.image.globals[97] = vm.image.field(b"absmin").unwrap() as u32;
+    vm.image.globals[98] = vm.image.field(b"absmax").unwrap() as u32;
     vm.image.globals[100..103].fill((-1.0f32).to_bits());
     vm.image.globals[103..106].fill(1.0f32.to_bits());
     vm.image.globals[106..109].fill((-4.0f32).to_bits());
@@ -6674,8 +6686,15 @@ fn qc_push_callbacks_see_committed_native_attachments_and_blocked_rollback_pose(
         for blocked in [false, true] {
             let mut code = Code::new();
             let frame = code.function(&[(Return, 0, 0, 0)]);
-            let callback = code.function(&[(LoadV, 86, 53, 60), (Return, 60, 0, 0)]);
+            let callback = code.function(&[
+                (LoadV, 86, 53, 60),
+                (LoadV, 86, 97, 63),
+                (LoadV, 86, 98, 66),
+                (Return, 60, 0, 0),
+            ]);
             let inspect_seen = code.function(&[(Return, 60, 0, 0)]);
+            let inspect_min = code.function(&[(Return, 63, 0, 0)]);
+            let inspect_max = code.function(&[(Return, 66, 0, 0)]);
             let (size, link) = code.push_links();
             let mut vm = code.push_vm();
             write_vector(&mut vm, 40, b"velocity", Vec3([16.0, 0.0, 0.0]));
@@ -6698,6 +6717,13 @@ fn qc_push_callbacks_see_committed_native_attachments_and_blocked_rollback_pose(
             );
             let pusher = ids[1];
             let child = ids[3];
+            assert_eq!(
+                host.runtime.server.area.bounds(child),
+                Some(Bounds {
+                    mins: Vec3([-2.0; 3]),
+                    maxs: Vec3([2.0; 3])
+                })
+            );
             host.runtime
                 .server
                 .entities
@@ -6742,16 +6768,32 @@ fn qc_push_callbacks_see_committed_native_attachments_and_blocked_rollback_pose(
                     expected
                 );
             }
-            host.call_module_export(
-                ModuleId(1),
-                Export::clocked(CallbackId(inspect_seen)),
-                ThinkTime::Seconds(9.0),
-            )
-            .unwrap();
+            let bounds = host.runtime.server.area.bounds(child).unwrap();
             assert_eq!(
-                host.module_counts(ModuleId(1)).unwrap().last_result,
-                Some(ModuleResult::QuakeC(expected.0.map(f32::to_bits)))
+                bounds,
+                Bounds {
+                    mins: expected + Vec3([-2.0; 3]),
+                    maxs: expected + Vec3([2.0; 3])
+                },
+                "{rules:?} blocked={blocked} linked expansion"
             );
+            for (inspect, value) in [
+                (inspect_seen, expected),
+                (inspect_min, bounds.mins),
+                (inspect_max, bounds.maxs),
+            ] {
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(inspect)),
+                    ThinkTime::Seconds(9.0),
+                )
+                .unwrap();
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC(value.0.map(f32::to_bits))),
+                    "{rules:?} blocked={blocked} captured native attachment fields"
+                );
+            }
             let counts = host.module_counts(ModuleId(1)).unwrap();
             assert_eq!((counts.rejected, counts.traps), (0, 0));
         }
@@ -6785,8 +6827,8 @@ fn qc_rejected_think_preparation_still_publishes_its_aliased_native_clear() {
         let mut host = load(runtime, vec![request]);
         tick(&mut host, 0);
         tick(&mut host, 100);
-        // The bad selector prevents a QC activation. Its admitted native clear
-        // nevertheless updates common origin and deadline before any later call.
+        // The bad selector reaches the existing missing-function adapter. Its
+        // admitted clear updates common state before any later explicit call.
         assert_eq!(
             host.runtime.server.entities.columns.position[ids[0].slot as usize],
             Vec3([0.0, 2.0, 3.0])
@@ -6796,6 +6838,6 @@ fn qc_rejected_think_preparation_still_publishes_its_aliased_native_clear() {
             Some(ThinkTime::Seconds(0.0))
         );
         let counts = host.module_counts(ModuleId(1)).unwrap();
-        assert_eq!((counts.rejected, counts.traps), (1, 0));
+        assert_eq!((counts.rejected, counts.traps), (1, 1));
     }
 }
