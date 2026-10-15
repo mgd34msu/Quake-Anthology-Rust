@@ -576,3 +576,115 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
 fn reject_move(client: qa_core::primitives::ClientId, error: qa_world::collision::TraceError) {
     panic!("unexpected movement rejection for {client:?}: {error:?}");
 }
+
+#[test]
+fn q3_respawn_gate_matches_server_and_prediction_replay_for_humans_and_bots() {
+    use qa_core::{
+        command_history::{Acknowledgement, CommandHistory},
+        primitives::{CommandExecution, PlayerState, buttons},
+    };
+
+    let (store, geometry) = floor();
+    let cvars = qa_console::cvars::Cvars::new().unwrap();
+    let handles = qa_console::input_settings::InputHandles::load(&cvars).unwrap();
+    for connection in [Connection::Local, Connection::Remote, Connection::Bot] {
+        let mut server = Server::load(1, 8, 1, 0, 0, 0).unwrap();
+        let id = server.connect(connection, ModuleId(2), None).unwrap();
+        let client = &mut server.clients[id.0 as usize];
+        client.player.movement_rules = RuleSetId::Quake3;
+        client.player.trace_rules = RuleSetId::Quake2;
+        client.player.health = 100;
+        qa_movement::set_bounds(&mut client.player);
+        client.player.body.position = Vec3([0.0, 0.0, 24.125]);
+        client.player.movement.grounded = true;
+        client.player.movement.respawned = true;
+        let entity = client.entity;
+        // Native health has already been accepted before the movement snapshot
+        // is remembered, as in the production CLIENT projection path.
+        let mut prediction = Prediction::new(PlayerState {
+            health: client.player.health,
+            ..Default::default()
+        });
+        prediction.apply_snapshot(&client.player);
+        prediction.remember_snapshot(Some(Acknowledgement::Number(0)));
+        assert!(prediction.player.movement.respawned);
+        server
+            .entities
+            .columns
+            .set_body(entity.slot as usize, client.player.body);
+        assert!(server.area.link(
+            &server.entities,
+            entity,
+            LinkFlags::SOLID,
+            LinkOrder::Tail,
+            LinkIntent::Explicit
+        ));
+        let mut scratch = store.scratch();
+        let mut history = CommandHistory::load(4, 0).unwrap();
+
+        for (index, held) in [buttons::ATTACK | buttons::JUMP, buttons::JUMP]
+            .into_iter()
+            .enumerate()
+        {
+            let start = EventTime::from_milliseconds(index as u64 * 16);
+            let end = EventTime::from_milliseconds((index as u64 + 1) * 16);
+            if connection == Connection::Bot {
+                server.clients[id.0 as usize].intent = CommandIntent {
+                    buttons: held,
+                    ..CommandIntent::moving([0.0, 0.0, 1.0])
+                };
+                server.build_bot_commands(start, end, |rules| handles.policy(&cvars, rules));
+            } else {
+                server.submit_command(
+                    id,
+                    UserCmd {
+                        duration_ms: 16,
+                        server_time_ms: end.milliseconds() as i32,
+                        movement: [0.0, 0.0, 127.0],
+                        buttons: held,
+                        ..Default::default()
+                    },
+                    CommandExecution::PerCommand,
+                    None,
+                );
+            }
+            let command = server.clients[id.0 as usize].command;
+            history.append(command);
+            assert_eq!(
+                server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
+                1
+            );
+            let mut trace = WorldTrace::new(
+                &store,
+                geometry,
+                0,
+                &server.entities,
+                &server.area,
+                &mut scratch,
+                CollisionOwner::Lifetime(entity),
+            );
+            assert_eq!(prediction.replay(&history, &mut trace).unwrap(), 1);
+            let authoritative = &server.clients[id.0 as usize].player;
+            assert_eq!(prediction.player.body.position, authoritative.body.position);
+            assert_eq!(prediction.player.body.velocity, authoritative.body.velocity);
+            assert_eq!(prediction.player.movement, authoritative.movement);
+            assert_eq!(prediction.player.trace_rules, RuleSetId::Quake2);
+            assert_eq!(prediction.player.movement.respawned, index == 0);
+            if index == 0 {
+                assert!(authoritative.movement.grounded);
+                assert!(!authoritative.movement.jump_held);
+                assert_eq!(authoritative.body.velocity.0[2], 0.0);
+            } else {
+                assert!(authoritative.movement.jump_held);
+                assert!(authoritative.body.position.0[2] > 24.125);
+                assert!(authoritative.body.velocity.0[2] > 200.0);
+            }
+            // The next command replays from the accepted authoritative frame,
+            // including its respawn latch, rather than from a second state copy.
+            prediction.apply_snapshot(authoritative);
+            prediction.remember_snapshot(Some(Acknowledgement::Number(history.number())));
+            assert_eq!(prediction.replay(&history, &mut trace).unwrap(), 0);
+            assert_eq!(prediction.player.movement, authoritative.movement);
+        }
+    }
+}

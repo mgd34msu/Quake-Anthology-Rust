@@ -14,8 +14,8 @@ const ENTITY_STRIDE: i32 = 608;
 const PLAYER_STRIDE: i32 = 512;
 const THINK_CLIENT: i32 = 64;
 const THINK_COUNT: i32 = 68;
-const RESIDUAL: u32 = 512 | 1024;
-const HOT: u32 = 1 | 2 | 32 | 64 | 256;
+const RESIDUAL: u32 = 1024;
+const HOT: u32 = 1 | 2 | 32 | 64 | 256 | 512;
 
 fn program(gravity: i32, speed: i32, followed_client: i32) -> qa_compat::qvm::Vm {
     program_inventory(
@@ -674,6 +674,8 @@ fn q3_native_metadata_survives_ordinary_snapshot_and_client_import_with_hot_flag
         player.movement.tuning.max_speed.unwrap().effective(0.5),
         250.0
     );
+    assert!(player.movement.respawned);
+    player.movement.respawned = false;
     player.movement.ducked = false;
     player.movement.jump_held = true;
     player.movement.timer = MovementTimer(MovementTimer::KNOCKBACK.0);
@@ -691,6 +693,7 @@ fn q3_native_metadata_survives_ordinary_snapshot_and_client_import_with_hot_flag
         (Some(1200), Some(250), Some(4))
     );
     assert_eq!(tail.flags, RESIDUAL | 2 | 64);
+    assert!(!player.movement.respawned);
     assert_eq!(player.inventory.weapon, expected_weapon);
     assert_eq!(
         (player.movement_rules, player.trace_rules),
@@ -799,9 +802,12 @@ fn q3_snapshot_does_not_borrow_another_namespace_or_source_tail_and_shared_reset
             (1200, 250, 0, 4)
         );
         assert_eq!(words[19], HOT);
+        // Changing raw-tail provenance preserves common movement capabilities.
+        assert!(host.runtime.prediction[0].player.movement.respawned);
         assert_eq!(presented_entity(&host, client), Some(0));
         host.runtime.server.clients[1].player.reset();
         assert!(host.runtime.server.clients[1].player.native.is_none());
+        assert!(!host.runtime.server.clients[1].player.movement.respawned);
         let words = transmit(&mut host, client, 200);
         assert_eq!((words[19], words[40], words[41]), (0, 0, 0));
         assert_eq!(

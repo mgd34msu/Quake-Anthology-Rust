@@ -872,6 +872,9 @@ impl Step<'_> {
         Ok(())
     }
     fn jump(&mut self) -> bool {
+        if self.parameters.special.respawn_release.is_some() && self.player.movement.respawned {
+            return false;
+        }
         if self.nq() {
             return false;
         } // NetQuake PlayerPreThink/QuakeC owns jump impulse.
@@ -1456,6 +1459,12 @@ impl Step<'_> {
         B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
     {
         self.result.steps += 1;
+        if let Some(held) = self.parameters.special.respawn_release
+            && self.player.health > 0
+            && self.command.buttons & held == 0
+        {
+            self.player.movement.respawned = false;
+        }
         if let Some(exclusive) = self.parameters.exclusive_button
             && self.command.buttons & exclusive != 0
         {
@@ -1548,7 +1557,7 @@ fn run_step<E, B>(
     result: &mut MovementResult,
     options: MoveOptions,
     boundary: &mut B,
-) -> Result<(), E>
+) -> Result<UserCmd, E>
 where
     E: From<TraceError>,
     B: FnMut(&mut PlayerState, MotionWrite) -> Result<(), E>,
@@ -1572,7 +1581,7 @@ where
             Contents::BODY | Contents::PLAYER
         };
     let previous_velocity = player.body.velocity;
-    Step {
+    let mut step = Step {
         player,
         world,
         result,
@@ -1586,9 +1595,9 @@ where
         scope: TraceScope::Scene,
         previous_velocity,
         options,
-    }
-    .run(boundary)?;
-    Ok(())
+    };
+    step.run(boundary)?;
+    Ok(step.command)
 }
 fn run_entry<E, B>(
     rules: RuleSetId,
@@ -1847,7 +1856,7 @@ where
                 command.duration_ms = ms;
                 player.movement.command_time_ms += i32::from(ms);
                 command.server_time_ms = player.movement.command_time_ms;
-                run_step(
+                command = run_step(
                     command,
                     player,
                     world,

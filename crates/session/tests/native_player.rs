@@ -32,18 +32,22 @@ fn native_metadata_follows_the_bound_lifetime_and_clears_on_rebind_or_disconnect
     tail.weapon_number = Some(0);
     tail.flags = 0x8000_3163;
     server.clients[id.0 as usize].player.native = Some(tail);
+    server.clients[id.0 as usize].player.movement.respawned = true;
     server.clients[id.0 as usize].player.prediction =
         qa_core::primitives::PredictionPolicy::DISABLED;
     assert!(server.bind_client_native(id, native));
+    assert!(server.clients[id.0 as usize].player.movement.respawned);
     assert_eq!(server.clients[id.0 as usize].player.native, Some(tail));
     assert_eq!(
         server.clients[id.0 as usize].player.prediction,
         qa_core::primitives::PredictionPolicy::DISABLED
     );
     assert!(!server.bind_client_native(id, occupied));
+    assert!(server.clients[id.0 as usize].player.movement.respawned);
     assert_eq!(server.clients[id.0 as usize].player.native, Some(tail));
     let changed = NativeEntity { slot: 1, ..native };
     assert!(server.bind_client_native(id, changed));
+    assert!(!server.clients[id.0 as usize].player.movement.respawned);
     assert_eq!(server.clients[id.0 as usize].player.native, None);
     assert_eq!(
         server.clients[id.0 as usize].player.prediction,
@@ -72,6 +76,7 @@ fn prediction_copies_metadata_and_effective_hot_inputs_without_copying_inventory
         position: false,
         angles: true,
     };
+    source.movement.respawned = true;
     source.movement.tuning.gravity_multiplier = 0.0;
     source.movement.tuning.gravity = Some(MovementMagnitude::native(1200.0, 0.0));
     source.inventory.item_counts[0] = 99;

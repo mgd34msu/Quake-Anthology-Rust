@@ -1313,7 +1313,7 @@ fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
     let namespace = ResourceNamespace::Module(ModuleId(7));
     let native = PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
     let wire = PlayerProjection::load(Protocol::Quake3_68, &[]);
-    assert_eq!(native.movement_flag_mask(), 0x163);
+    assert_eq!(native.movement_flag_mask(), 0x363);
     let mut words = [0; states::PLAYER_WORDS];
     let flags = 0x8000_0000 | 8 | 16 | 512 | 1024 | 2048 | 4096 | 8192 | 16384 | 0x163;
     words[19] = flags;
@@ -1404,7 +1404,9 @@ fn native_metadata_keeps_raw_widths_only_in_the_explicit_source_namespace()
         |_| None,
         |sound| Some(sound.ordinal),
     ));
-    assert_eq!(projected[19], 2 | 32);
+    // Respawn suppression is now common movement state, like jump/timers;
+    // changing the resource namespace drops only the residual native bits.
+    assert_eq!(projected[19], 2 | 32 | 512);
     assert_eq!(projected[24..=25], [123, 456]);
     assert_eq!(projected[40..=41], [5, 7]);
     // Matching namespace never makes foreign raw flag bits meaningful.
@@ -2353,4 +2355,88 @@ fn stats_and_movement_only_projection_preserve_the_accepted_player_loop() {
         |_| None
     ));
     assert_eq!(player.loop_sound, SoundRef::native(client, 17));
+}
+
+#[test]
+fn respawn_lock_is_common_state_with_protocol_exact_residual_flags()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{ClientId, ModuleId, ResourceNamespace};
+    let namespace = ResourceNamespace::Module(ModuleId(7));
+    let native = PlayerProjection::load_native_q3(PlayerValueBindings::EMPTY, Q3StatLayout::BASE);
+    let wire = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let mut words = [0; states::PLAYER_WORDS];
+    words[19] = 0x8000_0000 | 4096 | 512 | 8;
+    let mut player = PlayerState {
+        movement_rules: RuleSetId::Quake2,
+        trace_rules: RuleSetId::QuakeWorld,
+        ..Default::default()
+    };
+    let mut context = PlayerContext::default();
+    assert!(native.apply(&words, &mut player, &mut context, namespace, |_| None));
+    assert!(player.movement.respawned);
+    assert_eq!(player.native.unwrap().flags, words[19]);
+    assert_eq!(
+        (player.movement_rules, player.trace_rules),
+        (RuleSetId::Quake2, RuleSetId::QuakeWorld)
+    );
+
+    // Stats imports and rejected memory admission cannot clear a movement lock.
+    let stats = PlayerProjection::load_stat_values(
+        Protocol::Quake2_34,
+        PlayerValueBindings::EMPTY,
+        Q3StatLayout::BASE,
+    );
+    assert!(stats.apply(
+        &[0; states::Q2_PLAYER_WORDS],
+        &mut player,
+        &mut context,
+        namespace,
+        |_| None,
+    ));
+    assert!(player.movement.respawned);
+    assert!(native.apply_stats(&[0; states::PLAYER_WORDS], &mut player, namespace));
+    assert!(player.movement.respawned);
+    assert!(!native.apply(&words[..1], &mut player, &mut context, namespace, |_| None));
+    assert!(player.movement.respawned);
+
+    // Shared movement owns changes to the mapped flag. A retained raw tail
+    // must not resurrect it when projecting back to native or wire state.
+    player.movement.respawned = false;
+    let mut projected = [0; states::PLAYER_WORDS];
+    assert!(native.reduce(&player, &context, &mut projected, |_| None, |_| None));
+    assert_eq!(projected[19], words[19] & !512);
+    player.movement.respawned = true;
+    assert!(wire.reduce(&player, &context, &mut projected, |_| None, |_| None));
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Q3);
+    states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &projected)?;
+    let size = writer.size();
+    let received = states::read_q3_player(
+        &mut Reader::new(&bytes[..size], Encoding::Q3),
+        &[0; states::PLAYER_WORDS],
+    )?;
+    assert_eq!(received[19], words[19] & 65535);
+    let mut client = PlayerState::default();
+    assert!(wire.apply(
+        &received,
+        &mut client,
+        &mut PlayerContext::default(),
+        ResourceNamespace::Client(ClientId(0)),
+        |_| None,
+    ));
+    assert!(client.movement.respawned);
+
+    // Rerelease bit512 has a different meaning. It remains native metadata
+    // until that capability is projected, and cannot become a Q3 respawn lock.
+    let rr = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
+    let mut rr_words = [0; states::Q2_REPRO_PLAYER_WORDS];
+    rr_words[qa_network::projection::PM_FLAGS_WORD] = 512;
+    assert!(rr.apply(&rr_words, &mut player, &mut context, namespace, |_| None));
+    assert!(!player.movement.respawned);
+    assert_eq!(player.native.unwrap().flags, 512);
+    assert_eq!(
+        (player.movement_rules, player.trace_rules),
+        (RuleSetId::Quake2, RuleSetId::QuakeWorld)
+    );
+    Ok(())
 }

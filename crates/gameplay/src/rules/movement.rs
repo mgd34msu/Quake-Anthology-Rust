@@ -1,5 +1,5 @@
 //! Movement capability data; the one movement executor consumes this table.
-use qa_core::primitives::{Bounds, MovementMode, MovementTimer, RuleSetId, Vec3};
+use qa_core::primitives::{Bounds, MovementMode, MovementTimer, RuleSetId, Vec3, buttons};
 
 #[derive(Clone, Copy)]
 pub struct ViewAnglePolicy {
@@ -341,6 +341,7 @@ pub struct SpecialMovement {
     pub water_standing_cap: bool,
     pub water_duck_cap_after: Option<f32>,
     pub release_jump_below: Option<f32>,
+    pub respawn_release: Option<u32>,
     pub lower_step_probe: bool,
     pub settle_ground_step: bool,
     pub recover_stuck: bool,
@@ -377,6 +378,7 @@ const NO_SPECIAL: SpecialMovement = SpecialMovement {
     water_standing_cap: false,
     water_duck_cap_after: None,
     release_jump_below: None,
+    respawn_release: None,
     lower_step_probe: false,
     settle_ground_step: false,
     recover_stuck: false,
@@ -437,6 +439,7 @@ const SPECIAL: [SpecialMovement; 5] = [
         water_standing_cap: true,
         water_duck_cap_after: Some(100.0),
         release_jump_below: None,
+        respawn_release: None,
         lower_step_probe: true,
         settle_ground_step: true,
         recover_stuck: true,
@@ -444,6 +447,8 @@ const SPECIAL: [SpecialMovement; 5] = [
     },
     SpecialMovement {
         release_jump_below: Some(10.0),
+        // PMF_RESPAWNED clears before TALK suppresses the other command bits.
+        respawn_release: Some(buttons::ATTACK | buttons::USE),
         water_jump: Some(WaterJumpPolicy {
             phase: ProbePhase::InWaterMovement,
             horizontal: 200.0,

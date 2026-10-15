@@ -429,6 +429,10 @@ struct Binding {
     entity: EntityId,
     owned: bool,
     published: bool,
+    /// Q3's private svEntity_t area pair, captured by the last LinkEntity.
+    /// Explicit UnlinkEntity preserves it just like qsrc; lifetime retirement
+    /// and the next link clear it before any portal adjustment can observe it.
+    portal_areas: [Option<u32>; 2],
     // A native ordinal's reuse delay is independent of its common lifetime.
     freed_at: Option<ThinkTime>,
     think_word: Option<u32>,
@@ -498,11 +502,8 @@ impl EntityProjection {
             EntitySchema::QuakeC(_) => Err(CallError::Entity),
         }
     }
-    pub(crate) fn seed(
-        &mut self,
-        entities: &EntityTable,
-        owner: ModuleId,
-    ) -> Result<(), CallError> {
+    /// Bind this projection to its module and import any existing common lifetimes.
+    pub fn seed(&mut self, entities: &EntityTable, owner: ModuleId) -> Result<(), CallError> {
         if let Some(bound) = self.owner {
             return if bound == owner {
                 Ok(())
@@ -544,6 +545,7 @@ impl EntityProjection {
             entity,
             owned: false,
             published: false,
+            portal_areas: [None; 2],
             freed_at: None,
             think_word: None,
         });
@@ -914,6 +916,7 @@ impl EntityProjection {
             entity,
             owned: true,
             published: false,
+            portal_areas: [None; 2],
             freed_at: None,
             think_word: None,
         });
@@ -1046,6 +1049,12 @@ impl EntityProjection {
             bound = None;
         }
         let entity = self.bind(services, context, native_slot, bound)?;
+        if layout.source == RuleSetId::Quake3
+            && let Some(binding) = self.bindings[native_slot].as_mut()
+        {
+            // SV_LinkEntity resets areanum/areanum2 before querying leaves.
+            binding.portal_areas = [None; 2];
+        }
         let slot = entity.slot as usize;
         let columns = &mut services.server.entities.columns;
         columns.position[slot] = origin;
@@ -1096,17 +1105,19 @@ impl EntityProjection {
             return Ok(());
         }
         let world = services.visibility.as_ref().ok_or(CallError::Geometry)?.0;
-        let mut areas = [0u32; 2];
+        let mut areas = [None; 2];
         let mut clusters = [0u32; 16];
         let mut count = 0;
         for &index in &self.leaves[..result.count] {
             let leaf = world.leaf(index).ok_or(CallError::Geometry)?;
-            let area = leaf.area.unwrap_or(0);
-            if area != 0 {
-                if areas[0] != 0 && areas[0] != area {
-                    areas[1] = area;
+            if let Some(area) = leaf
+                .area
+                .filter(|&area| area != 0 || layout.source == RuleSetId::Quake3)
+            {
+                if areas[0].is_some_and(|first| first != area) {
+                    areas[1] = Some(area);
                 } else {
-                    areas[0] = area;
+                    areas[0] = Some(area);
                 }
             }
             if let Some(cluster) = leaf.selector
@@ -1125,7 +1136,7 @@ impl EntityProjection {
         }
         for (offset, value) in [(layout.area, areas[0]), (layout.area2, areas[1])] {
             if let Some(offset) = offset {
-                memory.write_word(address + offset as u64, value as i32)?;
+                memory.write_word(address + offset as u64, value.unwrap_or(0) as i32)?;
             }
         }
         for (offset, value) in [
@@ -1176,9 +1187,29 @@ impl EntityProjection {
             memory.write_vec3(address + 28, origin)?;
         }
         if let Some(binding) = self.bindings[native_slot].as_mut() {
+            if layout.source == RuleSetId::Quake3 {
+                binding.portal_areas = areas;
+            }
             binding.published = true;
         }
         Ok(())
+    }
+    pub fn adjust_area_portal_state(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        address: u64,
+        open: bool,
+    ) -> Result<(), CallError> {
+        let (_, slot, _) = self.entity(services, memory, context, address)?;
+        let Some(binding) = self.bindings.get(slot).copied().flatten() else {
+            return Ok(());
+        };
+        let [Some(first), Some(second)] = binding.portal_areas else {
+            return Ok(());
+        };
+        (ENGINE_CALLS.portal_adjust)(services, first, second, open)
     }
     fn retire(
         &mut self,
@@ -1198,6 +1229,9 @@ impl EntityProjection {
                 (ENGINE_CALLS.unlink)(services, binding.entity)?;
                 services.server.entities.columns.appearance[binding.entity.slot as usize] =
                     EntityAppearance::default();
+                if let Some(binding) = self.bindings[slot].as_mut() {
+                    binding.portal_areas = [None; 2];
+                }
             }
         }
         Ok(())

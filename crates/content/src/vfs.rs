@@ -354,21 +354,16 @@ impl Vfs {
                         .cmp(&self.mounts[x.mount].priority)
                 })
                 .then(y.mount.cmp(&x.mount))
-                .then(a.entry.cmp(&b.entry))
+                .then_with(|| match self.mounts[x.mount].kind {
+                    MountKind::Pk3 => b.entry.cmp(&a.entry),
+                    MountKind::Directory | MountKind::Pak => a.entry.cmp(&b.entry),
+                })
         });
         self.winners.fill(None);
         if let Some(names) = &self.names {
             for &reference in &self.listing {
-                let entry = &self.entries[reference.entry as usize];
-                if let Some(id) = names.find(&entry.name) {
-                    let winner = &mut self.winners[id.0 as usize];
-                    if winner.is_none_or(|current| {
-                        let current = &self.entries[current.entry as usize];
-                        current.mount == entry.mount
-                            && self.mounts[entry.mount].kind == MountKind::Pk3
-                    }) {
-                        *winner = Some(reference);
-                    }
+                if let Some(id) = names.find(&self.entries[reference.entry as usize].name) {
+                    self.winners[id.0 as usize].get_or_insert(reference);
                 }
             }
         }

@@ -1478,6 +1478,8 @@ pub struct MovementState {
     pub ladder: bool,
     pub ducked: bool,
     pub jump_held: bool,
+    /// The active movement policy may wait for spawn-time actions to release.
+    pub respawned: bool,
     pub timer: MovementTimer,
     pub remaining_ms: u32,
     pub command_time_ms: i32,

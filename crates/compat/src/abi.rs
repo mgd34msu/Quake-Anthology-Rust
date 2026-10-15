@@ -485,6 +485,7 @@ const fn server() -> CallTable {
     t.entries[25] = scalar!(q3_point_contents);
     t.entries[26] = scalar!(q3_visibility::<false>);
     t.entries[27] = scalar!(q3_visibility::<true>);
+    t.entries[28] = scalar!(q3_adjust_area_portal_state);
     t.entries[29] = scalar!(q3_areas_connected);
     t.entries[32] = scalar!(q3_entities_in_box);
     t.entries[33] = scalar!(q3_entity_contact::<false>);
@@ -3208,6 +3209,19 @@ fn native_portal_set<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result
     }
     let number = u32::try_from(number).map_err(|_| CallError::Geometry)?;
     (ENGINE_CALLS.portal_set)(c.services, number, c.arg(1)? != 0, !WIDE)?;
+    Ok(0)
+}
+
+fn q3_adjust_area_portal_state(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.null_pointer(0)? {
+        return Err(CallError::Entity);
+    }
+    let address = c.pointer(0)?;
+    let open = c.arg(1)? as u32 != 0;
+    c.native_entities
+        .as_mut()
+        .ok_or(CallError::Entity)?
+        .adjust_area_portal_state(c.services, c.memory, c.context, address, open)?;
     Ok(0)
 }
 

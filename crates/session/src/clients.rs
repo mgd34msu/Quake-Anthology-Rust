@@ -375,6 +375,7 @@ impl Server {
             client.player.native_clock = None;
             client.player.loop_sound = None;
             client.player.prediction = Default::default();
+            client.player.movement.respawned = false;
         }
         client.module = native.module;
         self.entities.columns.owner[slot] = native.module;

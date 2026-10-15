@@ -358,7 +358,7 @@ pub struct PlayerProjection {
     modes: [u32; 9],
     received_modes: &'static [MovementMode],
     exact_modes: bool,
-    flags: [u32; 8],
+    flags: [u32; 9],
     flag_mask: u32,
     prediction_masks: [u32; 2],
     stats_only: bool,
@@ -490,14 +490,14 @@ impl PlayerProjection {
     ) -> Self {
         use MovementMode as M;
         let (fields, words, modes, received_modes, flags) = match protocol {
-            Protocol::NetQuake15 => (NQ, states::NQ_PLAYER_WORDS, [0; 9], &[][..], [0; 8]),
-            Protocol::QuakeWorld28 => (QW, states::QW_PLAYER_WORDS, [0; 9], &[][..], [0; 8]),
+            Protocol::NetQuake15 => (NQ, states::NQ_PLAYER_WORDS, [0; 9], &[][..], [0; 9]),
+            Protocol::QuakeWorld28 => (QW, states::QW_PLAYER_WORDS, [0; 9], &[][..], [0; 9]),
             Protocol::Quake2_34 => (
                 Q2,
                 states::Q2_PLAYER_WORDS,
                 [0, 1, 1, 1, 2, 3, 4, 4, 4],
                 &[M::Walk, M::Spectator, M::Dead, M::Gib, M::Frozen][..],
-                [1, 2, 4, 8, 16, 32, 0, 0],
+                [1, 2, 4, 8, 16, 32, 0, 0, 0],
             ),
             Protocol::Quake2Repro1038 => (
                 Q2_REPRO,
@@ -512,7 +512,7 @@ impl PlayerProjection {
                     M::Gib,
                     M::Frozen,
                 ][..],
-                [1, 2, 4, 8, 16, 32, 0, 1024],
+                [1, 2, 4, 8, 16, 32, 0, 1024, 0],
             ),
             Protocol::Quake3_68 => (
                 Q3,
@@ -527,7 +527,7 @@ impl PlayerProjection {
                     M::Intermission,
                     M::SinglePlayerIntermission,
                 ][..],
-                [1, 2, 0, 256, 32, 0, 64, 0],
+                [1, 2, 0, 256, 32, 0, 64, 0, 512],
             ),
         };
         let admitted: Box<[_]> = bindings
@@ -847,6 +847,9 @@ impl PlayerProjection {
         if !stats_only {
             context.namespace = Some(namespace);
             player.prediction = Default::default();
+            // A full native state owns its admitted movement capabilities.
+            // Protocols without this flag cannot retain an earlier Q3 lock.
+            player.movement.respawned = false;
         }
         for field in &self.fields {
             if stats_only && !matches!(field.source, Health | Armor | Score | Frags | WeaponTime) {
@@ -871,6 +874,7 @@ impl PlayerProjection {
                 Timer => player.movement.remaining_ms = value,
                 Flags => {
                     native.flags = word;
+                    player.movement.respawned = value & self.flags[8] != 0;
                     player.prediction.position = word & self.prediction_masks[0] == 0;
                     player.prediction.angles = word & self.prediction_masks[1] == 0;
                     if self.flags[0] != 0 {
@@ -892,7 +896,7 @@ impl PlayerProjection {
                         MovementTimer::TRICK,
                     ]
                     .into_iter()
-                    .zip(&self.flags[3..])
+                    .zip(&self.flags[3..8])
                     {
                         if *flag != 0 {
                             player.movement.timer.0 = (player.movement.timer.0 & !timer.0)
@@ -1054,6 +1058,7 @@ impl PlayerProjection {
                     p.movement.timer.contains(MovementTimer::TELEPORT),
                     p.movement.timer.contains(MovementTimer::KNOCKBACK),
                     p.movement.timer.contains(MovementTimer::TRICK),
+                    p.movement.respawned,
                 ];
                 enabled
                     .into_iter()
