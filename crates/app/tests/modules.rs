@@ -1983,7 +1983,8 @@ fn module_entries_share_services_keep_native_namespace_and_preserve_raw_print_by
             CallbackId(0),
             CallbackCall::Think {
                 entity: ids[0],
-                time: ThinkTime::Milliseconds(50)
+                time: ThinkTime::Milliseconds(50),
+                prepared_native: None,
             }
         ),
         Ok(())
@@ -1993,7 +1994,8 @@ fn module_entries_share_services_keep_native_namespace_and_preserve_raw_print_by
             CallbackId(0),
             CallbackCall::Think {
                 entity: ids[1],
-                time: ThinkTime::Seconds(0.1)
+                time: ThinkTime::Seconds(0.1),
+                prepared_native: None,
             }
         ),
         Ok(())
@@ -2211,6 +2213,7 @@ fn an_executed_unsupported_quakec_builtin_traps_without_poisoning_the_next_entry
     let call = CallbackCall::Think {
         entity: ids[1],
         time: ThinkTime::Seconds(0.2),
+        prepared_native: None,
     };
     assert_eq!(
         host.call_module(CallbackId(1), call),

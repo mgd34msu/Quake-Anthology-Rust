@@ -26,6 +26,54 @@ pub struct StepRules {
     pub follow_adjust: f32,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct PushRules {
+    pub ground_flag: u32,
+    pub time_before_move: bool,
+    pub test_preexisting_stuck: bool,
+    pub traced_passengers: bool,
+    pub clear_ground_nonwalk: bool,
+    pub leave_behind: bool,
+    pub relink_exceptions: bool,
+    pub post_think_snap: Option<f32>,
+}
+impl PushRules {
+    pub const fn candidate(&self, move_type: f32) -> bool {
+        move_type != 7.0 && move_type != 0.0 && move_type != 8.0
+    }
+    pub const fn walking(&self, move_type: f32) -> bool {
+        move_type == 3.0
+    }
+    pub const fn corpse(&self, solid: f32) -> bool {
+        solid == 0.0 || solid == 1.0
+    }
+    pub const fn solid_not(&self) -> f32 {
+        0.0
+    }
+    pub const fn solid_bsp(&self) -> f32 {
+        4.0
+    }
+}
+
+pub const fn push_rules(source: RuleSetId) -> Option<PushRules> {
+    match source {
+        RuleSetId::Quake | RuleSetId::QuakeWorld => {
+            let world = matches!(source, RuleSetId::QuakeWorld);
+            Some(PushRules {
+                ground_flag: GROUND,
+                time_before_move: !world,
+                test_preexisting_stuck: world,
+                traced_passengers: !world,
+                clear_ground_nonwalk: !world,
+                leave_behind: world,
+                relink_exceptions: world,
+                post_think_snap: if world { Some(1.0 / 64.0) } else { None },
+            })
+        }
+        _ => None,
+    }
+}
+
 impl StepRules {
     pub const fn mobility_flags(&self) -> u32 {
         self.ground_flag | self.fly_flag | self.swim_flag
@@ -44,10 +92,10 @@ impl StepRules {
 
 impl TossRules {
     pub const fn gravity_applies(&self, move_type: f32) -> bool {
-        move_type != 5.0 && !self.is_missile(move_type)
+        move_type != 5.0 && !Self::is_missile(move_type)
     }
 
-    pub const fn is_missile(&self, move_type: f32) -> bool {
+    pub const fn is_missile(move_type: f32) -> bool {
         move_type == 9.0
     }
 
@@ -55,7 +103,7 @@ impl TossRules {
         move_type == 10.0
     }
 
-    pub const fn ignores_boxes(&self, solid: f32) -> bool {
+    pub const fn ignores_boxes(solid: f32) -> bool {
         solid == 0.0 || solid == 1.0
     }
 }

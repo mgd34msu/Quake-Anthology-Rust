@@ -120,24 +120,7 @@ pub fn toss<H: MotionHost>(
     let entities = host.entities();
     let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
     let movement = entities.columns.velocity[slot] * frame.elapsed as f32;
-    let end = entities.columns.position[slot] + movement;
-    let end = super::positional_end(entities, entity, end)?;
-    let state = host.state(entity)?;
-    let kind = if rules.is_missile(state.move_type) {
-        QuakeTraceKind::Missile
-    } else if rules.ignores_boxes(state.solid.ok_or(PhysicsError::MissingField)?) {
-        QuakeTraceKind::IgnoreBoxes
-    } else {
-        QuakeTraceKind::Normal
-    };
-    let trace = host.trace(entity, end, kind)?;
-    for axis in 0..3 {
-        host.write_motion(entity, MotionWrite::Origin(axis), trace.trace.end.0[axis])?;
-    }
-    let mut current = host.relink(entity)?;
-    if trace.trace.entity.is_some() {
-        current = host.impact(current, &trace)?;
-    }
+    let (trace, current) = push_entity(host, entity, movement)?;
     if trace.trace.fraction == 1.0 {
         return Ok(());
     }
@@ -194,6 +177,40 @@ pub fn toss<H: MotionHost>(
         }
     }
     host.water_transition(entity)
+}
+
+/// Shared native displacement: trace, scalar pose stores, trigger relink, then
+/// impact. The returned lifetime may differ after either callback boundary.
+pub fn push_entity<H: MotionHost>(
+    host: &mut H,
+    entity: EntityId,
+    displacement: Vec3,
+) -> Result<(MotionTrace, Option<EntityId>), H::Error> {
+    let entities = host.entities();
+    let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+    let end = super::positional_end(
+        entities,
+        entity,
+        entities.columns.position[slot] + displacement,
+    )?;
+    let state = host.state(entity)?;
+    // These native trace categories are shared by the existing Toss rules.
+    let kind = if TossRules::is_missile(state.move_type) {
+        QuakeTraceKind::Missile
+    } else if TossRules::ignores_boxes(state.solid.ok_or(PhysicsError::MissingField)?) {
+        QuakeTraceKind::IgnoreBoxes
+    } else {
+        QuakeTraceKind::Normal
+    };
+    let trace = host.trace(entity, end, kind)?;
+    for axis in 0..3 {
+        host.write_motion(entity, MotionWrite::Origin(axis), trace.trace.end.0[axis])?;
+    }
+    let mut current = host.relink(entity)?;
+    if trace.trace.entity.is_some() {
+        current = host.impact(current, &trace)?;
+    }
+    Ok((trace, current))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

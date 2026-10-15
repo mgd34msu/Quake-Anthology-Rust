@@ -61,7 +61,7 @@ fn deadline(time: ThinkTime) -> Option<ThinkTime> {
 }
 
 fn callback(world: &mut World, _: ModuleId, function: u32, call: CallbackCall) -> bool {
-    let CallbackCall::Think { entity, time } = call else {
+    let CallbackCall::Think { entity, time, .. } = call else {
         world.invalid = true;
         return false;
     };

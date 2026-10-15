@@ -19,7 +19,7 @@ impl ThinkWorld for World {
 }
 
 fn think(world: &mut World, module: ModuleId, _: u32, call: CallbackCall) -> bool {
-    let CallbackCall::Think { entity, time } = call else {
+    let CallbackCall::Think { entity, time, .. } = call else {
         return false;
     };
     let Some(slot) = world.entities.resolve(entity) else {

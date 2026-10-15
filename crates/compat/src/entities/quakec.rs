@@ -86,6 +86,8 @@ struct MotionFields {
     yaw_speed: Option<usize>,
     enemy: Option<usize>,
     goal: Option<usize>,
+    local_time: Option<usize>,
+    blocked: Option<usize>,
 }
 impl MotionFields {
     fn load(field: impl Fn(&[u8], u16) -> Option<usize>) -> Self {
@@ -99,6 +101,8 @@ impl MotionFields {
             yaw_speed: field(b"yaw_speed", 2),
             enemy: field(b"enemy", 4),
             goal: field(b"goalentity", 4),
+            local_time: field(b"ltime", 2),
+            blocked: field(b"blocked", 6),
         }
     }
 }
@@ -168,6 +172,8 @@ fn motion(value: f32) -> Motion {
         Motion::Fly
     } else if value == 6.0 {
         Motion::Toss
+    } else if value == 7.0 {
+        Motion::Push
     } else if value == 8.0 {
         Motion::Noclip
     } else if value == 9.0 {
@@ -1300,14 +1306,69 @@ impl EntityProjection {
         }
         Ok(None)
     }
-    pub(crate) fn quakec_clear_think(
+    pub(crate) fn quakec_push_candidate(
         &self,
-        memory: &mut ModuleMemory<'_>,
+        cursor: &mut usize,
+    ) -> Result<Option<NativeEntity>, CallError> {
+        let module = self.owner.ok_or(CallError::Entity)?;
+        if *cursor >= self.observed_count {
+            return Ok(None);
+        }
+        let slot = i32::try_from(*cursor).map_err(|_| CallError::Entity)?;
+        *cursor += 1;
+        Ok(Some(NativeEntity { module, slot }))
+    }
+    pub(crate) fn quakec_push_free(
+        &self,
+        entities: &EntityTable,
+        native: NativeEntity,
+    ) -> Result<bool, CallError> {
+        let slot = usize::try_from(native.slot).map_err(|_| CallError::Entity)?;
+        if self.owner != Some(native.module) || slot >= self.observed_count {
+            return Err(CallError::Entity);
+        }
+        let clients = self
+            .quakec_layout()?
+            .client_edicts
+            .ok_or(CallError::Entity)?;
+        Ok(slot > clients && self.quakec_bound_entity(entities, native)?.is_none())
+    }
+    pub(crate) fn quakec_function(
+        &self,
+        memory: &ModuleMemory<'_>,
         value: u32,
-    ) -> Result<(), CallError> {
+        blocked: bool,
+    ) -> Result<Option<qa_core::primitives::CallbackId>, CallError> {
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
-        layout.write_number(memory, address, layout.next_think, 0.0)
+        let word = layout.word(
+            memory,
+            address,
+            if blocked {
+                layout.motion.blocked
+            } else {
+                layout.think
+            },
+        )?;
+        if word == 0 {
+            Ok(None)
+        } else {
+            self.quakec_callback(word).map(Some)
+        }
+    }
+    pub(crate) fn quakec_refresh_raw_motion(
+        &self,
+        entities: &mut EntityTable,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        if let Some(entity) = self.quakec_bound_entity(entities, native)? {
+            self.quakec_layout()?
+                .refresh_motion(memory, u64::from(value), entities, entity)?;
+        }
+        Ok(())
     }
     fn quakec_identity(
         &self,
@@ -1320,6 +1381,13 @@ impl EntityProjection {
         }
         self.quakec_layout()?
             .identity(memory, context.module, value)
+    }
+    pub(crate) fn quakec_validate_owner(&self, module: ModuleId) -> Result<(), CallError> {
+        if self.owner == Some(module) {
+            Ok(())
+        } else {
+            Err(CallError::Entity)
+        }
     }
     pub(crate) fn quakec_spawn(
         &mut self,
@@ -1591,41 +1659,45 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         layout.word(memory, layout.address(memory, value)?, layout.motion.goal)
     }
-    pub(crate) fn quakec_monster_number(
+    pub(crate) fn quakec_scalar_number(
         &self,
         memory: &ModuleMemory<'_>,
         value: u32,
-        field: crate::quakec::monster::Scalar,
+        field: crate::quakec::Scalar,
     ) -> Result<f32, CallError> {
         Ok(f32::from_bits(
-            memory.read_word(self.quakec_monster_store(memory, value, field)?)? as u32,
+            memory.read_word(self.quakec_scalar_store(memory, value, field)?)? as u32,
         ))
     }
-    pub(crate) fn quakec_monster_store(
+    pub(crate) fn quakec_scalar_store(
         &self,
         memory: &ModuleMemory<'_>,
         value: u32,
-        field: crate::quakec::monster::Scalar,
+        field: crate::quakec::Scalar,
     ) -> Result<u64, CallError> {
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
+        use crate::quakec::Scalar;
+        let vector = |field: Option<usize>, axis: usize| {
+            field.filter(|_| axis < 3).map(|field| field + axis * 4)
+        };
         let field = match field {
-            crate::quakec::monster::Scalar::Origin(axis) => layout
-                .origin
-                .filter(|_| axis < 3)
-                .map(|field| field + axis * 4),
-            crate::quakec::monster::Scalar::Flags => layout.flags,
-            crate::quakec::monster::Scalar::Ground => layout.motion.ground_entity,
-            crate::quakec::monster::Scalar::IdealYaw => layout.motion.ideal_yaw,
-            crate::quakec::monster::Scalar::Yaw => layout.angles.map(|field| field + 4),
-            crate::quakec::monster::Scalar::AbsoluteMin(axis) => layout
-                .abs_min
-                .filter(|_| axis < 3)
-                .map(|field| field + axis * 4),
-            crate::quakec::monster::Scalar::AbsoluteMax(axis) => layout
-                .abs_max
-                .filter(|_| axis < 3)
-                .map(|field| field + axis * 4),
+            Scalar::Origin(axis) => vector(layout.origin, axis),
+            Scalar::Velocity(axis) => vector(layout.velocity, axis),
+            Scalar::Angles(axis) => vector(layout.angles, axis),
+            Scalar::AngularVelocity(axis) => vector(layout.angular_velocity, axis),
+            Scalar::Flags => layout.flags,
+            Scalar::Ground => layout.motion.ground_entity,
+            Scalar::IdealYaw => layout.motion.ideal_yaw,
+            Scalar::Yaw => vector(layout.angles, 1),
+            Scalar::Min(axis) => vector(layout.mins, axis),
+            Scalar::Max(axis) => vector(layout.maxs, axis),
+            Scalar::AbsoluteMin(axis) => vector(layout.abs_min, axis),
+            Scalar::AbsoluteMax(axis) => vector(layout.abs_max, axis),
+            Scalar::LocalTime => layout.motion.local_time,
+            Scalar::NextThink => layout.next_think,
+            Scalar::MoveType => layout.move_type,
+            Scalar::Solid => layout.solid,
         };
         let address = address + field.ok_or(CallError::Memory)? as u64;
         memory.read(address, 4)?;
@@ -1906,24 +1978,22 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         let address = u64::from(value);
         let slot = entity.slot as usize;
-        let (axis, field, vector) = match stage {
-            qa_session::physics::MotionWrite::Angles(axis) => {
-                (axis, layout.angles, entities.columns.angles[slot])
-            }
+        let (axis, vector) = match stage {
+            qa_session::physics::MotionWrite::Angles(axis) => (axis, entities.columns.angles[slot]),
             qa_session::physics::MotionWrite::AngularVelocity(axis) => (
                 axis,
-                layout.angular_velocity,
                 entities.columns.angular_velocity[slot].ok_or(CallError::Memory)?,
             ),
             qa_session::physics::MotionWrite::Origin(axis) => {
-                (axis, layout.origin, entities.columns.position[slot])
+                (axis, entities.columns.position[slot])
             }
             qa_session::physics::MotionWrite::Velocity(axis) => {
-                (axis, layout.velocity, entities.columns.velocity[slot])
+                (axis, entities.columns.velocity[slot])
             }
         };
-        let value = *vector.0.get(axis).ok_or(CallError::Memory)?;
-        layout.write_number(memory, address, field.map(|at| at + axis * 4), value)?;
+        let number = *vector.0.get(axis).ok_or(CallError::Memory)?;
+        let target = self.quakec_scalar_store(memory, value, stage.into())?;
+        memory.write_word(target, number.to_bits() as i32)?;
         // A native scalar can alias any later physical input, including
         // velocity/angles overlap and the last component of a vector.
         layout.refresh_motion(memory, address, entities, entity)

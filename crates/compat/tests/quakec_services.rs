@@ -1528,6 +1528,301 @@ fn seed_vm(calls: &mut QuakeCCalls<'_, '_>, mut vm: Vm) -> Vm {
     vm
 }
 
+#[test]
+fn push_native_movetype_reaches_provider_scan_with_native_decode_policy() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut fields = FIELDS.to_vec();
+            fields.push((2, 37, b"movetype".as_slice()));
+            let capacity = if rules == RuleSetId::QuakeWorld {
+                39
+            } else {
+                8
+            };
+            let mut vm = seed_vm(calls, vm_with_definitions(capacity, GLOBALS, &fields));
+            let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let id = entity(calls, &vm, native);
+            for (value, expected) in [
+                (7.0f32, Motion::Push),
+                (
+                    7.75f32,
+                    if rules == RuleSetId::QuakeWorld {
+                        Motion::Push
+                    } else {
+                        Motion::Unsupported
+                    },
+                ),
+            ] {
+                write(&mut vm, native, b"movetype", &[value.to_bits()]);
+                vm.project_entities(calls.services, calls.context).unwrap();
+                let mut cursor = 1;
+                let current = vm
+                    .physics_entity(&calls.services.server.entities, &mut cursor)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(current.entity, id);
+                assert_eq!(
+                    current.native.slot as u32,
+                    vm.entity_number(native).unwrap()
+                );
+                assert_eq!(current.phase, expected);
+            }
+        });
+    }
+}
+
+#[test]
+fn push_native_scan_includes_clients_freed_rows_and_later_spawns() {
+    with_services(RuleSetId::QuakeWorld, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        let first = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let native = NativeEntity {
+            module: calls.context.module,
+            slot: vm.entity_number(first).unwrap() as i32,
+        };
+        assert_eq!(native.slot, 33);
+        vm.remove_entity(calls.services, calls.context, first)
+            .unwrap();
+        let mut cursor = 1;
+        for slot in 1..=33 {
+            let observed = vm.push_candidate(&mut cursor).unwrap().unwrap();
+            assert_eq!(
+                observed,
+                NativeEntity {
+                    module: calls.context.module,
+                    slot
+                }
+            );
+            assert_eq!(
+                vm.push_free(&calls.services.server.entities, observed)
+                    .unwrap(),
+                slot == 33
+            );
+        }
+        assert_eq!(vm.push_candidate(&mut cursor).unwrap(), None);
+        let later = vm.spawn_entity(calls.services, calls.context).unwrap();
+        assert_eq!(vm.entity_number(later).unwrap(), 34);
+        assert_eq!(vm.push_candidate(&mut cursor).unwrap().unwrap().slot, 34);
+        assert_eq!(vm.push_candidate(&mut cursor).unwrap(), None);
+    });
+}
+
+#[test]
+fn push_origin_rollback_keeps_freed_backing_and_refreshes_only_current_lifetime() {
+    use qa_session::physics::{MotionWrite, PushNumber};
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let old = entity(calls, &vm, native);
+        vm.remove_entity(calls.services, calls.context, native)
+            .unwrap();
+        write(
+            &mut vm,
+            native,
+            b"velocity",
+            &[11.0f32.to_bits(), 12.0f32.to_bits(), 13.0f32.to_bits()],
+        );
+        write(&mut vm, native, b"flags", &[256.0f32.to_bits()]);
+        vm.push_store(
+            &mut calls.services.server.entities,
+            calls.context,
+            native,
+            PushNumber::Motion(MotionWrite::Origin(0)),
+            91.0,
+        )
+        .unwrap();
+        assert_eq!(read(&vm, native, b"origin", 3), [91.0f32.to_bits(), 0, 0]);
+        assert_eq!(
+            read(&vm, native, b"velocity", 3),
+            [11.0f32.to_bits(), 12.0f32.to_bits(), 13.0f32.to_bits()]
+        );
+        assert_eq!(vm.push_flags(native), Ok(256));
+        assert!(calls.services.server.entities.resolve(old).is_none());
+        calls.context.clock = ThinkTime::Seconds(100.0);
+        assert_eq!(
+            vm.spawn_entity(calls.services, calls.context).unwrap(),
+            native
+        );
+        let replacement = entity(calls, &vm, native);
+        assert_ne!(old, replacement);
+        write(
+            &mut vm,
+            native,
+            b"velocity",
+            &[21.0f32.to_bits(), 22.0f32.to_bits(), 23.0f32.to_bits()],
+        );
+        // An unrelated invalid model string must not force full projection.
+        write(&mut vm, native, b"model", &[u32::MAX]);
+        vm.push_store(
+            &mut calls.services.server.entities,
+            calls.context,
+            native,
+            PushNumber::Motion(MotionWrite::Origin(0)),
+            37.0,
+        )
+        .unwrap();
+        assert_eq!(
+            calls.services.server.entities.columns.position[replacement.slot as usize],
+            Vec3([37.0, 0.0, 0.0])
+        );
+        assert_eq!(
+            calls.services.server.entities.columns.velocity[replacement.slot as usize],
+            Vec3([21.0, 22.0, 23.0])
+        );
+        assert_eq!(read(&vm, native, b"model", 1), [u32::MAX]);
+        assert!(calls.services.server.entities.resolve(old).is_none());
+        assert!(
+            calls
+                .services
+                .server
+                .entities
+                .resolve(replacement)
+                .is_some()
+        );
+    });
+}
+
+#[test]
+fn push_callback_preparation_keeps_native_alias_order_and_current_function() {
+    use qa_session::dispatch::{FunctionBinding, FunctionTable};
+    with_services(RuleSetId::Quake, |calls| {
+        let mut fields = FIELDS.to_vec();
+        fields.extend([(2, 37, b"ltime".as_slice()), (6, 38, b"blocked".as_slice())]);
+        let globals = [
+            (4, 34, b"self".as_slice()),
+            (2, 34, b"time".as_slice()),
+            (4, 34, b"other".as_slice()),
+        ];
+        let mut vm = seed_vm(calls, vm_with_definitions(8, &globals, &fields));
+        let table = FunctionTable::<qa_session::clients::Server>::load([(
+            calls.context.module,
+            RuleSetId::Quake,
+            vec![
+                FunctionBinding {
+                    entry: 1,
+                    call: |_, _, _, _| true,
+                },
+                FunctionBinding {
+                    entry: 2,
+                    call: |_, _, _, _| true,
+                },
+            ],
+        )])
+        .unwrap();
+        vm.bind_thinks(table.module_binding(calls.context.module), &[1, 2]);
+        let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+        write(&mut vm, native, b"think", &[2]);
+        write(&mut vm, native, b"nextthink", &[1.0f32.to_bits()]);
+        assert_eq!(
+            vm.prepare_think(native, ThinkTime::Seconds(9.0)),
+            Ok(Some(CallbackId(1)))
+        );
+        assert_eq!(read(&vm, native, b"nextthink", 1), [0]);
+        // time, self, other => the aliased final word is native world0.
+        assert_eq!(vm.image.globals[34], 0);
+        write(&mut vm, native, b"blocked", &[1]);
+        assert_eq!(vm.blocked_callback(native), Ok(Some(CallbackId(0))));
+        write(&mut vm, native, b"blocked", &[2]);
+        assert_eq!(vm.blocked_callback(native), Ok(Some(CallbackId(1))));
+        vm.prepare_blocked(0, native).unwrap();
+        assert_eq!(vm.image.globals[34], native);
+    });
+}
+
+#[test]
+fn push_think_clears_aliased_deadline_before_selecting_function() {
+    with_services(RuleSetId::Quake, |calls| {
+        let fields: Vec<_> = FIELDS
+            .iter()
+            .copied()
+            .map(|(kind, offset, name)| (kind, if name == b"think" { 34 } else { offset }, name))
+            .collect();
+        let mut vm = seed_vm(calls, vm_with_definitions(8, GLOBALS, &fields));
+        let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+        write(&mut vm, native, b"think", &[1]);
+        assert_eq!(vm.prepare_think(native, ThinkTime::Seconds(6.0)), Ok(None));
+        assert_eq!(read(&vm, native, b"think", 1), [0]);
+        assert_eq!(vm.image.globals[35], 6.0f32.to_bits());
+        assert_eq!(vm.image.globals[34], native);
+    });
+}
+
+#[test]
+fn think_deadline_clear_publishes_aliased_origin_even_without_an_executed_callback() {
+    use qa_session::dispatch::{FunctionBinding, FunctionTable};
+    with_services(RuleSetId::Quake, |calls| {
+        let fields: Vec<_> = FIELDS
+            .iter()
+            .copied()
+            .map(|(kind, offset, name)| (kind, if name == b"nextthink" { 0 } else { offset }, name))
+            .collect();
+        let mut vm = seed_vm(calls, vm_with_definitions(8, GLOBALS, &fields));
+        let table = FunctionTable::<qa_session::clients::Server>::load([(
+            calls.context.module,
+            RuleSetId::Quake,
+            vec![FunctionBinding {
+                entry: 1,
+                call: |_, _, _, _| true,
+            }],
+        )])
+        .unwrap();
+        vm.bind_thinks(table.module_binding(calls.context.module), &[1]);
+        let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let id = entity(calls, &vm, native);
+        for (function, expected) in [(0, Ok(None)), (u32::MAX, Err(CallError::Entity))] {
+            write(
+                &mut vm,
+                native,
+                b"origin",
+                &[7.0f32.to_bits(), 8.0f32.to_bits(), 9.0f32.to_bits()],
+            );
+            write(&mut vm, native, b"think", &[function]);
+            vm.project_entities(calls.services, calls.context).unwrap();
+            assert_eq!(
+                calls.services.server.entities.columns.position[id.slot as usize],
+                Vec3([7.0, 8.0, 9.0])
+            );
+            assert_eq!(vm.prepare_think(native, ThinkTime::Seconds(6.0)), expected);
+            assert_eq!(
+                read(&vm, native, b"origin", 3),
+                [0, 8.0f32.to_bits(), 9.0f32.to_bits()]
+            );
+            vm.project_dirty_entities(calls.services, calls.context)
+                .unwrap();
+            assert_eq!(
+                calls.services.server.entities.columns.position[id.slot as usize],
+                Vec3([0.0, 8.0, 9.0])
+            );
+            assert_eq!(
+                calls.services.server.entities.columns.next_think[id.slot as usize],
+                Some(ThinkTime::Seconds(0.0))
+            );
+        }
+    });
+}
+
+#[test]
+fn push_blocked_preparation_keeps_time_and_accepts_retained_freed_subject() {
+    with_services(RuleSetId::Quake, |calls| {
+        let globals = [
+            (4, 34, b"self".as_slice()),
+            (2, 35, b"time".as_slice()),
+            (4, 36, b"other".as_slice()),
+        ];
+        let mut vm = seed_vm(calls, vm_with_definitions(8, &globals, FIELDS));
+        let native = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let old = entity(calls, &vm, native);
+        vm.remove_entity(calls.services, calls.context, native)
+            .unwrap();
+        vm.image.globals[35] = 18.25f32.to_bits();
+        vm.prepare_blocked(native, 0).unwrap();
+        assert_eq!(vm.image.globals[34], native);
+        assert_eq!(vm.image.globals[35], 18.25f32.to_bits());
+        assert_eq!(vm.image.globals[36], 0);
+        assert!(calls.services.server.entities.resolve(old).is_none());
+    });
+}
+
 fn named_vm(calls: &mut QuakeCCalls<'_, '_>, defined: &[&[u8]]) -> Vm {
     let mut fields = FIELDS.to_vec();
     fields.extend(

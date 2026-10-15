@@ -1,5 +1,7 @@
 pub use qa_core::primitives::RuleSetId;
-use qa_core::primitives::{CallbackCall, CallbackId, EntityId, ModuleId, ThinkBinding, ThinkTime};
+use qa_core::primitives::{
+    CallbackCall, CallbackId, EntityId, ModuleId, NativeEntityRef, ThinkBinding, ThinkTime,
+};
 use qa_world::entities::EntityTable;
 
 /// A native function, QC function or foreign export binds its boundary adapter
@@ -383,8 +385,21 @@ impl<C: ThinkWorld, R: CallOutcome<C>> CallbackResolver for FunctionTable<C, R> 
     }
 }
 
+pub struct PreparedNativeThink {
+    pub subject: NativeEntityRef,
+    pub callback: Option<CallbackId>,
+}
+
 pub trait ThinkWorld {
     fn entities(&mut self) -> &mut EntityTable;
+    fn prepare_native_think(
+        &mut self,
+        _entity: EntityId,
+        _subject: Option<NativeEntityRef>,
+        _time: ThinkTime,
+    ) -> Result<Option<PreparedNativeThink>, CallError> {
+        Ok(None)
+    }
 }
 
 impl ThinkWorld for crate::clients::Server {
@@ -404,6 +419,74 @@ pub struct ThinkResult {
     pub called: u32,
     pub rejected: u32,
     pub current_entity: Option<EntityId>,
+}
+
+/// Complete one admitted think without another clock or repetition policy.
+/// Native preparation runs before selecting the current function. A weak native
+/// subject can use its module's live anchor solely for call authorization.
+pub fn call_think_once<C: ThinkWorld, R: CallOutcome<C>>(
+    world: &mut C,
+    table: &FunctionTable<C, R>,
+    entity: EntityId,
+    subject: Option<NativeEntityRef>,
+    time: ThinkTime,
+    rebind: impl FnOnce(&mut C) -> Option<EntityId>,
+) -> ThinkResult {
+    let execute = (|| {
+        let entities = world.entities();
+        let slot = entities.resolve(entity)?;
+        let module = entities.columns.owner[slot];
+        let fallback = entities.columns.think_binding(slot);
+        if subject.is_none() {
+            entities.columns.next_think[slot] = None;
+        }
+        let prepared = world.prepare_native_think(entity, subject, time).ok()?;
+        let (binding, native) = match prepared {
+            Some(prepared) => (
+                table.binding(module)?.think(prepared.callback),
+                Some(prepared.subject),
+            ),
+            None if subject.is_none() => (fallback, None),
+            None => return None,
+        };
+        let functions = table
+            .functions
+            .get(binding.path as usize)
+            .filter(|_| binding.path != 0)?;
+        let call = CallbackCall::Think {
+            entity,
+            time,
+            prepared_native: native,
+        };
+        let resolved = ResolvedCall {
+            entity,
+            module,
+            path: binding.path,
+            entry: functions.function.entry,
+        };
+        Some(
+            table
+                .dispatch_resolved(world, resolved, call)
+                .is_ok_and(|outcome| outcome.complete(world, call)),
+        )
+    })();
+    if execute == Some(true) {
+        ThinkResult {
+            called: 1,
+            rejected: 0,
+            current_entity: rebind(world),
+        }
+    } else {
+        ThinkResult {
+            called: 0,
+            rejected: 1,
+            current_entity: if subject.is_none() {
+                world.entities().resolve(entity).map(|_| entity)
+            } else {
+                None
+            },
+        }
+    }
 }
 
 /// Run one current entity lifetime. A due deadline is cleared independently of
@@ -463,24 +546,15 @@ pub fn run_think_with_rebind<C: ThinkWorld, R: CallOutcome<C>>(
                 return result;
             }
         };
-        entities.columns.next_think[slot] = None;
-        let call = CallbackCall::Think { entity, time };
-        let resolved = ResolvedCall {
-            entity,
-            module,
-            path: binding.path,
-            entry: functions.function.entry,
-        };
-        let accepted = table
-            .dispatch_resolved(world, resolved, call)
-            .is_ok_and(|outcome| outcome.complete(world, call));
-        if !accepted {
-            result.current_entity = world.entities().resolve(entity).map(|_| entity);
-            result.rejected = result.rejected.saturating_add(1);
+        let once = call_think_once(world, table, entity, None, time, |world| {
+            rebind(world, entity)
+        });
+        result.current_entity = once.current_entity;
+        result.rejected = result.rejected.saturating_add(once.rejected);
+        if once.rejected != 0 {
             return result;
         }
-        result.called = result.called.saturating_add(1);
-        result.current_entity = rebind(world, entity);
+        result.called = result.called.saturating_add(once.called);
         if !functions.timing.repeat {
             return result;
         }

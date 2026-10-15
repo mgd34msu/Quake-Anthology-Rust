@@ -12,6 +12,7 @@ mod client;
 mod continuation;
 mod map;
 pub(crate) mod monster;
+mod push;
 pub(crate) mod sound;
 pub use client::ClientCallRestore;
 use continuation::{ActiveRun, RunState, Settings};
@@ -83,11 +84,42 @@ pub enum MotionField {
     WaterType(f32),
     WaterLevel(f32),
 }
+#[derive(Clone, Copy)]
+pub(crate) enum Scalar {
+    Origin(usize),
+    Velocity(usize),
+    Angles(usize),
+    AngularVelocity(usize),
+    Flags,
+    Ground,
+    IdealYaw,
+    Yaw,
+    Min(usize),
+    Max(usize),
+    AbsoluteMin(usize),
+    AbsoluteMax(usize),
+    LocalTime,
+    NextThink,
+    MoveType,
+    Solid,
+}
+impl From<qa_session::physics::MotionWrite> for Scalar {
+    fn from(value: qa_session::physics::MotionWrite) -> Self {
+        use qa_session::physics::MotionWrite;
+        match value {
+            MotionWrite::Origin(axis) => Self::Origin(axis),
+            MotionWrite::Velocity(axis) => Self::Velocity(axis),
+            MotionWrite::Angles(axis) => Self::Angles(axis),
+            MotionWrite::AngularVelocity(axis) => Self::AngularVelocity(axis),
+        }
+    }
+}
 
 impl From<qa_session::physics::PhysicsError> for crate::services::CallError {
     fn from(error: qa_session::physics::PhysicsError) -> Self {
         match error {
             qa_session::physics::PhysicsError::Entity => Self::Entity,
+            qa_session::physics::PhysicsError::Capacity => Self::Capacity,
             qa_session::physics::PhysicsError::AngularVelocity
             | qa_session::physics::PhysicsError::MissingField => Self::Memory,
         }
@@ -355,9 +387,9 @@ impl Vm {
         phase: CallPhase,
     ) -> Result<(), Trap> {
         if phase == CallPhase::Think {
-            self.projection
-                .quakec_clear_think(&mut self.entities, entity.ok_or(Trap::Memory)?)
+            self.prepare_think(entity.ok_or(Trap::Memory)?, time)
                 .map_err(|_| Trap::Memory)?;
+            return Ok(());
         }
         if let Some(global) = self.call_fields.self_global {
             self.image.globals[global] = entity.ok_or(Trap::Memory)?;

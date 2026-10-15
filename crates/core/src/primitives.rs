@@ -708,6 +708,10 @@ pub enum CallbackCall<'a> {
     Think {
         entity: EntityId,
         time: ThinkTime,
+        /// Some names a retained native row whose deadline and globals have
+        /// already been prepared. The dispatcher still checks live entity
+        /// authorization before entering its owning module.
+        prepared_native: Option<NativeEntityRef>,
     },
     /// Ordered load-time entity initialization uses the same lifetime-checked
     /// function table. The module ABI decides which call globals it changes.
@@ -728,8 +732,11 @@ pub enum CallbackCall<'a> {
         activator: EntityId,
     },
     Blocked {
+        /// Live authorization for the owning module, independent of retained
+        /// native rows which a preceding trigger may already have freed.
         entity: EntityId,
-        other: EntityId,
+        subject: NativeEntityRef,
+        other: NativeEntityRef,
     },
     Pain {
         event: DamageEvent,
