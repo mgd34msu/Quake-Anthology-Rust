@@ -185,7 +185,7 @@ fn renderer_lerp_tag<const RETURN_RESULT: bool>(
 enum CallValue {
     Word(u64),
     Host(HostRequest, ImportContinuation),
-    QuakeCHost(HostRequest, quakec::monster::WalkAfterTouch),
+    QuakeCHost(HostRequest, qc::QcContinuation),
     QuakeCReturn(u64, quakec::ClientCallRestore),
     TemporaryString(u32, u8),
     Vector(qa_core::primitives::Vec3),
@@ -812,6 +812,7 @@ const fn quakec() -> CallTable {
     );
     t.entries[49] = qc!(qc_change_yaw, 0, 0, false);
     t.entries[51] = value!(vector_angles, vector);
+    t.entries[67] = qc!(qc_move_to_goal, 1, 0, false);
     t.entries[68] = Some(CallEntry {
         handler: Handler::QuakeC(qc_precache_file),
         quakec: Some(strings),
@@ -945,9 +946,42 @@ fn qc_walk_move(
                 mover: walk.mover,
                 time: c.context.clock,
             },
-            walk,
+            qc::QcContinuation::Walk(walk),
         )),
     }
+}
+fn qc_move_to_goal(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    let step = vm.move_to_goal(
+        c.services,
+        c.context,
+        f32::from_bits(qc_word(arguments, 0)?),
+    )?;
+    qc_goal_value(vm, c.context, step)
+}
+fn qc_goal_value(
+    vm: &mut quakec::Vm,
+    context: CallContext,
+    step: qa_session::physics::GoalStep,
+) -> Result<CallValue, CallError> {
+    use qa_session::physics::GoalStep;
+    Ok(match step {
+        GoalStep::Rejected => {
+            *vm.image.globals.get_mut(1).ok_or(CallError::Memory)? = 0;
+            CallValue::Word(0)
+        }
+        GoalStep::Complete => CallValue::Word(0),
+        GoalStep::Link(cursor) => CallValue::QuakeCHost(
+            HostRequest::TouchTriggers {
+                mover: cursor.actor(),
+                time: context.clock,
+            },
+            qc::QcContinuation::Goal(cursor),
+        ),
+    })
 }
 fn qc_check_bottom(
     c: &mut QuakeCCalls<'_, '_>,
@@ -1011,7 +1045,7 @@ fn lightstyle(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     if !value.is_finite() {
         return Err(CallError::ConfigString);
     }
-    let style = crate::numbers::native_integer(value);
+    let style = qa_core::math::native_integer(value);
     let ordinal = usize::try_from(style).map_err(|_| CallError::ConfigString)?;
     let text = c.memory.cstring(c.pointer(1)?)?;
     (ENGINE_CALLS.lightstyle)(c.services, c.context.module, ordinal, text)?;
@@ -1026,8 +1060,8 @@ fn qc_particle(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         .ok_or(CallError::Unsupported)?;
     let position = qc_vector(c.arguments, 0)?;
     let direction = qc_vector(c.arguments, 3)?;
-    let color = crate::numbers::native_integer(float::<false>(c, 6)?) as u8;
-    let count = crate::numbers::native_integer(float::<false>(c, 7)?) as u8;
+    let color = qa_core::math::native_integer(float::<false>(c, 6)?) as u8;
+    let count = qa_core::math::native_integer(float::<false>(c, 7)?) as u8;
     let delivery = native_delivery::<false>(
         c,
         qa_core::primitives::NativeTarget::All,
@@ -1117,10 +1151,10 @@ fn qc_ambient_sound(
             origin: qc_vector(arguments, 0)?
                 .0
                 .map(qa_core::math::eighth_to_short),
-            volume: crate::numbers::native_integer(f64::from(
+            volume: qa_core::math::native_integer(f64::from(
                 f32::from_bits(qc_word(arguments, 4)?) * 255.0,
             )) as u8,
-            attenuation: crate::numbers::native_integer(f64::from(
+            attenuation: qa_core::math::native_integer(f64::from(
                 f32::from_bits(qc_word(arguments, 5)?) * 64.0,
             )) as u8,
         },
@@ -1137,9 +1171,9 @@ fn qc_sound(
     vm: &mut quakec::Vm,
     arguments: &[u64],
 ) -> Result<CallValue, CallError> {
-    let channel = crate::numbers::native_integer(f64::from(f32::from_bits(qc_word(arguments, 1)?)));
+    let channel = qa_core::math::native_integer(f64::from(f32::from_bits(qc_word(arguments, 1)?)));
     let volume =
-        crate::numbers::native_integer(f64::from(f32::from_bits(qc_word(arguments, 3)?) * 255.0));
+        qa_core::math::native_integer(f64::from(f32::from_bits(qc_word(arguments, 3)?) * 255.0));
     let attenuation = f32::from_bits(qc_word(arguments, 4)?);
     vm.start_sound_string(
         c.services,
@@ -1161,7 +1195,7 @@ fn qc_trace_line(
     use qa_world::collision::{QuakeTraceKind, TraceQuery, trace_policy};
     let (rules, entity_rules) = trace_policy(c.context.trace_rules);
     let kind =
-        match crate::numbers::native_integer(f64::from(f32::from_bits(qc_word(arguments, 6)?))) {
+        match qa_core::math::native_integer(f64::from(f32::from_bits(qc_word(arguments, 6)?))) {
             1 => QuakeTraceKind::IgnoreBoxes,
             2 => QuakeTraceKind::Missile,
             _ => QuakeTraceKind::Normal,
@@ -1210,7 +1244,7 @@ fn angle_basis(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
     )))
 }
 fn native_direction_angle(vertical: f32, horizontal: f32) -> f32 {
-    let mut angle = crate::numbers::native_integer(
+    let mut angle = qa_core::math::native_integer(
         f64::from(vertical).atan2(f64::from(horizontal)) * 180.0 / std::f64::consts::PI,
     ) as f32;
     if angle < 0.0 {
@@ -1309,7 +1343,7 @@ fn qc_var_string(c: &Invocation<'_, '_, '_>, first: usize) -> Result<FixedText<1
 }
 fn qc_print_level(c: &Invocation<'_, '_, '_>, first: usize, base: usize) -> Result<u8, CallError> {
     Ok(if first > base {
-        crate::numbers::native_integer(float::<false>(c, base)?) as u8
+        qa_core::math::native_integer(float::<false>(c, base)?) as u8
     } else {
         PrintKind::Console.default_level()
     })
@@ -1965,7 +1999,7 @@ fn snap_vector(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let vector = qa_core::primitives::Vec3(
         vector
             .0
-            .map(|value| crate::numbers::native_integer(value) as f32),
+            .map(|value| qa_core::math::native_integer(value) as f32),
     );
     c.memory.write_vec3(address, vector)?;
     Ok(0)
@@ -3572,7 +3606,7 @@ fn rint(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     // PF_rint promotes the parameter before adding the double literal. Do not
     // round the biased value to float before the native integer conversion.
     let biased = value + if value > 0.0 { 0.5 } else { -0.5 };
-    Ok(bits::<false>(f64::from(crate::numbers::native_integer(
+    Ok(bits::<false>(f64::from(qa_core::math::native_integer(
         biased,
     ))))
 }

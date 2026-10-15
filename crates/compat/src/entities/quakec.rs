@@ -85,6 +85,7 @@ struct MotionFields {
     ideal_yaw: Option<usize>,
     yaw_speed: Option<usize>,
     enemy: Option<usize>,
+    goal: Option<usize>,
 }
 impl MotionFields {
     fn load(field: impl Fn(&[u8], u16) -> Option<usize>) -> Self {
@@ -97,6 +98,7 @@ impl MotionFields {
             ideal_yaw: field(b"ideal_yaw", 2),
             yaw_speed: field(b"yaw_speed", 2),
             enemy: field(b"enemy", 4),
+            goal: field(b"goalentity", 4),
         }
     }
 }
@@ -178,7 +180,7 @@ fn motion(value: f32) -> Motion {
 }
 
 fn integer_motion(value: f32) -> Motion {
-    motion(crate::numbers::native_integer(f64::from(value)) as f32)
+    motion(qa_core::math::native_integer(f64::from(value)) as f32)
 }
 
 #[derive(Clone, Copy)]
@@ -295,7 +297,7 @@ impl QuakeCLayout {
     }
     fn flags(self, memory: &ModuleMemory<'_>, address: u64) -> Result<u32, CallError> {
         Ok(
-            crate::numbers::native_integer(f64::from(self.number(memory, address, self.flags)?))
+            qa_core::math::native_integer(f64::from(self.number(memory, address, self.flags)?))
                 as u32,
         )
     }
@@ -794,11 +796,9 @@ impl EntityProjection {
         self.quakec_identity(memory, context, value)?;
         let layout = self.quakec_layout()?;
         let address = self.quakec_client_address(memory, value)?;
-        Ok(motion(crate::numbers::native_integer(layout.number(
-            memory,
-            address,
-            layout.move_type,
-        )?) as f32))
+        Ok(motion(
+            qa_core::math::native_integer(layout.number(memory, address, layout.move_type)?) as f32,
+        ))
     }
     pub(crate) fn quakec_client_noclip(
         &self,
@@ -1468,7 +1468,7 @@ impl EntityProjection {
             .ok_or(CallError::Geometry)?;
         let byte = |field| -> Result<u8, CallError> {
             Ok(
-                crate::numbers::native_integer(f64::from(layout.number(memory, address, field)?))
+                qa_core::math::native_integer(f64::from(layout.number(memory, address, field)?))
                     as u8,
             )
         };
@@ -1583,6 +1583,24 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         layout.word(memory, layout.address(memory, value)?, layout.motion.enemy)
     }
+    pub(crate) fn quakec_monster_goal(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<u32, CallError> {
+        let layout = self.quakec_layout()?;
+        layout.word(memory, layout.address(memory, value)?, layout.motion.goal)
+    }
+    pub(crate) fn quakec_monster_number(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+        field: crate::quakec::monster::Scalar,
+    ) -> Result<f32, CallError> {
+        Ok(f32::from_bits(
+            memory.read_word(self.quakec_monster_store(memory, value, field)?)? as u32,
+        ))
+    }
     pub(crate) fn quakec_monster_store(
         &self,
         memory: &ModuleMemory<'_>,
@@ -1598,6 +1616,16 @@ impl EntityProjection {
                 .map(|field| field + axis * 4),
             crate::quakec::monster::Scalar::Flags => layout.flags,
             crate::quakec::monster::Scalar::Ground => layout.motion.ground_entity,
+            crate::quakec::monster::Scalar::IdealYaw => layout.motion.ideal_yaw,
+            crate::quakec::monster::Scalar::Yaw => layout.angles.map(|field| field + 4),
+            crate::quakec::monster::Scalar::AbsoluteMin(axis) => layout
+                .abs_min
+                .filter(|_| axis < 3)
+                .map(|field| field + axis * 4),
+            crate::quakec::monster::Scalar::AbsoluteMax(axis) => layout
+                .abs_max
+                .filter(|_| axis < 3)
+                .map(|field| field + axis * 4),
         };
         let address = address + field.ok_or(CallError::Memory)? as u64;
         memory.read(address, 4)?;
@@ -2009,7 +2037,7 @@ impl EntityProjection {
         let number = |field| {
             layout
                 .number(memory, address, field)
-                .map(|value| crate::numbers::native_integer(f64::from(value)))
+                .map(|value| qa_core::math::native_integer(f64::from(value)))
         };
         let flags = if layout.flags.is_some() {
             layout.flags(memory, address)?
@@ -2137,7 +2165,7 @@ impl EntityProjection {
                 .map(|at| layout.number(memory, address, Some(at)))
                 .transpose()
         };
-        let integer = |field| number(field).map(|value| value.map(crate::numbers::native_integer));
+        let integer = |field| number(field).map(|value| value.map(qa_core::math::native_integer));
         let health = number(fields.health)?;
         let armor = integer(fields.armor)?;
         let armor_type = number(fields.armor_type)?;
@@ -2195,7 +2223,7 @@ impl EntityProjection {
         };
         let mut stats = [None; 32];
         if let Some(health) = health {
-            stats[0] = Some(crate::numbers::native_integer(health) as u32);
+            stats[0] = Some(qa_core::math::native_integer(health) as u32);
         }
         if let Some(value) = frags {
             stats[1] = Some(value as u32);
@@ -2357,7 +2385,7 @@ impl QuakeCLayout {
     fn solid(self, memory: &ModuleMemory<'_>, address: u64) -> Result<i32, CallError> {
         self.solid.map_or(Ok(0), |field| {
             self.number(memory, address, Some(field))
-                .map(|value| crate::numbers::native_integer(f64::from(value)))
+                .map(|value| qa_core::math::native_integer(f64::from(value)))
         })
     }
     fn bounds(

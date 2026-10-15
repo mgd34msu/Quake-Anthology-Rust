@@ -407,7 +407,7 @@ impl Vm {
     }
     pub(super) fn sync_client_globals(&mut self) -> Result<(), CallError> {
         let number =
-            |at| crate::numbers::native_integer(f32::from_bits(self.image.globals[at])) as u32;
+            |at| qa_core::math::native_integer(f32::from_bits(self.image.globals[at])) as u32;
         let server_flags = self.map_globals.server_flags.map_or(0, number);
         let extra_stats = self.client_globals.stat_globals.map(|at| at.map(number));
         self.projection

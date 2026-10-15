@@ -1,9 +1,9 @@
 //! One safe version-six execution loop with optional hooks selected per call.
-use crate::numbers::native_integer;
 use crate::{
     hooks::Hooks,
     memory::{MemoryError, ModuleMemory},
 };
+use qa_core::math::native_integer;
 use qa_core::{bits::BitSet, primitives::Vec3, random::Random};
 use qa_formats::program::quakec::{Image, Opcode};
 use std::sync::Arc;

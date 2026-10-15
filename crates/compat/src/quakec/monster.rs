@@ -3,7 +3,9 @@ use super::{ClientCallRestore, Vm};
 use crate::services::{CallContext, CallError, ENGINE_CALLS, EngineServices};
 use qa_core::primitives::{Bounds, NativeEntityRef, ResourceNamespace, Vec3};
 use qa_gameplay::rules::motion::{StepRules, step_rules};
-use qa_session::physics::{MonsterHost, MotionTrace, StepMove, StepPost};
+use qa_session::physics::{
+    GoalCursor, GoalHost, GoalStep, MonsterHost, MotionTrace, StepMove, StepPost,
+};
 use qa_world::collision::{
     EntityTracePolicy, QuakeTraceKind, TraceQuery, TraceRules, trace_policy,
 };
@@ -12,6 +14,10 @@ pub(crate) enum Scalar {
     Origin(usize),
     Flags,
     Ground,
+    IdealYaw,
+    Yaw,
+    AbsoluteMin(usize),
+    AbsoluteMax(usize),
 }
 
 #[derive(Debug)]
@@ -167,7 +173,110 @@ impl MonsterHost for Host<'_, '_> {
     }
 }
 
+impl GoalHost for Host<'_, '_> {
+    fn ideal_yaw(&mut self) -> Result<f32, CallError> {
+        self.vm
+            .projection
+            .quakec_monster_number(&self.vm.entities, self.native, Scalar::IdealYaw)
+    }
+    fn yaw(&mut self) -> Result<f32, CallError> {
+        self.vm
+            .projection
+            .quakec_monster_number(&self.vm.entities, self.native, Scalar::Yaw)
+    }
+    fn write_ideal_yaw(&mut self, value: f32) -> Result<(), CallError> {
+        self.store(Scalar::IdealYaw, value.to_bits())
+    }
+    fn change_yaw(&mut self) -> Result<(), CallError> {
+        self.vm.change_yaw()
+    }
+    fn enemy_present(&mut self) -> Result<bool, CallError> {
+        Ok(self
+            .vm
+            .projection
+            .quakec_monster_enemy(&self.vm.entities, self.native)?
+            != 0)
+    }
+    fn absolute_min(&mut self, target: NativeEntityRef, axis: usize) -> Result<f32, CallError> {
+        let native = self.vm.weak_entity_offset(self.context.module, target)?;
+        self.vm.projection.quakec_monster_number(
+            &self.vm.entities,
+            native,
+            Scalar::AbsoluteMin(axis),
+        )
+    }
+    fn absolute_max(&mut self, target: NativeEntityRef, axis: usize) -> Result<f32, CallError> {
+        let native = self.vm.weak_entity_offset(self.context.module, target)?;
+        self.vm.projection.quakec_monster_number(
+            &self.vm.entities,
+            native,
+            Scalar::AbsoluteMax(axis),
+        )
+    }
+    fn random_word(&mut self) -> u32 {
+        self.vm.random_word()
+    }
+}
+
 impl Vm {
+    pub(crate) fn move_to_goal(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        distance: f32,
+    ) -> Result<GoalStep, CallError> {
+        let self_at = self.call_fields.self_global.ok_or(CallError::Memory)?;
+        let native = self.image.globals[self_at];
+        let goal = self
+            .projection
+            .quakec_monster_goal(&self.entities, native)?;
+        let reference = |value| {
+            self.entity_number(value)
+                .map(|ordinal| {
+                    NativeEntityRef::entity(ResourceNamespace::Module(context.module), ordinal)
+                })
+                .map_err(|_| CallError::Memory)
+        };
+        let actor = reference(native)?;
+        let goal = reference(goal)?;
+        let rules = step_rules(context.native_rules).ok_or(CallError::Unsupported)?;
+        let step = GoalCursor::begin(
+            &mut Host::new(self, services, context, native),
+            actor,
+            goal,
+            distance,
+            rules,
+        )?;
+        self.link_goal(services, context, step)
+    }
+    pub(crate) fn resume_goal(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        cursor: GoalCursor,
+    ) -> Result<GoalStep, CallError> {
+        let native = self.weak_entity_offset(context.module, cursor.actor())?;
+        let step = cursor.resume(&mut Host::new(self, services, context, native))?;
+        self.link_goal(services, context, step)
+    }
+    fn link_goal(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        step: GoalStep,
+    ) -> Result<GoalStep, CallError> {
+        if let GoalStep::Link(cursor) = &step {
+            let native = self.weak_entity_offset(context.module, cursor.actor())?;
+            self.projection.quakec_link(
+                services,
+                &mut self.entities,
+                &self.strings,
+                context,
+                native,
+            )?;
+        }
+        Ok(step)
+    }
     pub(crate) fn walk_move(
         &mut self,
         services: &mut EngineServices<'_>,

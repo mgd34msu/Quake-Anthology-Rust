@@ -16,9 +16,10 @@ pub struct QcImportContinuation {
     returns: bool,
 }
 #[derive(Debug)]
-enum QcContinuation {
+pub(super) enum QcContinuation {
     Shared(ImportContinuation),
     Walk(quakec::monster::WalkAfterTouch),
+    Goal(qa_session::physics::GoalCursor),
 }
 
 impl quakec::Builtins for QuakeCCalls<'_, '_> {
@@ -122,6 +123,13 @@ impl QuakeCCalls<'_, '_> {
                     .map_err(|_| quakec::Trap::Builtin);
                 return result.and_then(|step| restored.map(|()| step));
             }
+            QcContinuation::Goal(cursor) => {
+                let step = vm
+                    .resume_goal(self.services, self.context, cursor)
+                    .and_then(|step| qc_goal_value(vm, self.context, step))
+                    .map_err(|_| quakec::Trap::Builtin)?;
+                return Self::apply_value(vm, step, false);
+            }
         };
         let step = self
             .with_invocation(vm, &[], |invocation| shared.resume(invocation, returned))
@@ -142,7 +150,7 @@ impl QuakeCCalls<'_, '_> {
         continuation: QcImportContinuation,
     ) -> Result<(), quakec::Trap> {
         match continuation.kind {
-            QcContinuation::Shared(_) => Ok(()),
+            QcContinuation::Shared(_) | QcContinuation::Goal(_) => Ok(()),
             QcContinuation::Walk(walk) => vm
                 .restore_walk_move(walk)
                 .map_err(|_| quakec::Trap::Builtin),
@@ -181,13 +189,10 @@ impl QuakeCCalls<'_, '_> {
                     },
                 });
             }
-            CallValue::QuakeCHost(request, walk) => {
+            CallValue::QuakeCHost(request, kind) => {
                 return Ok(QcImportStep::Host {
                     request,
-                    continuation: QcImportContinuation {
-                        kind: QcContinuation::Walk(walk),
-                        returns,
-                    },
+                    continuation: QcImportContinuation { kind, returns },
                 });
             }
             CallValue::QuakeCReturn(value, restore) => {

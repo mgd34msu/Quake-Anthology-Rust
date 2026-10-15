@@ -594,7 +594,7 @@ impl Vm {
                         NegI => a.wrapping_neg(),
                         NegF => (-f32::from_bits(a as u32)).to_bits() as i32,
                         CvIF => (a as f32).to_bits() as i32,
-                        _ => crate::numbers::native_integer(f32::from_bits(a as u32)),
+                        _ => qa_core::math::native_integer(f32::from_bits(a as u32)),
                     };
                 }
                 Bcom => {

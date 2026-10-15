@@ -70,6 +70,17 @@ impl Code {
         ]);
         self.vm_fields(&fields)
     }
+    fn goal_vm(&self) -> Vm {
+        let mut fields = FIELDS.to_vec();
+        fields.extend_from_slice(&[
+            (4, 40, b"goalentity"),
+            (4, 41, b"enemy"),
+            (2, 42, b"ideal_yaw"),
+            (2, 43, b"yaw_speed"),
+            (6, 44, b"touch"),
+        ]);
+        self.vm_fields(&fields)
+    }
     fn vm_fields(&self, fields: &[(u16, u16, &[u8])]) -> Vm {
         let entity_fields = fields
             .iter()
@@ -5563,5 +5574,648 @@ fn qc_walkmove_anonymous_common_box_blocks_without_needing_native_ground() {
         assert!(host.runtime.server.area.bounds(ids[0]).is_none());
         assert_eq!(host.runtime.server.area.relinks, links);
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    }
+}
+
+#[test]
+fn qc_movetogoal_mobility_rejection_only_clears_scalar_return_without_random() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 0, 0, 0)]);
+        let goal = code.builtin(67);
+        let random = code.builtin(7);
+        let root = code.function(&[
+            (StoreV, 100, 1, 0),
+            (StoreF, 48, 4, 0),
+            (Call1, 58, 0, 0),
+            (StoreV, 1, 90, 0),
+            (Call0, 59, 0, 0),
+            (StoreF, 1, 93, 0),
+            (Return, 90, 0, 0),
+        ]);
+        let inspect_random = code.function(&[(Return, 93, 0, 0)]);
+        let mut fields = FIELDS.to_vec();
+        fields.push((4, 40, b"goalentity"));
+        // enemy, ideal_yaw and yaw_speed are absent on this rejected path.
+        let mut vm = code.vm_fields(&fields);
+        vm.image.globals[58] = goal;
+        vm.image.globals[59] = random;
+        vm.image.globals[100..103].copy_from_slice(&[73.0f32.to_bits(), 0x8000_0000, 0x7fc1_2345]);
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let (request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            (0..code.functions.len() as u32).collect(),
+            frame,
+            100,
+            &[(2, 0.0, 0.0, 0)],
+        );
+        let mut host = load(runtime, vec![request]);
+        host.call_module(
+            CallbackId(root),
+            CallbackCall::Export {
+                entity: ids[0],
+                time: ThinkTime::Seconds(5.0),
+                arguments: [0; 9],
+                client: None,
+                command: CommandArgs::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([0, 0x8000_0000, 0x7fc1_2345]))
+        );
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(inspect_random)),
+            ThinkTime::Seconds(5.0),
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([0x3f0a_cf16, 0, 0]))
+        );
+        assert_eq!(host.runtime.server.area.relinks, 0);
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    }
+}
+
+#[test]
+fn qc_movetogoal_close_enough_reads_world_and_freed_goal_backing_without_link_or_random() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for freed_goal in [false, true] {
+            let mut code = Code::new();
+            let frame = code.function(&[(Return, 0, 0, 0)]);
+            let goal = code.builtin(67);
+            let random = code.builtin(7);
+            let spawn = code.builtin(14);
+            let remove = code.builtin(15);
+            let initialize = code.function(&[
+                (Call0, 60, 0, 0),
+                (StoreEnt, 1, 65, 0),
+                (Address, 64, 66, 98),
+                (StorePEnt, 65, 98, 0),
+                (StoreEnt, 65, 4, 0),
+                (Call1, 61, 0, 0),
+                // Retained native backing is readable even after its common
+                // lifetime is gone. These raw absolute bounds are not a link.
+                (Address, 65, 67, 98),
+                (StorePV, 106, 98, 0),
+                (Address, 65, 68, 98),
+                (StorePV, 109, 98, 0),
+                (Return, 65, 0, 0),
+            ]);
+            let root = code.function(&[
+                (StoreV, 100, 1, 0),
+                (StoreF, 48, 4, 0),
+                (Call1, 58, 0, 0),
+                (StoreV, 1, 90, 0),
+                (Call0, 59, 0, 0),
+                (StoreF, 1, 93, 0),
+                (Return, 90, 0, 0),
+            ]);
+            let inspect_random = code.function(&[(Return, 93, 0, 0)]);
+            let mut vm = code.goal_vm();
+            let stride = vm.stride as u32;
+            for (at, value) in [
+                (58, goal),
+                (59, random),
+                (60, spawn),
+                (61, remove),
+                (64, 2 * stride),
+                (66, vm.image.field(b"goalentity").unwrap() as u32),
+                (67, vm.image.field(b"absmin").unwrap() as u32),
+                (68, vm.image.field(b"absmax").unwrap() as u32),
+            ] {
+                vm.image.globals[at] = value;
+            }
+            vm.image.globals[100..103].copy_from_slice(&[
+                73.0f32.to_bits(),
+                0x8000_0000,
+                0x7fc1_2345,
+            ]);
+            vm.image.globals[106..112].fill(0);
+            write(&mut vm, 2, b"flags", 512.0f32.to_bits());
+            write(&mut vm, 2, b"enemy", 2 * stride);
+            write_vector(&mut vm, 2, b"absmin", Vec3([-1.0; 3]));
+            write_vector(&mut vm, 2, b"absmax", Vec3([1.0; 3]));
+            let mut runtime = Runtime::load(1, []).unwrap();
+            install_motion_world(&mut runtime, false);
+            let (request, ids) = request(
+                &mut runtime,
+                ModuleId(1),
+                rules,
+                vm,
+                (0..code.functions.len() as u32).collect(),
+                frame,
+                100,
+                &[(2, 0.0, 0.0, 0)],
+            );
+            let mut host = load(runtime, vec![request]);
+            if freed_goal {
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(initialize)),
+                    ThinkTime::Seconds(5.0),
+                )
+                .unwrap();
+                let ordinal = if rules == RuleSetId::QuakeWorld {
+                    33
+                } else {
+                    3
+                };
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC([ordinal * stride, 40, 18]))
+                );
+                assert!(!host.runtime.server.entities.active().any(|entity| {
+                    host.runtime.server.entities.columns.native_entity[entity.slot as usize]
+                        == Some(NativeEntity {
+                            module: ModuleId(1),
+                            slot: ordinal as i32,
+                        })
+                }));
+            }
+            let links = host.runtime.server.area.relinks;
+            host.call_module(
+                CallbackId(root),
+                CallbackCall::Export {
+                    entity: ids[0],
+                    time: ThinkTime::Seconds(5.0),
+                    arguments: [0; 9],
+                    client: None,
+                    command: CommandArgs::default(),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([
+                    73.0f32.to_bits(),
+                    0x8000_0000,
+                    0x7fc1_2345
+                ]))
+            );
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(inspect_random)),
+                ThinkTime::Seconds(5.0),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([0x3f0a_cf16, 0, 0]))
+            );
+            assert_eq!(host.runtime.server.area.relinks, links);
+            assert!(host.runtime.server.area.bounds(ids[0]).is_none());
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+        }
+    }
+}
+
+#[test]
+fn qc_movetogoal_facing_restore_still_touches_and_keeps_callback_returns_or_trap_prefix() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for trap in [false, true] {
+            let mut code = Code::new();
+            let frame = code.function(&[(Return, 0, 0, 0)]);
+            let goal = code.builtin(67);
+            let setorigin = code.builtin(2);
+            let setsize = code.builtin(4);
+            let random = code.builtin(7);
+            let mut touch_body = vec![
+                (MulF, 70, 71, 82),
+                (AddF, 82, 72, 70),
+                (Call0, 62, 0, 0),
+                (StoreF, 1, 86, 0),
+                // StepDirection must restore the facing-rejected displacement
+                // before linking and entering this overlapping trigger.
+                (LoadV, 36, 53, 94),
+            ];
+            if trap {
+                touch_body.extend_from_slice(&[(Address, 36, 53, 98), (StorePV, 112, 98, 0)]);
+            } else {
+                touch_body.extend_from_slice(&[
+                    (StoreEnt, 36, 4, 0),
+                    (StoreV, 112, 7, 0),
+                    (Call2, 59, 0, 0),
+                ]);
+            }
+            touch_body.extend_from_slice(&[
+                (Address, 36, 66, 98),
+                (StorePF, 76, 98, 0),
+                (StoreF, 75, 35, 0),
+                (MulF, 70, 71, 82),
+                (AddF, 82, 73, 70),
+                (StoreEnt, 63, 34, 0),
+            ]);
+            if trap {
+                touch_body.push((Call0, 61, 0, 0));
+            }
+            touch_body.push((Return, 103, 0, 0));
+            let touch = code.function(&touch_body);
+            let root = code.function(&[
+                (StoreF, 48, 70, 0),
+                (StoreEnt, 65, 36, 0),
+                (StoreV, 100, 1, 0),
+                (StoreF, 71, 4, 0),
+                (Call1, 58, 0, 0),
+                (StoreV, 1, 90, 0),
+                (MulF, 70, 71, 82),
+                (AddF, 82, 74, 70),
+                (StoreEnt, 34, 79, 0),
+                (StoreEnt, 36, 80, 0),
+                (StoreF, 35, 81, 0),
+                (Call0, 62, 0, 0),
+                (StoreF, 1, 97, 0),
+                (Return, 90, 0, 0),
+            ]);
+            let link = code.function(&[
+                (StoreEnt, 64, 4, 0),
+                (StoreV, 106, 7, 0),
+                (StoreV, 109, 10, 0),
+                (Call3, 60, 0, 0),
+                (StoreEnt, 65, 4, 0),
+                (StoreV, 106, 7, 0),
+                (StoreV, 109, 10, 0),
+                (Call3, 60, 0, 0),
+                (Return, 0, 0, 0),
+            ]);
+            let inspect_context = code.function(&[(Return, 79, 0, 0)]);
+            let inspect_seen_origin = code.function(&[(Return, 94, 0, 0)]);
+            let inspect_random = code.function(&[
+                (StoreF, 86, 115, 0),
+                (StoreF, 97, 116, 0),
+                (StoreF, 70, 117, 0),
+                (Return, 115, 0, 0),
+            ]);
+            let probe_random = code.function(&[(Call0, 62, 0, 0), (Return, 1, 0, 0)]);
+            let mut vm = code.goal_vm();
+            let stride = vm.stride as u32;
+            for (at, value) in [
+                (58, goal),
+                (59, setorigin),
+                (60, setsize),
+                (61, u32::MAX),
+                (62, random),
+                (63, 0),
+                (64, 2 * stride),
+                (65, 3 * stride),
+                (66, vm.image.field(b"flags").unwrap() as u32),
+                (71, 10.0f32.to_bits()),
+                (72, 2.0f32.to_bits()),
+                (73, 3.0f32.to_bits()),
+                (74, 4.0f32.to_bits()),
+                (75, 42.0f32.to_bits()),
+                (76, 544.0f32.to_bits()),
+            ] {
+                vm.image.globals[at] = value;
+            }
+            vm.image.globals[100..103].copy_from_slice(&[73.0f32, -5.0, 7.0].map(f32::to_bits));
+            vm.image.globals[103..106].copy_from_slice(&[19.0f32, 23.0, 29.0].map(f32::to_bits));
+            vm.image.globals[106..109].fill((-1.0f32).to_bits());
+            vm.image.globals[109..112].fill(1.0f32.to_bits());
+            vm.image.globals[112..115].copy_from_slice(&[0.0f32, 0.0, 32.0].map(f32::to_bits));
+            write_vector(&mut vm, 2, b"origin", Vec3([0.0, 0.0, 8.0]));
+            write_vector(&mut vm, 2, b"angles", Vec3([0.0, 180.0, 0.0]));
+            write(&mut vm, 2, b"flags", 1536.0f32.to_bits());
+            write(&mut vm, 2, b"solid", 2.0f32.to_bits());
+            write_vector(&mut vm, 3, b"origin", Vec3([0.0, 0.0, 8.0]));
+            write(&mut vm, 3, b"solid", 1.0f32.to_bits());
+            write(&mut vm, 3, b"touch", touch);
+            let mut runtime = Runtime::load(1, []).unwrap();
+            install_motion_world(&mut runtime, false);
+            let (mut primary, ids) = request(
+                &mut runtime,
+                ModuleId(1),
+                rules,
+                vm,
+                (0..code.functions.len() as u32).collect(),
+                frame,
+                100,
+                &[(2, 0.0, 0.0, 0), (3, 0.0, 0.0, 0)],
+            );
+            primary.context.trace_rules = rules;
+            let mut peer_code = Code::new();
+            let peer_frame = peer_code.function(&[(Return, 70, 0, 0)]);
+            let mut peer_vm = peer_code.vm();
+            peer_vm.image.globals[70] = 77.0f32.to_bits();
+            let (peer, _) = request(
+                &mut runtime,
+                ModuleId(2),
+                rules,
+                peer_vm,
+                vec![peer_frame],
+                peer_frame,
+                100,
+                &[],
+            );
+            let mut host = load(runtime, vec![primary, peer]);
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(link)),
+                ThinkTime::Seconds(5.0),
+            )
+            .unwrap();
+            let result = host.call_module(
+                CallbackId(root),
+                CallbackCall::Export {
+                    entity: ids[0],
+                    time: ThinkTime::Seconds(5.0),
+                    arguments: [0; 9],
+                    client: None,
+                    command: CommandArgs::default(),
+                },
+            );
+            if trap {
+                assert!(result.is_err());
+            } else {
+                result.unwrap();
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC(
+                        [19.0f32, 23.0, 29.0].map(f32::to_bits)
+                    ))
+                );
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(inspect_context)),
+                    ThinkTime::Seconds(6.0),
+                )
+                .unwrap();
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC([
+                        2 * stride,
+                        3 * stride,
+                        42.0f32.to_bits()
+                    ]))
+                );
+            }
+            // ClearGround belongs before StepDirection's touch. A later clear
+            // copied from WalkMove would destroy this callback's new ground bit.
+            assert_eq!(
+                host.runtime.server.entities.columns.flags[ids[0].slot as usize],
+                544
+            );
+            assert_eq!(
+                host.runtime.server.entities.columns.position[ids[0].slot as usize],
+                Vec3([0.0, 0.0, 32.0])
+            );
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(inspect_seen_origin)),
+                ThinkTime::Seconds(6.0),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([0.0f32, 0.0, 8.0].map(f32::to_bits)))
+            );
+            if trap {
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(probe_random)),
+                    ThinkTime::Seconds(6.0),
+                )
+                .unwrap();
+                let Some(ModuleResult::QuakeC(words)) =
+                    host.module_counts(ModuleId(1)).unwrap().last_result
+                else {
+                    panic!()
+                };
+                assert_eq!(words[0], 0x3e43_4987);
+            } else {
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(inspect_random)),
+                    ThinkTime::Seconds(6.0),
+                )
+                .unwrap();
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC([
+                        0x3e8f_191e,
+                        0x3e43_4987,
+                        1234.0f32.to_bits()
+                    ]))
+                );
+            }
+            host.call_module_export(
+                ModuleId(2),
+                Export::clocked(CallbackId(0)),
+                ThinkTime::Seconds(6.0),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(2)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([77.0f32.to_bits(), 0, 0]))
+            );
+            let counts = host.module_counts(ModuleId(1)).unwrap();
+            assert_eq!(
+                (counts.rejected, counts.traps),
+                (0, if trap { 2 } else { 0 })
+            );
+            assert_eq!(
+                host.module_state(ModuleId(1)),
+                Some(qa_app::modules::State::Running)
+            );
+        }
+    }
+}
+
+#[test]
+fn qc_movetogoal_blocked_step_touches_then_chases_the_captured_live_goal_with_shared_rng() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 0, 0, 0)]);
+        let goal = code.builtin(67);
+        let setorigin = code.builtin(2);
+        let setsize = code.builtin(4);
+        let random = code.builtin(7);
+        let second_touch = code.function(&[
+            (MulF, 70, 71, 82),
+            (AddF, 82, 73, 70),
+            (Call0, 62, 0, 0),
+            (StoreF, 1, 87, 0),
+            (StoreEnt, 63, 34, 0),
+            (Return, 103, 0, 0),
+        ]);
+        let first_touch = code.function(&[
+            (MulF, 70, 71, 82),
+            (AddF, 82, 72, 70),
+            (Call0, 62, 0, 0),
+            (StoreF, 1, 86, 0),
+            (Address, 36, 66, 98),
+            (StorePF, 48, 98, 0),
+            (Address, 36, 68, 98),
+            (StorePEnt, 77, 98, 0),
+            // Goal pointer was captured before this callback, but its origin
+            // must be read now: both a stale goal pose and the new goal point X.
+            (Address, 76, 53, 98),
+            (StorePV, 112, 98, 0),
+            (Address, 34, 79, 98),
+            (StorePFnc, 99, 98, 0),
+            (Return, 103, 0, 0),
+        ]);
+        let root = code.function(&[
+            (StoreF, 48, 70, 0),
+            (StoreV, 100, 1, 0),
+            (StoreF, 71, 4, 0),
+            (Call1, 58, 0, 0),
+            (StoreV, 1, 90, 0),
+            (MulF, 70, 71, 82),
+            (AddF, 82, 74, 70),
+            (Call0, 62, 0, 0),
+            (StoreF, 1, 97, 0),
+            (Return, 90, 0, 0),
+        ]);
+        let link = code.function(&[
+            (StoreEnt, 64, 4, 0),
+            (StoreV, 106, 7, 0),
+            (StoreV, 109, 10, 0),
+            (Call3, 60, 0, 0),
+            (StoreEnt, 65, 4, 0),
+            (StoreV, 118, 7, 0),
+            (StoreV, 121, 10, 0),
+            (Call3, 60, 0, 0),
+            (Return, 0, 0, 0),
+        ]);
+        let inspect_random = code.function(&[
+            (StoreF, 86, 115, 0),
+            (StoreF, 87, 116, 0),
+            (StoreF, 97, 117, 0),
+            (Return, 115, 0, 0),
+        ]);
+        let inspect_log = code.function(&[(Return, 70, 0, 0)]);
+        let mut vm = code.goal_vm();
+        let stride = vm.stride as u32;
+        for (at, value) in [
+            (58, goal),
+            (59, setorigin),
+            (60, setsize),
+            (62, random),
+            (63, 0),
+            (64, 2 * stride),
+            (65, 3 * stride),
+            (66, vm.image.field(b"flags").unwrap() as u32),
+            (68, vm.image.field(b"goalentity").unwrap() as u32),
+            (71, 10.0f32.to_bits()),
+            (72, 2.0f32.to_bits()),
+            (73, 3.0f32.to_bits()),
+            (74, 4.0f32.to_bits()),
+            (76, 4 * stride),
+            (77, 5 * stride),
+            (79, vm.image.field(b"touch").unwrap() as u32),
+            (99, second_touch),
+        ] {
+            vm.image.globals[at] = value;
+        }
+        vm.image.globals[100..103].copy_from_slice(&[73.0f32, -5.0, 7.0].map(f32::to_bits));
+        vm.image.globals[103..106].copy_from_slice(&[19.0f32, 23.0, 29.0].map(f32::to_bits));
+        vm.image.globals[106..109].fill((-1.0f32).to_bits());
+        vm.image.globals[109..112].fill(1.0f32.to_bits());
+        vm.image.globals[112..115].copy_from_slice(&[0.0f32, 50.0, 8.0].map(f32::to_bits));
+        vm.image.globals[118..121].fill((-16.0f32).to_bits());
+        vm.image.globals[121..124].fill(16.0f32.to_bits());
+        write_vector(&mut vm, 2, b"origin", Vec3([0.0, 0.0, 8.0]));
+        write(&mut vm, 2, b"flags", 512.0f32.to_bits());
+        write(&mut vm, 2, b"solid", 2.0f32.to_bits());
+        write(&mut vm, 2, b"goalentity", 4 * stride);
+        write(&mut vm, 2, b"yaw_speed", 360.0f32.to_bits());
+        write_vector(&mut vm, 3, b"origin", Vec3([0.0, 0.0, 8.0]));
+        write(&mut vm, 3, b"solid", 1.0f32.to_bits());
+        write(&mut vm, 3, b"touch", first_touch);
+        for target in [4, 5] {
+            write_vector(&mut vm, target, b"origin", Vec3([50.0, 0.0, 8.0]));
+        }
+        let mut runtime = Runtime::load(1, []).unwrap();
+        install_motion_world(&mut runtime, false);
+        let (mut request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            (0..code.functions.len() as u32).collect(),
+            frame,
+            100,
+            &[
+                (2, 0.0, 0.0, 0),
+                (3, 0.0, 0.0, 0),
+                (4, 0.0, 0.0, 0),
+                (5, 0.0, 0.0, 0),
+            ],
+        );
+        request.context.trace_rules = rules;
+        let mut host = load(runtime, vec![request]);
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(link)),
+            ThinkTime::Seconds(5.0),
+        )
+        .unwrap();
+        let links = host.runtime.server.area.relinks;
+        host.call_module(
+            CallbackId(root),
+            CallbackCall::Export {
+                entity: ids[0],
+                time: ThinkTime::Seconds(5.0),
+                arguments: [0; 9],
+                client: None,
+                command: CommandArgs::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC(
+                [19.0f32, 23.0, 29.0].map(f32::to_bits)
+            ))
+        );
+        let expected = Vec3([0.0, 0.0, 8.0]) + qa_movement::yaw_displacement(90.0, 10.0);
+        assert_eq!(
+            host.runtime.server.entities.columns.position[ids[0].slot as usize]
+                .0
+                .map(f32::to_bits),
+            expected.0.map(f32::to_bits)
+        );
+        assert_eq!(
+            host.runtime.server.entities.columns.angles[ids[0].slot as usize].0[1].to_bits(),
+            90.0f32.to_bits()
+        );
+        assert_eq!(host.runtime.server.area.relinks - links, 2);
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(inspect_random)),
+            ThinkTime::Seconds(6.0),
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([
+                0x3e8f_191e,
+                (((1714636915u32 & 0x7fff) as f32) / 32767.0).to_bits(),
+                (((1957747793u32 & 0x7fff) as f32) / 32767.0).to_bits(),
+            ]))
+        );
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(inspect_log)),
+            ThinkTime::Seconds(6.0),
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([
+                1234.0f32.to_bits(),
+                10.0f32.to_bits(),
+                2.0f32.to_bits()
+            ]))
+        );
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        assert_eq!((counts.rejected, counts.traps), (0, 0));
     }
 }

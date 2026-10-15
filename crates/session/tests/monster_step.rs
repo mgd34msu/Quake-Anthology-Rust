@@ -4,7 +4,8 @@ use qa_core::primitives::{
 };
 use qa_gameplay::rules::motion::{StepRules, step_rules};
 use qa_session::physics::{
-    MonsterHost, MotionTrace, PhysicsError, StepMove, StepPost, finish_step, move_step,
+    GoalCursor, GoalHost, GoalStep, MonsterHost, MotionTrace, PhysicsError, StepMove, StepPost,
+    finish_step, move_step,
 };
 use qa_world::collision::{
     CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, TraceQuery, TraceRules,
@@ -40,6 +41,16 @@ struct Host {
     bounds_reads: usize,
     on_origin: Option<fn(&mut Host, usize)>,
     fail_axis: Option<usize>,
+    goal: NativeEntityRef,
+    goal_position: Vec3,
+    goal_bounds: Bounds,
+    ideal_yaw: f32,
+    yaw: f32,
+    yaw_speed: f32,
+    turns: Vec<f32>,
+    random: qa_core::random::Random,
+    draws: Vec<u32>,
+    absolute_reads: Vec<(NativeEntityRef, usize)>,
 }
 fn reference(ordinal: u32) -> NativeEntityRef {
     NativeEntityRef::entity(ResourceNamespace::Module(ModuleId(7)), ordinal)
@@ -109,6 +120,19 @@ impl Host {
             bounds_reads: 0,
             on_origin: None,
             fail_axis: None,
+            goal: reference(0),
+            goal_position: Vec3([100.0, 100.0, 0.0]),
+            goal_bounds: Bounds::default(),
+            ideal_yaw: 0.0,
+            yaw: 0.0,
+            yaw_speed: 360.0,
+            turns: Vec::new(),
+            random: qa_core::random::Random::with_algorithm(
+                1,
+                qa_core::random::Algorithm::GlibcType3,
+            ),
+            draws: Vec::new(),
+            absolute_reads: Vec::new(),
         }
     }
 }
@@ -130,6 +154,9 @@ impl MonsterHost for Host {
     }
     fn target_origin(&mut self, target: NativeEntityRef) -> Result<Vec3, PhysicsError> {
         self.target_reads += 1;
+        if target == self.goal {
+            return Ok(self.goal_position);
+        }
         assert_eq!(Some(target), self.enemy);
         self.target.ok_or(PhysicsError::MissingField)
     }
@@ -189,6 +216,49 @@ impl MonsterHost for Host {
     fn write_ground(&mut self, ground: NativeEntityRef) -> Result<(), PhysicsError> {
         self.writes.push(Write::Ground(ground));
         Ok(())
+    }
+}
+impl GoalHost for Host {
+    fn ideal_yaw(&mut self) -> Result<f32, PhysicsError> {
+        Ok(self.ideal_yaw)
+    }
+    fn yaw(&mut self) -> Result<f32, PhysicsError> {
+        Ok(self.yaw)
+    }
+    fn write_ideal_yaw(&mut self, value: f32) -> Result<(), PhysicsError> {
+        self.ideal_yaw = value;
+        Ok(())
+    }
+    fn change_yaw(&mut self) -> Result<(), PhysicsError> {
+        self.turns.push(self.ideal_yaw);
+        if let Some(yaw) = qa_movement::change_yaw(self.yaw, self.ideal_yaw, self.yaw_speed) {
+            self.yaw = yaw;
+        }
+        Ok(())
+    }
+    fn enemy_present(&mut self) -> Result<bool, PhysicsError> {
+        Ok(self.enemy.is_some())
+    }
+    fn absolute_min(&mut self, target: NativeEntityRef, axis: usize) -> Result<f32, PhysicsError> {
+        self.absolute_reads.push((target, axis));
+        Ok(if target == self.goal {
+            self.goal_bounds.mins.0[axis]
+        } else {
+            self.pose.position.0[axis] + self.bounds.mins.0[axis]
+        })
+    }
+    fn absolute_max(&mut self, target: NativeEntityRef, axis: usize) -> Result<f32, PhysicsError> {
+        self.absolute_reads.push((target, axis));
+        Ok(if target == self.goal {
+            self.goal_bounds.maxs.0[axis]
+        } else {
+            self.pose.position.0[axis] + self.bounds.maxs.0[axis]
+        })
+    }
+    fn random_word(&mut self) -> u32 {
+        let word = self.random.next_u32();
+        self.draws.push(word);
+        word
     }
 }
 fn rules(source: RuleSetId) -> StepRules {
@@ -454,4 +524,175 @@ fn scalar_failure_keeps_admitted_prefix_and_missing_ground_does_not_invent_world
             .iter()
             .any(|write| matches!(write, Write::Ground(_)))
     );
+}
+
+fn linked(step: GoalStep) -> GoalCursor {
+    match step {
+        GoalStep::Link(cursor) => cursor,
+        other => panic!("expected native relink boundary, got {other:?}"),
+    }
+}
+fn begin_goal(host: &mut Host, distance: f32) -> Result<GoalStep, PhysicsError> {
+    let goal = host.goal;
+    GoalCursor::begin(host, reference(1), goal, distance, rules(RuleSetId::Quake))
+}
+
+#[test]
+fn goal_mobility_rejection_and_nan_close_enough_do_not_draw_or_probe() {
+    let mut host = Host::new(&[]);
+    host.ideal_yaw = f32::NAN;
+    assert!(matches!(begin_goal(&mut host, 1.0), Ok(GoalStep::Rejected)));
+    assert!(host.draws.is_empty());
+    assert!(host.absolute_reads.is_empty());
+    assert!(host.traces.is_empty());
+
+    host.flags = rules(RuleSetId::Quake).ground_flag;
+    host.enemy = Some(reference(9));
+    host.goal_bounds = Bounds {
+        mins: Vec3([f32::NAN; 3]),
+        maxs: Vec3([f32::NAN; 3]),
+    };
+    assert!(matches!(begin_goal(&mut host, 1.0), Ok(GoalStep::Complete)));
+    assert_eq!(host.absolute_reads.len(), 12);
+    assert_eq!(host.target_reads, 0);
+    assert!(host.draws.is_empty());
+    assert!(host.traces.is_empty());
+}
+
+#[test]
+fn goal_success_latches_moved_even_when_facing_restores_origin() {
+    let mut host = Host::new(&[]);
+    host.flags = rules(RuleSetId::Quake).fly_flag;
+    host.yaw = 90.0;
+    host.yaw_speed = 0.0;
+    let cursor = linked(begin_goal(&mut host, 5.0).unwrap());
+    assert_eq!(host.pose.position, Vec3::default());
+    assert_eq!(host.turns, [0.0]);
+    assert_eq!(host.draws, [1804289383]);
+    // The relink callback can move the actor again. Completion must neither
+    // compare this pose with the old one nor replay the attempted step.
+    host.pose.position = Vec3([25.0, 30.0, 40.0]);
+    assert!(matches!(cursor.resume(&mut host), Ok(GoalStep::Complete)));
+    assert_eq!(host.pose.position, Vec3([25.0, 30.0, 40.0]));
+    assert_eq!(host.draws.len(), 1);
+}
+
+#[test]
+fn goal_partial_ground_clears_before_its_link_boundary() {
+    let mut host = Host::new(&[]);
+    let rules = rules(RuleSetId::Quake);
+    host.flags = rules.ground_flag | rules.partial_ground_flag;
+    let cursor = linked(begin_goal(&mut host, 5.0).unwrap());
+    assert_eq!(host.pose.position, Vec3([5.0, 0.0, 0.0]));
+    assert_eq!(host.flags, rules.partial_ground_flag);
+    host.flags |= rules.ground_flag;
+    assert!(matches!(cursor.resume(&mut host), Ok(GoalStep::Complete)));
+    assert_eq!(host.flags, rules.ground_flag | rules.partial_ground_flag);
+}
+
+#[test]
+fn chase_captures_after_initial_callback_then_retains_locals_across_later_callbacks() {
+    let mut host = Host::new(&[]);
+    host.flags = rules(RuleSetId::Quake).ground_flag;
+    let cursor = linked(begin_goal(&mut host, 5.0).unwrap());
+    assert_eq!(host.turns, [0.0]);
+    host.ideal_yaw = 90.0;
+    host.goal_position = Vec3([-100.0, -100.0, 0.0]);
+    let cursor = linked(cursor.resume(&mut host).unwrap());
+    assert_eq!(host.turns, [0.0, 215.0]);
+    // These changes happen after the diagonal's link. The captured southwest
+    // locals and old=90/turnaround=270 must survive them.
+    host.ideal_yaw = 0.0;
+    host.goal_position = Vec3([100.0, 100.0, 0.0]);
+    host.pose.position = Vec3([8.0, 9.0, 10.0]);
+    let _cursor = linked(cursor.resume(&mut host).unwrap());
+    assert_eq!(host.turns, [0.0, 215.0, 180.0]);
+    assert_eq!(host.draws, [1804289383, 846930886]);
+}
+
+#[test]
+fn chase_integer_abs_uses_truncated_magnitudes_and_random_is_read_after_callbacks() {
+    let mut host = Host::new(&[]);
+    host.flags = rules(RuleSetId::Quake).ground_flag;
+    host.goal_position = Vec3([10.1, 10.9, 0.0]);
+    let cursor = linked(begin_goal(&mut host, 5.0).unwrap());
+    let cursor = linked(cursor.resume(&mut host).unwrap());
+    let _cursor = linked(cursor.resume(&mut host).unwrap());
+    assert_eq!(host.turns, [0.0, 45.0, 0.0]);
+
+    let mut host = Host::new(&[]);
+    host.flags = rules(RuleSetId::Quake).ground_flag;
+    host.goal_position = Vec3([10.1, 10.9, 0.0]);
+    let cursor = linked(begin_goal(&mut host, 5.0).unwrap());
+    let cursor = linked(cursor.resume(&mut host).unwrap());
+    assert_eq!(GoalHost::random_word(&mut host), 846930886);
+    let _cursor = linked(cursor.resume(&mut host).unwrap());
+    assert_eq!(host.turns, [0.0, 45.0, 90.0]);
+    assert_eq!(host.draws, [1804289383, 846930886, 1681692777]);
+}
+
+#[test]
+fn exhausted_chase_keeps_duplicate_attempts_and_both_native_sweep_orders() {
+    for (seed, expected, draws) in [
+        (
+            1,
+            vec![
+                0.0, 45.0, 0.0, 90.0, 0.0, 0.0, 45.0, 90.0, 135.0, 225.0, 270.0, 315.0, 180.0,
+            ],
+            vec![1804289383, 846930886, 1681692777],
+        ),
+        (
+            2,
+            vec![
+                0.0, 45.0, 90.0, 0.0, 0.0, 315.0, 270.0, 225.0, 135.0, 90.0, 45.0, 0.0, 180.0,
+            ],
+            vec![1505335290, 1738766719, 190686788],
+        ),
+    ] {
+        let mut host = Host::new(&[]);
+        let rules = rules(RuleSetId::Quake);
+        host.flags = rules.ground_flag;
+        host.random =
+            qa_core::random::Random::with_algorithm(seed, qa_core::random::Algorithm::GlibcType3);
+        let mut step = begin_goal(&mut host, 5.0).unwrap();
+        let mut links = 0;
+        while let GoalStep::Link(cursor) = step {
+            links += 1;
+            step = cursor.resume(&mut host).unwrap();
+        }
+        assert!(matches!(step, GoalStep::Complete));
+        assert_eq!(links, expected.len());
+        assert_eq!(host.turns, expected);
+        assert_eq!(host.draws, draws);
+        assert_eq!(host.ideal_yaw, 0.0);
+        assert_eq!(host.flags, rules.ground_flag | rules.partial_ground_flag);
+        assert_eq!(host.pose.position, Vec3::default());
+    }
+}
+
+#[test]
+fn random_initial_short_circuit_skips_the_initial_direction() {
+    let mut host = Host::new(&[]);
+    host.flags = rules(RuleSetId::Quake).ground_flag;
+    host.random.next_u32();
+    host.random.next_u32();
+    let _cursor = linked(begin_goal(&mut host, 5.0).unwrap());
+    assert_eq!(host.turns, [45.0]);
+    assert_eq!(host.draws, [1681692777]);
+}
+
+#[test]
+fn goal_facing_rereads_ideal_yaw_after_overlapping_origin_stores() {
+    let mut host = Host::new(&[]);
+    host.flags = rules(RuleSetId::Quake).fly_flag;
+    host.on_origin = Some(|host, axis| {
+        if axis == 0 {
+            host.ideal_yaw = -90.0;
+        }
+    });
+    let cursor = linked(begin_goal(&mut host, 5.0).unwrap());
+    assert_eq!(host.ideal_yaw, -90.0);
+    assert_eq!(host.pose.position, Vec3::default());
+    assert_eq!(host.writes.len(), 6);
+    assert!(matches!(cursor.resume(&mut host), Ok(GoalStep::Complete)));
 }
