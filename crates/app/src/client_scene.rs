@@ -290,7 +290,7 @@ impl ClientEntities<'_> {
             .then_some(record)
     }
 
-    fn row<'a>(frame: ReceivedFrame<'a>, number: u32) -> Option<(&'a [u32], bool)> {
+    pub(crate) fn row<'a>(frame: ReceivedFrame<'a>, number: u32) -> Option<(&'a [u32], bool)> {
         macro_rules! find {
             ($frame:expr) => {{
                 let frame = $frame;

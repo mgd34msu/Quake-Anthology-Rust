@@ -2,7 +2,8 @@
 use qa_core::{
     events::OutputConsumerId,
     primitives::{
-        ClientId, EntityAppearance, PlayerState, Q3StatLayout, ResourceNamespace, ThinkTime,
+        ClientId, EntityAppearance, EntityRecord, PlayerState, Q3StatLayout, ResourceNamespace,
+        ThinkTime,
     },
     sys_events::SeatId,
 };
@@ -745,6 +746,20 @@ impl SnapshotBinding {
                 time,
                 clock,
             ) {
+                if let Some(frame @ ReceivedFrame::NetQuake(_)) = snapshot
+                    && let Some(number) = self.view_entity(Some(frame))
+                    && let Some((words, _)) =
+                        crate::client_scene::ClientEntities::row(frame, number)
+                {
+                    let mut record = EntityRecord::default();
+                    if self.entities.projection().apply(
+                        words,
+                        &mut record,
+                        ResourceNamespace::Client(self.client),
+                    ) {
+                        player.body.position = record.position;
+                    }
+                }
                 registry.project_player_weapon(player);
                 player.native_clock = clock;
                 self.applied += 1;

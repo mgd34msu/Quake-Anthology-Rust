@@ -726,6 +726,216 @@ fn rejected_snapshot_fragment_keeps_provenance_pending_while_local_client_and_ti
 }
 
 struct NoPredictionQueries;
+
+fn queue_nq_view_snapshot(
+    host: &mut FrameHost,
+    client: ClientId,
+    seconds: f64,
+    origin: Option<Vec3>,
+) {
+    use qa_network::{
+        message::{Encoding, Writer},
+        projection::{EntityContext, EntityProjection},
+        snapshots::{Entity, Frame},
+        states,
+    };
+    let projection = EntityProjection::load(Protocol::NetQuake15);
+    let mut entities = Vec::new();
+    for (number, position) in [(1, Some(Vec3([-200., -300., -400.]))), (6, origin)] {
+        let Some(position) = position else {
+            continue;
+        };
+        let record = EntityRecord {
+            position,
+            angles: Vec3([88., 99., 111.]),
+            appearance: EntityAppearance {
+                source: RuleSetId::Quake,
+                models: [
+                    ModelRef::native(ResourceNamespace::Module(ENTITIES), 9),
+                    None,
+                    None,
+                    None,
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut words = [0; states::NQ_ENTITY_WORDS];
+        assert!(projection.reduce(
+            &record,
+            &EntityContext::default(),
+            &mut words,
+            |model| Some(model.ordinal),
+            |_| None,
+            |_| None,
+        ));
+        entities.push(Entity { number, words });
+    }
+    let mut player = [0; states::NQ_PLAYER_WORDS];
+    player[0] = 22.0f32.to_bits();
+    player[3] = 32.0f32.to_bits();
+    player[5] = (-16.0f32).to_bits();
+    player[7] = 48.0f32.to_bits();
+    player[11] = 2;
+    player[12] = 87.0f32.to_bits();
+    let channel = &mut host
+        .runtime
+        .network
+        .get_mut(client, Endpoint::Server)
+        .unwrap()
+        .channel;
+    let sequence = channel.send_state().sequence;
+    let frame = ReceivedFrame::NetQuake(Frame {
+        sequence,
+        time: ThinkTime::Seconds(seconds),
+        command: 0,
+        flags: 0,
+        qw_peers: 0,
+        qw_dead: 0,
+        areas: &[],
+        player: &player,
+        entities: &entities,
+    });
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    channel
+        .write_snapshot_candidate(&mut writer, frame, None, 16)
+        .unwrap();
+    let length = writer.size();
+    channel.publish_written_snapshot(frame, None).unwrap();
+    let now = EventTime::from_milliseconds(u64::from(sequence) * 100 + 100);
+    channel
+        .prepare_snapshot(sequence, None, &bytes[..length], now)
+        .unwrap()
+        .unwrap();
+    assert!(
+        channel
+            .submit_with(now, |packet| host
+                .runtime
+                .loopback
+                .send(Endpoint::Server, client, packet)
+                .is_ok())
+            .unwrap()
+            .is_some()
+    );
+    assert!(!channel.pending_fragments());
+    host.time = now;
+}
+
+#[test]
+fn queued_netquake_view_entity_updates_only_client_origin_across_native_frames() {
+    let spawn = Vec3([10., 20., 30.]);
+    let angles = Vec3([13., 27., 39.]);
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let client = runtime
+        .connect_local(
+            SeatId::FIRST,
+            SpawnAnchor {
+                position: spawn,
+                angles,
+                entity: 0,
+                fixture_fallback: false,
+            },
+            ClientPolicy::select(
+                Some(RuleSetId::QuakeWorld),
+                None,
+                Some(RuleSetId::Quake3),
+                Some(RuleSetId::Quake2),
+                None,
+            )
+            .unwrap(),
+            Protocol::NetQuake15,
+            5,
+        )
+        .unwrap();
+    runtime.server.clients[client.0 as usize].module = RESOURCES;
+    let server_entity = runtime.server.clients[client.0 as usize].entity;
+    assert_ne!(server_entity.slot, 6);
+    let server_body = runtime.server.clients[client.0 as usize].player.body;
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(25).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    host.local_clients[0] = Some(client);
+    host.local_worlds[0] = Some((
+        qa_render::world::WorldId(0),
+        qa_render::world::WorldPresentationId(0),
+    ));
+    let (mins, maxs) = {
+        let body = host.runtime.prediction[0].player.body;
+        (body.mins, body.maxs)
+    };
+    let mut accepted = spawn;
+    for (index, (seconds, origin)) in [
+        (1.0, Some(Vec3([120.375, -24.625, 48.125]))),
+        (1.0, Some(Vec3([128.5, -32.25, 56.75]))),
+        (2.0, Some(Vec3([-1024.125, 2048.25, 512.5]))),
+        (3.0, None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        queue_nq_view_snapshot(&mut host, client, seconds, origin);
+        assert_eq!(host.runtime.prediction[0].player.body.position, accepted);
+        host.drain(&mut qa_app::host::FrameResult::default());
+        accepted = origin.unwrap_or(accepted);
+        let player = &host.runtime.prediction[0].player;
+        assert_eq!(player.body.position, accepted, "frame {index}");
+        assert_eq!(player.body.velocity, Vec3([32., -16., 48.]));
+        assert_eq!(player.view_angles, angles);
+        assert_eq!((player.body.mins, player.body.maxs), (mins, maxs));
+        assert_eq!(
+            (player.movement_rules, player.trace_rules),
+            (RuleSetId::Quake3, RuleSetId::Quake2)
+        );
+        assert_eq!(
+            player.view_weapon.model,
+            ModelRef::native(ResourceNamespace::Client(client), 2)
+        );
+        assert_eq!(player.health, 87);
+        assert_eq!(
+            player.native_clock.unwrap().native,
+            ThinkTime::Seconds(seconds)
+        );
+        let binding = host.runtime.snapshots[client.0 as usize].as_ref().unwrap();
+        assert_eq!((binding.applied, binding.rejected), (index as u64 + 1, 0));
+        assert_eq!(binding.native_client(), 5);
+        let frame = host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap();
+        assert_eq!(frame.time(), ThinkTime::Seconds(seconds));
+        assert_eq!(binding.view_entity(Some(frame)), Some(6));
+        assert_eq!(
+            host.client_views()[0].unwrap().origin,
+            accepted + Vec3([0., 0., 22.])
+        );
+        let server = &host.runtime.server.clients[client.0 as usize];
+        assert_eq!(server.module, RESOURCES);
+        for body in [
+            server.player.body,
+            host.runtime
+                .server
+                .entities
+                .columns
+                .body(server_entity.slot as usize),
+        ] {
+            assert_eq!(body.position, server_body.position);
+            assert_eq!(body.velocity, server_body.velocity);
+            assert_eq!(body.mins, server_body.mins);
+            assert_eq!(body.maxs, server_body.maxs);
+        }
+        assert_eq!(host.runtime.network.command_errors, 0);
+        assert_eq!(host.runtime.network.malformed, 0);
+    }
+}
 impl qa_movement::TraceServices for NoPredictionQueries {
     fn trace(
         &mut self,
