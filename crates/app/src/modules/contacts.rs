@@ -13,16 +13,9 @@ pub(super) fn reference(
     host: &FrameHost,
     entity: EntityId,
 ) -> Result<NativeEntityRef, ClientCommandError> {
-    let entities = &host.runtime.server.entities;
-    let slot = entities
-        .resolve(entity)
-        .ok_or(ClientCommandError::Inactive)?;
-    let native = entities.columns.native_entity[slot].ok_or(ClientCommandError::InvalidSlot)?;
-    let ordinal = u32::try_from(native.slot).map_err(|_| ClientCommandError::InvalidSlot)?;
-    Ok(NativeEntityRef::entity(
-        ResourceNamespace::Module(native.module),
-        ordinal,
-    ))
+    capture(host, entity)?
+        .reference()
+        .ok_or(ClientCommandError::InvalidSlot)
 }
 
 /// Rebind only at a native callback boundary. The preceding callback can
@@ -39,16 +32,6 @@ pub(super) fn current(
         slot: i32::try_from(reference.ordinal).map_err(|_| ClientCommandError::InvalidSlot)?,
     };
     Ok(host.runtime.server.entities.find_native(native, None))
-}
-
-pub(super) fn admit(
-    host: &mut FrameHost,
-    recipient: ModuleId,
-    reference: NativeEntityRef,
-) -> Result<AdmittedEntity, ClientCommandError> {
-    super::edit_quakec(host, recipient, |vm, services, context| {
-        vm.admit_reference(&services.server.entities, context, reference)
-    })
 }
 
 pub(super) fn release(
@@ -69,21 +52,25 @@ pub(super) fn release(
         .map_err(ClientCommandError::Usercmd)
 }
 
+pub(super) fn capture(
+    host: &FrameHost,
+    entity: EntityId,
+) -> Result<EntityReference, ClientCommandError> {
+    host.runtime
+        .server
+        .entities
+        .capture_reference(entity)
+        .ok_or(ClientCommandError::InvalidSlot)
+}
+
 fn admit_captured(
     host: &mut FrameHost,
     recipient: ModuleId,
-    reference: NativeEntityRef,
-    captured: Option<EntityReference>,
+    captured: EntityReference,
 ) -> Result<AdmittedEntity, ClientCommandError> {
-    match captured {
-        Some(captured) if captured.reference() == reference => {
-            super::edit_quakec(host, recipient, |vm, services, context| {
-                vm.admit_captured_reference(&services.server.entities, context, captured)
-            })
-        }
-        Some(_) => Err(ClientCommandError::InvalidSlot),
-        None => admit(host, recipient, reference),
-    }
+    super::edit_quakec(host, recipient, |vm, services, context| {
+        vm.admit_captured_reference(&services.server.entities, context, captured)
+    })
 }
 
 /// One owned traversal serves both ordinary provider calls and a stopped QC
@@ -137,12 +124,14 @@ impl TriggerRun {
                 break;
             };
             let target = linked.id;
+            let other = capture(host, entity)?;
+            let target_capture = capture(host, target)?;
             if target != entity
                 && let Some(touch) = prepare_touch(
                     host,
                     module,
-                    target,
-                    self.mover,
+                    target_capture,
+                    other,
                     Some(self.time),
                     false,
                     true,
@@ -233,8 +222,8 @@ impl PreparedTouch {
 fn prepare_touch(
     host: &mut FrameHost,
     module: ModuleId,
-    entity: EntityId,
-    other: NativeEntityRef,
+    target: EntityReference,
+    other: EntityReference,
     time: Option<ThinkTime>,
     deduplicate: bool,
     trigger_only: bool,
@@ -242,8 +231,9 @@ fn prepare_touch(
     prepare_admitted_touch(
         host,
         module,
-        entity,
-        (other, None, None),
+        target,
+        other,
+        None,
         time,
         deduplicate,
         trigger_only,
@@ -255,7 +245,7 @@ fn resolve_touch(
     module: ModuleId,
     entity: EntityId,
     time: Option<ThinkTime>,
-    deduplicate: bool,
+    stamp: Option<usize>,
     trigger_only: bool,
 ) -> Result<
     Option<(
@@ -270,15 +260,36 @@ fn resolve_touch(
         return Ok(None);
     };
     let owner = entities.columns.owner[slot];
-    let native = entities.columns.native_entity[slot].ok_or(ClientCommandError::InvalidSlot)?;
-    if native.module != owner {
+    let native = entities.columns.native_entity[slot];
+    let published = entities.columns.touch[slot];
+    if native.is_none() && published.is_none() {
+        return Ok(None);
+    }
+    if let Some(native) = native
+        && native.module != owner
+    {
         return Err(ClientCommandError::DifferentModule);
     }
-    let index = slot;
+    if native.is_none() {
+        if let Some(callback) = published {
+            host.modules
+                .as_ref()
+                .ok_or(ClientCommandError::MissingModule)?
+                .functions
+                .resolve(entities, callback, entity)
+                .map_err(ClientCommandError::Dispatch)?;
+            host.module_row_mut(module)
+                .ok_or(ClientCommandError::MissingModule)?
+                .counts
+                .unsupported_contacts += 1;
+        }
+        return Ok(None);
+    }
+    let native = native.ok_or(ClientCommandError::InvalidSlot)?;
     let row = host
         .module_row(owner)
         .ok_or(ClientCommandError::MissingModule)?;
-    if deduplicate {
+    if let Some(index) = stamp {
         let batch = host
             .module_row(module)
             .ok_or(ClientCommandError::MissingModule)?;
@@ -327,17 +338,26 @@ fn resolve_touch(
 fn prepare_admitted_touch(
     host: &mut FrameHost,
     module: ModuleId,
-    entity: EntityId,
-    (other, mut admitted, captured): (
-        NativeEntityRef,
-        Option<AdmittedEntity>,
-        Option<EntityReference>,
-    ),
+    target_capture: EntityReference,
+    other: EntityReference,
+    mut admitted: Option<AdmittedEntity>,
     time: Option<ThinkTime>,
     deduplicate: bool,
     trigger_only: bool,
 ) -> Result<Option<PreparedTouch>, ClientCommandError> {
-    let prepared = resolve_touch(host, module, entity, time, deduplicate, trigger_only);
+    let Some(entity) = host
+        .runtime
+        .server
+        .entities
+        .resolve_reference(target_capture)
+    else {
+        if let Some(admitted) = admitted.take() {
+            release(host, admitted)?;
+        }
+        return Ok(None);
+    };
+    let stamp = deduplicate.then_some(target_capture.entity().slot as usize);
+    let prepared = resolve_touch(host, module, entity, time, stamp, trigger_only);
     let prepared = match prepared {
         Ok(Some(prepared)) => prepared,
         result => {
@@ -350,7 +370,7 @@ fn prepare_admitted_touch(
     let (owner, target, time) = prepared;
     let admitted = match admitted {
         Some(admitted) => admitted,
-        None => admit_captured(host, owner, other, captured)?,
+        None => admit_captured(host, owner, other)?,
     };
     Ok(Some(PreparedTouch {
         request: CallbackRequest {
@@ -361,7 +381,7 @@ fn prepare_admitted_touch(
                 time,
             },
         },
-        stamp: deduplicate.then_some((module, entity.slot as usize)),
+        stamp: stamp.map(|index| (module, index)),
         admitted,
     }))
 }
@@ -369,14 +389,14 @@ fn prepare_admitted_touch(
 pub(super) fn touch(
     host: &mut FrameHost,
     module: ModuleId,
-    entity: EntityId,
-    other: NativeEntityRef,
+    target: EntityReference,
+    other: EntityReference,
     time: Option<ThinkTime>,
     deduplicate: bool,
     trigger_only: bool,
 ) -> Result<(), ClientCommandError> {
     if let Some(touch) =
-        prepare_touch(host, module, entity, other, time, deduplicate, trigger_only)?
+        prepare_touch(host, module, target, other, time, deduplicate, trigger_only)?
     {
         touch.invoke(host)?;
     }
@@ -387,47 +407,48 @@ pub(super) fn impact(
     host: &mut FrameHost,
     module: ModuleId,
     mover_entity: Option<EntityId>,
-    mover: NativeEntityRef,
-    obstacle: NativeEntityRef,
+    mover: EntityReference,
+    obstacle: EntityReference,
     time: ThinkTime,
-    captured: (Option<EntityReference>, Option<EntityReference>),
 ) -> Result<(), ClientCommandError> {
     let restore = super::edit_quakec(host, module, |vm, _, _| vm.prepare_impact(time))?;
     let mut first = None;
     let mut second = None;
     let execution = (|| {
-        let original_mover = current(host, mover)?;
+        let original_mover = host.runtime.server.entities.resolve_reference(mover);
         let first_runs = if let Some(entity) = mover_entity {
-            resolve_touch(host, module, entity, None, false, false)?.is_some()
+            resolve_touch(host, module, entity, None, None, false)?.is_some()
         } else {
             false
         };
-        let obstacle_entity = current(host, obstacle)?;
+        let obstacle_entity = host.runtime.server.entities.resolve_reference(obstacle);
         if first_runs {
-            first = Some(admit_captured(host, module, obstacle, captured.1)?);
+            first = Some(admit_captured(host, module, obstacle)?);
         }
         if let Some(entity) = obstacle_entity {
             let owner = host.runtime.server.entities.columns.owner[entity.slot as usize];
             if let Some(row) = host.module_row(owner)
                 && let Program::QuakeC(qc) = &row.request.program
+                && let Some(native) = obstacle.reference()
                 && qc
                     .vm
-                    .weak_entity_offset(owner, obstacle)
+                    .weak_entity_offset(owner, native)
                     .and_then(|offset| qc.vm.touch_pending(offset))
                     .map_err(ClientCommandError::Usercmd)?
             {
-                second = Some(admit_captured(host, owner, mover, captured.0)?);
+                second = Some(admit_captured(host, owner, mover)?);
             }
         }
         // Both values are pinned before callback one can retire either source.
         // Re-resolve callback-self and its touch word after each immediate call.
         if first_runs
-            && let Some(entity) = mover_entity
+            && mover_entity.is_some()
             && let Some(touch) = prepare_admitted_touch(
                 host,
                 module,
-                entity,
-                (obstacle, first.take(), captured.1),
+                mover,
+                obstacle,
+                first.take(),
                 None,
                 false,
                 false,
@@ -435,20 +456,21 @@ pub(super) fn impact(
         {
             touch.invoke(host)?;
         }
-        if let Some(entity) = current(host, obstacle)? {
-            let replacement = current(host, mover)?;
+        if let Some(entity) = host.runtime.server.entities.resolve_reference(obstacle) {
+            let replacement = host.runtime.server.entities.resolve_reference(mover);
             if second.is_some() && replacement.is_some() && replacement != original_mover {
                 if let Some(admitted) = second.take() {
                     release(host, admitted)?;
                 }
                 let owner = host.runtime.server.entities.columns.owner[entity.slot as usize];
-                second = Some(admit_captured(host, owner, mover, captured.0)?);
+                second = Some(admit_captured(host, owner, mover)?);
             }
             if let Some(touch) = prepare_admitted_touch(
                 host,
                 module,
-                entity,
-                (mover, second.take(), captured.0),
+                obstacle,
+                mover,
+                second.take(),
                 None,
                 false,
                 false,

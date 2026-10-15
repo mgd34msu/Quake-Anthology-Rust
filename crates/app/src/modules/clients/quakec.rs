@@ -561,17 +561,22 @@ pub(super) fn command(
         })?;
         if !spectator {
             let entity = host.runtime.server.clients[id.0 as usize].entity;
+            let other = super::super::contacts::capture(host, entity)?;
+            let mut contacts = moved.contacts.map(|_| None);
+            for (captured, contact) in contacts
+                .iter_mut()
+                .zip(&moved.contacts[..moved.contact_count])
+            {
+                if let Some(entity) = contact.and_then(|contact| contact.entity) {
+                    *captured = Some(super::super::contacts::capture(host, entity)?);
+                }
+            }
             super::super::contacts::triggers(host, module, entity, time)?;
-            let other_ref = super::super::contacts::reference(host, entity)?;
-            for contact in moved.contacts[..moved.contact_count].iter().flatten() {
+            for contact in contacts[..moved.contact_count].iter().flatten() {
                 if !same_client(host, module, id, captured) {
                     return Ok(());
                 }
-                if let Some(other) = contact.entity {
-                    super::super::contacts::touch(
-                        host, module, other, other_ref, None, true, false,
-                    )?;
-                }
+                super::super::contacts::touch(host, module, *contact, other, None, true, false)?;
             }
         }
     }
