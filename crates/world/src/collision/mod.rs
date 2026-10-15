@@ -24,6 +24,8 @@ pub use store::{CollisionStore, StoreError, TraceScratch};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraceError {
     Entity,
+    /// Invalid, nonrepresentable, or exhausted common shape query.
+    Query,
     Geometry {
         geometry: GeometryId,
         model: u32,
@@ -40,6 +42,7 @@ impl std::fmt::Display for TraceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Entity => formatter.write_str("unavailable native collision entity"),
+            Self::Query => formatter.write_str("invalid or exhausted collision query"),
             Self::Geometry { geometry, model } => {
                 write!(
                     formatter,
