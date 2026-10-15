@@ -186,7 +186,7 @@ impl FrameHost {
             let Program::QuakeC(qc) = &mut row.request.program else {
                 return Err(ServiceError::Aborted);
             };
-            qc.vm.set_map_time(time).map_err(|_| ServiceError::Memory)?;
+            qc.vm.set_time(time).map_err(|_| ServiceError::Memory)?;
             qc.vm
                 .bind_map_fields(&lump.names, rules)
                 .map_err(|_| ServiceError::Memory)?

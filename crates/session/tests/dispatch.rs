@@ -1014,7 +1014,7 @@ fn all_entity_reactions_share_one_numeric_function_table() {
     for call in [
         CallbackCall::Touch {
             entity: id,
-            other: id,
+            other: NativeEntityRef::entity(ResourceNamespace::Module(ModuleId(2)), 0),
             time: None,
         },
         CallbackCall::Use {

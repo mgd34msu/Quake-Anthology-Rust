@@ -3,6 +3,7 @@ pub mod entities;
 pub mod feedback;
 mod model;
 pub mod movement;
+pub mod motion;
 pub use model::model_rules;
 pub mod presentation;
 pub mod q1;

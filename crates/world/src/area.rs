@@ -7,6 +7,8 @@ use qa_core::{
 };
 
 const NONE: u32 = u32::MAX;
+const AREA_DEPTH: u8 = 4;
+const AREA_NODES: usize = (1 << (AREA_DEPTH + 1)) - 1;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkFlags(pub u8);
@@ -78,7 +80,7 @@ pub enum AreaError {
 }
 
 pub struct AreaGrid {
-    nodes: [Node; 31],
+    nodes: [Node; AREA_NODES],
     links: Box<[Link]>,
     pub relinks: u64,
     attachment_visited: StampSet,
@@ -133,10 +135,10 @@ pub struct AttachmentTransport {
     pub rejected: u32,
 }
 
-fn create(nodes: &mut [Node; 31], next: &mut u8, depth: u8, bounds: Bounds) -> u8 {
+fn create(nodes: &mut [Node; AREA_NODES], next: &mut u8, depth: u8, bounds: Bounds) -> u8 {
     let index = *next;
     *next += 1;
-    if depth == 4 {
+    if depth == AREA_DEPTH {
         return index;
     }
     let axis =
@@ -176,7 +178,7 @@ impl AreaGrid {
         if !bounds.is_valid() {
             return Err(AreaError::Bounds);
         }
-        let mut nodes = [Node::default(); 31];
+        let mut nodes = [Node::default(); AREA_NODES];
         create(&mut nodes, &mut 0, 0, bounds);
         Ok(Self {
             nodes,
@@ -365,17 +367,17 @@ impl AreaGrid {
         mut bodies: AttachmentBodies<'_>,
     ) -> AttachmentTransport {
         let mut result = AttachmentTransport::default();
-        if bodies.table().attachment_count() == 0 {
+        if bodies.table().attachment_ids().is_empty() {
             return result;
         }
         if bodies.table().capacity() != self.links.len() {
-            result.rejected = bodies.table().attachment_count() as u32;
+            result.rejected = bodies.table().attachment_ids().len() as u32;
             return result;
         }
         let predicted = matches!(&bodies, AttachmentBodies::Predicted { .. });
         self.attachment_visited.begin();
-        for index in 0..bodies.table().attachment_count() {
-            let mut id = bodies.table().attachment_at(index);
+        for index in 0..bodies.table().attachment_ids().len() {
+            let mut id = bodies.table().attachment_ids()[index];
             while let Some(follow) = bodies.table().attachment(id) {
                 if self.attachment_visited.contains(id.slot as usize) {
                     break;
@@ -455,6 +457,33 @@ impl AreaGrid {
         self.query_ordered(table, bounds, flags, None)
     }
 
+    /// The cursor owns traversal state only. Each next call releases both
+    /// spatial and entity borrows before a caller executes module callbacks.
+    pub fn query_cursor(&self, bounds: Bounds, flags: LinkFlags) -> AreaCursor {
+        AreaCursor {
+            bounds,
+            flags,
+            pending: [CursorNode::default(); AREA_DEPTH as usize + 1],
+            count: 1,
+            remaining: self.links.len(),
+            interrupted: false,
+        }
+    }
+
+    fn linked<'a>(&'a self, table: &'a EntityTable, id: EntityId) -> Option<LinkedEntity<'a>> {
+        let slot = table.resolve(id)?;
+        let link = self.links.get(slot).filter(|link| link.id == Some(id))?;
+        let columns = &table.columns;
+        Some(LinkedEntity {
+            id,
+            position: &columns.position[slot],
+            velocity: &columns.velocity[slot],
+            mins: &columns.mins[slot],
+            maxs: &columns.maxs[slot],
+            flags: link.flags,
+        })
+    }
+
     /// CLIENT clipping follows accepted native entity order rather than area
     /// node order. Both paths consult the same generation-checked links.
     pub fn query_ordered<'a>(
@@ -464,85 +493,155 @@ impl AreaGrid {
         flags: LinkFlags,
         order: Option<&'a [EntityId]>,
     ) -> impl Iterator<Item = LinkedEntity<'a>> + 'a {
-        let mut spatial = Query {
-            grid: self,
-            bounds,
-            flags,
-            pending: [0; 31],
-            count: 1,
-            current: NONE,
-        };
+        let mut spatial = self.query_cursor(bounds, flags);
         let mut ordered = order.map(|order| order.iter());
         std::iter::from_fn(move || {
             if let Some(order) = &mut ordered {
                 order.find_map(|&id| {
-                    let link = self.links.get(id.slot as usize)?;
-                    (link.id == Some(id)
+                    let Some(link) = self.links.get(id.slot as usize) else {
+                        return None;
+                    };
+                    if link.id == Some(id)
                         && link.flags.0 & flags.0 != 0
-                        && bounds.overlaps(link.bounds))
-                    .then_some(id)
+                        && bounds.overlaps(link.bounds)
+                    {
+                        self.linked(table, id)
+                    } else {
+                        None
+                    }
                 })
             } else {
-                spatial.next()
+                spatial.next(self, table)
             }
-        })
-        .filter_map(move |id| {
-            let slot = table.resolve(id)?;
-            let columns = &table.columns;
-            Some(LinkedEntity {
-                id,
-                position: &columns.position[slot],
-                velocity: &columns.velocity[slot],
-                mins: &columns.mins[slot],
-                maxs: &columns.maxs[slot],
-                flags: self.links[slot].flags,
-            })
         })
     }
 }
 
-struct Query<'a> {
-    grid: &'a AreaGrid,
+#[derive(Clone, Copy, Default)]
+enum CursorPhase {
+    #[default]
+    Start,
+    List,
+    Front,
+    Back,
+    Done,
+}
+
+#[derive(Clone, Copy, Default)]
+struct CursorNode {
+    node: u8,
+    phase: CursorPhase,
+    next: Option<CursorLink>,
+}
+
+#[derive(Clone, Copy)]
+struct CursorLink {
+    id: EntityId,
+    live: bool,
+}
+impl CursorLink {
+    fn at(grid: &AreaGrid, table: &EntityTable, slot: u32) -> Option<Self> {
+        let id = grid.links.get(slot as usize)?.id?;
+        Some(Self {
+            id,
+            live: table.resolve(id).is_some(),
+        })
+    }
+}
+
+pub struct AreaCursor {
     bounds: Bounds,
     flags: LinkFlags,
-    pending: [u8; 31],
+    pending: [CursorNode; AREA_DEPTH as usize + 1],
     count: usize,
-    current: u32,
+    remaining: usize,
+    interrupted: bool,
 }
-impl Iterator for Query<'_> {
-    type Item = EntityId;
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            while self.current != NONE {
-                let slot = self.current;
-                let link = self.grid.links[slot as usize];
-                self.current = link.next;
-                if link.flags.0
-                    & self.flags.0
-                    & (LinkFlags::SOLID.0 | LinkFlags::TRIGGER.0 | LinkFlags::LINKED.0)
-                    != 0
-                    && self.bounds.overlaps(link.bounds)
-                {
-                    return link.id;
+impl AreaCursor {
+    /// Trigger callbacks can move their querying entity. Remaining overlap
+    /// checks and each front/back descent use its newly linked bounds.
+    pub fn set_bounds(&mut self, bounds: Bounds) {
+        self.bounds = bounds;
+    }
+
+    /// A deleted/reused or moved pending link ends that node's list. Other
+    /// nodes remain queryable. A capacity-sized visit budget bounds callbacks
+    /// which repeatedly reinsert links; no stale lifetime is followed.
+    pub fn interrupted(&self) -> bool {
+        self.interrupted
+    }
+
+    pub fn next<'a>(
+        &mut self,
+        grid: &'a AreaGrid,
+        table: &'a EntityTable,
+    ) -> Option<LinkedEntity<'a>> {
+        while self.count != 0 {
+            let top = self.count - 1;
+            let frame = self.pending[top];
+            let node = grid.nodes[frame.node as usize];
+            match frame.phase {
+                CursorPhase::Start => {
+                    self.pending[top].phase = CursorPhase::List;
+                    self.pending[top].next = CursorLink::at(grid, table, node.head);
                 }
-            }
-            if self.count == 0 {
-                return None;
-            }
-            self.count -= 1;
-            let node = self.grid.nodes[self.pending[self.count] as usize];
-            if let Some(axis) = node.axis {
-                // Native area queries visit front then back, strictly across splits.
-                if self.bounds.mins.0[axis] < node.distance {
-                    self.pending[self.count] = node.children[1];
-                    self.count += 1;
+                CursorPhase::List => {
+                    let Some(next) = frame.next else {
+                        self.pending[top].phase = CursorPhase::Front;
+                        continue;
+                    };
+                    let id = next.id;
+                    let Some(link) = grid.links.get(id.slot as usize).copied().filter(|link| {
+                        link.id == Some(id)
+                            && link.node == frame.node
+                            && (!next.live || table.resolve(id).is_some())
+                    }) else {
+                        self.interrupted = true;
+                        self.pending[top].phase = CursorPhase::Front;
+                        continue;
+                    };
+                    if self.remaining == 0 {
+                        self.interrupted = true;
+                        self.count = 0;
+                        return None;
+                    }
+                    self.remaining -= 1;
+                    // Native SV_TouchLinks loads next before invoking touch.
+                    self.pending[top].next = CursorLink::at(grid, table, link.next);
+                    if link.flags.0
+                        & self.flags.0
+                        & (LinkFlags::SOLID.0 | LinkFlags::TRIGGER.0 | LinkFlags::LINKED.0)
+                        != 0
+                        && self.bounds.overlaps(link.bounds)
+                        && table.resolve(id).is_some()
+                    {
+                        return grid.linked(table, id);
+                    }
                 }
-                if self.bounds.maxs.0[axis] > node.distance {
-                    self.pending[self.count] = node.children[0];
-                    self.count += 1;
+                CursorPhase::Front | CursorPhase::Back => {
+                    let front = matches!(frame.phase, CursorPhase::Front);
+                    self.pending[top].phase = if front {
+                        CursorPhase::Back
+                    } else {
+                        CursorPhase::Done
+                    };
+                    if let Some(axis) = node.axis
+                        && if front {
+                            self.bounds.maxs.0[axis] > node.distance
+                        } else {
+                            self.bounds.mins.0[axis] < node.distance
+                        }
+                    {
+                        self.pending[self.count] = CursorNode {
+                            node: node.children[usize::from(!front)],
+                            ..CursorNode::default()
+                        };
+                        self.count += 1;
+                    }
                 }
+                CursorPhase::Done => self.count -= 1,
             }
-            self.current = node.head;
         }
+        None
     }
 }

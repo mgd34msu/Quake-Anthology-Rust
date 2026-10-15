@@ -77,6 +77,21 @@ pub fn vector_ma<S, E>(
     Ok(())
 }
 
+/// Native plane clipping stores each scalar after a separate product and
+/// subtraction. The optional stop interval excludes both epsilon endpoints.
+pub fn clip_component(value: f32, normal: f32, backoff: f32, stop_epsilon: Option<f32>) -> f32 {
+    let change = normal * backoff;
+    let clipped = value - change;
+    if let Some(epsilon) = stop_epsilon
+        && clipped > -epsilon
+        && clipped < epsilon
+    {
+        0.0
+    } else {
+        clipped
+    }
+}
+
 /// Q2 pitch wrapping keeps the native strict tie and single subtraction.
 pub fn wrap_above_180(angle: f32) -> f32 {
     if angle > 180.0 { angle - 360.0 } else { angle }

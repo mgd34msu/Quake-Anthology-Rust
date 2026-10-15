@@ -1117,30 +1117,6 @@ fn qc_precache_file(
 ) -> Result<CallValue, CallError> {
     Ok(CallValue::Word(u64::from(qc_word(arguments, 0)?)))
 }
-fn qc_precached_sound(
-    c: &mut QuakeCCalls<'_, '_>,
-    name: &[u8],
-    prefix: &[u8],
-    suffix: &[u8],
-) -> Result<Option<(qa_core::primitives::IndexSpan, u32)>, CallError> {
-    let sounds = c
-        .services
-        .storage
-        .resources(c.context.module)
-        .ok_or(CallError::ConfigString)?[1];
-    if let Some(ordinal) = (ENGINE_CALLS.resource_find)(c.services, c.context.module, sounds, name)?
-    {
-        return Ok(Some((sounds, ordinal)));
-    }
-    let mut text = qa_core::text::FixedText::<8240>::default();
-    text.append_bytes(prefix).map_err(|_| CallError::Capacity)?;
-    text.append_bytes(name).map_err(|_| CallError::Capacity)?;
-    text.append_bytes(suffix).map_err(|_| CallError::Capacity)?;
-    match (ENGINE_CALLS.console)(c.services, text.as_bytes()) {
-        Ok(_) | Err(CallError::Capacity) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
 fn qc_make_static(
     c: &mut QuakeCCalls<'_, '_>,
     vm: &mut quakec::Vm,
@@ -1155,7 +1131,9 @@ fn qc_ambient_sound(
     arguments: &[u64],
 ) -> Result<CallValue, CallError> {
     let name = vm.strings.cstring(u64::from(qc_word(arguments, 3)?))?;
-    let Some((_, source_ordinal)) = qc_precached_sound(c, name, b"no precache: ", b"\n")? else {
+    let Some((_, source_ordinal)) =
+        quakec::sound::precached_sound(c.services, c.context, name, b"no precache: ", b"\n")?
+    else {
         return Ok(CallValue::Word(0));
     };
     let result = (ENGINE_CALLS.ambient)(
@@ -1186,77 +1164,21 @@ fn qc_sound(
     vm: &mut quakec::Vm,
     arguments: &[u64],
 ) -> Result<CallValue, CallError> {
-    use qa_core::primitives::{NativeDelivery, NativeTarget, RuleSetId, SoundEmitter, SoundEvent};
-    let rules = c.context.native_rules;
     let channel = crate::numbers::native_integer(f64::from(f32::from_bits(qc_word(arguments, 1)?)));
     let volume =
         crate::numbers::native_integer(f64::from(f32::from_bits(qc_word(arguments, 3)?) * 255.0));
     let attenuation = f32::from_bits(qc_word(arguments, 4)?);
-    let maximum_channel = if rules == RuleSetId::QuakeWorld {
-        15
-    } else {
-        7
-    };
-    if !(0..=maximum_channel).contains(&channel)
-        || !(0..=255).contains(&volume)
-        || !(0.0..=4.0).contains(&attenuation)
-    {
-        return Err(CallError::Text);
-    }
-    let name = vm.strings.cstring(u64::from(qc_word(arguments, 2)?))?;
-    let Some((sounds, ordinal)) =
-        qc_precached_sound(c, name, b"SV_StartSound: ", b" not precached\n")?
-    else {
-        return Ok(CallValue::Word(0));
-    };
-    let Some(sound) =
-        (ENGINE_CALLS.sound_id)(c.services, c.context.module, sounds, ordinal as i32)?
-    else {
-        return Ok(CallValue::Word(0));
-    };
-    let (entity, position, positioned) = vm.projection.quakec_sound_source(
+    vm.start_sound_string(
         c.services,
-        &vm.entities,
-        &vm.strings,
         c.context,
+        c.platform_time,
         qc_word(arguments, 0)?,
-    )?;
-    let hearing = rules == RuleSetId::QuakeWorld
-        && channel & 8 == 0
-        && c.services.storage.uses_sound_phs(c.services.cvars);
-    let reliable = rules == RuleSetId::QuakeWorld && channel & 8 != 0;
-    let delivery = NativeDelivery {
-        module: c.context.module,
-        source: rules,
-        target: if hearing {
-            NativeTarget::Hearing
-        } else {
-            NativeTarget::All
-        },
-        origin: position,
-        reliable,
-        dupe_key: 0,
-        component: 0,
-        emission: None,
-        check_portals: false,
-    };
-    let event = SoundEvent {
-        sound,
-        source_ordinal: Some(ordinal),
-        spatial: c.context.sound_policy,
-        entity: Some(SoundEmitter::Entity(entity)),
-        position,
-        channel: channel & 7,
-        queued_at: c.platform_time,
-        volume: volume as f32 / 255.0,
+        qc_word(arguments, 2)?,
+        channel,
+        volume,
         attenuation,
-        positioned,
-        ..SoundEvent::default()
-    };
-    match (ENGINE_CALLS.sound)(c.services, delivery, event) {
-        Ok(_) | Err(CallError::Capacity) => Ok(CallValue::Word(0)),
-        Err(error) => Err(error),
-    }
+    )?;
+    Ok(CallValue::Word(0))
 }
 fn qc_trace_line(
     c: &mut QuakeCCalls<'_, '_>,

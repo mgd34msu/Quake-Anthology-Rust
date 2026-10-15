@@ -22,17 +22,13 @@ struct ClientFields {
     punch: Option<usize>,
     view_angles: Option<usize>,
     fix_angle: Option<usize>,
-    water_level: Option<usize>,
-    water_type: Option<usize>,
     water_jump: Option<usize>,
     button_attack: Option<usize>,
     button_jump: Option<usize>,
     impulse: Option<usize>,
     team: Option<usize>,
     net_name: Option<usize>,
-    gravity: Option<usize>,
     max_speed: Option<usize>,
-    touch: Option<usize>,
     stats: [Option<qa_core::primitives::ValueBinding>; 32],
     items_binding: Option<qa_core::primitives::ValueBinding>,
     extra_stats: [Option<u32>; 4],
@@ -63,22 +59,38 @@ impl ClientFields {
             punch: field(b"punchangle", 3),
             view_angles: field(b"v_angle", 3),
             fix_angle: field(b"fixangle", 2),
-            water_level: field(b"waterlevel", 2),
-            water_type: field(b"watertype", 2),
             water_jump: field(b"teleport_time", 2),
             button_attack: field(b"button0", 2),
             button_jump: field(b"button2", 2),
             impulse: field(b"impulse", 2),
             team: field(b"team", 2),
             net_name: field(b"netname", 1),
-            gravity: field(b"gravity", 2),
             max_speed: field(b"maxspeed", 2),
-            touch: field(b"touch", 6),
             stats: [None; 32],
             items_binding: None,
             extra_stats: [None; 4],
             server_flags: 0,
             player_stats: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MotionFields {
+    gravity: Option<usize>,
+    water_level: Option<usize>,
+    water_type: Option<usize>,
+    ground_entity: Option<usize>,
+    touch: Option<usize>,
+}
+impl MotionFields {
+    fn load(field: impl Fn(&[u8], u16) -> Option<usize>) -> Self {
+        Self {
+            gravity: field(b"gravity", 2),
+            water_level: field(b"waterlevel", 2),
+            water_type: field(b"watertype", 2),
+            ground_entity: field(b"groundentity", 4),
+            touch: field(b"touch", 6),
         }
     }
 }
@@ -113,8 +125,16 @@ fn client_edicts(
 fn motion(value: f32) -> Motion {
     if value == 0.0 {
         Motion::None
+    } else if value == 5.0 {
+        Motion::Fly
+    } else if value == 6.0 {
+        Motion::Toss
     } else if value == 8.0 {
         Motion::Noclip
+    } else if value == 9.0 {
+        Motion::FlyMissile
+    } else if value == 10.0 {
+        Motion::Bounce
     } else {
         Motion::Unsupported
     }
@@ -145,7 +165,6 @@ pub(crate) struct QuakeCLayout {
     abs_max: Option<usize>,
     solid: Option<usize>,
     flags: Option<usize>,
-    ground_entity: Option<usize>,
     attack_finished: Option<usize>,
     owner: Option<usize>,
     model: Option<usize>,
@@ -158,6 +177,7 @@ pub(crate) struct QuakeCLayout {
     next_think: Option<usize>,
     think: Option<usize>,
     move_type: Option<usize>,
+    motion: MotionFields,
     client: ClientFields,
 }
 impl QuakeCLayout {
@@ -186,7 +206,6 @@ impl QuakeCLayout {
             abs_max: field(b"absmax", 3),
             solid: field(b"solid", 2),
             flags: field(b"flags", 2),
-            ground_entity: field(b"groundentity", 4),
             attack_finished: field(b"attack_finished", 2),
             owner: field(b"owner", 4),
             model: field(b"model", 1),
@@ -199,6 +218,7 @@ impl QuakeCLayout {
             next_think: field(b"nextthink", 2),
             think: field(b"think", 6),
             move_type: field(b"movetype", 2),
+            motion: MotionFields::load(&field),
             client: ClientFields::load(field),
         }
     }
@@ -289,6 +309,29 @@ impl QuakeCLayout {
             Motion::Unsupported
         };
         Ok((motion, angular_velocity))
+    }
+    fn refresh_motion(
+        self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+        entities: &mut EntityTable,
+        entity: EntityId,
+    ) -> Result<(), CallError> {
+        let slot = entities.resolve(entity).ok_or(CallError::Entity)?;
+        for (field, target) in [
+            (self.origin, &mut entities.columns.position[slot]),
+            (self.velocity, &mut entities.columns.velocity[slot]),
+            (self.angles, &mut entities.columns.angles[slot]),
+        ] {
+            if let Some(field) = field {
+                *target = self.vector(memory, address, Some(field))?;
+            }
+        }
+        entities.columns.angular_velocity[slot] = self
+            .angular_velocity
+            .map(|field| self.vector(memory, address, Some(field)))
+            .transpose()?;
+        Ok(())
     }
     fn write_number(
         self,
@@ -602,7 +645,7 @@ impl EntityProjection {
         )?;
         if let Some(maxspeed) = maxspeed {
             for (field, value) in [
-                (layout.client.gravity, 1.0),
+                (layout.motion.gravity, 1.0),
                 (layout.client.max_speed, maxspeed),
             ] {
                 if let Some(field) = field {
@@ -826,27 +869,30 @@ impl EntityProjection {
             qa_core::primitives::MotionWrite::Velocity(axis) => {
                 (axis, layout.velocity, player.body.velocity)
             }
-            qa_core::primitives::MotionWrite::Angles(_) => return Err(CallError::Unsupported),
+            qa_core::primitives::MotionWrite::Angles(_)
+            | qa_core::primitives::MotionWrite::AngularVelocity(_) => {
+                return Err(CallError::Unsupported);
+            }
         };
         let value = *vector.0.get(axis).ok_or(CallError::Memory)?;
         layout.write_number(memory, address, field.map(|at| at + axis * 4), value)?;
         layout.read_client_pose(memory, address, player)
     }
-    pub(crate) fn quakec_client_classname<'a>(
+    pub(crate) fn quakec_classname<'a>(
         &self,
         memory: &ModuleMemory<'_>,
         strings: &'a ModuleMemory<'_>,
         value: u32,
     ) -> Result<&'a [u8], CallError> {
         let layout = self.quakec_layout()?;
-        let address = self.quakec_client_address(memory, value)?;
+        let address = layout.address(memory, value)?;
         let Some(field) = layout.name_fields[0] else {
             return Ok(b"");
         };
         let word = layout.word(memory, address, Some(field))?;
         Ok(strings.cstring(u64::from(word))?)
     }
-    pub(crate) fn quakec_prepare_client_velocity(
+    pub(crate) fn quakec_prepare_velocity(
         &self,
         entities: &mut EntityTable,
         memory: &ModuleMemory<'_>,
@@ -854,11 +900,11 @@ impl EntityProjection {
         value: u32,
     ) -> Result<(), CallError> {
         let native = self.quakec_identity(memory, context, value)?;
-        let address = self.quakec_client_address(memory, value)?;
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
         let entity = self
             .quakec_bound_entity(entities, native)?
             .ok_or(CallError::Entity)?;
-        let layout = self.quakec_layout()?;
         let origin = layout.vector(memory, address, layout.origin)?;
         let velocity = layout.vector(memory, address, layout.velocity)?;
         let slot = entities.resolve(entity).ok_or(CallError::Entity)?;
@@ -882,11 +928,11 @@ impl EntityProjection {
         let view = layout.vector(memory, address, layout.client.view_angles)?;
         let health = layout.number(memory, address, layout.client.health)?;
         let water_jump = layout.number(memory, address, layout.client.water_jump)?;
-        layout.number(memory, address, layout.client.water_level)?;
-        layout.number(memory, address, layout.client.water_type)?;
+        layout.number(memory, address, layout.motion.water_level)?;
+        layout.number(memory, address, layout.motion.water_type)?;
         layout.flags(memory, address)?;
         let gravity = layout
-            .client
+            .motion
             .gravity
             .map(|field| layout.number(memory, address, Some(field)))
             .transpose()?
@@ -936,9 +982,9 @@ impl EntityProjection {
         }
         for field in [
             layout.client.water_jump,
-            layout.client.water_level,
-            layout.client.water_type,
-            layout.ground_entity,
+            layout.motion.water_level,
+            layout.motion.water_type,
+            layout.motion.ground_entity,
         ] {
             memory.read(address + field.ok_or(CallError::Memory)? as u64, 4)?;
         }
@@ -953,8 +999,8 @@ impl EntityProjection {
         let view = player.view_angles;
         let flags = layout.flags(memory, address)?;
         layout.write_number(memory, address, layout.client.water_jump, water_jump)?;
-        layout.write_number(memory, address, layout.client.water_level, f32::from(level))?;
-        layout.write_number(memory, address, layout.client.water_type, contents as f32)?;
+        layout.write_number(memory, address, layout.motion.water_level, f32::from(level))?;
+        layout.write_number(memory, address, layout.motion.water_type, contents as f32)?;
         layout.write_number(
             memory,
             address,
@@ -963,7 +1009,7 @@ impl EntityProjection {
         )?;
         if grounded {
             memory.write_word(
-                address + layout.ground_entity.ok_or(CallError::Memory)? as u64,
+                address + layout.motion.ground_entity.ok_or(CallError::Memory)? as u64,
                 ground as i32,
             )?;
         }
@@ -976,14 +1022,24 @@ impl EntityProjection {
         &self,
         memory: &ModuleMemory<'_>,
         value: u32,
+        trigger_only: bool,
     ) -> Result<Option<qa_core::primitives::CallbackId>, CallError> {
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
-        let word = layout.word(memory, address, layout.client.touch)?;
+        let word = layout.word(memory, address, layout.motion.touch)?;
         if word == 0 {
             Ok(None)
         } else {
-            self.quakec_callback(word).map(Some)
+            let solid = layout.number(memory, address, layout.solid)?;
+            if if trigger_only {
+                solid != 1.0
+            } else {
+                solid == 0.0
+            } {
+                Ok(None)
+            } else {
+                self.quakec_callback(word).map(Some)
+            }
         }
     }
     pub(crate) fn quakec_client_fixangle(
@@ -1471,7 +1527,7 @@ impl EntityProjection {
             return Ok(false);
         }
         let ground_address =
-            u64::from(value) + layout.ground_entity.ok_or(CallError::Memory)? as u64;
+            u64::from(value) + layout.motion.ground_entity.ok_or(CallError::Memory)? as u64;
         let flags_address = u64::from(value) + layout.flags.ok_or(CallError::Memory)? as u64;
         memory.read(ground_address, 4)?;
         memory.read(flags_address, 4)?;
@@ -1578,7 +1634,7 @@ impl EntityProjection {
         };
         Ok((entity, position, centered))
     }
-    pub(crate) fn quakec_prepare_noclip(
+    pub(crate) fn quakec_prepare_motion(
         &mut self,
         entities: &mut EntityTable,
         memory: &ModuleMemory<'_>,
@@ -1589,14 +1645,88 @@ impl EntityProjection {
         let entity = self.binding(entities, native)?.ok_or(CallError::Entity)?;
         let layout = self.quakec_layout()?;
         let address = u64::from(value);
-        let angles = layout.vector(memory, address, layout.angles)?;
-        let angular_velocity = layout.vector(memory, address, layout.angular_velocity)?;
-        let slot = entity.slot as usize;
-        entities.columns.angles[slot] = angles;
-        entities.columns.angular_velocity[slot] = Some(angular_velocity);
-        Ok(())
+        layout.refresh_motion(memory, address, entities, entity)
     }
-    pub(crate) fn quakec_write_noclip(
+    pub(crate) fn quakec_motion_state(
+        &self,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<qa_session::physics::MotionState, CallError> {
+        self.quakec_identity(memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        let address = u64::from(value);
+        let number = |field: Option<usize>| {
+            field
+                .map(|field| layout.number(memory, address, Some(field)))
+                .transpose()
+        };
+        Ok(qa_session::physics::MotionState {
+            move_type: number(layout.move_type)?.ok_or(CallError::Memory)?,
+            solid: number(layout.solid)?,
+            flags: layout
+                .flags
+                .map(|_| layout.flags(memory, address))
+                .transpose()?,
+        })
+    }
+    pub(crate) fn quakec_motion_gravity(
+        &self,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<Option<f32>, CallError> {
+        self.quakec_identity(memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        layout
+            .motion
+            .gravity
+            .map(|field| layout.number(memory, u64::from(value), Some(field)))
+            .transpose()
+    }
+    pub(crate) fn quakec_motion_water_type(
+        &self,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<f32, CallError> {
+        self.quakec_identity(memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        layout.number(memory, u64::from(value), layout.motion.water_type)
+    }
+    pub(crate) fn quakec_write_motion_field(
+        &self,
+        entities: &mut EntityTable,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        field: crate::quakec::MotionField,
+        ground: Option<u32>,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        let entity = self.binding(entities, native)?.ok_or(CallError::Entity)?;
+        let layout = self.quakec_layout()?;
+        let address = u64::from(value);
+        use crate::quakec::MotionField;
+        match field {
+            MotionField::Flags(flags) => {
+                layout.write_number(memory, address, layout.flags, flags as i32 as f32)?
+            }
+            MotionField::Ground(_) => memory.write_word(
+                address + layout.motion.ground_entity.ok_or(CallError::Memory)? as u64,
+                ground.ok_or(CallError::Entity)? as i32,
+            )?,
+            MotionField::WaterType(value) => {
+                layout.write_number(memory, address, layout.motion.water_type, value)?
+            }
+            MotionField::WaterLevel(value) => {
+                layout.write_number(memory, address, layout.motion.water_level, value)?
+            }
+        }
+        layout.refresh_motion(memory, address, entities, entity)
+    }
+
+    pub(crate) fn quakec_write_motion(
         &mut self,
         entities: &mut EntityTable,
         memory: &mut ModuleMemory<'_>,
@@ -1613,6 +1743,11 @@ impl EntityProjection {
             qa_session::physics::MotionWrite::Angles(axis) => {
                 (axis, layout.angles, entities.columns.angles[slot])
             }
+            qa_session::physics::MotionWrite::AngularVelocity(axis) => (
+                axis,
+                layout.angular_velocity,
+                entities.columns.angular_velocity[slot].ok_or(CallError::Memory)?,
+            ),
             qa_session::physics::MotionWrite::Origin(axis) => {
                 (axis, layout.origin, entities.columns.position[slot])
             }
@@ -1622,26 +1757,11 @@ impl EntityProjection {
         };
         let value = *vector.0.get(axis).ok_or(CallError::Memory)?;
         layout.write_number(memory, address, field.map(|at| at + axis * 4), value)?;
-        // VectorMA writes each component before reading the next. Refresh the
-        // same common columns after writes that can alias later native input.
-        match stage {
-            qa_session::physics::MotionWrite::Angles(axis) if axis < 2 => {
-                let angles = layout.vector(memory, address, layout.angles)?;
-                let velocity = layout.vector(memory, address, layout.angular_velocity)?;
-                entities.columns.angles[slot] = angles;
-                entities.columns.angular_velocity[slot] = Some(velocity);
-            }
-            qa_session::physics::MotionWrite::Angles(_)
-            | qa_session::physics::MotionWrite::Origin(_)
-            | qa_session::physics::MotionWrite::Velocity(_) => {
-                let origin = layout.vector(memory, address, layout.origin)?;
-                let velocity = layout.vector(memory, address, layout.velocity)?;
-                entities.columns.position[slot] = origin;
-                entities.columns.velocity[slot] = velocity;
-            }
-        }
-        Ok(())
+        // A native scalar can alias any later physical input, including
+        // velocity/angles overlap and the last component of a vector.
+        layout.refresh_motion(memory, address, entities, entity)
     }
+
     pub(crate) fn quakec_relink_entity(
         &mut self,
         services: &mut EngineServices<'_>,
@@ -1919,16 +2039,16 @@ impl EntityProjection {
             .view_angles
             .map(|field| layout.vector(memory, address, Some(field)))
             .transpose()?;
-        let water_level = integer(fields.water_level)?;
-        let water_type = integer(fields.water_type)?;
+        let water_level = integer(layout.motion.water_level)?;
+        let water_type = integer(layout.motion.water_type)?;
         let ground_flags = layout
             .flags
             .map(|_| layout.flags(memory, address))
             .transpose()?;
         let ground = if ground_flags.is_some_and(|flags| flags & 512 != 0)
-            && layout.ground_entity.is_some()
+            && layout.motion.ground_entity.is_some()
         {
-            let word = layout.word(memory, address, layout.ground_entity)?;
+            let word = layout.word(memory, address, layout.motion.ground_entity)?;
             let ground = layout.identity(memory, context.module, word)?;
             self.binding(&services.server.entities, ground)?
         } else {

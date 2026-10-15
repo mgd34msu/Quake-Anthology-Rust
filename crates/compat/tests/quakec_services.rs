@@ -803,6 +803,7 @@ fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules(
             } else {
                 1.0f32
             };
+            calls.platform_time = EventTime::from_milliseconds(4321);
             parameters(
                 &mut vm,
                 &[
@@ -840,6 +841,93 @@ fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules(
             assert_eq!(delivery.target, NativeTarget::All);
             assert_eq!(delivery.reliable, rules == RuleSetId::QuakeWorld);
             assert!(calls.services.server.area.bounds(id).is_none());
+            assert_eq!(event.queued_at, calls.platform_time);
+
+            // Entity water transitions use this byte-name entry; the builtin
+            // string-offset entry must produce the same ring-owned event.
+            vm.start_sound(
+                calls.services,
+                calls.context,
+                calls.platform_time,
+                value,
+                b"misc/test.wav",
+                channel as i32,
+                127,
+                1.0,
+            )
+            .unwrap();
+            let mut direct = calls.services.server.events.batch(consumer).unwrap();
+            assert_eq!(
+                calls
+                    .services
+                    .server
+                    .events
+                    .next(&mut direct)
+                    .unwrap()
+                    .sequence,
+                record.sequence
+            );
+            let direct = calls.services.server.events.next(&mut direct).unwrap();
+            let qa_core::events::FrameEvent::Sound(direct_event) = direct.event else {
+                panic!("direct start-sound record")
+            };
+            assert_eq!(direct.delivery, record.delivery);
+            assert_eq!(
+                (
+                    direct_event.sound,
+                    direct_event.source_ordinal,
+                    direct_event.spatial,
+                    direct_event.entity,
+                    direct_event.position,
+                    direct_event.positioned,
+                    direct_event.channel,
+                    direct_event.queued_at,
+                ),
+                (
+                    event.sound,
+                    event.source_ordinal,
+                    event.spatial,
+                    event.entity,
+                    event.position,
+                    event.positioned,
+                    event.channel,
+                    event.queued_at,
+                )
+            );
+            assert_eq!(direct_event.volume.to_bits(), event.volume.to_bits());
+            assert_eq!(
+                direct_event.attenuation.to_bits(),
+                event.attenuation.to_bits()
+            );
+            assert_eq!(direct_event.action, event.action);
+            assert_eq!(direct_event.native_fields, event.native_fields);
+            assert_eq!(direct_event.client_lifetime, event.client_lifetime);
+            assert_eq!(direct_event.client, event.client);
+            let before = calls.services.server.events.sequence_range();
+            for (channel, volume, attenuation) in [
+                (-1, 255, 1.0),
+                (16, 255, 1.0),
+                (0, -1, 1.0),
+                (0, 256, 1.0),
+                (0, 255, -1.0),
+                (0, 255, 5.0),
+                (0, 255, f32::NAN),
+            ] {
+                assert_eq!(
+                    vm.start_sound(
+                        calls.services,
+                        calls.context,
+                        calls.platform_time,
+                        u32::MAX,
+                        b"unregistered.wav",
+                        channel,
+                        volume,
+                        attenuation,
+                    ),
+                    Err(CallError::Text)
+                );
+                assert_eq!(calls.services.server.events.sequence_range(), before);
+            }
             if rules == RuleSetId::QuakeWorld {
                 let phs = calls
                     .services

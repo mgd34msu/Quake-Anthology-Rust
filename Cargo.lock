@@ -332,6 +332,7 @@ version = "0.1.0"
 dependencies = [
  "qa-console",
  "qa-core",
+ "qa-gameplay",
  "qa-input",
  "qa-movement",
  "qa-navigation",

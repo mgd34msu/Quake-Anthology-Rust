@@ -717,7 +717,9 @@ pub enum CallbackCall<'a> {
     },
     Touch {
         entity: EntityId,
-        other: EntityId,
+        /// The first impact callback may remove this native row before the
+        /// reciprocal callback runs. Only callback-self requires liveness.
+        other: NativeEntityRef,
         /// Some selects a native trigger clock; contacts preserve globals.
         time: Option<ThinkTime>,
     },
@@ -762,6 +764,7 @@ pub enum Motion {
     None,
     Walk,
     Fly,
+    FlyMissile,
     Toss,
     Bounce,
     Push,
@@ -775,6 +778,7 @@ pub enum Motion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MotionWrite {
     Angles(usize),
+    AngularVelocity(usize),
     Origin(usize),
     Velocity(usize),
 }

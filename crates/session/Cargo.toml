@@ -9,6 +9,7 @@ qa-core = { path = "../core" }
 qa-world = { path = "../world" }
 qa-input = { path = "../input" }
 qa-movement = { path = "../movement" }
+qa-gameplay = { path = "../gameplay" }
 qa-navigation = { path = "../navigation" }
 
 [dev-dependencies]

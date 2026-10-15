@@ -418,7 +418,9 @@ fn foreign_control_is_noop_and_q3_acceleration_survives_native_readback() {
                     native_velocity.0[axis] = player.body.velocity.0[axis]
                 }
                 MotionWrite::Origin(axis) => native_position.0[axis] = player.body.position.0[axis],
-                MotionWrite::Angles(_) => panic!("client NOCLIP never integrates angular velocity"),
+                MotionWrite::Angles(_) | MotionWrite::AngularVelocity(_) => {
+                    panic!("client NOCLIP never integrates angular velocity")
+                }
             }
             player.body.position = native_position;
             player.body.velocity = native_velocity;
@@ -491,7 +493,9 @@ fn foreign_q2_final_snap_is_published_after_direct_native_motion() {
                         origin_x.push(native_position.0[axis]);
                     }
                 }
-                MotionWrite::Angles(_) => panic!("client motion is position/velocity only"),
+                MotionWrite::Angles(_) | MotionWrite::AngularVelocity(_) => {
+                    panic!("client motion is position/velocity only")
+                }
             }
             player.body.position = native_position;
             player.body.velocity = native_velocity;
@@ -554,7 +558,9 @@ fn slide_motion_publishes_its_finished_native_body_through_the_same_boundary() {
                     native_velocity.0[axis] = player.body.velocity.0[axis]
                 }
                 MotionWrite::Origin(axis) => native_position.0[axis] = player.body.position.0[axis],
-                MotionWrite::Angles(_) => panic!("client motion is position/velocity only"),
+                MotionWrite::Angles(_) | MotionWrite::AngularVelocity(_) => {
+                    panic!("client motion is position/velocity only")
+                }
             }
             player.body.position = native_position;
             player.body.velocity = native_velocity;

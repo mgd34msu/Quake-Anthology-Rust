@@ -246,19 +246,13 @@ impl Vm {
         map_name: &[u8],
         server_flags: f32,
     ) -> Result<(), Trap> {
-        let time_global = self.call_fields.time_global.ok_or(Trap::Memory)?;
+        self.call_fields.time_global.ok_or(Trap::Memory)?;
         let map_name_global = self.map_globals.map_name.ok_or(Trap::Memory)?;
         let server_flags_global = self.map_globals.server_flags.ok_or(Trap::Memory)?;
         let name = self.insert_string(map_name)?;
-        self.image.globals[time_global] = (time.seconds() as f32).to_bits();
+        self.set_time(time).map_err(|_| Trap::Memory)?;
         self.image.globals[map_name_global] = name as u32;
         self.image.globals[server_flags_global] = server_flags.to_bits();
-        Ok(())
-    }
-
-    pub fn set_map_time(&mut self, time: ThinkTime) -> Result<(), Trap> {
-        let global = self.call_fields.time_global.ok_or(Trap::Memory)?;
-        self.image.globals[global] = (time.seconds() as f32).to_bits();
         Ok(())
     }
 

@@ -24,11 +24,13 @@ use std::sync::Arc;
 mod load;
 pub use load::{Q2Clients, Q2Spec, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, load_quakec};
 mod clients;
+mod contacts;
 use clients::ClientLifecycle;
 pub use clients::{ClientCommandError, ClientLifecycleInfo};
 mod cues;
 mod input;
 mod map_start;
+mod motion;
 mod resources;
 
 fn host_clear_feedback(runtime: &mut Runtime, client: ClientId) {
@@ -252,9 +254,9 @@ struct Module {
     client_lifecycle: Option<ClientLifecycle>,
     client_batch: Option<ClientId>,
     client_contacts: qa_core::stamps::StampSet,
-    client_triggers: Vec<EntityId>,
     clock: qa_gameplay::rules::FrameClock,
     physics: Option<QwPhysics>,
+    toss: Option<qa_gameplay::rules::motion::TossRules>,
     duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
     signon: IndexSpan,
     client_connection: Option<(ClientId, EntityId)>,
@@ -725,6 +727,7 @@ impl FrameHost {
                     .bind_client_capacity(request.context.module, lifecycle.info.clients)
                     .map_err(|e| format!("module client capacity: {e:?}"))?;
             }
+            let toss = qa_gameplay::rules::motion::toss_rules(request.context.native_rules);
             rows[index] = Some(Module {
                 request,
                 scratch: host.runtime.geometry.scratch(),
@@ -736,7 +739,6 @@ impl FrameHost {
                 client_contacts: qa_core::stamps::StampSet::new(
                     host.runtime.server.entities.capacity(),
                 ),
-                client_triggers: Vec::with_capacity(host.runtime.server.entities.capacity()),
                 client_connection,
                 requires_startup,
                 consumes_server_commands,
@@ -747,6 +749,7 @@ impl FrameHost {
                 collision_role: Default::default(),
                 clock,
                 physics,
+                toss,
                 duration,
                 signon: IndexSpan {
                     first: (ordinal * client_capacity) as u32,
@@ -1457,8 +1460,8 @@ fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) -> bool
     }
 }
 
-/// NONE and NOCLIP belong after StartFrame in the native edict-order pass.
-/// Step, toss and pusher thinking belongs at their own motion phase positions,
+/// Native motion belongs after StartFrame in the native edict-order pass.
+/// Step and pusher thinking belongs at their own motion phase positions,
 /// and is explicitly counted as unsupported rather than run prematurely.
 fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, step: f64) {
     let Some(modules) = host.modules.as_ref() else {
@@ -1499,7 +1502,17 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
             continue;
         }
         match next {
-            Ok(Some(entity)) if matches!(entity.phase, Motion::None | Motion::Noclip) => {
+            Ok(Some(entity))
+                if matches!(
+                    entity.phase,
+                    Motion::None
+                        | Motion::Noclip
+                        | Motion::Toss
+                        | Motion::Bounce
+                        | Motion::Fly
+                        | Motion::FlyMissile
+                ) =>
+            {
                 let result = run_think_with_rebind(
                     host,
                     &functions,
@@ -1524,13 +1537,21 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
                 if let Some(row) = host.module_row_mut(module) {
                     row.counts.rejected += u64::from(result.rejected);
                 }
-                if entity.phase == Motion::Noclip
-                    && result.rejected == 0
+                if result.rejected == 0
                     && let Some(current) = result.current_entity
-                    && entity_noclip(host, module, current, motion_step).is_err()
-                    && let Some(row) = host.module_row_mut(module)
                 {
-                    row.counts.rejected += 1;
+                    let execution = match entity.phase {
+                        Motion::Noclip => motion::noclip(host, module, current, motion_step),
+                        Motion::Toss | Motion::Bounce | Motion::Fly | Motion::FlyMissile => {
+                            motion::toss(host, module, current, time, step)
+                        }
+                        _ => Ok(()),
+                    };
+                    if execution.is_err()
+                        && let Some(row) = host.module_row_mut(module)
+                    {
+                        row.counts.rejected += 1;
+                    }
                 }
             }
             Ok(Some(_)) => {
@@ -1550,37 +1571,35 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
     }
 }
 
-fn entity_noclip(
+fn edit_quakec<R>(
     host: &mut FrameHost,
     module: ModuleId,
-    entity: EntityId,
-    step: f32,
-) -> Result<(), qa_compat::services::CallError> {
+    call: impl FnOnce(
+        &mut qa_compat::quakec::Vm,
+        &mut qa_compat::services::EngineServices<'_>,
+        qa_compat::services::CallContext,
+    ) -> Result<R, qa_compat::services::CallError>,
+) -> Result<R, ClientCommandError> {
+    let time = host.time;
     let (row, storage) = host
         .modules
         .as_mut()
-        .and_then(|modules| modules.parts_mut(module))
-        .ok_or(qa_compat::services::CallError::Entity)?;
+        .and_then(|m| m.parts_mut(module))
+        .ok_or(ClientCommandError::MissingModule)?;
+    let clock = row.time(time);
     let Program::QuakeC(qc) = &mut row.request.program else {
-        return Err(qa_compat::services::CallError::Entity);
+        return Err(ClientCommandError::NeedsNativeModule);
     };
-    let native = native_self(&host.runtime, entity, module, &qc.vm)
-        .ok_or(qa_compat::services::CallError::Entity)?;
     let mut services = host
         .runtime
         .engine_services(&mut host.console, storage, &mut row.scratch);
-    let context = row.request.context;
-    qc.vm
-        .prepare_noclip(&mut services.server.entities, context, native)?;
-    qa_session::physics::noclip(
-        &mut services.server.entities,
-        entity,
-        step,
-        |entities, write| qc.vm.write_noclip(entities, context, native, write),
-    )?;
-    qc.vm.relink_entity(&mut services, context, native)
+    call(
+        &mut qc.vm,
+        &mut services,
+        context(row.request.context, clock),
+    )
+    .map_err(ClientCommandError::Usercmd)
 }
-
 fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context.clock = time;
     context
@@ -1756,11 +1775,11 @@ fn native_self(
     if native.module != module {
         return None;
     }
-    let offset = usize::try_from(native.slot).ok()?.checked_mul(vm.stride)?;
-    if offset >= vm.entities.len() {
-        return None;
-    }
-    u32::try_from(offset).ok()
+    let reference = qa_core::primitives::NativeEntityRef::entity(
+        qa_core::primitives::ResourceNamespace::Module(module),
+        u32::try_from(native.slot).ok()?,
+    );
+    vm.weak_entity_offset(module, reference).ok()
 }
 fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
     let platform_time = host.runtime.input_time;
@@ -1796,19 +1815,28 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     let Program::QuakeC(qc) = &mut row.request.program else {
         return false;
     };
+    if motion::sync_attachments(
+        &mut qc.vm,
+        &mut host.runtime.server.entities,
+        row.request.context,
+    )
+    .is_err()
+    {
+        row.counts.rejected += 1;
+        return false;
+    }
     let native = native_self(&host.runtime, entity, module, &qc.vm);
     let world = native_self(&host.runtime, row.request.anchor, module, &qc.vm);
     let prepared = match call {
         CallbackCall::Client { event, .. } => native
             .ok_or(qa_compat::services::CallError::Entity)
             .and_then(|native| qc.vm.prepare_client_call(event, native, time)),
-        CallbackCall::Touch { other, time, .. } => {
-            let other = native_self(&host.runtime, other, module, &qc.vm);
-            native
-                .zip(other)
-                .ok_or(qa_compat::services::CallError::Entity)
-                .and_then(|(native, other)| qc.vm.prepare_touch_call(native, other, time))
-        }
+        CallbackCall::Touch { other, time, .. } => native
+            .ok_or(qa_compat::services::CallError::Entity)
+            .and_then(|native| {
+                let other = qc.vm.weak_entity_offset(module, other)?;
+                qc.vm.prepare_touch_call(native, other, time)
+            }),
         _ => qc
             .vm
             .prepare_call(native, world, time, phase)
@@ -1852,31 +1880,14 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
         ) {
         (|| {
             let native = native.ok_or(qa_compat::services::CallError::Entity)?;
-            let maximum = qc.vm.client_max_velocity(calls.services.cvars)?;
-            qc.vm.prepare_client_velocity(
-                &mut calls.services.server.entities,
+            let maximum = qc.vm.max_velocity(calls.services.cvars)?;
+            motion::check_velocity(
+                &mut qc.vm,
+                calls.services,
                 calls.context,
                 native,
-            )?;
-            let server = &mut calls.services.server;
-            let events = &mut server.events;
-            qa_session::physics::check_velocity(
-                &mut server.entities,
                 entity,
                 maximum,
-                |entities, stage, invalid| {
-                    if invalid {
-                        let prefix = match stage {
-                            qa_session::physics::MotionWrite::Velocity(_) => {
-                                b"Got a NaN velocity on ".as_slice()
-                            }
-                            _ => b"Got a NaN origin on ".as_slice(),
-                        };
-                        let _ =
-                            events.console_parts(&[prefix, qc.vm.client_classname(native)?, b"\n"]);
-                    }
-                    qc.vm.write_noclip(entities, calls.context, native, stage)
-                },
             )?;
             Ok::<(), qa_compat::services::CallError>(())
         })()

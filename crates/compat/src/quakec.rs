@@ -9,8 +9,10 @@ use qa_formats::program::quakec::{Image, Opcode};
 
 mod client;
 mod map;
+pub(crate) mod sound;
 pub use client::ClientCallRestore;
 pub use map::{MapAdmission, MapFields};
+pub use qa_session::physics::MotionState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trap {
@@ -64,12 +66,20 @@ pub struct PhysicsEntity {
     pub native: qa_core::primitives::NativeEntity,
     pub phase: qa_core::primitives::Motion,
 }
+#[derive(Clone, Copy, Debug)]
+pub enum MotionField {
+    Flags(u32),
+    Ground(qa_core::primitives::NativeEntityRef),
+    WaterType(f32),
+    WaterLevel(f32),
+}
 
 impl From<qa_session::physics::PhysicsError> for crate::services::CallError {
     fn from(error: qa_session::physics::PhysicsError) -> Self {
         match error {
             qa_session::physics::PhysicsError::Entity => Self::Entity,
-            qa_session::physics::PhysicsError::AngularVelocity => Self::Memory,
+            qa_session::physics::PhysicsError::AngularVelocity
+            | qa_session::physics::PhysicsError::MissingField => Self::Memory,
         }
     }
 }
@@ -332,8 +342,8 @@ impl Vm {
         if let Some(global) = self.call_fields.other_global {
             self.image.globals[global] = world.ok_or(Trap::Memory)?;
         }
-        if let Some(global) = self.call_fields.time_global {
-            self.image.globals[global] = (time.seconds() as f32).to_bits();
+        if self.call_fields.time_global.is_some() {
+            self.set_time(time).map_err(|_| Trap::Memory)?;
         }
         Ok(())
     }
@@ -467,18 +477,79 @@ impl Vm {
     }
     /// Refresh the angular input for the shared entity executor. Missing
     /// native fields reject only this executed motion path.
-    pub fn prepare_noclip(
+    pub fn prepare_motion(
         &mut self,
         entities: &mut qa_world::entities::EntityTable,
         context: crate::services::CallContext,
         value: u32,
     ) -> Result<(), crate::services::CallError> {
         self.projection
-            .quakec_prepare_noclip(entities, &self.entities, context, value)
+            .quakec_prepare_motion(entities, &self.entities, context, value)
+    }
+    pub fn motion_state(
+        &self,
+        context: crate::services::CallContext,
+        value: u32,
+    ) -> Result<qa_session::physics::MotionState, crate::services::CallError> {
+        self.projection
+            .quakec_motion_state(&self.entities, context, value)
+    }
+    pub fn motion_gravity(
+        &self,
+        context: crate::services::CallContext,
+        value: u32,
+    ) -> Result<Option<f32>, crate::services::CallError> {
+        self.projection
+            .quakec_motion_gravity(&self.entities, context, value)
+    }
+    pub fn motion_water_type(
+        &self,
+        context: crate::services::CallContext,
+        value: u32,
+    ) -> Result<f32, crate::services::CallError> {
+        self.projection
+            .quakec_motion_water_type(&self.entities, context, value)
+    }
+    pub fn with_trace_view<R>(
+        &self,
+        context: crate::services::CallContext,
+        pass: u32,
+        query: impl FnOnce(
+            &dyn qa_world::collision::NativeTraceEntities,
+            qa_core::primitives::CollisionOwner,
+        ) -> Result<R, crate::services::CallError>,
+    ) -> Result<R, crate::services::CallError> {
+        let (view, pass) =
+            self.projection
+                .quakec_trace_view(&self.entities, &self.strings, context, pass)?;
+        let result = query(&view, pass);
+        view.finish()?;
+        result
+    }
+    pub fn write_motion_field(
+        &mut self,
+        entities: &mut qa_world::entities::EntityTable,
+        context: crate::services::CallContext,
+        value: u32,
+        field: MotionField,
+    ) -> Result<(), crate::services::CallError> {
+        let ground = if let MotionField::Ground(reference) = field {
+            Some(self.weak_entity_offset(context.module, reference)?)
+        } else {
+            None
+        };
+        self.projection.quakec_write_motion_field(
+            entities,
+            &mut self.entities,
+            context,
+            value,
+            field,
+            ground,
+        )
     }
     /// Scalar native writes retain VectorMA's read/write overlap order; all
     /// motion arithmetic stays in the shared executor over common columns.
-    pub fn write_noclip(
+    pub fn write_motion(
         &mut self,
         entities: &mut qa_world::entities::EntityTable,
         context: crate::services::CallContext,
@@ -486,7 +557,7 @@ impl Vm {
         stage: qa_session::physics::MotionWrite,
     ) -> Result<(), crate::services::CallError> {
         self.projection
-            .quakec_write_noclip(entities, &mut self.entities, context, value, stage)
+            .quakec_write_motion(entities, &mut self.entities, context, value, stage)
     }
     /// Finish the existing native explicit relink without trigger touches;
     /// native world0 only publishes its pose.
@@ -638,6 +709,26 @@ impl Vm {
     pub fn entity_number(&self, entity: u32) -> Result<u32, Trap> {
         self.field_address(entity, 0, 0)?;
         Ok((entity as usize / self.stride) as u32)
+    }
+    /// A touch's other identity remains weak after the first callback frees
+    /// its row. Validate its native namespace and backing, never its liveness.
+    pub fn weak_entity_offset(
+        &self,
+        module: qa_core::primitives::ModuleId,
+        reference: qa_core::primitives::NativeEntityRef,
+    ) -> Result<u32, crate::services::CallError> {
+        use qa_core::primitives::ResourceNamespace;
+        if reference.namespace != ResourceNamespace::Module(module) {
+            return Err(crate::services::CallError::Entity);
+        }
+        let value = usize::try_from(reference.ordinal)
+            .ok()
+            .and_then(|ordinal| ordinal.checked_mul(self.stride))
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or(crate::services::CallError::Entity)?;
+        self.entity_number(value)
+            .map_err(|_| crate::services::CallError::Entity)?;
+        Ok(value)
     }
     pub fn field_address(&self, entity: u32, field: u32, width: usize) -> Result<u64, Trap> {
         let row = entity as usize;

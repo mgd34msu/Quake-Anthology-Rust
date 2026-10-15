@@ -415,7 +415,7 @@ fn native_initial_globals_are_typed_and_optional_numeric_globals_do_not_grow_the
         b"start\xff"
     );
     assert_eq!(vm.image.globals[38], 5.0f32.to_bits());
-    vm.set_map_time(ThinkTime::Seconds(1.03125)).unwrap();
+    vm.set_time(ThinkTime::Seconds(1.03125)).unwrap();
     assert_eq!(vm.image.globals[35], 1.03125f32.to_bits());
     let count = vm.image.globaldefs.len();
     vm.set_map_number(b"coop", 1.0).unwrap();

@@ -386,10 +386,11 @@ fn client_callbacks_use_current_native_words_and_qw_context_phases() {
             .unwrap();
         assert_eq!(vm.image.globals[35], 20.0f32.to_bits());
         vm.finish_client_call(restore).unwrap();
+        write(vm, native, b"solid", &[2.0f32.to_bits()]);
         write(vm, native, b"touch", &[6]);
-        assert_eq!(vm.touch_callback(native), Ok(Some(CallbackId(0))));
+        assert_eq!(vm.touch_callback(native, false), Ok(Some(CallbackId(0))));
         write(vm, native, b"touch", &[0]);
-        assert_eq!(vm.touch_callback(native), Ok(None));
+        assert_eq!(vm.touch_callback(native, false), Ok(None));
         let parms = std::array::from_fn(|index| 0x80000000u32.wrapping_add(index as u32));
         vm.write_spawn_parms(parms).unwrap();
         assert_eq!(vm.read_spawn_parms().unwrap(), parms);
@@ -526,6 +527,95 @@ fn nq_callbacks_preserve_connect_globals_and_restore_only_native_saved_words() {
         vm.finish_client_call(restore).unwrap();
         assert_eq!(&vm.image.globals[34..37], &[333, 13.0f32.to_bits(), 888]);
     });
+}
+
+#[test]
+fn native_impact_saves_globals_before_clock_and_preserves_distinct_callback_time() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for alias_time in [false, true] {
+            let time_at = if alias_time { 34 } else { 35 };
+            let mut vm = vm(|image| {
+                image
+                    .globaldefs
+                    .iter_mut()
+                    .find(|global| image.names.get(global.name) == Some(b"time".as_slice()))
+                    .unwrap()
+                    .offset = time_at;
+                image.statements = [
+                    (Opcode::StoreF, [110, time_at as i16, 0]),
+                    (Opcode::StoreEnt, [111, 36, 0]),
+                    (Opcode::Return, [1, 0, 0]),
+                    (Opcode::StoreF, [time_at as i16, 112, 0]),
+                    (Opcode::Return, [1, 0, 0]),
+                ]
+                .map(|(opcode, operands)| Statement {
+                    opcode,
+                    source_opcode: opcode as u16,
+                    operands,
+                })
+                .to_vec()
+                .into_boxed_slice();
+                image.functions[1].first_statement = 0;
+                image.functions[2].first_statement = 3;
+            });
+            with_native_client(&mut vm, source, |vm, _, _, native, _| {
+                vm.image.globals[34..37].copy_from_slice(&[777, 7.0f32.to_bits(), 888]);
+                vm.image.globals[110] = 17.25f32.to_bits();
+                vm.image.globals[111] = 999;
+                let outer = vm.prepare_impact(ThinkTime::Seconds(12.5)).unwrap();
+                assert_eq!(vm.image.globals[time_at], 12.5f32.to_bits());
+                let first = vm.prepare_touch_call(0, native, None).unwrap();
+                vm.call(&mut NoImports, 1, 64, false).unwrap();
+                vm.finish_client_call(first).unwrap();
+                let second = vm.prepare_touch_call(native, 0, None).unwrap();
+                vm.call(&mut NoImports, 2, 64, false).unwrap();
+                assert_eq!(
+                    vm.image.globals[112],
+                    if alias_time {
+                        native
+                    } else {
+                        17.25f32.to_bits()
+                    }
+                );
+                vm.finish_client_call(second).unwrap();
+                vm.finish_client_call(outer).unwrap();
+                assert_eq!(vm.image.globals[34], 777);
+                assert_eq!(vm.image.globals[36], 888);
+                assert_eq!(
+                    vm.image.globals[35],
+                    if alias_time {
+                        7.0f32.to_bits()
+                    } else {
+                        17.25f32.to_bits()
+                    }
+                );
+            });
+        }
+    }
+}
+
+#[test]
+fn native_impact_missing_required_globals_preserves_all_words() {
+    for missing in [b"self".as_slice(), b"other", b"time"] {
+        let mut vm = vm(|image| {
+            image.globaldefs = image
+                .globaldefs
+                .iter()
+                .copied()
+                .filter(|global| image.names.get(global.name) != Some(missing))
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+        });
+        with_native_client(&mut vm, RuleSetId::Quake, |vm, _, _, _, _| {
+            vm.image.globals[34..37].copy_from_slice(&[777, 7.0f32.to_bits(), 888]);
+            let before = vm.image.globals.to_vec();
+            assert_eq!(
+                vm.prepare_impact(ThinkTime::Seconds(12.5)),
+                Err(CallError::Memory)
+            );
+            assert_eq!(vm.image.globals.as_ref(), before.as_slice());
+        });
+    }
 }
 
 #[test]
@@ -743,21 +833,21 @@ fn native_client_velocity_uses_shared_sanitizer_without_bounds_or_angular_fields
                 )
                 .unwrap();
             services.cvars.force_write(maximum, "4").unwrap();
-            let maximum = vm.client_max_velocity(services.cvars).unwrap();
+            let maximum = vm.max_velocity(services.cvars).unwrap();
             assert_eq!(maximum, 4.0);
             vector(vm, native, b"origin", Vec3([f32::NAN, f32::INFINITY, -2.0]));
             vector(vm, native, b"velocity", Vec3([f32::INFINITY, 3.0, -99.0]));
             let classname = vm.insert_string(b"raw\x80_player").unwrap() as u32;
             write(vm, native, b"classname", &[classname]);
-            assert_eq!(vm.client_classname(native).unwrap(), b"raw\x80_player");
-            vm.prepare_client_velocity(&mut services.server.entities, context, native)
+            assert_eq!(vm.classname(native).unwrap(), b"raw\x80_player");
+            vm.prepare_velocity(&mut services.server.entities, context, native)
                 .unwrap();
             let entity = services.server.clients[id.0 as usize].entity;
             let checked = qa_session::physics::check_velocity(
                 &mut services.server.entities,
                 entity,
                 maximum,
-                |entities, stage, _invalid| vm.write_noclip(entities, context, native, stage),
+                |entities, stage, _invalid| vm.write_motion(entities, context, native, stage),
             )
             .unwrap();
             assert_eq!((checked.invalid_velocity, checked.invalid_origin), (1, 3));
@@ -770,11 +860,64 @@ fn native_client_velocity_uses_shared_sanitizer_without_bounds_or_angular_fields
             assert!(services.server.area.bounds(entity).is_none());
             assert!(services.server.disconnect(id));
             assert_eq!(
-                vm.prepare_client_velocity(&mut services.server.entities, context, native),
+                vm.prepare_velocity(&mut services.server.entities, context, native),
                 Err(CallError::Entity)
             );
         },
     );
+}
+
+#[test]
+fn native_nonclient_velocity_uses_shared_sanitizer_without_client_or_angular_fields() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|image| {
+            image.fielddefs = image
+                .fielddefs
+                .iter()
+                .copied()
+                .filter(|field| {
+                    ![
+                        b"angles".as_slice(),
+                        b"avelocity",
+                        b"mins",
+                        b"maxs",
+                        b"absmin",
+                        b"absmax",
+                    ]
+                    .contains(&image.names.get(field.name).unwrap())
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+        });
+        with_native_client(&mut vm, source, |vm, services, context, _, _| {
+            let native = vm.spawn_entity(services, context).unwrap();
+            assert!(vm.entity_number(native).unwrap() > vm.client_count().unwrap() as u32);
+            let entity = vm
+                .resolve_entity(&services.server.entities, context.module, native)
+                .unwrap()
+                .unwrap();
+            vector(vm, native, b"origin", Vec3([f32::NAN, 2.0, 3.0]));
+            vector(vm, native, b"velocity", Vec3([9.0, f32::INFINITY, -9.0]));
+            vm.prepare_velocity(&mut services.server.entities, context, native)
+                .unwrap();
+            let checked = qa_session::physics::check_velocity(
+                &mut services.server.entities,
+                entity,
+                4.0,
+                |entities, stage, _invalid| vm.write_motion(entities, context, native, stage),
+            )
+            .unwrap();
+            assert_eq!((checked.invalid_velocity, checked.invalid_origin), (2, 1));
+            assert_eq!(read_vector(vm, native, b"origin"), Vec3([0.0, 2.0, 3.0]));
+            assert_eq!(read_vector(vm, native, b"velocity"), Vec3([4.0, 0.0, -4.0]));
+            assert!(services.server.area.bounds(entity).is_none());
+            assert!(services.server.free_entity(entity, context.clock));
+            assert_eq!(
+                vm.prepare_velocity(&mut services.server.entities, context, native),
+                Err(CallError::Entity)
+            );
+        });
+    }
 }
 
 #[test]
@@ -793,14 +936,14 @@ fn native_client_velocity_reloads_shifted_origin_aliases_after_every_scalar_writ
         |vm, services, context, native, id| {
             vector(vm, native, b"origin", Vec3([10.0, -8.0, 20.0]));
             vector(vm, native, b"velocity", Vec3([f32::NAN, 10.0, -10.0]));
-            vm.prepare_client_velocity(&mut services.server.entities, context, native)
+            vm.prepare_velocity(&mut services.server.entities, context, native)
                 .unwrap();
             let entity = services.server.clients[id.0 as usize].entity;
             let checked = qa_session::physics::check_velocity(
                 &mut services.server.entities,
                 entity,
                 4.0,
-                |entities, stage, _invalid| vm.write_noclip(entities, context, native, stage),
+                |entities, stage, _invalid| vm.write_motion(entities, context, native, stage),
             )
             .unwrap();
             assert_eq!((checked.invalid_velocity, checked.invalid_origin), (1, 0));
@@ -1769,4 +1912,288 @@ fn callback_native_function_width_is_not_limited_to_sixteen_bits() {
         vm.client_callback(ClientCallback::Connect),
         Ok(CallbackId(0))
     );
+}
+
+#[test]
+fn native_nonclient_motion_decodes_loaded_phase_and_keeps_current_raw_mode() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|_| {});
+        with_native_client(&mut vm, source, |vm, services, context, _, _| {
+            let native = vm.spawn_entity(services, context).unwrap();
+            let entity = vm
+                .resolve_entity(&services.server.entities, context.module, native)
+                .unwrap()
+                .unwrap();
+            for (raw, phase) in [
+                (5.0, Motion::Fly),
+                (6.0, Motion::Toss),
+                (9.0, Motion::FlyMissile),
+                (10.0, Motion::Bounce),
+                (7.0, Motion::Unsupported),
+                (4.0, Motion::Unsupported),
+            ] {
+                number(vm, native, b"movetype", raw);
+                vm.project_entities(services, context).unwrap();
+                let mut cursor = 0;
+                let mut found = None;
+                while let Some(row) = vm
+                    .physics_entity(&services.server.entities, &mut cursor)
+                    .unwrap()
+                {
+                    if row.entity == entity {
+                        found = Some(row.phase);
+                    }
+                }
+                assert_eq!(found, Some(phase));
+            }
+            number(vm, native, b"movetype", 5.75);
+            vm.project_entities(services, context).unwrap();
+            assert_eq!(
+                services.server.entities.columns.motion[entity.slot as usize],
+                if source == RuleSetId::QuakeWorld {
+                    Motion::Fly
+                } else {
+                    Motion::Unsupported
+                }
+            );
+            assert_eq!(vm.motion_state(context, native).unwrap().move_type, 5.75);
+            number(vm, native, b"movetype", 6.0);
+            vm.project_entities(services, context).unwrap();
+            number(vm, native, b"movetype", 10.75);
+            assert_eq!(
+                services.server.entities.columns.motion[entity.slot as usize],
+                Motion::Toss
+            );
+            assert_eq!(vm.motion_state(context, native).unwrap().move_type, 10.75);
+        });
+    }
+}
+
+#[test]
+fn native_motion_scalar_writes_refresh_shifted_physical_aliases() {
+    use qa_compat::quakec::MotionField;
+    let mut vm = vm(|image| {
+        for (name, offset) in [
+            (b"avelocity".as_slice(), 1),
+            (b"groundentity", 4),
+            (b"watertype", 2),
+            (b"waterlevel", 3),
+            (b"flags", 5),
+        ] {
+            image
+                .fielddefs
+                .iter_mut()
+                .find(|field| image.names.get(field.name) == Some(name))
+                .unwrap()
+                .offset = offset;
+        }
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, id| {
+            vector(vm, native, b"origin", Vec3([1.0, 2.0, 3.0]));
+            vector(vm, native, b"velocity", Vec3([4.0, 5.0, 6.0]));
+            vector(vm, native, b"angles", Vec3([7.0, 8.0, 9.0]));
+            vm.prepare_motion(&mut services.server.entities, context, native)
+                .unwrap();
+            let slot = services.server.clients[id.0 as usize].entity.slot as usize;
+            services.server.entities.columns.angular_velocity[slot]
+                .as_mut()
+                .unwrap()
+                .0[0] = -12.0;
+            vm.write_motion(
+                &mut services.server.entities,
+                context,
+                native,
+                MotionWrite::AngularVelocity(0),
+            )
+            .unwrap();
+            assert_eq!(read_vector(vm, native, b"origin").0[1], -12.0);
+            assert_eq!(
+                services.server.entities.columns.position[slot],
+                read_vector(vm, native, b"origin")
+            );
+            vm.write_motion_field(
+                &mut services.server.entities,
+                context,
+                native,
+                MotionField::Flags(513),
+            )
+            .unwrap();
+            assert_eq!(services.server.entities.columns.velocity[slot].0[2], 513.0);
+            let weak = NativeEntityRef::entity(ResourceNamespace::Module(context.module), 0);
+            vm.write_motion_field(
+                &mut services.server.entities,
+                context,
+                native,
+                MotionField::Ground(weak),
+            )
+            .unwrap();
+            assert_eq!(
+                services.server.entities.columns.velocity[slot].0[1].to_bits(),
+                0
+            );
+            vm.write_motion_field(
+                &mut services.server.entities,
+                context,
+                native,
+                MotionField::WaterType(-3.75),
+            )
+            .unwrap();
+            vm.write_motion_field(
+                &mut services.server.entities,
+                context,
+                native,
+                MotionField::WaterLevel(1.25),
+            )
+            .unwrap();
+            assert_eq!(services.server.entities.columns.position[slot].0[2], -3.75);
+            assert_eq!(services.server.entities.columns.velocity[slot].0[0], 1.25);
+            assert_eq!(vm.motion_water_type(context, native), Ok(-3.75));
+            assert_eq!(read(vm, native, b"waterlevel"), 1.25f32.to_bits());
+            for gravity in [0.0, -0.25, 1.0] {
+                number(vm, native, b"gravity", gravity);
+                assert_eq!(vm.motion_gravity(context, native), Ok(Some(gravity)));
+            }
+            let foreign = NativeEntityRef::entity(ResourceNamespace::Module(ModuleId(55)), 0);
+            assert_eq!(
+                vm.write_motion_field(
+                    &mut services.server.entities,
+                    context,
+                    native,
+                    MotionField::Ground(foreign)
+                ),
+                Err(CallError::Entity)
+            );
+            assert!(
+                services
+                    .server
+                    .area
+                    .bounds(services.server.clients[id.0 as usize].entity)
+                    .is_none()
+            );
+        },
+    );
+}
+
+#[test]
+fn native_motion_optional_fields_reject_only_the_executed_boundary() {
+    use qa_compat::quakec::MotionField;
+    let mut vm = vm(|image| {
+        image.fielddefs = image
+            .fielddefs
+            .iter()
+            .copied()
+            .filter(|field| {
+                ![
+                    b"gravity".as_slice(),
+                    b"waterlevel",
+                    b"groundentity",
+                    b"solid",
+                    b"flags",
+                ]
+                .contains(&image.names.get(field.name).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+    });
+    with_native_client(
+        &mut vm,
+        RuleSetId::Quake,
+        |vm, services, context, native, _| {
+            let state = vm.motion_state(context, native).unwrap();
+            assert!(state.solid.is_none());
+            assert!(state.flags.is_none());
+            assert_eq!(vm.motion_gravity(context, native), Ok(None));
+            vm.write_motion_field(
+                &mut services.server.entities,
+                context,
+                native,
+                MotionField::WaterType(-3.0),
+            )
+            .unwrap();
+            assert_eq!(vm.motion_water_type(context, native), Ok(-3.0));
+            assert_eq!(
+                vm.write_motion_field(
+                    &mut services.server.entities,
+                    context,
+                    native,
+                    MotionField::WaterLevel(1.0)
+                ),
+                Err(CallError::Memory)
+            );
+            assert_eq!(vm.motion_water_type(context, native), Ok(-3.0));
+            assert_eq!(
+                vm.write_motion_field(
+                    &mut services.server.entities,
+                    context,
+                    native,
+                    MotionField::Flags(512)
+                ),
+                Err(CallError::Memory)
+            );
+            assert_eq!(vm.touch_callback(native, true), Ok(None));
+            write(vm, native, b"touch", &[6]);
+            assert_eq!(vm.touch_callback(native, true), Err(CallError::Memory));
+        },
+    );
+}
+
+#[test]
+fn native_weak_touch_other_preserves_freed_ordinal_without_world_fallback() {
+    let mut vm = vm(|image| {
+        image.names.reserve(3, 24).unwrap();
+        let mut fields = image.fielddefs.to_vec();
+        for (value_type, offset, name) in [
+            (1, 70, b"model".as_slice()),
+            (2, 71, b"takedamage".as_slice()),
+            (2, 72, b"nextthink".as_slice()),
+        ] {
+            fields.push(qa_formats::program::quakec::Definition {
+                value_type,
+                offset,
+                name: image.names.intern(name).unwrap(),
+            });
+        }
+        image.fielddefs = fields.into_boxed_slice();
+        image.entityfields = 73;
+    });
+    with_native_client(&mut vm, RuleSetId::Quake, |vm, services, context, _, _| {
+        let native = vm.spawn_entity(services, context).unwrap();
+        let reference = NativeEntityRef::entity(
+            ResourceNamespace::Module(context.module),
+            vm.entity_number(native).unwrap(),
+        );
+        vm.remove_entity(services, context, native).unwrap();
+        assert_eq!(
+            vm.resolve_entity(&services.server.entities, context.module, native),
+            Ok(None)
+        );
+        assert_eq!(vm.weak_entity_offset(context.module, reference), Ok(native));
+        let restore = vm.prepare_touch_call(0, native, None).unwrap();
+        assert_eq!(vm.image.globals[36], native);
+        vm.finish_client_call(restore).unwrap();
+        assert_eq!(
+            vm.weak_entity_offset(
+                context.module,
+                NativeEntityRef::entity(ResourceNamespace::Module(context.module), 0)
+            ),
+            Ok(0)
+        );
+        assert_eq!(
+            vm.weak_entity_offset(
+                context.module,
+                NativeEntityRef::entity(ResourceNamespace::Client(ClientId(0)), reference.ordinal)
+            ),
+            Err(CallError::Entity)
+        );
+        assert_eq!(
+            vm.weak_entity_offset(
+                context.module,
+                NativeEntityRef::entity(reference.namespace, u32::MAX)
+            ),
+            Err(CallError::Entity)
+        );
+    });
 }

@@ -6,27 +6,90 @@ use qa_core::{
 };
 use qa_world::collision::TraceError;
 
-pub(crate) fn clip(velocity: Vec3, normal: Vec3, rules: RuleSetId) -> Vec3 {
+/// Compute the native plane response before any aliased output stores.
+/// Q3 divides nonnegative dot products; legacy overbounce always multiplies.
+pub fn clip_backoff(
+    velocity: Vec3,
+    normal: Vec3,
+    overbounce: f32,
+    reciprocal_on_positive: bool,
+) -> f32 {
     let dot = velocity.dot(normal);
-    let backoff = if rules == RuleSetId::Quake3 {
-        if dot < 0.0 { dot * 1.001 } else { dot / 1.001 }
-    } else {
-        dot * if matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) {
-            1.01
+    if reciprocal_on_positive {
+        if dot < 0.0 {
+            dot * overbounce
         } else {
-            1.0
+            dot / overbounce
         }
+    } else {
+        dot * overbounce
+    }
+}
+
+pub(crate) fn clip(velocity: Vec3, normal: Vec3, rules: RuleSetId) -> Vec3 {
+    let arena = rules == RuleSetId::Quake3;
+    let overbounce = if arena {
+        1.001
+    } else if matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) {
+        1.01
+    } else {
+        1.0
     };
-    let mut out = velocity - normal * backoff;
-    if rules != RuleSetId::Quake3 {
-        for value in &mut out.0 {
-            if *value > -0.1 && *value < 0.1 {
-                *value = 0.0;
-            }
+    let backoff = clip_backoff(velocity, normal, overbounce, arena);
+    Vec3(std::array::from_fn(|axis| {
+        math::clip_component(
+            velocity.0[axis],
+            normal.0[axis],
+            backoff,
+            (!arena).then_some(0.1),
+        )
+    }))
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+
+    #[test]
+    fn shared_scalar_clipping_preserves_all_existing_player_policies() {
+        let normal = Vec3([1.0, 0.0, 0.0]);
+        for (rules, incoming_x, outgoing_x, outgoing_y) in [
+            (RuleSetId::Quake, -10.0, 0, 0),
+            (RuleSetId::QuakeWorld, -10.0, 0, 0),
+            (RuleSetId::Quake2, -10.0, 0x3dcc_cd00, 0),
+            (RuleSetId::Quake2Rerelease, -10.0, 0x3dcc_cd00, 0),
+            (RuleSetId::Quake3, -10.0, 0x3c23_d800, 0x3d4c_cccd),
+            (RuleSetId::Quake2, 10.0, 0xbdcc_cd00, 0),
+            (RuleSetId::Quake3, 10.0, 0x3c23_b000, 0x3d4c_cccd),
+        ] {
+            assert_eq!(
+                clip(Vec3([incoming_x, 0.05, 0.1]), normal, rules)
+                    .0
+                    .map(f32::to_bits),
+                [outgoing_x, outgoing_y, 0x3dcc_cccd],
+                "{rules:?} incoming_x={incoming_x}"
+            );
         }
     }
-    out
+
+    #[test]
+    fn backoff_preserves_negative_zero_and_nan_reaches_all_components() {
+        let input = Vec3([-0.0, -0.0, -0.0]);
+        let normal = Vec3([1.0; 3]);
+        assert_eq!(
+            clip_backoff(input, normal, 1.001, true).to_bits(),
+            (-0.0_f32).to_bits()
+        );
+        let input = Vec3([1.0, f32::NAN, 3.0]);
+        assert!(
+            clip(input, normal, RuleSetId::Quake3)
+                .0
+                .into_iter()
+                .all(f32::is_nan)
+        );
+    }
 }
+
 fn legacy_slide(step: &mut Step<'_>) -> Result<u8, TraceError> {
     let rules = step.parameters.rules;
     let primal = step.player.body.velocity;

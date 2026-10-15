@@ -4,6 +4,50 @@ use qa_core::{
 };
 
 #[test]
+fn plane_clip_component_keeps_strict_stop_endpoints_and_native_zero_sign() {
+    let epsilon = 0.1_f32;
+    let inside = f32::from_bits(epsilon.to_bits() - 1);
+    for value in [epsilon, -epsilon] {
+        assert_eq!(
+            clip_component(value, 0.0, 1.0, Some(epsilon)).to_bits(),
+            value.to_bits()
+        );
+    }
+    for value in [inside, -inside, -0.0, f32::from_bits(1)] {
+        assert_eq!(
+            clip_component(value, 0.0, 1.0, Some(epsilon)).to_bits(),
+            0.0_f32.to_bits()
+        );
+    }
+    assert_eq!(
+        clip_component(-0.0, 0.0, 1.0, None).to_bits(),
+        (-0.0_f32).to_bits()
+    );
+    assert_eq!(
+        clip_component(inside, 0.0, 1.0, None).to_bits(),
+        inside.to_bits()
+    );
+    for value in [f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(
+            clip_component(value, 0.0, 1.0, Some(epsilon)).to_bits(),
+            value.to_bits()
+        );
+    }
+    assert!(clip_component(f32::NAN, 0.0, 1.0, Some(epsilon)).is_nan());
+    assert!(clip_component(1.0, f32::INFINITY, 0.0, Some(epsilon)).is_nan());
+}
+
+#[test]
+fn plane_clip_component_rounds_product_before_subtraction_without_fusion() {
+    let normal = f32::from_bits(0x3f80_0001); // 1 + 2^-23
+    let backoff = f32::from_bits(0x3f7f_fffe); // 1 - 2^-23
+    // The exact product is 1 - 2^-46 and rounds to one before subtraction.
+    assert_eq!(clip_component(1.0, normal, backoff, None).to_bits(), 0);
+    assert_eq!((-normal).mul_add(backoff, 1.0).to_bits(), 0x2880_0000);
+    assert_eq!(clip_component(5.0, 0.5, -4.0, None), 7.0);
+}
+
+#[test]
 fn local_plane_retains_the_world_half_space_for_rotated_scaled_coordinates() {
     let plane = Plane::oriented(Vec3([1., -2., 3.]), 19.);
     let origin = Vec3([4., 8., -2.]);

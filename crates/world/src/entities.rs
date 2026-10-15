@@ -421,12 +421,9 @@ impl EntityTable {
             .filter_map(|&id| self.attachment(id).map(|follow| (id, follow)))
     }
 
-    pub(crate) fn attachment_count(&self) -> usize {
-        self.attachment_order.len()
-    }
-
-    pub(crate) fn attachment_at(&self, index: usize) -> EntityId {
-        self.attachment_order[index]
+    /// Canonical attachment order, borrowed only until the next body mutation.
+    pub fn attachment_ids(&self) -> &[EntityId] {
+        &self.attachment_order
     }
 
     pub fn set_targetname(&mut self, id: EntityId, name: Option<NameId>) -> bool {

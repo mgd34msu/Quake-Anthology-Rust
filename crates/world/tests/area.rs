@@ -405,3 +405,208 @@ fn native_queries_visit_node_members_then_front_then_back() {
         [front]
     );
 }
+
+#[test]
+fn owned_cursor_releases_borrows_and_survives_current_link_deletion() {
+    let (mut table, mut grid) = setup();
+    let first = allocate(&mut table);
+    let second = allocate(&mut table);
+    let third = allocate(&mut table);
+    for id in [first, second, third] {
+        assert!(grid.link(
+            &table,
+            id,
+            LinkFlags::TRIGGER,
+            LinkOrder::Tail,
+            LinkIntent::Explicit
+        ));
+    }
+    let mut cursor = grid.query_cursor(bounds(), LinkFlags::TRIGGER);
+    assert_eq!(cursor.next(&grid, &table).unwrap().id, first);
+    assert!(grid.unlink(first));
+    assert!(table.release(first, ThinkTime::Seconds(3.0)));
+    assert_eq!(cursor.next(&grid, &table).unwrap().id, second);
+    assert_eq!(cursor.next(&grid, &table).unwrap().id, third);
+    assert!(cursor.next(&grid, &table).is_none());
+    assert!(!cursor.interrupted());
+}
+
+#[test]
+fn deleting_pending_link_ends_its_list_but_preserves_healthy_later_nodes() {
+    for reuse in [false, true] {
+        let (mut table, mut grid) = setup();
+        let first = allocate(&mut table);
+        let pending = allocate(&mut table);
+        let behind = allocate(&mut table);
+        let front = allocate(&mut table);
+        table.columns.position[front.slot as usize] = Vec3([0.0, 32.0, 0.0]);
+        for id in [first, pending, behind, front] {
+            assert!(grid.link(
+                &table,
+                id,
+                LinkFlags::TRIGGER,
+                LinkOrder::Tail,
+                LinkIntent::Explicit
+            ));
+        }
+        let mut cursor = grid.query_cursor(bounds(), LinkFlags::TRIGGER);
+        assert_eq!(cursor.next(&grid, &table).unwrap().id, first);
+        assert!(grid.unlink(pending));
+        assert!(table.release(pending, ThinkTime::Seconds(3.0)));
+        if reuse {
+            let replacement = table
+                .allocate(
+                    ThinkTime::Seconds(4.0),
+                    ModuleId(1),
+                    AllocationPolicy::EDICT,
+                )
+                .unwrap()
+                .id;
+            assert_eq!(replacement.slot, pending.slot);
+            assert_ne!(replacement, pending);
+            assert!(grid.link(
+                &table,
+                replacement,
+                LinkFlags::TRIGGER,
+                LinkOrder::Tail,
+                LinkIntent::Explicit
+            ));
+        }
+        assert_eq!(cursor.next(&grid, &table).unwrap().id, front);
+        assert!(cursor.next(&grid, &table).is_none());
+        assert!(cursor.interrupted());
+    }
+}
+
+#[test]
+fn relocated_pending_link_is_visited_only_when_its_new_node_is_reached() {
+    let (mut table, mut grid) = setup();
+    let first = allocate(&mut table);
+    let pending = allocate(&mut table);
+    let behind = allocate(&mut table);
+    let front = allocate(&mut table);
+    table.columns.position[front.slot as usize] = Vec3([0.0, 32.0, 0.0]);
+    for id in [first, pending, behind, front] {
+        assert!(grid.link(
+            &table,
+            id,
+            LinkFlags::TRIGGER,
+            LinkOrder::Tail,
+            LinkIntent::Explicit
+        ));
+    }
+    let mut cursor = grid.query_cursor(bounds(), LinkFlags::TRIGGER);
+    assert_eq!(cursor.next(&grid, &table).unwrap().id, first);
+    table.columns.position[pending.slot as usize] = Vec3([0.0, 32.0, 0.0]);
+    assert!(grid.link(
+        &table,
+        pending,
+        LinkFlags::TRIGGER,
+        LinkOrder::Tail,
+        LinkIntent::Explicit
+    ));
+    assert_eq!(cursor.next(&grid, &table).unwrap().id, front);
+    assert_eq!(cursor.next(&grid, &table).unwrap().id, pending);
+    assert!(cursor.next(&grid, &table).is_none());
+    assert!(cursor.interrupted());
+}
+
+#[test]
+fn cursor_refreshes_overlap_and_each_recursive_split_after_callbacks() {
+    let (mut table, mut grid) = setup();
+    let root = allocate(&mut table);
+    let front = allocate(&mut table);
+    let back = allocate(&mut table);
+    table.columns.position[front.slot as usize] = Vec3([0.0, 32.0, 0.0]);
+    table.columns.position[back.slot as usize] = Vec3([0.0, -32.0, 0.0]);
+    for id in [root, front, back] {
+        assert!(grid.link(
+            &table,
+            id,
+            LinkFlags::TRIGGER,
+            LinkOrder::Tail,
+            LinkIntent::Explicit
+        ));
+    }
+    let mut cursor = grid.query_cursor(Bounds::default(), LinkFlags::TRIGGER);
+    assert_eq!(cursor.next(&grid, &table).unwrap().id, root);
+    cursor.set_bounds(Bounds {
+        mins: Vec3([0.0, 31.0, 0.0]),
+        maxs: Vec3([0.0, 31.0, 0.0]),
+    });
+    assert_eq!(cursor.next(&grid, &table).unwrap().id, front);
+    cursor.set_bounds(Bounds {
+        mins: Vec3([0.0, -31.0, 0.0]),
+        maxs: Vec3([0.0, -31.0, 0.0]),
+    });
+    assert_eq!(cursor.next(&grid, &table).unwrap().id, back);
+    assert!(cursor.next(&grid, &table).is_none());
+    assert!(!cursor.interrupted());
+}
+
+#[test]
+fn nested_cursors_own_independent_native_order_and_links_are_rechecked() {
+    let (mut table, mut grid) = setup();
+    let first = allocate(&mut table);
+    let second = allocate(&mut table);
+    let third = allocate(&mut table);
+    for id in [first, second, third] {
+        assert!(grid.link(
+            &table,
+            id,
+            LinkFlags::TRIGGER,
+            LinkOrder::Tail,
+            LinkIntent::Explicit
+        ));
+    }
+    let mut outer = grid.query_cursor(Bounds::default(), LinkFlags::TRIGGER);
+    assert_eq!(outer.next(&grid, &table).unwrap().id, first);
+    let mut inner = grid.query_cursor(bounds(), LinkFlags::TRIGGER);
+    let mut nested = Vec::new();
+    while let Some(row) = inner.next(&grid, &table) {
+        nested.push(row.id);
+    }
+    assert_eq!(nested, [first, second, third]);
+    assert!(grid.link(
+        &table,
+        third,
+        LinkFlags::SOLID,
+        LinkOrder::Tail,
+        LinkIntent::Explicit
+    ));
+    assert_eq!(outer.next(&grid, &table).unwrap().id, second);
+    assert!(outer.next(&grid, &table).is_none());
+    assert!(!outer.interrupted());
+}
+
+#[test]
+fn cursor_callback_reinsert_loops_stop_at_loaded_capacity() {
+    let (mut table, mut grid) = setup();
+    let first = allocate(&mut table);
+    let second = allocate(&mut table);
+    for id in [first, second] {
+        assert!(grid.link(
+            &table,
+            id,
+            LinkFlags::TRIGGER,
+            LinkOrder::Tail,
+            LinkIntent::Explicit
+        ));
+    }
+    let mut cursor = grid.query_cursor(bounds(), LinkFlags::TRIGGER);
+    let mut visits = 0;
+    while let Some(row) = cursor.next(&grid, &table) {
+        let id = row.id;
+        visits += 1;
+        assert!(visits <= table.capacity());
+        assert!(grid.link(
+            &table,
+            id,
+            LinkFlags::TRIGGER,
+            LinkOrder::Tail,
+            LinkIntent::Explicit
+        ));
+    }
+    assert_eq!(visits, table.capacity());
+    assert!(cursor.interrupted());
+}

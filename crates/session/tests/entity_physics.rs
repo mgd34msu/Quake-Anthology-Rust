@@ -380,7 +380,7 @@ fn velocity_check_preserves_shifted_native_field_aliases() {
                     native[axis + 1] = entities.columns.velocity[slot].0[axis]
                 }
                 MotionWrite::Origin(axis) => native[axis] = entities.columns.position[slot].0[axis],
-                MotionWrite::Angles(_) => panic!("velocity checking must not write angles"),
+                MotionWrite::Angles(_) | MotionWrite::AngularVelocity(_) => panic!("velocity checking must not write angles"),
             }
             entities.columns.position[slot] = Vec3([native[0], native[1], native[2]]);
             entities.columns.velocity[slot] = Vec3([native[1], native[2], native[3]]);

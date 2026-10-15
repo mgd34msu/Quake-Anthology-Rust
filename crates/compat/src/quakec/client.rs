@@ -10,7 +10,7 @@ pub(super) struct ClientGlobals {
     pub rules: Option<RuleSetId>,
     callbacks: [Option<usize>; 6],
     parms: [Option<usize>; 16],
-    settings: Option<[CvarHandle; 4]>,
+    settings: Option<[CvarHandle; 5]>,
     stat_globals: [Option<usize>; 4],
 }
 
@@ -114,6 +114,7 @@ impl Vm {
             handle("cl_rollangle")?,
             handle("cl_rollspeed")?,
             handle("sv_maxvelocity")?,
+            handle("sv_gravity")?,
         ]);
         self.projection
             .quakec_bind_client_registry(registry, source)
@@ -165,8 +166,8 @@ impl Vm {
             other_word: None,
         };
         self.image.globals[self_at] = native;
-        if let Some(at) = time_at {
-            self.image.globals[at] = (time.seconds() as f32).to_bits();
+        if time_at.is_some() {
+            self.set_time(time)?;
         }
         Ok(restore)
     }
@@ -263,18 +264,24 @@ impl Vm {
         self.projection
             .quakec_client_phase(&self.entities, context, native)
     }
-    pub fn client_max_velocity(&self, vars: &qa_console::cvars::Cvars) -> Result<f32, CallError> {
+    pub fn max_velocity(&self, vars: &qa_console::cvars::Cvars) -> Result<f32, CallError> {
         let source = self.client_globals.require()?;
         let settings = self.client_globals.settings.ok_or(CallError::Cvar)?;
         vars.native_number(settings[3], source)
             .ok_or(CallError::Cvar)
     }
-    pub fn client_classname(&self, native: u32) -> Result<&[u8], CallError> {
+    pub fn motion_world_gravity(&self, vars: &qa_console::cvars::Cvars) -> Result<f32, CallError> {
+        let source = self.client_globals.require()?;
+        let settings = self.client_globals.settings.ok_or(CallError::Cvar)?;
+        vars.native_number(settings[4], source)
+            .ok_or(CallError::Cvar)
+    }
+    pub fn classname(&self, native: u32) -> Result<&[u8], CallError> {
         self.client_globals.require()?;
         self.projection
-            .quakec_client_classname(&self.entities, &self.strings, native)
+            .quakec_classname(&self.entities, &self.strings, native)
     }
-    pub fn prepare_client_velocity(
+    pub fn prepare_velocity(
         &mut self,
         entities: &mut qa_world::entities::EntityTable,
         context: CallContext,
@@ -284,7 +291,7 @@ impl Vm {
             return Err(CallError::Unsupported);
         }
         self.projection
-            .quakec_prepare_client_velocity(entities, &self.entities, context, native)
+            .quakec_prepare_velocity(entities, &self.entities, context, native)
     }
     pub fn prepare_client_command(
         &mut self,
@@ -427,10 +434,14 @@ impl Vm {
             offset,
         )
     }
-    pub fn touch_callback(&self, native: u32) -> Result<Option<CallbackId>, CallError> {
+    pub fn touch_callback(
+        &self,
+        native: u32,
+        trigger_only: bool,
+    ) -> Result<Option<CallbackId>, CallError> {
         self.client_globals.require()?;
         self.projection
-            .quakec_touch_callback(&self.entities, native)
+            .quakec_touch_callback(&self.entities, native, trigger_only)
     }
     pub fn client_set_angles(&self, native: u32) -> Result<Option<Vec3>, CallError> {
         self.client_globals.require()?;
@@ -441,6 +452,24 @@ impl Vm {
         self.client_globals.require()?;
         self.projection
             .quakec_clear_client_fixangle(&mut self.entities, native)
+    }
+    fn save_touch_globals(&self) -> Result<(ClientCallRestore, [usize; 2]), CallError> {
+        let self_at = self.call_fields.self_global.ok_or(CallError::Memory)?;
+        let other_at = self.call_fields.other_global.ok_or(CallError::Memory)?;
+        Ok((
+            ClientCallRestore {
+                self_word: Some(self.image.globals[self_at]),
+                other_word: Some(self.image.globals[other_at]),
+            },
+            [self_at, other_at],
+        ))
+    }
+    /// Save impact globals before setting its clock, including aliased words.
+    pub fn prepare_impact(&mut self, time: ThinkTime) -> Result<ClientCallRestore, CallError> {
+        self.client_globals.require()?;
+        let (restore, _) = self.save_touch_globals()?;
+        self.set_time(time)?;
+        Ok(restore)
     }
     pub fn prepare_touch_call(
         &mut self,
@@ -453,20 +482,20 @@ impl Vm {
             .quakec_check_address(&self.entities, native_self)?;
         self.projection
             .quakec_check_address(&self.entities, native_other)?;
-        let self_at = self.call_fields.self_global.ok_or(CallError::Memory)?;
-        let other_at = self.call_fields.other_global.ok_or(CallError::Memory)?;
-        let time_at = time
-            .map(|_| self.call_fields.time_global.ok_or(CallError::Memory))
+        let (restore, [self_at, other_at]) = self.save_touch_globals()?;
+        time.map(|_| self.call_fields.time_global.ok_or(CallError::Memory))
             .transpose()?;
-        let restore = ClientCallRestore {
-            self_word: Some(self.image.globals[self_at]),
-            other_word: Some(self.image.globals[other_at]),
-        };
         self.image.globals[self_at] = native_self;
         self.image.globals[other_at] = native_other;
-        if let (Some(at), Some(time)) = (time_at, time) {
-            self.image.globals[at] = (time.seconds() as f32).to_bits();
+        if let Some(time) = time {
+            self.set_time(time)?;
         }
         Ok(restore)
+    }
+
+    pub fn set_time(&mut self, time: ThinkTime) -> Result<(), CallError> {
+        let at = self.call_fields.time_global.ok_or(CallError::Memory)?;
+        self.image.globals[at] = (time.seconds() as f32).to_bits();
+        Ok(())
     }
 }

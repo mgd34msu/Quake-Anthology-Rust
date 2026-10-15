@@ -1,39 +1,12 @@
 //! QuakeC native client phases over the common lifetime and movement services.
 use super::*;
 use qa_compat::services::CallError as ServiceError;
-use qa_core::primitives::{CallbackCall, EntityId, Motion, MovementMode};
+use qa_core::primitives::{Motion, MovementMode};
 use qa_session::dispatch::{ThinkFrame, run_think_with_rebind};
 use std::sync::Arc;
 
-fn edit<R>(
-    host: &mut FrameHost,
-    module: ModuleId,
-    call: impl FnOnce(
-        &mut qa_compat::quakec::Vm,
-        &mut qa_compat::services::EngineServices<'_>,
-        qa_compat::services::CallContext,
-    ) -> Result<R, ServiceError>,
-) -> Result<R, ClientCommandError> {
-    let time = host.time;
-    let (row, storage) = host
-        .modules
-        .as_mut()
-        .and_then(|m| m.parts_mut(module))
-        .ok_or(ClientCommandError::MissingModule)?;
-    let clock = row.time(time);
-    let Program::QuakeC(qc) = &mut row.request.program else {
-        return Err(ClientCommandError::NeedsNativeModule);
-    };
-    let mut services = host
-        .runtime
-        .engine_services(&mut host.console, storage, &mut row.scratch);
-    call(
-        &mut qc.vm,
-        &mut services,
-        super::super::context(row.request.context, clock),
-    )
-    .map_err(ClientCommandError::Usercmd)
-}
+use super::super::edit_quakec as edit;
+
 fn native(host: &FrameHost, module: ModuleId, id: ClientId) -> Result<u32, ClientCommandError> {
     let client = host
         .runtime
@@ -375,7 +348,8 @@ pub(in crate::modules) fn frame(
     edit(host, module, |vm, services, context| {
         vm.relink_entity(services, context, offset)
     })?;
-    triggers(host, module, id, time)?;
+    let entity = host.runtime.server.clients[id.0 as usize].entity;
+    super::super::contacts::triggers(host, module, entity, time)?;
     native(host, module, id)?;
     callback(host, module, id, ClientCallback::AfterMove)?;
     Ok(true)
@@ -440,10 +414,14 @@ pub(super) fn command(
             vm.write_client(services, context, offset, origin_offset)
         })?;
         if !spectator {
-            triggers(host, module, id, time)?;
+            let entity = host.runtime.server.clients[id.0 as usize].entity;
+            super::super::contacts::triggers(host, module, entity, time)?;
+            let other_ref = super::super::contacts::reference(host, entity)?;
             for contact in moved.contacts[..moved.contact_count].iter().flatten() {
                 if let Some(other) = contact.entity {
-                    touch(host, module, id, other, None, true)?;
+                    super::super::contacts::touch(
+                        host, module, other, other_ref, None, true, false,
+                    )?;
                 }
             }
         }
@@ -451,105 +429,6 @@ pub(super) fn command(
     Ok(())
 }
 
-fn triggers(
-    host: &mut FrameHost,
-    module: ModuleId,
-    id: ClientId,
-    time: ThinkTime,
-) -> Result<(), ClientCommandError> {
-    let entity = host.runtime.server.clients[id.0 as usize].entity;
-    let bounds = host
-        .runtime
-        .server
-        .area
-        .bounds(entity)
-        .ok_or(ClientCommandError::Usercmd(ServiceError::Entity))?;
-    // Copy only bounded generation handles; no module bytes or event payloads.
-    let mut candidates = std::mem::take(
-        &mut host
-            .module_row_mut(module)
-            .ok_or(ClientCommandError::MissingModule)?
-            .client_triggers,
-    );
-    candidates.clear();
-    for linked in host.runtime.server.area.query(
-        &host.runtime.server.entities,
-        bounds,
-        qa_world::area::LinkFlags::TRIGGER,
-    ) {
-        if linked.id != entity && candidates.len() < candidates.capacity() {
-            candidates.push(linked.id);
-        }
-    }
-    let result = (|| {
-        for &other in &candidates {
-            touch(host, module, id, other, Some(time), false)?;
-        }
-        Ok(())
-    })();
-    if let Some(row) = host.module_row_mut(module) {
-        row.client_triggers = candidates;
-    }
-    result
-}
-fn touch(
-    host: &mut FrameHost,
-    module: ModuleId,
-    id: ClientId,
-    other: EntityId,
-    time: Option<ThinkTime>,
-    deduplicate: bool,
-) -> Result<(), ClientCommandError> {
-    let entity = host.runtime.server.clients[id.0 as usize].entity;
-    let Some(slot) = host.runtime.server.entities.resolve(other) else {
-        return Ok(());
-    };
-    let Some(native) = host.runtime.server.entities.columns.native_entity[slot]
-        .filter(|native| native.module == module)
-    else {
-        return Ok(());
-    };
-    let index = usize::try_from(native.slot).map_err(|_| ClientCommandError::InvalidSlot)?;
-    let row = host
-        .module_row(module)
-        .ok_or(ClientCommandError::MissingModule)?;
-    if index >= row.client_contacts.len() {
-        return Err(ClientCommandError::InvalidSlot);
-    }
-    if deduplicate && row.client_contacts.contains(index) {
-        return Ok(());
-    }
-    let Program::QuakeC(qc) = &row.request.program else {
-        return Err(ClientCommandError::NeedsNativeModule);
-    };
-    let offset = index
-        .checked_mul(qc.vm.stride)
-        .and_then(|v| u32::try_from(v).ok())
-        .ok_or(ClientCommandError::InvalidSlot)?;
-    let Some(callback) = qc
-        .vm
-        .touch_callback(offset)
-        .map_err(ClientCommandError::Usercmd)?
-    else {
-        return Ok(());
-    };
-    host.call_module(
-        callback,
-        CallbackCall::Touch {
-            entity: other,
-            other: entity,
-            time,
-        },
-    )
-    .map_err(ClientCommandError::Dispatch)?;
-    if deduplicate {
-        host.module_row_mut(module)
-            .ok_or(ClientCommandError::MissingModule)?
-            .client_contacts
-            .mark(index);
-    }
-    Ok(())
-}
 pub(super) fn finish(
     host: &mut FrameHost,
     module: ModuleId,

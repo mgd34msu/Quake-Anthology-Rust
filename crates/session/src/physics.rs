@@ -8,10 +8,14 @@ use qa_core::{
 use qa_world::collision::TraceError;
 use qa_world::entities::EntityTable;
 
+mod toss;
+pub use toss::{MotionState, TossFrame, TossHost, TossTrace, WaterTransition, toss, water_transition};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhysicsError {
     Entity,
     AngularVelocity,
+    MissingField,
 }
 
 /// Ordinary authoritative movement has no native scalar synchronization.
