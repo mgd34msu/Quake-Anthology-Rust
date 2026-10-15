@@ -76,16 +76,21 @@ pub(super) fn noclip(
     step: f32,
 ) -> Result<(), ClientCommandError> {
     let native = native_offset(host, module, entity)?;
-    edit_quakec(host, module, |vm, services, context| {
-        vm.prepare_motion(&mut services.server.entities, context, native)?;
-        physics::noclip(
-            &mut services.server.entities,
-            entity,
-            step,
-            |entities, field| vm.write_motion(entities, context, native, field),
-        )?;
-        vm.relink_entity(services, context, native)
-    })
+    edit_quakec(
+        host,
+        module,
+        crate::modules::execution::TraceAccess::empty(),
+        |vm, services, context| {
+            vm.prepare_motion(&mut services.server.entities, context, native)?;
+            physics::noclip(
+                &mut services.server.entities,
+                entity,
+                step,
+                |entities, field| vm.write_motion(entities, context, native, field),
+            )?;
+            vm.relink_entity(services, context, native)
+        },
+    )
 }
 
 /// The same scalar check serves native PlayerPreThink and nonclient physics.
@@ -334,13 +339,18 @@ impl<'a> Host<'a> {
     }
 
     fn frame(&mut self, elapsed: f64) -> Result<MotionFrame, ClientCommandError> {
-        let mut frame = edit_quakec(self.host, self.module, |vm, services, _| {
-            Ok(MotionFrame {
-                elapsed,
-                gravity: vm.motion_world_gravity(services.cvars)?,
-                max_velocity: vm.max_velocity(services.cvars)?,
-            })
-        })?;
+        let mut frame = edit_quakec(
+            self.host,
+            self.module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, _| {
+                Ok(MotionFrame {
+                    elapsed,
+                    gravity: vm.motion_world_gravity(services.cvars)?,
+                    max_velocity: vm.max_velocity(services.cvars)?,
+                })
+            },
+        )?;
         if let Some((id, _)) = self.client {
             self.client_entity().ok_or(ClientCommandError::Inactive)?;
             let player = &self.host.runtime.server.clients[id.0 as usize].player;
@@ -374,12 +384,17 @@ impl<'a> Host<'a> {
             return Err(ClientCommandError::InvalidSlot);
         }
         let trace_rules = self.trace_rules;
-        edit_quakec(self.host, self.module, |vm, services, mut context| {
-            if let Some(rules) = trace_rules {
-                context.trace_rules = rules;
-            }
-            call(vm, services, context, native)
-        })
+        edit_quakec(
+            self.host,
+            self.module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, mut context| {
+                if let Some(rules) = trace_rules {
+                    context.trace_rules = rules;
+                }
+                call(vm, services, context, native)
+            },
+        )
     }
 
     fn write_field(
@@ -483,10 +498,15 @@ impl<'a> Host<'a> {
             return Err(ClientCommandError::DifferentModule);
         };
         self.owner_time(module)?;
-        edit_quakec(self.host, module, |vm, services, context| {
-            let native = vm.weak_entity_offset(context.module, reference)?;
-            call(vm, services, context, native)
-        })
+        edit_quakec(
+            self.host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                let native = vm.weak_entity_offset(context.module, reference)?;
+                call(vm, services, context, native)
+            },
+        )
     }
 }
 
@@ -505,8 +525,12 @@ impl PushHost for Host<'_> {
         loop {
             match cursor {
                 PushCursor::Native(next) => {
-                    let candidate =
-                        edit_quakec(self.host, self.module, |vm, _, _| vm.push_candidate(next))?;
+                    let candidate = edit_quakec(
+                        self.host,
+                        self.module,
+                        crate::modules::execution::TraceAccess::empty(),
+                        |vm, _, _| vm.push_candidate(next),
+                    )?;
                     if let Some(native) = candidate {
                         return Ok(Some(CollisionOwner::Native(native)));
                     }
@@ -666,7 +690,13 @@ impl PushHost for Host<'_> {
             } else {
                 self.owner_time(module)?
             };
-            contacts::triggers(self.host, module, entity, time)?;
+            contacts::triggers(
+                self.host,
+                module,
+                crate::modules::execution::TraceAccess::empty(),
+                entity,
+                time,
+            )?;
         }
         Ok(())
     }
@@ -737,6 +767,7 @@ impl PushHost for Host<'_> {
             Some(contacts::admit_captured(
                 self.host,
                 module,
+                crate::modules::execution::TraceAccess::empty(),
                 captured.ok_or(ClientCommandError::InvalidSlot)?,
             )?)
         };
@@ -870,7 +901,13 @@ impl MotionHost for Host<'_> {
             vm.relink_entity(services, context, native)?;
             sync_attachments(vm, services, context)
         })?;
-        contacts::triggers(self.host, self.module, entity, self.time)?;
+        contacts::triggers(
+            self.host,
+            self.module,
+            crate::modules::execution::TraceAccess::empty(),
+            entity,
+            self.time,
+        )?;
         self.current()
     }
     fn impact(
@@ -883,6 +920,7 @@ impl MotionHost for Host<'_> {
         contacts::impact(
             self.host,
             self.module,
+            crate::modules::execution::TraceAccess::empty(),
             mover_entity,
             self.mover,
             obstacle,

@@ -145,6 +145,7 @@ fn fixture(nested: bool) -> FrameHost {
 }
 
 pub(super) fn run() {
+    suspended_producer_is_live_after_its_nested_export_returns();
     for nested in [false, true] {
         let mut host = fixture(nested);
         host.console
@@ -171,4 +172,265 @@ pub(super) fn run() {
         );
         host.shutdown_modules();
     }
+}
+
+fn suspended_producer_is_live_after_its_nested_export_returns() {
+    use qa_core::primitives::{Bounds, NativeEntity, Q3StatLayout, Vec3};
+    use qa_world::collision::{brushes::BrushTree, surfaces::SurfaceTable};
+
+    const ENTITY: usize = 0x1800;
+    const PLAYERS: usize = 0x1d00;
+    const BODY: u32 = 0x0200_0000;
+    fn leave(code: &mut Vec<u8>, value: Option<u32>) {
+        if let Some(value) = value {
+            code.push(0xb8);
+            code.extend(value.to_le_bytes());
+        }
+        code.extend([0x48, 0x83, 0xc4, 24, 0xc3]);
+    }
+    fn store(code: &mut Vec<u8>, target: usize, value: u32) {
+        rip(code, &[0xc7, 0x05], target);
+        // The memory operation also consumes its four-byte immediate.
+        let at = code.len() - 4;
+        let relative = i32::from_le_bytes(code[at..at + 4].try_into().unwrap()) - 4;
+        code[at..at + 4].copy_from_slice(&relative.to_le_bytes());
+        code.extend(value.to_le_bytes());
+    }
+    fn jump(code: &mut Vec<u8>, command: u8) -> usize {
+        code.extend([0x83, 0xff, command, 0x0f, 0x84]);
+        let at = code.len();
+        code.extend([0; 4]);
+        at
+    }
+    fn bind(code: &[u8], commands: &[u32]) -> Vm {
+        assert!(code.len() < ENTITY - ENTRY);
+        let mut entry = vec![0xe9];
+        entry.extend((ENTRY as i32 - 0x13c0 - 5).to_le_bytes());
+        let mut image = function_image(Encoding::Elf, &entry);
+        image.bytes[ENTRY + SEGMENT_BIAS..ENTRY + SEGMENT_BIAS + code.len()].copy_from_slice(code);
+        let mut exports: Vec<_> = commands
+            .iter()
+            .map(|&command| NamedExport {
+                parameters: &[NativeScalar::Word; 13],
+                result: NativeScalar::Word,
+                name: b"vmMain",
+                command: Some(command),
+            })
+            .collect();
+        exports.insert(
+            1,
+            NamedExport {
+                parameters: &[NativeScalar::Word],
+                result: NativeScalar::Void,
+                name: b"dllEntry",
+                command: None,
+            },
+        );
+        Vm::map_image(image, &exports, &[], Duration::from_secs(3)).unwrap()
+    }
+    let mut producer = vec![0x48, 0x83, 0xec, 24];
+    let initialize = jump(&mut producer, 0);
+    let nested = jump(&mut producer, 9);
+    let inspect = jump(&mut producer, 11);
+    store(&mut producer, ENTITY + 488, 64.0f32.to_bits());
+    store(&mut producer, ENTITY + 460, BODY);
+    now(&mut producer, TEXT);
+    leave(&mut producer, Some(7));
+    let init_at = producer.len();
+    number(&mut producer, 15);
+    rip(&mut producer, &[0x48, 0x8d, 0x35], ENTITY);
+    producer.extend([0xba, 1, 0, 0, 0, 0xb9]);
+    producer.extend(608u32.to_le_bytes());
+    rip(&mut producer, &[0x4c, 0x8d, 0x05], PLAYERS);
+    producer.extend([0x41, 0xb9]);
+    producer.extend(640u32.to_le_bytes());
+    syscall(&mut producer);
+    number(&mut producer, 30);
+    rip(&mut producer, &[0x48, 0x8d, 0x35], ENTITY);
+    syscall(&mut producer);
+    leave(&mut producer, Some(0));
+    let nested_at = producer.len();
+    store(&mut producer, ENTITY + 488, 96.0f32.to_bits());
+    leave(&mut producer, Some(0));
+    let inspect_at = producer.len();
+    rip(&mut producer, &[0x8b, 0x05], ENTITY + 420);
+    leave(&mut producer, None);
+    for (jump, target) in [
+        (initialize, init_at),
+        (nested, nested_at),
+        (inspect, inspect_at),
+    ] {
+        producer[jump..jump + 4].copy_from_slice(&(target as i32 - jump as i32 - 4).to_le_bytes());
+    }
+    let mut producer = bind(&producer, &[10, 0, 11, 9]);
+    producer.configure_q3_game(Q3StatLayout::BASE);
+    {
+        let base = producer.process.base();
+        let mut memory = qa_compat::memory::process_memory(&mut producer.process).unwrap();
+        let entity = base + (ENTITY + SEGMENT_BIAS) as u64;
+        memory.read_mut(entity, 608).unwrap().fill(0);
+        memory.write_word(entity + 512, 1023).unwrap();
+        memory.write_word(entity + 460, 1).unwrap();
+        memory.write_vec3(entity + 436, Vec3([-1.0; 3])).unwrap();
+        memory.write_vec3(entity + 448, Vec3([1.0; 3])).unwrap();
+        let text = base + (TEXT + SEGMENT_BIAS) as u64;
+        memory.write_string(text, 32, b"foreign_trace").unwrap();
+    }
+    let mut consumer = vec![0x48, 0x83, 0xec, 24];
+    number(&mut consumer, 24);
+    rip(&mut consumer, &[0x48, 0x8d, 0x35], PLAYERS);
+    rip(&mut consumer, &[0x48, 0x8d, 0x15], TEXT);
+    consumer.extend([0x31, 0xc9, 0x45, 0x31, 0xc0]);
+    rip(&mut consumer, &[0x4c, 0x8d, 0x0d], TEXT + 16);
+    consumer.extend([0x48, 0xc7, 0x04, 0x24]);
+    consumer.extend(1023u32.to_le_bytes());
+    consumer.extend([0x48, 0xc7, 0x44, 0x24, 8]);
+    consumer.extend(BODY.to_le_bytes());
+    syscall(&mut consumer);
+    rip(&mut consumer, &[0x8b, 0x05], PLAYERS + 8);
+    leave(&mut consumer, None);
+    let mut consumer = bind(&consumer, &[9]);
+    {
+        let base = consumer.process.base();
+        let mut memory = qa_compat::memory::process_memory(&mut consumer.process).unwrap();
+        memory
+            .write_vec3(base + (TEXT + SEGMENT_BIAS) as u64, Vec3([-16.0, 0.0, 0.0]))
+            .unwrap();
+        memory
+            .write_vec3(
+                base + (TEXT + SEGMENT_BIAS + 16) as u64,
+                Vec3([128.0, 0.0, 0.0]),
+            )
+            .unwrap();
+    }
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let geometry = runtime
+        .geometry
+        .load_brushes(
+            vec![],
+            vec![],
+            SurfaceTable::flags(vec![]),
+            BrushTree::direct(0).unwrap(),
+            vec![Bounds {
+                mins: Vec3([-4096.0; 3]),
+                maxs: Vec3([4096.0; 3]),
+            }],
+        )
+        .unwrap();
+    let collision = visibility_world::collision(
+        &runtime.geometry,
+        [Some(0), Some(0)],
+        qa_world::visibility::PvsRows::all_visible(1),
+    );
+    assert_eq!(collision.geometry, geometry);
+    runtime.collision = Some(collision);
+    let producer_pointer = producer.import_callback();
+    let consumer_pointer = consumer.import_callback();
+    let mut first = request(
+        &mut runtime,
+        ModuleId(1),
+        RuleSetId::Quake3,
+        TickRate::FrameDriven,
+        producer,
+    );
+    first.entries = vec![0, 1, 2, 3];
+    first.prepare = vec![Export::words(CallbackId(1), &[producer_pointer])];
+    first.initialize = vec![Export::words(CallbackId(2), &[])];
+    let mut second = request(
+        &mut runtime,
+        ModuleId(2),
+        RuleSetId::Quake3,
+        TickRate::FrameDriven,
+        consumer,
+    );
+    second.entries = vec![0, 1];
+    second.prepare = vec![Export::words(CallbackId(1), &[consumer_pointer])];
+    let mut console = Console::new(Context::default()).unwrap();
+    let max_clients = console
+        .cvars
+        .bind(
+            "sv_maxclients",
+            Context {
+                source: RuleSetId::Quake3,
+                ..Context::default()
+            },
+        )
+        .unwrap();
+    console.cvars.force_write(max_clients, "1").unwrap();
+    let mut host =
+        FrameHost::load_modules(console, runtime, TickRate::FrameDriven, vec![first, second])
+            .unwrap();
+    host.initialize_modules(Phase::Server);
+    if host.module_state(ModuleId(1)) != Some(State::Running) {
+        let mut batch = host
+            .runtime
+            .server
+            .events
+            .batch(host.runtime.server.presentation)
+            .unwrap();
+        while let Some(record) = host.runtime.server.events.next(&mut batch) {
+            if let FrameEvent::Print(print) = record.event {
+                eprintln!(
+                    "{}",
+                    String::from_utf8_lossy(
+                        host.runtime.server.events.texts.get(print.text).unwrap()
+                    )
+                );
+            }
+        }
+    }
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+    let entity = host
+        .runtime
+        .server
+        .entities
+        .find_native(
+            NativeEntity {
+                module: ModuleId(1),
+                slot: 0,
+            },
+            None,
+        )
+        .unwrap();
+    let before = host.runtime.server.area.bounds(entity).unwrap();
+    let relinks = host.runtime.server.area.relinks;
+    host.call_module_export(
+        ModuleId(1),
+        Export::words(CallbackId(0), &[]),
+        ThinkTime::Milliseconds(0),
+    )
+    .unwrap();
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Native(7))
+    );
+    let Some(ModuleResult::Native(bits)) = host.module_counts(ModuleId(2)).unwrap().last_result
+    else {
+        panic!("trace reply")
+    };
+    let fraction = f32::from_bits(bits as u32);
+    assert!(
+        fraction > 0.75 && fraction < 0.8,
+        "live foreign collision fraction {fraction}"
+    );
+    assert_eq!(
+        host.runtime.server.entities.columns.position[entity.slot as usize],
+        Vec3([96.0, 0.0, 0.0])
+    );
+    assert_eq!(host.runtime.server.area.bounds(entity), Some(before));
+    assert_eq!(host.runtime.server.area.relinks, relinks);
+    host.call_module_export(
+        ModuleId(1),
+        Export::words(CallbackId(3), &[]),
+        ThinkTime::Milliseconds(0),
+    )
+    .unwrap();
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Native(1))
+    );
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    host.shutdown_modules();
 }

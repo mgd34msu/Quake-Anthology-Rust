@@ -62,7 +62,7 @@ fn body(code: &mut Vec<u8>, callback: u64, destination: u64, counter: u64, resul
     code.extend(result.to_le_bytes());
     code.push(0xc3);
 }
-fn mapped_image() -> Vm {
+pub(super) fn mapped_image() -> Vm {
     let mut file = native_image::pe_export_fixture(64);
     native_image::put(&mut file, 208, 12288, 4);
     native_image::put(&mut file, 392 + 8, 8192, 4);

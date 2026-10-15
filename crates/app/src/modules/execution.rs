@@ -162,6 +162,62 @@ impl ExecutionSlot {
         Ok(slots.into_boxed_slice())
     }
 }
+/// Borrowed authority for foreign reads while the owned driver is suspended.
+/// Current wins over parents; an active matching frame without a pending stop
+/// cannot fall through to an older activation's controller capability.
+#[derive(Clone, Copy)]
+pub(crate) struct TraceAccess<'a> {
+    parents: &'a [ExecutionSlot],
+    current: Option<(ModuleId, &'a Backend)>,
+}
+impl<'a> TraceAccess<'a> {
+    pub(crate) fn empty() -> Self {
+        Self {
+            parents: &[],
+            current: None,
+        }
+    }
+    fn parents(parents: &'a [ExecutionSlot]) -> Self {
+        Self {
+            parents,
+            current: None,
+        }
+    }
+    fn with_current(self, module: ModuleId, backend: Option<&'a Backend>) -> Self {
+        Self {
+            current: backend.map(|backend| (module, backend)),
+            ..self
+        }
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(super) fn native(
+        self,
+        module: ModuleId,
+    ) -> Option<(
+        &'a qa_compat::native::Run,
+        &'a qa_compat::native::PendingImport,
+    )> {
+        let stopped = |backend: &'a Backend| match backend {
+            Backend::Native { run, pending } => pending.as_ref().map(|pending| (run, pending)),
+            _ => None,
+        };
+        if let Some((current, backend @ Backend::Native { .. })) = self.current
+            && current == module
+        {
+            return stopped(backend);
+        }
+        for slot in self.parents.iter().rev() {
+            if let Some(Frame::Guest(frame)) = &slot.frame
+                && frame.start.module == module
+                && let Some(backend @ Backend::Native { .. }) = frame.backend.as_ref()
+            {
+                return stopped(backend);
+            }
+        }
+        None
+    }
+}
+
 enum Frame {
     Guest(Activation),
     Console(ConsoleActivation),
@@ -497,9 +553,16 @@ fn drive(host: &mut FrameHost, frame: Frame, command: CommandArgs<'_>) -> Execut
         };
         let step = match &mut frame {
             Frame::Guest(guest) => match arguments(&arena, guest.arguments, command) {
-                Some(command) => guest_step(host, guest, command),
+                Some(command) => {
+                    guest_step(host, guest, command, TraceAccess::parents(&arena[..index]))
+                }
                 None => {
-                    cancel(host, guest, Arguments::default());
+                    cancel(
+                        host,
+                        guest,
+                        Arguments::default(),
+                        TraceAccess::parents(&arena[..index]),
+                    );
                     completing(host, guest, Err(()));
                     FrameStep::Continue
                 }
@@ -572,7 +635,12 @@ fn drive(host: &mut FrameHost, frame: Frame, command: CommandArgs<'_>) -> Execut
         depth -= 1;
         if let Some(Frame::Guest(mut frame)) = arena[depth].frame.take() {
             let command = arguments(&arena, frame.arguments, command).unwrap_or_default();
-            cancel(host, &mut frame, command);
+            cancel(
+                host,
+                &mut frame,
+                command,
+                TraceAccess::parents(&arena[..depth]),
+            );
             let _ = finish(host, &frame, Err(()));
         }
         arena[depth].command.clear();
@@ -581,18 +649,23 @@ fn drive(host: &mut FrameHost, frame: Frame, command: CommandArgs<'_>) -> Execut
     result
 }
 
-fn guest_step(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'_>) -> FrameStep {
+fn guest_step(
+    host: &mut FrameHost,
+    frame: &mut Activation,
+    command: Arguments<'_>,
+    access: TraceAccess<'_>,
+) -> FrameStep {
     let cleanup = frame
         .pending
         .as_ref()
         .is_some_and(|pending| matches!(pending.operation, Operation::Cleanup { .. }));
     if !cleanup && !valid_frame(host, frame.start, frame.backend.as_ref()) {
-        cancel(host, frame, command);
+        cancel(host, frame, command, access);
         completing(host, frame, Err(()));
         return FrameStep::Continue;
     }
     if frame.pending.is_some() {
-        return match operation(host, frame) {
+        return match operation(host, frame, access) {
             OperationStep::Continue => FrameStep::Continue,
             OperationStep::Reply => {
                 if let Some(Pending {
@@ -601,7 +674,7 @@ fn guest_step(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'
                 {
                     frame.reply = Some((point, 0));
                 } else {
-                    cancel(host, frame, command);
+                    cancel(host, frame, command, access);
                     completing(host, frame, Err(()));
                 }
                 FrameStep::Continue
@@ -624,7 +697,7 @@ fn guest_step(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'
                 FrameStep::Guest(child)
             }
             OperationStep::Abort => {
-                cancel(host, frame, command);
+                cancel(host, frame, command, access);
                 completing(host, frame, Err(()));
                 FrameStep::Continue
             }
@@ -655,7 +728,7 @@ fn guest_step(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'
             OperationStep::Console { context, text } => FrameStep::Console { context, text },
         };
     }
-    match advance(host, frame, command) {
+    match advance(host, frame, command, access) {
         Ok(GuestStep::Host(request, point)) => {
             let operation = match request {
                 HostRequest::Callback(request) => Ok(Operation::Callback(Some(request))),
@@ -691,13 +764,13 @@ fn guest_step(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'
                 });
             } else {
                 frame.reply = Some((point, 0));
-                cancel(host, frame, command);
+                cancel(host, frame, command, access);
                 completing(host, frame, Err(()));
             }
         }
         Ok(GuestStep::Returned(value)) => completing(host, frame, Ok(value)),
         Err(()) => {
-            cancel(host, frame, command);
+            cancel(host, frame, command, access);
             completing(host, frame, Err(()));
         }
     }
@@ -1036,10 +1109,11 @@ fn disconnect(
     id: ClientId,
     lifetime: EntityId,
     retiring: &mut Option<(ClientId, EntityId)>,
+    access: TraceAccess<'_>,
 ) -> Option<OperationStep> {
-    let (callback, call) = host.begin_client_disconnect(id, lifetime)?;
+    let (callback, call) = host.begin_client_disconnect(id, lifetime, access)?;
     let Some(modules) = host.modules.as_ref() else {
-        host.finish_client_disconnect(id, lifetime);
+        host.finish_client_disconnect(id, lifetime, access);
         return None;
     };
     let functions = Arc::clone(&modules.functions);
@@ -1051,8 +1125,20 @@ fn disconnect(
     ))
 }
 
-fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
-    let Some(pending) = frame.pending.as_mut() else {
+fn operation(
+    host: &mut FrameHost,
+    frame: &mut Activation,
+    parents: TraceAccess<'_>,
+) -> OperationStep {
+    let Activation {
+        start,
+        backend,
+        pending,
+        child,
+        ..
+    } = frame;
+    let access = parents.with_current(start.module, backend.as_ref());
+    let Some(pending) = pending.as_mut() else {
         return OperationStep::Abort;
     };
     match &mut pending.operation {
@@ -1067,7 +1153,7 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                     context: *context,
                     text: *text,
                 }
-            } else if matches!(frame.child.take(), Some(Ok(_))) {
+            } else if matches!(child.take(), Some(Ok(_))) {
                 OperationStep::Reply
             } else {
                 OperationStep::Abort
@@ -1084,14 +1170,14 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                         .dispatch_resolved(host, request.target, request.call)
                         .unwrap_or(ModuleDispatch::Completed(Err(()))),
                 )
-            } else if matches!(frame.child.take(), Some(Ok(_))) {
+            } else if matches!(child.take(), Some(Ok(_))) {
                 return OperationStep::Reply;
             } else {
                 return OperationStep::Abort;
             }
         }
         Operation::Triggers { run, touch } => {
-            if let Some(accepted) = frame.child.take() {
+            if let Some(accepted) = child.take() {
                 let Some(completed) = touch.take() else {
                     return OperationStep::Abort;
                 };
@@ -1099,7 +1185,7 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                     return OperationStep::Abort;
                 }
             }
-            match run.next(host) {
+            match run.next(host, access) {
                 Ok(Some(prepared)) => {
                     let request = prepared.request();
                     *touch = Some(prepared);
@@ -1124,11 +1210,11 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
             termination,
         } => {
             if let Some((id, lifetime)) = retiring.take() {
-                frame.child.take();
-                host.finish_client_disconnect(id, lifetime);
+                child.take();
+                host.finish_client_disconnect(id, lifetime, access);
             }
             if let Some(termination) = termination.take()
-                && let Some((id, lifetime)) = frame.start.connection
+                && let Some((id, lifetime)) = start.connection
                 && host
                     .runtime
                     .server
@@ -1141,7 +1227,7 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                         host.received_client_disconnect(id)
                     }
                     qa_compat::services::ClientTermination::Rejected => {
-                        if let Some(step) = disconnect(host, id, lifetime, retiring) {
+                        if let Some(step) = disconnect(host, id, lifetime, retiring, access) {
                             return step;
                         }
                     }
@@ -1151,17 +1237,17 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
                 while *next_client < host.runtime.server.clients.len() {
                     let id = ClientId(*next_client as u32);
                     *next_client += 1;
-                    if !host.module_recipient(frame.start.module, id) {
+                    if !host.module_recipient(start.module, id) {
                         continue;
                     }
                     let lifetime = host.runtime.server.clients[id.0 as usize].entity;
-                    if let Some(step) = disconnect(host, id, lifetime, retiring) {
+                    if let Some(step) = disconnect(host, id, lifetime, retiring, access) {
                         return step;
                     }
                 }
                 // Keep native client identities live through their disconnect
                 // callbacks. The sole failed-module owner retires rows afterward.
-                host.retire_module_state(frame.start.module);
+                host.retire_module_state(start.module);
                 *failed = false;
             }
             OperationStep::Finished(*result)
@@ -1173,19 +1259,19 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
             time,
             recipient,
         } => {
-            if let Some(accepted) = frame.child.take() {
+            if let Some(accepted) = child.take() {
                 if accepted.is_err()
                     && let Some(module) = recipient.take()
                 {
                     return OperationStep::FailedInput(module);
                 }
                 *recipient = None;
-                if !valid_frame(host, frame.start, frame.backend.as_ref()) {
+                if !valid_frame(host, *start, backend.as_ref()) {
                     return OperationStep::Abort;
                 }
             }
             if let Some(resume) = resume.take() {
-                match input_resume(host, frame.start.module, resume, *context) {
+                match input_resume(host, start.module, resume, *context) {
                     Some(next) => *cursor = Some(next),
                     None => return OperationStep::Abort,
                 }
@@ -1193,7 +1279,7 @@ fn operation(host: &mut FrameHost, frame: &mut Activation) -> OperationStep {
             let Some(current) = cursor.take() else {
                 return OperationStep::Abort;
             };
-            match input_advance(host, frame.start.module, current, *context) {
+            match input_advance(host, start.module, current, *context) {
                 Some(DispatchStep::Done) => return OperationStep::Reply,
                 Some(DispatchStep::Atom { atom, resume: next }) => {
                     *resume = Some(next);
@@ -1259,6 +1345,7 @@ fn advance(
     host: &mut FrameHost,
     frame: &mut Activation,
     command: Arguments<'_>,
+    access: TraceAccess<'_>,
 ) -> Result<GuestStep, ()> {
     let start = frame.start;
     let Some(functions) = host
@@ -1271,7 +1358,7 @@ fn advance(
     let (row, storage, traces) = host
         .modules
         .as_mut()
-        .and_then(|modules| modules.trace_parts_mut(start.module))
+        .and_then(|modules| modules.trace_parts_mut(start.module, access))
         .ok_or(())?;
     let entering = frame.backend.is_none();
     if entering && let Program::QuakeC(qc) = &mut row.request.program {
@@ -1687,7 +1774,12 @@ fn finish_quakec(
     restored.and(velocity).and(projection).map_err(|_| ())
 }
 
-fn cancel(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'_>) {
+fn cancel(
+    host: &mut FrameHost,
+    frame: &mut Activation,
+    command: Arguments<'_>,
+    access: TraceAccess<'_>,
+) {
     let point = frame
         .pending
         .as_mut()
@@ -1742,10 +1834,10 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'_>) 
     {
         row.counts.rejected += 1;
     }
-    let Some((row, storage)) = host
+    let Some((row, storage, traces)) = host
         .modules
         .as_mut()
-        .and_then(|modules| modules.parts_mut(frame.start.module))
+        .and_then(|modules| modules.trace_parts_mut(frame.start.module, access))
     else {
         return;
     };
@@ -1753,6 +1845,7 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: Arguments<'_>) 
         .runtime
         .engine_services(&mut host.console, storage, &mut row.scratch);
     services.native_geometry = row.geometry;
+    services.foreign_trace = Some(traces.borrow());
     services.storage.abort_client_callbacks(frame.start.module);
     match (&mut row.request.program, frame.backend.as_mut()) {
         (Program::QuakeC(qc), Some(Backend::QuakeC { run, .. })) => {

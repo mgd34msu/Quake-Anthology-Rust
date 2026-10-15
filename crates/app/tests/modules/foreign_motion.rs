@@ -67,29 +67,35 @@ fn push_entity_foreign_impact_retains_mover_identity_across_removing_relink_trig
         ),
         (ModuleId(2), vec![(2, Vec3([10.0, 0.0, 8.0]), 2.0, 6)]),
     ] {
-        edit_quakec(&mut host, module, |vm, services, context| {
-            for (native, position, solid, touch) in rows {
-                let offset = native * vm.stride as u32;
-                for (field, value) in [
-                    (b"origin".as_slice(), position),
-                    (b"mins", Vec3([-1.0; 3])),
-                    (b"maxs", Vec3([1.0; 3])),
-                ] {
-                    let address = vm
-                        .field_address(offset, vm.image.field(field).unwrap() as u32, 3)
-                        .unwrap();
-                    vm.entities.write_vec3(address, value).unwrap();
+        edit_quakec(
+            &mut host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                for (native, position, solid, touch) in rows {
+                    let offset = native * vm.stride as u32;
+                    for (field, value) in [
+                        (b"origin".as_slice(), position),
+                        (b"mins", Vec3([-1.0; 3])),
+                        (b"maxs", Vec3([1.0; 3])),
+                    ] {
+                        let address = vm
+                            .field_address(offset, vm.image.field(field).unwrap() as u32, 3)
+                            .unwrap();
+                        vm.entities.write_vec3(address, value).unwrap();
+                    }
+                    for (field, word) in [(b"solid".as_slice(), solid.to_bits()), (b"touch", touch)]
+                    {
+                        let address = vm
+                            .field_address(offset, vm.image.field(field).unwrap() as u32, 1)
+                            .unwrap();
+                        vm.entities.write_word(address, word as i32).unwrap();
+                    }
+                    vm.relink_entity(services, context, offset)?;
                 }
-                for (field, word) in [(b"solid".as_slice(), solid.to_bits()), (b"touch", touch)] {
-                    let address = vm
-                        .field_address(offset, vm.image.field(field).unwrap() as u32, 1)
-                        .unwrap();
-                    vm.entities.write_word(address, word as i32).unwrap();
-                }
-                vm.relink_entity(services, context, offset)?;
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .unwrap();
     }
     let calls = host.module_counts(ModuleId(2)).unwrap().calls;

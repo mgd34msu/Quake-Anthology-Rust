@@ -729,6 +729,26 @@ impl EntityProjection {
             Ok(None)
         }
     }
+    pub(crate) fn with_trace_view<T>(
+        projection: Option<&Self>,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        geometry: Option<qa_core::primitives::GeometryId>,
+        read: impl FnOnce(Option<&dyn qa_world::collision::NativeTraceEntities>) -> Result<T, CallError>,
+    ) -> Result<T, CallError> {
+        let view = projection
+            .map(|projection| projection.optional_trace_view(memory, context, geometry))
+            .transpose()?
+            .flatten();
+        let result = read(
+            view.as_ref()
+                .map(|view| view as &dyn qa_world::collision::NativeTraceEntities),
+        );
+        if let Some(view) = view {
+            view.finish()?;
+        }
+        result
+    }
     pub fn trace_view<'a, 'memory>(
         &'a self,
         memory: &'a ModuleMemory<'memory>,

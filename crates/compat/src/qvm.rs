@@ -124,6 +124,24 @@ impl Vm {
                 projection.stat_layout()
             })
     }
+    pub fn with_trace_view<T>(
+        &self,
+        context: crate::services::CallContext,
+        geometry: Option<qa_core::primitives::GeometryId>,
+        read: impl FnOnce(
+            Option<&dyn qa_world::collision::NativeTraceEntities>,
+        ) -> Result<T, crate::services::CallError>,
+    ) -> Result<T, crate::services::CallError> {
+        crate::entities::EntityProjection::with_trace_view(
+            self.projection
+                .as_ref()
+                .map(|projection| &projection.entities),
+            &self.memory,
+            context,
+            geometry,
+            read,
+        )
+    }
     pub fn bind_player_values(
         &mut self,
         values: qa_core::primitives::PlayerValueBindings<'_>,

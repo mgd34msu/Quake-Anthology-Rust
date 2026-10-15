@@ -50,7 +50,11 @@ pub(in crate::modules) fn same_client(
 }
 
 /// Native client edicts remain allocated after their connection retires.
-pub(super) fn retain_body(host: &mut FrameHost, id: ClientId) -> Result<(), ClientCommandError> {
+pub(super) fn retain_body(
+    host: &mut FrameHost,
+    id: ClientId,
+    access: crate::modules::execution::TraceAccess<'_>,
+) -> Result<(), ClientCommandError> {
     let Some(client) = host
         .runtime
         .server
@@ -90,7 +94,7 @@ pub(super) fn retain_body(host: &mut FrameHost, id: ClientId) -> Result<(), Clie
     }
     let offset = super::super::native_self(&host.runtime, entity, module, &qc.vm)
         .ok_or(ClientCommandError::InvalidSlot)?;
-    edit(host, module, |vm, services, context| {
+    edit(host, module, access, |vm, services, context| {
         vm.retain_client_body(services, context, offset, entity)
             .map(|_| ())
     })
@@ -190,9 +194,12 @@ pub(super) fn connect(
         slot: ordinal as i32,
     };
     let result = (|| -> Result<(), ClientCommandError> {
-        let released = edit(host, module, |vm, services, context| {
-            vm.release_client_body(services, context, offset)
-        });
+        let released = edit(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| vm.release_client_body(services, context, offset),
+        );
         if released.is_err()
             && let Some(row) = host.module_row_mut(module)
         {
@@ -206,11 +213,19 @@ pub(super) fn connect(
             return Err(ClientCommandError::InvalidSlot);
         }
         let entity = host.runtime.server.clients[id.0 as usize].entity;
-        edit(host, module, |vm, services, _| {
-            vm.bind_client(&services.server.entities, native, entity)
-        })?;
+        edit(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, _| vm.bind_client(&services.server.entities, native, entity),
+        )?;
         callback(host, module, id, ClientCallback::NewParameters)?;
-        let parms = edit(host, module, |vm, _, _| vm.read_spawn_parms())?;
+        let parms = edit(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, _, _| vm.read_spawn_parms(),
+        )?;
         host.runtime.server.clients[id.0 as usize].module_spawn_parms = parms;
         let color = |key| {
             let text = qa_core::text::info_value(userinfo, key, false)
@@ -218,17 +233,25 @@ pub(super) fn connect(
             (qa_core::text::integer_prefix(text).0 as u8 & 15).min(13)
         };
         let colors = color(b"topcolor") << 4 | color(b"bottomcolor");
-        edit(host, module, |vm, services, context| {
-            vm.prepare_client_spawn(services, context, offset, userinfo, colors)?;
-            vm.write_spawn_parms(parms)
-        })?;
+        edit(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                vm.prepare_client_spawn(services, context, offset, userinfo, colors)?;
+                vm.write_spawn_parms(parms)
+            },
+        )?;
         callback(host, module, id, ClientCallback::Connect)?;
         callback(host, module, id, ClientCallback::Begin)?;
         // The native module becomes movement owner only after Begin succeeds.
         host.runtime.server.clients[id.0 as usize].module_movement = true;
-        edit(host, module, |vm, services, context| {
-            vm.project_entity(services, context, offset)
-        })?;
+        edit(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| vm.project_entity(services, context, offset),
+        )?;
         host.runtime.native_numbers[id.0 as usize].set_native_clients(info.clients as u32, 1);
         Ok(())
     })();
@@ -249,9 +272,12 @@ pub(super) fn receive(
     _: u32,
 ) -> Result<(), ClientCommandError> {
     let offset = native(host, module, id)?;
-    edit(host, module, |vm, _, context| {
-        vm.receive_client_command(context, offset, command)
-    })
+    edit(
+        host,
+        module,
+        crate::modules::execution::TraceAccess::empty(),
+        |vm, _, context| vm.receive_client_command(context, offset, command),
+    )
 }
 
 fn think(
@@ -337,44 +363,51 @@ fn move_frame_client(
     let captured = host.runtime.server.clients[id.0 as usize].entity;
     let command = host.runtime.server.clients[id.0 as usize].command;
     with_tuning(host, id, |host| {
-        edit(host, module, |vm, services, context| {
-            vm.read_frame_client(
-                &services.server.entities,
-                context,
-                offset,
-                captured,
-                phase,
-                &mut services.server.clients[id.0 as usize].player,
-            )?;
-            let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
-            let foreign = services.foreign_trace;
-            let current =
-                super::super::trace::TraceView::current(vm, context, services.native_geometry);
-            let moved = services.server.move_client(
-                id,
-                command,
-                services.geometry,
-                geometry,
-                index,
-                services.scratch,
-                Some(&current),
-                foreign.map(|read| read.view),
-                options,
-                |entities, player, write| {
-                    current.edit(|vm| {
-                        vm.write_frame_scalar(entities, context, offset, captured, player, write)
-                    })
-                },
-            );
-            let moved = ForeignTraceRead::complete(
-                Some(current.borrow()),
-                ForeignTraceRead::complete(foreign, moved),
-            );
-            drop(current);
-            let moved = moved?;
-            vm.finish_frame_client(services, context, offset)?;
-            Ok(moved)
-        })
+        edit(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                vm.read_frame_client(
+                    &services.server.entities,
+                    context,
+                    offset,
+                    captured,
+                    phase,
+                    &mut services.server.clients[id.0 as usize].player,
+                )?;
+                let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
+                let foreign = services.foreign_trace;
+                let current =
+                    super::super::trace::TraceView::current(vm, context, services.native_geometry);
+                let moved = services.server.move_client(
+                    id,
+                    command,
+                    services.geometry,
+                    geometry,
+                    index,
+                    services.scratch,
+                    Some(&current),
+                    foreign.map(|read| read.view),
+                    options,
+                    |entities, player, write| {
+                        current.edit(|vm| {
+                            vm.write_frame_scalar(
+                                entities, context, offset, captured, player, write,
+                            )
+                        })
+                    },
+                );
+                let moved = ForeignTraceRead::complete(
+                    Some(current.borrow()),
+                    ForeignTraceRead::complete(foreign, moved),
+                );
+                drop(current);
+                let moved = moved?;
+                vm.finish_frame_client(services, context, offset)?;
+                Ok(moved)
+            },
+        )
     })
 }
 
@@ -396,9 +429,12 @@ pub(super) fn controls(host: &mut FrameHost, module: ModuleId, seconds: f64) {
         }
         let result = (|| {
             let offset = native(host, module, id)?;
-            let start = edit(host, module, |vm, services, context| {
-                vm.prepare_control(services, context, offset, seconds)
-            })?;
+            let start = edit(
+                host,
+                module,
+                crate::modules::execution::TraceAccess::empty(),
+                |vm, services, context| vm.prepare_control(services, context, offset, seconds),
+            )?;
             if let Some(start) = start
                 && host.runtime.server.clients[id.0 as usize]
                     .player
@@ -450,9 +486,12 @@ pub(in crate::modules) fn frame(
         return Ok(true);
     }
     let offset = native(host, module, id)?;
-    let phase = edit(host, module, |vm, _, context| {
-        vm.client_phase(context, offset)
-    })?;
+    let phase = edit(
+        host,
+        module,
+        crate::modules::execution::TraceAccess::empty(),
+        |vm, _, context| vm.client_phase(context, offset),
+    )?;
     match phase {
         Motion::None
         | Motion::Noclip
@@ -492,11 +531,20 @@ pub(in crate::modules) fn frame(
     if !same_client(host, module, id, captured) {
         return Ok(true);
     }
-    edit(host, module, |vm, services, context| {
-        vm.relink_entity(services, context, offset)
-    })?;
+    edit(
+        host,
+        module,
+        crate::modules::execution::TraceAccess::empty(),
+        |vm, services, context| vm.relink_entity(services, context, offset),
+    )?;
     let entity = host.runtime.server.clients[id.0 as usize].entity;
-    super::super::contacts::triggers(host, module, entity, time)?;
+    super::super::contacts::triggers(
+        host,
+        module,
+        crate::modules::execution::TraceAccess::empty(),
+        entity,
+        time,
+    )?;
     if !same_client(host, module, id, captured) {
         return Ok(true);
     }
@@ -518,9 +566,12 @@ pub(super) fn command(
             return Ok(());
         }
         let offset = native(host, module, id)?;
-        let step = edit(host, module, |vm, services, context| {
-            vm.prepare_client_command(services, context, offset, &command)
-        })?;
+        let step = edit(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| vm.prepare_client_command(services, context, offset, &command),
+        )?;
         callback(host, module, id, ClientCallback::BeforeMove)?;
         if !same_client(host, module, id, captured) {
             return Ok(());
@@ -533,9 +584,12 @@ pub(super) fn command(
             return Ok(());
         }
         let offset = native(host, module, id)?;
-        let origin_offset = edit(host, module, |vm, services, context| {
-            vm.read_client(services, context, offset)
-        })?;
+        let origin_offset = edit(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| vm.read_client(services, context, offset),
+        )?;
         if host.runtime.collision.is_none() {
             return Err(ClientCommandError::Usercmd(ServiceError::Geometry));
         }
@@ -550,32 +604,40 @@ pub(super) fn command(
                 .wrapping_add(i32::from(command.duration_ms));
         }
         let moved = with_tuning(host, id, |host| {
-            edit(host, module, |vm, services, context| {
-                let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
-                let foreign = services.foreign_trace;
-                vm.with_trace_view(context, offset, services.native_geometry, |view, _| {
-                    let moved = services
-                        .server
-                        .move_client(
-                            id,
-                            command,
-                            services.geometry,
-                            geometry,
-                            index,
-                            services.scratch,
-                            Some(view),
-                            foreign.map(|read| read.view),
-                            Default::default(),
-                            qa_session::physics::no_body_boundary,
-                        )
-                        .map_err(|_| ServiceError::Geometry);
-                    ForeignTraceRead::complete(foreign, moved)
-                })
-            })
+            edit(
+                host,
+                module,
+                crate::modules::execution::TraceAccess::empty(),
+                |vm, services, context| {
+                    let (geometry, index) = services.world.ok_or(ServiceError::Geometry)?;
+                    let foreign = services.foreign_trace;
+                    vm.with_trace_view(context, offset, services.native_geometry, |view, _| {
+                        let moved = services
+                            .server
+                            .move_client(
+                                id,
+                                command,
+                                services.geometry,
+                                geometry,
+                                index,
+                                services.scratch,
+                                Some(view),
+                                foreign.map(|read| read.view),
+                                Default::default(),
+                                qa_session::physics::no_body_boundary,
+                            )
+                            .map_err(|_| ServiceError::Geometry);
+                        ForeignTraceRead::complete(foreign, moved)
+                    })
+                },
+            )
         })?;
-        edit(host, module, |vm, services, context| {
-            vm.write_client(services, context, offset, origin_offset)
-        })?;
+        edit(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| vm.write_client(services, context, offset, origin_offset),
+        )?;
         if !spectator {
             let entity = host.runtime.server.clients[id.0 as usize].entity;
             let other = super::super::contacts::capture(host, entity)?;
@@ -588,12 +650,27 @@ pub(super) fn command(
                     *captured = Some(super::super::contacts::capture(host, entity)?);
                 }
             }
-            super::super::contacts::triggers(host, module, entity, time)?;
+            super::super::contacts::triggers(
+                host,
+                module,
+                crate::modules::execution::TraceAccess::empty(),
+                entity,
+                time,
+            )?;
             for contact in contacts[..moved.contact_count].iter().flatten() {
                 if !same_client(host, module, id, captured) {
                     return Ok(());
                 }
-                super::super::contacts::touch(host, module, *contact, other, None, true, false)?;
+                super::super::contacts::touch(
+                    host,
+                    module,
+                    crate::modules::execution::TraceAccess::empty(),
+                    *contact,
+                    other,
+                    None,
+                    true,
+                    false,
+                )?;
             }
         }
     }
@@ -642,7 +719,12 @@ pub(super) fn publish(
         .rules;
     host.publish_client_values(id, rules, module);
     let offset = native(host, module, id)?;
-    let angles = edit(host, module, |vm, _, _| vm.client_set_angles(offset))?;
+    let angles = edit(
+        host,
+        module,
+        crate::modules::execution::TraceAccess::empty(),
+        |vm, _, _| vm.client_set_angles(offset),
+    )?;
     if let Some(angles) = angles {
         let delivery = qa_core::primitives::NativeDelivery {
             module,
@@ -665,7 +747,12 @@ pub(super) fn publish(
             .push_delivered(delivery, qa_core::events::FrameEvent::SetAngles(angles))
             .is_ok()
         {
-            edit(host, module, |vm, _, _| vm.clear_client_set_angles(offset))?;
+            edit(
+                host,
+                module,
+                crate::modules::execution::TraceAccess::empty(),
+                |vm, _, _| vm.clear_client_set_angles(offset),
+            )?;
         }
     }
     Ok(())

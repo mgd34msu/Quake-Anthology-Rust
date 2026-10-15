@@ -180,26 +180,31 @@ fn fixture() -> (
                 _ => unreachable!(),
             }
         );
-        edit_quakec(&mut host, module, |vm, services, context| {
-            let native = 2 * vm.stride as u32;
-            let model = vm.insert_string(b"*1").unwrap();
-            for (field, word) in [
-                (24, if module == A { 4.0f32 } else { 2.0f32 }.to_bits()),
-                (27, model as u32),
-            ] {
-                let address = vm.field_address(native, field, 1).unwrap();
-                vm.entities.write_word(address, word as i32).unwrap();
-            }
-            for (field, vector) in [
-                (0, Vec3([if module == A { 20.0 } else { -100.0 }, 0.0, 0.0])),
-                (9, Vec3([-12.0; 3])),
-                (12, Vec3([12.0; 3])),
-            ] {
-                let address = vm.field_address(native, field, 3).unwrap();
-                vm.entities.write_vec3(address, vector).unwrap();
-            }
-            vm.relink_entity(services, context, native)
-        })
+        edit_quakec(
+            &mut host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                let native = 2 * vm.stride as u32;
+                let model = vm.insert_string(b"*1").unwrap();
+                for (field, word) in [
+                    (24, if module == A { 4.0f32 } else { 2.0f32 }.to_bits()),
+                    (27, model as u32),
+                ] {
+                    let address = vm.field_address(native, field, 1).unwrap();
+                    vm.entities.write_word(address, word as i32).unwrap();
+                }
+                for (field, vector) in [
+                    (0, Vec3([if module == A { 20.0 } else { -100.0 }, 0.0, 0.0])),
+                    (9, Vec3([-12.0; 3])),
+                    (12, Vec3([12.0; 3])),
+                ] {
+                    let address = vm.field_address(native, field, 3).unwrap();
+                    vm.entities.write_vec3(address, vector).unwrap();
+                }
+                vm.relink_entity(services, context, native)
+            },
+        )
         .unwrap();
     }
     let actor = host
@@ -231,15 +236,20 @@ fn call(host: &mut FrameHost, module: ModuleId, callback: u32) -> [u32; 3] {
 }
 
 fn solid(host: &mut FrameHost, value: f32) {
-    edit_quakec(host, A, |vm, services, context| {
-        vm.push_store(
-            &mut services.server.entities,
-            context,
-            2 * vm.stride as u32,
-            PushNumber::Solid,
-            value,
-        )
-    })
+    edit_quakec(
+        host,
+        A,
+        crate::modules::execution::TraceAccess::empty(),
+        |vm, services, context| {
+            vm.push_store(
+                &mut services.server.entities,
+                context,
+                2 * vm.stride as u32,
+                PushNumber::Solid,
+                value,
+            )
+        },
+    )
     .unwrap();
 }
 

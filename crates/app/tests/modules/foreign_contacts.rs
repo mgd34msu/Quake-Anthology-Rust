@@ -31,9 +31,12 @@ fn admit(
     recipient: ModuleId,
     reference: NativeEntityRef,
 ) -> Result<AdmittedEntity, ClientCommandError> {
-    super::super::edit_quakec(host, recipient, |vm, services, context| {
-        vm.admit_reference(&services.server.entities, context, reference)
-    })
+    super::super::edit_quakec(
+        host,
+        recipient,
+        crate::modules::execution::TraceAccess::empty(),
+        |vm, services, context| vm.admit_reference(&services.server.entities, context, reference),
+    )
 }
 
 pub(in crate::modules) const FIELDS: &[(u16, u16, &[u8])] = &[
@@ -252,19 +255,24 @@ pub(in crate::modules) fn fixture() -> (FrameHost, [EntityId; 3], u32) {
             ThinkTime::Seconds(0.0),
         )
         .unwrap();
-        super::super::edit_quakec(&mut host, module, |vm, services, context| {
-            let offset = 2 * vm.stride as u32;
-            let position = Vec3(std::array::from_fn(|axis| {
-                f32::from_bits(vm.image.globals[110 + axis])
-            }));
-            let origin = vm.field_address(offset, 0, 3).unwrap();
-            vm.entities.write_vec3(origin, position).unwrap();
-            for (field, word) in [(24, 2.0f32.to_bits()), (25, 1536.0f32.to_bits()), (30, 2)] {
-                let address = vm.field_address(offset, field, 1).unwrap();
-                vm.entities.write_word(address, word as i32).unwrap();
-            }
-            vm.project_entities(services, context)
-        })
+        super::super::edit_quakec(
+            &mut host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                let offset = 2 * vm.stride as u32;
+                let position = Vec3(std::array::from_fn(|axis| {
+                    f32::from_bits(vm.image.globals[110 + axis])
+                }));
+                let origin = vm.field_address(offset, 0, 3).unwrap();
+                vm.entities.write_vec3(origin, position).unwrap();
+                for (field, word) in [(24, 2.0f32.to_bits()), (25, 1536.0f32.to_bits()), (30, 2)] {
+                    let address = vm.field_address(offset, field, 1).unwrap();
+                    vm.entities.write_word(address, word as i32).unwrap();
+                }
+                vm.project_entities(services, context)
+            },
+        )
         .unwrap();
     }
     host.time = EventTime::from_milliseconds(3000);
@@ -316,6 +324,7 @@ fn foreign_qc_touch_uses_recipient_clock_stable_alias_and_private_words() {
     touch(
         &mut host,
         A,
+        TraceAccess::empty(),
         b_capture,
         other,
         Some(ThinkTime::Seconds(42.0)),
@@ -339,6 +348,7 @@ fn foreign_qc_touch_uses_recipient_clock_stable_alias_and_private_words() {
     touch(
         &mut host,
         A,
+        TraceAccess::empty(),
         b_capture,
         other,
         Some(ThinkTime::Seconds(42.0)),
@@ -360,10 +370,40 @@ fn foreign_contact_dedup_uses_invoking_batch_canonical_slots() {
 
     let other = capture(&host, a).unwrap();
     host.module_row_mut(A).unwrap().client_contacts.begin();
-    touch(&mut host, A, a_capture, other, None, true, false).unwrap();
-    touch(&mut host, A, b_capture, other, None, true, false).unwrap();
+    touch(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        a_capture,
+        other,
+        None,
+        true,
+        false,
+    )
+    .unwrap();
+    touch(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        b_capture,
+        other,
+        None,
+        true,
+        false,
+    )
+    .unwrap();
     let calls = host.module_counts(B).unwrap().calls;
-    touch(&mut host, A, b_capture, other, None, true, false).unwrap();
+    touch(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        b_capture,
+        other,
+        None,
+        true,
+        false,
+    )
+    .unwrap();
     assert_eq!(host.module_counts(B).unwrap().calls, calls);
     let stamps = &host.module_row(A).unwrap().client_contacts;
     assert!(stamps.contains(a.slot as usize));
@@ -478,23 +518,38 @@ fn qw_contact_dedup_keeps_captured_slot_when_callback_reuses_native_at_another_s
         .unwrap();
     assert_eq!(earlier.slot, filler.slot);
     assert!(earlier.slot < original.slot);
-    super::super::edit_quakec(&mut host, A, |vm, services, context| {
-        for (native, callback) in [(33, 13), (34, 0)] {
-            let base = native * vm.stride as u32;
-            let solid = vm.field_address(base, 24, 1).unwrap();
-            vm.entities
-                .write_word(solid, 2.0f32.to_bits() as i32)
-                .unwrap();
-            let touch = vm.field_address(base, 30, 1).unwrap();
-            vm.entities.write_word(touch, callback).unwrap();
-        }
-        vm.project_entities(services, context)
-    })
+    super::super::edit_quakec(
+        &mut host,
+        A,
+        crate::modules::execution::TraceAccess::empty(),
+        |vm, services, context| {
+            for (native, callback) in [(33, 13), (34, 0)] {
+                let base = native * vm.stride as u32;
+                let solid = vm.field_address(base, 24, 1).unwrap();
+                vm.entities
+                    .write_word(solid, 2.0f32.to_bits() as i32)
+                    .unwrap();
+                let touch = vm.field_address(base, 30, 1).unwrap();
+                vm.entities.write_word(touch, callback).unwrap();
+            }
+            vm.project_entities(services, context)
+        },
+    )
     .unwrap();
     let target = capture(&host, original).unwrap();
     let other = capture(&host, anchor).unwrap();
     host.module_row_mut(A).unwrap().client_contacts.begin();
-    touch(&mut host, A, target, other, None, true, false).unwrap();
+    touch(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        target,
+        other,
+        None,
+        true,
+        false,
+    )
+    .unwrap();
     let replacement = host
         .runtime
         .server
@@ -524,7 +579,17 @@ fn qw_contact_dedup_keeps_captured_slot_when_callback_reuses_native_at_another_s
             .client_contacts
             .contains(replacement.slot as usize)
     );
-    touch(&mut host, A, target, other, None, true, false).unwrap();
+    touch(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        target,
+        other,
+        None,
+        true,
+        false,
+    )
+    .unwrap();
     assert_eq!(host.module_counts(A).unwrap().calls, calls);
     assert_eq!(host.module_counts(A).unwrap().traps, 0);
 }
@@ -577,6 +642,7 @@ fn foreign_impact_pins_weak_other_before_first_callback_retires_mover() {
     impact(
         &mut host,
         A,
+        TraceAccess::empty(),
         Some(a),
         mover,
         obstacle,
@@ -615,6 +681,7 @@ fn foreign_impact_with_no_touch_ignores_full_recipient_alias_capacity() {
     impact(
         &mut host,
         A,
+        TraceAccess::empty(),
         Some(a),
         mover,
         obstacle,
@@ -652,6 +719,7 @@ fn foreign_impact_runs_mover_touch_when_no_touch_recipient_has_full_alias_capaci
     impact(
         &mut host,
         A,
+        TraceAccess::empty(),
         Some(a),
         mover,
         obstacle,
@@ -684,6 +752,7 @@ fn foreign_reciprocal_impact_rebinds_other_after_first_callback_reuses_native_ro
     impact(
         &mut host,
         A,
+        TraceAccess::empty(),
         Some(old_mover),
         mover,
         obstacle_ref,
@@ -758,7 +827,14 @@ fn native_private_trigger_is_counted_without_hiding_later_qc_recipient() {
     let bounds = host.runtime.server.area.bounds(native).unwrap();
     let relinks = host.runtime.server.area.relinks;
     let calls = host.module_counts(B).unwrap().calls;
-    triggers(&mut host, A, a, ThinkTime::Seconds(42.0)).unwrap();
+    triggers(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        a,
+        ThinkTime::Seconds(42.0),
+    )
+    .unwrap();
     assert_eq!(host.module_counts(A).unwrap().unsupported_contacts, 1);
     assert_eq!(host.module_counts(B).unwrap().calls, calls + 1);
     assert_eq!(host.module_counts(B).unwrap().traps, 0);
@@ -779,7 +855,17 @@ fn qc_contact_reads_published_native_body_without_importing_alias_back() {
         .entities
         .columns
         .body(native.slot as usize);
-    touch(&mut host, A, b_capture, other, None, false, false).unwrap();
+    touch(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        b_capture,
+        other,
+        None,
+        false,
+        false,
+    )
+    .unwrap();
     assert_eq!(
         inspect(&mut host, B, 3),
         [70.0f32, 80.0, 90.0].map(f32::to_bits)
@@ -807,9 +893,18 @@ fn rejected_prepared_foreign_touch_releases_its_alias_lease() {
     let b_capture = capture(&host, b).unwrap();
 
     let other = capture(&host, a).unwrap();
-    let prepared = prepare_touch(&mut host, A, b_capture, other, None, false, false)
-        .unwrap()
-        .unwrap();
+    let prepared = prepare_touch(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        b_capture,
+        other,
+        None,
+        false,
+        false,
+    )
+    .unwrap()
+    .unwrap();
     host.runtime.server.entities.columns.owner[b.slot as usize] = NATIVE;
     assert!(prepared.invoke(&mut host).is_err());
     host.runtime.server.entities.columns.owner[b.slot as usize] = B;
@@ -825,7 +920,17 @@ fn rejected_prepared_foreign_touch_releases_its_alias_lease() {
     let next = admit(&mut host, B, native).unwrap();
     assert_eq!(next.offset(), 3 * stride);
     release(&mut host, next).unwrap();
-    touch(&mut host, A, b_capture, native_capture, None, false, false).unwrap();
+    touch(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        b_capture,
+        native_capture,
+        None,
+        false,
+        false,
+    )
+    .unwrap();
     assert_eq!(
         inspect(&mut host, B, 3),
         [70.0f32, 80.0, 90.0].map(f32::to_bits)
@@ -858,6 +963,7 @@ fn captured_retired_foreign_mover_keeps_weak_other_at_reciprocal_impact() {
         impact(
             &mut host,
             A,
+            TraceAccess::empty(),
             None,
             mover,
             obstacle,
@@ -919,6 +1025,7 @@ fn impact_admits_anonymous_other_pose_and_skips_its_absent_native_callback() {
     impact(
         &mut host,
         A,
+        TraceAccess::empty(),
         Some(actor),
         mover,
         other,
@@ -953,6 +1060,7 @@ fn retired_anonymous_other_traps_on_read_without_retargeting_reused_common_slot(
     let prepared = prepare_touch(
         &mut host,
         A,
+        TraceAccess::empty(),
         recipient_capture,
         original,
         None,
@@ -988,7 +1096,17 @@ fn retired_anonymous_other_traps_on_read_without_retargeting_reused_common_slot(
         None
     );
     let current = capture(&host, fresh).unwrap();
-    touch(&mut host, A, recipient_capture, current, None, false, false).unwrap();
+    touch(
+        &mut host,
+        A,
+        TraceAccess::empty(),
+        recipient_capture,
+        current,
+        None,
+        false,
+        false,
+    )
+    .unwrap();
     assert_eq!(inspect(&mut host, B, 3), fresh_pose.0.map(f32::to_bits));
     assert_eq!(host.module_counts(B).unwrap().traps, 1);
 }
@@ -1004,6 +1122,7 @@ fn anonymous_published_callback_is_resolved_before_missing_native_self_is_counte
     impact(
         &mut host,
         A,
+        TraceAccess::empty(),
         Some(actor),
         mover,
         other,

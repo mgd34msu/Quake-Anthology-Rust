@@ -2179,6 +2179,9 @@ fn owned_pe64_shader_imports_borrow_only_the_parked_child_and_share_cold_dispatc
 #[path = "support/drop_client.rs"]
 mod drop_client;
 
+#[path = "support/scoped_trace.rs"]
+mod scoped_trace;
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "support/native_continuation.rs"]
 mod native_continuation;
@@ -2192,6 +2195,7 @@ fn main() {
         std::process::exit(status);
     }
     drop_client::run();
+    scoped_trace::run();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     native_continuation::run();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

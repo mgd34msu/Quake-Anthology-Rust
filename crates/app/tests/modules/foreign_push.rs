@@ -286,18 +286,23 @@ impl Fixture {
         // Ordinary native bodies must be owned by the VM allocator. Imported
         // startup rows are borrowed and intentionally cannot be removed by QC.
         let rider = borrowed.unwrap_or_else(|| {
-            edit_quakec(&mut host, B, |vm, services, context| {
-                loop {
-                    let offset = vm.spawn_entity(services, context)?;
-                    let slot = offset / vm.stride as u32;
-                    assert!(slot <= 40, "fixture skipped native passenger40");
-                    if slot == 40 {
-                        return vm
-                            .resolve_entity(&services.server.entities, B, offset)?
-                            .ok_or(CallError::Entity);
+            edit_quakec(
+                &mut host,
+                B,
+                crate::modules::execution::TraceAccess::empty(),
+                |vm, services, context| {
+                    loop {
+                        let offset = vm.spawn_entity(services, context)?;
+                        let slot = offset / vm.stride as u32;
+                        assert!(slot <= 40, "fixture skipped native passenger40");
+                        if slot == 40 {
+                            return vm
+                                .resolve_entity(&services.server.entities, B, offset)?
+                                .ok_or(CallError::Entity);
+                        }
                     }
-                }
-            })
+                },
+            )
             .unwrap()
         });
         for (module, id, position, solid, motion, mins, maxs) in [
@@ -324,41 +329,51 @@ impl Fixture {
                 Vec3([1.0; 3]),
             ),
         ] {
-            edit_quakec(&mut host, module, |vm, services, context| {
-                let slot = services.server.entities.columns.native_entity[id.slot as usize]
-                    .unwrap()
-                    .slot;
-                let offset = slot as u32 * vm.stride as u32;
-                for (field, value) in [(0, position), (9, mins), (12, maxs)] {
-                    vector(vm, offset, field, value);
-                }
-                for (field, value) in [
-                    (24, solid.to_bits()),
-                    (33, motion.to_bits()),
-                    (25, 512.0f32.to_bits()),
-                ] {
-                    word(vm, offset, field, value);
-                }
-                if module == A {
-                    let model = vm.insert_string(b"*1").unwrap() as u32;
-                    word(vm, offset, 27, model);
-                    word(vm, offset, 41, 1.0f32.to_bits());
-                    word(vm, offset, 31, 100.0f32.to_bits());
-                    vector(vm, offset, 3, Vec3([16.0, 0.0, 0.0]));
-                }
-                vm.relink_entity(services, context, offset)
-            })
+            edit_quakec(
+                &mut host,
+                module,
+                crate::modules::execution::TraceAccess::empty(),
+                |vm, services, context| {
+                    let slot = services.server.entities.columns.native_entity[id.slot as usize]
+                        .unwrap()
+                        .slot;
+                    let offset = slot as u32 * vm.stride as u32;
+                    for (field, value) in [(0, position), (9, mins), (12, maxs)] {
+                        vector(vm, offset, field, value);
+                    }
+                    for (field, value) in [
+                        (24, solid.to_bits()),
+                        (33, motion.to_bits()),
+                        (25, 512.0f32.to_bits()),
+                    ] {
+                        word(vm, offset, field, value);
+                    }
+                    if module == A {
+                        let model = vm.insert_string(b"*1").unwrap() as u32;
+                        word(vm, offset, 27, model);
+                        word(vm, offset, 41, 1.0f32.to_bits());
+                        word(vm, offset, 31, 100.0f32.to_bits());
+                        vector(vm, offset, 3, Vec3([16.0, 0.0, 0.0]));
+                    }
+                    vm.relink_entity(services, context, offset)
+                },
+            )
             .unwrap();
         }
         let captured = contacts::capture(&host, pusher).unwrap();
-        edit_quakec(&mut host, B, |vm, services, context| {
-            vm.write_motion_field(
-                &mut services.server.entities,
-                context,
-                native as u32 * vm.stride as u32,
-                MotionField::Ground(captured),
-            )
-        })
+        edit_quakec(
+            &mut host,
+            B,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                vm.write_motion_field(
+                    &mut services.server.entities,
+                    context,
+                    native as u32 * vm.stride as u32,
+                    MotionField::Ground(captured),
+                )
+            },
+        )
         .unwrap();
         if blocked {
             Self::body(&mut host, A, Vec3([7.5625, 0.0, 0.0]), 2.0, 0);
@@ -379,26 +394,36 @@ impl Fixture {
         solid: f32,
         touch: u32,
     ) -> EntityId {
-        edit_quakec(host, module, |vm, services, context| {
-            let offset = vm.spawn_entity(services, context)?;
-            let entity = vm
-                .resolve_entity(&services.server.entities, module, offset)?
-                .ok_or(CallError::Entity)?;
-            for (field, value) in [(0, position), (9, Vec3([-1.0; 3])), (12, Vec3([1.0; 3]))] {
-                vector(vm, offset, field, value);
-            }
-            word(vm, offset, 24, solid.to_bits());
-            word(vm, offset, 30, touch);
-            vm.relink_entity(services, context, offset)?;
-            Ok(entity)
-        })
+        edit_quakec(
+            host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                let offset = vm.spawn_entity(services, context)?;
+                let entity = vm
+                    .resolve_entity(&services.server.entities, module, offset)?
+                    .ok_or(CallError::Entity)?;
+                for (field, value) in [(0, position), (9, Vec3([-1.0; 3])), (12, Vec3([1.0; 3]))] {
+                    vector(vm, offset, field, value);
+                }
+                word(vm, offset, 24, solid.to_bits());
+                word(vm, offset, 30, touch);
+                vm.relink_entity(services, context, offset)?;
+                Ok(entity)
+            },
+        )
         .unwrap()
     }
     fn blocked(&mut self, callback: u32) {
-        edit_quakec(&mut self.host, A, |vm, _, _| {
-            word(vm, 40 * vm.stride as u32, 42, callback);
-            Ok(())
-        })
+        edit_quakec(
+            &mut self.host,
+            A,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, _, _| {
+                word(vm, 40 * vm.stride as u32, 42, callback);
+                Ok(())
+            },
+        )
         .unwrap();
     }
     fn run(&mut self) -> Result<(), ClientCommandError> {
@@ -411,12 +436,17 @@ impl Fixture {
         )
     }
     fn raw_position(&mut self, module: ModuleId, native: i32) -> Vec3 {
-        edit_quakec(&mut self.host, module, |vm, _, _| {
-            let at = vm
-                .field_address(native as u32 * vm.stride as u32, 0, 3)
-                .map_err(|_| CallError::Memory)?;
-            Ok(vm.entities.read_vec3(at)?)
-        })
+        edit_quakec(
+            &mut self.host,
+            module,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, _, _| {
+                let at = vm
+                    .field_address(native as u32 * vm.stride as u32, 0, 3)
+                    .map_err(|_| CallError::Memory)?;
+                Ok(vm.entities.read_vec3(at)?)
+            },
+        )
         .unwrap()
     }
 }
@@ -429,7 +459,13 @@ fn foreign_primary_passenger_routes_once_through_its_owner_and_retained_geometry
     ] {
         let mut f = Fixture::new(a, b, false, false);
         let captured = contacts::capture(&f.host, f.rider).unwrap();
-        let admitted = contacts::admit_captured(&mut f.host, A, captured).unwrap();
+        let admitted = contacts::admit_captured(
+            &mut f.host,
+            A,
+            crate::modules::execution::TraceAccess::empty(),
+            captured,
+        )
+        .unwrap();
         let alias = admitted.reference().ordinal as i32;
         contacts::release(&mut f.host, admitted).unwrap();
         let Program::QuakeC(qc) = &f.host.module_row(B).unwrap().request.program else {
@@ -717,7 +753,12 @@ fn fill_aliases(host: &mut FrameHost, recipient: ModuleId) -> Vec<EntityId> {
             .unwrap()
             .id;
         let capture = contacts::capture(host, entity).unwrap();
-        match contacts::admit_captured(host, recipient, capture) {
+        match contacts::admit_captured(
+            host,
+            recipient,
+            crate::modules::execution::TraceAccess::empty(),
+            capture,
+        ) {
             Ok(admitted) => {
                 contacts::release(host, admitted).unwrap();
                 aliases.push(entity);
@@ -738,7 +779,12 @@ fn foreign_blocked_without_callback_does_not_admit_other_into_a_full_recipient()
     assert_eq!(f.raw_position(B, 40), Vec3([5.5, 0.0, 0.0]));
     let capture = contacts::capture(&f.host, f.rider).unwrap();
     assert!(matches!(
-        contacts::admit_captured(&mut f.host, A, capture),
+        contacts::admit_captured(
+            &mut f.host,
+            A,
+            crate::modules::execution::TraceAccess::empty(),
+            capture
+        ),
         Err(ClientCommandError::Usercmd(CallError::Capacity))
     ));
 }
@@ -750,19 +796,24 @@ fn foreign_passenger_count_can_exceed_pushers_native_backing_capacity() {
     let mut passengers = vec![f.rider];
     for index in 1..65 {
         let entity = Fixture::body(&mut f.host, B, Vec3([0.0, index as f32 * 4.0, 6.0]), 2.0, 0);
-        edit_quakec(&mut f.host, B, |vm, services, context| {
-            let native =
-                services.server.entities.columns.native_entity[entity.slot as usize].unwrap();
-            let offset = native.slot as u32 * vm.stride as u32;
-            word(vm, offset, 25, 512.0f32.to_bits());
-            word(vm, offset, 33, 3.0f32.to_bits());
-            vm.write_motion_field(
-                &mut services.server.entities,
-                context,
-                offset,
-                MotionField::Ground(pusher),
-            )
-        })
+        edit_quakec(
+            &mut f.host,
+            B,
+            crate::modules::execution::TraceAccess::empty(),
+            |vm, services, context| {
+                let native =
+                    services.server.entities.columns.native_entity[entity.slot as usize].unwrap();
+                let offset = native.slot as u32 * vm.stride as u32;
+                word(vm, offset, 25, 512.0f32.to_bits());
+                word(vm, offset, 33, 3.0f32.to_bits());
+                vm.write_motion_field(
+                    &mut services.server.entities,
+                    context,
+                    offset,
+                    MotionField::Ground(pusher),
+                )
+            },
+        )
         .unwrap();
         passengers.push(entity);
     }
@@ -781,9 +832,12 @@ fn saved_foreign_native_origin_store_rejects_alias_takeover_before_any_write() {
     let mut f = Fixture::new(RuleSetId::Quake, RuleSetId::QuakeWorld, true, false);
     f.host.time = EventTime::from_milliseconds(100_000);
     f.host.module_row_mut(B).unwrap().request.context.clock = ThinkTime::Seconds(100.0);
-    edit_quakec(&mut f.host, B, |vm, services, context| {
-        vm.remove_entity(services, context, 40 * vm.stride as u32)
-    })
+    edit_quakec(
+        &mut f.host,
+        B,
+        crate::modules::execution::TraceAccess::empty(),
+        |vm, services, context| vm.remove_entity(services, context, 40 * vm.stride as u32),
+    )
     .unwrap();
     // Reclaim through the existing edict delay, without changing private bindings.
     f.host.time = EventTime::from_milliseconds(100_600);

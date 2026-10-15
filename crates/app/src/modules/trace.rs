@@ -1,5 +1,5 @@
 //! Trace reads borrow a module only until their selected field operation returns.
-use super::{Module, Program};
+use super::{Module, Program, execution::TraceAccess};
 use qa_compat::{
     entities::TraceError,
     quakec::Vm,
@@ -11,11 +11,36 @@ use qa_world::collision::{
 };
 use std::cell::RefCell;
 
+struct Rows<'a> {
+    before: &'a mut [Option<Module>],
+    after: &'a mut [Option<Module>],
+}
+impl Rows<'_> {
+    fn row(&self, module: ModuleId) -> Option<&Module> {
+        let index = module.0 as usize;
+        let row = if index < self.before.len() {
+            self.before.get(index)
+        } else {
+            self.after.get(index.checked_sub(self.before.len() + 1)?)
+        }?
+        .as_ref()?;
+        row.state.can_invoke().then_some(row)
+    }
+    fn row_mut(&mut self, module: ModuleId) -> Option<&mut Module> {
+        let index = module.0 as usize;
+        let row = if index < self.before.len() {
+            self.before.get_mut(index)
+        } else {
+            self.after
+                .get_mut(index.checked_sub(self.before.len() + 1)?)
+        }?
+        .as_mut()?;
+        row.state.can_invoke().then_some(row)
+    }
+}
+
 enum Source<'a> {
-    Rows {
-        before: &'a [Option<Module>],
-        after: &'a [Option<Module>],
-    },
+    Rows(RefCell<Rows<'a>>),
     Current {
         vm: RefCell<&'a mut Vm>,
         context: CallContext,
@@ -26,18 +51,24 @@ enum Source<'a> {
 pub(super) struct TraceView<'a> {
     source: Source<'a>,
     error: TraceError,
+    access: TraceAccess<'a>,
 }
 
 impl<'a> TraceView<'a> {
-    pub(super) fn rows(before: &'a [Option<Module>], after: &'a [Option<Module>]) -> Self {
+    pub(super) fn rows(
+        before: &'a mut [Option<Module>],
+        after: &'a mut [Option<Module>],
+        access: TraceAccess<'a>,
+    ) -> Self {
         Self {
-            source: Source::Rows { before, after },
+            source: Source::Rows(RefCell::new(Rows { before, after })),
             error: TraceError::default(),
+            access,
         }
     }
 
-    pub(super) fn all(rows: &'a [Option<Module>]) -> Self {
-        Self::rows(rows, &[])
+    pub(super) fn all(rows: &'a mut [Option<Module>], access: TraceAccess<'a>) -> Self {
+        Self::rows(rows, &mut [], access)
     }
 
     pub(super) fn current(
@@ -52,6 +83,7 @@ impl<'a> TraceView<'a> {
                 geometry,
             },
             error: TraceError::default(),
+            access: TraceAccess::empty(),
         }
     }
 
@@ -73,35 +105,42 @@ impl<'a> TraceView<'a> {
         call(&mut vm)
     }
 
-    fn row(&self, module: ModuleId) -> Option<&Module> {
-        let Source::Rows { before, after } = &self.source else {
-            return None;
+    fn anchor(&self, module: ModuleId) -> Result<Option<EntityId>, CallError> {
+        let Source::Rows(rows) = &self.source else {
+            return Ok(None);
         };
-        let index = module.0 as usize;
-        let row = if index < before.len() {
-            before.get(index)
-        } else {
-            after.get(index.checked_sub(before.len() + 1)?)
-        }?
-        .as_ref()?;
-        (row.state.can_invoke() && matches!(&row.request.program, Program::QuakeC(_)))
-            .then_some(row)
+        let rows = rows.try_borrow().map_err(|_| CallError::Aborted)?;
+        Ok(rows.row(module).map(|row| row.request.anchor))
     }
 
-    fn with_vm<T>(
+    fn with_view<T>(
         &self,
         module: ModuleId,
-        call: impl FnOnce(&Vm, CallContext, Option<GeometryId>) -> Result<T, CallError>,
+        call: impl FnOnce(Option<&dyn NativeTraceEntities>) -> Result<T, CallError>,
     ) -> Result<Option<T>, CallError> {
         match &self.source {
-            Source::Rows { .. } => {
-                let Some(row) = self.row(module) else {
+            Source::Rows(rows) => {
+                let mut rows = rows.try_borrow_mut().map_err(|_| CallError::Aborted)?;
+                let Some(row) = rows.row_mut(module) else {
                     return Ok(None);
                 };
-                let Program::QuakeC(qc) = &row.request.program else {
-                    return Ok(None);
-                };
-                call(&qc.vm, row.request.context, row.geometry).map(Some)
+                let context = row.request.context;
+                let geometry = row.geometry;
+                match &mut row.request.program {
+                    Program::QuakeC(qc) => {
+                        qc.vm
+                            .with_trace_view(context, 0, geometry, |view, _| call(Some(view)))
+                    }
+                    Program::Qvm { vm, .. } => vm.with_trace_view(context, geometry, call),
+                    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                    Program::Native { vm, .. } => vm
+                        .with_trace_view(context, geometry, self.access.native(module), call)
+                        .map_err(|error| match error {
+                            qa_compat::native::Error::Service(error) => error,
+                            _ => CallError::Aborted,
+                        }),
+                }
+                .map(Some)
             }
             Source::Current {
                 vm,
@@ -109,7 +148,8 @@ impl<'a> TraceView<'a> {
                 geometry,
             } if context.module == module => {
                 let vm = vm.try_borrow().map_err(|_| CallError::Aborted)?;
-                call(&vm, *context, *geometry).map(Some)
+                vm.with_trace_view(*context, 0, *geometry, |view, _| call(Some(view)))
+                    .map(Some)
             }
             Source::Current { .. } => Ok(None),
         }
@@ -121,11 +161,7 @@ impl<'a> TraceView<'a> {
         call: impl FnOnce(&dyn NativeTraceEntities) -> Option<T>,
     ) -> Option<T> {
         self.error
-            .capture(|| {
-                self.with_vm(native.module, |vm, context, geometry| {
-                    vm.with_trace_view(context, 0, geometry, |view, _| Ok(call(view)))
-                })
-            })
+            .capture(|| self.with_view(native.module, |view| Ok(view.and_then(call))))
             .flatten()
             .flatten()
     }
@@ -137,14 +173,19 @@ impl NativeTraceEntities for TraceView<'_> {
     }
 
     fn supports(&self, module: ModuleId) -> bool {
-        match &self.source {
-            Source::Rows { .. } => self.row(module).is_some(),
-            Source::Current { context, .. } => context.module == module,
-        }
+        self.error
+            .capture(|| {
+                self.with_view(module, |view| {
+                    Ok(view.is_some_and(|view| view.supports(module)))
+                })
+            })
+            .map_or(true, |supported| supported.unwrap_or(false))
     }
 
     fn anchor(&self, module: ModuleId) -> Option<EntityId> {
-        self.row(module).map(|row| row.request.anchor)
+        self.error
+            .capture(|| TraceView::anchor(self, module))
+            .flatten()
     }
 
     fn owner(&self, native: NativeEntity) -> Option<CollisionOwner> {

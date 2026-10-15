@@ -1,5 +1,5 @@
 //! Contact traversal owns its cursor and releases spatial borrows per callback.
-use super::{FrameHost, Program, clients::ClientCommandError};
+use super::{FrameHost, Program, clients::ClientCommandError, execution::TraceAccess};
 use qa_compat::{abi::CallbackRequest, quakec::AdmittedEntity};
 use qa_core::primitives::{
     CallbackCall, EntityId, ModuleId, NativeEntityRef, ResourceNamespace, ThinkTime,
@@ -66,9 +66,10 @@ pub(super) fn capture(
 pub(super) fn admit_captured(
     host: &mut FrameHost,
     recipient: ModuleId,
+    access: TraceAccess<'_>,
     captured: EntityReference,
 ) -> Result<AdmittedEntity, ClientCommandError> {
-    super::edit_quakec(host, recipient, |vm, services, context| {
+    super::edit_quakec(host, recipient, access, |vm, services, context| {
         vm.admit_captured_reference(&services.server.entities, context, captured)
     })
 }
@@ -104,6 +105,7 @@ impl TriggerRun {
     pub(super) fn next(
         &mut self,
         host: &mut FrameHost,
+        access: TraceAccess<'_>,
     ) -> Result<Option<PreparedTouch>, ClientCommandError> {
         let ResourceNamespace::Module(module) = self.mover.namespace else {
             return Err(ClientCommandError::DifferentModule);
@@ -130,6 +132,7 @@ impl TriggerRun {
                 && let Some(touch) = prepare_touch(
                     host,
                     module,
+                    access,
                     target_capture,
                     other,
                     Some(self.time),
@@ -153,6 +156,7 @@ impl TriggerRun {
 pub(super) fn triggers(
     host: &mut FrameHost,
     module: ModuleId,
+    access: TraceAccess<'_>,
     entity: EntityId,
     time: ThinkTime,
 ) -> Result<(), ClientCommandError> {
@@ -161,7 +165,7 @@ pub(super) fn triggers(
         return Err(ClientCommandError::DifferentModule);
     }
     let mut run = TriggerRun::begin(host, mover, time)?;
-    while let Some(touch) = run.next(host)? {
+    while let Some(touch) = run.next(host, access)? {
         touch.invoke(host)?;
     }
     Ok(())
@@ -222,6 +226,7 @@ impl PreparedTouch {
 fn prepare_touch(
     host: &mut FrameHost,
     module: ModuleId,
+    access: TraceAccess<'_>,
     target: EntityReference,
     other: EntityReference,
     time: Option<ThinkTime>,
@@ -231,6 +236,7 @@ fn prepare_touch(
     prepare_admitted_touch(
         host,
         module,
+        access,
         target,
         other,
         None,
@@ -338,6 +344,7 @@ fn resolve_touch(
 fn prepare_admitted_touch(
     host: &mut FrameHost,
     module: ModuleId,
+    access: TraceAccess<'_>,
     target_capture: EntityReference,
     other: EntityReference,
     mut admitted: Option<AdmittedEntity>,
@@ -370,7 +377,7 @@ fn prepare_admitted_touch(
     let (owner, target, time) = prepared;
     let admitted = match admitted {
         Some(admitted) => admitted,
-        None => admit_captured(host, owner, other)?,
+        None => admit_captured(host, owner, access, other)?,
     };
     Ok(Some(PreparedTouch {
         request: CallbackRequest {
@@ -389,15 +396,23 @@ fn prepare_admitted_touch(
 pub(super) fn touch(
     host: &mut FrameHost,
     module: ModuleId,
+    access: TraceAccess<'_>,
     target: EntityReference,
     other: EntityReference,
     time: Option<ThinkTime>,
     deduplicate: bool,
     trigger_only: bool,
 ) -> Result<(), ClientCommandError> {
-    if let Some(touch) =
-        prepare_touch(host, module, target, other, time, deduplicate, trigger_only)?
-    {
+    if let Some(touch) = prepare_touch(
+        host,
+        module,
+        access,
+        target,
+        other,
+        time,
+        deduplicate,
+        trigger_only,
+    )? {
         touch.invoke(host)?;
     }
     Ok(())
@@ -406,12 +421,13 @@ pub(super) fn touch(
 pub(super) fn impact(
     host: &mut FrameHost,
     module: ModuleId,
+    access: TraceAccess<'_>,
     mover_entity: Option<EntityId>,
     mover: EntityReference,
     obstacle: EntityReference,
     time: ThinkTime,
 ) -> Result<(), ClientCommandError> {
-    let restore = super::edit_quakec(host, module, |vm, _, _| vm.prepare_impact(time))?;
+    let restore = super::edit_quakec(host, module, access, |vm, _, _| vm.prepare_impact(time))?;
     let mut first = None;
     let mut second = None;
     let execution = (|| {
@@ -423,7 +439,7 @@ pub(super) fn impact(
         };
         let obstacle_entity = host.runtime.server.entities.resolve_reference(obstacle);
         if first_runs {
-            first = Some(admit_captured(host, module, obstacle)?);
+            first = Some(admit_captured(host, module, access, obstacle)?);
         }
         if let Some(entity) = obstacle_entity {
             let owner = host.runtime.server.entities.columns.owner[entity.slot as usize];
@@ -436,7 +452,7 @@ pub(super) fn impact(
                     .and_then(|offset| qc.vm.touch_pending(offset))
                     .map_err(ClientCommandError::Usercmd)?
             {
-                second = Some(admit_captured(host, owner, mover)?);
+                second = Some(admit_captured(host, owner, access, mover)?);
             }
         }
         // Both values are pinned before callback one can retire either source.
@@ -446,6 +462,7 @@ pub(super) fn impact(
             && let Some(touch) = prepare_admitted_touch(
                 host,
                 module,
+                access,
                 mover,
                 obstacle,
                 first.take(),
@@ -463,11 +480,12 @@ pub(super) fn impact(
                     release(host, admitted)?;
                 }
                 let owner = host.runtime.server.entities.columns.owner[entity.slot as usize];
-                second = Some(admit_captured(host, owner, mover)?);
+                second = Some(admit_captured(host, owner, access, mover)?);
             }
             if let Some(touch) = prepare_admitted_touch(
                 host,
                 module,
+                access,
                 obstacle,
                 mover,
                 second.take(),
@@ -488,7 +506,9 @@ pub(super) fn impact(
         .take()
         .map(|admitted| release(host, admitted))
         .transpose();
-    let restored = super::edit_quakec(host, module, |vm, _, _| vm.finish_client_call(restore));
+    let restored = super::edit_quakec(host, module, access, |vm, _, _| {
+        vm.finish_client_call(restore)
+    });
     execution
         .and(released_first.map(|_| ()))
         .and(released_second.map(|_| ()))

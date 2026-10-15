@@ -17,7 +17,7 @@ fn edit<R>(
     let (row, storage, traces) = host
         .modules
         .as_mut()
-        .and_then(|m| m.trace_parts_mut(module))
+        .and_then(|m| m.trace_parts_mut(module, super::execution::TraceAccess::empty()))
         .ok_or(ServiceError::Aborted)?;
     let Program::QuakeC(qc) = &mut row.request.program else {
         return Err(ServiceError::Aborted);

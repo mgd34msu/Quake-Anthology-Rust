@@ -524,10 +524,12 @@ impl FrameHost {
                 }
             }
         } else if let Some(world) = &mut self.runtime.collision {
-            let traces = self
-                .modules
-                .as_ref()
-                .map(|modules| super::trace::TraceView::all(&modules.rows));
+            let traces = self.modules.as_mut().map(|modules| {
+                super::trace::TraceView::all(
+                    &mut modules.rows,
+                    super::execution::TraceAccess::empty(),
+                )
+            });
             let foreign = traces.as_ref().map(|traces| traces.borrow());
             let player = &mut self.runtime.server.clients[id.0 as usize].player;
             let base = player.movement.tuning;
@@ -991,6 +993,7 @@ impl FrameHost {
         &mut self,
         id: ClientId,
         lifetime: qa_core::primitives::EntityId,
+        access: super::execution::TraceAccess<'_>,
     ) -> Option<(CallbackId, CallbackCall<'static>)> {
         let prepared = self.client_disconnect_call(id);
         if !self
@@ -1006,12 +1009,12 @@ impl FrameHost {
                 .filter(|client| client.connection.is_some() && client.entity == lifetime)
                 .is_some_and(|client| self.module_state(client.module) == Some(State::Failed));
             if failed {
-                self.finish_client_disconnect(id, lifetime);
+                self.finish_client_disconnect(id, lifetime, access);
             }
             return None;
         }
         if prepared.is_none() {
-            self.finish_client_disconnect(id, lifetime);
+            self.finish_client_disconnect(id, lifetime, access);
         }
         prepared
     }
@@ -1019,6 +1022,7 @@ impl FrameHost {
         &mut self,
         id: ClientId,
         lifetime: qa_core::primitives::EntityId,
+        access: super::execution::TraceAccess<'_>,
     ) {
         if self
             .runtime
@@ -1027,7 +1031,7 @@ impl FrameHost {
             .get(id.0 as usize)
             .is_some_and(|client| client.entity == lifetime)
         {
-            self.retire_client(id);
+            self.retire_client(id, access);
         }
     }
     pub(crate) fn disconnect_client(&mut self, id: ClientId) {
@@ -1040,9 +1044,11 @@ impl FrameHost {
         else {
             return;
         };
-        if let Some((callback, call)) = self.begin_client_disconnect(id, lifetime) {
+        if let Some((callback, call)) =
+            self.begin_client_disconnect(id, lifetime, super::execution::TraceAccess::empty())
+        {
             let _ = self.call_module(callback, call);
-            self.finish_client_disconnect(id, lifetime);
+            self.finish_client_disconnect(id, lifetime, super::execution::TraceAccess::empty());
         }
     }
     pub(crate) fn finish_client_termination(
@@ -1057,14 +1063,18 @@ impl FrameHost {
             qa_compat::services::ClientTermination::Rejected => self.disconnect_client(id),
         }
     }
-    pub(crate) fn retire_client(&mut self, id: ClientId) {
+    pub(crate) fn retire_client(
+        &mut self,
+        id: ClientId,
+        access: super::execution::TraceAccess<'_>,
+    ) {
         let module = self
             .runtime
             .server
             .clients
             .get(id.0 as usize)
             .map(|client| client.module);
-        if quakec::retain_body(self, id).is_err()
+        if quakec::retain_body(self, id, access).is_err()
             && let Some(row) = module.and_then(|module| self.module_row_mut(module))
         {
             row.counts.rejected += 1;

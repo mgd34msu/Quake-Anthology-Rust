@@ -467,6 +467,42 @@ impl Vm {
         }
         Ok(())
     }
+    pub fn with_trace_view<T>(
+        &mut self,
+        context: CallContext,
+        geometry: Option<qa_core::primitives::GeometryId>,
+        pending: Option<(&Run, &PendingImport)>,
+        read: impl FnOnce(Option<&dyn qa_world::collision::NativeTraceEntities>) -> Result<T, CallError>,
+    ) -> Result<T, Error> {
+        if let Some((run, pending)) = pending {
+            self.validate_pending(run, pending)?;
+        } else if self.is_active() {
+            return Err(Error::Export);
+        }
+        let projection = &self.projection;
+        let inspect = |memory: &ModuleMemory<'_>| {
+            crate::entities::EntityProjection::with_trace_view(
+                projection.as_ref().map(|projection| &projection.entities),
+                memory,
+                context,
+                geometry,
+                read,
+            )
+        };
+        if let Some((_, pending)) = pending {
+            self.process
+                .with_import_memory(&pending.stopped, |base, bytes| {
+                    Ok(ModuleMemory::borrow(base, bytes)
+                        .map_err(|_| CallError::Memory)
+                        .and_then(|memory| inspect(&memory)))
+                })
+                .map_err(Error::Process)?
+                .map_err(Error::Service)
+        } else {
+            let memory = process_memory(&mut self.process)?;
+            inspect(&memory).map_err(Error::Service)
+        }
+    }
     pub fn copy_import_command(
         &mut self,
         run: &Run,
