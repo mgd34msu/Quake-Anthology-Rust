@@ -38,7 +38,7 @@ impl CallOutcome<FrameHost> for ModuleDispatch {
                     }
                     _ => CommandArgs::default(),
                 };
-                drive(host, start, command)
+                drive(host, Activation::new(start, false), command)
             }
         }
     }
@@ -343,7 +343,7 @@ fn valid_frame(host: &FrameHost, start: GuestStart, backend: Option<&Backend>) -
     valid(host, start, live_self)
 }
 
-fn drive(host: &mut FrameHost, start: GuestStart, command: CommandArgs<'_>) -> bool {
+fn drive(host: &mut FrameHost, frame: Activation, command: CommandArgs<'_>) -> bool {
     let Some(modules) = host.modules.as_mut() else {
         return false;
     };
@@ -352,7 +352,7 @@ fn drive(host: &mut FrameHost, start: GuestStart, command: CommandArgs<'_>) -> b
         modules.execution = arena;
         return false;
     }
-    arena[0] = Some(Activation::new(start, false));
+    arena[0] = Some(frame);
     let mut depth = 1;
     let result = loop {
         let Some(mut frame) = arena[depth - 1].take() else {
@@ -1047,6 +1047,20 @@ fn advance(
                             request,
                             continuation,
                         } => {
+                            // A nested host operation sees every admitted producer
+                            // store, while explicit area links keep their old bounds.
+                            if qc
+                                .vm
+                                .project_dirty_entities(calls.services, start.context)
+                                .is_err()
+                            {
+                                // The continuation has not entered pending/reply yet,
+                                // so cancellation cannot restore its saved globals.
+                                calls
+                                    .abort_import(&mut qc.vm, continuation)
+                                    .map_err(|_| ())?;
+                                return Err(());
+                            }
                             return Ok(GuestStep::Host(request, ReplyPoint::QuakeC(continuation)));
                         }
                     }
@@ -1234,3 +1248,7 @@ fn finish(host: &mut FrameHost, frame: &Activation, result: Result<ModuleResult,
     }
     accepted
 }
+
+#[cfg(test)]
+#[path = "../../tests/modules/quakec_yield.rs"]
+mod tests;
