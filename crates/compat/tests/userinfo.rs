@@ -148,6 +148,7 @@ impl Fixture {
                 },
                 platform_time: EventTime(17),
                 command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                 addresses,
                 arguments,
             },

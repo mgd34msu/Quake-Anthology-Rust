@@ -279,6 +279,7 @@ pub struct FrameHost {
     providers: Box<[Provider]>,
     module_outputs: Box<[Option<qa_core::events::OutputConsumerId>]>,
     pub(crate) command_tokens: qa_console::command_text::Tokens,
+    pub(crate) execution: Box<[crate::modules::ExecutionSlot]>,
 }
 
 #[derive(Default)]
@@ -532,6 +533,7 @@ impl FrameHost {
             .collect::<Result<Box<[_]>, _>>()?;
         Ok(Self {
             modules: None,
+            execution: crate::modules::ExecutionSlot::reserve(1)?,
             muzzle_sounds: crate::audio::MuzzleSounds::default(),
             console,
             runtime,
@@ -616,7 +618,7 @@ impl FrameHost {
         self.retire_closing_clients();
         self.retire_stale_modules();
         self.update_console_policy(true);
-        self.console.execute_frame(&mut self.runtime);
+        self.execute_commands();
         if self.runtime.quit {
             source.request_mouse_capture(false);
             self.shutdown_modules();
@@ -691,7 +693,7 @@ impl FrameHost {
         self.previous = Some(server_time);
         self.retire_stale_modules();
         self.update_console_policy(true);
-        self.console.execute_frame(&mut self.runtime);
+        self.execute_commands();
         if self.runtime.quit {
             source.request_mouse_capture(false);
             self.shutdown_modules();

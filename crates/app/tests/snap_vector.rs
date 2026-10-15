@@ -197,6 +197,7 @@ fn invoke(
                 context,
                 platform_time: EventTime(0),
                 command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                 addresses,
                 arguments,
             },

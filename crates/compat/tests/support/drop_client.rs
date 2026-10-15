@@ -179,6 +179,7 @@ fn qvm_synchronous_drop_preserves_live_fields_and_recurses_through_the_same_tabl
                     raw: &[],
                 },
             ),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         };
         assert_eq!(vm.call(&mut calls, [0; 10], 10_000, false), Ok(2));
@@ -266,6 +267,7 @@ fn qvm_free_close_guard_expires_and_admission_resets_it() {
         context: context(),
         platform_time: EventTime::from_milliseconds(5_000),
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         unknown: &mut unknown,
     };
     let mut arguments = [0; 10];
@@ -318,6 +320,7 @@ fn qvm_negative_free_timeout_keeps_recursive_disconnect_synchronous() {
         context: context(),
         platform_time: EventTime::from_milliseconds(5_000),
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         unknown: &mut unknown,
     };
     let mut arguments = [0; 10];
@@ -349,6 +352,7 @@ fn qvm_callback_failure_keeps_the_free_timeout_without_an_inflight_leak() {
         context: context(),
         platform_time: EventTime::from_milliseconds(5_000),
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         unknown: &mut unknown,
     };
     let mut arguments = [0; 10];
@@ -401,6 +405,7 @@ fn qvm_failed_reason_reread_unwinds_the_free_callback_guard() {
         context: context(),
         platform_time: EventTime::from_milliseconds(5_000),
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         unknown: &mut unknown,
     };
     let mut arguments = [0; 10];
@@ -442,6 +447,7 @@ fn qvm_drop_shares_the_outer_instruction_budget() {
         context: context(),
         platform_time: EventTime(123),
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         unknown: &mut unknown,
     };
     assert_eq!(
@@ -595,6 +601,7 @@ fn owned_pe64_synchronous_drop(trap: bool) {
                     raw: b"outer",
                 },
             ),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
             native_player: None,
         };
@@ -617,6 +624,7 @@ fn owned_pe64_synchronous_drop(trap: bool) {
                     raw: b"outer",
                 },
             ),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
             native_player: None,
         };

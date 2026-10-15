@@ -178,6 +178,7 @@ fn engine_timings(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
                 context,
                 platform_time: EventTime(frame as u64 * 1_000_000),
                 command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                 unknown: &mut unknown,
             };
             for _ in 0..64 {

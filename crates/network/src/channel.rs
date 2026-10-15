@@ -151,6 +151,13 @@ impl Channel {
     pub(crate) fn policy(&self) -> Policy {
         self.policy
     }
+    fn supports_protocol(&self, protocol: crate::commands::packet::Protocol) -> bool {
+        if protocol == crate::commands::packet::Protocol::Quake2Repro1038 {
+            self.policy == q2_new(false) || self.policy == q2_new(true)
+        } else {
+            protocol.channel() == self.policy
+        }
+    }
     /// The negotiated module/protocol boundary supplies its maximum message.
     /// Native QW receive limits may exceed our future 1400-byte transmit limit.
     pub fn load(
@@ -256,12 +263,7 @@ impl Channel {
         protocol: crate::commands::packet::Protocol,
     ) -> Result<(), crate::commands::packet::Error> {
         use crate::commands::packet::Error;
-        let compatible = if protocol == crate::commands::packet::Protocol::Quake2Repro1038 {
-            self.policy == q2_new(false) || self.policy == q2_new(true)
-        } else {
-            protocol.channel() == self.policy
-        };
-        if !compatible {
+        if !self.supports_protocol(protocol) {
             return Err(Error::Context);
         }
         if let Some(storage) = &self.snapshots {

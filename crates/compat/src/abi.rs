@@ -31,6 +31,12 @@ pub enum Addresses {
         pointer_bytes: u8,
     },
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgumentSelection {
+    Caller,
+    RetainedClient,
+}
+
 pub struct Invocation<'a, 'engine, 'memory> {
     pub services: &'a mut EngineServices<'engine>,
     pub memory: &'a mut ModuleMemory<'memory>,
@@ -45,6 +51,7 @@ pub struct Invocation<'a, 'engine, 'memory> {
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: qa_console::command_text::Arguments<'a>,
+    pub argument_selection: &'a mut ArgumentSelection,
     pub addresses: Addresses,
     pub arguments: &'a [u64],
 }
@@ -345,10 +352,22 @@ pub struct ClientInputExports {
     pub event_handling: Option<u32>,
     pub menu: Option<u32>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandRole {
+    Cgame,
+    Server,
+    Ui,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandExport {
+    pub role: CommandRole,
+    pub entry: u32,
+}
 pub struct CallTable {
     entries: [Option<CallEntry>; 256],
     client_view: bool,
     input_exports: Option<ClientInputExports>,
+    command_export: Option<CommandExport>,
 }
 pub struct UnknownCalls {
     numbers: NameTable,
@@ -392,6 +411,9 @@ impl UnknownCalls {
     }
 }
 impl CallTable {
+    pub const fn command_export(&self) -> Option<CommandExport> {
+        self.command_export
+    }
     pub const fn input_exports(&self) -> Option<ClientInputExports> {
         self.input_exports
     }
@@ -453,6 +475,7 @@ const fn common() -> CallTable {
         entries: [None; 256],
         client_view: false,
         input_exports: None,
+        command_export: None,
     };
     table.entries[100] = scalar!(memset);
     table.entries[101] = scalar!(memcpy);
@@ -467,6 +490,10 @@ const fn common() -> CallTable {
 }
 const fn server() -> CallTable {
     let mut t = common();
+    t.command_export = Some(CommandExport {
+        role: CommandRole::Server,
+        entry: 9,
+    });
     t.entries[107] = None;
     t.entries[108] = None;
     t.entries[110] = scalar!(floor::<false>);
@@ -484,7 +511,10 @@ const fn server() -> CallTable {
     t.entries[10] = scalar!(file_open);
     t.entries[11] = scalar!(file_read);
     t.entries[13] = scalar!(file_close);
-    t.entries[14] = scalar!(command);
+    t.entries[14] = Some(CallEntry {
+        handler: Handler::Shared(|call, _| command(call)),
+        quakec: None,
+    });
     t.entries[15] = scalar!(q3_locate_game_data);
     t.entries[16] = Some(CallEntry {
         handler: Handler::Shared(|call, _| callbacks::drop_client(call)),
@@ -519,6 +549,10 @@ mod input;
 
 const fn client() -> CallTable {
     let mut t = common();
+    t.command_export = Some(CommandExport {
+        role: CommandRole::Cgame,
+        entry: 2,
+    });
     t.client_view = true;
     t.input_exports = Some(ClientInputExports {
         catcher: qa_core::sys_events::key_catchers::CGAME,
@@ -604,6 +638,10 @@ const fn client() -> CallTable {
 }
 const fn ui() -> CallTable {
     let mut t = common();
+    t.command_export = Some(CommandExport {
+        role: CommandRole::Ui,
+        entry: 8,
+    });
     t.input_exports = Some(ClientInputExports {
         catcher: qa_core::sys_events::key_catchers::UI,
         key: 3,
@@ -623,7 +661,10 @@ const fn ui() -> CallTable {
     t.entries[8] = scalar!(cvar_create);
     t.entries[10] = scalar!(argc);
     t.entries[11] = scalar!(argv);
-    t.entries[12] = scalar!(command);
+    t.entries[12] = Some(CallEntry {
+        handler: Handler::Shared(|call, _| command(call)),
+        quakec: None,
+    });
     t.entries[13] = scalar!(file_open);
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
@@ -677,6 +718,7 @@ const fn quakec() -> CallTable {
         entries: [None; 256],
         client_view: false,
         input_exports: None,
+        command_export: None,
     };
     let vector = QcSignature::new(QcArgc::Fixed(1), QcArgs::Vector, true);
     let scalar = QcSignature::new(QcArgc::Fixed(1), QcArgs::Scalars, true);
@@ -1415,6 +1457,7 @@ pub struct QvmCalls<'a, 'engine> {
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: qa_console::command_text::Arguments<'a>,
+    pub argument_selection: &'a mut ArgumentSelection,
     pub unknown: &'a mut UnknownCalls,
 }
 impl qvm::SystemCalls for QvmCalls<'_, '_> {
@@ -1465,7 +1508,9 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
                                     .map_err(|_| qvm::Trap::Syscall)?;
                                 0
                             }
-                            HostRequest::TouchTriggers { .. } => return Err(qvm::Trap::Syscall),
+                            HostRequest::TouchTriggers { .. } | HostRequest::ExecuteNow { .. } => {
+                                return Err(qvm::Trap::Syscall);
+                            }
                         };
                         step = self
                             .resume_import(vm, continuation, returned)
@@ -1541,6 +1586,7 @@ impl QvmCalls<'_, '_> {
             context: self.context,
             platform_time: self.platform_time,
             command: self.command,
+            argument_selection: &mut *self.argument_selection,
             addresses: Addresses::Qvm { mask },
             arguments,
         };
@@ -2045,20 +2091,34 @@ fn cvar_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     }
     Ok(0)
 }
+fn selected_arguments<'a>(
+    command: qa_console::command_text::Arguments<'a>,
+    selection: ArgumentSelection,
+    client: Option<&'a dyn crate::services::ClientConnection>,
+) -> qa_console::command_text::Arguments<'a> {
+    match selection {
+        ArgumentSelection::Caller => command,
+        ArgumentSelection::RetainedClient => client.map_or(command, |client| client.arguments()),
+    }
+}
 fn argc(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(c.services
-        .client_connection
-        .as_deref()
-        .map_or_else(|| c.command.len(), |commands| commands.arguments().len()) as u64)
+    Ok(selected_arguments(
+        c.command,
+        *c.argument_selection,
+        c.services.client_connection.as_deref(),
+    )
+    .len() as u64)
 }
 fn argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let index = c.arg(0)? as u32 as usize;
     let target = c.pointer(1)?;
     let length = c.length(2)?;
-    let text = c.services.client_connection.as_deref().map_or_else(
-        || c.command.get_bytes(index),
-        |commands| commands.arguments().get_bytes(index),
+    let arguments = selected_arguments(
+        c.command,
+        *c.argument_selection,
+        c.services.client_connection.as_deref(),
     );
+    let text = arguments.get_bytes(index);
     c.memory.write_string(target, length, text)?;
     Ok(0)
 }
@@ -2066,21 +2126,23 @@ fn client_args(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(0)?;
     let length = c.length(1)?;
     let mut text = FixedText::<1024>::default();
-    c.services
-        .client_connection
-        .as_deref()
-        .ok_or(CallError::Text)?
-        .arguments()
-        .join_bytes(1, &mut text)
-        .map_err(|_| CallError::Text)?;
+    selected_arguments(
+        c.command,
+        *c.argument_selection,
+        c.services.client_connection.as_deref(),
+    )
+    .join_bytes(1, &mut text)
+    .map_err(|_| CallError::Text)?;
     c.memory.write_string(target, length, text.as_bytes())?;
     Ok(0)
 }
 fn client_server_command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let number = c.arg(0)? as u32 as i32;
-    Ok(u64::from((ENGINE_CALLS.server_command)(
-        c.services, number,
-    )?))
+    let accepted = (ENGINE_CALLS.server_command)(c.services, number)?;
+    if accepted {
+        *c.argument_selection = ArgumentSelection::RetainedClient;
+    }
+    Ok(u64::from(accepted))
 }
 
 fn renderer_configuration(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -2478,18 +2540,37 @@ fn native_argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 fn native_args(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.native_command.ok_or(CallError::Memory)?.args())
 }
-fn command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let text = text_at(c.memory, c.pointer(1)?)?;
-    match c.arg(0)? as u32 {
-        1 => (ENGINE_CALLS.command_insert)(c.services, c.context.console, text)?,
-        2 => (ENGINE_CALLS.command)(c.services, c.context.console, text)?,
-        // EXEC_NOW needs synchronous host dispatch, not queued insertion.
-        _ => return Err(CallError::Text),
+fn command(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+    let mode = c.arg(0)? as u32;
+    if mode == 0 {
+        let text = if c.null_pointer(1)? {
+            None
+        } else {
+            let pointer = c.pointer(1)?;
+            c.memory.cstring(pointer)?;
+            Some(pointer)
+        };
+        return Ok(CallValue::Host(
+            HostRequest::ExecuteNow {
+                context: c.context.console,
+                text,
+            },
+            ImportContinuation::Return(0),
+        ));
     }
-    Ok(0)
+    if !matches!(mode, 1 | 2) {
+        return Err(CallError::Text);
+    }
+    let text = c.memory.cstring(c.pointer(1)?)?;
+    if mode == 1 {
+        (ENGINE_CALLS.command_insert)(c.services, c.context.console, text)?;
+    } else {
+        (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
+    }
+    Ok(CallValue::Word(0))
 }
 fn command_append(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let text = text_at(c.memory, c.pointer(0)?)?;
+    let text = c.memory.cstring(c.pointer(0)?)?;
     (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
     Ok(0)
 }

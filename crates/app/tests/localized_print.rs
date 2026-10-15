@@ -75,6 +75,8 @@ fn localized_native_prints_share_ring_routing_and_checked_argument_memory() {
                             },
                             platform_time: EventTime(0),
                             command: Default::default(),
+                            argument_selection:
+                                &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                             addresses: Addresses::Native {
                                 pointer_bytes: 8,
                                 abi,

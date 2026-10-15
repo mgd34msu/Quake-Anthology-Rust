@@ -176,7 +176,9 @@ impl Transmit {
             message: vec![0; maximum].into_boxed_slice(),
             command_output: vec![
                 0;
-                if policy.command_ack && endpoint == Endpoint::Server {
+                if endpoint == Endpoint::Client {
+                    crate::message::LEGACY_STRING_BYTES + 2
+                } else if policy.command_ack {
                     NATIVE_WIRE_BYTES
                 } else {
                     0
@@ -300,6 +302,33 @@ impl Channel {
     /// Receipts from the most recent receive; consume before the next packet.
     pub fn reliable_receipts(&self) -> &[NativeReceipt] {
         &self.transmit.receipts[..self.transmit.receipt_count]
+    }
+    /// Queue console text using this connection's native client framing. The
+    /// ordinary transmit path owns submission, retransmission and retirement.
+    pub fn queue_client_command(
+        &mut self,
+        protocol: crate::commands::packet::Protocol,
+        text: &[u8],
+    ) -> Result<NativeReceipt, TransmitError> {
+        if self.endpoint != Endpoint::Client || !self.supports_protocol(protocol) {
+            return Err(TransmitError::PayloadReliability);
+        }
+        if protocol == crate::commands::packet::Protocol::Quake3_68 {
+            return self.queue_reliable(text);
+        }
+        let mut bytes = std::mem::take(&mut self.transmit.command_output);
+        let result = (|| {
+            let mut writer =
+                crate::message::Writer::new(&mut bytes, crate::message::Encoding::Bytes);
+            writer
+                .write_bits(4, 8)
+                .and_then(|_| writer.write_string(protocol.client_string_policy(), text))
+                .map_err(|_| TransmitError::MessageTooLarge)?;
+            let length = writer.bytes().len();
+            self.queue_reliable(&bytes[..length])
+        })();
+        self.transmit.command_output = bytes;
+        result
     }
     pub fn queue_reliable(&mut self, bytes: &[u8]) -> Result<NativeReceipt, TransmitError> {
         let endpoint = self.endpoint();

@@ -119,6 +119,7 @@ pub struct NativeCalls<'a, 'engine> {
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: qa_console::command_text::Arguments<'a>,
+    pub argument_selection: &'a mut crate::abi::ArgumentSelection,
     pub unknown: &'a mut UnknownCalls,
     pub native_player: Option<qa_core::primitives::ClientId>,
 }
@@ -402,6 +403,17 @@ impl Vm {
     pub fn declares_export(&self, ordinal: u32) -> bool {
         (ordinal as usize) < self.exports.len()
     }
+    /// Resolve a declared vmMain selector to its bound export index at load.
+    pub fn export_for_command(&self, command: u32) -> Option<u32> {
+        self.exports
+            .iter()
+            .position(|export| {
+                export
+                    .as_ref()
+                    .is_some_and(|export| export.command == Some(command))
+            })
+            .and_then(|index| u32::try_from(index).ok())
+    }
     pub fn export_count(&self) -> usize {
         self.exports.len()
     }
@@ -443,6 +455,43 @@ impl Vm {
             return Err(Error::Export);
         }
         Ok(())
+    }
+    fn validate_pending(&self, run: &Run, pending: &PendingImport) -> Result<(), Error> {
+        self.validate_run(run)?;
+        if !run.pending
+            || !Arc::ptr_eq(&self.run_owner, &pending.owner)
+            || pending.activation != run.activation
+            || pending.depth != run.depth
+        {
+            return Err(Error::Export);
+        }
+        Ok(())
+    }
+    pub fn copy_import_command(
+        &mut self,
+        run: &Run,
+        pending: &PendingImport,
+        pointer: u64,
+        out: &mut qa_console::command_text::ParsedCommand,
+    ) -> Result<bool, Error> {
+        self.validate_pending(run, pending)?;
+        let mut rejected = None;
+        let result = self
+            .process
+            .with_import_memory(&pending.stopped, |base, bytes| {
+                let result = (|| {
+                    let memory =
+                        ModuleMemory::borrow(base, bytes).map_err(|_| CallError::Memory)?;
+                    let text = memory.cstring(pointer)?;
+                    out.set_raw(text).map_err(|_| CallError::Text)?;
+                    Ok(!text.is_empty())
+                })();
+                result.map_err(|error| {
+                    rejected = Some(error);
+                    NativeError::Callback
+                })
+            });
+        result.map_err(|error| rejected.map_or(Error::Process(error), Error::Service))
     }
     pub fn begin(
         &mut self,
@@ -572,6 +621,7 @@ impl Vm {
                     context: run.context,
                     platform_time: run.platform_time,
                     command: calls.command,
+                    argument_selection: &mut *calls.argument_selection,
                     addresses: if call.as_ref().is_some_and(|call| call.function) {
                         Addresses::NativeFunction { abi, pointer_bytes }
                     } else {
@@ -752,15 +802,7 @@ impl Vm {
         pending: &mut Option<PendingImport>,
         returned: u64,
     ) -> Result<Step, Error> {
-        self.validate_run(run)?;
-        let authority = pending.as_ref().ok_or(Error::Export)?;
-        if !run.pending
-            || !Arc::ptr_eq(&self.run_owner, &authority.owner)
-            || authority.activation != run.activation
-            || authority.depth != run.depth
-        {
-            return Err(Error::Export);
-        }
+        self.validate_pending(run, pending.as_ref().ok_or(Error::Export)?)?;
         let PendingImport {
             stopped,
             continuation,
@@ -870,7 +912,7 @@ impl Vm {
                             }
                             step = self.resume(calls, &mut run, &mut Some(pending), 0)?;
                         }
-                        HostRequest::TouchTriggers { .. } => {
+                        HostRequest::TouchTriggers { .. } | HostRequest::ExecuteNow { .. } => {
                             return Err(Error::Service(CallError::Unsupported));
                         }
                     },

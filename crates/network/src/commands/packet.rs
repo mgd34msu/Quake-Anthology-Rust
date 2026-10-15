@@ -35,6 +35,14 @@ impl Protocol {
             _ => StringPolicy::LEGACY,
         }
     }
+    pub(crate) const fn client_string_policy(self) -> StringPolicy {
+        if matches!(self, Self::Quake2Repro1038) {
+            self.string_policy()
+                .limited(crate::message::COMMAND_STRING_BYTES - 1)
+        } else {
+            self.string_policy()
+        }
+    }
     /// Native protocol identity at the wire boundary, independent of the
     /// connection's selected movement, presentation and module capabilities.
     pub const fn rule_set(self) -> qa_core::primitives::RuleSetId {
@@ -585,13 +593,7 @@ pub fn read_with_commands(
                 4,
             )
             | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 3) => {
-                let policy = if protocol == Protocol::Quake2Repro1038 {
-                    protocol
-                        .string_policy()
-                        .limited(crate::message::COMMAND_STRING_BYTES - 1)
-                } else {
-                    protocol.string_policy()
-                };
+                let policy = protocol.client_string_policy();
                 let text = r.read_string(policy).map_err(|error| {
                     if error.kind == crate::message::ErrorKind::Capacity {
                         Error::Count

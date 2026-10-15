@@ -1269,8 +1269,8 @@ pub struct EngineCallTable {
     pub cvar_reset: fn(&mut EngineServices<'_>, View, bool) -> Result<(), CallError>,
     pub cvar_number: fn(&EngineServices<'_>, View) -> Result<f32, CallError>,
     pub cvar_integer: fn(&EngineServices<'_>, View) -> Result<i32, CallError>,
-    pub command: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
-    pub command_insert: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
+    pub command: fn(&mut EngineServices<'_>, Context, &[u8]) -> Result<(), CallError>,
+    pub command_insert: fn(&mut EngineServices<'_>, Context, &[u8]) -> Result<(), CallError>,
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
     pub lightstyle: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
     pub resource_index: ResourceIndexCall,
@@ -1646,7 +1646,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     cvar_number: |s, view| s.cvars.numeric(view).map_err(|_| CallError::Cvar),
     cvar_integer: |s, view| s.cvars.integer_view(view).map_err(|_| CallError::Cvar),
     command: |s, c, t| s.command(c, t),
-    command_insert: |s, c, t| s.commands.insert(t, c).map_err(|_| CallError::Text),
+    command_insert: |s, c, t| s.commands.insert_bytes(t, c).map_err(|_| CallError::Text),
     configstring: |s, m, i, t| s.configstring(m, i, t),
     lightstyle: |s, m, i, t| s.lightstyle(m, i, t),
     resource_index: |s, m, r, n| s.storage.resource_index(m, r, n),
@@ -2194,9 +2194,9 @@ impl EngineServices<'_> {
         );
         Ok(())
     }
-    pub fn command(&mut self, context: Context, text: &str) -> Result<(), CallError> {
+    pub fn command(&mut self, context: Context, text: &[u8]) -> Result<(), CallError> {
         self.commands
-            .append(text, context)
+            .append_bytes(text, context)
             .map_err(|_| CallError::Text)
     }
     pub fn configstring(

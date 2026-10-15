@@ -219,6 +219,7 @@ impl Fixture {
                 context: context(),
                 platform_time: EventTime(0),
                 command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                 unknown: &mut unknown,
             };
             calls.begin_call(vm)?;
@@ -473,6 +474,7 @@ fn qvm_entity_publication_preserves_all_fields_and_separate_physical_pose() {
             context: context(),
             platform_time: EventTime(0),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         };
         assert_eq!(vm.call(&mut calls, [8; 10], 1000, false), Ok(0));
@@ -879,6 +881,7 @@ fn qvm_export_relocation_zero_address_and_stale_bindings() {
             context: context(),
             platform_time: EventTime(0),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         };
         assert_eq!(vm.call(&mut calls, [0; 10], 100, false), Ok(0));
@@ -1345,6 +1348,7 @@ fn qvm_powerups_observe_the_signed_clock_supplied_to_the_guest() {
                 context,
                 platform_time: queued,
                 command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                 unknown: &mut unknown,
             };
             assert_eq!(
@@ -1489,6 +1493,7 @@ fn qvm_player_loop_sound_uses_public_memory_and_the_owning_namespace() {
             context: context(),
             platform_time: EventTime::from_milliseconds(1234),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         };
         vm.call(
@@ -1580,6 +1585,7 @@ fn qvm_player_signals_preserve_native_cells_and_publication_boundaries() {
             context: context(),
             platform_time: EventTime::from_milliseconds(1234),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         };
         vm.call(
@@ -1762,6 +1768,7 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
                 context,
                 platform_time: time,
                 command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                 unknown,
                 native_player: None,
             },
@@ -2149,6 +2156,7 @@ fn owned_pe64_shader_imports_borrow_only_the_parked_child_and_share_cold_dispatc
             context: context(),
             platform_time: EventTime(17),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
             native_player: None,
         };

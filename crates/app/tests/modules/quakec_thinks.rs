@@ -1824,7 +1824,7 @@ fn native_qw_minimum_accumulates_and_maximum_clamps_physics_without_stopping_clo
     host.console
         .append("sv_maxtic 0.1\n", Context::default())
         .unwrap();
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     tick(&mut host, 0);
     tick(&mut host, 17);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
@@ -2310,7 +2310,7 @@ fn native_client_physics_reservations_survive_maxclients_changes() {
                     Context::default(),
                 )
                 .unwrap();
-            host.console.execute_frame(&mut host.runtime);
+            host.execute_commands();
             if milliseconds == 125 {
                 tick(&mut host, 0);
             }
@@ -2435,7 +2435,7 @@ fn noclip_qw_motion_uses_only_accepted_accumulated_and_clamped_span() {
     host.console
         .append("sv_maxtic 0.1\n", Context::default())
         .unwrap();
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     tick(&mut host, 0);
     tick(&mut host, 17);
     assert_eq!(
@@ -5074,7 +5074,7 @@ fn netquake_foreign_noclip_preserves_substeps_and_final_native_snap() {
                 },
             )
             .unwrap();
-        host.console.execute_frame(&mut host.runtime);
+        host.execute_commands();
         host.runtime.server.clients[id.0 as usize]
             .player
             .trace_rules = RuleSetId::Quake2;

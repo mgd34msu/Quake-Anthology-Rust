@@ -273,6 +273,7 @@ fn invoke_call(
         context: context(),
         platform_time: EventTime(123_456_789),
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         addresses,
         arguments,
     };
@@ -475,6 +476,7 @@ fn executed_qvm_shader_imports_share_the_same_cold_service() {
             context: context(),
             platform_time: EventTime(19),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         };
         assert_eq!(vm.call(&mut calls, [0; 10], 100, false), Ok(42));

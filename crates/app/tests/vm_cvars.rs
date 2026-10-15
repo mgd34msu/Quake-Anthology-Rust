@@ -77,6 +77,7 @@ fn q3_vm_cvars_share_registry_and_match_native_layout_and_reference_rows() {
                 context,
                 platform_time: EventTime(0),
                 command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                 addresses,
                 arguments: &[],
             };
@@ -334,6 +335,7 @@ fn invoke(
         context: call.context,
         platform_time: call.platform_time,
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         addresses: call.addresses,
         arguments,
     };

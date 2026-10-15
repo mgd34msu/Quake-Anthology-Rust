@@ -105,6 +105,7 @@ fn q3_file_imports_seek_shared_handles_with_native_long_widths_and_eof() {
                         context,
                         platform_time: EventTime(0),
                         command: Default::default(),
+                        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
                         addresses,
                         arguments,
                     };

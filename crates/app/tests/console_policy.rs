@@ -125,7 +125,7 @@ fn live_host_protects_init_and_latches_only_while_the_q2_provider_runs() {
     );
     // Startup config still runs in the eagerly registered catalog's setup phase.
     host.console.append("_policy_init 2\n", context).unwrap();
-    host.console.execute_frame(&mut host.runtime);
+    host.execute_commands();
     let init = host.console.cvars.bind("_policy_init", context).unwrap();
     let latch = host.console.cvars.bind("_policy_latch", context).unwrap();
     assert_eq!(host.console.cvars.read(init).unwrap().as_str(), "2");

@@ -30,6 +30,7 @@ fn with_calls<R>(
                 raw: b"payload",
             },
         ),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         unknown,
         native_player: None,
     })
@@ -302,6 +303,7 @@ pub fn run() {
         .unwrap(),
         99
     );
+    execute_now_command_copy();
     foreign_runs();
     nested_reject_zero_unwinds_its_suspended_parent();
 }
@@ -424,6 +426,7 @@ fn nested_reject_zero_unwinds_its_suspended_parent() {
         context,
         platform_time: EventTime::from_milliseconds(5_000),
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         unknown: &mut unknown,
         native_player: None,
     };
@@ -452,5 +455,110 @@ fn nested_reject_zero_unwinds_its_suspended_parent() {
         .unwrap()
         .is_some()
     );
+    assert_eq!(unknown.calls, 0);
+}
+
+fn execute_now_image() -> Vm {
+    let mut vm = mapped_image();
+    let base = vm.process.base();
+    let mut code = vec![0x48, 0x81, 0xec, 136, 0, 0, 0, 0x31, 0xd2, 0x49, 0xb8];
+    code.extend((base + 0x1900).to_le_bytes());
+    syscall(&mut code, vm.import_callback(), 12);
+    code.extend([0x48, 0x81, 0xc4, 136, 0, 0, 0, 0xb8, 42, 0, 0, 0, 0xc3]);
+    let mut memory = qa_compat::memory::process_memory(&mut vm.process).unwrap();
+    memory.write(base + 0x1200, &code).unwrap();
+    memory
+        .write_string(base + 0x1900, 64, b"echo \xff; tail")
+        .unwrap();
+    drop(memory);
+    vm
+}
+fn execute_now_command_copy() {
+    let mut vm = execute_now_image();
+    let mut external = image();
+    let mut fixture = Fixture::new();
+    let mut unknown = UnknownCalls::load(1).unwrap();
+    let context = context();
+    let time = EventTime(42);
+    let mut run = with_calls(&mut fixture, &mut unknown, context, time, |calls| {
+        vm.begin(calls, 0, &[])
+    })
+    .unwrap();
+    let Step::Host {
+        request:
+            HostRequest::ExecuteNow {
+                context: found,
+                text: Some(pointer),
+            },
+        pending,
+    } = with_calls(&mut fixture, &mut unknown, context, time, |calls| {
+        vm.advance(calls, &mut run)
+    })
+    .unwrap()
+    else {
+        panic!("EXEC_NOW host stop");
+    };
+    assert_eq!(found, context.console);
+    assert_eq!(pointer, vm.process.base() + 0x1900);
+    let mut command = qa_console::command_text::ParsedCommand::default();
+    command.set_raw(b"kept").unwrap();
+    assert!(matches!(
+        external.copy_import_command(&run, &pending, pointer, &mut command),
+        Err(Error::Export)
+    ));
+    assert_eq!(command.raw_bytes(), b"kept");
+    assert!(
+        vm.copy_import_command(&run, &pending, pointer, &mut command)
+            .unwrap()
+    );
+    assert_eq!(command.raw_bytes(), b"echo \xff; tail");
+    assert!(command.arguments().is_empty());
+    assert!(
+        !vm.copy_import_command(&run, &pending, vm.process.base() + 0x1980, &mut command)
+            .unwrap()
+    );
+    assert!(command.raw_bytes().is_empty());
+    assert!(
+        vm.copy_import_command(&run, &pending, pointer, &mut command)
+            .unwrap()
+    );
+    assert!(vm.process.memory().is_err());
+    let mut external_run = with_calls(&mut fixture, &mut unknown, context, time, |calls| {
+        external.begin(calls, 0, &[])
+    })
+    .unwrap();
+    let external_pending = host(
+        with_calls(&mut fixture, &mut unknown, context, time, |calls| {
+            external.advance(calls, &mut external_run)
+        })
+        .unwrap(),
+        context.console.seat,
+        time,
+    );
+    assert!(matches!(
+        vm.copy_import_command(&run, &external_pending, pointer, &mut command),
+        Err(Error::Export)
+    ));
+    assert_eq!(command.raw_bytes(), b"echo \xff; tail");
+    let mut pending = Some(pending);
+    assert!(matches!(
+        with_calls(&mut fixture, &mut unknown, context, time, |calls| vm
+            .resume(calls, &mut run, &mut pending, 0))
+        .unwrap(),
+        Step::Returned(42)
+    ));
+    assert_eq!(command.raw_bytes(), b"echo \xff; tail");
+    assert!(fixture.commands.is_empty());
+    let mut standalone = execute_now_image();
+    assert!(matches!(
+        with_calls(&mut fixture, &mut unknown, context, time, |calls| {
+            standalone.call(calls, 0, &[])
+        }),
+        Err(Error::Service(CallError::Unsupported))
+    ));
+    assert!(fixture.commands.is_empty());
+    with_calls(&mut fixture, &mut unknown, context, time, |calls| {
+        external.abort(calls, &mut external_run, CallError::Aborted)
+    });
     assert_eq!(unknown.calls, 0);
 }

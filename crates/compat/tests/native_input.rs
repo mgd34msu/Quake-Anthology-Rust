@@ -156,6 +156,7 @@ impl Fixture {
             context: Self::context(seat),
             platform_time: EventTime::from_milliseconds(42),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             addresses: mode,
             arguments,
         };
@@ -500,6 +501,7 @@ fn qvm_executes_the_numbered_ui_imports_and_caches_input_export_capabilities() {
         context: Fixture::context(SeatId::FIRST),
         platform_time: EventTime(42),
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         unknown: &mut unknown,
     };
     assert_eq!(vm.call(&mut calls, [0; 10], 1000, false), Ok(1));
@@ -563,6 +565,7 @@ fn qvm_clear_keys_yields_owned_host_work_before_changing_input() {
             context,
             platform_time: queued,
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         }
         .import(&mut vm, &syscall)
@@ -596,6 +599,7 @@ fn qvm_clear_keys_yields_owned_host_work_before_changing_input() {
             context,
             platform_time: queued,
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         }
         .resume_import(&mut vm, continuation, 123)
@@ -618,6 +622,7 @@ fn qvm_clear_keys_yields_owned_host_work_before_changing_input() {
             context,
             platform_time: queued,
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         }
         .import(&mut vm, &syscall)
@@ -669,6 +674,7 @@ fn qvm_import_uses_captured_scalar_arguments_and_current_guest_string_bytes() {
             context: Fixture::context(SeatId::FIRST),
             platform_time: EventTime(42),
             command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
             unknown: &mut unknown,
         }
         .import(&mut vm, &syscall)
@@ -697,10 +703,334 @@ fn synchronous_qvm_adapter_drains_the_same_clear_keys_host_request() {
         context: Fixture::context(SeatId::FIRST),
         platform_time: EventTime(42),
         command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
         unknown: &mut unknown,
     };
     assert_eq!(vm.call(&mut calls, [0; 10], 100, false), Ok(0));
     assert!(!f.host.input.is_down(SeatId::FIRST, 4));
     assert!(!vm.is_active());
     assert_eq!(unknown.calls, 0);
+}
+
+#[test]
+fn command_exports_are_loaded_abi_capabilities() {
+    use qa_compat::abi::{CommandExport, CommandRole, Q2_CLASSIC, Q2_RERELEASE, Q3_SERVER, QUAKEC};
+    for (table, role, entry) in [
+        (&Q3_CLIENT, CommandRole::Cgame, 2),
+        (&Q3_SERVER, CommandRole::Server, 9),
+        (&Q3_UI, CommandRole::Ui, 8),
+    ] {
+        assert_eq!(table.command_export(), Some(CommandExport { role, entry }));
+    }
+    for table in [&Q2_CLASSIC, &Q2_RERELEASE, &QUAKEC] {
+        assert_eq!(table.command_export(), None);
+    }
+}
+
+#[test]
+fn execute_now_yields_checked_raw_pointer_without_touching_the_pending_buffer() {
+    use qa_compat::abi::{ArgumentSelection, Q3_SERVER};
+    use qa_core::text::FixedText;
+    for (base, addresses) in [
+        (0, Addresses::Qvm { mask: 255 }),
+        (
+            1 << 40,
+            Addresses::Native {
+                pointer_bytes: 8,
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
+        ),
+    ] {
+        for (table, ordinal) in [(&Q3_SERVER, 14), (&Q3_UI, 12)] {
+            let mut fixture = Fixture::new();
+            let mut memory = ModuleMemory::load(base, 256, &[]).unwrap();
+            memory.write_string(base, 32, b"wrapped\xff").unwrap();
+            memory
+                .write_string(base + 32, 32, b"echo \xff; untouched")
+                .unwrap();
+            let mut unknown = UnknownCalls::load(1).unwrap();
+            let mut engine = fixture.engine();
+            let mut context = Fixture::context(SeatId::FIRST);
+            context.console.source = RuleSetId::Quake3;
+            engine.commands.append("queued\n", context.console).unwrap();
+            let mut call = Invocation {
+                services: &mut engine,
+                memory: &mut memory,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                native_pmove: None,
+                native_player: None,
+                context,
+                platform_time: EventTime(42),
+                command: Default::default(),
+                argument_selection: &mut ArgumentSelection::RetainedClient,
+                addresses,
+                arguments: &[0, base + 32],
+            };
+            let ImportStep::Host {
+                request:
+                    HostRequest::ExecuteNow {
+                        context: found,
+                        text,
+                    },
+                continuation,
+            } = table.invoke(ordinal, &mut call, &mut unknown).unwrap()
+            else {
+                panic!("EXEC_NOW host request");
+            };
+            assert_eq!(found, context.console);
+            assert_eq!(text, Some(base + 32));
+            assert!(matches!(
+                continuation.resume(&mut call, 999).unwrap(),
+                ImportStep::Return(0)
+            ));
+            call.arguments = &[0, 0];
+            assert!(matches!(
+                table.invoke(ordinal, &mut call, &mut unknown).unwrap(),
+                ImportStep::Host {
+                    request: HostRequest::ExecuteNow { text: None, .. },
+                    ..
+                }
+            ));
+            if base == 0 {
+                call.arguments = &[0, 256];
+                assert!(matches!(
+                    table.invoke(ordinal, &mut call, &mut unknown).unwrap(),
+                    ImportStep::Host {
+                        request: HostRequest::ExecuteNow { text: Some(0), .. },
+                        ..
+                    }
+                ));
+            }
+            let invalid_mode = [3, u64::MAX];
+            call.arguments = &invalid_mode;
+            assert!(matches!(
+                table.invoke(ordinal, &mut call, &mut unknown),
+                Err(CallError::Text)
+            ));
+            let invalid_pointer = [0, base + 255];
+            call.memory.write(base + 255, &[b'x']).unwrap();
+            call.arguments = &invalid_pointer;
+            assert!(matches!(
+                table.invoke(ordinal, &mut call, &mut unknown),
+                Err(CallError::Memory)
+            ));
+            let mut line = FixedText::<64>::default();
+            assert_eq!(
+                call.services.commands.next_line(&mut line).unwrap().0,
+                context.console
+            );
+            assert_eq!(line.as_bytes(), b"queued");
+            assert!(call.services.commands.is_empty());
+            let queued_arguments = [[1, base + 32], [2, base + 32]];
+            for arguments in &queued_arguments {
+                call.arguments = arguments;
+                assert!(matches!(
+                    table.invoke(ordinal, &mut call, &mut unknown).unwrap(),
+                    ImportStep::Return(0)
+                ));
+                call.services.commands.next_line(&mut line).unwrap();
+                assert_eq!(line.as_bytes(), b"echo \xff");
+                call.services.commands.next_line(&mut line).unwrap();
+                assert_eq!(line.as_bytes(), b" untouched");
+                assert!(call.services.commands.is_empty());
+            }
+            assert_eq!(unknown.calls, 0);
+        }
+    }
+}
+
+struct CommandWindow {
+    selected: qa_console::command_text::ParsedCommand,
+}
+impl qa_compat::services::ClientConnection for CommandWindow {
+    fn identity(
+        &self,
+        _: &qa_session::clients::Server,
+    ) -> Result<(qa_core::primitives::ClientId, qa_core::primitives::EntityId), CallError> {
+        Err(CallError::Unsupported)
+    }
+    fn command_number(&self, _: &qa_session::clients::Server) -> Result<u64, CallError> {
+        Err(CallError::Unsupported)
+    }
+    fn usercmd(
+        &mut self,
+        _: i32,
+        _: &qa_session::clients::Server,
+    ) -> Result<Option<qa_core::primitives::UserCmd>, CallError> {
+        Err(CallError::Unsupported)
+    }
+    fn select(
+        &mut self,
+        number: i32,
+        _: &mut qa_session::clients::Server,
+    ) -> Result<bool, CallError> {
+        if number != 7 {
+            return Ok(false);
+        }
+        self.selected
+            .parse(b"retained \"new\xff value\"", RuleSetId::Quake3)
+            .map_err(|_| CallError::Text)?;
+        Ok(true)
+    }
+    fn arguments(&self) -> qa_console::command_text::Arguments<'_> {
+        self.selected.arguments()
+    }
+    fn disconnected(&self) -> Option<qa_compat::services::ClientTermination> {
+        None
+    }
+    fn configstrings(
+        &self,
+        _: &qa_session::clients::Server,
+    ) -> Result<&qa_core::configstrings::ConfigStrings, CallError> {
+        Err(CallError::Unsupported)
+    }
+    fn snapshot_number(
+        &self,
+        _: &qa_session::clients::Server,
+    ) -> Result<(u32, ThinkTime), CallError> {
+        Err(CallError::Unsupported)
+    }
+    fn snapshot(
+        &mut self,
+        _: i32,
+        _: &qa_session::clients::Server,
+    ) -> Result<Option<qa_network::snapshots::Q3ClientSnapshot<'_>>, CallError> {
+        Err(CallError::Unsupported)
+    }
+}
+
+#[test]
+fn caller_arguments_override_retained_client_until_get_server_command_selects_it() {
+    use qa_compat::abi::ArgumentSelection;
+    let mut fixture = Fixture::new();
+    let mut caller = qa_console::command_text::ParsedCommand::default();
+    caller
+        .parse_engine(b"local \"raw\xff value\" extra", RuleSetId::Quake3)
+        .unwrap();
+    let mut window = CommandWindow {
+        selected: Default::default(),
+    };
+    window
+        .selected
+        .parse(b"retained old", RuleSetId::Quake3)
+        .unwrap();
+    let mut engine = fixture.engine();
+    engine.client_connection = Some(&mut window);
+    let mut memory = ModuleMemory::load(0, 512, &[]).unwrap();
+    let mut unknown = UnknownCalls::load(1).unwrap();
+    let mut call = Invocation {
+        services: &mut engine,
+        memory: &mut memory,
+        native_cvars: None,
+        native_resources: None,
+        native_entities: None,
+        native_surfaces: None,
+        native_command: None,
+        native_configs: None,
+        native_pmove: None,
+        native_player: None,
+        context: Fixture::context(SeatId::FIRST),
+        platform_time: EventTime(42),
+        command: caller.arguments(),
+        argument_selection: &mut ArgumentSelection::Caller,
+        addresses: Addresses::Qvm { mask: 511 },
+        arguments: &[],
+    };
+    assert!(matches!(
+        Q3_CLIENT.invoke(7, &mut call, &mut unknown).unwrap(),
+        ImportStep::Return(3)
+    ));
+    call.arguments = &[1, 64, 64];
+    Q3_CLIENT.invoke(8, &mut call, &mut unknown).unwrap();
+    assert_eq!(call.memory.cstring(64).unwrap(), b"raw\xff value");
+    call.arguments = &[128, 128];
+    Q3_CLIENT.invoke(9, &mut call, &mut unknown).unwrap();
+    assert_eq!(call.memory.cstring(128).unwrap(), b"raw\xff value extra");
+    call.arguments = &[6];
+    assert!(matches!(
+        Q3_CLIENT.invoke(53, &mut call, &mut unknown).unwrap(),
+        ImportStep::Return(0)
+    ));
+    assert_eq!(*call.argument_selection, ArgumentSelection::Caller);
+    call.arguments = &[7];
+    assert!(matches!(
+        Q3_CLIENT.invoke(53, &mut call, &mut unknown).unwrap(),
+        ImportStep::Return(1)
+    ));
+    assert_eq!(*call.argument_selection, ArgumentSelection::RetainedClient);
+    assert!(matches!(
+        Q3_CLIENT.invoke(7, &mut call, &mut unknown).unwrap(),
+        ImportStep::Return(2)
+    ));
+    call.arguments = &[1, 64, 64];
+    Q3_CLIENT.invoke(8, &mut call, &mut unknown).unwrap();
+    assert_eq!(call.memory.cstring(64).unwrap(), b"new\xff value");
+    assert_eq!(caller.arguments().get_bytes(1), b"raw\xff value");
+    assert_eq!(unknown.calls, 0);
+}
+
+#[test]
+fn standalone_qvm_execute_now_is_explicitly_unsupported_without_queueing() {
+    use qa_formats::program::qvm::Opcode::*;
+    let mut vm = input_vm(
+        &[
+            (Enter, 64),
+            (Const, 0),
+            (Arg, 8),
+            (Const, 128),
+            (Arg, 12),
+            (Const, -13),
+            (Call, 0),
+            (Leave, 64),
+        ],
+        &[0; 256],
+    );
+    vm.memory.write_string(128, 64, b"echo immediate").unwrap();
+    let mut fixture = Fixture::new();
+    let mut engine = fixture.engine();
+    let mut unknown = UnknownCalls::load(1).unwrap();
+    let mut calls = QvmCalls {
+        services: &mut engine,
+        table: &Q3_UI,
+        context: Fixture::context(SeatId::FIRST),
+        platform_time: EventTime(42),
+        command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
+        unknown: &mut unknown,
+    };
+    assert!(matches!(
+        vm.call(&mut calls, [0; 10], 100, false),
+        Err(qa_compat::qvm::Trap::Syscall)
+    ));
+    assert!(calls.services.commands.is_empty());
+}
+
+#[test]
+fn cgame_console_command_remains_text_only_append_with_native_bytes() {
+    let mut fixture = Fixture::new();
+    let mut memory = ModuleMemory::load(0, 256, &[]).unwrap();
+    memory.write_string(128, 64, b"echo cgame\xff").unwrap();
+    assert_eq!(
+        fixture.call(
+            &Q3_CLIENT,
+            Addresses::Qvm { mask: 255 },
+            &mut memory,
+            14,
+            &[128],
+            SeatId::FIRST
+        ),
+        Ok(0)
+    );
+    let mut line = qa_core::text::FixedText::<64>::default();
+    let engine = fixture.engine();
+    let (context, result) = engine.commands.next_line(&mut line).unwrap();
+    assert_eq!(context, Fixture::context(SeatId::FIRST).console);
+    assert_eq!(result, Ok(()));
+    assert_eq!(line.as_bytes(), b"echo cgame\xff");
+    assert!(engine.commands.is_empty());
 }

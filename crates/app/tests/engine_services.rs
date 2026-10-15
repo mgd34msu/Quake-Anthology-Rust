@@ -176,7 +176,7 @@ fn modules_share_entity_lifetimes_cvars_command_buffer_and_byte_exact_output() {
             (ENGINE_CALLS.cvar_register)(&mut services, q3.console, "", Some("0"), 0).unwrap_err(),
             CallError::Cvar
         );
-        (ENGINE_CALLS.command)(&mut services, q3.console, "sensitivity 5 extra\n").unwrap();
+        (ENGINE_CALLS.command)(&mut services, q3.console, b"sensitivity 5 extra\n").unwrap();
         (ENGINE_CALLS.configstring)(&mut services, ModuleId(1), 3, b"\x80native").unwrap();
         (ENGINE_CALLS.configstring)(&mut services, ModuleId(1), 3, b"\x80native").unwrap();
         assert_eq!(
