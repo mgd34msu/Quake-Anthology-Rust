@@ -65,3 +65,82 @@ fn shared_leaf_references_retain_native_visit_order() {
     assert_eq!((result.count, result.top_node), (2, 0));
     assert_eq!(output, [7, 7]);
 }
+
+#[test]
+fn visitor_walks_past_collection_limits_and_keeps_the_same_native_order() {
+    use qa_core::primitives::child_from_leaf;
+    const LEAVES: usize = 2048;
+    let bounds = Bounds {
+        mins: Vec3([-1.0; 3]),
+        maxs: Vec3([1.0; 3]),
+    };
+    let node = |index: i32| {
+        let children = [index as usize * 2 + 1, index as usize * 2 + 2].map(|child| {
+            if child < LEAVES - 1 {
+                child as i32
+            } else {
+                child_from_leaf((child - (LEAVES - 1)) as u32)
+            }
+        });
+        (Plane::oriented(Vec3::axis(0, 1.0), 0.0), children)
+    };
+    let mut scratch = LeafScratch::new(12);
+    let mut count = 0;
+    let result = scratch
+        .visit(0, bounds, node, |leaf| {
+            assert_eq!(leaf as usize, count);
+            count += 1;
+            Ok::<_, ()>(true)
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!((result.count, result.top_node, count), (LEAVES, 0, LEAVES));
+    let mut output = [u32::MAX; 1024];
+    let collected = scratch.query(0, bounds, &mut output, node).unwrap();
+    assert_eq!((collected.count, collected.top_node), (1024, 0));
+    assert_eq!(output, std::array::from_fn(|i| i as u32));
+    let mut seen = 0;
+    let stopped = scratch
+        .visit(0, bounds, node, |_| {
+            seen += 1;
+            Ok::<_, ()>(seen < 3)
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!((stopped.count, stopped.top_node, seen), (3, 0, 3));
+    let empty = scratch
+        .query(0, bounds, &mut [], |_| {
+            panic!("empty collection must not walk")
+        })
+        .unwrap();
+    assert_eq!((empty.count, empty.top_node), (0, -1));
+}
+
+#[test]
+fn visitor_propagates_failure_and_stack_exhaustion_and_reuses_its_scratch() {
+    let bounds = Bounds {
+        mins: Vec3([-1.0; 3]),
+        maxs: Vec3([1.0; 3]),
+    };
+    let node = |_| (Plane::oriented(Vec3::axis(0, 1.0), 0.0), [-1, -2]);
+    let mut short = LeafScratch::new(1);
+    assert_eq!(
+        short.visit(0, bounds, node, |_| Ok::<_, u8>(true)),
+        Ok(None)
+    );
+    let mut scratch = LeafScratch::new(2);
+    assert_eq!(
+        scratch.visit(0, bounds, node, |_| Err::<bool, _>(17u8)),
+        Err(17)
+    );
+    let mut visited = Vec::new();
+    let result = scratch
+        .visit(0, bounds, node, |leaf| {
+            visited.push(leaf);
+            Ok::<_, u8>(true)
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!((result.count, result.top_node), (2, 0));
+    assert_eq!(visited, [0, 1]);
+}

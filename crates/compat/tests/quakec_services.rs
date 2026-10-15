@@ -577,9 +577,9 @@ fn checkbottom_keeps_foreign_trace_selection_and_does_not_flush_unrelated_dirty_
         let order = solid_order(calls);
         assert_eq!(vm.call(calls, 1, 64, false).unwrap()[0], 0.0f32.to_bits());
         calls.context.trace_rules = RuleSetId::Quake2;
-        // The chosen policy visits linked contents, but a bbox contributes
-        // BODY, not the SOLID contents required by the native support test.
-        assert_eq!(vm.call(calls, 1, 64, false).unwrap()[0], 0.0f32.to_bits());
+        // The chosen foreign policy includes linked BODY contents. Its one
+        // Q1 projection now maps that solid family to native CONTENTS_SOLID.
+        assert_eq!(vm.call(calls, 1, 64, false).unwrap()[0], 1.0f32.to_bits());
         // Candidate-local bounds are now executed only by the foreign linked
         // contents policy. Q1 world contents and IgnoreBoxes never read them.
         write(&mut vm, obstacle, b"mins", &[9.0f32.to_bits(); 3]);
@@ -824,8 +824,20 @@ fn with_model_services(
 }
 fn with_collision_services(
     rules: RuleSetId,
-    mut model_loader: Option<&mut Models>,
+    model_loader: Option<&mut Models>,
     world_boxes: &[Bounds],
+    run: impl FnOnce(&mut QuakeCCalls<'_, '_>),
+) {
+    let brushes = world_boxes
+        .iter()
+        .map(|&bounds| (bounds, qa_world::collision::Contents::SOLID))
+        .collect::<Vec<_>>();
+    with_brush_services(rules, model_loader, &brushes, run);
+}
+fn with_brush_services(
+    rules: RuleSetId,
+    mut model_loader: Option<&mut Models>,
+    world_brushes: &[(Bounds, qa_world::collision::Contents)],
     run: impl FnOnce(&mut QuakeCCalls<'_, '_>),
 ) {
     let mut names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
@@ -848,7 +860,7 @@ fn with_collision_services(
     let mut geometry = CollisionStore::new();
     let mut planes = Vec::new();
     let mut brushes = Vec::new();
-    for bounds in world_boxes {
+    for (bounds, contents) in world_brushes {
         let first = planes.len() as u32;
         for axis in 0..3 {
             let mut normal = [0.0; 3];
@@ -859,7 +871,7 @@ fn with_collision_services(
         }
         brushes.push(qa_world::collision::brushes::Brush {
             sides: IndexSpan { first, count: 6 },
-            contents: qa_world::collision::Contents::SOLID,
+            contents: *contents,
         });
     }
     let mut tree = BrushTree::direct(brushes.len()).unwrap();
@@ -870,7 +882,7 @@ fn with_collision_services(
             planes,
             brushes,
             Vec::new(),
-            SurfaceTable::flags(vec![SurfaceFlags::default(); world_boxes.len() * 6]),
+            SurfaceTable::flags(vec![SurfaceFlags::default(); world_brushes.len() * 6]),
             tree,
             vec![
                 Bounds {
@@ -5323,7 +5335,7 @@ fn point_contents_reads_live_candidates_without_flushing_unrelated_dirty_rows() 
         // Native temporary boxes do not use angles or owner for contents.
         write(&mut vm, value, b"angles", &[f32::NAN.to_bits(); 3]);
         calls.call(&mut vm, 41, 1).unwrap();
-        assert_eq!(vm.image.globals[1], (-1.0f32).to_bits());
+        assert_eq!(vm.image.globals[1], (-2.0f32).to_bits());
         assert_eq!(calls.services.server.area.bounds(id), bounds);
     });
 }
@@ -6488,4 +6500,70 @@ fn full_qw_backing_never_overwrites_a_live_foreign_alias() {
             Ok(Some(actor))
         );
     });
+}
+
+#[test]
+fn quakec_trace_globals_adopt_foreign_brush_media_from_the_caller_trace_role() {
+    use qa_world::collision::Contents;
+    let water = Bounds {
+        mins: Vec3([2.0, -2.0, -2.0]),
+        maxs: Vec3([4.0, 2.0, 2.0]),
+    };
+    let wall = Bounds {
+        mins: Vec3([6.0, -2.0, -2.0]),
+        maxs: Vec3([7.0, 2.0, 2.0]),
+    };
+    for native in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_brush_services(
+            native,
+            None,
+            &[(water, Contents::WATER), (wall, Contents::SOLID)],
+            |calls| {
+                let bytes = quakec_program::program_with_definitions(
+                    &[(Opcode::Call4, 32, 0, 0), (Opcode::Return, 1, 0, 0)],
+                    &[0, 1, -16],
+                    GLOBALS,
+                    FIELDS,
+                    37,
+                    96,
+                );
+                let layout = Layout {
+                    entities: 64,
+                    header_bytes: 16,
+                    extra_string_bytes: 128,
+                    state_step: 0.1,
+                    random_seed: 1,
+                };
+                let mut vm = seed_vm(
+                    calls,
+                    Vm::load(Image::parse(&bytes, Some(5927)).unwrap(), layout).unwrap(),
+                );
+                vm.image.globals[32] = 2;
+                let start = [0.0f32; 3].map(f32::to_bits);
+                let end = [10.0f32, 0.0, 0.0].map(f32::to_bits);
+                calls.context.console.source = RuleSetId::Quake3;
+                for role in [
+                    RuleSetId::Quake,
+                    RuleSetId::QuakeWorld,
+                    RuleSetId::Quake2,
+                    RuleSetId::Quake2Rerelease,
+                    RuleSetId::Quake3,
+                ] {
+                    calls.context.trace_rules = role;
+                    parameters(&mut vm, &[&start, &end, &[0], &[0]]);
+                    vm.call(calls, 1, 64, false).unwrap();
+                    let native_media = matches!(role, RuleSetId::Quake | RuleSetId::QuakeWorld);
+                    let expected = if native_media { 1.0f32 } else { 0.0f32 }.to_bits();
+                    assert_eq!(
+                        &vm.image.globals[63..65],
+                        &[expected; 2],
+                        "native={native:?} trace={role:?}"
+                    );
+                    assert!(f32::from_bits(vm.image.globals[62]) > 0.5);
+                    assert!(f32::from_bits(vm.image.globals[62]) < 0.6);
+                    assert_eq!(&vm.image.globals[69..72], &[(-1.0f32).to_bits(), 0, 0]);
+                }
+            },
+        );
+    }
 }

@@ -30,7 +30,8 @@ pub(super) fn trace_capsule(
     let target = Capsule::from_bounds(bounds);
     let center = math::midpoint(bounds.mins, bounds.maxs);
     let mut local_plane = false;
-    let mut trace = if let Some(moving) = query.capsule {
+    let moving = query.capsule;
+    let mut trace = if let Some(moving) = moving {
         if moving.offset.0[0] != 0.0 || moving.offset.0[1] != 0.0 {
             if !bounds.is_valid() {
                 return Err(TraceError::Query);
@@ -108,8 +109,16 @@ pub(super) fn trace_capsule(
             entity,
             BodyTraceMode::Direct,
             Some(culling_bounds),
-        )
+        )?
     };
+    if query.rules.reached_media && moving.is_some() {
+        if !bounds.is_valid() {
+            return Err(TraceError::Query);
+        }
+        rounded::capsule_pair_media(query, center, target, trace.fraction, scratch)
+            .map_err(rounded::Failure::query_error)?
+            .apply(&mut trace);
+    }
     if trace.fraction < 1.0 || trace.start_solid {
         trace.entity = entity;
     }

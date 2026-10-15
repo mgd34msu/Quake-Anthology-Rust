@@ -64,7 +64,8 @@ fn main() -> Result<(), &'static str> {
                     generation: 1,
                 }),
                 BodyTraceMode::Transformed,
-            );
+            )
+            .map_err(|_| "box trace rejected")?;
             if black_box(trace).fraction < 1.0 {
                 hits += 1;
             }
