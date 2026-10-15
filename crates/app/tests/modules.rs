@@ -984,12 +984,17 @@ fn quakec_pointcontents_uses_module_rules_over_all_collision_topologies() {
                                 vec![plane],
                                 vec![node],
                                 vec![node],
-                                vec![HullModel { roots: [0; 3] }],
+                                vec![HullModel {
+                                    roots: [0; 3],
+                                    brushes: Default::default(),
+                                }],
                                 vec![bounds],
+                                None,
+                                Default::default(),
                             )
                             .unwrap()
                     } else {
-                        let contents = Contents::from_q1(native);
+                        let contents = Contents::from_q1(native, Contents::EMPTY);
                         runtime
                             .geometry
                             .load_brushes(

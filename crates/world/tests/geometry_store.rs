@@ -120,8 +120,13 @@ fn add_hull(store: &mut CollisionStore) -> Result<GeometryId, StoreError> {
         vec![wall_plane()],
         vec![node],
         vec![node],
-        vec![HullModel { roots: [0; 3] }],
+        vec![HullModel {
+            roots: [0; 3],
+            brushes: Default::default(),
+        }],
         vec![bounds()],
+        None,
+        Default::default(),
     )
 }
 
@@ -429,8 +434,13 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            vec![HullModel { roots: [0; 3] }],
-            vec![bounds()]
+            vec![HullModel {
+                roots: [0; 3],
+                brushes: Default::default(),
+            }],
+            vec![bounds()],
+            None,
+            Default::default(),
         ),
         Err(StoreError::Hull(HullError::Root))
     ));
@@ -443,8 +453,13 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
             vec![wall_plane()],
             cycle.clone(),
             cycle,
-            vec![HullModel { roots: [0; 3] }],
-            vec![bounds()]
+            vec![HullModel {
+                roots: [0; 3],
+                brushes: Default::default(),
+            }],
+            vec![bounds()],
+            None,
+            Default::default(),
         ),
         Err(StoreError::Hull(HullError::Cycle))
     ));
@@ -479,11 +494,22 @@ fn terminal_hull_models_and_stale_scratch_remain_scoped() -> Result<(), StoreErr
         Vec::new(),
         Vec::new(),
         vec![
-            HullModel { roots: [-1; 3] },
-            HullModel { roots: [-2; 3] },
-            HullModel { roots: [-3; 3] },
+            HullModel {
+                roots: [-1; 3],
+                brushes: Default::default(),
+            },
+            HullModel {
+                roots: [-2; 3],
+                brushes: Default::default(),
+            },
+            HullModel {
+                roots: [-3; 3],
+                brushes: Default::default(),
+            },
         ],
         vec![bounds(); 3],
+        None,
+        Default::default(),
     )?;
     let query = crossing(
         TraceRules::LEGACY,

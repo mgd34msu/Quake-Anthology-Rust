@@ -20,6 +20,8 @@ impl Contents {
     pub const NO_WATERJUMP: Self = Self((1 << 13) << 36);
     pub const PLAYER: Self = Self(1 << 41);
     pub const PROJECTILE: Self = Self(1 << 42);
+    /// Authored clipping that defaults to blocking sized shapes, not points.
+    pub const VOLUME_CLIP: Self = Self(1 << 51);
     pub const CURRENT: Self = Self(0x3f << 35);
     pub const FLUID: Self = Self(8 | 16 | 32);
     const Q2_SHARED: u32 = 0x0f03807d;
@@ -38,15 +40,21 @@ impl Contents {
         ])
     }
 
-    pub fn from_q1(raw: i32) -> Self {
+    pub fn from_q1(raw: i32, unknown: Self) -> Self {
         match raw {
+            -1 | -15 => Self::EMPTY,
             -2 => Self::SOLID,
             -3 => Self::WATER,
             -4 => Self::SLIME,
             -5 => Self::LAVA,
             -6 => Self::SKY,
+            -8 => Self::VOLUME_CLIP,
+            -16 => Self::LADDER,
+            -17 => Self::MONSTER_CLIP,
+            -18 => Self::PLAYER_CLIP,
+            -19 => Self::CORPSE,
             -14..=-9 => Self(Self::WATER.0 | (1 << (35 + (-9 - raw)))),
-            _ => Self::EMPTY,
+            _ => unknown,
         }
     }
 
@@ -85,6 +93,9 @@ impl Contents {
 
     pub fn to_q2(self) -> u32 {
         let mut raw = self.0 as u32 & Self::Q2_SHARED;
+        if self.intersects(Self::VOLUME_CLIP) {
+            raw |= (Self::PLAYER_CLIP | Self::MONSTER_CLIP).0 as u32;
+        }
         if self.intersects(Self::WINDOW) {
             raw |= 2;
         }
@@ -108,6 +119,9 @@ impl Contents {
     }
     pub fn to_q3(self) -> u32 {
         let mut raw = self.0 as u32;
+        if self.intersects(Self::VOLUME_CLIP) {
+            raw |= (Self::PLAYER_CLIP | Self::MONSTER_CLIP).0 as u32;
+        }
         if self.intersects(Self::WINDOW | Self::SKY) {
             raw |= 1;
         }

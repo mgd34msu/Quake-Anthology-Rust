@@ -22,7 +22,15 @@ fn load(
         models.len()
     ];
     let mut store = CollisionStore::new();
-    let geometry = store.load_hulls(planes, drawing, clips, models, bounds)?;
+    let geometry = store.load_hulls(
+        planes,
+        drawing,
+        clips,
+        models,
+        bounds,
+        None,
+        Default::default(),
+    )?;
     Ok(Case { store, geometry })
 }
 
@@ -38,7 +46,10 @@ fn wall() -> (Vec<Plane>, Vec<ClipNode>, Vec<HullModel>) {
             plane: 0,
             children: [-1, -2],
         }],
-        vec![HullModel { roots: [0; 3] }],
+        vec![HullModel {
+            roots: [0; 3],
+            brushes: Default::default(),
+        }],
     )
 }
 
@@ -274,7 +285,10 @@ fn native_compiled_height_and_foreign_supplied_height_are_independent() {
             plane: 1,
             children: [-2, -1],
         }],
-        vec![HullModel { roots: [0; 3] }],
+        vec![HullModel {
+            roots: [0; 3],
+            brushes: Default::default(),
+        }],
     )
     .unwrap();
     let mut scratch = hulls.store.scratch();

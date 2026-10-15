@@ -410,6 +410,8 @@ pub struct Map<'a> {
     pub models: Vec<Model>,
     pub brushes: Vec<Brush>,
     pub brush_sides: Vec<BrushSide>,
+    /// Present BSPX BRUSHLIST makes every model brush span authoritative.
+    pub authored_brushes: bool,
     pub shaders: Vec<Shader<'a>>,
     pub fogs: Vec<Fog<'a>>,
     pub surfaces: Vec<Surface<'a>>,

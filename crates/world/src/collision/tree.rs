@@ -304,7 +304,7 @@ impl Topology {
         scratch: &mut BrushScratch,
     ) {
         if work.query.rules.leaf_gate == LeafGate::StoredContents
-            && !self.leaf_contents[leaf as usize].intersects(work.query.mask)
+            && !self.leaf_contents[leaf as usize].intersects(work.query.effective_mask())
         {
             return;
         }
@@ -314,7 +314,7 @@ impl Topology {
                 continue;
             }
             let brush = map.brushes[index];
-            if !brush.contents.intersects(work.query.mask) {
+            if !brush.contents.intersects(work.query.effective_mask()) {
                 continue;
             }
             if position {
@@ -333,7 +333,7 @@ impl Topology {
         for &id in &self.leaf_patches[leaf.patches.range()] {
             let patch = &map.patches[id as usize];
             if scratch.stamps.test_and_set(map.brushes.len() + id as usize)
-                || !patch.contents.intersects(work.query.mask)
+                || !patch.contents.intersects(work.query.effective_mask())
             {
                 continue;
             }

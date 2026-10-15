@@ -113,16 +113,32 @@ impl CollisionStore {
         clips: Vec<ClipNode>,
         models: Vec<HullModel>,
         bounds: Vec<Bounds>,
+        authored: Option<Vec<Brush>>,
+        limits: HullPositionLimits,
     ) -> Result<GeometryId, StoreError> {
         validate_bounds(models.len(), &bounds)?;
-        let geometry = Q1Hulls::load(planes, drawing, clips, &models).map_err(StoreError::Hull)?;
+        let prepared = authored
+            .as_ref()
+            .map(|brushes| position::prepare_brushes(&planes, brushes, &models, limits))
+            .transpose()
+            .map_err(|error| match error {
+                position::Failure::Input => StoreError::Brush(GeometryError::BrushRange),
+                _ => StoreError::Capacity,
+            })?;
+        let mut geometry = Q1Hulls::load(planes, drawing, clips, &models, prepared.is_some())
+            .map_err(StoreError::Hull)?;
+        let cells = prepared.map(|prepared| {
+            geometry.publish_authored(prepared.data);
+            prepared.models
+        });
         let models = models
             .into_iter()
             .zip(bounds)
-            .map(|(root, bounds)| Model {
+            .enumerate()
+            .map(|(index, (root, bounds))| Model {
                 root: Root::Hull(root),
                 bounds,
-                position_cells: None,
+                position_cells: cells.as_ref().map(|cells| cells[index]),
             })
             .collect();
         self.insert(Geometry::Hulls(geometry), models)
@@ -554,8 +570,8 @@ impl CollisionStore {
         };
         let (resource, model) = self.resolve(geometry, index).ok_or(invalid)?;
         validate_query_shape(resource, geometry, index, query)?;
-        if query.rules.hull_shape == HullShape::ExactBox
-            && let Geometry::Hulls(hulls) = resource
+        if let Geometry::Hulls(hulls) = resource
+            && (hulls.is_authored() || query.rules.hull_shape == HullShape::ExactBox)
         {
             return trace_position(
                 hulls,
@@ -604,9 +620,22 @@ impl CollisionStore {
                 Geometry::Hulls(hulls),
                 Model {
                     root: Root::Hull(model),
+                    position_cells,
                     ..
                 },
-            )) => Ok(hulls.point_contents(*model, point)),
+            )) => {
+                if hulls.is_authored() {
+                    let invalid = TraceError::Unsupported {
+                        geometry,
+                        model: index,
+                    };
+                    hulls
+                        .authored_contents(position_cells.ok_or(invalid)?, point)
+                        .map_err(|_| invalid)
+                } else {
+                    Ok(hulls.point_contents(*model, point))
+                }
+            }
             Some((
                 Geometry::Brushes(brushes),
                 Model {
@@ -641,8 +670,8 @@ impl CollisionStore {
         };
         let (resource, model) = self.resolve(geometry, index).ok_or(invalid)?;
         validate_query_shape(resource, geometry, index, query)?;
-        if query.rules.hull_shape == HullShape::ExactBox
-            && let Geometry::Hulls(hulls) = resource
+        if let Geometry::Hulls(hulls) = resource
+            && (hulls.is_authored() || query.rules.hull_shape == HullShape::ExactBox)
         {
             let axes = if rules.rotation != ModelRotation::TranslationOnly
                 && angles.0.iter().any(|&angle| angle != 0.0)
@@ -792,7 +821,7 @@ fn validate_query_shape(
 ) -> Result<(), TraceError> {
     if query.capsule.is_some()
         && query.rules.hull_shape != HullShape::ExactBox
-        && matches!(resource, Geometry::Hulls(_))
+        && matches!(resource, Geometry::Hulls(hulls) if !hulls.is_authored())
     {
         Err(TraceError::Unsupported {
             geometry,
@@ -852,8 +881,13 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            vec![HullModel { roots: [-1; 3] }],
+            vec![HullModel {
+                roots: [-1; 3],
+                brushes: IndexSpan::default(),
+            }],
             bounds.clone(),
+            None,
+            HullPositionLimits::default(),
         )?;
         store.slots[geometry.slot as usize].generation = u32::MAX - 1;
         let terminal = GeometryId {
@@ -866,8 +900,13 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            vec![HullModel { roots: [-1; 3] }],
+            vec![HullModel {
+                roots: [-1; 3],
+                brushes: IndexSpan::default(),
+            }],
             bounds,
+            None,
+            HullPositionLimits::default(),
         )?;
         assert_ne!(next.slot, terminal.slot);
         assert_eq!(next.generation, 1);

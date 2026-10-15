@@ -77,7 +77,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
     let format = bsp.format;
     let rules = format.rule_set();
     let wide = format.wide();
-    let planes = records(&bsp, Planes, |r| {
+    let mut planes = records(&bsp, Planes, |r| {
         let normal = r.vector()?;
         let distance = r.float()?;
         let plane_type = if bsp.stride(Planes) == 20 {
@@ -248,7 +248,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
             next,
         })
     })?;
-    let models = records(&bsp, Models, |r| {
+    let mut models = records(&bsp, Models, |r| {
         let bounds = r.bounds(2)?;
         let mut model = Model {
             bounds,
@@ -275,7 +275,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         }
         Ok(model)
     })?;
-    let brushes = records(&bsp, Brushes, |r| {
+    let mut brushes = records(&bsp, Brushes, |r| {
         let sides = r.range(true)?;
         let (contents, shader) = if format.modern_q3() {
             (0, Some(r.u32()?))
@@ -288,7 +288,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
             shader,
         })
     })?;
-    let brush_sides = records(&bsp, BrushSides, |r| {
+    let mut brush_sides = records(&bsp, BrushSides, |r| {
         let plane = r.index(if matches!(rules, RuleSetId::Quake2) {
             wide
         } else {
@@ -344,6 +344,14 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
     })?;
     let textures = textures(&bsp)?;
     let extensions = extensions(&bsp)?;
+    let authored_brushes = matches!(rules, RuleSetId::Quake)
+        && brush_list(
+            &extensions,
+            &mut models,
+            &mut planes,
+            &mut brushes,
+            &mut brush_sides,
+        )?;
     let decoupled_lightmaps = decoupled_lightmaps(&bsp, &faces, &extensions)?;
     Ok(Map {
         bsp,
@@ -362,6 +370,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         models,
         brushes,
         brush_sides,
+        authored_brushes,
         shaders,
         fogs,
         surfaces,
@@ -371,6 +380,159 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         extensions,
         decoupled_lightmaps,
     })
+}
+
+#[derive(Default)]
+struct BrushChunk {
+    planes: Vec<Plane>,
+    sides: Vec<BrushSide>,
+    brushes: Vec<Brush>,
+}
+impl BrushChunk {
+    fn plane(&mut self, plane: Plane) -> Result<(), FormatError> {
+        if !plane.is_valid() {
+            return Err(FormatError::InvalidValue);
+        }
+        let plane_index =
+            u32::try_from(self.planes.len()).map_err(|_| FormatError::InvalidRange)?;
+        self.planes.push(plane);
+        self.sides.push(BrushSide {
+            plane: plane_index,
+            texture_info: None,
+            shader: None,
+            flags: 0,
+        });
+        Ok(())
+    }
+}
+
+fn brush_chunk(
+    mut row: Row<'_>,
+    count: usize,
+    mut remaining_planes: usize,
+) -> Result<BrushChunk, FormatError> {
+    let mut chunk = BrushChunk::default();
+    for _ in 0..count {
+        let bounds = row.bounds(2)?;
+        if !bounds.is_valid() {
+            return Err(FormatError::InvalidValue);
+        }
+        let contents = i32::from(row.i16()?);
+        let planes = usize::from(row.u16()?);
+        remaining_planes = remaining_planes
+            .checked_sub(planes)
+            .ok_or(FormatError::InvalidRange)?;
+        let first = u32::try_from(chunk.sides.len()).map_err(|_| FormatError::InvalidRange)?;
+        for _ in 0..planes {
+            let normal = row.vector()?;
+            let distance = row.float()?;
+            chunk.plane(Plane::oriented(normal, distance))?;
+        }
+        // FTE Q1BSP_LoadBrushes appends all positive axes before negative axes.
+        for axis in 0..3 {
+            chunk.plane(Plane::oriented(Vec3::axis(axis, 1.0), bounds.maxs.0[axis]))?;
+        }
+        for axis in 0..3 {
+            chunk.plane(Plane::oriented(
+                Vec3::axis(axis, -1.0),
+                -bounds.mins.0[axis],
+            ))?;
+        }
+        chunk.brushes.push(Brush {
+            sides: IndexSpan {
+                first,
+                count: u32::try_from(planes + 6).map_err(|_| FormatError::InvalidRange)?,
+            },
+            contents,
+            shader: None,
+        });
+    }
+    if remaining_planes != 0 || row.at != row.bytes.len() {
+        return Err(FormatError::InvalidRecordSize);
+    }
+    Ok(chunk)
+}
+
+/// Decode into the same source records; repeated complete model chunks replace
+/// their predecessor, including a later empty chunk (FTE q1bsp.c:1449-1507).
+fn brush_list(
+    extensions: &[Extension<'_>],
+    models: &mut [Model],
+    planes: &mut Vec<Plane>,
+    brushes: &mut Vec<Brush>,
+    sides: &mut Vec<BrushSide>,
+) -> Result<bool, FormatError> {
+    let Some(extension) = extensions.iter().find(|entry| entry.name == b"BRUSHLIST") else {
+        return Ok(false);
+    };
+    let mut selected: Vec<Option<BrushChunk>> =
+        std::iter::repeat_with(|| None).take(models.len()).collect();
+    let mut row = Row::new(extension.bytes);
+    while row.at < row.bytes.len() {
+        if row.u32()? != 1 {
+            return Err(FormatError::Unsupported);
+        }
+        let model = row.u32()? as usize;
+        let count = row.u32()? as usize;
+        let plane_count = row.u32()? as usize;
+        let output = selected
+            .get_mut(model)
+            .ok_or(FormatError::InvalidReference("BRUSHLIST model", model))?;
+        let length = count
+            .checked_mul(28)
+            .and_then(|bytes| {
+                plane_count
+                    .checked_mul(16)
+                    .and_then(|planes| bytes.checked_add(planes))
+            })
+            .ok_or(FormatError::InvalidRange)?;
+        let payload = row.take(length)?;
+        *output = Some(brush_chunk(Row::new(payload), count, plane_count)?);
+    }
+    for (model, chunk) in models.iter_mut().zip(selected) {
+        model.brushes = IndexSpan {
+            first: u32::try_from(brushes.len()).map_err(|_| FormatError::InvalidRange)?,
+            count: 0,
+        };
+        let Some(mut chunk) = chunk else {
+            continue;
+        };
+        let plane_base = u32::try_from(planes.len()).map_err(|_| FormatError::InvalidRange)?;
+        let side_base = u32::try_from(sides.len()).map_err(|_| FormatError::InvalidRange)?;
+        u32::try_from(
+            planes
+                .len()
+                .checked_add(chunk.planes.len())
+                .ok_or(FormatError::InvalidRange)?,
+        )
+        .map_err(|_| FormatError::InvalidRange)?;
+        u32::try_from(
+            sides
+                .len()
+                .checked_add(chunk.sides.len())
+                .ok_or(FormatError::InvalidRange)?,
+        )
+        .map_err(|_| FormatError::InvalidRange)?;
+        u32::try_from(
+            brushes
+                .len()
+                .checked_add(chunk.brushes.len())
+                .ok_or(FormatError::InvalidRange)?,
+        )
+        .map_err(|_| FormatError::InvalidRange)?;
+        for side in &mut chunk.sides {
+            side.plane += plane_base;
+        }
+        for brush in &mut chunk.brushes {
+            brush.sides.first += side_base;
+        }
+        model.brushes.count =
+            u32::try_from(chunk.brushes.len()).map_err(|_| FormatError::InvalidRange)?;
+        planes.extend(chunk.planes);
+        sides.extend(chunk.sides);
+        brushes.extend(chunk.brushes);
+    }
+    Ok(true)
 }
 
 /// FTE specs/bspx.txt DECOUPLED_LM and q2repro common/bsp.c:412-454.

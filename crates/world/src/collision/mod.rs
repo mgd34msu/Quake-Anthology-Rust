@@ -425,6 +425,24 @@ pub struct TraceQuery<'a> {
 }
 
 impl TraceQuery<'_> {
+    /// Sized solid queries and explicit native clip masks admit volume clip.
+    /// A solid-only zero-size point still ignores that capability.
+    pub fn effective_mask(self) -> Contents {
+        let sized = self.mins != self.maxs
+            || self
+                .capsule
+                .is_some_and(|capsule| capsule.radius != 0.0 || capsule.offset != Vec3::default());
+        if self
+            .mask
+            .intersects(Contents::PLAYER_CLIP | Contents::MONSTER_CLIP)
+            || sized && self.mask.intersects(Contents::SOLID)
+        {
+            self.mask | Contents::VOLUME_CLIP
+        } else {
+            self.mask
+        }
+    }
+
     pub fn with_capsule(mut self) -> Self {
         self.capsule = Some(qa_core::primitives::Capsule::from_bounds(
             qa_core::primitives::Bounds {

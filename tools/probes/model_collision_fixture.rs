@@ -135,6 +135,7 @@ fn hulls(mut data: &[u8]) -> Result<brush::Fixture, &'static str> {
                 word(&mut data)? as i32,
                 word(&mut data)? as i32,
             ],
+            brushes: Default::default(),
         });
         bounds.push(Bounds {
             mins: vector(&mut data)?,
@@ -143,7 +144,15 @@ fn hulls(mut data: &[u8]) -> Result<brush::Fixture, &'static str> {
     }
     let mut store = CollisionStore::new();
     let geometry = store
-        .load_hulls(planes, drawing, clips, models, bounds)
+        .load_hulls(
+            planes,
+            drawing,
+            clips,
+            models,
+            bounds,
+            None,
+            Default::default(),
+        )
         .map_err(|_| "hull-model fixture geometry rejected")?;
     let mut queries = Vec::with_capacity(query_count);
     for _ in 0..query_count {

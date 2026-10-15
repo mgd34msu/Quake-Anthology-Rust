@@ -1,10 +1,10 @@
-//! Exact shape occupancy and certified exterior sweeps over hull-zero cells.
+//! Exact shape occupancy and certified sweeps over BSP or authored convex cells.
 //! Native compiled hull traversal does not use this predicate.
 mod integer;
 mod sphere;
 
 use self::integer::Int;
-use super::{AllSolid, Contents, Trace, TraceQuery};
+use super::{AllSolid, Contents, Trace, TraceQuery, brushes::Brush, hulls::HullModel};
 use qa_core::{
     math,
     primitives::{Bounds, Capsule, ClipNode, IndexSpan, Plane, Vec3},
@@ -1139,7 +1139,7 @@ fn paths(
             path.push(side);
         }
         if frame.node < 0 {
-            let contents = Contents::from_q1(frame.node);
+            let contents = Contents::from_q1(frame.node, Contents::EMPTY);
             if contents != Contents::EMPTY {
                 leaf(path, contents, work)?;
             }
@@ -1175,11 +1175,99 @@ fn paths(
     Ok(())
 }
 
+enum CellSource<'a> {
+    Bsp {
+        nodes: &'a [ClipNode],
+        root: &'a dyn Fn(usize) -> i32,
+    },
+    Authored {
+        brushes: &'a [Brush],
+        models: &'a [HullModel],
+    },
+}
+
+impl CellSource<'_> {
+    fn visit(
+        &self,
+        model: usize,
+        path: &mut Vec<Side>,
+        pending: &mut Vec<Pending>,
+        work: &mut Work,
+        mut leaf: impl FnMut(&[Side], Contents, &mut Work) -> Result<(), Failure>,
+    ) -> Result<(), Failure> {
+        match self {
+            Self::Bsp { nodes, root } => paths(nodes, root(model), path, pending, work, leaf),
+            Self::Authored { brushes, models } => {
+                for brush in &brushes[models[model].brushes.range()] {
+                    work.item()?;
+                    if brush.contents == Contents::EMPTY {
+                        continue;
+                    }
+                    path.clear();
+                    for plane in brush.sides.range() {
+                        path.push(Side {
+                            plane: plane as u32,
+                            inverted: false,
+                            strict: false,
+                        });
+                    }
+                    leaf(path, brush.contents, work)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 pub(super) fn prepare(
     planes: &[Plane],
     nodes: &[ClipNode],
     model_count: usize,
     root: impl Fn(usize) -> i32,
+    depth: usize,
+    limits: HullPositionLimits,
+) -> Result<Prepared, Failure> {
+    prepare_source(
+        planes,
+        CellSource::Bsp { nodes, root: &root },
+        model_count,
+        depth,
+        limits,
+    )
+}
+
+pub(super) fn prepare_brushes(
+    planes: &[Plane],
+    brushes: &[Brush],
+    models: &[HullModel],
+    limits: HullPositionLimits,
+) -> Result<Prepared, Failure> {
+    if planes.iter().any(|plane| !plane.is_valid())
+        || brushes.iter().any(|brush| !brush.sides.fits(planes.len()))
+        || models
+            .iter()
+            .any(|model| !model.brushes.fits(brushes.len()))
+    {
+        return Err(Failure::Input);
+    }
+    let depth = brushes
+        .iter()
+        .map(|brush| brush.sides.count as usize)
+        .max()
+        .unwrap_or(0);
+    prepare_source(
+        planes,
+        CellSource::Authored { brushes, models },
+        models.len(),
+        depth,
+        limits,
+    )
+}
+
+fn prepare_source(
+    planes: &[Plane],
+    source: CellSource<'_>,
+    model_count: usize,
     depth: usize,
     limits: HullPositionLimits,
 ) -> Result<Prepared, Failure> {
@@ -1200,25 +1288,18 @@ pub(super) fn prepare(
     // Count first, then reserve once. The validated graph may share children;
     // cell paths, rather than node count, determine retained storage.
     for model in 0..model_count {
-        paths(
-            nodes,
-            root(model),
-            &mut path,
-            &mut pending,
-            &mut work,
-            |path, _, _| {
-                cells = cells
-                    .checked_add(1)
-                    .filter(|n| *n <= limits.cells && *n <= u32::MAX as usize)
-                    .ok_or(Failure::Budget)?;
-                sides = sides
-                    .checked_add(path.len())
-                    .filter(|n| *n <= limits.sides && *n <= u32::MAX as usize)
-                    .ok_or(Failure::Budget)?;
-                greatest = greatest.max(path.len());
-                Ok(())
-            },
-        )?;
+        source.visit(model, &mut path, &mut pending, &mut work, |path, _, _| {
+            cells = cells
+                .checked_add(1)
+                .filter(|n| *n <= limits.cells && *n <= u32::MAX as usize)
+                .ok_or(Failure::Budget)?;
+            sides = sides
+                .checked_add(path.len())
+                .filter(|n| *n <= limits.sides && *n <= u32::MAX as usize)
+                .ok_or(Failure::Budget)?;
+            greatest = greatest.max(path.len());
+            Ok(())
+        })?;
     }
     let rows = greatest.checked_add(6).ok_or(Failure::Budget)?;
     let mut workspace = reserve::<Row>(rows, &mut held, limits.bytes)?;
@@ -1232,9 +1313,8 @@ pub(super) fn prepare(
     let mut retained_greatest = 0;
     for model in 0..model_count {
         let first = retained_cells.len();
-        paths(
-            nodes,
-            root(model),
+        source.visit(
+            model,
             &mut path,
             &mut pending,
             &mut work,
@@ -1295,6 +1375,36 @@ pub(super) fn prepare(
 }
 
 impl Data {
+    pub fn point_contents(
+        &self,
+        planes: &[Plane],
+        cells: IndexSpan,
+        point: Vec3,
+    ) -> Result<Contents, Failure> {
+        let point = vector(point)?;
+        let mut contents = Contents::EMPTY;
+        let mut work = Work {
+            remaining: self.query_work,
+        };
+        for cell in &self.cells[cells.range()] {
+            work.item()?;
+            let mut inside = true;
+            for &side in &self.sides[cell.sides.range()] {
+                work.item()?;
+                let row = source_row(planes, side)?;
+                let distance = dot(&row.normal, &point)?.add(&row.distance.shift(149)?.neg())?;
+                if !distance.negative() && (!distance.is_zero() || row.strict) {
+                    inside = false;
+                    break;
+                }
+            }
+            if inside {
+                contents |= cell.contents;
+            }
+        }
+        Ok(contents)
+    }
+
     pub fn scratch_rows(&self) -> usize {
         self.rows
     }
@@ -1885,6 +1995,10 @@ impl Data {
         axes: [Vec3; 3],
         scratch: &mut Scratch,
     ) -> Result<Trace, Failure> {
+        let query = TraceQuery {
+            mask: query.effective_mask(),
+            ..query
+        };
         if !query.start.is_finite()
             || !query.end.is_finite()
             || !(Bounds {
