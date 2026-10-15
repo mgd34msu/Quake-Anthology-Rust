@@ -228,7 +228,7 @@ impl QuakeCCalls<'_, '_> {
             native_player: None,
             context: self.context,
             platform_time: self.platform_time,
-            command: &[],
+            command: Default::default(),
             addresses: Addresses::Native {
                 abi: qa_platform::native::NativeAbi::SystemV,
                 pointer_bytes: 8,

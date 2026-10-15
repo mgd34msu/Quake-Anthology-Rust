@@ -3153,8 +3153,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         table: game.imports,
                         context,
                         platform_time: EventTime(0),
-                        command: &[],
-                        raw_args: b"",
+                        command: Default::default(),
                         unknown: &mut unknown,
                     },
                     0,
@@ -3237,8 +3236,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         table: game.imports,
                         context,
                         platform_time: EventTime(0),
-                        command: &[],
-                        raw_args: b"",
+                        command: Default::default(),
                         unknown: &mut unknown,
                     },
                     run,
@@ -3317,8 +3315,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         table: game.imports,
                         context,
                         platform_time: EventTime(0),
-                        command: &[],
-                        raw_args: b"",
+                        command: Default::default(),
                         unknown: &mut unknown,
                     },
                     run,
@@ -3483,12 +3480,16 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         table: game.imports,
                         context,
                         platform_time: EventTime(0),
-                        command: &[b"_qa_native_command", b"\x80", b"third"],
-                        raw_args: if rr {
-                            b"\"\x80\"   third ".as_slice()
-                        } else {
-                            b"\"\x80\"   third"
-                        },
+                        command: qa_console::command_text::Arguments::from_command(
+                            qa_core::primitives::CommandArgs {
+                                argv: &[b"_qa_native_command", b"\x80", b"third"],
+                                raw: if rr {
+                                    b"\"\x80\"   third ".as_slice()
+                                } else {
+                                    b"\"\x80\"   third"
+                                },
+                            },
+                        ),
                         unknown: &mut unknown,
                     },
                     run,
@@ -4793,8 +4794,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         table: game.imports,
                         context: sound_context,
                         platform_time: EventTime(0),
-                        command: &[],
-                        raw_args: b"",
+                        command: Default::default(),
                         unknown: &mut unknown,
                     },
                     run,
@@ -5062,8 +5062,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         table: game.imports,
                         context,
                         platform_time: EventTime(0),
-                        command: &[],
-                        raw_args: b"",
+                        command: Default::default(),
                         unknown: &mut unknown,
                     },
                     run,

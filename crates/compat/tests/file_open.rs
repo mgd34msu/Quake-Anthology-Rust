@@ -128,7 +128,7 @@ impl Fixture {
                 native_player: None,
                 context: Self::context(),
                 platform_time: EventTime(42),
-                command: &[],
+                command: Default::default(),
                 addresses: mode,
                 arguments,
             },
@@ -299,7 +299,7 @@ fn executed_qvm_observes_boolean_existence_and_preserves_guest_data() {
             table: &Q3_SERVER,
             context: Fixture::context(),
             platform_time: EventTime(42),
-            command: &[],
+            command: Default::default(),
             unknown: &mut unknown,
         };
         assert_eq!(vm.call(&mut calls, [0; 10], 1000, false), Ok(73));

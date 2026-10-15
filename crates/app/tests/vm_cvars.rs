@@ -76,7 +76,7 @@ fn q3_vm_cvars_share_registry_and_match_native_layout_and_reference_rows() {
                 native_player: None,
                 context,
                 platform_time: EventTime(0),
-                command: &[],
+                command: Default::default(),
                 addresses,
                 arguments: &[],
             };
@@ -333,7 +333,7 @@ fn invoke(
         native_player: None,
         context: call.context,
         platform_time: call.platform_time,
-        command: &[],
+        command: Default::default(),
         addresses: call.addresses,
         arguments,
     };

@@ -1,5 +1,6 @@
 //! Native command C strings projected into the module's owned memory.
 use crate::{memory::ModuleMemory, services::CallError};
+use qa_console::command_text::Arguments;
 
 const TOKENS: usize = 1024;
 const TOKEN_BYTES: usize = qa_console::text::MAX_TEXT + TOKENS + 1;
@@ -28,17 +29,17 @@ impl NativeCommand {
     pub fn prepare(
         &mut self,
         memory: &mut ModuleMemory<'_>,
-        tokens: &[&[u8]],
-        raw_args: &[u8],
+        arguments: &Arguments<'_>,
     ) -> Result<(), CallError> {
-        if tokens.len() > TOKENS || raw_args.len() >= ARG_BYTES {
+        let raw_args = arguments.raw_bytes();
+        if arguments.len() > TOKENS || raw_args.len() >= ARG_BYTES {
             return Err(CallError::Capacity);
         }
-        if raw_args.contains(&0) || tokens.iter().any(|token| token.contains(&0)) {
+        if raw_args.contains(&0) || arguments.iter_bytes().any(|token| token.contains(&0)) {
             return Err(CallError::Text);
         }
-        tokens
-            .iter()
+        arguments
+            .iter_bytes()
             .try_fold(1usize, |size, token| {
                 size.checked_add(token.len()).and_then(|n| n.checked_add(1))
             })
@@ -47,7 +48,7 @@ impl NativeCommand {
         let output = memory.read_mut(self.address, Self::byte_length())?;
         output[0] = 0;
         let mut at = 1;
-        for (offset, token) in self.offsets.iter_mut().zip(tokens) {
+        for (offset, token) in self.offsets.iter_mut().zip(arguments.iter_bytes()) {
             *offset = at as u16;
             output[at..at + token.len()].copy_from_slice(token);
             at += token.len();
@@ -56,7 +57,7 @@ impl NativeCommand {
         }
         output[TOKEN_BYTES..TOKEN_BYTES + raw_args.len()].copy_from_slice(raw_args);
         output[TOKEN_BYTES + raw_args.len()] = 0;
-        self.count = tokens.len();
+        self.count = arguments.len();
         Ok(())
     }
     pub fn argv(&self, index: u32) -> u64 {

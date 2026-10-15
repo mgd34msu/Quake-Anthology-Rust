@@ -913,7 +913,7 @@ fn advance(
                 table: imports,
                 context: start.context,
                 platform_time: start.platform_time,
-                command: command.argv,
+                command: qa_console::command_text::Arguments::from_command(command),
                 unknown: &mut row.unknown,
             };
             if entering {
@@ -986,8 +986,7 @@ fn advance(
                 table: imports,
                 context: start.context,
                 platform_time: start.platform_time,
-                command: command.argv,
-                raw_args: command.raw,
+                command: qa_console::command_text::Arguments::from_command(command),
                 native_player: start.native_player(),
                 unknown: &mut row.unknown,
             };
@@ -1277,8 +1276,7 @@ fn cancel(host: &mut FrameHost, frame: &mut Activation, command: CommandArgs<'_>
                 table: imports,
                 context: frame.start.context,
                 platform_time: frame.start.platform_time,
-                command: command.argv,
-                raw_args: command.raw,
+                command: qa_console::command_text::Arguments::from_command(command),
                 native_player: frame.start.native_player(),
                 unknown: &mut row.unknown,
             };

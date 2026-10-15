@@ -44,7 +44,7 @@ pub struct Invocation<'a, 'engine, 'memory> {
     pub native_player: Option<qa_core::primitives::ClientId>,
     pub context: CallContext,
     pub platform_time: EventTime,
-    pub command: &'a [&'a [u8]],
+    pub command: qa_console::command_text::Arguments<'a>,
     pub addresses: Addresses,
     pub arguments: &'a [u64],
 }
@@ -1414,7 +1414,7 @@ pub struct QvmCalls<'a, 'engine> {
     pub table: &'a CallTable,
     pub context: CallContext,
     pub platform_time: EventTime,
-    pub command: &'a [&'a [u8]],
+    pub command: qa_console::command_text::Arguments<'a>,
     pub unknown: &'a mut UnknownCalls,
 }
 impl qvm::SystemCalls for QvmCalls<'_, '_> {
@@ -2056,7 +2056,7 @@ fn argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(1)?;
     let length = c.length(2)?;
     let text = c.services.client_connection.as_deref().map_or_else(
-        || c.command.get(index).copied().unwrap_or(b""),
+        || c.command.get_bytes(index),
         |commands| commands.arguments().get_bytes(index),
     );
     c.memory.write_string(target, length, text)?;

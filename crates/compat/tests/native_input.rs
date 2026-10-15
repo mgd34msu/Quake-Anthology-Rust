@@ -155,7 +155,7 @@ impl Fixture {
             native_player: None,
             context: Self::context(seat),
             platform_time: EventTime::from_milliseconds(42),
-            command: &[],
+            command: Default::default(),
             addresses: mode,
             arguments,
         };
@@ -499,7 +499,7 @@ fn qvm_executes_the_numbered_ui_imports_and_caches_input_export_capabilities() {
         table: &Q3_UI,
         context: Fixture::context(SeatId::FIRST),
         platform_time: EventTime(42),
-        command: &[],
+        command: Default::default(),
         unknown: &mut unknown,
     };
     assert_eq!(vm.call(&mut calls, [0; 10], 1000, false), Ok(1));
@@ -562,7 +562,7 @@ fn qvm_clear_keys_yields_owned_host_work_before_changing_input() {
             table: &Q3_UI,
             context,
             platform_time: queued,
-            command: &[],
+            command: Default::default(),
             unknown: &mut unknown,
         }
         .import(&mut vm, &syscall)
@@ -595,7 +595,7 @@ fn qvm_clear_keys_yields_owned_host_work_before_changing_input() {
             table: &Q3_UI,
             context,
             platform_time: queued,
-            command: &[],
+            command: Default::default(),
             unknown: &mut unknown,
         }
         .resume_import(&mut vm, continuation, 123)
@@ -617,7 +617,7 @@ fn qvm_clear_keys_yields_owned_host_work_before_changing_input() {
             table: &Q3_UI,
             context,
             platform_time: queued,
-            command: &[],
+            command: Default::default(),
             unknown: &mut unknown,
         }
         .import(&mut vm, &syscall)
@@ -668,7 +668,7 @@ fn qvm_import_uses_captured_scalar_arguments_and_current_guest_string_bytes() {
             table: &Q3_UI,
             context: Fixture::context(SeatId::FIRST),
             platform_time: EventTime(42),
-            command: &[],
+            command: Default::default(),
             unknown: &mut unknown,
         }
         .import(&mut vm, &syscall)
@@ -696,7 +696,7 @@ fn synchronous_qvm_adapter_drains_the_same_clear_keys_host_request() {
         table: &Q3_UI,
         context: Fixture::context(SeatId::FIRST),
         platform_time: EventTime(42),
-        command: &[],
+        command: Default::default(),
         unknown: &mut unknown,
     };
     assert_eq!(vm.call(&mut calls, [0; 10], 100, false), Ok(0));

@@ -173,12 +173,17 @@ fn qvm_synchronous_drop_preserves_live_fields_and_recurses_through_the_same_tabl
             table: &Q3_SERVER,
             context: context(),
             platform_time: EventTime(123),
-            command: &[b"outer", b"raw\x80"],
+            command: qa_console::command_text::Arguments::from_command(
+                qa_core::primitives::CommandArgs {
+                    argv: &[b"outer", b"raw\x80"],
+                    raw: &[],
+                },
+            ),
             unknown: &mut unknown,
         };
         assert_eq!(vm.call(&mut calls, [0; 10], 10_000, false), Ok(2));
         assert_eq!(calls.context.clock, context().clock);
-        assert_eq!(calls.command[1], b"raw\x80");
+        assert_eq!(calls.command.get_bytes(1), b"raw\x80");
         // Invalid and already-Closing pointers are never read, even after return.
         for number in [-1, 2, 0, 1] {
             assert_eq!(calls.call(&mut vm, 16, &[0, number, -1]), Ok(0));
@@ -260,7 +265,7 @@ fn qvm_free_close_guard_expires_and_admission_resets_it() {
         table: &Q3_SERVER,
         context: context(),
         platform_time: EventTime::from_milliseconds(5_000),
-        command: &[],
+        command: Default::default(),
         unknown: &mut unknown,
     };
     let mut arguments = [0; 10];
@@ -312,7 +317,7 @@ fn qvm_negative_free_timeout_keeps_recursive_disconnect_synchronous() {
         table: &Q3_SERVER,
         context: context(),
         platform_time: EventTime::from_milliseconds(5_000),
-        command: &[],
+        command: Default::default(),
         unknown: &mut unknown,
     };
     let mut arguments = [0; 10];
@@ -343,7 +348,7 @@ fn qvm_callback_failure_keeps_the_free_timeout_without_an_inflight_leak() {
         table: &Q3_SERVER,
         context: context(),
         platform_time: EventTime::from_milliseconds(5_000),
-        command: &[],
+        command: Default::default(),
         unknown: &mut unknown,
     };
     let mut arguments = [0; 10];
@@ -395,7 +400,7 @@ fn qvm_failed_reason_reread_unwinds_the_free_callback_guard() {
         table: &Q3_SERVER,
         context: context(),
         platform_time: EventTime::from_milliseconds(5_000),
-        command: &[],
+        command: Default::default(),
         unknown: &mut unknown,
     };
     let mut arguments = [0; 10];
@@ -436,7 +441,7 @@ fn qvm_drop_shares_the_outer_instruction_budget() {
         table: &Q3_SERVER,
         context: context(),
         platform_time: EventTime(123),
-        command: &[],
+        command: Default::default(),
         unknown: &mut unknown,
     };
     assert_eq!(
@@ -584,8 +589,12 @@ fn owned_pe64_synchronous_drop(trap: bool) {
             table: &Q3_SERVER,
             context: context(),
             platform_time: EventTime(123),
-            command: &[b"outer"],
-            raw_args: b"outer",
+            command: qa_console::command_text::Arguments::from_command(
+                qa_core::primitives::CommandArgs {
+                    argv: &[b"outer"],
+                    raw: b"outer",
+                },
+            ),
             unknown: &mut unknown,
             native_player: None,
         };
@@ -602,13 +611,18 @@ fn owned_pe64_synchronous_drop(trap: bool) {
             table: &Q3_SERVER,
             context: context(),
             platform_time: EventTime(123),
-            command: &[b"outer"],
-            raw_args: b"outer",
+            command: qa_console::command_text::Arguments::from_command(
+                qa_core::primitives::CommandArgs {
+                    argv: &[b"outer"],
+                    raw: b"outer",
+                },
+            ),
             unknown: &mut unknown,
             native_player: None,
         };
         let result = vm.call(&mut calls, 0, &[]);
-        assert_eq!(calls.command, [b"outer".as_slice()]);
+        assert_eq!(calls.command.len(), 1);
+        assert_eq!(calls.command.get_bytes(0), b"outer");
         if trap {
             assert!(matches!(
                 result,

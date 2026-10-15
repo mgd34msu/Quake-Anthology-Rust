@@ -187,7 +187,7 @@ fn invoke(
             native_player: None,
             context: context(),
             platform_time: EventTime(0),
-            command: &[],
+            command: Default::default(),
             addresses,
             arguments,
         },

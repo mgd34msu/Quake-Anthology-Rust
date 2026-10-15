@@ -153,7 +153,7 @@ fn abi_call(
                         link_order: LinkOrder::Head,
                     },
                     platform_time: host.time,
-                    command: &[],
+                    command: Default::default(),
                     addresses,
                     arguments: &args,
                 },

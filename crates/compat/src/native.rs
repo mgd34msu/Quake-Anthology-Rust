@@ -118,9 +118,7 @@ pub struct NativeCalls<'a, 'engine> {
     pub table: &'static CallTable,
     pub context: CallContext,
     pub platform_time: EventTime,
-    pub command: &'a [&'a [u8]],
-    /// Native Cmd_Args/Cmd_RawArgs suffix, retained by the caller's tokenizer.
-    pub raw_args: &'a [u8],
+    pub command: qa_console::command_text::Arguments<'a>,
     pub unknown: &'a mut UnknownCalls,
     pub native_player: Option<qa_core::primitives::ClientId>,
 }
@@ -490,7 +488,7 @@ impl Vm {
                 }
                 if let Some(command) = &mut self.native_command {
                     command
-                        .prepare(&mut memory, calls.command, calls.raw_args)
+                        .prepare(&mut memory, &calls.command)
                         .map_err(Error::Service)?;
                 }
                 if let Some(configs) = &mut self.native_configs {

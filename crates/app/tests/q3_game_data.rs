@@ -92,7 +92,7 @@ impl Fixture {
                 ..context()
             },
             platform_time: EventTime(0),
-            command: &[],
+            command: Default::default(),
             unknown: &mut self.unknown,
         };
         calls.begin_call(&mut self.vm)?;
@@ -117,7 +117,7 @@ impl Fixture {
             table: &Q3_SERVER,
             context,
             platform_time: EventTime(0),
-            command: &[],
+            command: Default::default(),
             unknown: &mut self.unknown,
         };
         self.vm.call(&mut calls, [0; 10], 100, true)

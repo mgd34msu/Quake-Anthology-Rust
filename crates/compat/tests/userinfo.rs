@@ -147,7 +147,7 @@ impl Fixture {
                     link_order: qa_gameplay::rules::link_order(RuleSetId::QuakeWorld),
                 },
                 platform_time: EventTime(17),
-                command: &[],
+                command: Default::default(),
                 addresses,
                 arguments,
             },

@@ -1,6 +1,6 @@
 //! Command-boundary parsing from the original Q1/Q2/Q3 Cmd tokenizers.
 use crate::{conversion::Text, text::MAX_TEXT, views::RuleSetId};
-use qa_core::text::FixedText;
+use qa_core::{primitives::CommandArgs, text::FixedText};
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,23 +70,42 @@ impl Tokens {
     fn arguments<'a>(&'a self, text: &'a [u8]) -> Arguments<'a> {
         let raw = &text[self.raw.clone()];
         Arguments {
-            text,
-            tokens: self,
+            storage: ArgumentStorage::Parsed { text, tokens: self },
             raw_bytes: raw,
             raw: std::str::from_utf8(raw).unwrap_or(""),
         }
     }
 }
+#[derive(Clone, Copy)]
+enum ArgumentStorage<'a> {
+    Parsed { text: &'a [u8], tokens: &'a Tokens },
+    Borrowed(CommandArgs<'a>),
+}
+#[derive(Clone, Copy)]
 pub struct Arguments<'a> {
-    text: &'a [u8],
-    tokens: &'a Tokens,
+    storage: ArgumentStorage<'a>,
     raw_bytes: &'a [u8],
     /// UTF-8 view for local Console callers; native arguments use raw_bytes().
     pub raw: &'a str,
 }
+impl Default for Arguments<'_> {
+    fn default() -> Self {
+        Self::from_command(CommandArgs::default())
+    }
+}
 impl<'a> Arguments<'a> {
+    pub fn from_command(args: CommandArgs<'a>) -> Self {
+        Self {
+            storage: ArgumentStorage::Borrowed(args),
+            raw_bytes: args.raw,
+            raw: std::str::from_utf8(args.raw).unwrap_or(""),
+        }
+    }
     pub fn len(&self) -> usize {
-        self.tokens.len
+        match self.storage {
+            ArgumentStorage::Parsed { tokens, .. } => tokens.len,
+            ArgumentStorage::Borrowed(args) => args.argv.len(),
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -95,11 +114,14 @@ impl<'a> Arguments<'a> {
         std::str::from_utf8(self.get_bytes(index)).unwrap_or("")
     }
     pub fn get_bytes(&self, index: usize) -> &'a [u8] {
-        self.tokens
-            .spans
-            .get(index)
-            .filter(|_| index < self.len())
-            .map_or(&[], |s| &self.text[s.start as usize..s.end as usize])
+        match self.storage {
+            ArgumentStorage::Parsed { text, tokens } => tokens
+                .spans
+                .get(index)
+                .filter(|_| index < tokens.len)
+                .map_or(&[], |s| &text[s.start as usize..s.end as usize]),
+            ArgumentStorage::Borrowed(args) => args.argv.get(index).copied().unwrap_or(&[]),
+        }
     }
     pub fn iter(&self) -> impl Iterator<Item = &'a str> + '_ {
         (0..self.len()).map(|i| self.get(i))
@@ -110,17 +132,22 @@ impl<'a> Arguments<'a> {
     pub fn raw_bytes(&self) -> &'a [u8] {
         self.raw_bytes
     }
-    pub fn tail(&self, first: usize) -> &'a str {
-        std::str::from_utf8(self.tail_bytes(first)).unwrap_or("")
+    pub fn tail(&self, first: usize) -> Option<&'a str> {
+        self.tail_bytes(first)
+            .map(|text| std::str::from_utf8(text).unwrap_or(""))
     }
-    pub fn tail_bytes(&self, first: usize) -> &'a [u8] {
-        if first >= self.len() {
+    /// Only parsed spans retain the original suffix at an arbitrary token.
+    pub fn tail_bytes(&self, first: usize) -> Option<&'a [u8]> {
+        let ArgumentStorage::Parsed { text, tokens } = self.storage else {
+            return None;
+        };
+        Some(if first >= self.len() {
             &[]
         } else if first + 1 == self.len() {
             self.get_bytes(first)
         } else {
-            &self.text[self.tokens.spans[first].raw as usize..]
-        }
+            &text[tokens.spans[first].raw as usize..]
+        })
     }
     pub fn join<const N: usize>(
         &self,

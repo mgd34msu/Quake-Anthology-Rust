@@ -50,7 +50,8 @@ fn mark(
     args: &command_text::Arguments<'_>,
     _: Context,
 ) -> Result<(), CommandError> {
-    host.marks.push(args.tail(1).to_owned());
+    host.marks
+        .push(args.tail(1).expect("parsed command tail").to_owned());
     Ok(())
 }
 

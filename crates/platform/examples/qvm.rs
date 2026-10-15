@@ -177,7 +177,7 @@ fn engine_timings(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
                 table: &Q3_SERVER,
                 context,
                 platform_time: EventTime(frame as u64 * 1_000_000),
-                command: &[],
+                command: Default::default(),
                 unknown: &mut unknown,
             };
             for _ in 0..64 {

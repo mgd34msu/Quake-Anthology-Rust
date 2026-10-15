@@ -23,9 +23,12 @@ fn native_arguments_borrow_high_bytes_without_reencoding_or_sanitizing() {
         assert_eq!(args.get_bytes(usize::MAX), b"");
         assert_eq!(args.get_bytes(1).as_ptr(), input[4..].as_ptr());
         assert_eq!(args.get_bytes(2).as_ptr(), input[10..].as_ptr());
-        assert_eq!(args.tail_bytes(2), b"\"quoted\xff text\" tail\xfe  \t");
-        assert_eq!(args.tail_bytes(3), b"tail\xfe");
-        assert_eq!(args.tail_bytes(4), b"");
+        assert_eq!(
+            args.tail_bytes(2),
+            Some(b"\"quoted\xff text\" tail\xfe  \t".as_slice())
+        );
+        assert_eq!(args.tail_bytes(3), Some(b"tail\xfe".as_slice()));
+        assert_eq!(args.tail_bytes(4), Some(b"".as_slice()));
         let raw = if matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) {
             b"raw\x80 \"quoted\xff text\" tail\xfe".as_slice()
         } else {
@@ -50,7 +53,10 @@ fn utf8_wrappers_and_byte_arguments_share_all_token_spans() {
         assert_eq!(human.raw.as_bytes(), native.raw_bytes());
         for index in 0..human.len() + 1 {
             assert_eq!(human.get(index).as_bytes(), native.get_bytes(index));
-            assert_eq!(human.tail(index).as_bytes(), native.tail_bytes(index));
+            assert_eq!(
+                human.tail(index).map(str::as_bytes),
+                native.tail_bytes(index)
+            );
         }
         let mut human_joined = FixedText::<128>::default();
         let mut native_joined = FixedText::<128>::default();
@@ -169,4 +175,54 @@ fn byte_macros_keep_unknown_name_quote_loop_and_length_rules() {
         command_text::expand_bytes(&mut text, &mut Tokens::default(), |_| None),
         Err(TextError::TooLong)
     );
+}
+
+#[test]
+fn borrowed_arguments_keep_original_slices_and_raw_bytes_without_inventing_tails() {
+    let first = *b"cmd";
+    let high = *b"raw\xff";
+    let last = *b"space value";
+    let raw = *b"unrelated \xff suffix  ";
+    let argv = [first.as_slice(), high.as_slice(), last.as_slice()];
+    let arguments = command_text::Arguments::from_command(qa_core::primitives::CommandArgs {
+        argv: &argv,
+        raw: &raw,
+    });
+    let copied = arguments;
+    assert_eq!(arguments.len(), 3);
+    assert!(!copied.is_empty());
+    assert_eq!(copied.get_bytes(0).as_ptr(), first.as_ptr());
+    assert_eq!(copied.get_bytes(1).as_ptr(), high.as_ptr());
+    assert_eq!(copied.get_bytes(2).as_ptr(), last.as_ptr());
+    assert_eq!(copied.raw_bytes().as_ptr(), raw.as_ptr());
+    assert_eq!(copied.get_bytes(1), b"raw\xff");
+    assert_eq!(copied.get_bytes(3), b"");
+    assert_eq!(copied.get_bytes(usize::MAX), b"");
+    assert_eq!(copied.raw_bytes(), b"unrelated \xff suffix  ");
+    assert_eq!(copied.raw, "");
+    for first in [0, 1, 2, 3, usize::MAX] {
+        assert_eq!(copied.tail_bytes(first), None);
+        assert_eq!(copied.tail(first), None);
+    }
+    let mut joined = FixedText::<64>::default();
+    copied.join_bytes(1, &mut joined).unwrap();
+    assert_eq!(joined.as_bytes(), b"raw\xff space value");
+    assert_eq!(copied.raw_bytes(), &raw);
+    assert_eq!(copied.iter_bytes().count(), argv.len());
+    assert_eq!(copied.iter_bytes().nth(1).unwrap().as_ptr(), high.as_ptr());
+}
+
+#[test]
+fn default_argument_view_is_empty_and_borrowed_view_copies_share_the_same_bytes() {
+    let arguments = command_text::Arguments::default();
+    let copied = arguments;
+    assert!(arguments.is_empty());
+    assert_eq!(copied.len(), 0);
+    assert_eq!(copied.raw_bytes(), b"");
+    assert_eq!(copied.get_bytes(0), b"");
+    assert_eq!(copied.tail_bytes(0), None);
+    let mut joined = FixedText::<8>::default();
+    joined.append_bytes(b"old").unwrap();
+    copied.join_bytes(1, &mut joined).unwrap();
+    assert!(joined.as_bytes().is_empty());
 }

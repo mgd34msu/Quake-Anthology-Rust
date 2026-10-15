@@ -24,8 +24,12 @@ fn with_calls<R>(
         table: &Q3_UI,
         context,
         platform_time: time,
-        command: &[b"original", b"payload"],
-        raw_args: b"payload",
+        command: qa_console::command_text::Arguments::from_command(
+            qa_core::primitives::CommandArgs {
+                argv: &[b"original", b"payload"],
+                raw: b"payload",
+            },
+        ),
         unknown,
         native_player: None,
     })
@@ -419,8 +423,7 @@ fn nested_reject_zero_unwinds_its_suspended_parent() {
         table: &Q3_SERVER,
         context,
         platform_time: EventTime::from_milliseconds(5_000),
-        command: &[],
-        raw_args: b"",
+        command: Default::default(),
         unknown: &mut unknown,
         native_player: None,
     };

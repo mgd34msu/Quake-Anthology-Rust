@@ -272,7 +272,7 @@ fn invoke_call(
         native_player: None,
         context: context(),
         platform_time: EventTime(123_456_789),
-        command: &[],
+        command: Default::default(),
         addresses,
         arguments,
     };
@@ -474,7 +474,7 @@ fn executed_qvm_shader_imports_share_the_same_cold_service() {
             table: &Q3_CLIENT,
             context: context(),
             platform_time: EventTime(19),
-            command: &[],
+            command: Default::default(),
             unknown: &mut unknown,
         };
         assert_eq!(vm.call(&mut calls, [0; 10], 100, false), Ok(42));

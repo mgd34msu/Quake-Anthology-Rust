@@ -72,7 +72,7 @@ fn cgame_world_and_model_registration_keep_distinct_native_ordinals() {
             native_player: None,
             context: context(),
             platform_time: EventTime(0),
-            command: &[],
+            command: Default::default(),
             addresses,
             arguments: &[0],
         };
@@ -149,7 +149,7 @@ fn model_tag_calls_keep_ui_void_result_and_ignore_names_without_tag_storage() {
             native_player: None,
             context: context(),
             platform_time: EventTime(0),
-            command: &[],
+            command: Default::default(),
             addresses,
             arguments: &[64, handle as u64, 0, 1, 0.25f32.to_bits() as u64, 16],
         };
@@ -260,7 +260,7 @@ fn q3_visibility_imports_use_compiled_pvs_and_native_portal_policy() {
                     native_player: None,
                     context: context(),
                     platform_time: EventTime(0),
-                    command: &[],
+                    command: Default::default(),
                     addresses,
                     arguments: &arguments,
                 };
@@ -302,7 +302,7 @@ fn q3_visibility_imports_use_compiled_pvs_and_native_portal_policy() {
                                 table: &Q3_SERVER,
                                 context: context(),
                                 platform_time: EventTime(0),
-                                command: &[],
+                                command: Default::default(),
                                 unknown: &mut unknown,
                             },
                             [0; 10],
@@ -394,7 +394,7 @@ fn q3_area_connection_keeps_native_bounds_and_integer_override() {
                 native_player: None,
                 context: context(),
                 platform_time: EventTime(0),
-                command: &[],
+                command: Default::default(),
                 addresses,
                 arguments: &arguments,
             };
@@ -423,7 +423,7 @@ fn q3_area_connection_keeps_native_bounds_and_integer_override() {
                     table: &Q3_SERVER,
                     context: context(),
                     platform_time: EventTime(0),
-                    command: &[],
+                    command: Default::default(),
                     unknown: &mut unknown,
                 };
                 let result = vm.call(&mut calls, [0; 10], 128, false);
@@ -585,7 +585,7 @@ fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
                                     ..context()
                                 },
                                 platform_time: EventTime(0),
-                                command: &[],
+                                command: Default::default(),
                                 addresses,
                                 arguments: &arguments,
                             },
@@ -711,7 +711,7 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
                                     ..context()
                                 },
                                 platform_time: EventTime(0),
-                                command: &[],
+                                command: Default::default(),
                                 addresses,
                                 arguments: &arguments,
                             },
@@ -759,7 +759,7 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
                                 ..context()
                             },
                             platform_time: EventTime(0),
-                            command: &[],
+                            command: Default::default(),
                             addresses,
                             arguments: &arguments,
                         },
@@ -803,7 +803,7 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
                             ..context()
                         },
                         platform_time: EventTime(0),
-                        command: &[],
+                        command: Default::default(),
                         unknown: &mut unknown,
                     },
                     [0; 10],
@@ -889,7 +889,7 @@ fn module_console_prints_do_not_wait_for_client_consumers() {
                                 native_player: None,
                                 context: context(),
                                 platform_time: EventTime(0),
-                                command: &[],
+                                command: Default::default(),
                                 addresses,
                                 arguments: &arguments[..if null_client { 3 } else { 1 }],
                             },
@@ -959,7 +959,7 @@ fn local_native_and_received_priority_prints_have_identical_hud_effects() {
                                 native_player: None,
                                 context: context(),
                                 platform_time: EventTime(0),
-                                command: &[],
+                                command: Default::default(),
                                 addresses: Addresses::Native {
                                     pointer_bytes: 8,
                                     abi
@@ -1096,7 +1096,7 @@ fn q3_game_and_ui_commands_insert_and_append_in_the_one_buffer() {
                 native_player: None,
                 context: ctx,
                 platform_time: EventTime(0),
-                command: &[],
+                command: Default::default(),
                 addresses,
                 arguments: &args,
             };
@@ -1224,7 +1224,7 @@ fn q3_spawn_tokens_have_independent_module_cursors_and_bounded_raw_output() {
             native_player: None,
             context: context(),
             platform_time: EventTime(0),
-            command: &[],
+            command: Default::default(),
             addresses,
             arguments: &arguments,
         };
@@ -1359,7 +1359,7 @@ fn numeric_cvar_imports_share_views_and_keep_signed_native_results() {
                 native_player: None,
                 context: context(),
                 platform_time: EventTime(0),
-                command: &[],
+                command: Default::default(),
                 addresses,
                 arguments: &arguments,
             };
@@ -1392,7 +1392,7 @@ fn numeric_cvar_imports_share_views_and_keep_signed_native_results() {
                     table: &Q3_SERVER,
                     context: context(),
                     platform_time: EventTime(0),
-                    command: &[],
+                    command: Default::default(),
                     unknown: &mut unknown,
                 };
                 assert_eq!(vm.call(&mut calls, [0; 10], 128, false), Ok(integer));
@@ -1416,7 +1416,7 @@ fn numeric_cvar_imports_share_views_and_keep_signed_native_results() {
             native_player: None,
             context: context(),
             platform_time: EventTime(0),
-            command: &[],
+            command: Default::default(),
             addresses,
             arguments: &arguments,
         };
@@ -1514,7 +1514,7 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
                     native_player: None,
                     context: call_context,
                     platform_time: EventTime(0),
-                    command: &[],
+                    command: Default::default(),
                     addresses,
                     arguments: &arguments,
                 };
@@ -1597,7 +1597,7 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
                     native_player: None,
                     context: call_context,
                     platform_time: EventTime(0),
-                    command: &[],
+                    command: Default::default(),
                     addresses,
                     arguments: &arguments,
                 };
@@ -1637,7 +1637,7 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
                 native_player: None,
                 context: call_context,
                 platform_time: EventTime(0),
-                command: &[],
+                command: Default::default(),
                 addresses,
                 arguments: &arguments,
             };
@@ -1668,7 +1668,7 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
                     native_player: None,
                     context: call_context,
                     platform_time: EventTime(0),
-                    command: &[],
+                    command: Default::default(),
                     addresses,
                     arguments: &arguments,
                 };
@@ -1734,7 +1734,7 @@ fn q3_ui_create_and_reset_preserve_native_flags_protection_and_latches() {
                 native_player: None,
                 context: ctx,
                 platform_time: EventTime(0),
-                command: &[],
+                command: Default::default(),
                 addresses,
                 arguments: &arguments,
             };
@@ -1880,7 +1880,7 @@ fn q3_ui_numeric_setter_preserves_native_formatting_and_forced_writes() {
                 native_player: None,
                 context: ctx,
                 platform_time: EventTime(0),
-                command: &[],
+                command: Default::default(),
                 addresses,
                 arguments: &arguments,
             };
@@ -1933,7 +1933,7 @@ fn native_syscall_memory_width_stays_separate_from_child_runtime_imports() {
         native_player: None,
         context: context(),
         platform_time: EventTime(0),
-        command: &[],
+        command: Default::default(),
         addresses: Addresses::Native {
             pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::SystemV,
@@ -1980,7 +1980,7 @@ fn original_float_syscalls_keep_their_declared_bits() {
             native_player: None,
             context: context(),
             platform_time: EventTime(0),
-            command: &[],
+            command: Default::default(),
             addresses,
             arguments,
         };
@@ -2071,7 +2071,12 @@ fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_
             native_player: None,
             context: context(),
             platform_time: EventTime((u64::from(u32::MAX) + 8) * 1_000_000),
-            command: &[b"native", b"arg"],
+            command: qa_console::command_text::Arguments::from_command(
+                qa_core::primitives::CommandArgs {
+                    argv: &[b"native", b"arg"],
+                    raw: &[],
+                },
+            ),
             addresses: Addresses::Native {
                 pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
@@ -2202,7 +2207,7 @@ fn real_qvm_calls_write_cvars_print_and_append_into_the_existing_console() {
             table: &Q3_SERVER,
             context: context(),
             platform_time: EventTime(90_000_000),
-            command: &[],
+            command: Default::default(),
             unknown: &mut unknown,
         };
         assert_eq!(vm.call(&mut calls, [0; 10], 1000, false), Ok(105));
@@ -2252,7 +2257,7 @@ fn server_and_client_console_imports_keep_their_different_arguments() {
             native_player: None,
             context: context(),
             platform_time: EventTime(0),
-            command: &[],
+            command: Default::default(),
             addresses: Addresses::Qvm { mask: 127 },
             arguments: &[1],
         };

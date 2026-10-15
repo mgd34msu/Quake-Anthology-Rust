@@ -74,7 +74,7 @@ fn localized_native_prints_share_ring_routing_and_checked_argument_memory() {
                                 link_order: LinkOrder::Head,
                             },
                             platform_time: EventTime(0),
-                            command: &[],
+                            command: Default::default(),
                             addresses: Addresses::Native {
                                 pointer_bytes: 8,
                                 abi,
