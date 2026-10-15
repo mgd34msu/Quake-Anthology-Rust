@@ -239,9 +239,8 @@ fn qvm_ops(ops: &mut Vec<(Opcode, i32)>, body: &[Op]) {
         }
     }
 }
-fn qvm_input(ui: bool) -> Program {
+fn qvm_input(bodies: Vec<Vec<Op>>, ui: bool) -> Program {
     use Opcode::*;
-    let bodies = bodies(ui);
     let mut ops = vec![(Enter, 96)];
     let mut branches = vec![];
     for command in 0..bodies.len() {
@@ -319,9 +318,16 @@ fn native_ops(code: &mut Vec<u8>, body: &[Op], base: u64, callback: u64) {
             Op::Call(number, args, output) => {
                 for (index, &arg) in args.iter().enumerate() {
                     native_value(code, arg, base);
-                    code.extend(
-                        [[0x48, 0x89, 0xc2], [0x49, 0x89, 0xc0], [0x49, 0x89, 0xc1]][index],
-                    );
+                    if index < 3 {
+                        code.extend(
+                            [[0x48, 0x89, 0xc2], [0x49, 0x89, 0xc0], [0x49, 0x89, 0xc1]][index],
+                        );
+                    } else {
+                        // Microsoft x64: the ordinal occupies RCX. Import
+                        // arguments after RDX/R8/R9 use the caller's stack.
+                        assert!(index < 9);
+                        code.extend([0x48, 0x89, 0x44, 0x24, 0x20 + (index as u8 - 3) * 8]);
+                    }
                 }
                 code.push(0xb9);
                 code.extend(number.to_le_bytes());
@@ -353,7 +359,7 @@ fn native_ops(code: &mut Vec<u8>, body: &[Op], base: u64, callback: u64) {
     }
 }
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn native_input(ui: bool) -> Program {
+fn native_input(bodies: Vec<Vec<Op>>, ui: bool) -> Program {
     use native_image::*;
     use qa_compat::native::{NamedExport, Vm};
     use qa_formats::program::native::{Image, LoadRole};
@@ -367,7 +373,6 @@ fn native_input(ui: bool) -> Program {
     pe_text(&mut file, 0x1800, &[0xc3]);
     let image = Image::parse(&file, None, LoadRole::Library).unwrap();
     let base = image.base;
-    let bodies = bodies(ui);
     let mut vm = Vm::map_image(
         image,
         &(0..bodies.len())
@@ -499,24 +504,63 @@ fn frame(
     result
 }
 fn program(native: bool, ui: bool) -> Program {
+    program_from(native, ui, bodies(ui))
+}
+fn program_from(native: bool, ui: bool, bodies: Vec<Vec<Op>>) -> Program {
     if native {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
-            return native_input(ui);
+            return native_input(bodies, ui);
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {
             panic!("owned-child fixture is unavailable on this target");
         }
     }
-    qvm_input(ui)
+    qvm_input(bodies, ui)
 }
 fn fixture(native: bool) -> FrameHost {
+    fixture_with(native, |_, _, _| {})
+}
+fn fixture_with(
+    native: bool,
+    mut customize: impl FnMut(usize, bool, &mut Vec<Vec<Op>>),
+) -> FrameHost {
+    fixture_config(
+        native,
+        |seat, ui, bodies| {
+            customize(seat, ui, bodies);
+            Vec::new()
+        },
+        |_| {},
+    )
+}
+fn fixture_config(
+    native: bool,
+    customize: impl FnMut(usize, bool, &mut Vec<Vec<Op>>) -> Vec<Export>,
+    before_initialize: impl FnOnce(&mut FrameHost),
+) -> FrameHost {
+    fixture_roles(native, native, customize, before_initialize)
+}
+fn fixture_roles(
+    native: bool,
+    cgame_native: bool,
+    mut customize: impl FnMut(usize, bool, &mut Vec<Vec<Op>>) -> Vec<Export>,
+    before_initialize: impl FnOnce(&mut FrameHost),
+) -> FrameHost {
     let (mut runtime, ids) = runtime(2);
     let mut requests = vec![];
     for (seat, &client) in ids.iter().enumerate() {
         for ui in [true, false] {
-            let mut request = request(&mut runtime, module(seat, ui), client, program(native, ui));
+            let mut bodies = bodies(ui);
+            let initialize = customize(seat, ui, &mut bodies);
+            let mut request = request(
+                &mut runtime,
+                module(seat, ui),
+                client,
+                program_from(if ui { native } else { cgame_native }, ui, bodies),
+            );
+            request.initialize = initialize;
             request.entries = (0..32).collect();
             request.instruction_budget = 10000;
             request.frame = Export::words(CallbackId(0), &[]);
@@ -568,11 +612,16 @@ fn fixture(native: bool) -> FrameHost {
             .input
             .assign(DeviceId::Mouse(11), SeatId::new(1).unwrap())
     );
+    before_initialize(&mut host);
     host.client_modules();
     host
 }
 
+#[path = "input/clear_states.rs"]
+mod clear_states;
+
 pub(super) fn queued_native_input(native: bool) {
+    clear_states::run(native);
     queued_callbacks_and_imports(native);
     binding_capture_releases_and_atomic_catchers(native);
     menu_failure_and_teardown(native);

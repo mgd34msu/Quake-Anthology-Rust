@@ -194,6 +194,18 @@ fn fixture_with(
     fail_begin: bool,
     bot: bool,
 ) -> (Box<FrameHost>, ClientId, GeometryId) {
+    fixture_extra(denial, phase, missing_export, fail_begin, bot, |_, _| {
+        Vec::new()
+    })
+}
+fn fixture_extra(
+    denial: i32,
+    phase: Phase,
+    missing_export: Option<u32>,
+    fail_begin: bool,
+    bot: bool,
+    extra: impl FnOnce(&mut Runtime, ClientId) -> Vec<ModuleRequest>,
+) -> (Box<FrameHost>, ClientId, GeometryId) {
     let mut runtime = Runtime::load(3, []).unwrap();
     // The actual native namespace must not be inferred from this occupied common slot.
     assert_eq!(
@@ -314,14 +326,10 @@ fn fixture_with(
         files: 0,
         entity_source: None,
     };
+    let mut requests = vec![request];
+    requests.extend(extra(&mut runtime, client));
     let mut host = Box::new(
-        FrameHost::load_modules(
-            console,
-            runtime,
-            TickRate::fixed(50).unwrap(),
-            vec![request],
-        )
-        .unwrap(),
+        FrameHost::load_modules(console, runtime, TickRate::fixed(50).unwrap(), requests).unwrap(),
     );
     host.initialize_modules(phase);
     (host, client, geometry)
@@ -486,6 +494,95 @@ fn q3_client_text_userinfo_and_disconnect_use_the_same_lifecycle_and_lifetime() 
             .is_err()
     );
     assert_eq!(count(&mut host, 7), 0);
+}
+
+#[test]
+fn rejected_client_import_keeps_termination_and_dispatches_the_server_disconnect_once() {
+    const CGAME: ModuleId = ModuleId(3);
+    let (mut host, client, _) =
+        fixture_extra(0, Phase::Server, None, false, false, |runtime, client| {
+            let anchor = runtime
+                .server
+                .entities
+                .allocate(ThinkTime::Milliseconds(0), CGAME, AllocationPolicy::q3(0))
+                .unwrap()
+                .id;
+            let mut code = vec![
+                (Op::Enter, 64),
+                (Op::Local, 72),
+                (Op::Load4, 0),
+                (Op::Const, 1),
+                (Op::Eq, 7),
+                (Op::Const, 0),
+                (Op::Leave, 64),
+            ];
+            // A future GetSnapshot marks this short ClientConnectionView as
+            // rejected. The status must survive releasing its service borrow.
+            import(&mut code, 52, &[1, 0], false);
+            code.push((Op::Pop, 0));
+            finish(&mut code, 0);
+            vec![ModuleRequest {
+                context: CallContext {
+                    module: CGAME,
+                    clock: ThinkTime::Milliseconds(0),
+                    native_rules: RuleSetId::Quake3,
+                    trace_rules: RuleSetId::Quake2,
+                    sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
+                    server_frame: 0,
+                    console: Context::default(),
+                    allocation: AllocationPolicy::q3(0),
+                    link_order: LinkOrder::Head,
+                },
+                timing_rules: RuleSetId::Quake3,
+                phase: Phase::Client,
+                rate: TickRate::FrameDriven,
+                anchor,
+                program: Program::Qvm {
+                    vm: Box::new(service_program::program(&code, &[])),
+                    imports: &qa_compat::abi::Q3_CLIENT,
+                },
+                entries: vec![0, 1],
+                frame: Export {
+                    client: Some(client),
+                    ..Export::words(CallbackId(0), &[])
+                },
+                prepare: vec![],
+                initialize: vec![],
+                api: None,
+                shutdown: vec![],
+                instruction_budget: 1000,
+                configstrings: 0,
+                files: 0,
+                entity_source: None,
+            }]
+        });
+    host.connect_module_client(MODULE, client, b"\\name\\RejectedView")
+        .unwrap();
+    let lifetime = host.runtime.server.clients[client.0 as usize].entity;
+    host.client_modules();
+    assert_eq!(count(&mut host, 5), 0);
+    assert!(
+        host.call_module_export(
+            CGAME,
+            Export::words(CallbackId(1), &[]),
+            ThinkTime::Milliseconds(20),
+        )
+        .is_err()
+    );
+    assert_eq!(count(&mut host, 5), 1);
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .connection
+            .is_none()
+    );
+    assert!(host.runtime.server.entities.resolve(lifetime).is_none());
+    assert_eq!(
+        host.runtime.server.clients[0].connection,
+        Some(Connection::Bot)
+    );
+    assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
+    host.client_modules();
+    assert_eq!(count(&mut host, 5), 1);
 }
 
 #[test]

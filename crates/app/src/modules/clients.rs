@@ -28,7 +28,11 @@ pub(super) struct ClientLifecycle {
     command:
         fn(&mut FrameHost, ModuleId, ClientId, &UserCmd, u32) -> Result<(), ClientCommandError>,
     finish: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
-    disconnect: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
+    prepare_disconnect: fn(
+        &mut FrameHost,
+        ModuleId,
+        ClientId,
+    ) -> Result<(CallbackId, CallbackCall<'static>), ClientCommandError>,
     text: fn(&mut FrameHost, ModuleId, ClientId, CommandArgs<'_>) -> Result<(), ClientCommandError>,
     userinfo: fn(&mut FrameHost, ModuleId, ClientId, &[u8]) -> Result<(), ClientCommandError>,
     publish: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
@@ -49,7 +53,7 @@ impl ClientLifecycle {
             connect: q3::connect,
             command: q3::command,
             finish: no_finish,
-            disconnect: q3::disconnect,
+            prepare_disconnect: q3::prepare_disconnect,
             text: q3::text,
             userinfo: q3::userinfo,
             publish: no_finish,
@@ -79,7 +83,7 @@ impl ClientLifecycle {
             } else {
                 quakec::finish
             },
-            disconnect: quakec::disconnect,
+            prepare_disconnect: quakec::prepare_disconnect,
             text: quakec::text,
             userinfo: quakec::userinfo,
             publish: quakec::publish,
@@ -100,7 +104,7 @@ impl ClientLifecycle {
             connect: q2_connect,
             command: q2_command,
             finish: no_finish,
-            disconnect: q2_disconnect,
+            prepare_disconnect: q2_disconnect,
             text: q2_text,
             userinfo: q2_userinfo,
             publish: no_finish,
@@ -138,19 +142,19 @@ fn q2_disconnect(
     host: &mut FrameHost,
     module: ModuleId,
     id: ClientId,
-) -> Result<(), ClientCommandError> {
+) -> Result<(CallbackId, CallbackCall<'static>), ClientCommandError> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         let api = q2_api(host, module)?;
         let (_, address, time) = host.module_client(id)?;
-        host.invoke_client(
+        host.client_call(
             id,
-            api.disconnect,
             ClientCallback::Disconnect,
             time,
             &[address],
             CommandArgs::default(),
         )
+        .map(|call| (api.disconnect, call))
     }
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     {
@@ -391,6 +395,18 @@ impl FrameHost {
         words: &[u64],
         command: CommandArgs<'_>,
     ) -> Result<(), ClientCommandError> {
+        let call = self.client_call(id, event, time, words, command)?;
+        self.call_module(callback, call)
+            .map_err(ClientCommandError::Dispatch)
+    }
+    fn client_call<'a>(
+        &self,
+        id: ClientId,
+        event: ClientCallback,
+        time: ThinkTime,
+        words: &[u64],
+        command: CommandArgs<'a>,
+    ) -> Result<CallbackCall<'a>, ClientCommandError> {
         let client = self
             .runtime
             .server
@@ -401,23 +417,18 @@ impl FrameHost {
                     && (client.is_active() || event == ClientCallback::Disconnect)
             })
             .ok_or(ClientCommandError::Inactive)?;
-        let entity = client.entity;
         let mut arguments = [0; 9];
         for (to, from) in arguments.iter_mut().zip(words) {
             *to = *from;
         }
-        self.call_module(
-            callback,
-            CallbackCall::Client {
-                entity,
-                client: id,
-                event,
-                time,
-                arguments,
-                command,
-            },
-        )
-        .map_err(ClientCommandError::Dispatch)
+        Ok(CallbackCall::Client {
+            entity: client.entity,
+            client: id,
+            event,
+            time,
+            arguments,
+            command,
+        })
     }
     /// Called once for every command admitted by the native channel. Modules
     /// never share the engine's deferred movement pass with their ClientThink.
@@ -926,38 +937,101 @@ impl FrameHost {
     }
     /// Original signon protocols cannot selectively remove one module's loops
     /// or static models. Drop recipients which have observed that module.
+    pub(super) fn module_recipient(&self, module: ModuleId, id: ClientId) -> bool {
+        let Some(client) = self.runtime.server.clients.get(id.0 as usize) else {
+            return false;
+        };
+        client.connection.is_some()
+            && (client.module == module
+                || self.modules.as_ref().is_some_and(|modules| {
+                    modules.row(module).is_some_and(|row| {
+                        modules.signon[row.signon.range()]
+                            .get(id.0 as usize)
+                            .is_some_and(|cursor| {
+                                cursor.has_publication_for(module, id, client.entity)
+                            })
+                    })
+                }))
+    }
     pub(super) fn disconnect_module_recipients(&mut self, module: ModuleId) {
         for slot in 0..self.runtime.server.clients.len() {
-            let client = &self.runtime.server.clients[slot];
             let id = ClientId(slot as u32);
-            let affected = client.connection.is_some()
-                && (client.module == module
-                    || self.modules.as_ref().is_some_and(|modules| {
-                        modules.row(module).is_some_and(|row| {
-                            modules.signon[row.signon.range()]
-                                .get(slot)
-                                .is_some_and(|cursor| {
-                                    cursor.has_publication_for(module, id, client.entity)
-                                })
-                        })
-                    }));
-            if affected {
+            if self.module_recipient(module, id) {
                 self.disconnect_client(id);
             }
         }
     }
-    pub(crate) fn disconnect_client(&mut self, id: ClientId) {
-        // Only clients admitted through this lifecycle have a disconnect entry.
-        // Failed modules still release those clients without re-entering them.
-        if let Some(native) = self.runtime.server.module_moves(id)
-            && let Some(table) = self
-                .module_row(native.module)
-                .filter(|row| row.state == State::Running)
-                .and_then(|row| row.client_lifecycle)
+    pub(super) fn client_disconnect_call(
+        &mut self,
+        id: ClientId,
+    ) -> Option<(CallbackId, CallbackCall<'static>)> {
+        let native = self.runtime.server.module_moves(id)?;
+        let prepare = self
+            .module_row(native.module)
+            .filter(|row| row.state == State::Running)?
+            .client_lifecycle?
+            .prepare_disconnect;
+        prepare(self, native.module, id).ok()
+    }
+    /// Claim one synchronous disconnect without disturbing a healthy in-flight
+    /// owner. Failed owners cannot resume their earlier Closing continuation.
+    pub(super) fn begin_client_disconnect(
+        &mut self,
+        id: ClientId,
+        lifetime: qa_core::primitives::EntityId,
+    ) -> Option<(CallbackId, CallbackCall<'static>)> {
+        let prepared = self.client_disconnect_call(id);
+        if !self
+            .runtime
+            .server
+            .begin_close(id, lifetime, self.runtime.input_time)
         {
-            let _ = (table.disconnect)(self, native.module, id);
+            let failed = self
+                .runtime
+                .server
+                .clients
+                .get(id.0 as usize)
+                .filter(|client| client.connection.is_some() && client.entity == lifetime)
+                .is_some_and(|client| self.module_state(client.module) == Some(State::Failed));
+            if failed {
+                self.finish_client_disconnect(id, lifetime);
+            }
+            return None;
         }
-        self.retire_client(id);
+        if prepared.is_none() {
+            self.finish_client_disconnect(id, lifetime);
+        }
+        prepared
+    }
+    pub(super) fn finish_client_disconnect(
+        &mut self,
+        id: ClientId,
+        lifetime: qa_core::primitives::EntityId,
+    ) {
+        if self
+            .runtime
+            .server
+            .clients
+            .get(id.0 as usize)
+            .is_some_and(|client| client.entity == lifetime)
+        {
+            self.retire_client(id);
+        }
+    }
+    pub(crate) fn disconnect_client(&mut self, id: ClientId) {
+        let Some(lifetime) = self
+            .runtime
+            .server
+            .clients
+            .get(id.0 as usize)
+            .map(|client| client.entity)
+        else {
+            return;
+        };
+        if let Some((callback, call)) = self.begin_client_disconnect(id, lifetime) {
+            let _ = self.call_module(callback, call);
+            self.finish_client_disconnect(id, lifetime);
+        }
     }
     pub(crate) fn finish_client_termination(
         &mut self,

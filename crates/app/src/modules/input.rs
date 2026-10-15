@@ -39,7 +39,7 @@ struct Recipient {
 }
 
 impl FrameHost {
-    fn input_recipient(&self, seat: SeatId, catcher: u32) -> Option<Recipient> {
+    fn input_recipient(&self, seat: SeatId, catcher: u32, active: bool) -> Option<Recipient> {
         let defaults = self.modules.as_ref()?.input[seat.index()];
         let fallback = if catcher == key_catchers::UI {
             defaults.ui
@@ -62,13 +62,27 @@ impl FrameHost {
         ]
         .into_iter()
         .flatten()
-        .find_map(|module| self.input_binding(module, seat, catcher))
+        .find_map(|module| self.input_binding(module, seat, catcher, active))
     }
 
-    fn input_binding(&self, module: ModuleId, seat: SeatId, catcher: u32) -> Option<Recipient> {
+    fn input_binding(
+        &self,
+        module: ModuleId,
+        seat: SeatId,
+        catcher: u32,
+        active: bool,
+    ) -> Option<Recipient> {
         let row = self.module_row(module)?;
         let input = row.input?;
-        if row.state != State::Running
+        let initializing = active
+            && row.state == State::Pending
+            && match &row.request.program {
+                super::Program::Qvm { vm, .. } => vm.is_active(),
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                super::Program::Native { vm, .. } => vm.is_active(),
+                super::Program::QuakeC(_) => false,
+            };
+        if (row.state != State::Running && !initializing)
             || row.request.phase != Phase::Client
             || row.request.context.console.seat != seat
             || input.catcher != catcher
@@ -108,12 +122,8 @@ impl FrameHost {
             Export::words(CallbackId(callback), words),
             recipient.time,
         );
-        if result.is_err() && self.module_state(recipient.module) == Some(State::Running) {
-            if let Some(row) = self.module_row_mut(recipient.module) {
-                row.state = State::Failed;
-            }
-            self.disconnect_module_recipients(recipient.module);
-            self.retire_module_state(recipient.module);
+        if result.is_err() {
+            self.fail_input_recipient(recipient.module);
         }
     }
 
@@ -142,7 +152,7 @@ impl FrameHost {
             && qa_input::keys::native_number(source.control) == Some(27)
         {
             if catchers & key_catchers::CGAME != 0 {
-                let recipient = self.input_recipient(seat, key_catchers::CGAME);
+                let recipient = self.input_recipient(seat, key_catchers::CGAME, false);
                 self.runtime
                     .input
                     .set_catcher(seat, key_catchers::CGAME, false, time);
@@ -154,7 +164,7 @@ impl FrameHost {
                 return InputCapture::Caught;
             }
             if catchers & key_catchers::UI == 0
-                && let Some(recipient) = self.input_recipient(seat, key_catchers::UI)
+                && let Some(recipient) = self.input_recipient(seat, key_catchers::UI, false)
                 && let Some(callback) = recipient.input.menu
             {
                 let active = self.local_clients[seat.index()]
@@ -167,40 +177,81 @@ impl FrameHost {
                 return InputCapture::Caught;
             }
         }
-        let catcher = if catchers & key_catchers::UI != 0 {
-            key_catchers::UI
-        } else if catchers & key_catchers::CGAME != 0 {
-            key_catchers::CGAME
-        } else {
+        if catchers & (key_catchers::UI | key_catchers::CGAME) == 0 {
             return InputCapture::Pass;
-        };
-        if let Some(recipient) = self.input_recipient(seat, catcher) {
-            match atom {
-                InputAtom::Key { source, down, .. } => {
-                    if let Some(key) = qa_input::keys::native_number(source.control) {
-                        self.input_export(
-                            recipient,
-                            recipient.input.key,
-                            &[u64::from(key), u64::from(down)],
-                        );
-                    }
-                }
-                InputAtom::Character { value, .. } if recipient.input.character => {
-                    self.input_export(
-                        recipient,
-                        recipient.input.key,
-                        &[u64::from(u32::from(value) | 1024), 1],
-                    );
-                }
-                InputAtom::Character { .. } => {}
-                InputAtom::Mouse { dx, dy, .. } => {
-                    self.input_export(recipient, recipient.input.mouse, &[dx as u64, dy as u64]);
-                }
-            }
+        }
+        if let Some((module, callback, call)) = self.input_call(atom, false)
+            && self.call_module(callback, call).is_err()
+        {
+            self.fail_input_recipient(module);
         }
         // A failed/missing recipient never turns the caught physical press
         // into a gameplay command during the same dispatch continuation.
         InputCapture::Caught
+    }
+
+    /// Ordinary atoms and synchronous clears share recipient and export
+    /// preparation. Only a native clear may reach an actually active initializer.
+    pub(super) fn input_call(
+        &self,
+        atom: InputAtom,
+        active: bool,
+    ) -> Option<(
+        ModuleId,
+        CallbackId,
+        qa_core::primitives::CallbackCall<'static>,
+    )> {
+        let seat = match atom {
+            InputAtom::Key { seat, .. }
+            | InputAtom::Character { seat, .. }
+            | InputAtom::Mouse { seat, .. } => seat,
+        };
+        let mask = self.runtime.input.key_catchers(seat);
+        let catcher = if mask & key_catchers::UI != 0 {
+            key_catchers::UI
+        } else if mask & key_catchers::CGAME != 0 {
+            key_catchers::CGAME
+        } else {
+            return None;
+        };
+        let recipient = self.input_recipient(seat, catcher, active)?;
+        let (callback, words) = match atom {
+            InputAtom::Key { source, down, .. } => (
+                recipient.input.key,
+                [
+                    u64::from(qa_input::keys::native_number(source.control)?),
+                    u64::from(down),
+                ],
+            ),
+            InputAtom::Character { value, .. } if recipient.input.character => {
+                (recipient.input.key, [u64::from(u32::from(value) | 1024), 1])
+            }
+            InputAtom::Character { .. } => return None,
+            InputAtom::Mouse { dx, dy, .. } => (recipient.input.mouse, [dx as u64, dy as u64]),
+        };
+        let row = self.module_row(recipient.module)?;
+        let mut arguments = [0; 9];
+        arguments[..2].copy_from_slice(&words);
+        Some((
+            recipient.module,
+            CallbackId(callback),
+            qa_core::primitives::CallbackCall::Export {
+                entity: row.request.anchor,
+                time: recipient.time,
+                arguments,
+                client: None,
+                command: Default::default(),
+            },
+        ))
+    }
+
+    pub(super) fn fail_input_recipient(&mut self, module: ModuleId) {
+        if let Some(row) = self.module_row_mut(module)
+            && row.state.can_invoke()
+        {
+            row.state = State::Failed;
+            self.cleanup_failed_module(module);
+        }
     }
 
     pub(crate) fn native_input_wants_mouse(&self) -> bool {
@@ -209,7 +260,7 @@ impl FrameHost {
             mask & key_catchers::CONSOLE == 0
                 && [key_catchers::UI, key_catchers::CGAME]
                     .into_iter()
-                    .any(|bit| mask & bit != 0 && self.input_recipient(seat, bit).is_some())
+                    .any(|bit| mask & bit != 0 && self.input_recipient(seat, bit, false).is_some())
         })
     }
 
@@ -236,7 +287,9 @@ impl FrameHost {
             let seat = self.console.editor.seat().or_else(|| {
                 SeatId::ALL.into_iter().find(|&seat| {
                     self.runtime.input.key_catchers(seat) & key_catchers::UI != 0
-                        && self.input_recipient(seat, key_catchers::UI).is_some()
+                        && self
+                            .input_recipient(seat, key_catchers::UI, false)
+                            .is_some()
                 })
             });
             self.runtime

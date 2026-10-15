@@ -96,7 +96,6 @@ impl<'a> SceneBorrow<'a> {
         composer: Option<&'a mut SceneComposer>,
         models: Option<&'a ModelCatalog>,
         role: &'a mut SceneRole,
-        module: ModuleId,
         cvars: &qa_console::cvars::Cvars,
         client: Option<qa_render::effects::EffectClient>,
     ) -> Self {
@@ -112,23 +111,32 @@ impl<'a> SceneBorrow<'a> {
                 .lighting
                 .map(|view| cvars.numeric(view).unwrap_or(0.))
         });
-        let mut borrow = Self {
+        Self {
             composer,
             models,
             role,
             rails,
             lighting,
             client,
-        };
-        if let Some(composer) = borrow.composer.as_deref_mut()
-            && composer.publisher != Some(module)
-        {
-            if let Some(frame) = composer.frame.as_mut() {
-                frame.clear_scene();
-            }
-            composer.publisher = Some(module);
         }
-        borrow
+    }
+}
+
+/// Select the actual guest entry separately from reconstructing a short scene
+/// borrow. Resuming a parent restores ownership without clearing child output.
+pub(crate) fn select_publisher(
+    composer: Option<&mut SceneComposer>,
+    module: ModuleId,
+    entering: bool,
+) {
+    if let Some(composer) = composer {
+        if entering
+            && composer.publisher != Some(module)
+            && let Some(frame) = composer.frame.as_mut()
+        {
+            frame.clear_scene();
+        }
+        composer.publisher = Some(module);
     }
 }
 impl SceneService for SceneBorrow<'_> {

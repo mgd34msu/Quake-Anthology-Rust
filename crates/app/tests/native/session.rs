@@ -27,6 +27,7 @@ mod native_image;
 use native_image::*;
 mod command_lifetimes;
 mod cues;
+mod failure_cleanup;
 #[path = "../elf32_q3.rs"]
 mod registered_q3;
 mod sound_routes;
@@ -5797,6 +5798,10 @@ mod pmove;
 mod appearance;
 
 pub fn run() {
+    failure_cleanup::run();
+    if std::env::args().any(|arg| arg == "--failed-owner") {
+        return;
+    }
     if std::env::args().any(|arg| arg == "--command-lifetimes") {
         command_lifetimes::run();
         return;

@@ -37,13 +37,13 @@ fn binding(
     Ok((number, row.time(host.time)))
 }
 
-fn callback(
+fn prepare_callback<'a>(
     host: &mut FrameHost,
     module: ModuleId,
     id: ClientId,
     event: ClientCallback,
-    argv: CommandArgs<'_>,
-) -> Result<(), ClientCommandError> {
+    argv: CommandArgs<'a>,
+) -> Result<(CallbackId, CallbackCall<'a>), ClientCommandError> {
     let (number, time) = binding(host, module, id)?;
     // game/g_public.h GAME_CLIENT_* ordinals, shared by QVM and native vmMain.
     let export = match event {
@@ -60,14 +60,19 @@ fn callback(
         ClientCallback::BeforeMove => 7,
         _ => return Err(ClientCommandError::Unsupported),
     };
-    host.invoke_client(
-        id,
-        CallbackId(export),
-        event,
-        time,
-        &[u64::from(number)],
-        argv,
-    )
+    host.client_call(id, event, time, &[u64::from(number)], argv)
+        .map(|call| (CallbackId(export), call))
+}
+fn callback(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    event: ClientCallback,
+    argv: CommandArgs<'_>,
+) -> Result<(), ClientCommandError> {
+    let (callback, call) = prepare_callback(host, module, id, event, argv)?;
+    host.call_module(callback, call)
+        .map_err(ClientCommandError::Dispatch)
 }
 
 fn denial(host: &mut FrameHost, module: ModuleId) -> Result<Option<String>, String> {
@@ -240,12 +245,12 @@ pub(super) fn command(
         CommandArgs::default(),
     )
 }
-pub(super) fn disconnect(
+pub(super) fn prepare_disconnect(
     host: &mut FrameHost,
     module: ModuleId,
     id: ClientId,
-) -> Result<(), ClientCommandError> {
-    callback(
+) -> Result<(CallbackId, CallbackCall<'static>), ClientCommandError> {
+    prepare_callback(
         host,
         module,
         id,

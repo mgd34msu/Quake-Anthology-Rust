@@ -25,12 +25,12 @@ fn native(host: &FrameHost, module: ModuleId, id: ClientId) -> Result<u32, Clien
     super::super::native_self(&host.runtime, client.entity, module, &qc.vm)
         .ok_or(ClientCommandError::InvalidSlot)
 }
-fn callback(
+fn prepare_callback(
     host: &mut FrameHost,
     module: ModuleId,
     id: ClientId,
     event: ClientCallback,
-) -> Result<(), ClientCommandError> {
+) -> Result<(CallbackId, CallbackCall<'static>), ClientCommandError> {
     let row = host
         .module_row(module)
         .filter(|row| row.state == State::Running)
@@ -43,7 +43,18 @@ fn callback(
         .client_callback(event)
         .map_err(ClientCommandError::Usercmd)?;
     let time = row.time(host.time);
-    host.invoke_client(id, callback, event, time, &[], CommandArgs::default())
+    host.client_call(id, event, time, &[], CommandArgs::default())
+        .map(|call| (callback, call))
+}
+fn callback(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    event: ClientCallback,
+) -> Result<(), ClientCommandError> {
+    let (callback, call) = prepare_callback(host, module, id, event)?;
+    host.call_module(callback, call)
+        .map_err(ClientCommandError::Dispatch)
 }
 
 pub(super) fn connect(
@@ -436,12 +447,12 @@ pub(super) fn finish(
 ) -> Result<(), ClientCommandError> {
     callback(host, module, id, ClientCallback::AfterMove)
 }
-pub(super) fn disconnect(
+pub(super) fn prepare_disconnect(
     host: &mut FrameHost,
     module: ModuleId,
     id: ClientId,
-) -> Result<(), ClientCommandError> {
-    callback(host, module, id, ClientCallback::Disconnect)
+) -> Result<(CallbackId, CallbackCall<'static>), ClientCommandError> {
+    prepare_callback(host, module, id, ClientCallback::Disconnect)
 }
 pub(super) fn text(
     _: &mut FrameHost,

@@ -4,7 +4,7 @@ use crate::{
     host::{FrameHost, Provider},
 };
 use qa_compat::{
-    abi::{CallTable, QUAKEC, QuakeCCalls, QvmCalls, UnknownCalls},
+    abi::{CallTable, QUAKEC, QuakeCCalls, UnknownCalls},
     quakec, qvm,
     services::{CallContext, ServiceStorage, SignonCursor},
 };
@@ -28,7 +28,9 @@ mod contacts;
 use clients::ClientLifecycle;
 pub use clients::{ClientCommandError, ClientLifecycleInfo};
 mod cues;
+mod execution;
 mod input;
+use execution::ModuleDispatch;
 mod map_start;
 mod motion;
 mod resources;
@@ -72,7 +74,7 @@ impl Program {
             map,
         })
     }
-    fn entry(&self) -> fn(&mut FrameHost, ModuleId, u32, CallbackCall) -> bool {
+    fn entry(&self) -> fn(&mut FrameHost, ModuleId, u32, CallbackCall) -> ModuleDispatch {
         match self {
             Self::Qvm { .. } => word_entry,
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -251,6 +253,7 @@ struct Module {
     unknown: UnknownCalls,
     counts: Counts,
     state: State,
+    failure_cleanup: bool,
     client_lifecycle: Option<ClientLifecycle>,
     client_batch: Option<ClientId>,
     client_contacts: qa_core::stamps::StampSet,
@@ -290,11 +293,12 @@ impl Module {
     }
 }
 pub struct Modules {
-    functions: Arc<FunctionTable<FrameHost>>,
+    functions: Arc<FunctionTable<FrameHost, ModuleDispatch>>,
     rows: Box<[Option<Module>]>,
     storage: ServiceStorage,
     signon: Box<[SignonCursor]>,
     input: [input::Recipients; qa_core::sys_events::SeatId::COUNT],
+    execution: Box<[Option<execution::Activation>]>,
 }
 impl Modules {
     pub(crate) fn has_module(&self, module: ModuleId) -> bool {
@@ -355,6 +359,22 @@ impl FrameHost {
                 row.state = State::Failed;
                 row.counts.rejected += 1;
             }
+            self.cleanup_failed_module(module);
+        }
+    }
+
+    fn claim_failed_module(&mut self, module: ModuleId) -> bool {
+        let Some(row) = self.module_row_mut(module) else {
+            return false;
+        };
+        if row.state != State::Failed || row.failure_cleanup {
+            return false;
+        }
+        row.failure_cleanup = true;
+        true
+    }
+    fn cleanup_failed_module(&mut self, module: ModuleId) {
+        if self.claim_failed_module(module) {
             self.disconnect_module_recipients(module);
             self.retire_module_state(module);
         }
@@ -420,6 +440,27 @@ impl FrameHost {
                 .reserve(names, bytes)
                 .map_err(|error| format!("QuakeC name reservation: {error}"))?;
         }
+        let execution_capacity = requests.iter().try_fold(0usize, |total, request| {
+            let count = match &request.program {
+                Program::Qvm { vm, .. } => vm.activation_capacity(),
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                Program::Native { vm, .. } => vm.activation_capacity(),
+                Program::QuakeC(_) => 0,
+            };
+            total.checked_add(count).ok_or("module execution capacity")
+        })?;
+        // A completed backend may wait for one claimed client-lifetime or
+        // failed-module cleanup. These owners cannot be claimed twice.
+        let execution_capacity = execution_capacity
+            .checked_add(host.runtime.server.clients.len())
+            .and_then(|capacity| capacity.checked_add(requests.len()))
+            .ok_or("module cleanup execution capacity")?;
+        let mut execution = Vec::new();
+        execution
+            .try_reserve_exact(execution_capacity)
+            .map_err(|_| "module execution reservation")?;
+        execution.resize_with(execution_capacity, || None);
+        let execution = execution.into_boxed_slice();
         let mut functions = FunctionTable::load(requests.iter().map(|m| {
             (
                 m.context.module,
@@ -741,6 +782,7 @@ impl FrameHost {
                 unknown: UnknownCalls::load(256).map_err(|e| e.to_string())?,
                 counts: Counts::default(),
                 state,
+                failure_cleanup: false,
                 client_lifecycle,
                 client_batch: None,
                 client_contacts: qa_core::stamps::StampSet::new(
@@ -777,6 +819,7 @@ impl FrameHost {
             storage,
             signon,
             input,
+            execution,
         });
         host.bind_client_presentation()?;
         host.configure_output_resources();
@@ -1190,11 +1233,10 @@ impl FrameHost {
                 qc.vm.active = row.state == State::Running;
             }
         }
-        if !shutdown && result.is_err() {
-            self.disconnect_module_recipients(module);
-        }
-        if shutdown || result.is_err() {
+        if shutdown {
             self.retire_module_state(module);
+        } else if result.is_err() {
+            self.cleanup_failed_module(module);
         }
     }
     fn check_module_api(
@@ -1366,11 +1408,8 @@ impl FrameHost {
             .resolve(call.entity())
             .map(|slot| self.runtime.server.entities.columns.owner[slot]);
         let result = functions.invoke(self, callback, call);
-        if let Some(module) = module
-            && self.module_state(module) == Some(State::Failed)
-        {
-            self.disconnect_module_recipients(module);
-            self.retire_module_state(module);
+        if let Some(module) = module {
+            self.cleanup_failed_module(module);
         }
         result
     }
@@ -1574,7 +1613,7 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
 fn entity_think(
     host: &mut FrameHost,
     module: ModuleId,
-    functions: &FunctionTable<FrameHost>,
+    functions: &FunctionTable<FrameHost, ModuleDispatch>,
     source: &quakec::PhysicsEntity,
     current: EntityId,
     time: ThinkTime,
@@ -1642,166 +1681,15 @@ fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context.clock = time;
     context
 }
-fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall<'_>) -> bool {
-    let platform_time = host.runtime.input_time;
-    let functions = host
-        .modules
-        .as_ref()
-        .map(|modules| Arc::clone(&modules.functions));
-    let (time, words, native_player, command) = match call {
-        CallbackCall::Think { time, .. } => {
-            let mut arguments = [0; 9];
-            arguments[0] = time.milliseconds() as u64;
-            (time, arguments, None, Default::default())
-        }
-        CallbackCall::Export {
-            time,
-            arguments,
-            client,
-            command,
-            ..
-        } => (time, arguments, client, command),
-        CallbackCall::Client {
-            time,
-            arguments,
-            client,
-            command,
-            ..
-        } => (time, arguments, Some(client), command),
-        _ => return false,
-    };
-    let Some((row, storage)) = host
-        .modules
-        .as_mut()
-        .and_then(|modules| modules.parts_mut(module))
-    else {
-        return false;
-    };
-    if !row.state.can_invoke() {
-        return false;
-    }
-    if matches!(row.request.program, Program::QuakeC(_)) {
-        return false;
-    }
-    let client_connection = row.client_connection;
-    if let Some((id, lifetime)) = client_connection
-        && (native_player.is_some_and(|requested| requested != id)
-            || host
-                .runtime
-                .server
-                .clients
-                .get(id.0 as usize)
-                .is_none_or(|client| client.connection.is_none() || client.entity != lifetime)
-            || host.runtime.snapshots[id.0 as usize]
-                .as_ref()
-                .is_some_and(|binding| binding.presentation_closed())
-            || host.runtime.server.entities.resolve(lifetime).is_none())
-    {
-        return false;
-    }
-    let (mut services, mut client_view, composer, models) = host.runtime.engine_service_parts(
-        &mut host.console,
-        storage,
-        &mut row.scratch,
-        client_connection,
-    );
-    let mut scene = crate::renderer::native::SceneBorrow::new(
-        composer,
-        models,
-        &mut row.scene_role,
-        module,
-        services.cvars,
-        client_connection
-            .map(|(client, lifetime)| qa_render::effects::EffectClient { client, lifetime }),
-    );
-    services.callbacks = functions
-        .as_deref()
-        .map(|table| table as &dyn qa_session::dispatch::CallbackResolver);
-    services.client_disconnect = row
-        .client_lifecycle
-        .and_then(|table| table.disconnect_callback);
-    services.scene = Some(&mut scene);
-    services.client_collision = Some(&mut row.collision_role);
-    // A live connection can lack this protocol's configstring/command view.
-    // Each executed import checks its own service; independent CLIENT audio
-    // and scene calls still use their load-bound publisher and common state.
-    services.client_connection = client_view
-        .as_mut()
-        .map(|view| view as &mut dyn qa_compat::services::ClientConnection);
-    row.counts.calls += 1;
-    let call_context = context(row.request.context, time);
-    let result = match &mut row.request.program {
-        Program::Qvm { vm, imports } => {
-            let mut calls = QvmCalls {
-                services: &mut services,
-                table: imports,
-                context: call_context,
-                platform_time,
-                command: command.argv,
-                unknown: &mut row.unknown,
-            };
-            let mut arguments = [0; 10];
-            arguments[0] = entry as i32;
-            for (output, word) in arguments[1..].iter_mut().zip(words) {
-                *output = word as u32 as i32;
-            }
-            let result = vm
-                .call(&mut calls, arguments, row.request.instruction_budget, false)
-                .map_err(|_| ());
-            result.and_then(|value| {
-                vm.publish_entities(
-                    calls.services,
-                    call_context,
-                    calls.platform_time,
-                    Some(entry),
-                )
-                .map(|()| ModuleResult::Qvm(value))
-                .map_err(|_| ())
-            })
-        }
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        Program::Native { vm, imports } => {
-            let mut calls = qa_compat::native::NativeCalls {
-                services: &mut services,
-                table: imports,
-                context: call_context,
-                platform_time,
-                command: command.argv,
-                raw_args: command.raw,
-                native_player,
-                unknown: &mut row.unknown,
-            };
-            vm.call(&mut calls, entry, &words)
-                .map(ModuleResult::Native)
-                .map_err(|error| {
-                    if !error.recoverable() {
-                        row.state = State::Failed;
-                        if row.counts.traps == 0 {
-                            let _ = (qa_compat::services::ENGINE_CALLS.console_formatted)(
-                                calls.services,
-                                format_args!(
-                                    "module {}: native export {entry}: {error:?}\n",
-                                    module.0
-                                ),
-                            );
-                        }
-                    }
-                })
-        }
-        Program::QuakeC(_) => return false,
-    };
-    let accepted = row.counts.record(result);
-    Module::retain_active_batch(&mut row.client_batch, services.server);
-    let termination = services
-        .client_connection
-        .as_deref()
-        .and_then(|commands| commands.disconnected());
-    drop(services);
-    if let (Some(termination), Some((id, _))) = (termination, client_connection) {
-        host.finish_client_termination(id, termination);
-    }
-    accepted
+fn word_entry(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entry: u32,
+    call: CallbackCall<'_>,
+) -> ModuleDispatch {
+    execution::start(host, module, entry, call)
 }
+
 fn native_self(
     runtime: &Runtime,
     entity: EntityId,
@@ -1819,7 +1707,20 @@ fn native_self(
     );
     vm.weak_entity_offset(module, reference).ok()
 }
-fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
+fn quakec_entry(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entry: u32,
+    call: CallbackCall,
+) -> ModuleDispatch {
+    ModuleDispatch::Completed(quakec_entry_complete(host, module, entry, call))
+}
+fn quakec_entry_complete(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entry: u32,
+    call: CallbackCall,
+) -> bool {
     let platform_time = host.runtime.input_time;
     let phase = match call {
         CallbackCall::Think { .. } => quakec::CallPhase::Think,
