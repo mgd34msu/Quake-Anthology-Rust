@@ -25,6 +25,54 @@ fn native(host: &FrameHost, module: ModuleId, id: ClientId) -> Result<u32, Clien
     super::super::native_self(&host.runtime, client.entity, module, &qc.vm)
         .ok_or(ClientCommandError::InvalidSlot)
 }
+
+/// Native client edicts remain allocated after their connection retires.
+pub(super) fn retain_body(host: &mut FrameHost, id: ClientId) -> Result<(), ClientCommandError> {
+    let Some(client) = host
+        .runtime
+        .server
+        .clients
+        .get(id.0 as usize)
+        .filter(|client| client.connection.is_some())
+    else {
+        return Ok(());
+    };
+    let module = client.module;
+    let entity = client.entity;
+    let Some(row) = host
+        .module_row(module)
+        .filter(|row| row.state == State::Running)
+    else {
+        return Ok(());
+    };
+    let Program::QuakeC(qc) = &row.request.program else {
+        return Ok(());
+    };
+    let entities = &host.runtime.server.entities;
+    let slot = entities
+        .resolve(entity)
+        .ok_or(ClientCommandError::Inactive)?;
+    let Some(binding) =
+        entities.columns.native_entity[slot].filter(|native| native.module == module)
+    else {
+        return Ok(());
+    };
+    if qc
+        .vm
+        .bound_entity(entities, binding)
+        .map_err(ClientCommandError::Usercmd)?
+        != Some(entity)
+    {
+        return Ok(());
+    }
+    let offset = super::super::native_self(&host.runtime, entity, module, &qc.vm)
+        .ok_or(ClientCommandError::InvalidSlot)?;
+    edit(host, module, |vm, services, context| {
+        vm.retain_client_body(services, context, offset, entity)
+            .map(|_| ())
+    })
+}
+
 fn prepare_callback(
     host: &mut FrameHost,
     module: ModuleId,
@@ -118,11 +166,23 @@ pub(super) fn connect(
         module,
         slot: ordinal as i32,
     };
-    if !host.runtime.server.bind_client_native(id, native) {
-        return Err("native client namespace already occupied".into());
-    }
-    let entity = host.runtime.server.clients[id.0 as usize].entity;
     let result = (|| -> Result<(), ClientCommandError> {
+        let released = edit(host, module, |vm, services, context| {
+            vm.release_client_body(services, context, offset)
+        });
+        if released.is_err()
+            && let Some(row) = host.module_row_mut(module)
+        {
+            row.counts.rejected += 1;
+        }
+        released?;
+        if !host.runtime.server.bind_client_native(id, native) {
+            if let Some(row) = host.module_row_mut(module) {
+                row.counts.rejected += 1;
+            }
+            return Err(ClientCommandError::InvalidSlot);
+        }
+        let entity = host.runtime.server.clients[id.0 as usize].entity;
         edit(host, module, |vm, services, _| {
             vm.bind_client(&services.server.entities, native, entity)
         })?;

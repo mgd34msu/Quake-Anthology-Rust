@@ -67,7 +67,7 @@ fn frame(now: f64, step: f64) -> Option<ThinkFrame> {
 }
 
 fn record(world: &mut World, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
-    let CallbackCall::Think { entity, time } = call else {
+    let CallbackCall::Think { entity, time, .. } = call else {
         return false;
     };
     let slot = world.entities.resolve(entity).unwrap();
@@ -356,6 +356,7 @@ fn missing_modules_do_not_inherit_quake_timing_and_bad_functions_are_scoped() {
                     ..valid
                 },
                 time: ThinkTime::Seconds(1.0),
+                prepared_native: None,
             }
         ),
         Err(CallError::StaleEntity)
@@ -1023,7 +1024,8 @@ fn all_entity_reactions_share_one_numeric_function_table() {
         },
         CallbackCall::Blocked {
             entity: id,
-            other: id,
+            subject: NativeEntityRef::entity(ResourceNamespace::Module(ModuleId(2)), 1),
+            other: NativeEntityRef::entity(ResourceNamespace::Module(ModuleId(2)), 0),
         },
         CallbackCall::Pain {
             event,

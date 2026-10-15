@@ -178,7 +178,18 @@ pub(super) fn start(
     // Command tokens remain in complete()'s external lease. The activation owns
     // only the numeric callback metadata needed across stopped guest borrows.
     let (call, time) = match call {
-        CallbackCall::Think { entity, time } => (CallbackCall::Think { entity, time }, time),
+        CallbackCall::Think {
+            entity,
+            time,
+            prepared_native,
+        } => (
+            CallbackCall::Think {
+                entity,
+                time,
+                prepared_native,
+            },
+            time,
+        ),
         CallbackCall::Spawn { entity, time }
             if matches!(row.request.program, Program::QuakeC(_)) =>
         {
@@ -195,6 +206,18 @@ pub(super) fn start(
                 time,
             },
             time.unwrap_or_else(|| row.time(host.time)),
+        ),
+        CallbackCall::Blocked {
+            entity,
+            subject,
+            other,
+        } if matches!(row.request.program, Program::QuakeC(_)) => (
+            CallbackCall::Blocked {
+                entity,
+                subject,
+                other,
+            },
+            row.time(host.time),
         ),
         CallbackCall::Export {
             entity,
@@ -392,6 +415,7 @@ fn drive(host: &mut FrameHost, start: GuestStart, command: CommandArgs<'_>) -> b
                             call: CallbackCall::Think {
                                 entity: row.request.anchor,
                                 time: row.request.context.clock,
+                                prepared_native: None,
                             },
                             anchor: row.request.anchor,
                             entry: 0,
@@ -740,17 +764,34 @@ fn advance(
         // A nested callback must observe its suspended parent's native stores,
         // including attached poses not yet published to the common columns.
         if !qc.vm.is_running()
-            && motion::sync_attachments(
-                &mut qc.vm,
-                &mut host.runtime.server.entities,
-                row.request.context,
+            && !matches!(
+                start.call,
+                CallbackCall::Think {
+                    prepared_native: Some(_),
+                    ..
+                }
             )
-            .is_err()
         {
-            row.counts.rejected += 1;
-            return Err(());
+            let mut services =
+                host.runtime
+                    .engine_services(&mut host.console, storage, &mut row.scratch);
+            if motion::sync_attachments(&mut qc.vm, &mut services, row.request.context).is_err() {
+                row.counts.rejected += 1;
+                return Err(());
+            }
         }
-        let native = native_self(&host.runtime, start.call.entity(), start.module, &qc.vm);
+        let native = match start.call {
+            CallbackCall::Think {
+                prepared_native: Some(subject),
+                ..
+            }
+            | CallbackCall::Blocked { subject, .. } => Some(
+                qc.vm
+                    .weak_entity_offset(start.module, subject)
+                    .map_err(|_| ())?,
+            ),
+            _ => native_self(&host.runtime, start.call.entity(), start.module, &qc.vm),
+        };
         let world = native_self(&host.runtime, start.anchor, start.module, &qc.vm);
         let prepared = match start.call {
             CallbackCall::Client { event, time, .. } => native
@@ -762,6 +803,17 @@ fn advance(
                     qc.vm.prepare_touch_call(native, other, time)
                 })
             }
+            CallbackCall::Blocked { other, .. } => {
+                native.ok_or(ServiceError::Entity).and_then(|native| {
+                    let other = qc.vm.weak_entity_offset(start.module, other)?;
+                    qc.vm.prepare_blocked(native, other)?;
+                    Ok(quakec::ClientCallRestore::default())
+                })
+            }
+            CallbackCall::Think {
+                prepared_native: Some(_),
+                ..
+            } => Ok(quakec::ClientCallRestore::default()),
             CallbackCall::Think { time, .. }
             | CallbackCall::Spawn { time, .. }
             | CallbackCall::Export { time, .. } => qc

@@ -4,14 +4,20 @@ use qa_compat::{
     quakec::{MotionField, Vm},
     services::{CallContext, CallError, EngineServices},
 };
-use qa_core::primitives::{EntityId, ModuleId, NativeEntityRef, ThinkTime, Vec3};
+use qa_core::primitives::{
+    CallbackCall, CollisionOwner, EntityId, ModuleId, NativeEntity, NativeEntityRef,
+    ResourceNamespace, ThinkTime, Vec3,
+};
+use qa_session::dispatch::{CallOutcome, call_think_once};
 use qa_session::physics::{
-    self, MotionFrame, MotionHost, MotionState, MotionTrace, MotionWrite, PhysicsError,
+    self, MotionFrame, MotionHost, MotionState, MotionTrace, MotionWrite, PhysicsError, PushFrame,
+    PushHost, PushNumber,
 };
 use qa_world::{
     collision::{QuakeTraceKind, TraceQuery, trace_policy},
     entities::EntityTable,
 };
+use std::sync::Arc;
 
 impl From<PhysicsError> for ClientCommandError {
     fn from(error: PhysicsError) -> Self {
@@ -19,21 +25,22 @@ impl From<PhysicsError> for ClientCommandError {
     }
 }
 
-/// Attachment transport owns the common pose. Publish it before a callback
-/// can import native fields over that pose. Each scalar write may refresh
-/// overlapping fields, so retain only this row's already transported position.
+/// Commit the shared attachment graph before a callback can import native
+/// fields over its authoritative pose. Retain one transported row's position
+/// across scalar stores, which may refresh overlapping native fields.
 pub(super) fn sync_attachments(
     vm: &mut Vm,
-    entities: &mut EntityTable,
+    services: &mut EngineServices<'_>,
     context: CallContext,
 ) -> Result<(), CallError> {
-    for index in 0..entities.attachment_ids().len() {
-        let entity = entities.attachment_ids()[index];
-        let Some(slot) = entities.resolve(entity) else {
+    services.server.commit_attachments();
+    for index in 0..services.server.entities.attachment_ids().len() {
+        let entity = services.server.entities.attachment_ids()[index];
+        let Some(slot) = services.server.entities.resolve(entity) else {
             continue;
         };
-        let Some(native) =
-            entities.columns.native_entity[slot].filter(|native| native.module == context.module)
+        let Some(native) = services.server.entities.columns.native_entity[slot]
+            .filter(|native| native.module == context.module)
         else {
             continue;
         };
@@ -42,12 +49,22 @@ pub(super) fn sync_attachments(
             u32::try_from(native.slot).map_err(|_| CallError::Entity)?,
         );
         let offset = vm.weak_entity_offset(context.module, reference)?;
-        let position = entities.columns.position[slot];
+        let position = services.server.entities.columns.position[slot];
         for axis in 0..3 {
-            let slot = entities.resolve(entity).ok_or(CallError::Entity)?;
-            entities.columns.position[slot].0[axis] = position.0[axis];
-            vm.write_motion(entities, context, offset, MotionWrite::Origin(axis))?;
+            let slot = services
+                .server
+                .entities
+                .resolve(entity)
+                .ok_or(CallError::Entity)?;
+            services.server.entities.columns.position[slot].0[axis] = position.0[axis];
+            vm.write_motion(
+                &mut services.server.entities,
+                context,
+                offset,
+                MotionWrite::Origin(axis),
+            )?;
         }
+        vm.publish_link_bounds(services, context, offset)?;
     }
     Ok(())
 }
@@ -130,6 +147,49 @@ pub(super) fn toss(
     physics::toss(&mut host, entity, frame, &rules)
 }
 
+pub(super) fn push(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entity: EntityId,
+    time: ThinkTime,
+    elapsed: f64,
+) -> Result<(), ClientCommandError> {
+    let (anchor, rules, mut undo) = {
+        let row = host
+            .module_row_mut(module)
+            .ok_or(ClientCommandError::MissingModule)?;
+        let rules = row.push.ok_or(ClientCommandError::Unsupported)?;
+        let undo = row.push_undo.take().ok_or(ClientCommandError::Inactive)?;
+        (row.request.anchor, rules, undo)
+    };
+    let result = (|| {
+        let native = host.runtime.server.entities.columns.native_entity[host
+            .runtime
+            .server
+            .entities
+            .resolve(entity)
+            .ok_or(ClientCommandError::Inactive)?]
+        .ok_or(ClientCommandError::InvalidSlot)?;
+        let mut adapter = Host::new(host, module, entity, time)?;
+        physics::push_frame(
+            &mut adapter,
+            CollisionOwner::Native(native),
+            &mut undo,
+            PushFrame {
+                elapsed,
+                world_time: time,
+            },
+            &rules,
+        )
+    })();
+    let row = host
+        .module_row_mut(module)
+        .filter(|row| row.request.anchor == anchor)
+        .ok_or(ClientCommandError::MissingModule)?;
+    row.push_undo = Some(undo);
+    result
+}
+
 pub(super) fn step_fall(
     host: &mut FrameHost,
     module: ModuleId,
@@ -203,6 +263,206 @@ impl<'a> Host<'a> {
         edit_quakec(self.host, self.module, |vm, services, context| {
             call(vm, services, context, native)
         })
+    }
+
+    fn reference(&self, owner: CollisionOwner) -> Result<NativeEntityRef, ClientCommandError> {
+        let native = match owner {
+            CollisionOwner::Native(native) => native,
+            CollisionOwner::Lifetime(entity) => {
+                let entities = &self.host.runtime.server.entities;
+                let slot = entities
+                    .resolve(entity)
+                    .ok_or(ClientCommandError::Inactive)?;
+                entities.columns.native_entity[slot].ok_or(ClientCommandError::InvalidSlot)?
+            }
+            CollisionOwner::None => return Err(ClientCommandError::InvalidSlot),
+        };
+        if native.module != self.module {
+            return Err(ClientCommandError::DifferentModule);
+        }
+        Ok(NativeEntityRef::entity(
+            ResourceNamespace::Module(native.module),
+            u32::try_from(native.slot).map_err(|_| ClientCommandError::InvalidSlot)?,
+        ))
+    }
+
+    fn edit_owner<R>(
+        &mut self,
+        owner: CollisionOwner,
+        call: impl FnOnce(&mut Vm, &mut EngineServices<'_>, CallContext, u32) -> Result<R, CallError>,
+    ) -> Result<R, ClientCommandError> {
+        let reference = self.reference(owner)?;
+        edit_quakec(self.host, self.module, |vm, services, context| {
+            let native = vm.weak_entity_offset(context.module, reference)?;
+            call(vm, services, context, native)
+        })
+    }
+}
+
+impl PushHost for Host<'_> {
+    type Error = ClientCommandError;
+
+    fn next_candidate(
+        &mut self,
+        cursor: &mut usize,
+    ) -> Result<Option<CollisionOwner>, Self::Error> {
+        edit_quakec(self.host, self.module, |vm, _, _| {
+            vm.push_candidate(cursor)
+                .map(|native| native.map(CollisionOwner::Native))
+        })
+    }
+
+    fn free(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error> {
+        let reference = self.reference(owner)?;
+        let native = NativeEntity {
+            module: self.module,
+            slot: i32::try_from(reference.ordinal).map_err(|_| ClientCommandError::InvalidSlot)?,
+        };
+        edit_quakec(self.host, self.module, |vm, services, _| {
+            vm.push_free(&services.server.entities, native)
+        })
+    }
+
+    fn number(&mut self, owner: CollisionOwner, field: PushNumber) -> Result<f32, Self::Error> {
+        self.edit_owner(owner, |vm, _, _, native| vm.push_number(native, field))
+    }
+
+    fn store(
+        &mut self,
+        owner: CollisionOwner,
+        field: PushNumber,
+        value: f32,
+    ) -> Result<(), Self::Error> {
+        self.edit_owner(owner, |vm, services, context, native| {
+            vm.push_store(&mut services.server.entities, context, native, field, value)
+        })
+    }
+
+    fn flags(&mut self, owner: CollisionOwner) -> Result<u32, Self::Error> {
+        self.edit_owner(owner, |vm, _, _, native| vm.push_flags(native))
+    }
+
+    fn store_flags(&mut self, owner: CollisionOwner, flags: u32) -> Result<(), Self::Error> {
+        self.edit_owner(owner, |vm, services, context, native| {
+            vm.push_store_flags(&mut services.server.entities, context, native, flags)
+        })
+    }
+
+    fn ground_owner(&mut self, owner: CollisionOwner) -> Result<CollisionOwner, Self::Error> {
+        let ground = self.edit_owner(owner, |vm, _, context, native| {
+            vm.push_ground(context, native)
+        })?;
+        let ResourceNamespace::Module(module) = ground.namespace else {
+            return Err(ClientCommandError::DifferentModule);
+        };
+        Ok(CollisionOwner::Native(NativeEntity {
+            module,
+            slot: i32::try_from(ground.ordinal).map_err(|_| ClientCommandError::InvalidSlot)?,
+        }))
+    }
+
+    fn test_position(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error> {
+        self.edit_owner(owner, |vm, services, context, native| {
+            vm.push_test_position(services, context, native)
+        })
+    }
+
+    fn link(&mut self, owner: CollisionOwner, touch: bool) -> Result<(), Self::Error> {
+        if PushHost::free(self, owner)? {
+            return Ok(());
+        }
+        let reference = self.reference(owner)?;
+        self.edit_owner(owner, |vm, services, context, native| {
+            vm.relink_entity(services, context, native)?;
+            sync_attachments(vm, services, context)
+        })?;
+        if touch && let Some(entity) = contacts::current(self.host, reference)? {
+            contacts::triggers(self.host, self.module, entity, self.time)?;
+        }
+        Ok(())
+    }
+
+    fn push_entity(
+        &mut self,
+        owner: CollisionOwner,
+        displacement: Vec3,
+    ) -> Result<(), Self::Error> {
+        let reference = self.reference(owner)?;
+        let entity = match contacts::current(self.host, reference)? {
+            Some(entity) => entity,
+            None => self.edit_owner(owner, |vm, services, context, native| {
+                vm.ensure_client_body(services, context, native)
+            })?,
+        };
+        let mut moving = Host::new(self.host, self.module, entity, self.time)?;
+        physics::push_entity(&mut moving, entity, displacement).map(|_| ())
+    }
+
+    fn blocked(
+        &mut self,
+        pusher: CollisionOwner,
+        blocker: CollisionOwner,
+    ) -> Result<(), Self::Error> {
+        let subject = self.reference(pusher)?;
+        let other = self.reference(blocker)?;
+        let binding = self.edit_owner(pusher, |vm, _, _, native| vm.blocked_binding(native))?;
+        let Some(binding) = binding else {
+            return Ok(());
+        };
+        let anchor = self
+            .host
+            .module_row(self.module)
+            .ok_or(ClientCommandError::MissingModule)?
+            .request
+            .anchor;
+        let entity = contacts::current(self.host, subject)?.unwrap_or(anchor);
+        let functions = self
+            .host
+            .modules
+            .as_ref()
+            .map(|modules| Arc::clone(&modules.functions))
+            .ok_or(ClientCommandError::MissingModule)?;
+        let resolved = functions
+            .resolve_binding(&self.host.runtime.server.entities, binding, entity)
+            .map_err(ClientCommandError::Dispatch)?;
+        let call = CallbackCall::Blocked {
+            entity,
+            subject,
+            other,
+        };
+        let accepted = functions
+            .dispatch_resolved(self.host, resolved, call)
+            .map_err(ClientCommandError::Dispatch)?
+            .complete(self.host, call);
+        accepted.then_some(()).ok_or(ClientCommandError::Dispatch(
+            qa_session::dispatch::CallError::Rejected,
+        ))
+    }
+
+    fn think_once(&mut self, pusher: CollisionOwner, time: ThinkTime) -> Result<(), Self::Error> {
+        let subject = self.reference(pusher)?;
+        let anchor = self
+            .host
+            .module_row(self.module)
+            .ok_or(ClientCommandError::MissingModule)?
+            .request
+            .anchor;
+        let current = contacts::current(self.host, subject)?;
+        let entity = current.unwrap_or(anchor);
+        let functions = self
+            .host
+            .modules
+            .as_ref()
+            .map(|modules| Arc::clone(&modules.functions))
+            .ok_or(ClientCommandError::MissingModule)?;
+        let result = call_think_once(self.host, &functions, entity, Some(subject), time, |host| {
+            contacts::current(host, subject).ok().flatten()
+        });
+        (result.rejected == 0)
+            .then_some(())
+            .ok_or(ClientCommandError::Dispatch(
+                qa_session::dispatch::CallError::Rejected,
+            ))
     }
 }
 
@@ -311,7 +571,8 @@ impl MotionHost for Host<'_> {
     }
     fn relink(&mut self, entity: EntityId) -> Result<Option<EntityId>, Self::Error> {
         self.edit(entity, |vm, services, context, native| {
-            vm.relink_entity(services, context, native)
+            vm.relink_entity(services, context, native)?;
+            sync_attachments(vm, services, context)
         })?;
         contacts::triggers(self.host, self.module, entity, self.time)?;
         self.current()

@@ -9,11 +9,13 @@ use qa_compat::{
     services::{CallContext, ServiceStorage, SignonCursor},
 };
 use qa_core::primitives::{
-    CallbackCall, CallbackId, ClientId, EntityId, IndexSpan, ModuleId, Motion, RuleSetId, ThinkTime,
+    CallbackCall, CallbackId, ClientId, EntityId, IndexSpan, ModuleId, Motion, NativeEntityRef,
+    RuleSetId, ThinkTime,
 };
 use qa_session::{
     dispatch::{
-        CallError, FunctionBinding, FunctionTable, ThinkFrame, ThinkWorld, run_think_with_rebind,
+        CallError, FunctionBinding, FunctionTable, PreparedNativeThink, ThinkFrame, ThinkWorld,
+        run_think_with_rebind,
     },
     timing::{Tick, TickRate},
 };
@@ -255,6 +257,8 @@ struct Module {
         qa_gameplay::rules::motion::StepRules,
         qa_gameplay::rules::sweep::LegacySweepRules,
     )>,
+    push: Option<qa_gameplay::rules::motion::PushRules>,
+    push_undo: Option<qa_session::physics::PushUndo>,
     duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
     signon: IndexSpan,
     client_connection: Option<(ClientId, EntityId)>,
@@ -381,6 +385,42 @@ impl FrameHost {
 impl ThinkWorld for FrameHost {
     fn entities(&mut self) -> &mut qa_world::entities::EntityTable {
         &mut self.runtime.server.entities
+    }
+
+    fn prepare_native_think(
+        &mut self,
+        entity: EntityId,
+        subject: Option<NativeEntityRef>,
+        time: ThinkTime,
+    ) -> Result<Option<PreparedNativeThink>, CallError> {
+        let slot = self
+            .runtime
+            .server
+            .entities
+            .resolve(entity)
+            .ok_or(CallError::StaleEntity)?;
+        let module = self.runtime.server.entities.columns.owner[slot];
+        let row = self.module_row(module).ok_or(CallError::MissingModule)?;
+        if !matches!(&row.request.program, Program::QuakeC(_)) {
+            return Ok(None);
+        }
+        let subject = subject
+            .map_or_else(|| contacts::reference(self, entity), Ok)
+            .map_err(|_| CallError::Rejected)?;
+        edit_quakec(self, module, |vm, services, context| {
+            if !vm.is_running() {
+                motion::sync_attachments(vm, services, context)?;
+            }
+            let native = vm.weak_entity_offset(context.module, subject)?;
+            let binding = vm.prepare_think(native, time);
+            let published = vm.project_entity(services, context, native);
+            Ok(PreparedNativeThink {
+                subject,
+                binding: binding.and_then(|binding| published.map(|()| binding))?,
+            })
+        })
+        .map(Some)
+        .map_err(|_| CallError::Rejected)
     }
 }
 
@@ -767,6 +807,16 @@ impl FrameHost {
             let step = qa_gameplay::rules::motion::step_rules(request.context.native_rules).zip(
                 qa_gameplay::rules::sweep::entity_sweep(request.context.native_rules),
             );
+            let push = matches!(&request.program, Program::QuakeC(_))
+                .then(|| qa_gameplay::rules::motion::push_rules(request.context.native_rules))
+                .flatten();
+            let push_undo = if let (Some(_), Program::QuakeC(qc)) = (push, &request.program) {
+                Some(qa_session::physics::PushUndo::load(
+                    qc.vm.entities.len() / qc.vm.stride,
+                ))
+            } else {
+                None
+            };
             rows[index] = Some(Module {
                 request,
                 scratch: host.runtime.geometry.scratch(),
@@ -791,6 +841,8 @@ impl FrameHost {
                 physics,
                 toss,
                 step,
+                push,
+                push_undo,
                 duration,
                 signon: IndexSpan {
                     first: (ordinal * client_capacity) as u32,
@@ -1539,6 +1591,13 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
             continue;
         }
         match next {
+            Ok(Some(entity)) if entity.phase == Motion::Push => {
+                if motion::push(host, module, entity.entity, time, step).is_err()
+                    && let Some(row) = host.module_row_mut(module)
+                {
+                    row.counts.rejected += 1;
+                }
+            }
             Ok(Some(entity)) if entity.phase == Motion::Step => {
                 let execution = motion::step_fall(host, module, entity.entity, time, step)
                     .and_then(|current| {

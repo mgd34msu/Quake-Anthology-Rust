@@ -1,5 +1,5 @@
 //! Native monster fields adapt to the shared displacement/support solver.
-use super::{ClientCallRestore, Vm};
+use super::{ClientCallRestore, Scalar, Vm};
 use crate::services::{CallContext, CallError, ENGINE_CALLS, EngineServices};
 use qa_core::primitives::{Bounds, NativeEntityRef, ResourceNamespace, Vec3};
 use qa_gameplay::rules::motion::{StepRules, step_rules};
@@ -9,16 +9,6 @@ use qa_session::physics::{
 use qa_world::collision::{
     EntityTracePolicy, QuakeTraceKind, TraceQuery, TraceRules, trace_policy,
 };
-
-pub(crate) enum Scalar {
-    Origin(usize),
-    Flags,
-    Ground,
-    IdealYaw,
-    Yaw,
-    AbsoluteMin(usize),
-    AbsoluteMax(usize),
-}
 
 #[derive(Debug)]
 pub(crate) struct WalkAfterTouch {
@@ -62,7 +52,7 @@ impl<'a, 'engine> Host<'a, 'engine> {
         let address =
             self.vm
                 .projection
-                .quakec_monster_store(&self.vm.entities, self.native, field)?;
+                .quakec_scalar_store(&self.vm.entities, self.native, field)?;
         self.vm
             .store_entity_word(address, word)
             .map_err(|_| CallError::Memory)
@@ -177,12 +167,12 @@ impl GoalHost for Host<'_, '_> {
     fn ideal_yaw(&mut self) -> Result<f32, CallError> {
         self.vm
             .projection
-            .quakec_monster_number(&self.vm.entities, self.native, Scalar::IdealYaw)
+            .quakec_scalar_number(&self.vm.entities, self.native, Scalar::IdealYaw)
     }
     fn yaw(&mut self) -> Result<f32, CallError> {
         self.vm
             .projection
-            .quakec_monster_number(&self.vm.entities, self.native, Scalar::Yaw)
+            .quakec_scalar_number(&self.vm.entities, self.native, Scalar::Yaw)
     }
     fn write_ideal_yaw(&mut self, value: f32) -> Result<(), CallError> {
         self.store(Scalar::IdealYaw, value.to_bits())
@@ -199,7 +189,7 @@ impl GoalHost for Host<'_, '_> {
     }
     fn absolute_min(&mut self, target: NativeEntityRef, axis: usize) -> Result<f32, CallError> {
         let native = self.vm.weak_entity_offset(self.context.module, target)?;
-        self.vm.projection.quakec_monster_number(
+        self.vm.projection.quakec_scalar_number(
             &self.vm.entities,
             native,
             Scalar::AbsoluteMin(axis),
@@ -207,7 +197,7 @@ impl GoalHost for Host<'_, '_> {
     }
     fn absolute_max(&mut self, target: NativeEntityRef, axis: usize) -> Result<f32, CallError> {
         let native = self.vm.weak_entity_offset(self.context.module, target)?;
-        self.vm.projection.quakec_monster_number(
+        self.vm.projection.quakec_scalar_number(
             &self.vm.entities,
             native,
             Scalar::AbsoluteMax(axis),
@@ -267,13 +257,9 @@ impl Vm {
     ) -> Result<GoalStep, CallError> {
         if let GoalStep::Link(cursor) = &step {
             let native = self.weak_entity_offset(context.module, cursor.actor())?;
-            self.projection.quakec_link(
-                services,
-                &mut self.entities,
-                &self.strings,
-                context,
-                native,
-            )?;
+            self.with_entity_stores(|projection, memory, strings, store| {
+                projection.quakec_link(services, memory, strings, context, native, store)
+            })?;
         }
         Ok(step)
     }
@@ -305,13 +291,9 @@ impl Vm {
         let StepMove::Moved(post) = outcome else {
             return Ok(WalkMove::Blocked(restore));
         };
-        self.projection.quakec_link(
-            services,
-            &mut self.entities,
-            &self.strings,
-            context,
-            native,
-        )?;
+        self.with_entity_stores(|projection, memory, strings, store| {
+            projection.quakec_link(services, memory, strings, context, native, store)
+        })?;
         let ordinal = self.entity_number(native).map_err(|_| CallError::Memory)?;
         Ok(WalkMove::Moved(WalkAfterTouch {
             mover: NativeEntityRef::entity(ResourceNamespace::Module(context.module), ordinal),

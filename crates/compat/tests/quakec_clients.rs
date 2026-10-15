@@ -14,7 +14,7 @@ use qa_session::{
     dispatch::{FunctionBinding, FunctionTable},
 };
 use qa_world::{
-    area::LinkOrder,
+    area::{LinkFlags, LinkOrder},
     collision::{CollisionStore, Contents},
     entities::AllocationPolicy,
 };
@@ -322,6 +322,190 @@ fn with_native_client(
         scratch: &mut scratch,
     };
     run(vm, &mut services, context, native, client);
+}
+
+#[test]
+fn retained_client_body_keeps_native_bytes_and_area_order_until_exact_reconnect() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|_| {});
+        with_native_client(&mut vm, source, |vm, services, context, native, client| {
+            let identity = NativeEntity {
+                module: context.module,
+                slot: vm.entity_number(native).unwrap() as i32,
+            };
+            let old = services.server.clients[client.0 as usize].entity;
+            let other_native = vm.stride as u32;
+            let other = vm
+                .ensure_client_body(services, context, other_native)
+                .unwrap();
+            number(vm, native, b"solid", 2.0);
+            vector(vm, native, b"origin", Vec3([10.0, 0.0, 0.0]));
+            vector(vm, native, b"mins", Vec3([-1.0; 3]));
+            vector(vm, native, b"maxs", Vec3([1.0; 3]));
+            (ENGINE_CALLS.link)(services, context, other, LinkFlags::SOLID).unwrap();
+            vm.relink_entity(services, context, native).unwrap();
+            let sibling = (ENGINE_CALLS.spawn)(services, context).unwrap();
+            (ENGINE_CALLS.link)(services, context, sibling, LinkFlags::SOLID).unwrap();
+            let query = Bounds {
+                mins: Vec3([-512.0; 3]),
+                maxs: Vec3([512.0; 3]),
+            };
+            let before = services
+                .server
+                .area
+                .query(&services.server.entities, query, LinkFlags::SOLID)
+                .map(|row| row.id)
+                .collect::<Vec<_>>();
+            let bounds = services.server.area.bounds(old).unwrap();
+            let relinks = services.server.area.relinks;
+            let bytes = vm
+                .entities
+                .read(u64::from(native), vm.stride)
+                .unwrap()
+                .to_vec();
+            // Releasing a borrowed connection body leaves its binding intact.
+            vm.release_client_body(services, context, native).unwrap();
+            assert_eq!(
+                vm.bound_entity(&services.server.entities, identity),
+                Ok(Some(old))
+            );
+            let retained = vm
+                .retain_client_body(services, context, native, old)
+                .unwrap();
+            assert_ne!(retained, old);
+            assert_eq!(
+                vm.bound_entity(&services.server.entities, identity),
+                Ok(Some(retained))
+            );
+            assert_eq!(services.server.area.bounds(old), None);
+            assert_eq!(services.server.area.bounds(retained), Some(bounds));
+            assert_eq!(services.server.area.relinks, relinks);
+            assert_eq!(
+                services
+                    .server
+                    .area
+                    .query(&services.server.entities, query, LinkFlags::SOLID)
+                    .map(|row| row.id)
+                    .collect::<Vec<_>>(),
+                before
+                    .into_iter()
+                    .map(|id| if id == old { retained } else { id })
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                vm.entities.read(u64::from(native), vm.stride).unwrap(),
+                bytes
+            );
+            assert!(services.server.disconnect(client));
+            assert!(services.server.entities.resolve(old).is_none());
+            assert!(services.server.entities.resolve(retained).is_some());
+            assert_eq!(services.server.area.bounds(retained), Some(bounds));
+            assert_eq!(
+                vm.entities.read(u64::from(native), vm.stride).unwrap(),
+                bytes
+            );
+
+            // A new connection can already carry this namespace before the
+            // old ordinary body is reclaimed. Only that exact body retires.
+            let reconnect = services
+                .server
+                .connect(Connection::Bot, context.module, Some(identity))
+                .unwrap();
+            vm.release_client_body(services, context, native).unwrap();
+            assert!(services.server.entities.resolve(retained).is_none());
+            assert!(services.server.entities.resolve(other).is_some());
+            assert!(services.server.entities.resolve(sibling).is_some());
+            assert_eq!(
+                vm.entities.read(u64::from(native), vm.stride).unwrap(),
+                bytes
+            );
+            assert!(services.server.bind_client_native(reconnect, identity));
+            let current = services.server.clients[reconnect.0 as usize].entity;
+            vm.bind_client(&services.server.entities, identity, current)
+                .unwrap();
+            assert_eq!(
+                vm.ensure_client_body(services, context, native),
+                Ok(current)
+            );
+            let duplicate = services
+                .server
+                .connect(Connection::Bot, context.module, None)
+                .unwrap();
+            vm.release_client_body(services, context, native).unwrap();
+            assert!(!services.server.bind_client_native(duplicate, identity));
+            assert_eq!(
+                vm.bound_entity(&services.server.entities, identity),
+                Ok(Some(current))
+            );
+            assert!(services.server.entities.resolve(current).is_some());
+        });
+    }
+}
+
+#[test]
+fn retaining_client_body_restores_borrowed_binding_on_projection_or_capacity_failure() {
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut vm = vm(|_| {});
+        with_native_client(&mut vm, source, |vm, services, context, native, client| {
+            let identity = NativeEntity {
+                module: context.module,
+                slot: vm.entity_number(native).unwrap() as i32,
+            };
+            let old = services.server.clients[client.0 as usize].entity;
+            number(vm, native, b"solid", 2.0);
+            vector(vm, native, b"mins", Vec3([-1.0; 3]));
+            vector(vm, native, b"maxs", Vec3([1.0; 3]));
+            vm.relink_entity(services, context, native).unwrap();
+            let bounds = services.server.area.bounds(old);
+            let relinks = services.server.area.relinks;
+            let before = services.server.entities.active().collect::<Vec<_>>();
+            write(vm, native, b"classname", &[u32::MAX]);
+            let bytes = vm
+                .entities
+                .read(u64::from(native), vm.stride)
+                .unwrap()
+                .to_vec();
+            assert_eq!(
+                vm.retain_client_body(services, context, native, old),
+                Err(CallError::Memory)
+            );
+            assert_eq!(
+                services.server.entities.active().collect::<Vec<_>>(),
+                before
+            );
+            assert_eq!(
+                vm.bound_entity(&services.server.entities, identity),
+                Ok(Some(old))
+            );
+            assert_eq!(services.server.area.bounds(old), bounds);
+            assert_eq!(services.server.area.relinks, relinks);
+            assert_eq!(
+                vm.entities.read(u64::from(native), vm.stride).unwrap(),
+                bytes
+            );
+            write(vm, native, b"classname", &[0]);
+            while services
+                .server
+                .entities
+                .allocate(context.clock, context.module, AllocationPolicy::EDICT)
+                .is_some()
+            {}
+            let full = services.server.entities.active().collect::<Vec<_>>();
+            let mut overwrite = context;
+            overwrite.allocation.full = qa_world::entities::FullTable::OverwriteLastOwned;
+            assert_eq!(
+                vm.retain_client_body(services, overwrite, native, old),
+                Err(CallError::Capacity)
+            );
+            assert_eq!(services.server.entities.active().collect::<Vec<_>>(), full);
+            assert_eq!(
+                vm.bound_entity(&services.server.entities, identity),
+                Ok(Some(old))
+            );
+            assert_eq!(services.server.area.bounds(old), bounds);
+            assert_eq!(services.server.area.relinks, relinks);
+        });
+    }
 }
 
 #[test]
@@ -1931,7 +2115,7 @@ fn native_nonclient_motion_decodes_loaded_phase_and_keeps_current_raw_mode() {
                 (6.0, Motion::Toss),
                 (9.0, Motion::FlyMissile),
                 (10.0, Motion::Bounce),
-                (7.0, Motion::Unsupported),
+                (7.0, Motion::Push),
             ] {
                 number(vm, native, b"movetype", raw);
                 vm.project_entities(services, context).unwrap();

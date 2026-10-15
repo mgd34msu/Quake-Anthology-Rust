@@ -70,6 +70,42 @@ impl Code {
         ]);
         self.vm_fields(&fields)
     }
+    fn push_vm(&self) -> Vm {
+        let mut fields = FIELDS.to_vec();
+        fields.extend_from_slice(&[
+            (2, 40, b"gravity"),
+            (2, 41, b"waterlevel"),
+            (2, 42, b"watertype"),
+            (4, 43, b"groundentity"),
+            (6, 44, b"touch"),
+            (2, 45, b"ltime"),
+            (6, 46, b"blocked"),
+        ]);
+        self.vm_fields(&fields)
+    }
+    fn push_links(&mut self) -> (u32, u32) {
+        let size = self.builtin(4);
+        let link = self.function(&[
+            (StoreEnt, 80, 4, 0),
+            (StoreV, 106, 7, 0),
+            (StoreV, 109, 10, 0),
+            (Call3, 83, 0, 0),
+            (StoreEnt, 81, 4, 0),
+            (StoreV, 100, 7, 0),
+            (StoreV, 103, 10, 0),
+            (Call3, 83, 0, 0),
+            (StoreEnt, 82, 4, 0),
+            (StoreV, 100, 7, 0),
+            (StoreV, 103, 10, 0),
+            (Call3, 83, 0, 0),
+            (StoreEnt, 86, 4, 0),
+            (StoreV, 100, 7, 0),
+            (StoreV, 103, 10, 0),
+            (Call3, 83, 0, 0),
+            (Return, 0, 0, 0),
+        ]);
+        (size, link)
+    }
     fn goal_vm(&self) -> Vm {
         let mut fields = FIELDS.to_vec();
         fields.extend_from_slice(&[
@@ -118,6 +154,10 @@ impl Code {
 }
 
 fn install_motion_world(runtime: &mut Runtime, floor: bool) -> GeometryId {
+    install_motion_models(runtime, floor, false)
+}
+
+fn install_motion_models(runtime: &mut Runtime, floor: bool, pusher: bool) -> GeometryId {
     use qa_app::WorldCollision;
     use qa_world::collision::{
         Contents,
@@ -125,7 +165,7 @@ fn install_motion_world(runtime: &mut Runtime, floor: bool) -> GeometryId {
         surfaces::SurfaceTable,
     };
 
-    let (planes, brushes, surfaces, brush_span, leaf_brushes) = if floor {
+    let (mut planes, mut brushes, mut surfaces, brush_span, mut leaf_brushes) = if floor {
         let planes = [
             (Vec3([1.0, 0.0, 0.0]), 512.0),
             (Vec3([-1.0, 0.0, 0.0]), 512.0),
@@ -149,6 +189,45 @@ fn install_motion_world(runtime: &mut Runtime, floor: bool) -> GeometryId {
     } else {
         (vec![], vec![], vec![], IndexSpan::default(), vec![])
     };
+    let mut leaves = vec![CollisionLeaf {
+        stored_contents: None,
+        brushes: brush_span,
+    }];
+    let mut models = vec![ModelRoot::Leaf(0)];
+    let mut bounds = vec![Bounds {
+        mins: Vec3([-512.0; 3]),
+        maxs: Vec3([512.0; 3]),
+    }];
+    if pusher {
+        let first = planes.len() as u32;
+        for normal in [
+            Vec3([1.0, 0.0, 0.0]),
+            Vec3([-1.0, 0.0, 0.0]),
+            Vec3([0.0, 1.0, 0.0]),
+            Vec3([0.0, -1.0, 0.0]),
+            Vec3([0.0, 0.0, 1.0]),
+            Vec3([0.0, 0.0, -1.0]),
+        ] {
+            planes.push(Plane::oriented(normal, 4.0));
+            surfaces.push(SurfaceFlags::default());
+        }
+        let brush = brushes.len() as u32;
+        brushes.push(Brush {
+            sides: IndexSpan { first, count: 6 },
+            contents: Contents::SOLID,
+        });
+        let first = leaf_brushes.len() as u32;
+        leaf_brushes.push(brush);
+        leaves.push(CollisionLeaf {
+            stored_contents: None,
+            brushes: IndexSpan { first, count: 1 },
+        });
+        models.push(ModelRoot::Leaf(1));
+        bounds.push(Bounds {
+            mins: Vec3([-4.0; 3]),
+            maxs: Vec3([4.0; 3]),
+        });
+    }
     let geometry = runtime
         .geometry
         .load_brushes(
@@ -158,17 +237,11 @@ fn install_motion_world(runtime: &mut Runtime, floor: bool) -> GeometryId {
             BrushTree {
                 planes: vec![],
                 nodes: vec![],
-                leaves: vec![CollisionLeaf {
-                    stored_contents: None,
-                    brushes: brush_span,
-                }],
+                leaves,
                 leaf_brushes,
-                models: vec![ModelRoot::Leaf(0)],
+                models,
             },
-            vec![Bounds {
-                mins: Vec3([-512.0; 3]),
-                maxs: Vec3([512.0; 3]),
-            }],
+            bounds,
         )
         .unwrap();
     runtime.collision = Some(WorldCollision::new(&runtime.geometry, geometry, 0));
@@ -1211,7 +1284,10 @@ fn state_reaches_provider_none_phase_with_native_clock_clear_and_world_context()
             host.runtime.server.entities.columns.appearance[slot].frame,
             9
         );
-        assert_eq!(host.runtime.server.entities.columns.next_think[slot], None);
+        assert_eq!(
+            host.runtime.server.entities.columns.next_think[slot],
+            Some(ThinkTime::Seconds(0.0))
+        );
         assert_eq!(
             host.runtime.server.entities.columns.think_function(slot),
             Some(CallbackId(0))
@@ -1260,7 +1336,7 @@ fn nq_runs_once_and_qw_repeats_reschedules_through_the_same_dispatcher() {
             let due = (f64::from(0.1f32) + 0.1) as f32;
             assert_eq!(deadline, Some(ThinkTime::Seconds(f64::from(due))));
         } else {
-            assert_eq!(deadline, None);
+            assert_eq!(deadline, Some(ThinkTime::Seconds(0.0)));
             let first_due = (f64::from(0.25f32) + 0.1) as f32;
             let second_due = (f64::from(first_due) + 0.1) as f32;
             assert_eq!(
@@ -1294,7 +1370,7 @@ fn native_edict_order_is_independent_of_common_slots_and_other_physics_is_not_sc
             (41, 0.0, 0.05, think),
             (40, 0.0, 0.05, think),
             (43, 3.0, 0.05, think), // WALK belongs to a later motion slice.
-            (44, 7.0, 0.05, think), // PUSH: ltime controls its due phase.
+            (44, 7.0, 0.05, think), // PUSH executes its own phase and rejects missing ltime.
         ],
     );
     let mut host = load(runtime, vec![request]);
@@ -1321,8 +1397,9 @@ fn native_edict_order_is_independent_of_common_slots_and_other_physics_is_not_sc
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
     assert_eq!(
         host.module_counts(ModuleId(1)).unwrap().unsupported_physics,
-        2
+        1
     );
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 1);
 }
 
 #[test]
@@ -1482,7 +1559,7 @@ fn full_width_invalid_native_function_rejects_only_its_due_entity() {
     );
     assert_eq!(
         host.runtime.server.entities.columns.next_think[ids[0].slot as usize],
-        None
+        Some(ThinkTime::Seconds(0.0))
     );
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 1);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
@@ -1785,7 +1862,7 @@ fn noclip_reads_think_pose_changes_and_uses_native_float_arithmetic() {
             (Address, 34, 53, 61),
             (StorePV, 89, 61, 0),
             // The selected NOCLIP phase continues even if think changes
-            // movetype. The next native pass selects unsupported PUSH.
+            // movetype. The next native pass selects PUSH.
             (Address, 34, 57, 61),
             (StorePF, 71, 61, 0),
             (Return, 70, 0, 0),
@@ -1864,8 +1941,10 @@ fn noclip_reads_think_pose_changes_and_uses_native_float_arithmetic() {
         );
         assert_eq!(
             host.module_counts(ModuleId(1)).unwrap().unsupported_physics,
-            1
+            0
         );
+        // The next captured PUSH phase executes and rejects missing ltime.
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 1);
     }
 }
 
@@ -6218,4 +6297,1130 @@ fn qc_movetogoal_blocked_step_touches_then_chases_the_captured_live_goal_with_sh
         let counts = host.module_counts(ModuleId(1)).unwrap();
         assert_eq!((counts.rejected, counts.traps), (0, 0));
     }
+}
+
+fn push_fixture(
+    code: &Code,
+    mut vm: Vm,
+    rules: RuleSetId,
+    frame: u32,
+    size: u32,
+    link: u32,
+    think: u32,
+    nextthink: f32,
+    blocked: u32,
+    rider: Vec3,
+    wall: Option<Vec3>,
+) -> (FrameHost, Vec<EntityId>) {
+    let stride = vm.stride as u32;
+    vm.image.globals[80] = 40 * stride;
+    vm.image.globals[81] = stride;
+    vm.image.globals[82] = 3 * stride;
+    vm.image.globals[83] = size;
+    vm.image.globals[86] = 4 * stride;
+    vm.image.globals[90] = vm.image.field(b"ltime").unwrap() as u32;
+    vm.image.globals[91] = vm.image.field(b"blocked").unwrap() as u32;
+    vm.image.globals[93] = 1.0f32.to_bits();
+    vm.image.globals[94] = 2.0f32.to_bits();
+    vm.image.globals[95] = 42.0f32.to_bits();
+    vm.image.globals[97] = vm.image.field(b"absmin").unwrap() as u32;
+    vm.image.globals[98] = vm.image.field(b"absmax").unwrap() as u32;
+    vm.image.globals[100..103].fill((-1.0f32).to_bits());
+    vm.image.globals[103..106].fill(1.0f32.to_bits());
+    vm.image.globals[106..109].fill((-4.0f32).to_bits());
+    vm.image.globals[109..112].fill(4.0f32.to_bits());
+    let model = vm.insert_string(b"*1").unwrap() as u32;
+    write(&mut vm, 40, b"model", model);
+    write(&mut vm, 40, b"solid", 4.0f32.to_bits());
+    write(&mut vm, 40, b"ltime", 1.0f32.to_bits());
+    write(&mut vm, 40, b"blocked", blocked);
+    write_vector(&mut vm, 1, b"origin", rider);
+    write(&mut vm, 1, b"solid", 2.0f32.to_bits());
+    write(&mut vm, 1, b"flags", 512.0f32.to_bits());
+    write(&mut vm, 1, b"groundentity", 40 * stride);
+    if let Some(wall) = wall {
+        write_vector(&mut vm, 3, b"origin", wall);
+        write(&mut vm, 3, b"solid", 2.0f32.to_bits());
+    }
+    let mut runtime = Runtime::load(1, []).unwrap();
+    install_motion_models(&mut runtime, false, true);
+    let (request, ids) = request(
+        &mut runtime,
+        ModuleId(1),
+        rules,
+        vm,
+        (0..code.functions.len() as u32).collect(),
+        frame,
+        // request() takes milliseconds, not Hz: admit one provider frame at
+        // tick100 rather than accumulating ten float local-time increments.
+        100,
+        &[
+            (1, 3.0, 0.0, 0),
+            (40, 7.0, nextthink, think),
+            (3, 0.0, 0.0, 0),
+            (4, 0.0, 0.0, 0),
+        ],
+    );
+    // Reserved native edict 1 participates in PUSH even when the ordinary
+    // QW provider scan excludes client edicts. Its Body is the existing row.
+    let mut host = load(runtime, vec![request]);
+    host.call_module_export(
+        ModuleId(1),
+        Export::clocked(CallbackId(link)),
+        ThinkTime::Seconds(0.0),
+    )
+    .unwrap();
+    tick(&mut host, 0);
+    (host, ids)
+}
+
+#[test]
+fn qc_push_carries_reserved_native_riders_and_uses_local_deadlines_once_with_world_time() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 0, 0, 0)]);
+        let think = code.function(&[
+            (LoadF, 34, 90, 60),
+            (StoreF, 35, 61, 0),
+            (AddF, 62, 48, 62),
+            // Already past after this callback: QW PUSH still calls only once.
+            (Address, 34, 54, 99),
+            (StorePF, 93, 99, 0),
+            (Return, 60, 0, 0),
+        ]);
+        let inspect = code.function(&[(Return, 60, 0, 0)]);
+        let (size, link) = code.push_links();
+        let mut vm = code.push_vm();
+        write_vector(&mut vm, 40, b"velocity", Vec3([16.0, 0.0, 0.0]));
+        let (mut host, ids) = push_fixture(
+            &code,
+            vm,
+            rules,
+            frame,
+            size,
+            link,
+            think,
+            1.0625,
+            0,
+            Vec3([0.0, 0.0, 6.0]),
+            None,
+        );
+        tick(&mut host, 100);
+        assert_eq!(
+            host.runtime.server.entities.columns.position[ids[1].slot as usize],
+            Vec3([1.0, 0.0, 0.0]),
+            "{rules:?} PUSH actor; {:?}",
+            host.module_counts(ModuleId(1))
+        );
+        assert_eq!(
+            host.runtime.server.entities.columns.position[ids[0].slot as usize],
+            Vec3([1.0, 0.0, 6.0])
+        );
+        tick(&mut host, 200);
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(inspect)),
+            ThinkTime::Seconds(9.0),
+        )
+        .unwrap();
+        let world_time = if rules == RuleSetId::Quake {
+            0.0f32
+        } else {
+            0.1f32
+        };
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([
+                1.0625f32.to_bits(),
+                world_time.to_bits(),
+                1.0f32.to_bits()
+            ]))
+        );
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
+    }
+}
+
+#[test]
+fn qc_push_blocked_callback_observes_restored_poses_and_reuses_undo_after_a_trap() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for trap in [false, true] {
+            let mut code = Code::new();
+            // Blocked preserves time left by the prior impact/direct move.
+            // NQ PushEntity's wall impact sets world time even without touch;
+            // QW's direct passenger move leaves this StartFrame value intact.
+            let frame = code.function(&[(StoreF, 95, 35, 0), (Return, 0, 0, 0)]);
+            let blocked = code.function(&[
+                (LoadV, 34, 53, 60),
+                (LoadV, 36, 53, 63),
+                (LoadF, 34, 90, 66),
+                (StoreF, 35, 67, 0),
+                (AddF, 68, 48, 68),
+                (Address, 34, 90, 99),
+                (StorePF, 94, 99, 0),
+                (Return, 66, 0, 0),
+            ]);
+            let failing = code.function(&[(Call0, 84, 0, 0), (Call0, 85, 0, 0), (Return, 0, 0, 0)]);
+            let repair = code.function(&[
+                (Address, 80, 91, 99),
+                (StorePFnc, 84, 99, 0),
+                (Return, 0, 0, 0),
+            ]);
+            let inspect = code.function(&[(LoadF, 80, 90, 69), (Return, 66, 0, 0)]);
+            let seen_poses = code.function(&[(Return, 60, 0, 0)]);
+            let seen_rider = code.function(&[(Return, 63, 0, 0)]);
+            let (size, link) = code.push_links();
+            let mut vm = code.push_vm();
+            vm.image.globals[84] = blocked;
+            vm.image.globals[85] = u32::MAX;
+            write_vector(&mut vm, 40, b"velocity", Vec3([16.0, 0.0, 0.0]));
+            let (mut host, ids) = push_fixture(
+                &code,
+                vm,
+                rules,
+                frame,
+                size,
+                link,
+                0,
+                100.0,
+                if trap { failing } else { blocked },
+                Vec3([5.5, 0.0, 0.0]),
+                Some(Vec3([7.5625, 0.0, 0.0])),
+            );
+            tick(&mut host, 100);
+            assert_eq!(
+                host.runtime.server.entities.columns.position[ids[1].slot as usize],
+                Vec3::default(),
+                "{rules:?} trap={trap} blocked actor; {:?}",
+                host.module_counts(ModuleId(1))
+            );
+            assert_eq!(
+                host.runtime.server.entities.columns.position[ids[0].slot as usize],
+                Vec3([5.5, 0.0, 0.0])
+            );
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().traps,
+                u64::from(trap)
+            );
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(seen_poses)),
+                ThinkTime::Seconds(9.0),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([0; 3]))
+            );
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(seen_rider)),
+                ThinkTime::Seconds(9.0),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([5.5f32.to_bits(), 0, 0]))
+            );
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(inspect)),
+                ThinkTime::Seconds(9.0),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([
+                    1.0f32.to_bits(),
+                    (if rules == RuleSetId::Quake {
+                        0.0f32
+                    } else {
+                        42.0f32
+                    })
+                    .to_bits(),
+                    1.0f32.to_bits()
+                ])),
+                "{rules:?} trap={trap} first blocked globals"
+            );
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(repair)),
+                ThinkTime::Seconds(9.0),
+            )
+            .unwrap();
+            tick(&mut host, 200);
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(inspect)),
+                ThinkTime::Seconds(9.0),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([
+                    (if rules == RuleSetId::Quake {
+                        (2.0f32 + 0.1f32) - 0.1f32
+                    } else {
+                        2.0f32
+                    })
+                    .to_bits(),
+                    (if rules == RuleSetId::Quake {
+                        0.1f32
+                    } else {
+                        42.0f32
+                    })
+                    .to_bits(),
+                    2.0f32.to_bits()
+                ])),
+                "{rules:?} trap={trap} second blocked globals"
+            );
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().traps,
+                u64::from(trap)
+            );
+        }
+    }
+}
+
+#[test]
+fn qc_qw_push_replays_only_a_significant_think_snap_through_the_same_passenger_move() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for displacement in [1.0f32, 1.0 / 128.0] {
+            let mut code = Code::new();
+            let frame = code.function(&[(Return, 0, 0, 0)]);
+            let think = code.function(&[
+                (Address, 34, 53, 99),
+                (StorePV, 112, 99, 0),
+                (Return, 0, 0, 0),
+            ]);
+            let (size, link) = code.push_links();
+            let mut vm = code.push_vm();
+            vm.image.globals[112..115].copy_from_slice(&[displacement.to_bits(), 0, 0]);
+            let (mut host, ids) = push_fixture(
+                &code,
+                vm,
+                rules,
+                frame,
+                size,
+                link,
+                think,
+                1.0625,
+                0,
+                Vec3([0.0, 0.0, 6.0]),
+                None,
+            );
+            // Zero velocity advances only local time; any passenger move is the
+            // QW post-think snap, not the first movement transaction.
+            tick(&mut host, 100);
+            assert_eq!(
+                host.runtime.server.entities.columns.position[ids[1].slot as usize],
+                Vec3([displacement, 0.0, 0.0])
+            );
+            let carried = if rules == RuleSetId::QuakeWorld && displacement > 1.0 / 64.0 {
+                displacement
+            } else {
+                0.0
+            };
+            assert_eq!(
+                host.runtime.server.entities.columns.position[ids[0].slot as usize],
+                Vec3([carried, 0.0, 6.0])
+            );
+            let counts = host.module_counts(ModuleId(1)).unwrap();
+            assert_eq!((counts.rejected, counts.traps), (0, 0));
+        }
+    }
+}
+
+#[test]
+fn qc_invalid_dirty_row_does_not_suppress_a_later_due_think() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 0, 0, 0)]);
+        let malformed = code.function(&[
+            (Address, 34, 56, 99),
+            (StorePF, 50, 99, 0),
+            (Address, 34, 86, 99),
+            (StorePS, 87, 99, 0),
+            (Call0, 87, 0, 0),
+            (Return, 0, 0, 0),
+        ]);
+        let later = code.function(&[
+            (StoreEnt, 34, 4, 0),
+            (StoreV, 90, 7, 0),
+            (Call2, 84, 0, 0),
+            (Return, 0, 0, 0),
+        ]);
+        let set_origin = code.builtin(2);
+        let mut fields = FIELDS.to_vec();
+        fields.push((1, 40, b"classname"));
+        let mut vm = code.vm_fields(&fields);
+        vm.image.globals[84] = set_origin;
+        vm.image.globals[86] = 40; // classname is read even for nonsolid rows.
+        vm.image.globals[87] = u32::MAX;
+        vm.image.globals[90..93].copy_from_slice(&[9.0f32.to_bits(), 0, 0]);
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let (request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            (0..code.functions.len() as u32).collect(),
+            frame,
+            100,
+            &[(40, 0.0, 0.05, malformed), (41, 0.0, 0.05, later)],
+        );
+        let mut host = load(runtime, vec![request]);
+        tick(&mut host, 0);
+        tick(&mut host, 100);
+        let columns = &host.runtime.server.entities.columns;
+        // A stores an invalid classname and traps. B still reaches setorigin
+        // service before ordinary return publication retries A's pending row.
+        assert_eq!(
+            columns.position[ids[1].slot as usize],
+            Vec3([9.0, 0.0, 0.0])
+        );
+        assert_eq!(columns.appearance[ids[0].slot as usize].frame, 0);
+        for id in ids {
+            assert_eq!(
+                columns.next_think[id.slot as usize],
+                Some(ThinkTime::Seconds(0.0))
+            );
+        }
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        assert_eq!(counts.calls, 3);
+        // B's successful service does not discard A's failed dirty import.
+        // Its return still rejects that pending row, producing the second trap.
+        assert_eq!((counts.rejected, counts.traps), (2, 2));
+    }
+}
+
+#[test]
+fn qc_due_think_selects_the_function_after_clearing_an_aliased_native_deadline() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 0, 0, 0)]);
+        let stale = code.function(&[(AddF, 70, 48, 70), (Return, 70, 0, 0)]);
+        let inspect = code.function(&[(LoadF, 80, 54, 71), (Return, 70, 0, 0)]);
+        let fields = FIELDS
+            .iter()
+            .map(|&(kind, offset, name)| (kind, if name == b"think" { 34 } else { offset }, name))
+            .collect::<Vec<_>>();
+        let mut vm = code.vm_fields(&fields);
+        vm.image.globals[80] = 40 * vm.stride as u32;
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let (request, _) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            (0..code.functions.len() as u32).collect(),
+            frame,
+            10,
+            &[(40, 0.0, f32::from_bits(stale), stale)],
+        );
+        let mut host = load(runtime, vec![request]);
+        tick(&mut host, 0);
+        tick(&mut host, 100);
+        // Clearing nextthink also clears the native function cell. Executing
+        // the pre-clear cached stale callback would increment this observable.
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 1);
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 1);
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(inspect)),
+            ThinkTime::Seconds(2.0),
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([0; 3]))
+        );
+        tick(&mut host, 200);
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 1);
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 1);
+    }
+}
+
+#[test]
+fn qc_push_callbacks_see_committed_native_attachments_and_blocked_rollback_pose() {
+    use qa_core::primitives::{BodyAttachment, BodyFollow};
+
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for blocked in [false, true] {
+            let mut code = Code::new();
+            let frame = code.function(&[(Return, 0, 0, 0)]);
+            let callback = code.function(&[
+                (LoadV, 86, 53, 60),
+                (LoadV, 86, 97, 63),
+                (LoadV, 86, 98, 66),
+                (Return, 60, 0, 0),
+            ]);
+            let inspect_seen = code.function(&[(Return, 60, 0, 0)]);
+            let inspect_min = code.function(&[(Return, 63, 0, 0)]);
+            let inspect_max = code.function(&[(Return, 66, 0, 0)]);
+            let (size, link) = code.push_links();
+            let mut vm = code.push_vm();
+            write_vector(&mut vm, 40, b"velocity", Vec3([16.0, 0.0, 0.0]));
+            let (mut host, ids) = push_fixture(
+                &code,
+                vm,
+                rules,
+                frame,
+                size,
+                link,
+                if blocked { 0 } else { callback },
+                if blocked { 100.0 } else { 1.0625 },
+                if blocked { callback } else { 0 },
+                if blocked {
+                    Vec3([5.5, 0.0, 0.0])
+                } else {
+                    Vec3([0.0, 0.0, 6.0])
+                },
+                blocked.then_some(Vec3([7.5625, 0.0, 0.0])),
+            );
+            let pusher = ids[1];
+            let child = ids[3];
+            assert_eq!(
+                host.runtime.server.area.bounds(child),
+                Some(Bounds {
+                    mins: Vec3([-2.0; 3]),
+                    maxs: Vec3([2.0; 3])
+                })
+            );
+            host.runtime
+                .server
+                .entities
+                .attach(
+                    child,
+                    BodyAttachment {
+                        anchor: pusher,
+                        follow: BodyFollow::Translation,
+                        offset: Vec3([0.0, 0.0, 6.0]),
+                    },
+                )
+                .unwrap();
+            if !blocked {
+                // This native rider is also attached. Its own native PUSH
+                // attempt must not make the callback observe two translations.
+                host.runtime
+                    .server
+                    .entities
+                    .attach(
+                        ids[0],
+                        BodyAttachment {
+                            anchor: pusher,
+                            follow: BodyFollow::Translation,
+                            offset: Vec3([0.0, 0.0, 6.0]),
+                        },
+                    )
+                    .unwrap();
+            }
+            // No manual transport: the actual provider must commit both the
+            // accepted +1 pose and the restored pose before its callback.
+            tick(&mut host, 100);
+            let expected = Vec3([if blocked { 0.0 } else { 1.0 }, 0.0, 6.0]);
+            assert_eq!(
+                host.runtime.server.entities.columns.position[child.slot as usize],
+                expected,
+                "{rules:?} blocked={blocked} attached child; {:?}",
+                host.module_counts(ModuleId(1))
+            );
+            if !blocked {
+                assert_eq!(
+                    host.runtime.server.entities.columns.position[ids[0].slot as usize],
+                    expected
+                );
+            }
+            let bounds = host.runtime.server.area.bounds(child).unwrap();
+            assert_eq!(
+                bounds,
+                Bounds {
+                    mins: expected + Vec3([-2.0; 3]),
+                    maxs: expected + Vec3([2.0; 3])
+                },
+                "{rules:?} blocked={blocked} linked expansion"
+            );
+            for (inspect, value) in [
+                (inspect_seen, expected),
+                (inspect_min, bounds.mins),
+                (inspect_max, bounds.maxs),
+            ] {
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(inspect)),
+                    ThinkTime::Seconds(9.0),
+                )
+                .unwrap();
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC(value.0.map(f32::to_bits))),
+                    "{rules:?} blocked={blocked} captured native attachment fields"
+                );
+            }
+            let counts = host.module_counts(ModuleId(1)).unwrap();
+            assert_eq!((counts.rejected, counts.traps), (0, 0));
+        }
+    }
+}
+
+#[test]
+fn qc_failed_think_binding_preparation_publishes_its_aliased_native_clear() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 0, 0, 0)]);
+        let fields = FIELDS
+            .iter()
+            .copied()
+            .filter(|(_, _, name)| *name != b"think")
+            .map(|(kind, offset, name)| (kind, if name == b"nextthink" { 0 } else { offset }, name))
+            .collect::<Vec<_>>();
+        let mut vm = code.vm_fields(&fields);
+        write_vector(&mut vm, 40, b"origin", Vec3([0.05, 2.0, 3.0]));
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let (request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            vec![frame],
+            frame,
+            10,
+            &[(40, 0.0, 0.05, 0)],
+        );
+        let mut host = load(runtime, vec![request]);
+        tick(&mut host, 0);
+        tick(&mut host, 100);
+        // The absent typed think cell rejects preparation after nextthink's
+        // native clear. Its aliased origin still publishes in this same pass.
+        let columns = &host.runtime.server.entities.columns;
+        assert_eq!(
+            columns.position[ids[0].slot as usize],
+            Vec3([0.0, 2.0, 3.0])
+        );
+        assert_eq!(
+            columns.next_think[ids[0].slot as usize],
+            Some(ThinkTime::Seconds(0.0))
+        );
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        assert_eq!((counts.rejected, counts.traps), (1, 0));
+    }
+}
+
+#[test]
+fn qc_rejected_think_preparation_still_publishes_its_aliased_native_clear() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 0, 0, 0)]);
+        let fields = FIELDS
+            .iter()
+            .map(|&(kind, offset, name)| {
+                (kind, if name == b"nextthink" { 0 } else { offset }, name)
+            })
+            .collect::<Vec<_>>();
+        let mut vm = code.vm_fields(&fields);
+        write_vector(&mut vm, 40, b"origin", Vec3([0.05, 2.0, 3.0]));
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let (request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            vec![frame],
+            frame,
+            10,
+            &[(40, 0.0, 0.05, u32::MAX)],
+        );
+        let mut host = load(runtime, vec![request]);
+        tick(&mut host, 0);
+        tick(&mut host, 100);
+        // The bad selector reaches the existing missing-function adapter. Its
+        // admitted clear updates common state before any later explicit call.
+        assert_eq!(
+            host.runtime.server.entities.columns.position[ids[0].slot as usize],
+            Vec3([0.0, 2.0, 3.0])
+        );
+        assert_eq!(
+            host.runtime.server.entities.columns.next_think[ids[0].slot as usize],
+            Some(ThinkTime::Seconds(0.0))
+        );
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        assert_eq!((counts.rejected, counts.traps), (1, 1));
+    }
+}
+
+fn client_push_vm(code: &Code, idle: u32, begin: u32) -> Vm {
+    let mut fields = FIELDS.to_vec();
+    fields.extend_from_slice(&[
+        (2, 40, b"gravity"),
+        (2, 41, b"waterlevel"),
+        (2, 42, b"watertype"),
+        (4, 43, b"groundentity"),
+        (6, 44, b"touch"),
+        (2, 45, b"ltime"),
+        (6, 46, b"blocked"),
+        (2, 47, b"team"),
+        (1, 48, b"netname"),
+    ]);
+    let mut globals = GLOBALS.to_vec();
+    for (index, name) in [
+        b"SetNewParms".as_slice(),
+        b"ClientConnect",
+        b"PutClientInServer",
+        b"PlayerPreThink",
+        b"PlayerPostThink",
+        b"ClientDisconnect",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        globals.push((6, 140 + index as u16, name));
+    }
+    let parms = (1..=16)
+        .map(|index| format!("parm{index}"))
+        .collect::<Vec<_>>();
+    for (index, name) in parms.iter().enumerate() {
+        globals.push((2, 160 + index as u16, name.as_bytes()));
+    }
+    let bytes = quakec_program::program_with_definitions(
+        &code.operations,
+        &code.functions,
+        &globals,
+        &fields,
+        49,
+        192,
+    );
+    let mut vm = Vm::load(
+        Image::parse(&bytes, Some(5927)).unwrap(),
+        Layout {
+            entities: 64,
+            header_bytes: 16,
+            extra_string_bytes: 1024,
+            state_step: 0.1,
+            random_seed: 1,
+        },
+    )
+    .unwrap();
+    vm.image.globals[140..146].fill(idle);
+    vm.image.globals[142] = begin;
+    vm.image.globals[48] = 1.0f32.to_bits();
+    vm.image.globals[53] = 0;
+    vm.image.globals[57] = 36;
+    vm
+}
+
+#[test]
+fn qc_push_moves_disconnected_and_never_connected_native_client_bodies() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for connected in [false, true] {
+            for blocked in [false, true] {
+                let mut code = Code::new();
+                let idle = code.function(&[(Return, 0, 0, 0)]);
+                let touch = code.function(&[(AddF, 71, 48, 71), (Return, 0, 0, 0)]);
+                let blocked_call = code.function(&[
+                    (LoadV, 34, 53, 60),
+                    (LoadV, 36, 53, 63),
+                    (AddF, 70, 48, 70),
+                    (Return, 0, 0, 0),
+                ]);
+                let begin = code.function(&[
+                    (Address, 34, 53, 99),
+                    (StorePV, 112, 99, 0),
+                    (Address, 34, 120, 99),
+                    (StorePF, 116, 99, 0),
+                    (Address, 34, 121, 99),
+                    (StorePF, 117, 99, 0),
+                    (Address, 34, 57, 99),
+                    (StorePF, 118, 99, 0),
+                    (Address, 34, 119, 99),
+                    (StorePEnt, 80, 99, 0),
+                    (Address, 34, 123, 99),
+                    (StorePFnc, 124, 99, 0),
+                    (Return, 0, 0, 0),
+                ]);
+                let size = code.builtin(4);
+                let link = code.function(&[
+                    (StoreEnt, 80, 4, 0),
+                    (StoreV, 106, 7, 0),
+                    (StoreV, 109, 10, 0),
+                    (Call3, 83, 0, 0),
+                    (StoreEnt, 82, 4, 0),
+                    (StoreV, 100, 7, 0),
+                    (StoreV, 103, 10, 0),
+                    (Call3, 83, 0, 0),
+                    (Return, 0, 0, 0),
+                ]);
+                let link_rider = code.function(&[
+                    (StoreEnt, 81, 4, 0),
+                    (StoreV, 100, 7, 0),
+                    (StoreV, 103, 10, 0),
+                    (Call3, 83, 0, 0),
+                    (Return, 0, 0, 0),
+                ]);
+                let inspect = code.function(&[(Return, 70, 0, 0)]);
+                let inspect_rider = code.function(&[(LoadV, 81, 53, 75), (Return, 75, 0, 0)]);
+                let mut vm = client_push_vm(&code, idle, begin);
+                let stride = vm.stride as u32;
+                let rider = if blocked {
+                    Vec3([5.5, 0.0, 0.0])
+                } else {
+                    Vec3([0.0, 0.0, 6.0])
+                };
+                for (at, word) in [
+                    (80, 40 * stride),
+                    (81, stride),
+                    (82, 3 * stride),
+                    (83, size),
+                    (116, 512.0f32.to_bits()),
+                    (117, 2.0f32.to_bits()),
+                    (118, 3.0f32.to_bits()),
+                    (119, 43),
+                    (120, 25),
+                    (121, 24),
+                    (123, 44),
+                    (124, touch),
+                ] {
+                    vm.image.globals[at] = word;
+                }
+                vm.image.globals[100..103].fill((-1.0f32).to_bits());
+                vm.image.globals[103..106].fill(1.0f32.to_bits());
+                vm.image.globals[106..109].fill((-4.0f32).to_bits());
+                vm.image.globals[109..112].fill(4.0f32.to_bits());
+                vm.image.globals[112..115].copy_from_slice(&rider.0.map(f32::to_bits));
+                let model = vm.insert_string(b"*1").unwrap() as u32;
+                write(&mut vm, 40, b"model", model);
+                write(&mut vm, 40, b"solid", 4.0f32.to_bits());
+                write(&mut vm, 40, b"ltime", 1.0f32.to_bits());
+                write(&mut vm, 40, b"blocked", blocked_call);
+                write_vector(&mut vm, 40, b"velocity", Vec3([10.0, 0.0, 0.0]));
+                if !connected {
+                    write_vector(&mut vm, 1, b"origin", rider);
+                    write_vector(&mut vm, 1, b"mins", Vec3([-1.0; 3]));
+                    write_vector(&mut vm, 1, b"maxs", Vec3([1.0; 3]));
+                    write(&mut vm, 1, b"solid", 2.0f32.to_bits());
+                    write(&mut vm, 1, b"flags", 512.0f32.to_bits());
+                    write(&mut vm, 1, b"movetype", 3.0f32.to_bits());
+                    write(&mut vm, 1, b"groundentity", 40 * stride);
+                    write(&mut vm, 1, b"touch", touch);
+                }
+                if blocked {
+                    write_vector(&mut vm, 3, b"origin", Vec3([7.5625, 0.0, 0.0]));
+                    write(&mut vm, 3, b"solid", 2.0f32.to_bits());
+                }
+                let mut runtime = Runtime::load(1, []).unwrap();
+                install_motion_models(&mut runtime, false, true);
+                let (request, rows) = request(
+                    &mut runtime,
+                    ModuleId(1),
+                    rules,
+                    vm,
+                    (0..code.functions.len() as u32).collect(),
+                    idle,
+                    100,
+                    &[(40, 7.0, 100.0, 0), (3, 0.0, 0.0, 0)],
+                );
+                let mut host = Box::new(load(runtime, vec![request]));
+                let native = NativeEntity {
+                    module: ModuleId(1),
+                    slot: 1,
+                };
+                let old = if connected {
+                    let client = host
+                        .runtime
+                        .server
+                        .connect(
+                            qa_session::clients::Connection::Bot,
+                            ModuleId(1),
+                            Some(native),
+                        )
+                        .unwrap();
+                    host.connect_module_client(ModuleId(1), client, b"\\name\\rider")
+                        .unwrap();
+                    let entity = host.runtime.server.clients[client.0 as usize].entity;
+                    host.call_module_export(
+                        ModuleId(1),
+                        Export::clocked(CallbackId(link_rider)),
+                        ThinkTime::Seconds(0.0),
+                    )
+                    .unwrap();
+                    let bounds = host.runtime.server.area.bounds(entity);
+                    let links = host.runtime.server.area.relinks;
+                    assert!(
+                        host.client_string_command(client, rules, b"disconnect")
+                            .unwrap()
+                            .is_break()
+                    );
+                    assert!(host.runtime.server.entities.resolve(entity).is_none());
+                    assert!(
+                        host.runtime.server.clients[client.0 as usize]
+                            .connection
+                            .is_none()
+                    );
+                    let orphan = native_entity(&host, ModuleId(1), 1);
+                    assert_ne!(orphan, entity);
+                    assert_eq!(host.runtime.server.area.bounds(orphan), bounds);
+                    assert_eq!(host.runtime.server.area.relinks, links);
+                    Some(entity)
+                } else {
+                    assert!(
+                        host.runtime
+                            .server
+                            .entities
+                            .find_native(native, None)
+                            .is_none()
+                    );
+                    None
+                };
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(link)),
+                    ThinkTime::Seconds(0.0),
+                )
+                .unwrap();
+                tick(&mut host, 0);
+                tick(&mut host, 100);
+                let body = native_entity(&host, ModuleId(1), 1);
+                if let Some(old) = old {
+                    assert!(host.runtime.server.entities.resolve(old).is_none());
+                    assert_ne!(body, old);
+                }
+                let expected = rider + Vec3([if blocked { 0.0 } else { 1.0 }, 0.0, 0.0]);
+                assert_eq!(
+                    host.runtime.server.entities.columns.position[body.slot as usize], expected,
+                    "{rules:?} connected={connected} blocked={blocked}"
+                );
+                assert_eq!(
+                    host.runtime.server.entities.columns.position[rows[0].slot as usize],
+                    Vec3([if blocked { 0.0 } else { 1.0 }, 0.0, 0.0])
+                );
+                assert!(host.runtime.server.area.bounds(body).is_some());
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(inspect_rider)),
+                    ThinkTime::Seconds(9.0),
+                )
+                .unwrap();
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC(expected.0.map(f32::to_bits)))
+                );
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(inspect)),
+                    ThinkTime::Seconds(9.0),
+                )
+                .unwrap();
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC([
+                        (u8::from(blocked) as f32).to_bits(),
+                        if blocked && rules == RuleSetId::Quake {
+                            1.0f32.to_bits()
+                        } else {
+                            0
+                        },
+                        0
+                    ]))
+                );
+                let counts = host.module_counts(ModuleId(1)).unwrap();
+                assert_eq!((counts.rejected, counts.traps), (0, 0));
+                assert_eq!(counts.unsupported_physics, 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn qc_native_client_reconnect_reclaims_only_its_exact_orphan_body() {
+    for other_module in [false, true] {
+        let first_native = NativeEntity {
+            module: ModuleId(1),
+            slot: 1,
+        };
+        let second_native = NativeEntity {
+            module: ModuleId(2),
+            slot: 1,
+        };
+        let (mut host, first, unused) = qc_bot_namespace_host(second_native);
+        let old = host.runtime.server.clients[first.0 as usize].entity;
+        assert!(
+            host.client_string_command(first, RuleSetId::Quake, b"disconnect")
+                .unwrap()
+                .is_break()
+        );
+        let orphan = native_entity(&host, ModuleId(1), 1);
+        assert!(host.runtime.server.entities.resolve(old).is_none());
+        assert_ne!(orphan, old);
+        if other_module {
+            assert!(
+                host.client_string_command(unused, RuleSetId::Quake, b"disconnect")
+                    .unwrap()
+                    .is_break()
+            );
+        }
+        let native = if other_module {
+            second_native
+        } else {
+            first_native
+        };
+        let reconnected = host
+            .runtime
+            .server
+            .connect(
+                qa_session::clients::Connection::Bot,
+                native.module,
+                Some(native),
+            )
+            .unwrap();
+        assert_eq!(reconnected, first);
+        let replacement = host.runtime.server.clients[first.0 as usize].entity;
+        host.connect_module_client(native.module, first, b"\\name\\replacement")
+            .unwrap();
+        assert_eq!(host.runtime.server.module_moves(first), Some(native));
+        assert_eq!(native_entity(&host, native.module, 1), replacement);
+        if other_module {
+            assert_eq!(native_entity(&host, ModuleId(1), 1), orphan);
+            assert!(host.runtime.server.entities.resolve(orphan).is_some());
+        } else {
+            assert!(host.runtime.server.entities.resolve(orphan).is_none());
+        }
+        assert!(host.runtime.server.entities.resolve(old).is_none());
+        assert_eq!(host.module_counts(native.module).unwrap().rejected, 0);
+    }
+}
+
+#[test]
+fn qw_remote_output_overflow_retires_the_connection_and_retains_its_native_body() {
+    use qa_core::{
+        events::{EventRing, OutputTarget},
+        loopback::Endpoint,
+    };
+    use qa_network::{
+        channel::Channel,
+        commands::{connection::Commands, packet::Protocol},
+        ingress::{Connection, Route},
+    };
+    use qa_world::area::{LinkFlags, LinkIntent};
+
+    let mut runtime = Runtime::load(1, []).unwrap();
+    runtime.server.events = EventRing::load(8, 8, 64, 256).unwrap();
+    runtime.server.presentation = runtime
+        .server
+        .events
+        .bind(OutputTarget::Presentation)
+        .unwrap();
+    let (request, _) = request(
+        &mut runtime,
+        ModuleId(1),
+        RuleSetId::QuakeWorld,
+        qc_client_vm(),
+        (0..8).collect(),
+        7,
+        100,
+        &[],
+    );
+    let client = runtime
+        .server
+        .connect(qa_session::clients::Connection::Remote, ModuleId(1), None)
+        .unwrap();
+    let protocol = Protocol::QuakeWorld28;
+    let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
+    channel.set_qport(2000);
+    runtime
+        .bind_server_connection(
+            client,
+            Connection {
+                route: Route {
+                    socket: 0,
+                    peer: Peer::Socket("127.0.0.1:2000".parse().unwrap()),
+                },
+                channel,
+                output: None,
+                pending_output: None,
+                commands: Some(Commands::load(protocol, 8192)),
+            },
+            0,
+            None,
+        )
+        .unwrap();
+    let mut host = Box::new(load(runtime, vec![request]));
+    host.connect_module_client(ModuleId(1), client, b"\\name\\stalled")
+        .unwrap();
+    let old = host.runtime.server.clients[client.0 as usize].entity;
+    let native = NativeEntity {
+        module: ModuleId(1),
+        slot: 1,
+    };
+    let server = &mut host.runtime.server;
+    server.area.link(
+        &server.entities,
+        old,
+        LinkFlags::SOLID,
+        LinkOrder::Tail,
+        LinkIntent::Explicit,
+    );
+    let bounds = server.area.bounds(old).unwrap();
+    let body = server.entities.columns.body(old.slot as usize);
+    let output = server.clients[client.0 as usize].output.unwrap();
+    for value in 0..=server.events.capacity() {
+        server
+            .events
+            .push_to(
+                OutputTarget::Client(client),
+                FrameEvent::Hud(HudEvent {
+                    client,
+                    change: HudChange::Collectibles(value as u64),
+                }),
+            )
+            .unwrap();
+        if server.events.needs_resync(output) {
+            break;
+        }
+    }
+    assert!(server.events.needs_resync(output));
+    let counters = server.events.counters(output).unwrap();
+    let overflow = counters.overflow;
+    let retired = counters.retired_on_resync;
+    let result = host.frame(
+        &mut Source {
+            time: EventTime::from_milliseconds(0),
+            polls: 0,
+        },
+        true,
+    );
+    assert_eq!(result.output_drains, 1);
+    assert_eq!(result.output.native_disconnected, 1);
+    assert_eq!(result.output.native_overflow, overflow);
+    assert_eq!(result.output.native_resync_retired, retired);
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .connection
+            .is_none()
+    );
+    assert!(host.runtime.network.get(client, Endpoint::Server).is_none());
+    assert!(host.runtime.server.events.counters(output).is_none());
+    assert!(host.runtime.server.entities.resolve(old).is_none());
+    let retained = host
+        .runtime
+        .server
+        .entities
+        .find_native(native, None)
+        .unwrap();
+    assert_ne!(retained, old);
+    let retained_body = host
+        .runtime
+        .server
+        .entities
+        .columns
+        .body(retained.slot as usize);
+    assert_eq!(
+        (
+            retained_body.position,
+            retained_body.velocity,
+            retained_body.mins,
+            retained_body.maxs
+        ),
+        (body.position, body.velocity, body.mins, body.maxs)
+    );
+    assert_eq!(host.runtime.server.area.bounds(retained), Some(bounds));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
 }

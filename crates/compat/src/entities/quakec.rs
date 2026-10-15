@@ -86,6 +86,8 @@ struct MotionFields {
     yaw_speed: Option<usize>,
     enemy: Option<usize>,
     goal: Option<usize>,
+    local_time: Option<usize>,
+    blocked: Option<usize>,
 }
 impl MotionFields {
     fn load(field: impl Fn(&[u8], u16) -> Option<usize>) -> Self {
@@ -99,6 +101,8 @@ impl MotionFields {
             yaw_speed: field(b"yaw_speed", 2),
             enemy: field(b"enemy", 4),
             goal: field(b"goalentity", 4),
+            local_time: field(b"ltime", 2),
+            blocked: field(b"blocked", 6),
         }
     }
 }
@@ -145,6 +149,12 @@ impl ThinkBindings {
         missing.callback = Some(qa_core::primitives::CallbackId(word));
         missing
     }
+    fn binding(&self, word: u32) -> qa_core::primitives::ThinkBinding {
+        self.functions
+            .get(word as usize)
+            .copied()
+            .unwrap_or_else(|| Self::missing(self.module, word))
+    }
 }
 
 fn client_edicts(
@@ -168,6 +178,8 @@ fn motion(value: f32) -> Motion {
         Motion::Fly
     } else if value == 6.0 {
         Motion::Toss
+    } else if value == 7.0 {
+        Motion::Push
     } else if value == 8.0 {
         Motion::Noclip
     } else if value == 9.0 {
@@ -379,11 +391,30 @@ impl QuakeCLayout {
         field: Option<usize>,
         value: f32,
     ) -> Result<(), CallError> {
-        memory.write_word(
+        self.store_number(
+            memory,
+            address,
+            field,
+            value,
+            &mut |memory, address, word| {
+                memory.write_word(address, word as i32)?;
+                Ok(())
+            },
+        )
+    }
+    fn store_number(
+        self,
+        memory: &mut ModuleMemory<'_>,
+        address: u64,
+        field: Option<usize>,
+        value: f32,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<(), CallError> {
+        store(
+            memory,
             address + field.ok_or(CallError::Memory)? as u64,
-            value.to_bits() as i32,
-        )?;
-        Ok(())
+            value.to_bits(),
+        )
     }
     fn write_vector(
         self,
@@ -392,7 +423,30 @@ impl QuakeCLayout {
         field: Option<usize>,
         value: Vec3,
     ) -> Result<(), CallError> {
-        memory.write_vec3(address + field.ok_or(CallError::Memory)? as u64, value)?;
+        self.store_vector(
+            memory,
+            address,
+            field,
+            value,
+            &mut |memory, address, word| {
+                memory.write_word(address, word as i32)?;
+                Ok(())
+            },
+        )
+    }
+    fn store_vector(
+        self,
+        memory: &mut ModuleMemory<'_>,
+        address: u64,
+        field: Option<usize>,
+        value: Vec3,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<(), CallError> {
+        let address = address + field.ok_or(CallError::Memory)? as u64;
+        memory.read(address, 12)?;
+        for (axis, word) in value.0.map(f32::to_bits).into_iter().enumerate() {
+            store(memory, address + axis as u64 * 4, word)?;
+        }
         Ok(())
     }
     fn read_client_pose(
@@ -557,6 +611,106 @@ impl EntityProjection {
             return Err(CallError::Entity);
         }
         self.bind_client(entities, native, entity)
+    }
+    pub(crate) fn quakec_ensure_client_body(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<EntityId, CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        self.quakec_client_address(memory, value)?;
+        if let Some(entity) = self.binding(&services.server.entities, native)? {
+            return Ok(entity);
+        }
+        self.quakec_allocate_client_body(services, memory, strings, context, native, None)
+    }
+    pub(crate) fn quakec_retain_client_body(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        old: EntityId,
+    ) -> Result<EntityId, CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        self.quakec_client_address(memory, value)?;
+        let previous = self.bindings[native.slot as usize].ok_or(CallError::Entity)?;
+        if previous.owned
+            || previous.entity != old
+            || self.quakec_bound_entity(&services.server.entities, native)? != Some(old)
+        {
+            return Err(CallError::Entity);
+        }
+        self.quakec_allocate_client_body(services, memory, strings, context, native, Some(old))
+    }
+    fn quakec_allocate_client_body(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        native: NativeEntity,
+        old: Option<EntityId>,
+    ) -> Result<EntityId, CallError> {
+        let slot = native.slot as usize;
+        let previous = self.bindings[slot];
+        let mut claim = context;
+        claim.allocation.full = FullTable::Reject;
+        let entity = self.bind(services, claim, slot, None)?;
+        let published = self
+            .quakec_project_row(services, memory, strings, context, slot)
+            .and_then(|()| {
+                if let Some(old) = old
+                    && services.server.area.bounds(old).is_some()
+                    && !services
+                        .server
+                        .area
+                        .transfer_link(&services.server.entities, old, entity)
+                {
+                    return Err(CallError::Entity);
+                }
+                Ok(())
+            });
+        if let Err(error) = published {
+            let cleanup = self.retire(services, context, slot);
+            self.bindings[slot] = previous;
+            cleanup?;
+            return Err(error);
+        }
+        Ok(entity)
+    }
+    pub(crate) fn quakec_release_client_body(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        self.quakec_client_address(memory, value)?;
+        let slot = native.slot as usize;
+        let Some(binding) = self.bindings[slot].filter(|binding| binding.owned) else {
+            return Ok(());
+        };
+        if services.server.entities.resolve(binding.entity).is_some()
+            && self.quakec_bound_entity(&services.server.entities, native)? != Some(binding.entity)
+        {
+            return Err(CallError::Entity);
+        }
+        if services.server.clients.iter().any(|client| {
+            client.connection.is_some()
+                && client.entity == binding.entity
+                && services.server.entities.resolve(client.entity).is_some()
+                && services.server.entities.columns.native_entity[client.entity.slot as usize]
+                    == Some(native)
+        }) {
+            return Err(CallError::Entity);
+        }
+        self.retire(services, context, slot)
     }
     pub(crate) fn quakec_bind_player_values(
         &mut self,
@@ -1010,6 +1164,7 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
         offset: Vec3,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         let (address, client) = self.quakec_client(services, memory, context, value)?;
         let layout = self.quakec_layout()?;
@@ -1035,25 +1190,39 @@ impl EntityProjection {
         let velocity = player.body.velocity;
         let view = player.view_angles;
         let flags = layout.flags(memory, address)?;
-        layout.write_number(memory, address, layout.client.water_jump, water_jump)?;
-        layout.write_number(memory, address, layout.motion.water_level, f32::from(level))?;
-        layout.write_number(memory, address, layout.motion.water_type, contents as f32)?;
-        layout.write_number(
+        layout.store_number(memory, address, layout.client.water_jump, water_jump, store)?;
+        layout.store_number(
+            memory,
+            address,
+            layout.motion.water_level,
+            f32::from(level),
+            store,
+        )?;
+        layout.store_number(
+            memory,
+            address,
+            layout.motion.water_type,
+            contents as f32,
+            store,
+        )?;
+        layout.store_number(
             memory,
             address,
             layout.flags,
             (if grounded { flags | 512 } else { flags & !512 }) as i32 as f32,
+            store,
         )?;
         if grounded {
-            memory.write_word(
+            store(
+                memory,
                 address + layout.motion.ground_entity.ok_or(CallError::Memory)? as u64,
-                ground as i32,
+                ground,
             )?;
         }
-        layout.write_vector(memory, address, layout.origin, origin)?;
-        layout.write_vector(memory, address, layout.velocity, velocity)?;
-        layout.write_vector(memory, address, layout.client.view_angles, view)?;
-        self.quakec_link(services, memory, strings, context, value)
+        layout.store_vector(memory, address, layout.origin, origin, store)?;
+        layout.store_vector(memory, address, layout.velocity, velocity, store)?;
+        layout.store_vector(memory, address, layout.client.view_angles, view, store)?;
+        self.quakec_link(services, memory, strings, context, value, store)
     }
     pub(crate) fn quakec_touch_callback(
         &self,
@@ -1200,10 +1369,7 @@ impl EntityProjection {
         function: u32,
     ) -> Result<qa_core::primitives::CallbackId, CallError> {
         let thinks = self.quakec_thinks.as_ref().ok_or(CallError::Entity)?;
-        let binding = thinks
-            .functions
-            .get(function as usize)
-            .ok_or(CallError::Entity)?;
+        let binding = thinks.binding(function);
         if binding.path == thinks.module.think(None).path {
             return Err(CallError::Entity);
         }
@@ -1239,7 +1405,13 @@ impl EntityProjection {
             };
             let native_slot = native.slot as usize;
             let client = native_slot > 0 && native_slot <= clients;
-            if client && layout.integer_motion {
+            // An owned reserved-row body has no active connection. It still
+            // participates in links and pushes, but native client physics is
+            // skipped, just as SV_Physics_Client skips inactive clients.
+            if client
+                && (layout.integer_motion
+                    || self.bindings[native_slot].is_some_and(|binding| binding.owned))
+            {
                 continue;
             }
             let phase = if !client {
@@ -1300,14 +1472,74 @@ impl EntityProjection {
         }
         Ok(None)
     }
-    pub(crate) fn quakec_clear_think(
+    pub(crate) fn quakec_push_candidate(
         &self,
-        memory: &mut ModuleMemory<'_>,
+        cursor: &mut usize,
+    ) -> Result<Option<NativeEntity>, CallError> {
+        let module = self.owner.ok_or(CallError::Entity)?;
+        if *cursor >= self.observed_count {
+            return Ok(None);
+        }
+        let slot = i32::try_from(*cursor).map_err(|_| CallError::Entity)?;
+        *cursor += 1;
+        Ok(Some(NativeEntity { module, slot }))
+    }
+    pub(crate) fn quakec_push_free(
+        &self,
+        entities: &EntityTable,
+        native: NativeEntity,
+    ) -> Result<bool, CallError> {
+        let slot = usize::try_from(native.slot).map_err(|_| CallError::Entity)?;
+        if self.owner != Some(native.module) || slot >= self.observed_count {
+            return Err(CallError::Entity);
+        }
+        let clients = self
+            .quakec_layout()?
+            .client_edicts
+            .ok_or(CallError::Entity)?;
+        Ok(slot > clients && self.quakec_bound_entity(entities, native)?.is_none())
+    }
+    pub(crate) fn quakec_function_word(
+        &self,
+        memory: &ModuleMemory<'_>,
         value: u32,
-    ) -> Result<(), CallError> {
+        blocked: bool,
+    ) -> Result<u32, CallError> {
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
-        layout.write_number(memory, address, layout.next_think, 0.0)
+        layout.word(
+            memory,
+            address,
+            if blocked {
+                layout.motion.blocked
+            } else {
+                layout.think
+            },
+        )
+    }
+    pub(crate) fn quakec_function_binding(
+        &self,
+        word: u32,
+    ) -> Result<qa_core::primitives::ThinkBinding, CallError> {
+        Ok(self
+            .quakec_thinks
+            .as_ref()
+            .ok_or(CallError::Entity)?
+            .binding(word))
+    }
+    pub(crate) fn quakec_refresh_raw_motion(
+        &self,
+        entities: &mut EntityTable,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        if let Some(entity) = self.quakec_bound_entity(entities, native)? {
+            self.quakec_layout()?
+                .refresh_motion(memory, u64::from(value), entities, entity)?;
+        }
+        Ok(())
     }
     fn quakec_identity(
         &self,
@@ -1320,6 +1552,13 @@ impl EntityProjection {
         }
         self.quakec_layout()?
             .identity(memory, context.module, value)
+    }
+    pub(crate) fn quakec_validate_owner(&self, module: ModuleId) -> Result<(), CallError> {
+        if self.owner == Some(module) {
+            Ok(())
+        } else {
+            Err(CallError::Entity)
+        }
     }
     pub(crate) fn quakec_spawn(
         &mut self,
@@ -1389,7 +1628,10 @@ impl EntityProjection {
             .binding(&services.server.entities, native)?
             .ok_or(CallError::Entity)?;
         let binding = self.bindings[native.slot as usize].ok_or(CallError::Entity)?;
-        if native.slot == 0 || !binding.owned || !services.server.entities.can_release(entity) {
+        if native.slot as usize <= self.quakec_client_count()?
+            || !binding.owned
+            || !services.server.entities.can_release(entity)
+        {
             return Err(CallError::Entity);
         }
         let layout = self.quakec_layout()?;
@@ -1526,11 +1768,12 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
         origin: Vec3,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         self.quakec_identity(memory, context, value)?;
         let layout = self.quakec_layout()?;
-        layout.write_vector(memory, value as u64, layout.origin, origin)?;
-        self.quakec_link(services, memory, strings, context, value)
+        layout.store_vector(memory, value as u64, layout.origin, origin, store)?;
+        self.quakec_link(services, memory, strings, context, value, store)
     }
     pub(crate) fn quakec_yaw_change(
         &self,
@@ -1591,41 +1834,45 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         layout.word(memory, layout.address(memory, value)?, layout.motion.goal)
     }
-    pub(crate) fn quakec_monster_number(
+    pub(crate) fn quakec_scalar_number(
         &self,
         memory: &ModuleMemory<'_>,
         value: u32,
-        field: crate::quakec::monster::Scalar,
+        field: crate::quakec::Scalar,
     ) -> Result<f32, CallError> {
         Ok(f32::from_bits(
-            memory.read_word(self.quakec_monster_store(memory, value, field)?)? as u32,
+            memory.read_word(self.quakec_scalar_store(memory, value, field)?)? as u32,
         ))
     }
-    pub(crate) fn quakec_monster_store(
+    pub(crate) fn quakec_scalar_store(
         &self,
         memory: &ModuleMemory<'_>,
         value: u32,
-        field: crate::quakec::monster::Scalar,
+        field: crate::quakec::Scalar,
     ) -> Result<u64, CallError> {
         let layout = self.quakec_layout()?;
         let address = layout.address(memory, value)?;
+        use crate::quakec::Scalar;
+        let vector = |field: Option<usize>, axis: usize| {
+            field.filter(|_| axis < 3).map(|field| field + axis * 4)
+        };
         let field = match field {
-            crate::quakec::monster::Scalar::Origin(axis) => layout
-                .origin
-                .filter(|_| axis < 3)
-                .map(|field| field + axis * 4),
-            crate::quakec::monster::Scalar::Flags => layout.flags,
-            crate::quakec::monster::Scalar::Ground => layout.motion.ground_entity,
-            crate::quakec::monster::Scalar::IdealYaw => layout.motion.ideal_yaw,
-            crate::quakec::monster::Scalar::Yaw => layout.angles.map(|field| field + 4),
-            crate::quakec::monster::Scalar::AbsoluteMin(axis) => layout
-                .abs_min
-                .filter(|_| axis < 3)
-                .map(|field| field + axis * 4),
-            crate::quakec::monster::Scalar::AbsoluteMax(axis) => layout
-                .abs_max
-                .filter(|_| axis < 3)
-                .map(|field| field + axis * 4),
+            Scalar::Origin(axis) => vector(layout.origin, axis),
+            Scalar::Velocity(axis) => vector(layout.velocity, axis),
+            Scalar::Angles(axis) => vector(layout.angles, axis),
+            Scalar::AngularVelocity(axis) => vector(layout.angular_velocity, axis),
+            Scalar::Flags => layout.flags,
+            Scalar::Ground => layout.motion.ground_entity,
+            Scalar::IdealYaw => layout.motion.ideal_yaw,
+            Scalar::Yaw => vector(layout.angles, 1),
+            Scalar::Min(axis) => vector(layout.mins, axis),
+            Scalar::Max(axis) => vector(layout.maxs, axis),
+            Scalar::AbsoluteMin(axis) => vector(layout.abs_min, axis),
+            Scalar::AbsoluteMax(axis) => vector(layout.abs_max, axis),
+            Scalar::LocalTime => layout.motion.local_time,
+            Scalar::NextThink => layout.next_think,
+            Scalar::MoveType => layout.move_type,
+            Scalar::Solid => layout.solid,
         };
         let address = address + field.ok_or(CallError::Memory)? as u64;
         memory.read(address, 4)?;
@@ -1669,6 +1916,7 @@ impl EntityProjection {
         strings: &ModuleMemory<'_>,
         context: CallContext,
         value: u32,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<bool, CallError> {
         use qa_world::collision::{QuakeTraceKind, TraceQuery, trace_policy};
         let layout = self.quakec_layout()?;
@@ -1701,11 +1949,11 @@ impl EntityProjection {
         if value != 0 {
             layout.link_fields(memory, u64::from(value))?;
         }
-        self.quakec_set_origin(services, memory, strings, context, value, trace.end)?;
+        self.quakec_set_origin(services, memory, strings, context, value, trace.end, store)?;
         let flags = layout.flags(memory, u64::from(value))? as i32 | 512;
-        layout.write_number(memory, u64::from(value), layout.flags, flags as f32)?;
+        layout.store_number(memory, u64::from(value), layout.flags, flags as f32, store)?;
         let ground = self.quakec_hit(services, trace.entity);
-        memory.write_word(ground_address, ground as i32)?;
+        store(memory, ground_address, ground)?;
         Ok(true)
     }
     pub(crate) fn quakec_set_size(
@@ -1716,6 +1964,7 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
         bounds: Bounds,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         self.quakec_identity(memory, context, value)?;
         // PF_setsize rejects backwards extents before modifying any field.
@@ -1723,10 +1972,16 @@ impl EntityProjection {
             return Err(CallError::Entity);
         }
         let layout = self.quakec_layout()?;
-        layout.write_vector(memory, value as u64, layout.mins, bounds.mins)?;
-        layout.write_vector(memory, value as u64, layout.maxs, bounds.maxs)?;
-        layout.write_vector(memory, value as u64, layout.size, bounds.maxs - bounds.mins)?;
-        self.quakec_link(services, memory, strings, context, value)
+        layout.store_vector(memory, value as u64, layout.mins, bounds.mins, store)?;
+        layout.store_vector(memory, value as u64, layout.maxs, bounds.maxs, store)?;
+        layout.store_vector(
+            memory,
+            value as u64,
+            layout.size,
+            bounds.maxs - bounds.mins,
+            store,
+        )?;
+        self.quakec_link(services, memory, strings, context, value, store)
     }
     pub(crate) fn quakec_set_model(
         &mut self,
@@ -1736,6 +1991,7 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
         name: u32,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         self.quakec_identity(memory, context, value)?;
         let models = services
@@ -1746,11 +2002,18 @@ impl EntityProjection {
         let ordinal = (ENGINE_CALLS.resource_find)(services, context.module, models, text)?
             .ok_or(CallError::Geometry)?;
         let layout = self.quakec_layout()?;
-        memory.write_word(
+        store(
+            memory,
             u64::from(value) + layout.model.ok_or(CallError::Memory)? as u64,
-            name as i32,
+            name,
         )?;
-        layout.write_number(memory, u64::from(value), layout.model_index, ordinal as f32)?;
+        layout.store_number(
+            memory,
+            u64::from(value),
+            layout.model_index,
+            ordinal as f32,
+            store,
+        )?;
         let bounds = if text.starts_with(b"*") {
             Some(
                 inline_model(
@@ -1772,7 +2035,7 @@ impl EntityProjection {
             )?)
         };
         if let Some(bounds) = bounds {
-            self.quakec_set_size(services, memory, strings, context, value, bounds)
+            self.quakec_set_size(services, memory, strings, context, value, bounds, store)
         } else {
             self.quakec_publish(services, memory, strings, context, value)?;
             Ok(())
@@ -1900,30 +2163,29 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
         stage: qa_session::physics::MotionWrite,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         let native = self.quakec_identity(memory, context, value)?;
         let entity = self.binding(entities, native)?.ok_or(CallError::Entity)?;
         let layout = self.quakec_layout()?;
         let address = u64::from(value);
         let slot = entity.slot as usize;
-        let (axis, field, vector) = match stage {
-            qa_session::physics::MotionWrite::Angles(axis) => {
-                (axis, layout.angles, entities.columns.angles[slot])
-            }
+        let (axis, vector) = match stage {
+            qa_session::physics::MotionWrite::Angles(axis) => (axis, entities.columns.angles[slot]),
             qa_session::physics::MotionWrite::AngularVelocity(axis) => (
                 axis,
-                layout.angular_velocity,
                 entities.columns.angular_velocity[slot].ok_or(CallError::Memory)?,
             ),
             qa_session::physics::MotionWrite::Origin(axis) => {
-                (axis, layout.origin, entities.columns.position[slot])
+                (axis, entities.columns.position[slot])
             }
             qa_session::physics::MotionWrite::Velocity(axis) => {
-                (axis, layout.velocity, entities.columns.velocity[slot])
+                (axis, entities.columns.velocity[slot])
             }
         };
-        let value = *vector.0.get(axis).ok_or(CallError::Memory)?;
-        layout.write_number(memory, address, field.map(|at| at + axis * 4), value)?;
+        let number = *vector.0.get(axis).ok_or(CallError::Memory)?;
+        let target = self.quakec_scalar_store(memory, value, stage.into())?;
+        store(memory, target, number.to_bits())?;
         // A native scalar can alias any later physical input, including
         // velocity/angles overlap and the last component of a vector.
         layout.refresh_motion(memory, address, entities, entity)
@@ -1936,6 +2198,7 @@ impl EntityProjection {
         strings: &ModuleMemory<'_>,
         context: CallContext,
         value: u32,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
         self.quakec_identity(memory, context, value)?;
         if value == 0 {
@@ -1944,7 +2207,7 @@ impl EntityProjection {
             self.quakec_publish(services, memory, strings, context, value)?;
             return Ok(());
         }
-        self.quakec_link(services, memory, strings, context, value)
+        self.quakec_link(services, memory, strings, context, value, store)
     }
     pub(crate) fn quakec_link(
         &mut self,
@@ -1953,27 +2216,49 @@ impl EntityProjection {
         strings: &ModuleMemory<'_>,
         context: CallContext,
         value: u32,
+        store: &mut crate::quakec::EntityStore<'_>,
     ) -> Result<(), CallError> {
-        self.quakec_identity(memory, context, value)?;
+        let native = self.quakec_identity(memory, context, value)?;
         if value == 0 {
             return Ok(());
         }
         let layout = self.quakec_layout()?;
         layout.link_fields(memory, u64::from(value))?;
+        if native.slot as usize <= self.quakec_client_count()?
+            && self.binding(&services.server.entities, native)?.is_none()
+        {
+            self.quakec_ensure_client_body(services, memory, strings, context, value)?;
+        }
         let Some((entity, link_flags)) =
             self.quakec_publish(services, memory, strings, context, value)?
         else {
             return Ok(());
         };
         (ENGINE_CALLS.link)(services, context, entity, link_flags)?;
-        let bounds = services
-            .server
-            .area
-            .bounds(entity)
-            .ok_or(CallError::Entity)?;
-        layout.write_vector(memory, value as u64, layout.abs_min, bounds.mins)?;
-        layout.write_vector(memory, value as u64, layout.abs_max, bounds.maxs)?;
-        Ok(())
+        self.quakec_publish_link_bounds(services, memory, strings, context, value, store)
+    }
+    pub(crate) fn quakec_publish_link_bounds(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        store: &mut crate::quakec::EntityStore<'_>,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        let Some(entity) = self.quakec_bound_entity(&services.server.entities, native)? else {
+            return Ok(());
+        };
+        let Some(bounds) = services.server.area.bounds(entity) else {
+            return Ok(());
+        };
+        let layout = self.quakec_layout()?;
+        // Publish the actual linked/expanded bounds, in native vector order.
+        // Each completed scalar remains dirty even if a later write rejects.
+        layout.store_vector(memory, u64::from(value), layout.abs_min, bounds.mins, store)?;
+        layout.store_vector(memory, u64::from(value), layout.abs_max, bounds.maxs, store)?;
+        self.quakec_project_row(services, memory, strings, context, native.slot as usize)
     }
     fn quakec_publish(
         &mut self,
@@ -2119,16 +2404,8 @@ impl EntityProjection {
                 .as_mut()
                 .ok_or(CallError::Entity)?;
             if row.think_word != word || columns.think_binding(slot).path == 0 {
-                let binding = word.map_or_else(
-                    || thinks.module.think(None),
-                    |word| {
-                        thinks
-                            .functions
-                            .get(word as usize)
-                            .copied()
-                            .unwrap_or_else(|| ThinkBindings::missing(thinks.module, word))
-                    },
-                );
+                let binding =
+                    word.map_or_else(|| thinks.module.think(None), |word| thinks.binding(word));
                 columns.set_think_function(slot, binding);
                 row.think_word = word;
             }

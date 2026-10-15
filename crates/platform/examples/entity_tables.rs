@@ -34,7 +34,7 @@ impl ThinkWorld for World {
     }
 }
 fn callback(world: &mut World, _: ModuleId, _: u32, call: CallbackCall) -> bool {
-    let CallbackCall::Think { entity, time } = call else {
+    let CallbackCall::Think { entity, time, .. } = call else {
         return false;
     };
     let ThinkTime::Seconds(time) = time else {

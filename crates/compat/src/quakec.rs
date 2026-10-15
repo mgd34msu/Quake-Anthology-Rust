@@ -12,12 +12,55 @@ mod client;
 mod continuation;
 mod map;
 pub(crate) mod monster;
+mod push;
 pub(crate) mod sound;
 pub use client::ClientCallRestore;
 use continuation::{ActiveRun, RunState, Settings};
 pub use continuation::{BuiltinCall, Run, Step};
 pub use map::{MapAdmission, MapFields};
 pub use qa_session::physics::MotionState;
+pub(crate) type EntityStore<'a> = dyn for<'memory> FnMut(
+        &mut ModuleMemory<'memory>,
+        u64,
+        u32,
+    ) -> Result<(), crate::services::CallError>
+    + 'a;
+
+fn mark_entity_rows(
+    dirty: &mut BitSet,
+    slots: &mut [usize],
+    count: &mut usize,
+    first: usize,
+    last: usize,
+) {
+    for slot in first..=last {
+        if dirty.insert(slot) {
+            slots[*count] = slot;
+            *count += 1;
+        }
+    }
+}
+
+fn store_entity_word(
+    memory: &mut ModuleMemory<'_>,
+    dirty: &mut BitSet,
+    slots: &mut [usize],
+    count: &mut usize,
+    stride: usize,
+    address: u64,
+    word: u32,
+) -> Result<(), Trap> {
+    memory.write_word(address, word as i32)?;
+    // StoreP accepts an unaligned word crossing a native row boundary.
+    mark_entity_rows(
+        dirty,
+        slots,
+        count,
+        address as usize / stride,
+        (address as usize + 3) / stride,
+    );
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trap {
@@ -83,11 +126,42 @@ pub enum MotionField {
     WaterType(f32),
     WaterLevel(f32),
 }
+#[derive(Clone, Copy)]
+pub(crate) enum Scalar {
+    Origin(usize),
+    Velocity(usize),
+    Angles(usize),
+    AngularVelocity(usize),
+    Flags,
+    Ground,
+    IdealYaw,
+    Yaw,
+    Min(usize),
+    Max(usize),
+    AbsoluteMin(usize),
+    AbsoluteMax(usize),
+    LocalTime,
+    NextThink,
+    MoveType,
+    Solid,
+}
+impl From<qa_session::physics::MotionWrite> for Scalar {
+    fn from(value: qa_session::physics::MotionWrite) -> Self {
+        use qa_session::physics::MotionWrite;
+        match value {
+            MotionWrite::Origin(axis) => Self::Origin(axis),
+            MotionWrite::Velocity(axis) => Self::Velocity(axis),
+            MotionWrite::Angles(axis) => Self::Angles(axis),
+            MotionWrite::AngularVelocity(axis) => Self::AngularVelocity(axis),
+        }
+    }
+}
 
 impl From<qa_session::physics::PhysicsError> for crate::services::CallError {
     fn from(error: qa_session::physics::PhysicsError) -> Self {
         match error {
             qa_session::physics::PhysicsError::Entity => Self::Entity,
+            qa_session::physics::PhysicsError::Capacity => Self::Capacity,
             qa_session::physics::PhysicsError::AngularVelocity
             | qa_session::physics::PhysicsError::MissingField => Self::Memory,
         }
@@ -355,9 +429,9 @@ impl Vm {
         phase: CallPhase,
     ) -> Result<(), Trap> {
         if phase == CallPhase::Think {
-            self.projection
-                .quakec_clear_think(&mut self.entities, entity.ok_or(Trap::Memory)?)
+            self.prepare_think(entity.ok_or(Trap::Memory)?, time)
                 .map_err(|_| Trap::Memory)?;
+            return Ok(());
         }
         if let Some(global) = self.call_fields.self_global {
             self.image.globals[global] = entity.ok_or(Trap::Memory)?;
@@ -396,6 +470,48 @@ impl Vm {
         native: qa_core::primitives::NativeEntity,
     ) -> Result<Option<qa_core::primitives::EntityId>, crate::services::CallError> {
         self.projection.quakec_bound_entity(entities, native)
+    }
+    /// Materialize an unconnected native client's ordinary common body.
+    pub fn ensure_client_body(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        native: u32,
+    ) -> Result<qa_core::primitives::EntityId, crate::services::CallError> {
+        self.projection.quakec_ensure_client_body(
+            services,
+            &self.entities,
+            &self.strings,
+            context,
+            native,
+        )
+    }
+    /// Preserve native backing when its borrowed connection lifetime ends.
+    pub fn retain_client_body(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        native: u32,
+        old: qa_core::primitives::EntityId,
+    ) -> Result<qa_core::primitives::EntityId, crate::services::CallError> {
+        self.projection.quakec_retain_client_body(
+            services,
+            &self.entities,
+            &self.strings,
+            context,
+            native,
+            old,
+        )
+    }
+    /// Retire only this reserved native client's owned orphan body.
+    pub fn release_client_body(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        native: u32,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection
+            .quakec_release_client_body(services, &self.entities, context, native)
     }
     /// Map admission and builtin spawn use the existing native ordinal
     /// allocator. This does not change the VM's return globals.
@@ -516,13 +632,9 @@ impl Vm {
             .self_global
             .ok_or(crate::services::CallError::Memory)?;
         let entity = self.image.globals[global];
-        let dropped = self.projection.quakec_drop_to_floor(
-            services,
-            &mut self.entities,
-            &self.strings,
-            context,
-            entity,
-        )?;
+        let dropped = self.with_entity_stores(|projection, memory, strings, store| {
+            projection.quakec_drop_to_floor(services, memory, strings, context, entity, store)
+        })?;
         if dropped {
             let slot = entity as usize / self.stride;
             self.mark_entity_rows(slot, slot);
@@ -610,8 +722,9 @@ impl Vm {
         value: u32,
         stage: qa_session::physics::MotionWrite,
     ) -> Result<(), crate::services::CallError> {
-        self.projection
-            .quakec_write_motion(entities, &mut self.entities, context, value, stage)
+        self.with_entity_stores(|projection, memory, _, store| {
+            projection.quakec_write_motion(entities, memory, context, value, stage, store)
+        })
     }
     /// Finish the existing native explicit relink without trigger touches;
     /// native world0 only publishes its pose.
@@ -621,12 +734,43 @@ impl Vm {
         context: crate::services::CallContext,
         value: u32,
     ) -> Result<(), crate::services::CallError> {
-        self.projection.quakec_relink_entity(
-            services,
+        self.with_entity_stores(|projection, memory, strings, store| {
+            projection.quakec_relink_entity(services, memory, strings, context, value, store)
+        })
+    }
+    /// Publish the already committed area bounds without relinking or moving.
+    pub fn publish_link_bounds(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        value: u32,
+    ) -> Result<(), crate::services::CallError> {
+        self.with_entity_stores(|projection, memory, strings, store| {
+            projection.quakec_publish_link_bounds(services, memory, strings, context, value, store)
+        })
+    }
+    pub(crate) fn with_entity_stores<R>(
+        &mut self,
+        call: impl FnOnce(
+            &mut crate::entities::EntityProjection,
+            &mut ModuleMemory<'static>,
+            &ModuleMemory<'static>,
+            &mut EntityStore<'_>,
+        ) -> Result<R, crate::services::CallError>,
+    ) -> Result<R, crate::services::CallError> {
+        let stride = self.stride;
+        let dirty = &mut self.dirty_entities;
+        let slots = &mut self.dirty_slots;
+        let count = &mut self.dirty_count;
+        let mut store = |memory: &mut ModuleMemory<'_>, address, word| {
+            store_entity_word(memory, dirty, slots, count, stride, address, word)
+                .map_err(|_| crate::services::CallError::Memory)
+        };
+        call(
+            &mut self.projection,
             &mut self.entities,
             &self.strings,
-            context,
-            value,
+            &mut store,
         )
     }
     /// Import bytecode field stores without replacing explicit native relinks.
@@ -642,6 +786,25 @@ impl Vm {
         self.dirty_entities.clear();
         self.dirty_count = 0;
         Ok(())
+    }
+    /// Publish one native row without consuming other pending guest stores.
+    pub fn project_entity(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        value: u32,
+    ) -> Result<(), crate::services::CallError> {
+        self.sync_client_globals()?;
+        let slot = self
+            .entity_number(value)
+            .map_err(|_| crate::services::CallError::Memory)?;
+        self.projection.quakec_project_row(
+            services,
+            &self.entities,
+            &self.strings,
+            context,
+            slot as usize,
+        )
     }
     /// Module return imports successful bytecode entity writes since the
     /// previous publication. Export projection also catches external byte edits.
@@ -670,21 +833,24 @@ impl Vm {
         Ok(())
     }
     fn store_entity_word(&mut self, address: u64, word: u32) -> Result<(), Trap> {
-        self.entities.write_word(address, word as i32)?;
-        // StoreP accepts native pointers, including an unaligned word crossing
-        // a row boundary. Retain every successfully written row on later traps.
-        let first = address as usize / self.stride;
-        let last = (address as usize + 3) / self.stride;
-        self.mark_entity_rows(first, last);
-        Ok(())
+        store_entity_word(
+            &mut self.entities,
+            &mut self.dirty_entities,
+            &mut self.dirty_slots,
+            &mut self.dirty_count,
+            self.stride,
+            address,
+            word,
+        )
     }
     fn mark_entity_rows(&mut self, first: usize, last: usize) {
-        for slot in first..=last {
-            if self.dirty_entities.insert(slot) {
-                self.dirty_slots[self.dirty_count] = slot;
-                self.dirty_count += 1;
-            }
-        }
+        mark_entity_rows(
+            &mut self.dirty_entities,
+            &mut self.dirty_slots,
+            &mut self.dirty_count,
+            first,
+            last,
+        );
     }
     pub(crate) fn write_trace(
         &mut self,

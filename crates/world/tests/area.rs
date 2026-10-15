@@ -134,6 +134,67 @@ fn ids(grid: &AreaGrid, table: &EntityTable, flags: LinkFlags) -> Vec<EntityId> 
 }
 
 #[test]
+fn body_identity_transfer_preserves_bounds_and_every_list_position() {
+    for order in [LinkOrder::Head, LinkOrder::Tail] {
+        for selected in 0..3 {
+            let (mut table, mut grid) = setup();
+            let original = std::array::from_fn::<_, 3, _>(|_| allocate(&mut table));
+            for entity in original {
+                assert!(grid.link(
+                    &table,
+                    entity,
+                    LinkFlags::SOLID,
+                    order,
+                    LinkIntent::Explicit
+                ));
+            }
+            let mut expected = ids(&grid, &table, LinkFlags::SOLID);
+            let from = expected[selected];
+            let to = allocate(&mut table);
+            let bounds = grid.bounds(from).unwrap();
+            let relinks = grid.relinks;
+            assert!(grid.transfer_link(&table, from, to));
+            expected[selected] = to;
+            assert_eq!(ids(&grid, &table, LinkFlags::SOLID), expected);
+            assert_eq!(grid.bounds(from), None);
+            assert_eq!(grid.bounds(to), Some(bounds));
+            assert_eq!(grid.relinks, relinks);
+            assert!(!grid.unlink(from));
+            assert!(table.release(from, ThinkTime::Seconds(3.0)));
+            assert_eq!(ids(&grid, &table, LinkFlags::SOLID), expected);
+            assert!(grid.unlink(to));
+            expected.remove(selected);
+            assert_eq!(ids(&grid, &table, LinkFlags::SOLID), expected);
+        }
+    }
+}
+
+#[test]
+fn rejected_body_transfer_does_not_replace_another_link_or_revive_a_stale_id() {
+    let (mut table, mut grid) = setup();
+    let from = allocate(&mut table);
+    let to = allocate(&mut table);
+    for entity in [from, to] {
+        assert!(grid.link(
+            &table,
+            entity,
+            LinkFlags::SOLID,
+            LinkOrder::Tail,
+            LinkIntent::Explicit
+        ));
+    }
+    let expected = ids(&grid, &table, LinkFlags::SOLID);
+    assert!(!grid.transfer_link(&table, from, from));
+    assert!(!grid.transfer_link(&table, from, to));
+    let stale = allocate(&mut table);
+    assert!(table.release(stale, ThinkTime::Seconds(3.0)));
+    assert!(!grid.transfer_link(&table, from, stale));
+    assert!(!grid.transfer_link(&table, stale, from));
+    assert_eq!(ids(&grid, &table, LinkFlags::SOLID), expected);
+    assert_eq!(grid.relinks, 2);
+}
+
+#[test]
 fn native_tail_relink_changes_touch_order_without_a_body_change() {
     // WinQuake world.c:376-377,463-470; Q2 sv_world.c:339-343.
     let (mut table, mut grid) = setup();
