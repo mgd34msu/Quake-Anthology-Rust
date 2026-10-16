@@ -676,6 +676,7 @@ impl GlBackend {
         let Some(admission) = AssetAdmission::prepare(self.admission.as_ref(), assets)? else {
             return Ok(());
         };
+        let lightmap_updates = self.lightmap_updates.prepare_append(assets)?;
         self.state.vao = 0;
         self.state.texture = None;
         let _bindings = UploadBindings::new(&self.gl);
@@ -689,6 +690,9 @@ impl GlBackend {
         std::mem::swap(&mut self.texture_params, &mut prepared.texture_params);
         std::mem::swap(&mut self.sky_clouds, &mut prepared.sky_clouds);
         std::mem::swap(&mut self.skies, &mut prepared.skies);
+        if let Some(lightmap_updates) = lightmap_updates {
+            self.lightmap_updates = lightmap_updates;
+        }
         prepared.retain_textures();
         self.admission = Some(admission);
         Ok(())

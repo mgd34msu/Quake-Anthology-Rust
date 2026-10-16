@@ -19,13 +19,6 @@ impl AssetCounts {
             && self.presentations >= required.presentations
             && self.palettes >= required.palettes
     }
-
-    pub fn extends(self, previous: Self) -> bool {
-        self.contains(previous)
-            && self.worlds == previous.worlds
-            && self.presentations == previous.presentations
-            && self.palettes == previous.palettes
-    }
 }
 
 impl Assets {
@@ -41,17 +34,20 @@ impl Assets {
     }
 
     /// Discard resources from a rejected cold registration. Interned names
-    /// retain their identities; worlds and presentation resources stay fixed.
+    /// retain their identities; every admitted numeric resource prefix stays.
     pub fn discard_registration_suffix(
         &mut self,
         retained: AssetCounts,
     ) -> Result<(), &'static str> {
-        if !self.counts().extends(retained) {
+        if !self.counts().contains(retained) {
             return Err("invalid registration resource prefix");
         }
+        self.worlds.truncate(retained.worlds);
+        self.presentations.truncate(retained.presentations);
         self.models.truncate(retained.models);
         self.materials.truncate(retained.materials);
         self.images.truncate(retained.images);
+        self.palettes.truncate(retained.palettes);
         Ok(())
     }
 }
@@ -84,7 +80,7 @@ impl AssetAdmission {
         let counts = assets.counts();
         if let Some(previous) = previous {
             let old = previous.counts;
-            if !counts.extends(old) {
+            if !counts.contains(old) {
                 return Err("renderer asset prefix changed incompatibly");
             }
             if previous

@@ -2887,3 +2887,211 @@ fn changed_image_admission_rejects_without_poisoning_the_prior_cpu_prefix() {
     assert_eq!(cpu.admitted_assets(), admission);
     assert_eq!(cpu.raster_config(), config);
 }
+
+#[test]
+fn cold_world_append_preserves_old_ids_and_renders_the_new_palette() {
+    let mut assets = Assets::load().unwrap();
+    let original_palette = palette(&mut assets, false);
+    let image = texture(&mut assets, original_palette, 7, false);
+    let original_material = material(&mut assets, image, false);
+    let original = world(
+        &mut assets,
+        2.,
+        original_material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let original_mesh = assets.world(original).unwrap().mesh();
+    let original_presentation = only_presentation(&assets, original);
+    let retained = assets.counts();
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let original_packet = packet(
+        &mut frontend,
+        &[(original, 0)],
+        view(original_palette),
+        &assets,
+    );
+    assert_eq!(cpu.render(&original_packet, &assets).rejected, 0);
+    let original_pixels = cpu.pixels().to_vec();
+    let original_depth = cpu.inverse_depth().to_vec();
+    let original_config = cpu.raster_config();
+
+    let appended_palette = palette(&mut assets, false);
+    let appended_image = texture(&mut assets, appended_palette, 23, false);
+    let appended_material = material(&mut assets, appended_image, false);
+    let appended = world(
+        &mut assets,
+        2.,
+        appended_material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let counts = assets.counts();
+    assert_eq!(counts.worlds, retained.worlds + 1);
+    assert_eq!(counts.presentations, retained.presentations + 1);
+    assert_eq!(counts.palettes, retained.palettes + 1);
+    assert_eq!(counts.models, retained.models + 1);
+    assert!(counts.contains(retained));
+    cpu.prepare_assets(&assets).unwrap();
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(cpu.pixels(), original_pixels);
+    assert_eq!(cpu.inverse_depth(), original_depth);
+    assert_eq!(cpu.raster_config().bands, original_config.bands);
+    assert_eq!(assets.world(original).unwrap().mesh(), original_mesh);
+    assert_eq!(only_presentation(&assets, original), original_presentation);
+    assert_eq!(
+        assets
+            .surface_binding(original_presentation, 0)
+            .unwrap()
+            .material,
+        original_material
+    );
+    assert_eq!(assets.image(image).unwrap().rgba[0], 7);
+    assert_eq!(
+        assets
+            .palette(original_palette)
+            .unwrap()
+            .color(7)
+            .to_le_bytes(),
+        [7, 7, 7, 255]
+    );
+    assert_eq!(cpu.render(&original_packet, &assets).rejected, 0);
+    assert_eq!(cpu.pixels(), original_pixels);
+
+    assert!(frontend.recycle(original_packet).is_ok());
+    let appended_packet = packet(
+        &mut frontend,
+        &[(appended, 0)],
+        view(appended_palette),
+        &assets,
+    );
+    assert_eq!(cpu.render(&appended_packet, &assets).rejected, 0);
+    assert_ne!(cpu.pixels(), original_pixels);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .any(|&pixel| pixel == u32::from_le_bytes([23, 23, 23, 255]))
+    );
+    assert!(frontend.recycle(appended_packet).is_ok());
+    let original_packet = packet(
+        &mut frontend,
+        &[(original, 0)],
+        view(original_palette),
+        &assets,
+    );
+    assert_eq!(cpu.render(&original_packet, &assets).rejected, 0);
+    assert_eq!(cpu.pixels(), original_pixels);
+}
+
+#[test]
+fn rejected_world_append_discards_every_suffix_and_keeps_the_old_raster_usable() {
+    let mut assets = Assets::load().unwrap();
+    let original_palette = palette(&mut assets, false);
+    let image = texture(&mut assets, original_palette, 7, false);
+    let original_material = material(&mut assets, image, false);
+    let original = world(
+        &mut assets,
+        2.,
+        original_material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let retained = assets.counts();
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let original_packet = packet(
+        &mut frontend,
+        &[(original, 0)],
+        view(original_palette),
+        &assets,
+    );
+    assert_eq!(cpu.render(&original_packet, &assets).rejected, 0);
+    let original_pixels = cpu.pixels().to_vec();
+    let original_depth = cpu.inverse_depth().to_vec();
+    let original_stats = cpu.world_stats();
+    let original_config = cpu.raster_config();
+
+    let rejected_palette = palette(&mut assets, false);
+    let rejected_image = texture(&mut assets, rejected_palette, 31, false);
+    let rejected_material = assets
+        .register_material(
+            "rejected appended world cloud",
+            &[cloud_stage(rejected_image)],
+            MaterialSettings {
+                sky: Some(qa_render::assets::Sky::Cube {
+                    outer_box: None,
+                    inner_box: None,
+                    clouds: qa_render::sky::CloudSphere::native(0.),
+                    rotation: None,
+                    params: Default::default(),
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let rejected_world = world(
+        &mut assets,
+        2.,
+        rejected_material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let rejected_mesh = assets.world(rejected_world).unwrap().mesh();
+    let rejected_presentation = only_presentation(&assets, rejected_world);
+    assert!(assets.counts().contains(retained));
+    for _ in 0..2 {
+        assert!(cpu.prepare_assets(&assets).is_err());
+        assert_eq!(cpu.admitted_assets(), Some(retained));
+        assert_eq!(cpu.pixels(), original_pixels);
+        assert_eq!(cpu.inverse_depth(), original_depth);
+        assert_eq!(cpu.world_stats(), original_stats);
+        assert_eq!(cpu.raster_config(), original_config);
+    }
+    assert_eq!(cpu.render(&original_packet, &assets).rejected, 0);
+    assert_eq!(cpu.pixels(), original_pixels);
+    assert!(cpu.world_stats().cache.hits > original_stats.cache.hits);
+
+    assets.discard_registration_suffix(retained).unwrap();
+    assert_eq!(assets.counts(), retained);
+    assert!(assets.world(rejected_world).is_none());
+    assert!(assets.world_presentation(rejected_presentation).is_none());
+    assert!(assets.model(rejected_mesh).is_none());
+    assert!(assets.material(rejected_material).is_none());
+    assert!(assets.image(rejected_image).is_none());
+    assert!(assets.palette(rejected_palette).is_none());
+    let stats = cpu.world_stats();
+    cpu.prepare_assets(&assets).unwrap();
+    assert_eq!(cpu.world_stats(), stats);
+    assert_eq!(cpu.admitted_assets(), Some(retained));
+    assert_eq!(cpu.render(&original_packet, &assets).rejected, 0);
+    assert_eq!(cpu.pixels(), original_pixels);
+
+    let retry_palette = palette(&mut assets, false);
+    let retry_image = texture(&mut assets, retry_palette, 41, false);
+    let retry_material = material(&mut assets, retry_image, false);
+    let retry_world = world(
+        &mut assets,
+        2.,
+        retry_material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    assert_eq!(retry_world, rejected_world);
+    assert_eq!(retry_palette, rejected_palette);
+    cpu.prepare_assets(&assets).unwrap();
+    assert_eq!(cpu.admitted_assets(), Some(assets.counts()));
+    assert!(frontend.recycle(original_packet).is_ok());
+    let retry_packet = packet(
+        &mut frontend,
+        &[(retry_world, 0)],
+        view(retry_palette),
+        &assets,
+    );
+    assert_eq!(cpu.render(&retry_packet, &assets).rejected, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .any(|&pixel| pixel == u32::from_le_bytes([41, 41, 41, 255]))
+    );
+}

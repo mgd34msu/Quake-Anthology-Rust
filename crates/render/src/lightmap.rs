@@ -311,8 +311,8 @@ pub struct AtlasUpdates {
     rgba: Box<[u8]>,
 }
 impl AtlasUpdates {
-    /// Frozen Assets must retain the same numeric presentation, surface and
-    /// image registrations until this residency owner is discarded.
+    /// Assets retain numeric presentation, surface and image prefixes while
+    /// cold append preparation extends the same residency owner.
     pub fn load(assets: &crate::Assets) -> Result<Self, &'static str> {
         let mut offsets = Vec::with_capacity(assets.world_presentations().len());
         let mut region_edges = Vec::new();
@@ -397,6 +397,30 @@ impl AtlasUpdates {
             rgb: vec![0; bytes].into_boxed_slice(),
             rgba: vec![0; rgba_bytes].into_boxed_slice(),
         })
+    }
+
+    /// Stage appended presentations without changing any admitted style
+    /// residency. Scratch and atlas validation use the initial load path.
+    pub fn prepare_append(&self, assets: &crate::Assets) -> Result<Option<Self>, &'static str> {
+        let presentations = assets.world_presentations().len();
+        if presentations < self.offsets.len() {
+            return Err("GL styled presentation prefix shrank");
+        }
+        if presentations == self.offsets.len() {
+            return Ok(None);
+        }
+        let mut candidate = Self::load(assets)?;
+        if candidate.offsets.get(..self.offsets.len()) != Some(self.offsets.as_ref())
+            || candidate.offsets.get(self.offsets.len()) != Some(&self.styles.len())
+        {
+            return Err("GL styled presentation prefix changed");
+        }
+        candidate
+            .styles
+            .get_mut(..self.styles.len())
+            .ok_or("GL styled surface prefix shrank")?
+            .copy_from_slice(&self.styles);
+        Ok(Some(candidate))
     }
 
     /// The upload callback borrows scratch only during this call. A true return

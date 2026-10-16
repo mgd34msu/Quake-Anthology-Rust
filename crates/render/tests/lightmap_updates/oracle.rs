@@ -532,3 +532,176 @@ fn presentation_variants_cannot_alias_mutable_atlas_texels() {
         Err("GL styled atlas regions overlap")
     ));
 }
+
+#[test]
+fn appended_presentations_preserve_style_residency_and_grow_upload_scratch() {
+    let mut assets = qa_render::Assets::load().unwrap();
+    let image = assets.register_image(4, 4, &[0; 64]).unwrap();
+    let (_, original) = fixture(
+        &mut assets,
+        image,
+        region(0),
+        Some(LightmapConversion::Scalar(Q1GlScale::Standard)),
+        [[16; 3], [8; 3]],
+    );
+    let mut updates = AtlasUpdates::load(&assets).unwrap();
+    let mut styles = [LightStyle::default(); 256];
+    styles[0].indexed_scale = 128;
+    assert!(
+        updates
+            .refresh(original, 0, &styles, &assets, |_, _, pixels| {
+                assert_eq!(pixels, [16, 16, 16, 255]);
+                true
+            })
+            .unwrap()
+    );
+    assert!(updates.prepare_append(&assets).unwrap().is_none());
+    let expanded = AtlasRegion {
+        width: 2,
+        height: 2,
+        ..region(2)
+    };
+    let (_, appended) = fixture(
+        &mut assets,
+        image,
+        expanded,
+        Some(LightmapConversion::Scalar(Q1GlScale::Standard)),
+        [[32; 3], [16; 3]],
+    );
+    let mut candidate = updates.prepare_append(&assets).unwrap().unwrap();
+    assert!(
+        !updates
+            .refresh(original, 0, &styles, &assets, |_, _, _| panic!(
+                "old residency changed while staging"
+            ))
+            .unwrap()
+    );
+    assert!(
+        updates
+            .refresh(appended, 0, &styles, &assets, |_, _, _| panic!(
+                "uncommitted presentation uploaded"
+            ))
+            .is_err()
+    );
+    assert!(
+        !candidate
+            .refresh(original, 0, &styles, &assets, |_, _, _| panic!(
+                "admitted prefix was not retained"
+            ))
+            .unwrap()
+    );
+    let mut uploads = 0;
+    assert!(
+        candidate
+            .refresh(appended, 0, &styles, &assets, |id, rect, pixels| {
+                assert_eq!(id, image);
+                assert_eq!(rect, expanded);
+                assert_eq!(pixels, [32, 32, 32, 255].repeat(4));
+                uploads += 1;
+                true
+            })
+            .unwrap()
+    );
+    assert_eq!(uploads, 1);
+    assert!(candidate.prepare_append(&assets).unwrap().is_none());
+    assert!(
+        !candidate
+            .refresh(appended, 0, &styles, &assets, |_, _, _| panic!(
+                "unchanged style uploaded twice"
+            ))
+            .unwrap()
+    );
+    styles[0].indexed_scale = 256;
+    for presentation in [original, appended] {
+        assert!(
+            candidate
+                .refresh(presentation, 0, &styles, &assets, |_, _, _| true)
+                .unwrap()
+        );
+    }
+}
+
+#[test]
+fn rejected_atlas_append_preserves_the_old_owner_and_allows_a_clean_retry() {
+    let mut assets = qa_render::Assets::load().unwrap();
+    let image = assets.register_image(4, 4, &[0; 64]).unwrap();
+    let (world, original) = fixture(
+        &mut assets,
+        image,
+        region(0),
+        Some(LightmapConversion::Scalar(Q1GlScale::Standard)),
+        [[16; 3], [0; 3]],
+    );
+    let retained = assets.counts();
+    let mut updates = AtlasUpdates::load(&assets).unwrap();
+    let styles = [LightStyle::default(); 256];
+    assert!(
+        updates
+            .refresh(original, 0, &styles, &assets, |_, _, _| true)
+            .unwrap()
+    );
+    let (rejected_world, rejected_presentation) = fixture(
+        &mut assets,
+        image,
+        region(0),
+        Some(LightmapConversion::Rgb { modulate: 1.0 }),
+        [[32; 3], [0; 3]],
+    );
+    assert!(matches!(
+        updates.prepare_append(&assets),
+        Err("GL styled atlas regions overlap")
+    ));
+    assert!(
+        !updates
+            .refresh(original, 0, &styles, &assets, |_, _, _| panic!(
+                "rejected candidate cleared residency"
+            ))
+            .unwrap()
+    );
+    assets.discard_registration_suffix(retained).unwrap();
+    assert_eq!(assets.counts(), retained);
+    assert_eq!(
+        assets.world(world).unwrap().presentations().first,
+        original.0
+    );
+    assert!(assets.world(rejected_world).is_none());
+    assert!(assets.world_presentation(rejected_presentation).is_none());
+    assert!(updates.prepare_append(&assets).unwrap().is_none());
+    let (retry_world, retry_presentation) = fixture(
+        &mut assets,
+        image,
+        region(1),
+        Some(LightmapConversion::Rgb { modulate: 1.0 }),
+        [[32; 3], [0; 3]],
+    );
+    assert_eq!(retry_world, rejected_world);
+    assert_eq!(retry_presentation, rejected_presentation);
+    let mut candidate = updates.prepare_append(&assets).unwrap().unwrap();
+    assert!(
+        !candidate
+            .refresh(original, 0, &styles, &assets, |_, _, _| panic!(
+                "retry cleared old residency"
+            ))
+            .unwrap()
+    );
+    assert!(
+        candidate
+            .refresh(
+                retry_presentation,
+                0,
+                &styles,
+                &assets,
+                |_, rect, pixels| {
+                    assert_eq!(rect, region(1));
+                    assert_eq!(pixels, [32, 32, 32, 255]);
+                    true
+                }
+            )
+            .unwrap()
+    );
+    assets.discard_registration_suffix(retained).unwrap();
+    assert!(matches!(
+        candidate.prepare_append(&assets),
+        Err("GL styled presentation prefix shrank")
+    ));
+}

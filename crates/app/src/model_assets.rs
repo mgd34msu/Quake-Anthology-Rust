@@ -1005,11 +1005,11 @@ impl ModelAssets {
     }
 
     fn validate_admission(&self, counts: AssetCounts) -> Result<(), CallError> {
-        if !self.assets.counts().extends(counts)
+        if !self.assets.counts().contains(counts)
             || self
                 .catalog
                 .admitted_assets
-                .is_some_and(|previous| !counts.extends(previous))
+                .is_some_and(|previous| !counts.contains(previous))
         {
             return Err(CallError::Geometry);
         }
