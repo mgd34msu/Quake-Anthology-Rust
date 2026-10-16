@@ -4,6 +4,7 @@ pub mod hud;
 pub(crate) mod native;
 pub mod text;
 mod video;
+mod view_policy;
 use crate::model_assets::ModelProfile;
 use crate::{
     client_scene::{ClientSceneInput, SceneCounts},
@@ -24,6 +25,7 @@ use qa_render::{
 };
 pub use video::PreparedVideo;
 pub(crate) use video::{discard_live_video, prepare_live_video, publish_live_video};
+pub(crate) use view_policy::ViewPolicyViews;
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 use qa_platform::allocations::Counts;
@@ -387,6 +389,8 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
         fov,
         curve_error: client.curve_error,
         model_lod: client.model_lod,
+        policy: client.policy,
+        near: client.near,
         blend: client.screen_blend,
         damage_blend: client.damage_blend,
         flags: client.flags,

@@ -29,6 +29,33 @@ const LOD_BIAS_NAME: u32 = 240;
 const CURVE_NAME: u32 = 976;
 const CURVE_FIRST: u32 = 992;
 const CURVE_SECOND: u32 = 1000;
+const NOVIS_NAME: u32 = 1024;
+const NOCULL_NAME: u32 = 1040;
+const WORLD_NAME: u32 = 1056;
+const ENTITIES_NAME: u32 = 1072;
+const NEAR_NAME: u32 = 1096;
+const POLICY_FIRST: u32 = 1112;
+const POLICY_SECOND: u32 = 1120;
+const VIEW_CALLS: &[(u8, &[u32])] = &[
+    (5, &[CURVE_NAME, CURVE_FIRST]),
+    (5, &[LOD_SCALE_NAME, CURVE_FIRST]),
+    (5, &[LOD_BIAS_NAME, CURVE_SECOND]),
+    (5, &[NOVIS_NAME, POLICY_FIRST]),
+    (5, &[NOCULL_NAME, POLICY_FIRST]),
+    (5, &[WORLD_NAME, POLICY_FIRST]),
+    (5, &[ENTITIES_NAME, POLICY_FIRST]),
+    (5, &[NEAR_NAME, POLICY_FIRST]),
+    (44, &[256]),
+    (5, &[CURVE_NAME, CURVE_SECOND]),
+    (5, &[LOD_SCALE_NAME, CURVE_SECOND]),
+    (5, &[LOD_BIAS_NAME, CURVE_FIRST]),
+    (5, &[NOVIS_NAME, POLICY_SECOND]),
+    (5, &[NOCULL_NAME, POLICY_SECOND]),
+    (5, &[WORLD_NAME, POLICY_SECOND]),
+    (5, &[ENTITIES_NAME, POLICY_SECOND]),
+    (5, &[NEAR_NAME, POLICY_SECOND]),
+    (44, &[256]),
+];
 const CALLS: &[(u8, &[u32])] = &[
     (39, &[16]),
     (45, &[32]),
@@ -64,8 +91,8 @@ fn scene_call(command: usize) -> (u8, &'static [u32]) {
     }
 }
 
-fn data() -> [u8; 1024] {
-    let mut data = [0; 1024];
+fn data() -> [u8; 1536] {
+    let mut data = [0; 1536];
     data[16..27].copy_from_slice(b"ui/pic.tga\0");
     data[224..239].copy_from_slice(b"maps/probe.bsp\0");
     for (index, value) in [0.5f32, 0.25, 1., 0.75].into_iter().enumerate() {
@@ -126,6 +153,13 @@ fn data() -> [u8; 1024] {
         (LOD_BIAS_NAME, b"r_lodbias\0"),
         (CURVE_FIRST, b"12.5\0"),
         (CURVE_SECOND, b"-2\0"),
+        (NOVIS_NAME, b"r_novis\0"),
+        (NOCULL_NAME, b"r_nocull\0"),
+        (WORLD_NAME, b"r_drawworld\0"),
+        (ENTITIES_NAME, b"r_drawentities\0"),
+        (NEAR_NAME, b"r_znear\0"),
+        (POLICY_FIRST, b"0.5\0"),
+        (POLICY_SECOND, b"2\0"),
     ] {
         data[offset as usize..offset as usize + text.len()].copy_from_slice(text);
     }
@@ -163,7 +197,7 @@ fn ordinal(ui: bool, value: u8) -> u8 {
 fn qvm_scene(ui: bool) -> Program {
     qvm_scene_data(ui, &data())
 }
-fn qvm_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
+fn qvm_scene_data(ui: bool, initial: &[u8; 1536]) -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 96)];
     let mut branches = vec![];
@@ -191,16 +225,7 @@ fn qvm_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
                 (Call, 0),
             ]);
         } else if command == 29 {
-            for (number, words) in [
-                (5, &[CURVE_NAME, CURVE_FIRST][..]),
-                (5, &[LOD_SCALE_NAME, CURVE_FIRST][..]),
-                (5, &[LOD_BIAS_NAME, CURVE_SECOND][..]),
-                (44, &[256][..]),
-                (5, &[CURVE_NAME, CURVE_SECOND][..]),
-                (5, &[LOD_SCALE_NAME, CURVE_SECOND][..]),
-                (5, &[LOD_BIAS_NAME, CURVE_FIRST][..]),
-                (44, &[256][..]),
-            ] {
+            for &(number, words) in VIEW_CALLS {
                 for (index, &word) in words.iter().enumerate() {
                     operations.extend([(Const, word as i32), (Arg, 8 + index as i32 * 4)]);
                 }
@@ -330,7 +355,7 @@ fn native_scene(ui: bool) -> Program {
     native_scene_data(ui, &data())
 }
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
+fn native_scene_data(ui: bool, initial: &[u8; 1536]) -> Program {
     use native_image::*;
     use qa_compat::native::{NamedExport, Vm};
     use qa_formats::program::native::{Image, LoadRole};
@@ -359,7 +384,7 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     )
     .unwrap();
     let callback = vm.import_callback();
-    let source = base + 0x2400;
+    let source = base + 0x2800;
     let mut code = vec![];
     for command in 0..31usize {
         code.extend([0x83, 0xf9, command as u8, 0x0f, 0x85]);
@@ -381,16 +406,7 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
             code.extend(callback.to_le_bytes());
             code.extend([0xff, 0xd0]);
         } else if command == 29 {
-            for (number, words) in [
-                (5, &[CURVE_NAME, CURVE_FIRST][..]),
-                (5, &[LOD_SCALE_NAME, CURVE_FIRST][..]),
-                (5, &[LOD_BIAS_NAME, CURVE_SECOND][..]),
-                (44, &[256][..]),
-                (5, &[CURVE_NAME, CURVE_SECOND][..]),
-                (5, &[LOD_SCALE_NAME, CURVE_SECOND][..]),
-                (5, &[LOD_BIAS_NAME, CURVE_FIRST][..]),
-                (44, &[256][..]),
-            ] {
+            for &(number, words) in VIEW_CALLS {
                 for (index, &word) in words.iter().enumerate() {
                     code.extend(if index == 0 {
                         [0x48, 0xba]
@@ -534,9 +550,9 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
         code[branch..branch + 4].copy_from_slice(&((end - branch - 4) as i32).to_le_bytes());
     }
     code.extend([0x31, 0xc0, 0xc3]);
-    assert!(code.len() < 0xc00);
+    assert!(code.len() < 0x1000);
     vm.process.memory_mut().unwrap()[0x1800..0x1800 + code.len()].copy_from_slice(&code);
-    vm.process.memory_mut().unwrap()[0x2400..0x2800].copy_from_slice(initial);
+    vm.process.memory_mut().unwrap()[0x2800..0x2800 + initial.len()].copy_from_slice(initial);
     Program::Native {
         vm: Box::new(vm),
         imports: if ui {
@@ -558,18 +574,30 @@ pub(super) fn submissions(native: bool, ui: bool) {
     )]);
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     let mut assets = qa_render::Assets::load().unwrap();
-    let world = model_support::world(&mut assets, -1.);
+    let policy_rules = [
+        RuleSetId::Quake3,
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+    ];
+    let variants: [&[qa_render::world::SurfaceMaterial]; 5] = [&[]; 5];
+    let world = model_support::world_variants(&mut assets, -1., &variants);
     let presentation = qa_render::world::WorldPresentationId(0);
+    let policy_presentations = assets.world(world).unwrap().presentations().to_vec();
     let loaded = LoadedWorld {
         world,
-        presentations: vec![LoadedWorldPresentation {
-            id: presentation,
-            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
-            lighting: Default::default(),
-            compile_policy: Default::default(),
-            defaults: Default::default(),
-        }]
-        .into_boxed_slice(),
+        presentations: policy_rules
+            .into_iter()
+            .zip(policy_presentations.iter().copied())
+            .map(|(rules, id)| LoadedWorldPresentation {
+                id,
+                profile: WorldPresentationProfile::native(rules, None),
+                lighting: Default::default(),
+                compile_policy: Default::default(),
+                defaults: Default::default(),
+            })
+            .collect(),
         diagnostics: Box::default(),
     };
     assets
@@ -656,6 +684,20 @@ pub(super) fn submissions(native: bool, ui: bool) {
         200,
     )
     .unwrap();
+    for (rules, &selected) in policy_rules.into_iter().zip(&policy_presentations) {
+        host.local_worlds[0] = Some((world, selected));
+        let view = host.client_views()[0].unwrap();
+        assert_eq!(view.policy, Default::default());
+        assert_eq!(
+            view.near,
+            if rules == RuleSetId::Quake2Rerelease {
+                2.
+            } else {
+                4.
+            }
+        );
+    }
+    host.local_worlds[0] = Some((world, presentation));
     if !ui {
         assert_eq!(probe(&mut host, 0, 6, 0), 0);
     } // Cold selection, before any scene owner.
@@ -733,6 +775,8 @@ pub(super) fn submissions(native: bool, ui: bool) {
     };
     assert_eq!(view.refdef.time_ms, -12345);
     assert_eq!(view.refdef.curve_error, 37.5);
+    assert_eq!(view.refdef.policy, qa_render::scene::ViewPolicy::default());
+    assert_eq!(view.refdef.near, 4.);
     assert_eq!(view.refdef.text[7][1], 0xe7);
     assert_eq!(view.scene.polys.count, 2);
     let recipient = host.local_clients[0].map(|client| qa_render::effects::EffectClient {
@@ -786,11 +830,92 @@ pub(super) fn submissions(native: bool, ui: bool) {
                 view.refdef.curve_error,
                 view.refdef.model_lod.scale,
                 view.refdef.model_lod.bias,
+                view.refdef.policy,
+                view.refdef.near,
             )),
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(captured, [(12.5, 12.5, -2), (-2.0, -2.0, 12)]);
+    let fractional = qa_render::scene::ViewPolicy {
+        draw_world: false,
+        draw_entities: false,
+        ..Default::default()
+    };
+    let enabled = qa_render::scene::ViewPolicy {
+        ignore_pvs: true,
+        ignore_areas: true,
+        cull_bounds: false,
+        ..Default::default()
+    };
+    assert_eq!(
+        captured,
+        [
+            (12.5, 12.5, -2, fractional, 0.5),
+            (-2.0, -2.0, 12, enabled, 2.)
+        ]
+    );
+    assert!(
+        host.runtime
+            .scene
+            .as_mut()
+            .unwrap()
+            .recycle(same_callback)
+            .is_ok()
+    );
+    for name in ["r_novis", "r_nocull", "r_drawworld", "r_drawentities"] {
+        let view = host
+            .console
+            .cvars
+            .bind(
+                name,
+                Context {
+                    source: RuleSetId::Quake3,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        host.console.cvars.force_write(view, "0.5").unwrap();
+    }
+    let q3 = host.client_views()[0].unwrap();
+    assert_eq!(q3.policy, fractional);
+    for &presentation in &policy_presentations[1..4] {
+        host.local_worlds[1] = Some((world, presentation));
+        assert_eq!(
+            host.client_views()[1].unwrap().policy,
+            qa_render::scene::ViewPolicy {
+                ignore_pvs: true,
+                cull_bounds: false,
+                ..Default::default()
+            }
+        );
+    }
+    host.local_worlds[1] = Some((world, policy_presentations[4]));
+    assert_eq!(host.client_views()[1].unwrap().policy, fractional);
+    host.local_worlds[1] = Some((world, presentation));
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    assert_eq!(probe(&mut host, 1, 3, 0), 0);
+    let packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
+    let views = packet
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            Command::View(view) => Some(view),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(views.len(), 2);
+    assert_eq!(views[0].refdef.policy, fractional);
+    assert_eq!(
+        views[1].refdef.policy,
+        qa_render::scene::ViewPolicy {
+            ignore_pvs: true,
+            cull_bounds: false,
+            ..Default::default()
+        }
+    );
+    assert_eq!(views[0].refdef.viewport.x, 0);
+    assert_eq!(views[1].refdef.viewport.x, 160);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }
 
@@ -1268,6 +1393,8 @@ pub(super) fn ownership() {
         lighting_scales: [0.6, 1.],
         curve_error: qa_render::scene::DEFAULT_CURVE_ERROR,
         model_lod: Default::default(),
+        policy: Default::default(),
+        near: 4.,
     };
     let mut source = Source {
         renderer,

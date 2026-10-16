@@ -313,23 +313,39 @@ impl WorldView {
         hidden_areas: &[u8],
     ) -> Result<&[VisibleSurface], VisibilityQueryError> {
         self.count = 0;
-        let primary = world
-            .visibility
-            .point_in_leaf(
-                refdef.pvs_origin.unwrap_or(refdef.origin),
-                qa_world::visibility::PointLeafRules::RENDER,
-            )
-            .and_then(|leaf| world.visibility.leaf(leaf))
-            .and_then(|leaf| leaf.selector);
+        if !refdef.policy.draw_world {
+            return Ok(&self.surfaces[..0]);
+        }
+        let primary = if refdef.policy.ignore_pvs {
+            None
+        } else {
+            world
+                .visibility
+                .point_in_leaf(
+                    refdef.pvs_origin.unwrap_or(refdef.origin),
+                    qa_world::visibility::PointLeafRules::RENDER,
+                )
+                .and_then(|leaf| world.visibility.leaf(leaf))
+                .and_then(|leaf| leaf.selector)
+        };
+        let secondary = if refdef.policy.ignore_pvs {
+            None
+        } else {
+            secondary
+        };
+        let hidden_areas = if refdef.policy.ignore_areas {
+            &[][..]
+        } else {
+            hidden_areas
+        };
         let base = frustum(refdef)?;
         let mut planes = [base[0]; 7];
         planes[..6].copy_from_slice(&base);
-        let count = if let Some(plane) = refdef.clip_plane {
-            planes[6] = plane;
-            7
-        } else {
-            6
-        };
+        let mut count = if refdef.policy.cull_bounds { 6 } else { 0 };
+        if let Some(plane) = refdef.clip_plane {
+            planes[count] = plane;
+            count += 1;
+        }
         self.visibility.query(
             &world.visibility,
             refdef.origin,

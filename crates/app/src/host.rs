@@ -27,6 +27,8 @@ pub struct ClientView {
     pub lighting_scales: [f32; 2],
     pub curve_error: f32,
     pub model_lod: qa_render::scene::ModelLodSettings,
+    pub policy: qa_render::scene::ViewPolicy,
+    pub near: f32,
 }
 
 /// The live adapter delegates every OS operation to platform. The same host
@@ -388,6 +390,7 @@ pub struct FrameHost {
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
     model_lod: [qa_console::cvars::View; 2],
+    view_policy: [crate::renderer::ViewPolicyViews; 5],
     pub(crate) image_search: qa_console::cvars::View,
     image_search_generation: Option<u64>,
     userinfo: Box<[ClientUserinfo]>,
@@ -1272,6 +1275,9 @@ impl FrameHost {
             .ok_or("missing software water warp cvar")?;
         let curve_error = crate::render_settings::curve_error_view(&console.cvars)?;
         let model_lod = crate::render_settings::model_lod_views(&console.cvars)?;
+        let [q1, qw, q2, rr, q3] = RuleSetId::ALL
+            .map(|source| crate::renderer::ViewPolicyViews::bind(&console.cvars, source));
+        let view_policy = [q1?, qw?, q2?, rr?, q3?];
         let image_search = crate::render_settings::image_search_view(&console.cvars)?;
         let lighting_scales =
             ["r_ambientScale", "r_directedScale"].map(|name| console.cvars.find(name));
@@ -1381,6 +1387,7 @@ impl FrameHost {
             software_waterwarp,
             curve_error,
             model_lod,
+            view_policy,
             image_search,
             image_search_generation: None,
             userinfo: (0..SeatId::COUNT)
@@ -1645,6 +1652,29 @@ impl FrameHost {
         std::array::from_fn(|seat| {
             let (client, row, player) = self.local_seat(seat)?;
             let (world, world_presentation) = self.local_worlds[seat]?;
+            let rules = self
+                .runtime
+                .model_assets
+                .as_ref()
+                .and_then(|owner| {
+                    owner
+                        .assets()
+                        .world_presentation_registration(world_presentation)
+                })
+                .map(|entry| entry.profile.rules)
+                .or(self.local_presentation_rules[seat])
+                .or_else(|| {
+                    self.runtime.client_resources[client.0 as usize]
+                        .as_ref()?
+                        .state
+                        .models
+                        .profile()
+                        .map(|profile| profile.rules)
+                })
+                .unwrap_or(row.client_rules);
+            let (policy, near) = self.view_policy[rules as usize]
+                .read(&self.console.cvars)
+                .ok()?;
             let camera = self.client_camera(client, player);
             let mut presentation = self.local_presentations[seat];
             presentation.software_waterwarp &= self
@@ -1672,6 +1702,8 @@ impl FrameHost {
                     .map(|handle| self.console.cvars.value(handle)),
                 curve_error,
                 model_lod,
+                policy,
+                near,
             })
         })
     }

@@ -9,6 +9,9 @@ use qa_render::world::{SurfaceMaterial, VisibleSurface, WorldId};
 use qa_render::{Assets, Command, FrontEnd, Limits, Refdef, SceneEntity, ShaderBindingId, Vertex};
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
+#[path = "scene/view_policy.rs"]
+mod view_policy;
+
 #[test]
 fn background_commands_precede_native_views_and_ui_with_owned_ranges() {
     let assets = Assets::load().unwrap();
@@ -238,6 +241,15 @@ fn world_variants_with(
     variants: &[&[SurfaceMaterial]],
     mutate: impl FnOnce(&mut WorldGeometry),
 ) -> WorldId {
+    world_variants_visibility(assets, variants, mutate, None)
+}
+
+fn world_variants_visibility(
+    assets: &mut Assets,
+    variants: &[&[SurfaceMaterial]],
+    mutate: impl FnOnce(&mut WorldGeometry),
+    visibility: Option<VisibilityWorld>,
+) -> WorldId {
     let materials = variants[0];
     let bounds = Bounds {
         mins: Vec3([1.0, -1.0, -1.0]),
@@ -296,25 +308,27 @@ fn world_variants_with(
         patch_stats: PatchStats::default(),
     };
     mutate(&mut geometry);
-    let visibility = VisibilityWorld::load(
-        vec![],
-        vec![],
-        vec![VisLeaf {
-            selector: None,
-            area: None,
-            solid: false,
-            bounds,
-            surfaces: SurfaceSpan {
-                first: 0,
-                count: materials.len() as u32,
-            },
-        }],
-        (0..materials.len() as u32).collect(),
-        materials.len(),
-        -1,
-        PvsRows::all_visible(0),
-    )
-    .unwrap();
+    let visibility = visibility.unwrap_or_else(|| {
+        VisibilityWorld::load(
+            vec![],
+            vec![],
+            vec![VisLeaf {
+                selector: None,
+                area: None,
+                solid: false,
+                bounds,
+                surfaces: SurfaceSpan {
+                    first: 0,
+                    count: materials.len() as u32,
+                },
+            }],
+            (0..materials.len() as u32).collect(),
+            materials.len(),
+            -1,
+            PvsRows::all_visible(0),
+        )
+        .unwrap()
+    });
     assets
         .register_world(
             geometry,
@@ -406,7 +420,7 @@ fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_vie
     };
     let mut scratch = qa_render::world::WorldView::load(assets.world(world).unwrap());
     let mut cpu = qa_render::cpu::CpuBackend::load_with_assets(8, 8, &assets).unwrap();
-    for (limits, expected_views) in [
+    for (limits, expected_views, policy) in [
         (Limits::default(), 2),
         (
             Limits {
@@ -429,7 +443,20 @@ fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_vie
             },
             1,
         ),
-    ] {
+    ]
+    .into_iter()
+    .map(|(limits, count)| (limits, count, qa_render::scene::ViewPolicy::default()))
+    .chain(std::iter::once((
+        Limits::default(),
+        2,
+        qa_render::scene::ViewPolicy {
+            ignore_pvs: true,
+            ignore_areas: true,
+            cull_bounds: false,
+            draw_entities: false,
+            ..Default::default()
+        },
+    ))) {
         let mut front = FrontEnd::load(limits).unwrap();
         let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
         assert!(frame.add_entity(SceneEntity {
@@ -479,7 +506,7 @@ fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_vie
         assert!(frame.render_world_scene(
             world,
             presentation,
-            view,
+            Refdef { policy, ..view },
             &[],
             &mut scratch,
             &assets,
@@ -497,6 +524,8 @@ fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_vie
         assert_eq!(views.len(), expected_views);
         assert!(!views.last().unwrap().refdef.portal);
         for view in &views {
+            assert_eq!(view.refdef.policy, policy);
+            assert_eq!(view.refdef.near, 0.25);
             assert_eq!(view.scene.entities.count, 2);
             assert_eq!(view.scene.lights.count, 1);
             assert_eq!(

@@ -89,6 +89,28 @@ impl Default for PaletteTransform {
         }
     }
 }
+/// Per-view capability data. Source adapters resolve cvars before copying a
+/// Refdef; visibility and both drawing backends consume the same submission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewPolicy {
+    pub ignore_pvs: bool,
+    pub ignore_areas: bool,
+    pub cull_bounds: bool,
+    pub draw_world: bool,
+    pub draw_entities: bool,
+}
+impl Default for ViewPolicy {
+    fn default() -> Self {
+        Self {
+            ignore_pvs: false,
+            ignore_areas: false,
+            cull_bounds: true,
+            draw_world: true,
+            draw_entities: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Refdef {
     pub viewport: Viewport,
@@ -98,6 +120,7 @@ pub struct Refdef {
     pub fov: [f32; 2],
     pub near: f32,
     pub far: f32,
+    pub policy: ViewPolicy,
     pub time_ms: i64,
     pub hyperspace: bool,
     pub portal: bool,
@@ -210,6 +233,7 @@ impl Default for Refdef {
             fov: [90.0, 75.0],
             near: 4.0,
             far: 65536.0,
+            policy: ViewPolicy::default(),
             time_ms: 0,
             hyperspace: false,
             portal: false,
@@ -1236,7 +1260,9 @@ impl Frame {
         let projection = refdef.projection_scales();
         let generated = self.list.draws[self.first.draws.first as usize..self.list.draw_count]
             .iter()
-            .filter(|draw| draw.kind == DrawKind::Entity)
+            .filter(|&&draw| {
+                draw.kind == DrawKind::Entity && draw_allowed(&self.list, draw, refdef.policy)
+            })
             .filter_map(|&draw| {
                 model_draw(&self.list, assets, draw, &refdef, projection)
                     .ok()
@@ -1281,6 +1307,9 @@ impl Frame {
             if source.draws.count as usize <= self.list.draws.len() - first {
                 let mut count = 0;
                 for index in source.draws.range() {
+                    if !draw_allowed(&self.list, self.list.draws[index], refdef.policy) {
+                        continue;
+                    }
                     let Ok(Some(mut draw)) = model_draw(
                         &self.list,
                         assets,
@@ -1780,6 +1809,9 @@ impl Frame {
         let first_draw = self.first.draws.first as usize;
         let mut valid = first_draw;
         for index in first_draw..end {
+            if !draw_allowed(&self.list, self.list.draws[index], refdef.policy) {
+                continue;
+            }
             let draw = match model_draw(
                 &self.list,
                 assets,
@@ -1891,18 +1923,24 @@ impl Frame {
         self.command(Command::Draw2d(draw))
     }
 }
+fn draw_entity_index(list: &CommandList, draw: DrawItem) -> Option<u32> {
+    match draw.kind {
+        DrawKind::Entity => Some(draw.index),
+        DrawKind::Surface => list.surface(draw.index).entity,
+        DrawKind::Poly => list.poly(draw.index).entity,
+    }
+}
+
+fn draw_allowed(list: &CommandList, draw: DrawItem, policy: ViewPolicy) -> bool {
+    if draw_entity_index(list, draw).is_some() {
+        policy.draw_entities
+    } else {
+        draw.kind != DrawKind::Surface || policy.draw_world
+    }
+}
+
 pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<SceneEntity> {
-    let mut entity = match draw.kind {
-        DrawKind::Entity => Some(*list.entity(draw.index)),
-        DrawKind::Surface => list
-            .surface(draw.index)
-            .entity
-            .map(|index| *list.entity(index)),
-        DrawKind::Poly => list
-            .poly(draw.index)
-            .entity
-            .map(|index| *list.entity(index)),
-    }?;
+    let mut entity = *list.entity(draw_entity_index(list, draw)?);
     if let Some(mesh) = draw.mesh {
         entity.model = SceneModel::Mesh(mesh);
     } else if matches!(entity.model, SceneModel::Lods { .. }) {
@@ -2021,11 +2059,7 @@ fn draw_key(
     shaders: ShaderView<'_>,
 ) -> Option<DrawKey> {
     let (material, lightmap) = source_material_lightmap(assets, draw, shaders.native)?;
-    let instance = match draw.kind {
-        DrawKind::Entity => draw.index,
-        DrawKind::Surface => list.surface(draw.index).entity.unwrap_or(u32::MAX),
-        DrawKind::Poly => list.poly(draw.index).entity.unwrap_or(u32::MAX),
-    };
+    let instance = draw_entity_index(list, draw).unwrap_or(u32::MAX);
     if draw_entity(list, draw).is_some_and(|entity| entity.material_opacity.is_some()) {
         return Some(DrawKey {
             sort: 6.,

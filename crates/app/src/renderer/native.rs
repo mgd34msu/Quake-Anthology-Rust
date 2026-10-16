@@ -29,6 +29,7 @@ struct Target {
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
     model_lod: [qa_console::cvars::View; 2],
+    view_policy: super::ViewPolicyViews,
 }
 impl Target {
     fn world_presentation(
@@ -160,6 +161,7 @@ impl SceneRole {
         software_waterwarp: qa_console::cvars::View,
         curve_error: qa_console::cvars::View,
         model_lod: [qa_console::cvars::View; 2],
+        view_policy: super::ViewPolicyViews,
     ) {
         self.target = Some(Target {
             profile,
@@ -172,6 +174,7 @@ impl SceneRole {
             software_waterwarp,
             curve_error,
             model_lod,
+            view_policy,
         });
     }
 }
@@ -594,6 +597,10 @@ impl SceneService for SceneBorrow<'_> {
             cvars.numeric(target.software_waterwarp).unwrap_or(0.0) != 0.0;
         view.refdef.curve_error = crate::render_settings::curve_error(cvars, target.curve_error);
         view.refdef.model_lod = crate::render_settings::model_lod(cvars, target.model_lod);
+        (view.refdef.policy, view.refdef.near) = target
+            .view_policy
+            .read(cvars)
+            .map_err(|_| CallError::Geometry)?;
         view.refdef
             .validate(u32::MAX, u32::MAX)
             .ok_or(CallError::Geometry)?;

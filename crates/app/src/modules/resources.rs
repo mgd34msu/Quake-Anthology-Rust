@@ -741,6 +741,8 @@ impl FrameHost {
                 .ok_or("missing software water warp cvar")?;
             let curve_error = crate::render_settings::curve_error_view(&self.console.cvars)?;
             let model_lod = crate::render_settings::model_lod_views(&self.console.cvars)?;
+            let view_policy =
+                crate::renderer::ViewPolicyViews::bind(&self.console.cvars, profile.rules)?;
             row.scene_role.configure(
                 profile,
                 viewport,
@@ -752,6 +754,7 @@ impl FrameHost {
                 software_waterwarp,
                 curve_error,
                 model_lod,
+                view_policy,
             );
         }
         let count = modules.rows.len();

@@ -45,6 +45,8 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
         lighting_scales: [0.6, 1.],
         curve_error: 250.0,
         model_lod: Default::default(),
+        policy: Default::default(),
+        near: 4.0,
     };
     let mut second = first;
     second.world_presentation = WorldPresentationId(4);
@@ -56,6 +58,10 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     second.curve_error = 17.25;
     second.model_lod.scale = 7.25;
     second.model_lod.bias = -1;
+    second.policy.ignore_pvs = true;
+    second.policy.ignore_areas = true;
+    second.policy.draw_entities = false;
+    second.near = 2.0;
     let a = view_refdef(first, viewport, Kind::Cpu);
     let b = view_refdef(second, viewport, Kind::Cpu);
     assert_eq!(a.cpu_presentation, first.presentation.cpu);
@@ -67,6 +73,10 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     assert_eq!(a.model_lod, first.model_lod);
     assert_eq!(b.curve_error, second.curve_error);
     assert_eq!(b.model_lod, second.model_lod);
+    assert_eq!(a.policy, first.policy);
+    assert_eq!(b.policy, second.policy);
+    assert_eq!(a.near, first.near);
+    assert_eq!(b.near, second.near);
     assert_eq!(a.axes, b.axes);
     assert_eq!(a.origin, b.origin);
     assert_eq!(a.fov, b.fov);
@@ -79,4 +89,6 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     assert_eq!(gl.lightstyles[0], second.presentation.lightstyles[0]);
     assert_eq!(gl.curve_error, second.curve_error);
     assert_eq!(gl.model_lod, second.model_lod);
+    assert_eq!(gl.policy, second.policy);
+    assert_eq!(gl.near, second.near);
 }
