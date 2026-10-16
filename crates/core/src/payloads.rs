@@ -137,6 +137,25 @@ impl<T: Copy> PayloadQueue<T> {
         ))
     }
 
+    /// Retain the oldest `keep` records, releasing newer payload reservations.
+    pub fn truncate(&mut self, keep: usize) {
+        if keep >= self.length {
+            return;
+        }
+        if keep == 0 {
+            self.clear();
+            return;
+        }
+        while self.length > keep {
+            let index = (self.head + self.length - 1) % self.slots.len();
+            if let Some(slot) = self.slots[index].take() {
+                self.used -= slot.reserved;
+                self.write = (self.write + self.bytes.len() - slot.reserved) % self.bytes.len();
+            }
+            self.length -= 1;
+        }
+    }
+
     pub fn clear(&mut self) {
         self.slots.fill(None);
         self.head = 0;

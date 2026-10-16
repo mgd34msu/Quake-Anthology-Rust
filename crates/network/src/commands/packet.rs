@@ -35,7 +35,7 @@ impl Protocol {
             _ => StringPolicy::LEGACY,
         }
     }
-    pub(crate) const fn client_string_policy(self) -> StringPolicy {
+    pub const fn client_string_policy(self) -> StringPolicy {
         if matches!(self, Self::Quake2Repro1038) {
             self.string_policy()
                 .limited(crate::message::COMMAND_STRING_BYTES - 1)

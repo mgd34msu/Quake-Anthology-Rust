@@ -2,6 +2,9 @@
 #[allow(dead_code)]
 mod assets_support;
 
+#[path = "support/client_asset_frames.rs"]
+mod asset_frames;
+
 use qa_app::{
     Runtime,
     client_policy::ClientPolicy,
@@ -69,6 +72,7 @@ struct Source {
     packets: Vec<Vec<u8>>,
     polls: usize,
     presentation_paused: bool,
+    reject_reset: bool,
 }
 impl FrameSource for Source {
     fn begin_frame(&mut self) -> Duration {
@@ -92,6 +96,9 @@ impl FrameSource for Source {
     fn present(&mut self) {}
     fn presentation_ready(&self) -> bool {
         !self.presentation_paused
+    }
+    fn reset_presentation(&mut self, _: ClientId, _: EntityId) -> bool {
+        !std::mem::take(&mut self.reject_reset)
     }
     fn send_packet(&mut self, socket: u16, peer: std::net::SocketAddr, bytes: &[u8]) -> bool {
         assert_eq!(socket, 0);
@@ -2303,5 +2310,605 @@ fn queued_netquake_reset_keeps_new_display_records_pending_without_stalling_a_he
     assert_eq!(
         host.runtime.server.events.texts.get(peer),
         Some(b"healthy peer".as_slice())
+    );
+}
+
+fn dispatch_nq_startup_reset(host: &mut FrameHost) {
+    qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut Source::default(),
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.,
+        2.,
+    );
+}
+
+// Observe the actual existing loopback/channel decoder at SERVER. This fixture
+// consumes commands instead of dispatching gameplay, then returns native ACKs.
+fn flush_nq_client_commands(host: &mut FrameHost, rounds: usize) -> (Vec<Vec<u8>>, usize) {
+    let mut commands = Vec::new();
+    let mut moves = 0;
+    let mut queue = SysEventQueue::load(256, 256 * 1024).unwrap();
+    for _ in 0..rounds {
+        for client in host.local_clients.into_iter().flatten() {
+            host.runtime.send_local_command(
+                client,
+                &UserCmd {
+                    duration_ms: 16,
+                    movement: [100., 0., 0.],
+                    ..Default::default()
+                },
+                host.time,
+            );
+        }
+        host.runtime.loopback.enqueue(&mut queue, host.time);
+        while let Some(event) = queue.pop() {
+            let EventKind::Packet {
+                socket,
+                from,
+                bytes,
+            } = event.kind
+            else {
+                continue;
+            };
+            assert_eq!(socket, Endpoint::Server.socket());
+            host.runtime
+                .network
+                .receive(socket, from, bytes, event.time, |_, _, incoming| {
+                    match incoming {
+                        qa_network::ingress::Incoming::CommandString { text, .. } => {
+                            commands.push(text.to_vec())
+                        }
+                        qa_network::ingress::Incoming::Command { .. } => moves += 1,
+                        _ => {}
+                    }
+                    ControlFlow::Continue(())
+                });
+        }
+        for client in host.local_clients.into_iter().flatten() {
+            let connection = host
+                .runtime
+                .network
+                .get_mut(client, Endpoint::Server)
+                .unwrap();
+            while connection.channel.pending_controls() != 0 {
+                connection
+                    .channel
+                    .prepare(None, host.time)
+                    .unwrap()
+                    .unwrap();
+                connection
+                    .channel
+                    .submit_with(host.time, |packet| {
+                        host.runtime
+                            .loopback
+                            .send(Endpoint::Server, client, packet)
+                            .is_ok()
+                    })
+                    .unwrap();
+            }
+        }
+        host.drain(&mut Default::default());
+    }
+    assert_eq!(
+        (
+            host.runtime.network.malformed,
+            host.runtime.network.command_errors
+        ),
+        (0, 0)
+    );
+    (commands, moves)
+}
+
+#[test]
+fn queued_netquake_signon_replies_preserve_native_text_retry_progress_and_stage_order() {
+    let (mut host, clients) = netquake_camera_host(&[5]);
+    let client = clients[0];
+    bind_nq_preloaded_world(&mut host, &clients);
+    let context = Context {
+        source: RuleSetId::Quake,
+        seat: SeatId::FIRST,
+        ..Default::default()
+    };
+    host.console
+        .cvars
+        .set_user("_cl_name", "Pilot", context, None, 0)
+        .unwrap();
+    host.console
+        .cvars
+        .set_user("_cl_color", "0x34", context, None, 0)
+        .unwrap();
+    let resources = host.runtime.client_resources[client.0 as usize]
+        .as_mut()
+        .unwrap();
+    resources.set_nq_spawn_parameters(b"1 2 3 ").unwrap();
+    for rejected in [
+        b"hidden\0suffix".as_slice(),
+        b"hidden\xffsuffix",
+        &vec![b'x'; 2048],
+    ] {
+        assert!(resources.set_nq_spawn_parameters(rejected).is_err());
+    }
+    let mut header = nq_server_info(b"signon", &[b"maps/ready.bsp", b"*1"], &[]);
+    header.extend([25, 1]);
+    queue_netquake_control(&mut host, client, &header);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .nq_signon_stage(),
+        Some(1)
+    );
+    assert_eq!(flush_nq_client_commands(&mut host, 1), (vec![], 0));
+    dispatch_nq_startup_reset(&mut host);
+    // An ordinary admitted row while stage1 keeps it at1 and retries readiness.
+    queue_nq_view_snapshot(&mut host, client, 1., None, (42, Vec3::default()), None);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        flush_nq_client_commands(&mut host, 2),
+        (vec![b"prespawn".to_vec()], 0)
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        0
+    );
+
+    // Discover the bounded record capacity through real queue admission and
+    // drain its native coalesced flight. Then refill all but one record slot:
+    // stage2 can admit name, while color/spawn must wait without duplicating it.
+    let mut filled = 0;
+    loop {
+        let result = host
+            .runtime
+            .network
+            .get_mut(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .queue_client_command(Protocol::NetQuake15, b"busy");
+        match result {
+            Ok(_) => filled += 1,
+            Err(qa_network::channel::TransmitError::Full) => break,
+            Err(error) => panic!("unexpected native queue error: {error}"),
+        }
+    }
+    assert!(filled > 1);
+    assert_eq!(
+        flush_nq_client_commands(&mut host, filled + 2),
+        (vec![b"busy".to_vec(); filled], 0)
+    );
+    for _ in 0..filled - 1 {
+        host.runtime
+            .network
+            .get_mut(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .queue_client_command(Protocol::NetQuake15, b"busy")
+            .unwrap();
+    }
+    queue_netquake_control(&mut host, client, &[25, 2]);
+    host.drain(&mut Default::default());
+    let (queued, moves) = flush_nq_client_commands(&mut host, filled + 2);
+    assert_eq!(moves, 0);
+    assert_eq!(
+        queued
+            .iter()
+            .filter(|text| text.as_slice() == b"busy")
+            .count(),
+        filled - 1
+    );
+    assert_eq!(
+        queued
+            .iter()
+            .filter(|text| text.as_slice() != b"busy")
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![b"name \"Pilot\"\n".to_vec()]
+    );
+    queue_nq_view_snapshot(&mut host, client, 2., None, (42, Vec3::default()), None);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        flush_nq_client_commands(&mut host, 3),
+        (vec![b"color 3 4\n".to_vec(), b"spawn 1 2 3 ".to_vec()], 0)
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        0
+    );
+
+    queue_netquake_control(&mut host, client, &[25, 3]);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        flush_nq_client_commands(&mut host, 2),
+        (vec![b"begin".to_vec()], 0)
+    );
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .nq_signon_stage(),
+        Some(3)
+    );
+    // A truncated fast-update body cannot admit the native transition.
+    queue_netquake_control(&mut host, client, &[0x80]);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .nq_signon_stage(),
+        Some(3)
+    );
+    assert_eq!(host.runtime.network.command_errors, 1);
+    queue_nq_view_snapshot(&mut host, client, 3., None, (42, Vec3::default()), None);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .nq_signon_stage(),
+        Some(4)
+    );
+    assert!(host.runtime.send_local_command(
+        client,
+        &UserCmd {
+            duration_ms: 16,
+            ..Default::default()
+        },
+        host.time
+    ));
+    assert_eq!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        1
+    );
+}
+
+#[test]
+fn queued_netquake_stage_jumps_require_resources_and_reset_before_movement_and_reject_only_the_bad_client()
+ {
+    let (mut host, clients) = netquake_camera_host(&[5, 9]);
+    bind_nq_preloaded_world(&mut host, &clients);
+    let first = clients[0];
+    let peer = clients[1];
+    let mut bytes = nq_server_info(b"unseen", &[b"maps/unseen.bsp"], &[]);
+    bytes.extend([25, 2, 25, 3]);
+    queue_nq_view_snapshot_with_prefix(
+        &mut host,
+        first,
+        1.,
+        None,
+        (42, Vec3::default()),
+        None,
+        &bytes,
+    );
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.client_resources[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .nq_signon_stage(),
+        Some(4)
+    );
+    let number = host
+        .runtime
+        .network
+        .get(first, Endpoint::Client)
+        .unwrap()
+        .commands
+        .as_ref()
+        .unwrap()
+        .history()
+        .unwrap()
+        .number();
+    assert!(!host.runtime.send_local_command(
+        first,
+        &UserCmd {
+            duration_ms: 100,
+            movement: [200., 0., 0.],
+            ..Default::default()
+        },
+        host.time
+    ));
+    assert_eq!(
+        host.runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        number
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .channel
+            .send_state()
+            .reliable_bytes,
+        0
+    );
+    // Explicit wire stage4 has the same resource gate as an entity-completed4.
+    let mut bytes = nq_server_info(b"unseen again", &[b"maps/unseen.bsp"], &[]);
+    bytes.extend([25, 4]);
+    queue_netquake_control(&mut host, first, &bytes);
+    host.drain(&mut Default::default());
+    assert!(!host.runtime.send_local_command(
+        first,
+        &UserCmd {
+            duration_ms: 100,
+            ..Default::default()
+        },
+        host.time
+    ));
+    assert_eq!(
+        host.runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        number
+    );
+
+    // Another connection admits a jump directly to3 and sends only begin.
+    let mut bytes = nq_server_info(b"healthy", &[b"maps/ready.bsp"], &[]);
+    bytes.extend([25, 3]);
+    queue_netquake_control(&mut host, peer, &bytes);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    queue_netquake_control(&mut host, peer, &[1]);
+    host.drain(&mut Default::default());
+    // A row completes3→4, but resources must first be admitted at the same
+    // restored-network boundary; no name/color/spawn/prespawn is fabricated.
+    queue_nq_view_snapshot(&mut host, peer, 2., None, (42, Vec3::default()), None);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.client_resources[peer.0 as usize]
+            .as_ref()
+            .unwrap()
+            .nq_signon_stage(),
+        Some(4)
+    );
+    assert!(
+        !host.runtime.snapshots[peer.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+
+    let (replies, _) = flush_nq_client_commands(&mut host, 2);
+    assert_eq!(replies, vec![b"begin".to_vec()]);
+
+    queue_netquake_control(&mut host, first, &[25, 4]); // duplicate after4
+    host.drain(&mut Default::default());
+    assert!(
+        host.runtime.snapshots[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    assert!(
+        !host.runtime.snapshots[peer.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    assert_eq!(
+        host.runtime.snapshots[peer.0 as usize]
+            .as_ref()
+            .unwrap()
+            .native_client(),
+        9
+    );
+}
+
+#[test]
+fn queued_netquake_stage4_waits_for_rejected_reset_without_predicting_or_advancing_command_history()
+{
+    let (mut host, clients) = netquake_camera_host(&[5, 9]);
+    bind_nq_preloaded_world(&mut host, &clients);
+    let first = clients[0];
+    let peer = clients[1];
+    let old_angles = host.runtime.prediction[0].player.view_angles;
+    let mut bytes = nq_server_info(b"pending reset", &[b"maps/ready.bsp"], &[]);
+    bytes.extend([25, 4]);
+    queue_netquake_control(&mut host, first, &bytes);
+    host.drain(&mut Default::default());
+    host.runtime
+        .input
+        .set_view_angles(SeatId::FIRST, Vec3([70., 80., 90.]));
+    let mut source = Source {
+        time: EventTime::from_milliseconds(10),
+        reject_reset: true,
+        ..Default::default()
+    };
+    let first_frame = host.frame(&mut source, true);
+    assert_eq!(first_frame.output.unhandled_presentation_resets, 1);
+    assert_eq!(
+        (
+            first_frame.commands[0].duration_ms,
+            first_frame.commands[0].movement[0]
+        ),
+        (0, 0.)
+    );
+    assert_eq!(host.runtime.prediction[0].player.view_angles, old_angles);
+    assert_eq!(
+        host.runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        0
+    );
+    assert!(
+        host.runtime
+            .network
+            .get(peer, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number()
+            > 0
+    );
+    source.time = EventTime::from_milliseconds(20);
+    let retry = host.frame(&mut source, true);
+    assert_eq!(retry.output.presentation_resets, 1);
+    assert_eq!(
+        (retry.commands[0].duration_ms, retry.commands[0].movement[0]),
+        (0, 0.)
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        0
+    );
+    source.time = EventTime::from_milliseconds(30);
+    host.frame(&mut source, true);
+    assert!(
+        host.runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number()
+            > 0
+    );
+    assert_eq!(
+        (
+            host.runtime.prediction[0].player.movement_rules,
+            host.runtime.prediction[0].player.trace_rules
+        ),
+        (RuleSetId::Quake3, RuleSetId::Quake2)
+    );
+}
+
+#[test]
+fn queued_netquake_required_model_waits_without_backend_then_closes_on_real_cold_failure() {
+    let (mut host, clients) = netquake_camera_host(&[5, 9]);
+    bind_nq_preloaded_world(&mut host, &clients);
+    let first = clients[0];
+    let peer = clients[1];
+    let mut backend =
+        asset_frames::Source::load(host.runtime.model_assets.as_ref().unwrap().assets());
+    host.publish_model_admission(backend.cpu.admitted_assets().unwrap())
+        .unwrap();
+    let mut bytes = nq_server_info(
+        b"missing model",
+        &[b"maps/ready.bsp", b"progs/not-installed.mdl"],
+        &[],
+    );
+    bytes.extend([25, 1]);
+    queue_netquake_control(&mut host, first, &bytes);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.runtime.vfs.take_lookup_count();
+    host.register_client_model_assets(None);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    queue_nq_view_snapshot(&mut host, first, 1., None, (42, Vec3::default()), None);
+    host.drain(&mut Default::default());
+    assert!(
+        !host.runtime.snapshots[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .channel
+            .send_state()
+            .reliable_bytes,
+        0
+    );
+    host.register_client_model_assets(Some(&mut backend));
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+    host.register_client_model_assets(Some(&mut backend));
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    queue_nq_view_snapshot(&mut host, first, 2., None, (42, Vec3::default()), None);
+    host.drain(&mut Default::default());
+    assert!(
+        host.runtime.snapshots[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    assert!(
+        !host.runtime.snapshots[peer.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        0
     );
 }

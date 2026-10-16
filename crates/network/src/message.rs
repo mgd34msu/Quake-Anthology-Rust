@@ -148,7 +148,7 @@ impl StringPolicy {
         };
         &text[..length.min(maximum)]
     }
-    pub(crate) fn truncates(self, text: &[u8]) -> bool {
+    pub fn truncates(self, text: &[u8]) -> bool {
         text.get(self.payload(text).len())
             .is_some_and(|&byte| !self.terminates(byte))
     }

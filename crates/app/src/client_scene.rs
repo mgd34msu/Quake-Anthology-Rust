@@ -121,6 +121,12 @@ pub struct ClientModelBindings {
     players: Option<player_models::PlayerBindings>,
     colors: Option<crate::model_assets::ModelColorId>,
 }
+pub(crate) enum RequiredModels {
+    Waiting,
+    Missing(u32),
+    Ready,
+}
+
 impl ClientModelBindings {
     pub fn load(client: ClientId, layout: ConfigLayout) -> Self {
         let range = layout.resources[0];
@@ -170,6 +176,34 @@ impl ClientModelBindings {
         self.profile = profile;
         self.colors = colors;
         self.world = world;
+    }
+
+    /// Native startup checks existing numeric bindings only while its reply is
+    /// pending. Config receipt and the cold pass own all filename work.
+    pub(crate) fn required_models(&self, configs: &ConfigStrings) -> RequiredModels {
+        if self.profile.is_none() || self.world.and_then(|(world, _)| world.collision).is_none() {
+            return RequiredModels::Waiting;
+        }
+        for ordinal in 1..self.range.count as usize {
+            let Some(row) = self
+                .range
+                .get(ordinal)
+                .and_then(|index| configs.config(index))
+            else {
+                return RequiredModels::Missing(ordinal as u32);
+            };
+            if ordinal != 1 && row.text.is_empty() {
+                continue;
+            }
+            if self.registrations[ordinal].is_none() {
+                return if self.cold.contains(ordinal) {
+                    RequiredModels::Waiting
+                } else {
+                    RequiredModels::Missing(ordinal as u32)
+                };
+            }
+        }
+        RequiredModels::Ready
     }
 
     pub fn revision(&self) -> u64 {

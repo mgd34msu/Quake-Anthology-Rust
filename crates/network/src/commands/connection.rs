@@ -623,6 +623,7 @@ impl Commands {
                     (Protocol::NetQuake15, 11) => {
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
                         let info = super::startup::NqServerInfo::read(&mut reader)?;
+                        channel.reset_client_startup();
                         let storage = channel.nq_state_mut().ok_or(packet::Error::Context)?;
                         storage.ring.reset_gamestate();
                         nq = Some(storage.begin());
@@ -653,6 +654,15 @@ impl Commands {
                         channel.read_q1_baseline(&mut reader)?;
                         at += 1 + reader.byte_position();
                     }
+                    (Protocol::NetQuake15, 25) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let stage = reader.read_bits(8)? as u8;
+                        if !(1..=4).contains(&stage) {
+                            return Err(packet::Error::Context);
+                        }
+                        at += 1 + reader.byte_position();
+                        consume(Incoming::SignonStage { stage });
+                    }
                     (Protocol::NetQuake15, opcode) if opcode & 128 != 0 => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;
                         let mut reader = Reader::new(&scratch[at..], Encoding::Bytes);
@@ -661,6 +671,7 @@ impl Commands {
                             .ok_or(packet::Error::Context)?
                             .entity(&mut reader, packet)?;
                         at += reader.byte_position();
+                        consume(Incoming::NqEntityUpdate);
                     }
                     (Protocol::QuakeWorld28, 42) => {
                         let (prior, model) = channel

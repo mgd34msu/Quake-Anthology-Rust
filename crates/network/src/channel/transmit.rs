@@ -259,6 +259,25 @@ impl Transmit {
 }
 
 impl Channel {
+    /// Replace an NQ CLIENT's unsubmitted command text without rewinding the
+    /// native reliable flight already accepted by its transport.
+    pub(crate) fn reset_client_startup(&mut self) {
+        if self.endpoint != Endpoint::Client || !self.policy.datagram {
+            return;
+        }
+        let tx = &mut self.transmit;
+        tx.ring
+            .truncate(if tx.started { tx.flight_records } else { 0 });
+        tx.pending = None;
+        if !tx.started {
+            tx.flight_records = 0;
+            tx.flight_length = 0;
+            tx.flight_offset = 0;
+            tx.state.reliable_bytes = 0;
+            tx.send_next = false;
+        }
+    }
+
     /// Native callers that correlate replies with incoming packet sequences
     /// select this behavior explicitly. Header format never selects it.
     pub(crate) fn align_reply(&mut self, incoming: u32) {

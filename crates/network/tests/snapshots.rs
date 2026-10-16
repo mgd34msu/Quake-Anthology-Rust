@@ -2427,7 +2427,7 @@ fn q1_wire_baselines_replace_future_rows_without_mutating_retained_frames() -> R
                     assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 7);
                     frames += 1;
                 }
-                Incoming::CommandProgress(_) => {}
+                Incoming::CommandProgress(_) | Incoming::NqEntityUpdate => {}
                 _ => panic!("baseline/update published an unrelated event"),
             },
         )?;
@@ -2475,7 +2475,7 @@ fn q1_wire_baselines_replace_future_rows_without_mutating_retained_frames() -> R
                 Incoming::Snapshot(frame) => {
                     assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 9)
                 }
-                Incoming::CommandProgress(_) => {}
+                Incoming::CommandProgress(_) | Incoming::NqEntityUpdate => {}
                 _ => panic!("baseline-derived update"),
             },
         )?;
@@ -2873,12 +2873,361 @@ fn nq_serverinfo_borrows_header_and_resource_rows_before_following_controls() ->
         &mut connections,
         NQ_BASELINE_UPDATE,
         |_, _, incoming| {
+            if matches!(incoming, Incoming::NqEntityUpdate) {
+                return;
+            }
             let Incoming::Snapshot(frame) = incoming else {
                 panic!("following native snapshot")
             };
             assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 7);
         },
     )?;
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn nq_serverinfo_cancels_only_validated_unsubmitted_client_text_and_prepared_bytes()
+-> Result<(), Error> {
+    for prepare in [false, true] {
+        let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+        let client = connections
+            .get_mut(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?;
+        client
+            .channel
+            .queue_client_command(Protocol::NetQuake15, b"prespawn")
+            .map_err(|_| Error::Context)?;
+        let discarded = client
+            .channel
+            .queue_client_command(Protocol::NetQuake15, b"unrelated old command")
+            .map_err(|_| Error::Context)?;
+        let prepared = if prepare {
+            client
+                .channel
+                .prepare_output(EventTime(0))
+                .map_err(|_| Error::Context)?
+                .ok_or(Error::Context)?;
+            assert_eq!(
+                client
+                    .channel
+                    .submit_with(EventTime(0), |_| false)
+                    .map_err(|_| Error::Context)?,
+                None
+            );
+            Some(
+                client
+                    .channel
+                    .pending_packet()
+                    .ok_or(Error::Context)?
+                    .bytes
+                    .to_vec(),
+            )
+        } else {
+            None
+        };
+        let before = client.channel.send_state();
+        server_payload(
+            &mut server,
+            &mut connections,
+            &NQ_SERVERINFO[..NQ_SERVERINFO.len() - 1],
+            |_, _, _| panic!("malformed replacement escaped validation"),
+        )?;
+        let client = connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?;
+        assert_eq!(client.channel.send_state(), before);
+        assert_eq!(
+            client.channel.pending_packet().map(|packet| packet.bytes),
+            prepared.as_deref()
+        );
+        assert!(client.channel.has_output());
+        let mut headers = 0;
+        server_payload(
+            &mut server,
+            &mut connections,
+            NQ_SERVERINFO,
+            |_, _, incoming| match incoming {
+                Incoming::ServerInfo(_) => headers += 1,
+                _ => panic!("replacement header manufactured another event"),
+            },
+        )?;
+        let client = connections
+            .get_mut(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?;
+        let mut expected = before;
+        expected.reliable_bytes = 0;
+        assert_eq!(client.channel.send_state(), expected);
+        assert!(client.channel.pending_packet().is_none());
+        assert!(!client.channel.has_output());
+        assert!(
+            client
+                .channel
+                .prepare_output(EventTime(4))
+                .map_err(|_| Error::Context)?
+                .is_none()
+        );
+        let fresh = client
+            .channel
+            .queue_client_command(Protocol::NetQuake15, b"fresh")
+            .map_err(|_| Error::Context)?;
+        assert!(fresh.0 > discarded.0);
+        let packet = client
+            .channel
+            .prepare_output(EventTime(5))
+            .map_err(|_| Error::Context)?
+            .ok_or(Error::Context)?;
+        let (header, body) = qa_network::headers::decode(
+            qa_network::headers::NETQUAKE,
+            qa_network::headers::Direction::ToServer,
+            packet.bytes,
+        )
+        .map_err(|_| Error::Context)?;
+        assert_eq!(header.sequence, before.sequence);
+        assert_eq!(body, b"\x04fresh\0");
+        assert_eq!((headers, connections.command_errors), (1, 1));
+    }
+    Ok(())
+}
+
+#[test]
+fn nq_serverinfo_regenerates_a_blocked_native_ack_without_old_client_text() -> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let receipt = server.queue_reliable(&[1]).map_err(|_| Error::Context)?;
+    server_payload(&mut server, &mut connections, &[], |_, _, _| {
+        panic!("native nop manufactured a presentation event")
+    })?;
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    client
+        .channel
+        .queue_client_command(Protocol::NetQuake15, b"obsolete")
+        .map_err(|_| Error::Context)?;
+    let old_ack = client
+        .channel
+        .prepare_output(EventTime(4))
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?
+        .bytes
+        .to_vec();
+    assert_eq!(
+        client
+            .channel
+            .submit_with(EventTime(4), |_| false)
+            .map_err(|_| Error::Context)?,
+        None
+    );
+    assert_eq!(client.channel.pending_controls(), 1);
+    server_payload(
+        &mut server,
+        &mut connections,
+        NQ_SERVERINFO,
+        |_, _, incoming| assert!(matches!(incoming, Incoming::ServerInfo(_))),
+    )?;
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    assert!(client.channel.pending_packet().is_none());
+    assert_eq!(client.channel.pending_controls(), 1);
+    let ack = client
+        .channel
+        .prepare_output(EventTime(5))
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?
+        .bytes
+        .to_vec();
+    assert_eq!(ack, old_ack);
+    client
+        .channel
+        .submitted(EventTime(5))
+        .map_err(|_| Error::Context)?;
+    server
+        .receive(&ack, EventTime(6))
+        .map_err(|_| Error::Context)?;
+    assert_eq!(server.reliable_receipts(), &[receipt]);
+    assert!(!client.channel.has_output());
+    assert_eq!(client.channel.send_state().sequence, 0);
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn nq_serverinfo_preserves_a_submitted_multifragment_flight_and_its_native_receipts()
+-> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    let receipts = [
+        client
+            .channel
+            .queue_reliable(&[b'a'; 1200])
+            .map_err(|_| Error::Context)?,
+        client
+            .channel
+            .queue_reliable(&[b'b'; 1300])
+            .map_err(|_| Error::Context)?,
+    ];
+    let mut regenerated = None;
+    let mut fresh = None;
+    let mut acknowledged = Vec::new();
+    for part in 0..3 {
+        let time = 10 + part * 10;
+        let client = connections
+            .get_mut(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?;
+        let data = client
+            .channel
+            .prepare_output(EventTime(time))
+            .map_err(|_| Error::Context)?
+            .ok_or(Error::Context)?
+            .bytes
+            .to_vec();
+        if part == 1 {
+            assert_eq!(Some(data.as_slice()), regenerated.as_deref());
+        }
+        client
+            .channel
+            .submitted(EventTime(time))
+            .map_err(|_| Error::Context)?;
+        match server
+            .receive(&data, EventTime(time + 1))
+            .map_err(|_| Error::Context)?
+            .delivery
+        {
+            qa_network::channel::Delivery::Pending if part < 2 => {}
+            qa_network::channel::Delivery::Payload(body) if part == 2 => {
+                assert_eq!(&body[..1200], &[b'a'; 1200]);
+                assert_eq!(&body[1200..], &[b'b'; 1300]);
+            }
+            _ => panic!("replacement corrupted a submitted reliable flight"),
+        }
+        let ack = server
+            .prepare_output(EventTime(time + 2))
+            .map_err(|_| Error::Context)?
+            .ok_or(Error::Context)?
+            .bytes
+            .to_vec();
+        server
+            .submitted(EventTime(time + 2))
+            .map_err(|_| Error::Context)?;
+        connections.receive(
+            Endpoint::Client.socket(),
+            Peer::Loopback(ClientId(0)),
+            &ack,
+            EventTime(time + 3),
+            |_, _, incoming| {
+                match incoming {
+                    Incoming::Acknowledged { receipt, .. } => acknowledged.push(receipt),
+                    _ => panic!("CLIENT ACK manufactured a presentation event"),
+                }
+                std::ops::ControlFlow::Continue(())
+            },
+        );
+        let client = connections
+            .get_mut(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?;
+        if part == 0 {
+            assert!(client.channel.reliable_receipts().is_empty());
+            let discarded = client
+                .channel
+                .queue_client_command(Protocol::NetQuake15, b"obsolete suffix")
+                .map_err(|_| Error::Context)?;
+            regenerated = Some(
+                client
+                    .channel
+                    .prepare_output(EventTime(time + 4))
+                    .map_err(|_| Error::Context)?
+                    .ok_or(Error::Context)?
+                    .bytes
+                    .to_vec(),
+            );
+            assert_eq!(
+                client
+                    .channel
+                    .submit_with(EventTime(time + 4), |_| false)
+                    .map_err(|_| Error::Context)?,
+                None
+            );
+            let before = client.channel.send_state();
+            let info = server
+                .prepare_move(NQ_SERVERINFO, EventTime(time + 5), None, None)
+                .map_err(|_| Error::Context)?
+                .ok_or(Error::Context)?
+                .bytes
+                .to_vec();
+            server
+                .submitted(EventTime(time + 5))
+                .map_err(|_| Error::Context)?;
+            connections.receive(
+                Endpoint::Client.socket(),
+                Peer::Loopback(ClientId(0)),
+                &info,
+                EventTime(time + 6),
+                |_, _, incoming| {
+                    assert!(matches!(incoming, Incoming::ServerInfo(_)));
+                    std::ops::ControlFlow::Continue(())
+                },
+            );
+            let client = connections
+                .get_mut(ClientId(0), Endpoint::Client)
+                .ok_or(Error::Context)?;
+            assert_eq!(client.channel.send_state(), before);
+            assert!(client.channel.pending_packet().is_none());
+            let receipt = client
+                .channel
+                .queue_client_command(Protocol::NetQuake15, b"fresh")
+                .map_err(|_| Error::Context)?;
+            assert!(receipt.0 > discarded.0);
+            fresh = Some(receipt);
+        } else if part == 2 {
+            assert_eq!(client.channel.reliable_receipts(), &receipts);
+        } else {
+            assert!(client.channel.reliable_receipts().is_empty());
+        }
+    }
+    assert_eq!(acknowledged, receipts);
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    let data = client
+        .channel
+        .prepare_output(EventTime(50))
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?
+        .bytes
+        .to_vec();
+    client
+        .channel
+        .submitted(EventTime(50))
+        .map_err(|_| Error::Context)?;
+    let delivery = server
+        .receive(&data, EventTime(51))
+        .map_err(|_| Error::Context)?
+        .delivery;
+    assert_eq!(
+        delivery,
+        qa_network::channel::Delivery::Payload(b"\x04fresh\0")
+    );
+    let ack = server
+        .prepare_output(EventTime(52))
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?
+        .bytes
+        .to_vec();
+    server
+        .submitted(EventTime(52))
+        .map_err(|_| Error::Context)?;
+    client
+        .channel
+        .receive(&ack, EventTime(53))
+        .map_err(|_| Error::Context)?;
+    assert_eq!(
+        client.channel.reliable_receipts(),
+        &[fresh.ok_or(Error::Context)?]
+    );
+    assert_eq!(client.channel.send_state().reliable_bytes, 0);
     assert_eq!(connections.command_errors, 0);
     Ok(())
 }
@@ -2955,6 +3304,7 @@ fn nq_serverinfo_replacement_resets_only_received_state_and_the_in_progress_pack
         |_, _, incoming| match incoming {
             Incoming::ServerInfo(_) => headers += 1,
             Incoming::SetView { entity: 3 } => {}
+            Incoming::NqEntityUpdate => {}
             _ => panic!("new serverinfo leaked its preceding in-progress snapshot"),
         },
     )?;
@@ -2981,6 +3331,9 @@ fn nq_serverinfo_replacement_resets_only_received_state_and_the_in_progress_pack
         &mut connections,
         b"\x81\x40\0\x01",
         |_, _, incoming| {
+            if matches!(incoming, Incoming::NqEntityUpdate) {
+                return;
+            }
             let Incoming::Snapshot(frame) = incoming else {
                 panic!("new-state entity update")
             };
@@ -3067,6 +3420,9 @@ fn nq_serverinfo_truncation_or_invalid_header_keeps_the_prior_ring_and_baselines
         &mut connections,
         NQ_BASELINE_UPDATE,
         |_, _, incoming| {
+            if matches!(incoming, Incoming::NqEntityUpdate) {
+                return;
+            }
             let Incoming::Snapshot(frame) = incoming else {
                 panic!("old-state update")
             };
@@ -3259,11 +3615,263 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
                 assert_eq!(print.text, b"NetQuake");
                 prints += 1;
             }
+            Incoming::NqEntityUpdate => {}
             _ => panic!("NQ snapshot/print stream"),
         },
     )?;
     assert_eq!((snapshots, prints, connections.command_errors), (1, 1, 0));
     assert!(!server.set_snapshot_baseline(256, &baseline));
+    Ok(())
+}
+
+#[test]
+fn nq_signon_stage_is_ordered_control_with_app_owned_progression() -> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut order = Vec::new();
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x19\x01\x08after\0\x19\x03\x19\x02\x19\x02\x19\x04",
+        |id, endpoint, incoming| {
+            assert_eq!((id, endpoint), (ClientId(0), Endpoint::Client));
+            match incoming {
+                Incoming::SignonStage { stage } => order.push((25, stage)),
+                Incoming::Print(print) => {
+                    assert_eq!(print.text, b"after");
+                    order.push((8, 0));
+                }
+                _ => panic!("signon controls manufactured snapshot or command progress"),
+            }
+        },
+    )?;
+    // This boundary checks the byte, while the one app owner decides whether
+    // a repeated, decreasing or skipped stage is acceptable for its connection.
+    assert_eq!(order, [(25, 1), (8, 0), (25, 3), (25, 2), (25, 2), (25, 4)]);
+    assert!(
+        connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel
+            .current_snapshot()
+            .is_none()
+    );
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn nq_invalid_or_truncated_signon_stage_preserves_the_admitted_control_prefix() -> Result<(), Error>
+{
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut stage = None;
+    server_payload(
+        &mut server,
+        &mut connections,
+        &[25, 1],
+        |_, _, incoming| match incoming {
+            Incoming::SignonStage { stage: value } => stage = Some(value),
+            _ => panic!("stage-only packet"),
+        },
+    )?;
+    for invalid in [b"\x19".as_slice(), b"\x19\0", b"\x19\x05", b"\x19\xff"] {
+        server_payload(&mut server, &mut connections, invalid, |_, _, _| {
+            panic!("invalid signon operand escaped")
+        })?;
+        assert_eq!(stage, Some(1));
+    }
+    let mut admitted = 0;
+    server_payload(
+        &mut server,
+        &mut connections,
+        &[25, 2, 25],
+        |_, _, incoming| match incoming {
+            Incoming::SignonStage { stage: value } => {
+                admitted += 1;
+                stage = Some(value);
+            }
+            _ => panic!("invalid signon tail published another event"),
+        },
+    )?;
+    assert_eq!(
+        (admitted, stage, connections.command_errors),
+        (1, Some(2), 5)
+    );
+    assert!(
+        connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel
+            .current_snapshot()
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn nq_fast_update_notifications_follow_complete_records_and_interleaved_signon() -> Result<(), Error>
+{
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut stage = 0;
+    let mut completed = 0;
+    let mut order = Vec::new();
+    // Literal unchanged fast updates still carry real native entity records.
+    // An update before stage 3 cannot consume the update after that service.
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x80\x01\x19\x03\x80\x02\x80\x03\x08after\0",
+        |_, _, incoming| match incoming {
+            Incoming::NqEntityUpdate => {
+                if stage == 3 {
+                    stage = 4;
+                    completed += 1;
+                }
+                order.push((128, stage));
+            }
+            Incoming::SignonStage { stage: value } => {
+                stage = value;
+                order.push((25, stage));
+            }
+            Incoming::Print(print) => {
+                assert_eq!(print.text, b"after");
+                order.push((8, stage));
+            }
+            Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) => {
+                assert_eq!(
+                    frame
+                        .entities
+                        .iter()
+                        .map(|row| row.number)
+                        .collect::<Vec<_>>(),
+                    [1, 2, 3]
+                );
+                order.push((7, stage));
+            }
+            _ => panic!("fast-update/signon stream"),
+        },
+    )?;
+    assert_eq!(completed, 1);
+    assert_eq!(
+        order,
+        [(128, 0), (25, 3), (128, 4), (128, 4), (8, 4), (7, 4)]
+    );
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn nq_signon_completion_requires_an_entire_fast_update_body() -> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut bytes = [0; 128];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    let mut entity = [0; states::NQ_ENTITY_WORDS];
+    for (index, value) in entity[..11].iter_mut().enumerate() {
+        *value = (index as f32 + 1.0).to_bits();
+    }
+    assert!(states::write_nq_entity(
+        &mut writer,
+        256,
+        &[0; states::NQ_ENTITY_WORDS],
+        &entity,
+        true,
+    )?);
+    let update = writer.bytes().to_vec();
+    for cut in 1..update.len() {
+        let mut payload = vec![25, 3];
+        payload.extend_from_slice(&update[..cut]);
+        let mut stage = None;
+        server_payload(
+            &mut server,
+            &mut connections,
+            &payload,
+            |_, _, incoming| match incoming {
+                Incoming::SignonStage { stage: value } => stage = Some(value),
+                _ => panic!("truncated fast body completed signon or published a frame"),
+            },
+        )?;
+        assert_eq!(stage, Some(3));
+    }
+    assert_eq!(connections.command_errors, (update.len() - 1) as u64);
+    let mut payload = update.clone();
+    payload.extend_from_slice(&[128]);
+    let mut updates = 0;
+    server_payload(
+        &mut server,
+        &mut connections,
+        &payload,
+        |_, _, incoming| match incoming {
+            Incoming::NqEntityUpdate => updates += 1,
+            _ => panic!("malformed tail published more than its complete update prefix"),
+        },
+    )?;
+    assert_eq!(updates, 1);
+    assert!(
+        connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel
+            .current_snapshot()
+            .is_none()
+    );
+    // Time and clientdata may legitimately publish a frame without any update.
+    for clientdata in [false, true] {
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        writer.write_data(&[25, 3])?;
+        if clientdata {
+            states::write_nq_player(&mut writer, &[0; states::NQ_PLAYER_WORDS])?;
+        } else {
+            writer.write_bits(7, 8)?;
+            writer.write_bits(1.25f32.to_bits(), 32)?;
+        }
+        let mut frames = 0;
+        server_payload(
+            &mut server,
+            &mut connections,
+            writer.bytes(),
+            |_, _, incoming| match incoming {
+                Incoming::SignonStage { stage: 3 } => {}
+                Incoming::Snapshot(_) => frames += 1,
+                _ => panic!("time or clientdata manufactured a fast update"),
+            },
+        )?;
+        assert_eq!(frames, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn nq_signon_controls_are_connection_local_and_not_admitted_for_qw() -> Result<(), Error> {
+    let (mut first_server, _, mut first) = byte_connection(Protocol::NetQuake15)?;
+    let (mut second_server, _, mut second) = byte_connection(Protocol::NetQuake15)?;
+    let mut stages = [0, 0];
+    let mut updates = [0, 0];
+    for (index, server, connections, stage) in [
+        (0, &mut first_server, &mut first, 3),
+        (1, &mut second_server, &mut second, 1),
+    ] {
+        server_payload(
+            server,
+            connections,
+            &[25, stage, 128, 1],
+            |_, _, incoming| match incoming {
+                Incoming::SignonStage { stage } => stages[index] = stage,
+                Incoming::NqEntityUpdate => updates[index] += 1,
+                Incoming::Snapshot(_) => {}
+                _ => panic!("connection-local signon controls"),
+            },
+        )?;
+        assert_eq!(stages[1 - index], if index == 0 { 0 } else { 3 });
+    }
+    assert_eq!((stages, updates), ([3, 1], [1, 1]));
+    assert_eq!((first.command_errors, second.command_errors), (0, 0));
+    let (mut qw_server, mut qw_commands, mut qw) = byte_connection(Protocol::QuakeWorld28)?;
+    for payload in [b"\x19\x03".as_slice(), b"\x80\x01"] {
+        qw_move(&mut qw, &mut qw_server, &mut qw_commands, true)?;
+        server_payload(&mut qw_server, &mut qw, payload, |_, _, incoming| {
+            assert!(matches!(incoming, Incoming::CommandProgress(_)));
+        })?;
+    }
+    assert_eq!(qw.command_errors, 2);
     Ok(())
 }
 

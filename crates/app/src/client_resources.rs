@@ -31,7 +31,61 @@ pub struct ClientResources {
     selected: Box<qa_console::command_text::ParsedCommand>,
     joined: qa_core::text::FixedText<8192>,
     pub unsupported_commands: u64,
+    nq_signon: Option<NqSignon>,
+    nq_spawn_parameters: qa_core::text::FixedText<{ qa_network::message::LEGACY_STRING_BYTES }>,
 }
+#[derive(Clone, Copy)]
+pub(crate) enum NqReply {
+    Prespawn,
+    Name,
+    Color,
+    Spawn,
+    Begin,
+}
+#[derive(Default)]
+struct NqSignon {
+    stage: u8,
+    observed: u8,
+    stage2_step: u8,
+    resources_admitted: bool,
+}
+impl NqSignon {
+    fn receive(&mut self, stage: u8) -> bool {
+        if stage <= self.stage || stage > 4 {
+            return false;
+        }
+        self.stage = stage;
+        if stage < 4 {
+            self.observed |= 1 << stage;
+        }
+        true
+    }
+    fn next(&self) -> Option<NqReply> {
+        if self.observed & 2 != 0 {
+            Some(NqReply::Prespawn)
+        } else if self.observed & 4 != 0 {
+            match self.stage2_step {
+                0 => Some(NqReply::Name),
+                1 => Some(NqReply::Color),
+                _ => Some(NqReply::Spawn),
+            }
+        } else if self.observed & 8 != 0 {
+            Some(NqReply::Begin)
+        } else {
+            None
+        }
+    }
+    fn queued(&mut self, reply: NqReply) {
+        match reply {
+            NqReply::Prespawn => self.observed &= !2,
+            NqReply::Name => self.stage2_step = 1,
+            NqReply::Color => self.stage2_step = 2,
+            NqReply::Spawn => self.observed &= !4,
+            NqReply::Begin => self.observed &= !8,
+        }
+    }
+}
+
 /// Native server header retained independently of camera and physical identity.
 #[derive(Clone, Debug)]
 pub struct ReceivedServerInfo {
@@ -83,6 +137,8 @@ impl ClientResources {
             selected: Box::default(),
             joined: qa_core::text::FixedText::default(),
             unsupported_commands: 0,
+            nq_signon: None,
+            nq_spawn_parameters: Default::default(),
             state: ResourceState {
                 configs: ConfigStrings::load(
                     (0..layout.count).map(|index| layout.capacity(index).unwrap_or(0)),
@@ -111,6 +167,77 @@ impl ClientResources {
                 static_dirty: false,
             },
         }))
+    }
+
+    /// Connect/map parameters are native CLIENT text, independent of SERVER
+    /// QuakeC spawn globals. Reject text the actual wire would truncate.
+    pub fn set_nq_spawn_parameters(&mut self, parameters: &[u8]) -> Result<(), &'static str> {
+        if self.state.layout.rules != RuleSetId::Quake {
+            return Err("spawn parameters require NetQuake");
+        }
+        let mut command =
+            qa_core::text::FixedText::<{ qa_network::message::LEGACY_STRING_BYTES }>::default();
+        command
+            .set_bytes(b"spawn ")
+            .map_err(|_| "spawn command capacity")?;
+        command
+            .append_bytes(parameters)
+            .map_err(|_| "spawn command capacity")?;
+        if command
+            .as_bytes()
+            .iter()
+            .any(|&byte| byte == 0 || byte == 255)
+            || Protocol::NetQuake15
+                .client_string_policy()
+                .truncates(command.as_bytes())
+        {
+            return Err("spawn parameters exceed native string policy");
+        }
+        self.nq_spawn_parameters
+            .set_bytes(parameters)
+            .map_err(|_| "spawn parameter capacity")
+    }
+    pub fn nq_signon_stage(&self) -> Option<u8> {
+        self.nq_signon.as_ref().map(|signon| signon.stage)
+    }
+    pub(crate) fn awaiting_nq_signon(&self) -> bool {
+        self.nq_signon
+            .as_ref()
+            .is_some_and(|signon| signon.stage < 4 || !signon.resources_admitted)
+    }
+    pub(crate) fn nq_resources_needed(&self) -> bool {
+        self.nq_signon
+            .as_ref()
+            .is_some_and(|signon| !signon.resources_admitted)
+    }
+    pub(crate) fn nq_resources_admitted(&mut self) {
+        if let Some(signon) = &mut self.nq_signon {
+            signon.resources_admitted = true;
+        }
+    }
+
+    pub(crate) fn receive_nq_stage(&mut self, stage: u8) -> bool {
+        self.nq_signon
+            .get_or_insert_with(NqSignon::default)
+            .receive(stage)
+    }
+    pub(crate) fn receive_nq_entity(&mut self) {
+        if let Some(signon) = &mut self.nq_signon
+            && signon.stage == 3
+        {
+            signon.stage = 4;
+        }
+    }
+    pub(crate) fn nq_reply(&self) -> Option<NqReply> {
+        self.nq_signon.as_ref()?.next()
+    }
+    pub(crate) fn nq_spawn_parameters(&self) -> &[u8] {
+        self.nq_spawn_parameters.as_bytes()
+    }
+    pub(crate) fn nq_reply_queued(&mut self, reply: NqReply) {
+        if let Some(signon) = &mut self.nq_signon {
+            signon.queued(reply);
+        }
     }
 
     pub fn apply(
@@ -151,6 +278,7 @@ impl ClientResources {
         let mut level_name = qa_core::text::FixedText::default();
         // The checked native string policy admits at most this buffer's size.
         let _ = level_name.set_bytes(info.level_name);
+        self.nq_signon = Some(NqSignon::default());
         self.state.server_info = Some(ReceivedServerInfo {
             max_clients: info.max_clients,
             game_type: info.game_type,
@@ -172,6 +300,7 @@ impl ClientResources {
         self.selected.clear();
         self.joined.clear();
         self.state.server_info = None;
+        self.nq_signon = None;
         self.state.models.reset_received(world);
         self.state.sounds.clear();
         self.state.sound_dirty.clear();

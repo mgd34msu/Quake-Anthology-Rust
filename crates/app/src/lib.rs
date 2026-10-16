@@ -715,6 +715,11 @@ impl Runtime {
         command: &qa_core::primitives::UserCmd,
         time: qa_core::sys_events::EventTime,
     ) -> bool {
+        let signing_on = self
+            .client_resources
+            .get(id.0 as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|resources| resources.awaiting_nq_signon());
         let Some(connection) = self
             .network
             .get_mut(id, qa_core::loopback::Endpoint::Client)
@@ -724,18 +729,25 @@ impl Runtime {
         let Some(commands) = &mut connection.commands else {
             return false;
         };
-        let Ok(command) = qa_network::commands::canonical_command(commands.protocol, *command)
-        else {
-            return false;
+        let recorded = if signing_on {
+            None
+        } else {
+            let Ok(command) = qa_network::commands::canonical_command(commands.protocol, *command)
+            else {
+                return false;
+            };
+            // Active CLIENT numbers advance even while a preceding flight waits.
+            let Ok(number) = commands.record(command) else {
+                return false;
+            };
+            Some((command, number))
         };
-        // CLIENT numbers advance on command production, including a command
-        // retained while its preceding native packet flight is still pending.
-        let Ok(number) = commands.record(command) else {
-            return false;
-        };
-        // Retained fragments belong to their original encoded message. Drain
-        // that flight without attaching the current command's watermark.
-        if connection.channel.pending_packet().is_some() || connection.channel.pending_fragments() {
+        // Startup has no move. Pending fragments retain their original move
+        // watermark. Both use the same control-only submission path.
+        if recorded.is_none()
+            || connection.channel.pending_packet().is_some()
+            || connection.channel.pending_fragments()
+        {
             transport::send(
                 &mut connection.channel,
                 time,
@@ -754,6 +766,9 @@ impl Runtime {
             );
             return false;
         }
+        let Some((command, number)) = recorded else {
+            return false;
+        };
         let Ok(maximum) = connection.channel.native_payload_capacity() else {
             return false;
         };

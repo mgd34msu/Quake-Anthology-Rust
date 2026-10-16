@@ -97,6 +97,12 @@ pub enum Incoming<'a> {
     SetView {
         entity: u16,
     },
+    /// Checked NQ control; progression belongs to the connection's consumer.
+    SignonStage {
+        stage: u8,
+    },
+    /// One fully decoded NQ fast update, before any following service.
+    NqEntityUpdate,
     SetAngles(qa_core::primitives::Vec3),
     CdTrack(crate::outputs::CdTrack),
     Print(crate::outputs::Print<'a>),

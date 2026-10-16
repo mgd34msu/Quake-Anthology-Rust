@@ -308,6 +308,7 @@ pub struct FrameHost {
     pub(crate) player_model_options: (qa_console::cvars::View, qa_console::cvars::View),
     software_waterwarp: qa_console::cvars::View,
     userinfo: Box<[ClientUserinfo]>,
+    nq_identity: [(qa_console::cvars::View, qa_console::cvars::View); SeatId::COUNT],
     lighting_scales: [CvarHandle; 2],
     style_interpolation: CvarHandle,
     roll_angle: CvarHandle,
@@ -522,6 +523,35 @@ impl FrameHost {
             source: qa_core::primitives::RuleSetId::Quake2,
             ..Default::default()
         };
+        let q1_context = qa_console::views::Context {
+            source: qa_core::primitives::RuleSetId::Quake,
+            seat: SeatId::FIRST,
+            ..Default::default()
+        };
+        let q1_identity = (
+            console
+                .cvars
+                .bind("_cl_name", q1_context)
+                .ok_or("missing _cl_name")?,
+            console
+                .cvars
+                .bind("_cl_color", q1_context)
+                .ok_or("missing _cl_color")?,
+        );
+        let mut nq_identity = [q1_identity; SeatId::COUNT];
+        for seat in SeatId::ALL.into_iter().skip(1) {
+            let context = qa_console::views::Context { seat, ..q1_context };
+            nq_identity[seat.index()] = (
+                console
+                    .cvars
+                    .bind("_cl_name", context)
+                    .ok_or("missing _cl_name")?,
+                console
+                    .cvars
+                    .bind("_cl_color", context)
+                    .ok_or("missing _cl_color")?,
+            );
+        }
         let q2_fov = console
             .cvars
             .bind("deathmatch", q2_context)
@@ -628,6 +658,7 @@ impl FrameHost {
             zombie_time,
             fov,
             q2_fov,
+            nq_identity,
             player_model_options,
             software_waterwarp,
             userinfo: (0..SeatId::COUNT)
@@ -817,6 +848,7 @@ impl FrameHost {
         }
         self.client_configurations(&mut crate::modules::Driver::new(source.asset_preparer()));
         self.register_client_model_assets(source.asset_preparer());
+        self.flush_nq_signon_replies();
         let client = Stopwatch::start();
         let command_times = std::array::from_fn(|seat| {
             self.local_clients[seat]
@@ -1359,6 +1391,139 @@ impl FrameHost {
                     }))
     }
 
+    fn reject_nq_signon(&mut self, client: ClientId, reason: std::fmt::Arguments<'_>) {
+        if let Some(resources) = self.runtime.client_resources[client.0 as usize].as_mut() {
+            resources.state.rejected += 1;
+        }
+        let _ = self
+            .runtime
+            .server
+            .events
+            .console_formatted(format_args!("NetQuake signon: {reason}\n"));
+        self.received_client_disconnect(client);
+    }
+
+    fn flush_nq_signon_replies(&mut self) {
+        for slot in 0..self.runtime.client_resources.len() {
+            self.flush_nq_signon_reply(ClientId(slot as u32));
+        }
+    }
+
+    fn flush_nq_signon_reply(&mut self, client: ClientId) {
+        use crate::client_resources::NqReply;
+        use qa_network::{channel::TransmitError, commands::packet::Protocol};
+        use std::fmt::Write;
+        let slot = client.0 as usize;
+        let Some(seat) = self
+            .runtime
+            .snapshots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .filter(|binding| binding.protocol == Protocol::NetQuake15)
+            .and_then(crate::snapshots::SnapshotBinding::seat)
+        else {
+            return;
+        };
+        if self.runtime.server.clients.get(slot).is_none_or(|row| {
+            row.connection != Some(qa_session::clients::Connection::Local)
+                || self.runtime.server.entities.resolve(row.entity).is_none()
+        }) {
+            return;
+        }
+        let Some(resources) = self.runtime.client_resources[slot].as_ref() else {
+            return;
+        };
+        if resources.nq_resources_needed() {
+            if resources.state.presentation_reset_pending()
+                || self.local_worlds[seat.index()].is_none()
+            {
+                return;
+            }
+            match resources
+                .state
+                .models
+                .required_models(&resources.state.configs)
+            {
+                crate::client_scene::RequiredModels::Waiting => return,
+                crate::client_scene::RequiredModels::Missing(ordinal) => {
+                    self.reject_nq_signon(
+                        client,
+                        format_args!("required model {ordinal} unavailable"),
+                    );
+                    return;
+                }
+                crate::client_scene::RequiredModels::Ready => {}
+            }
+            if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                resources.nq_resources_admitted();
+            }
+        }
+        loop {
+            let Some(resources) = self.runtime.client_resources[slot].as_ref() else {
+                return;
+            };
+            let Some(reply) = resources.nq_reply() else {
+                return;
+            };
+            let mut text =
+                qa_core::text::FixedText::<{ qa_network::message::LEGACY_STRING_BYTES }>::default();
+            let (name, color) = self.nq_identity[seat.index()];
+            let formatted = match reply {
+                NqReply::Prespawn => text.set("prespawn"),
+                NqReply::Name => self
+                    .console
+                    .cvars
+                    .read(name)
+                    .map_err(|_| std::fmt::Error)
+                    .and_then(|name| write!(text, "name \"{}\"\n", name.as_str())),
+                NqReply::Color => self
+                    .console
+                    .cvars
+                    .numeric(color)
+                    .map_err(|_| std::fmt::Error)
+                    .and_then(|color| {
+                        let color = color as i32;
+                        writeln!(text, "color {} {}", color >> 4, color & 15)
+                    }),
+                NqReply::Spawn => text
+                    .set("spawn ")
+                    .and_then(|()| text.append_bytes(resources.nq_spawn_parameters())),
+                NqReply::Begin => text.set("begin"),
+            };
+            if formatted.is_err()
+                || text.as_bytes().iter().any(|&byte| byte == 0 || byte == 255)
+                || Protocol::NetQuake15
+                    .client_string_policy()
+                    .truncates(text.as_bytes())
+            {
+                self.reject_nq_signon(client, format_args!("reply exceeds native string policy"));
+                return;
+            }
+            let Some(connection) = self
+                .runtime
+                .network
+                .get_mut(client, qa_core::loopback::Endpoint::Client)
+            else {
+                return;
+            };
+            match connection
+                .channel
+                .queue_client_command(Protocol::NetQuake15, text.as_bytes())
+            {
+                Ok(_) => {
+                    if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                        resources.nq_reply_queued(reply);
+                    }
+                }
+                Err(TransmitError::Full) => return,
+                Err(error) => {
+                    self.reject_nq_signon(client, format_args!("{error}"));
+                    return;
+                }
+            }
+        }
+    }
+
     fn queue_client_userinfo(&mut self) {
         use qa_network::commands::packet::Protocol;
         let revision = self.console.cvars.revision();
@@ -1750,6 +1915,7 @@ impl FrameHost {
         );
         let mut disconnected = None;
         let mut completed_close = None;
+        let mut signon_client = None;
         network.receive(socket, from, bytes, time, |id, endpoint, incoming| {
             use qa_network::ingress::Incoming;
             match endpoint {
@@ -1772,6 +1938,21 @@ impl FrameHost {
                         && server.clients[id.0 as usize].output == Some(binding.output)
                     {
                         match incoming {
+                            Incoming::SignonStage { stage } => {
+                                let accepted = self.runtime.client_resources[id.0 as usize].as_mut()
+                                    .is_some_and(|resources| resources.receive_nq_stage(stage));
+                                if !accepted {
+                                    self.reject_nq_signon(id, format_args!("non-increasing native stage {stage}"));
+                                    return std::ops::ControlFlow::Break(());
+                                }
+                                signon_client = Some(id);
+                            }
+                            Incoming::NqEntityUpdate => {
+                                if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
+                                    resources.receive_nq_entity();
+                                }
+                                signon_client = Some(id);
+                            }
                             Incoming::CommandProgress(number) => self.runtime.prediction[seat.index()].observe_command_progress(number),
                             Incoming::PlayerValue { index, value } => {
                                 let protocol = self.runtime.snapshots[id.0 as usize]
@@ -1863,6 +2044,7 @@ impl FrameHost {
                                 }
                             }
                             Incoming::ServerInfo(info) => {
+                                signon_client = Some(id);
                                 let old_world = self.local_worlds[seat.index()];
                                 let owner = self.runtime.model_assets.as_ref();
                                 let mut world = None;
@@ -2078,6 +2260,9 @@ impl FrameHost {
             network.unbind(id);
         }
         self.runtime.network = network;
+        if let Some(id) = signon_client {
+            self.flush_nq_signon_reply(id);
+        }
         if let Some(id) = completed_close {
             self.close_acknowledged += 1;
             self.retire_client(id, crate::modules::TraceAccess::empty());
@@ -2252,7 +2437,10 @@ impl FrameHost {
             .build_frame_with_policy(self.time, &policies);
         for (seat, command) in commands.iter_mut().enumerate() {
             if self.local_clients[seat].is_some_and(|id| {
-                !self.runtime.server.clients[id.0 as usize].is_active()
+                self.runtime.client_resources[id.0 as usize]
+                    .as_ref()
+                    .is_some_and(|resources| resources.awaiting_nq_signon())
+                    || !self.runtime.server.clients[id.0 as usize].is_active()
                     || self.runtime.snapshots[id.0 as usize]
                         .as_ref()
                         .is_some_and(|binding| binding.presentation_closed())
@@ -2290,6 +2478,12 @@ impl FrameHost {
                 }
                 self.runtime
                     .send_local_command(*id, &commands[seat], self.time);
+                if self.runtime.client_resources[id.0 as usize]
+                    .as_ref()
+                    .is_some_and(|resources| resources.awaiting_nq_signon())
+                {
+                    continue;
+                }
                 if let Some(frame) = self
                     .runtime
                     .network
