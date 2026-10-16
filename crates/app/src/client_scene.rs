@@ -1699,7 +1699,7 @@ impl ClientSceneInput<'_> {
                             counts.missing_models += 1;
                             continue;
                         };
-                        let frames = info.frame_count(model.frame_count());
+                        let frames = info.frame_count(model.native_frame_count());
                         if frames == 0 {
                             counts.missing_models += 1;
                             continue;
@@ -1833,7 +1833,7 @@ impl ClientSceneInput<'_> {
                 counts.missing_models += 1;
                 continue;
             };
-            let frames = info.frame_count(model.frame_count());
+            let frames = info.frame_count(model.native_frame_count());
             if frames == 0 {
                 counts.missing_models += 1;
                 continue;

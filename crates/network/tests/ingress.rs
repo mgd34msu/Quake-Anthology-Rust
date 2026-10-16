@@ -11,6 +11,123 @@ use qa_network::{
 mod support;
 
 #[test]
+fn qw_packet_timing_uses_submitted_move_slots_once_even_without_a_valid_service_body()
+-> Result<(), String> {
+    use qa_network::{
+        channel::MoveCommand,
+        commands::{connection::Commands, packet::Protocol},
+    };
+    let client = ClientId(0);
+    let mut peers = Connections::load(1);
+    let mut incoming = connection(
+        Endpoint::Client.socket(),
+        Peer::Loopback(client),
+        Endpoint::Client,
+    )?;
+    incoming.commands = Some(Commands::load(Protocol::QuakeWorld28, 8192));
+    peers
+        .bind(client, Endpoint::Client, incoming)
+        .map_err(|error| format!("bind {error:?}"))?;
+    let channel = &mut peers.get_mut(client, Endpoint::Client).unwrap().channel;
+    let mut submitted = Vec::new();
+    for (number, time) in [(11, EventTime(100_250_000)), (12, EventTime(200_500_000))] {
+        let sequence = channel.send_state().sequence;
+        let command = MoveCommand {
+            number,
+            server_time_ms: 90,
+        };
+        assert!(
+            channel
+                .prepare_move(&[1], EventTime::from_milliseconds(1), None, Some(command))
+                .map_err(|error| error.to_string())?
+                .is_some()
+        );
+        assert_eq!(channel.submitted_time(sequence), None);
+        channel.submitted(time).map_err(|error| error.to_string())?;
+        assert_eq!(channel.submitted_time(sequence), Some(time));
+        assert_eq!(channel.submitted_command(sequence), Some(command));
+        submitted.push((sequence, time));
+    }
+    let mut receipts = Vec::new();
+    let mut empty_payloads = 0;
+    let mut prints = 0;
+    for (sequence, acknowledgement, payload, expected) in [
+        (1, submitted[0].0, b"".as_slice(), Some(submitted[0].1)),
+        (
+            2,
+            submitted[1].0,
+            b"\x08\x02receipt\0".as_slice(),
+            Some(submitted[1].1),
+        ),
+        (3, submitted[1].0, b"\xff".as_slice(), Some(submitted[1].1)),
+    ] {
+        let mut bytes = [0; 1400];
+        let length = headers::encode(
+            headers::QUAKEWORLD,
+            Direction::ToClient,
+            Header {
+                sequence,
+                acknowledgement,
+                ..Default::default()
+            },
+            payload,
+            &mut bytes,
+        )
+        .map_err(|error| error.to_string())?;
+        let before = receipts.len();
+        peers.receive(
+            Endpoint::Client.socket(),
+            Peer::Loopback(client),
+            &bytes[..length],
+            EventTime::from_milliseconds(300),
+            |id, endpoint, incoming| {
+                assert_eq!((id, endpoint), (client, Endpoint::Client));
+                match incoming {
+                    Incoming::PacketTiming { acknowledged_sent } => {
+                        receipts.push(acknowledged_sent)
+                    }
+                    Incoming::Payload(bytes) => {
+                        assert!(bytes.is_empty());
+                        empty_payloads += 1;
+                    }
+                    Incoming::Print(print) => {
+                        assert_eq!(print.text, b"receipt");
+                        prints += 1;
+                    }
+                    _ => panic!("timing metadata must not create snapshot/control data"),
+                }
+                std::ops::ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(&receipts[before..], &[expected]);
+        // The byte-identical stale packet produces neither another timing
+        // observation nor a replay of its already accepted native service.
+        peers.receive(
+            Endpoint::Client.socket(),
+            Peer::Loopback(client),
+            &bytes[..length],
+            EventTime::from_milliseconds(400),
+            |_, _, _| {
+                panic!("stale QW packet reached the consumer");
+            },
+        );
+        assert_eq!(receipts.len(), before + 1);
+    }
+    assert_eq!((empty_payloads, prints), (1, 1));
+    assert_eq!(
+        (peers.delivered, peers.command_errors, peers.malformed),
+        (3, 1, 0)
+    );
+    let channel = &peers.get(client, Endpoint::Client).unwrap().channel;
+    assert_eq!(channel.counts().stale, 3);
+    assert!(channel.current_snapshot().is_none());
+    for (sequence, time) in submitted {
+        assert_eq!(channel.submitted_time(sequence), Some(time));
+    }
+    Ok(())
+}
+
+#[test]
 fn q2_native_ack_survives_a_rejected_fragment_body() -> Result<(), String> {
     let mut peers = Connections::load(1);
     let client = ClientId(0);

@@ -41,7 +41,9 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
         damage_blend: [0.0; 4],
         flags: Default::default(),
         time_ms: 123,
+        model_time: Some(qa_core::primitives::ThinkTime::Seconds(0.125_000_000_1)),
         presentation: presentation(PaletteId(0), IndexedLighting::Gray),
+        presentation_rules: qa_core::primitives::RuleSetId::Quake,
         lighting_scales: [0.6, 1.],
         curve_error: 250.0,
         model_lod: Default::default(),
@@ -53,6 +55,8 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     assert_eq!(first.world, second.world);
     assert_ne!(first.world_presentation, second.world_presentation);
     second.presentation = presentation(PaletteId(1), IndexedLighting::NativeRgb);
+    second.presentation_rules = qa_core::primitives::RuleSetId::Quake3;
+    second.model_time = Some(qa_core::primitives::ThinkTime::Seconds(0.375_000_000_1));
     second.presentation.lightstyles[0].indexed_scale = 384;
     second.presentation.identity_light = 0.5;
     second.curve_error = 17.25;
@@ -81,6 +85,15 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     assert_eq!(a.origin, b.origin);
     assert_eq!(a.fov, b.fov);
     assert_eq!(a.time_ms, b.time_ms);
+    assert_eq!(a.model_time, first.model_time);
+    assert_eq!(b.model_time, second.model_time);
+    assert_ne!(a.model_time, b.model_time);
+    assert_eq!(a.frame_timing, qa_render::scene::FrameTiming::Cumulative);
+    assert_eq!(b.frame_timing, qa_render::scene::FrameTiming::Cumulative);
+    assert_eq!(
+        view_refdef(first, viewport, Kind::Gl).frame_timing,
+        qa_render::scene::FrameTiming::UniformFirst
+    );
     assert_eq!(a.blend_phase, BlendPhase::FinalPalette);
     assert_eq!(a.palette_transform, first.presentation.palette_transform);
     let gl = view_refdef(second, viewport, Kind::Gl);
@@ -91,4 +104,6 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     assert_eq!(gl.model_lod, second.model_lod);
     assert_eq!(gl.policy, second.policy);
     assert_eq!(gl.near, second.near);
+    assert_eq!(gl.model_time, second.model_time);
+    assert_eq!(gl.frame_timing, qa_render::scene::FrameTiming::Cumulative);
 }

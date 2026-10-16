@@ -91,6 +91,8 @@ impl ViewRules {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ClockRules {
+    /// Predict display time from queued realtime and acknowledged move latency.
+    pub realtime_prediction: bool,
     /// Native Q2 uses remaining milliseconds times its precomputed 0.01.
     /// Other native clocks use the interval reciprocal, in a different order.
     pub remaining_ms_scale: Option<f32>,
@@ -108,6 +110,7 @@ pub struct ClockSynchronization {
 }
 pub fn clock_rules(rules: RuleSetId) -> ClockRules {
     ClockRules {
+        realtime_prediction: rules == RuleSetId::QuakeWorld,
         remaining_ms_scale: (rules == RuleSetId::Quake2).then_some(0.01),
         synchronization: (rules == RuleSetId::Quake3).then_some(ClockSynchronization {
             reset_difference_ms: 500,

@@ -1,9 +1,11 @@
 //! Registration is a load operation. Frames use numeric handles only.
 mod admission;
+mod animation;
 mod retessellation;
 pub mod upload;
 pub(crate) use admission::AssetAdmission;
 pub use admission::AssetCounts;
+pub use animation::{FrameTiming, ModelAnimation, TimedGroup};
 pub use retessellation::WorldRetessellation;
 
 use crate::scene::Span;
@@ -19,6 +21,7 @@ use qa_core::names::{NameTable, NamesError};
 pub use qa_core::primitives::ModelId;
 use qa_core::primitives::{NameId, Vec3};
 use qa_world::visibility::VisibilityWorld;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ImageId(pub u32);
@@ -416,6 +419,7 @@ pub struct Model {
     frame_count: u32,
     pub sprite: Option<SpriteGeometry>,
     alias: Option<AliasFrames>,
+    animation: Option<Arc<ModelAnimation>>,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct AliasFrame {
@@ -451,6 +455,24 @@ pub struct ModelFrames<'a> {
 impl Model {
     pub fn frame_count(&self) -> u32 {
         self.frame_count
+    }
+
+    pub fn native_frame_count(&self) -> u32 {
+        self.animation
+            .as_ref()
+            .map_or(self.frame_count, |animation| {
+                animation.frame_groups().len() as u32
+            })
+    }
+
+    pub fn native_skin_count(&self) -> u32 {
+        self.animation
+            .as_ref()
+            .map_or(0, |animation| animation.skin_groups().len() as u32)
+    }
+
+    pub fn animation(&self) -> Option<&ModelAnimation> {
+        self.animation.as_deref()
     }
 
     pub fn frames(&self, frame: u32, old_frame: u32, back_lerp: f32) -> Option<ModelFrames<'_>> {
@@ -652,6 +674,7 @@ impl Assets {
                 frame_count: 1,
                 sprite: None,
                 alias: None,
+                animation: None,
             }],
             model_preparation_revision: 0,
             worlds: Vec::new(),
@@ -1126,6 +1149,7 @@ impl Assets {
             frame_count,
             sprite: None,
             alias: None,
+            animation: None,
         })
     }
     pub fn register_sprite(
@@ -1149,8 +1173,33 @@ impl Assets {
             frame_count: 1,
             sprite: Some(geometry),
             alias: None,
+            animation: None,
         });
         Ok(id)
+    }
+
+    /// Attach the source's immutable parent-to-pose recipe before publication.
+    pub fn set_model_animation(
+        &mut self,
+        id: ModelId,
+        animation: Arc<ModelAnimation>,
+    ) -> Result<(), &'static str> {
+        let model = self
+            .models
+            .get_mut(id.0 as usize)
+            .ok_or("unknown animated model")?;
+        if model.sprite.is_some() || animation.physical_frames() != model.frame_count {
+            return Err("model animation frame count mismatch");
+        }
+        if let Some(existing) = &model.animation {
+            return if Arc::ptr_eq(existing, &animation) || existing == &animation {
+                Ok(())
+            } else {
+                Err("model animation already registered")
+            };
+        }
+        model.animation = Some(animation);
+        Ok(())
     }
 
     pub fn set_alias_frames(

@@ -389,6 +389,8 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
         fov,
         curve_error: client.curve_error,
         model_lod: client.model_lod,
+        model_time: client.model_time,
+        frame_timing: frame_timing(kind, client.presentation_rules),
         policy: client.policy,
         near: client.near,
         blend: client.screen_blend,
@@ -400,6 +402,23 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
     apply_presentation(&mut refdef, &client.presentation, kind);
     refdef
 }
+
+fn frame_timing(
+    kind: Kind,
+    rules: qa_core::primitives::RuleSetId,
+) -> qa_render::scene::FrameTiming {
+    if matches!(kind, Kind::Gl)
+        && matches!(
+            rules,
+            qa_core::primitives::RuleSetId::Quake | qa_core::primitives::RuleSetId::QuakeWorld
+        )
+    {
+        qa_render::scene::FrameTiming::UniformFirst
+    } else {
+        qa_render::scene::FrameTiming::Cumulative
+    }
+}
+
 fn apply_presentation(
     refdef: &mut Refdef,
     presentation: &qa_render::material::world_load::PresentationDefaults,

@@ -19,14 +19,14 @@ pub mod stage;
 pub mod surface_cache;
 pub mod world;
 pub use assets::{
-    Assets, ImageId, MaterialId, ModelId, NativeDefaultKind, PaletteId, ShaderBinding,
-    ShaderBindingId, ShaderRegistration, Vertex,
+    Assets, ImageId, MaterialId, ModelAnimation, ModelId, NativeDefaultKind, PaletteId,
+    ShaderBinding, ShaderBindingId, ShaderRegistration, TimedGroup, Vertex,
 };
 pub use scene::{
-    BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame, FrontEnd,
-    Light, LightStyle, Limits, ModelLodSettings, ModelPart, PaletteOperation, PaletteShift,
-    PaletteTransform, ParticlePresentation, PerspectiveStep, Refdef, SceneEntity, SceneModel,
-    SceneParticle, Viewport,
+    BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame,
+    FrameTiming, FrontEnd, Light, LightStyle, Limits, ModelLodSettings, ModelPart,
+    PaletteOperation, PaletteShift, PaletteTransform, ParticlePresentation, PerspectiveStep,
+    Refdef, SceneEntity, SceneModel, SceneParticle, Viewport,
 };
 pub use world::WorldPresentationId;
 

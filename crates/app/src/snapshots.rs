@@ -118,6 +118,7 @@ struct ClientPresentation {
     view_source: qa_core::primitives::RuleSetId,
     view_rules: qa_gameplay::rules::presentation::ViewRules,
     clock: PresentationClock,
+    paused: bool,
     fixed_period: Option<u16>,
     negotiated_period: bool,
     sequence: Option<u32>,
@@ -216,6 +217,7 @@ impl SnapshotBinding {
         self.view_entity_override = None;
         if let Some(client) = self.presentation.as_mut() {
             client.clock.reset();
+            client.paused = false;
             client.sequence = None;
             client.gun_animation = None;
             client.view_height = None;
@@ -272,6 +274,13 @@ impl SnapshotBinding {
             .as_ref()
             .filter(|client| client.clock.is_ready())
             .map(|client| client.clock.sample())
+    }
+    pub(crate) fn uses_realtime_prediction(&self) -> bool {
+        !self.presentation_closed
+            && self
+                .presentation
+                .as_ref()
+                .is_some_and(|client| client.clock.uses_realtime_prediction())
     }
     pub fn view_source(&self) -> Option<qa_core::primitives::RuleSetId> {
         self.presentation.as_ref().map(|client| client.view_source)
@@ -393,11 +402,12 @@ impl SnapshotBinding {
         &mut self,
         channel: &Channel,
         queued: qa_core::sys_events::EventTime,
-        options: ClockOptions,
+        mut options: ClockOptions,
     ) -> Result<(), ClockError> {
         let Some(client) = self.presentation.as_mut() else {
             return Ok(());
         };
+        options.paused |= client.paused;
         let Some(current) = channel.current_snapshot() else {
             return Ok(());
         };
@@ -608,6 +618,7 @@ impl SnapshotBinding {
                 clock: PresentationClock::load(qa_gameplay::rules::presentation::clock_rules(
                     protocol.rule_set(),
                 )),
+                paused: false,
                 fixed_period: (protocol == Protocol::Quake2_34).then_some(100),
                 negotiated_period: protocol == Protocol::Quake2Repro1038,
                 loops: Some(loops::LoopPublication::load(
@@ -849,6 +860,18 @@ impl SnapshotBinding {
         time: qa_core::sys_events::EventTime,
     ) -> bool {
         if self.presentation_closed {
+            return false;
+        }
+        if let Incoming::PacketTiming { acknowledged_sent } = incoming {
+            if let Some(client) = &mut self.presentation {
+                client.clock.observe_packet_timing(time, acknowledged_sent);
+            }
+            return false;
+        }
+        if let Incoming::Pause(paused) = incoming {
+            if let Some(client) = &mut self.presentation {
+                client.paused = paused;
+            }
             return false;
         }
         if let Incoming::SetView { entity } = incoming {

@@ -130,6 +130,11 @@ pub enum Incoming<'a> {
     /// A native sequenced ACK maps to the newest submitted common command.
     /// It is not an output-record ACK or a server execution-time assertion.
     CommandProgress(Option<u64>),
+    /// One accepted QW packet observes the existing acknowledged move timestamp.
+    PacketTiming {
+        acknowledged_sent: Option<EventTime>,
+    },
+    Pause(bool),
     PlayerInfo(crate::states::QwPlayerInfo),
     PlayerValue {
         index: u8,
@@ -521,53 +526,69 @@ impl Connections {
                             Ok(_) => {}
                             Err(_) => self.command_errors += 1,
                         }
-                    } else if !payload.is_empty()
-                        && endpoint == Endpoint::Client
+                    } else if endpoint == Endpoint::Client
                         && let Some(commands) = &mut connection.commands
                     {
                         let sequence = received.header.sequence;
+                        let acknowledgement = received.header.acknowledgement;
+                        let empty = payload.is_empty();
                         let length = commands.stage(payload);
-                        let acknowledged = connection
-                            .channel
-                            .submitted_command(connection.channel.state().acknowledged)
-                            .map(|command| command.number);
-                        let packet_ack = matches!(
-                            commands.protocol,
-                            crate::commands::packet::Protocol::QuakeWorld28
-                                | crate::commands::packet::Protocol::Quake2_34
-                                | crate::commands::packet::Protocol::Quake2Repro1038
-                        );
-                        let mut deliver = |incoming: Incoming<'_>| {
-                            if packet_ack
-                                && matches!(
-                                    &incoming,
-                                    Incoming::PlayerInfo(_) | Incoming::Snapshot(_)
-                                )
-                            {
-                                let _ = consume(
-                                    client,
-                                    endpoint,
-                                    Incoming::CommandProgress(acknowledged),
-                                );
-                            }
-                            let _ = consume(client, endpoint, incoming);
-                        };
-                        match length.and_then(|length| {
-                            commands.decode_output(
-                                length,
-                                sequence,
-                                &mut connection.channel,
-                                qa_core::primitives::ResourceNamespace::Client(client),
-                                &mut deliver,
-                            )
-                        }) {
-                            Err(_) => self.command_errors += 1,
-                            Ok(Some(sequence)) => {
-                                if let Some(frame) = connection.channel.snapshot(sequence) {
-                                    deliver(Incoming::Snapshot(frame));
+                        if commands.protocol == crate::commands::packet::Protocol::QuakeWorld28 {
+                            let _ = consume(
+                                client,
+                                endpoint,
+                                Incoming::PacketTiming {
+                                    acknowledged_sent: connection
+                                        .channel
+                                        .submitted_time(acknowledgement),
+                                },
+                            );
+                        }
+                        if empty {
+                            let _ = consume(client, endpoint, Incoming::Payload(&[]));
+                        } else {
+                            let acknowledged = connection
+                                .channel
+                                .submitted_command(connection.channel.state().acknowledged)
+                                .map(|command| command.number);
+                            let packet_ack = matches!(
+                                commands.protocol,
+                                crate::commands::packet::Protocol::QuakeWorld28
+                                    | crate::commands::packet::Protocol::Quake2_34
+                                    | crate::commands::packet::Protocol::Quake2Repro1038
+                            );
+                            let mut deliver = |incoming: Incoming<'_>| {
+                                if packet_ack
+                                    && matches!(
+                                        &incoming,
+                                        Incoming::PlayerInfo(_) | Incoming::Snapshot(_)
+                                    )
+                                {
+                                    let _ = consume(
+                                        client,
+                                        endpoint,
+                                        Incoming::CommandProgress(acknowledged),
+                                    );
                                 }
+                                let _ = consume(client, endpoint, incoming);
+                            };
+                            match length.and_then(|length| {
+                                commands.decode_output(
+                                    length,
+                                    sequence,
+                                    &mut connection.channel,
+                                    qa_core::primitives::ResourceNamespace::Client(client),
+                                    &mut deliver,
+                                )
+                            }) {
+                                Err(_) => self.command_errors += 1,
+                                Ok(Some(sequence)) => {
+                                    if let Some(frame) = connection.channel.snapshot(sequence) {
+                                        deliver(Incoming::Snapshot(frame));
+                                    }
+                                }
+                                Ok(None) => {}
                             }
-                            Ok(None) => {}
                         }
                     } else {
                         let _ = consume(client, endpoint, Incoming::Payload(payload));

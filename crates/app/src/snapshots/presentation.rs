@@ -17,6 +17,7 @@ pub struct ClockOptions {
     /// This slice consumes queued realtime at the default frame scale.
     pub timescale: f32,
     pub paused: bool,
+    pub push_latency_ms: f32,
 }
 impl Default for ClockOptions {
     fn default() -> Self {
@@ -24,6 +25,7 @@ impl Default for ClockOptions {
             time_nudge_ms: 0,
             timescale: 1.0,
             paused: false,
+            push_latency_ms: 0.0,
         }
     }
 }
@@ -161,6 +163,7 @@ pub struct PresentationClock {
     time: Option<ThinkTime>,
     sample: Interpolation,
     synchronization: Synchronization,
+    latency: f32,
 }
 impl PresentationClock {
     pub fn load(rules: ClockRules) -> Self {
@@ -171,6 +174,24 @@ impl PresentationClock {
     }
     pub fn sample(&self) -> Interpolation {
         self.sample
+    }
+    pub(crate) fn uses_realtime_prediction(&self) -> bool {
+        self.rules.realtime_prediction
+    }
+    pub fn observe_packet_timing(&mut self, received: EventTime, submitted: Option<EventTime>) {
+        if !self.rules.realtime_prediction {
+            return;
+        }
+        let Some(submitted) = submitted else { return };
+        let observed = (received.seconds() - submitted.seconds()) as f32;
+        if !(0.0..=1.0).contains(&observed) {
+            return;
+        }
+        self.latency = if observed < self.latency {
+            observed
+        } else {
+            (f64::from(self.latency) + 0.001) as f32
+        };
     }
     pub fn is_ready(&self) -> bool {
         self.rules.synchronization.is_none() || self.time.is_some()
@@ -190,8 +211,27 @@ impl PresentationClock {
         options: ClockOptions,
     ) -> Result<(), ClockError> {
         let current = snapshot.time;
-        // QW snapshots have no native timestamp. Their zero-length interval
-        // stays at fraction one rather than borrowing renderer uptime.
+        if self.rules.realtime_prediction {
+            if options.paused {
+                return Ok(());
+            }
+            let realtime = queued.seconds();
+            let time = realtime
+                - f64::from(self.latency)
+                - f64::from(options.push_latency_ms.min(0.0)) * 0.001;
+            if !time.is_finite() {
+                return Err(ClockError::TimeRange);
+            }
+            let time = ThinkTime::Seconds(time.min(realtime));
+            self.queued_at = Some(queued);
+            self.time = Some(time);
+            self.sample = Interpolation {
+                time,
+                fraction: 1.0,
+                frame_ms: 0,
+            };
+            return Ok(());
+        }
         let elapsed = self
             .queued_at
             .map_or(EventTime::default(), |old| EventTime(queued.since(old)));

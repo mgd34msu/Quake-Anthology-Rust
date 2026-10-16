@@ -17,6 +17,7 @@ pub struct ClientView {
     pub world: qa_render::world::WorldId,
     pub world_presentation: qa_render::world::WorldPresentationId,
     pub presentation: qa_render::material::world_load::PresentationDefaults,
+    pub presentation_rules: RuleSetId,
     pub origin: qa_core::primitives::Vec3,
     pub angles: qa_core::primitives::Vec3,
     pub fov_x: f32,
@@ -24,6 +25,7 @@ pub struct ClientView {
     pub damage_blend: [f32; 4],
     pub flags: qa_core::primitives::PlayerViewFlags,
     pub time_ms: u64,
+    pub model_time: Option<qa_core::primitives::ThinkTime>,
     pub lighting_scales: [f32; 2],
     pub curve_error: f32,
     pub model_lod: qa_render::scene::ModelLodSettings,
@@ -402,6 +404,7 @@ pub struct FrameHost {
     kick_angles: CvarHandle,
     smooth_clients: CvarHandle,
     time_nudge: CvarHandle,
+    push_latency: qa_console::cvars::View,
     timescale: CvarHandle,
     input_handles: qa_console::input_settings::InputHandles,
     pub(crate) movement_handles: qa_console::movement::MovementHandles,
@@ -1309,6 +1312,16 @@ impl FrameHost {
             .cvars
             .find("cl_timeNudge")
             .ok_or("missing cl_timeNudge")?;
+        let push_latency = console
+            .cvars
+            .bind(
+                "pushlatency",
+                qa_console::views::Context {
+                    source: RuleSetId::QuakeWorld,
+                    ..Default::default()
+                },
+            )
+            .ok_or("missing pushlatency")?;
         let timescale = console.cvars.find("timescale").ok_or("missing timescale")?;
         let input_handles = qa_console::input_settings::InputHandles::load(&console.cvars)?;
         let movement_handles = qa_console::movement::MovementHandles::bind(&console.cvars)?;
@@ -1400,6 +1413,7 @@ impl FrameHost {
             kick_angles,
             smooth_clients,
             time_nudge,
+            push_latency,
             timescale,
             input_handles,
             movement_handles,
@@ -1687,6 +1701,7 @@ impl FrameHost {
                 world,
                 world_presentation,
                 presentation,
+                presentation_rules: rules,
                 origin: camera.origin,
                 angles: self.client_angles(client, row, player),
                 fov_x: camera
@@ -1697,6 +1712,13 @@ impl FrameHost {
                 damage_blend: camera.view.damage_blend,
                 flags: camera.view.flags,
                 time_ms: self.time.milliseconds(),
+                model_time: self
+                    .runtime
+                    .snapshots
+                    .get(client.0 as usize)
+                    .and_then(Option::as_ref)
+                    .and_then(|snapshot| snapshot.interpolation())
+                    .map(|interpolation| interpolation.time),
                 lighting_scales: self
                     .lighting_scales
                     .map(|handle| self.console.cvars.value(handle)),
@@ -1988,12 +2010,31 @@ impl FrameHost {
     }
 
     fn advance_client_presentation(&mut self, driver: &mut crate::modules::Driver<'_>) {
+        let mut push_latency_ms = self.console.cvars.numeric(self.push_latency).unwrap_or(0.0);
+        if push_latency_ms > 0.0
+            && self
+                .runtime
+                .snapshots
+                .iter()
+                .flatten()
+                .any(crate::snapshots::SnapshotBinding::uses_realtime_prediction)
+        {
+            if let Err(error) = self.console.cvars.force_write(self.push_latency, "0") {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("CLIENT pushlatency: {error:?}\n"));
+            }
+            push_latency_ms = 0.0;
+        }
         let options = crate::snapshots::ClockOptions {
             time_nudge_ms: self.console.cvars.integer(self.time_nudge),
             timescale: self.console.cvars.value(self.timescale),
             // Native local-server pause and modified frame duration remain a
             // separate capability; queued time is not silently rescaled here.
             paused: false,
+            push_latency_ms,
         };
         for slot in 0..self.runtime.snapshots.len() {
             let failed = self.runtime.snapshots[slot].as_mut().and_then(|snapshot| {

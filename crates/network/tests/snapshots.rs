@@ -1251,7 +1251,7 @@ fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() 
                         frames.push(frame.sequence);
                     }
                     Incoming::Print(print) => prints.push(print.text.to_vec()),
-                    Incoming::CommandProgress(_) => {}
+                    Incoming::CommandProgress(_) | Incoming::PacketTiming { .. } => {}
                     _ => panic!("QW native frame/print"),
                 }
             },
@@ -1719,7 +1719,7 @@ fn qw_connected_playerinfo_retains_native_slot_commands_and_imports_common_playe
                         seen += 1;
                     }
                     Incoming::Print(print) => assert_eq!(print.text, b"playerinfo"),
-                    Incoming::CommandProgress(_) => {}
+                    Incoming::CommandProgress(_) | Incoming::PacketTiming { .. } => {}
                     _ => panic!("QW playerinfo/print stream"),
                 }
             },
@@ -1964,7 +1964,10 @@ fn qw_playerinfo_rejects_bad_numbers_and_does_not_commit_truncated_commands() ->
             &mut connections,
             &payload[..length],
             |_, _, incoming| {
-                if matches!(incoming, Incoming::CommandProgress(_)) {
+                if matches!(
+                    incoming,
+                    Incoming::CommandProgress(_) | Incoming::PacketTiming { .. }
+                ) {
                     return;
                 }
                 let Incoming::PlayerInfo(info) = incoming else {
@@ -2431,6 +2434,7 @@ fn q1_wire_baselines_replace_future_rows_without_mutating_retained_frames() -> R
                     frames += 1;
                 }
                 Incoming::CommandProgress(_) | Incoming::NqEntityUpdate => {}
+                Incoming::PacketTiming { .. } => assert_eq!(protocol, Protocol::QuakeWorld28),
                 _ => panic!("baseline/update published an unrelated event"),
             },
         )?;
@@ -2455,7 +2459,13 @@ fn q1_wire_baselines_replace_future_rows_without_mutating_retained_frames() -> R
             &mut commands,
             &mut connections,
             &payload,
-            |_, _, _| panic!("baseline-only replacement published an event"),
+            |_, _, incoming| {
+                assert_eq!(protocol, Protocol::QuakeWorld28);
+                assert!(
+                    matches!(incoming, Incoming::PacketTiming { .. }),
+                    "baseline-only replacement published an event"
+                );
+            },
         )?;
         {
             let channel = &mut connections
@@ -2479,6 +2489,7 @@ fn q1_wire_baselines_replace_future_rows_without_mutating_retained_frames() -> R
                     assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 9)
                 }
                 Incoming::CommandProgress(_) | Incoming::NqEntityUpdate => {}
+                Incoming::PacketTiming { .. } => assert_eq!(protocol, Protocol::QuakeWorld28),
                 _ => panic!("baseline-derived update"),
             },
         )?;
@@ -2531,7 +2542,13 @@ fn qw_late_baselines_leave_matched_delta_rows_on_the_requested_old_frame() -> Re
         &mut commands,
         &mut connections,
         &payload,
-        |_, _, _| panic!("baseline-only replacement published an event"),
+        |_, _, incoming| {
+            assert_eq!(protocol, Protocol::QuakeWorld28);
+            assert!(
+                matches!(incoming, Incoming::PacketTiming { .. }),
+                "baseline-only replacement published an event"
+            );
+        },
     )?;
     // Matched entity256 uses the old row; new entity257 uses its new baseline.
     let delta = [48, old as u8, 0, 1, 1, 1, 0, 0];
@@ -2548,7 +2565,7 @@ fn qw_late_baselines_leave_matched_delta_rows_on_the_requested_old_frame() -> Re
                 assert_q1_baseline_row(q1_frame_row(frame, 257).unwrap(), 11);
                 frames += 1;
             }
-            Incoming::CommandProgress(_) => {}
+            Incoming::CommandProgress(_) | Incoming::PacketTiming { .. } => {}
             _ => panic!("matched delta update"),
         },
     )?;
@@ -2585,7 +2602,13 @@ fn q1_baseline_replacements_are_atomic_per_record_and_keep_accepted_prefixes() -
             &mut commands,
             &mut connections,
             &Q1_BASELINE,
-            |_, _, _| panic!("baseline-only packet published an event"),
+            |_, _, incoming| {
+                assert_eq!(protocol, Protocol::QuakeWorld28);
+                assert!(
+                    matches!(incoming, Incoming::PacketTiming { .. }),
+                    "baseline-only packet published an event"
+                );
+            },
         )?;
         let mut replacement = Q1_BASELINE;
         replacement[3..7].fill(255);
@@ -2596,7 +2619,13 @@ fn q1_baseline_replacements_are_atomic_per_record_and_keep_accepted_prefixes() -
                 &mut commands,
                 &mut connections,
                 &replacement[..cut],
-                |_, _, _| panic!("truncated baseline published an event"),
+                |_, _, incoming| {
+                    assert_eq!(protocol, Protocol::QuakeWorld28);
+                    assert!(
+                        matches!(incoming, Incoming::PacketTiming { .. }),
+                        "truncated baseline published an event"
+                    );
+                },
             )?;
         }
         q1_service_payload(
@@ -2622,7 +2651,13 @@ fn q1_baseline_replacements_are_atomic_per_record_and_keep_accepted_prefixes() -
                 &mut commands,
                 &mut connections,
                 &payload,
-                |_, _, _| panic!("baseline prefix/tail published an event"),
+                |_, _, incoming| {
+                    assert_eq!(protocol, Protocol::QuakeWorld28);
+                    assert!(
+                        matches!(incoming, Incoming::PacketTiming { .. }),
+                        "baseline prefix/tail published an event"
+                    );
+                },
             )?;
             q1_service_payload(
                 protocol,
@@ -2667,7 +2702,13 @@ fn q1_baseline_native_capacities_do_not_widen_qw_packet_entity_numbers() -> Resu
                 &mut commands,
                 &mut connections,
                 &baseline,
-                |_, _, _| panic!("baseline-only boundary record published an event"),
+                |_, _, incoming| {
+                    assert_eq!(protocol, Protocol::QuakeWorld28);
+                    assert!(
+                        matches!(incoming, Incoming::PacketTiming { .. }),
+                        "baseline-only boundary record published an event"
+                    );
+                },
             )?;
         }
         assert_eq!(connections.command_errors, 0);
@@ -2679,7 +2720,13 @@ fn q1_baseline_native_capacities_do_not_widen_qw_packet_entity_numbers() -> Resu
                 &mut commands,
                 &mut connections,
                 &baseline,
-                |_, _, _| panic!("rejected baseline published an event"),
+                |_, _, incoming| {
+                    assert_eq!(protocol, Protocol::QuakeWorld28);
+                    assert!(
+                        matches!(incoming, Incoming::PacketTiming { .. }),
+                        "rejected baseline published an event"
+                    );
+                },
             )?;
         }
         assert_eq!(connections.command_errors, 2);
@@ -3871,7 +3918,10 @@ fn nq_signon_controls_are_connection_local_and_not_admitted_for_qw() -> Result<(
     for payload in [b"\x19\x03".as_slice(), b"\x80\x01"] {
         qw_move(&mut qw, &mut qw_server, &mut qw_commands, true)?;
         server_payload(&mut qw_server, &mut qw, payload, |_, _, incoming| {
-            assert!(matches!(incoming, Incoming::CommandProgress(_)));
+            assert!(matches!(
+                incoming,
+                Incoming::CommandProgress(_) | Incoming::PacketTiming { .. }
+            ));
         })?;
     }
     assert_eq!(qw.command_errors, 2);
@@ -4062,7 +4112,10 @@ fn nq_setview_intake_is_independent_between_connections_and_not_admitted_for_qw(
         b"\x05\x34\x12",
         |_, _, incoming| {
             assert!(
-                matches!(incoming, Incoming::CommandProgress(_)),
+                matches!(
+                    incoming,
+                    Incoming::CommandProgress(_) | Incoming::PacketTiming { .. }
+                ),
                 "NQ setview support leaked into QW"
             );
         },

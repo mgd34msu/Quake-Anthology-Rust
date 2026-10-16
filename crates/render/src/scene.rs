@@ -6,10 +6,11 @@ use crate::shader::reference::{
 use crate::surface_cache::IndexedLighting;
 use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
 pub use qa_core::primitives::LightStyle;
-use qa_core::primitives::{Orientation, PlayerViewFlags, Vec3};
+use qa_core::primitives::{Orientation, PlayerViewFlags, ThinkTime, Vec3};
 use std::cmp::Ordering as SortOrdering;
 mod model_lod;
 mod patch;
+pub use crate::assets::FrameTiming;
 pub use model_lod::ModelLodSettings;
 pub(crate) use model_lod::projection_scales;
 pub use patch::{PatchSelection, PatchTriangles};
@@ -122,6 +123,10 @@ pub struct Refdef {
     pub far: f32,
     pub policy: ViewPolicy,
     pub time_ms: i64,
+    /// CLIENT presentation time can retain fractional native seconds.
+    /// None uses this view's ordinary millisecond clock.
+    pub model_time: Option<ThinkTime>,
+    pub frame_timing: FrameTiming,
     pub hyperspace: bool,
     pub portal: bool,
     pub reflected_view: bool,
@@ -176,6 +181,10 @@ impl Refdef {
     pub fn time_seconds(&self) -> f32 {
         milliseconds_to_seconds(self.time_ms)
     }
+    pub fn model_time(&self) -> ThinkTime {
+        self.model_time
+            .unwrap_or(ThinkTime::Milliseconds(self.time_ms))
+    }
 
     /// Shared view boundary for visibility and both drawing backends.
     /// Returns the native half-FOV tangents in the original operation order.
@@ -192,6 +201,9 @@ impl Refdef {
                 .iter()
                 .chain(self.damage_blend.iter())
                 .all(|value| value.is_finite())
+            || self
+                .model_time
+                .is_some_and(|time| !time.seconds().is_finite())
             || !self.damage_border.is_finite()
             || !self.near.is_finite()
             || self.near <= 0.0
@@ -235,6 +247,8 @@ impl Default for Refdef {
             far: 65536.0,
             policy: ViewPolicy::default(),
             time_ms: 0,
+            model_time: None,
+            frame_timing: FrameTiming::default(),
             hyperspace: false,
             portal: false,
             reflected_view: false,
@@ -446,6 +460,8 @@ pub struct SceneEntity {
     pub back_lerp: f32,
     pub depth_hack: bool,
     pub shader_time: f32,
+    /// Native model synchronization, independent of shader animation time.
+    pub sync_base: f32,
     pub shader_texcoord: [f32; 2],
     pub lighting: Option<crate::stage::EntityLighting>,
     pub lighting_origin: Option<Vec3>,
@@ -500,6 +516,7 @@ impl Default for SceneEntity {
             back_lerp: 0.0,
             depth_hack: false,
             shader_time: 0.0,
+            sync_base: 0.0,
             shader_texcoord: [0.0; 2],
             lighting: None,
             lighting_origin: None,
@@ -762,6 +779,8 @@ pub struct DrawItem {
     pub index: u32,
     pub shader: Option<ShaderRef>,
     pub mesh: Option<ModelId>,
+    /// Flattened current/previous poses selected for this copied view.
+    pub frames: Option<[u32; 2]>,
     key: DrawKey,
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -1750,6 +1769,7 @@ impl Frame {
             key: DrawKey::default(),
             shader: None,
             mesh: None,
+            frames: None,
         };
         self.list.draw_count += 1;
     }
@@ -1865,6 +1885,7 @@ impl Frame {
                         kind: DrawKind::Poly,
                         index: poly as u32,
                         mesh: draw.mesh,
+                        frames: draw.frames,
                         ..Default::default()
                     };
                     self.list.draw_count += 1;
@@ -1949,6 +1970,10 @@ pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<SceneEnt
     if let Some(shader) = draw.shader {
         entity.shader = Some(shader);
     }
+    if let Some([current, previous]) = draw.frames {
+        entity.frame = current;
+        entity.old_frame = previous;
+    }
     Some(entity)
 }
 
@@ -1979,16 +2004,28 @@ fn model_draw(
             let Some(part) = list.lod_choices[choices.range()][level as usize] else {
                 return Ok(None);
             };
-            let mut selected = *entity;
-            selected.model = SceneModel::Mesh(part.model);
-            assets
-                .model(part.model)
-                .and_then(|model| model.posed_frames(&selected))
-                .ok_or(())?;
             draw.mesh = Some(part.model);
             draw.shader = entity.shader.or(Some(part.shader));
         }
         _ => {}
+    }
+    if let Some(mesh) = draw.mesh {
+        let model = assets.model(mesh).ok_or(())?;
+        if let Some(animation) = model.animation() {
+            let time = view.model_time();
+            draw.frames = Some([
+                animation
+                    .frame_pose(entity.frame, time, entity.sync_base, view.frame_timing)
+                    .ok_or(())?,
+                animation
+                    .frame_pose(entity.old_frame, time, entity.sync_base, view.frame_timing)
+                    .ok_or(())?,
+            ]);
+        }
+        if matches!(entity.model, SceneModel::Lods { .. }) || model.animation().is_some() {
+            let selected = draw_entity(list, draw).ok_or(())?;
+            model.posed_frames(&selected).ok_or(())?;
+        }
     }
     Ok(Some(draw))
 }

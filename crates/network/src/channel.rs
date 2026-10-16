@@ -217,6 +217,12 @@ impl Channel {
         }
         self.snapshots.as_ref()?.submitted_command(sequence)
     }
+    pub fn submitted_time(&self, sequence: u32) -> Option<EventTime> {
+        if self.endpoint != Endpoint::Client {
+            return None;
+        }
+        self.snapshots.as_ref()?.submitted_time(sequence)
+    }
     pub fn q3_client_snapshot(
         &self,
         sequence: i32,

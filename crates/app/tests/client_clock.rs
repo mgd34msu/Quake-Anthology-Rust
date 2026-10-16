@@ -509,3 +509,87 @@ fn queued_q3_clock_offsets_stamp_prior_commands_without_changing_legacy_seats() 
         Some(RuleSetId::Quake3)
     );
 }
+
+#[test]
+fn quakeworld_queued_pause_and_push_latency_drive_the_same_client_clock() {
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let client = connect(
+        &mut runtime,
+        SeatId::FIRST,
+        Protocol::QuakeWorld28,
+        RuleSetId::Quake2,
+        RuleSetId::Quake3,
+    );
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    host.local_clients[0] = Some(client);
+    let packet = |sequence, body: &[u8]| {
+        let mut bytes = [0; 1400];
+        let length = qa_network::headers::encode(
+            qa_network::headers::QUAKEWORLD,
+            qa_network::headers::Direction::ToClient,
+            qa_network::headers::Header {
+                sequence,
+                ..Default::default()
+            },
+            body,
+            &mut bytes,
+        )
+        .unwrap();
+        bytes[..length].to_vec()
+    };
+    let mut source = Source {
+        time_ms: 10_000,
+        packets: vec![(client, packet(1, &[47, 0, 0]))],
+        ..Default::default()
+    };
+    host.console
+        .append_line(
+            "pushlatency 500",
+            Context {
+                source: RuleSetId::QuakeWorld,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let result = host.frame(&mut source, true);
+    assert_eq!(result.drains, 2);
+    let time = |host: &FrameHost| {
+        host.runtime.snapshots[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .interpolation()
+            .unwrap()
+            .time
+    };
+    assert_eq!(time(&host), ThinkTime::Seconds(10.0));
+    let push = host
+        .console
+        .cvars
+        .bind(
+            "pushlatency",
+            Context {
+                source: RuleSetId::QuakeWorld,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(host.console.cvars.numeric(push).unwrap(), 0.0);
+    source.time_ms = 20_000;
+    source.packets.push((client, packet(2, &[24, 1])));
+    host.frame(&mut source, true);
+    assert_eq!(time(&host), ThinkTime::Seconds(10.0));
+    source.time_ms = 30_000;
+    source.packets.push((client, packet(3, &[24, 0])));
+    host.frame(&mut source, true);
+    assert_eq!(time(&host), ThinkTime::Seconds(30.0));
+    assert_eq!(source.polls, 6);
+    assert_eq!(host.runtime.network.command_errors, 0);
+    assert_eq!(host.local_clients[0], Some(client));
+    assert!(!host.runtime.quit);
+}

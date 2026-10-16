@@ -166,6 +166,7 @@ fn literal_static_entities_traverse_native_channel_in_service_order_without_snap
         bytes[..length].copy_from_slice(packet.bytes);
         server.submitted(EventTime(2)).unwrap();
         let mut order = Vec::new();
+        let mut timing = 0;
         connections.receive(
             Endpoint::Client.socket(),
             Peer::Loopback(ClientId(0)),
@@ -185,12 +186,18 @@ fn literal_static_entities_traverse_native_channel_in_service_order_without_snap
                         assert_eq!(print.text, b"after");
                         order.push("print");
                     }
+                    Incoming::PacketTiming { acknowledged_sent } => {
+                        assert_eq!(protocol, Protocol::QuakeWorld28);
+                        assert_eq!(acknowledged_sent, None);
+                        timing += 1;
+                    }
                     _ => panic!("static/print service stream"),
                 }
                 ControlFlow::Continue(())
             },
         );
         assert_eq!(order, ["static", "print", "static"]);
+        assert_eq!(timing, usize::from(protocol == Protocol::QuakeWorld28));
         assert_eq!(connections.command_errors, 0);
         assert!(
             connections

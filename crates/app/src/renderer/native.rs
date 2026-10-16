@@ -431,7 +431,7 @@ impl SceneService for SceneBorrow<'_> {
             let Some(first) = assets.model(first_choice.model) else {
                 return frame.reject_submission();
             };
-            let count = info.frame_count(first.frame_count());
+            let count = info.frame_count(first.native_frame_count());
             if count == 0 {
                 return frame.reject_submission();
             }
@@ -593,6 +593,7 @@ impl SceneService for SceneBorrow<'_> {
         view.refdef.viewport.x += target.viewport.x;
         view.refdef.viewport.y += target.viewport.y;
         super::apply_presentation(&mut view.refdef, &target.presentation, composer.kind);
+        view.refdef.frame_timing = super::frame_timing(composer.kind, target.profile.rules);
         view.refdef.software_waterwarp &=
             cvars.numeric(target.software_waterwarp).unwrap_or(0.0) != 0.0;
         view.refdef.curve_error = crate::render_settings::curve_error(cvars, target.curve_error);

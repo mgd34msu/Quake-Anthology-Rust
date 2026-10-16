@@ -360,3 +360,106 @@ fn interpolation_fraction_remains_bounded_while_native_time_extrapolates() {
         assert_eq!(clock.sample().frame_ms, 50);
     }
 }
+
+#[test]
+fn quakeworld_animation_clock_uses_queued_realtime_and_native_packet_latency() {
+    let mut clock = PresentationClock::load(qa_gameplay::rules::presentation::clock_rules(
+        RuleSetId::QuakeWorld,
+    ));
+    let zero_wire_time = SnapshotClockSample {
+        sequence: 1,
+        time: ThinkTime::Milliseconds(0),
+        flags: 0,
+    };
+    let queued = EventTime(12_345_678_901);
+    clock
+        .advance(queued, zero_wire_time, None, None, ClockOptions::default())
+        .unwrap();
+    assert_eq!(clock.sample().time, ThinkTime::Seconds(queued.seconds()));
+    assert_eq!(clock.sample().fraction, 1.0);
+    // Native cls.latency starts at zero and drifts up by a double .001,
+    // stored back in float after each accepted packet, even without a snapshot.
+    clock.observe_packet_timing(EventTime(10_125_000_000), Some(EventTime(10_000_000_000)));
+    clock
+        .advance(queued, zero_wire_time, None, None, ClockOptions::default())
+        .unwrap();
+    assert_eq!(
+        clock.sample().time,
+        ThinkTime::Seconds(queued.seconds() - f64::from(0.001f32))
+    );
+    clock.observe_packet_timing(EventTime(10_250_000_000), Some(EventTime(10_000_000_000)));
+    clock
+        .advance(queued, zero_wire_time, None, None, ClockOptions::default())
+        .unwrap();
+    let drifted = (f64::from(0.001f32) + 0.001) as f32;
+    assert_eq!(
+        clock.sample().time,
+        ThinkTime::Seconds(queued.seconds() - f64::from(drifted))
+    );
+    clock.observe_packet_timing(EventTime(10_000_500_000), Some(EventTime(10_000_000_000)));
+    clock
+        .advance(queued, zero_wire_time, None, None, ClockOptions::default())
+        .unwrap();
+    let native_sample = (10.0005f64 - 10.0) as f32;
+    let expected = ThinkTime::Seconds(queued.seconds() - f64::from(native_sample));
+    assert_eq!(clock.sample().time, expected);
+    // Missing/negative/over-one-second observations do not change the estimate.
+    for (received, sent) in [
+        (20_000_000_000, None),
+        (9_000_000_000, Some(EventTime(10_000_000_000))),
+        (12_000_000_000, Some(EventTime(10_000_000_000))),
+    ] {
+        clock.observe_packet_timing(EventTime(received), sent);
+    }
+    clock
+        .advance(queued, zero_wire_time, None, None, ClockOptions::default())
+        .unwrap();
+    assert_eq!(clock.sample().time, expected);
+    // Native negative push latency moves toward realtime, never beyond it.
+    clock
+        .advance(
+            queued,
+            zero_wire_time,
+            None,
+            None,
+            ClockOptions {
+                push_latency_ms: -500.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(clock.sample().time, ThinkTime::Seconds(queued.seconds()));
+    let paused = clock.sample();
+    clock
+        .advance(
+            EventTime(30_000_000_000),
+            zero_wire_time,
+            None,
+            None,
+            ClockOptions {
+                paused: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(clock.sample(), paused);
+    clock
+        .advance(
+            EventTime(30_000_000_000),
+            zero_wire_time,
+            None,
+            None,
+            ClockOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        clock.sample().time,
+        ThinkTime::Seconds(30.0 - f64::from(native_sample))
+    );
+    // A new server header clears cl presentation state, not cls.latency.
+    clock.reset();
+    clock
+        .advance(queued, zero_wire_time, None, None, ClockOptions::default())
+        .unwrap();
+    assert_eq!(clock.sample().time, expected);
+}

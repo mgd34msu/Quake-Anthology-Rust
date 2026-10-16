@@ -58,6 +58,7 @@ pub enum NativeService<'a> {
     Cue(Cue),
     Particle(Particle),
     Print(Print<'a>),
+    Pause(bool),
     Nop,
     Disconnect,
 }
@@ -66,6 +67,12 @@ pub fn read_native_service(
     bytes: &[u8],
 ) -> Result<(NativeService<'_>, usize), Error> {
     match (protocol, bytes.first().copied().ok_or(Error::Truncated)?) {
+        (Protocol::NetQuake15 | Protocol::QuakeWorld28, 24) => {
+            let mut reader = Reader::new(bytes, Encoding::Bytes);
+            reader.read_bits(8)?;
+            let paused = reader.read_bits(8)? != 0;
+            Ok((NativeService::Pause(paused), reader.byte_position()))
+        }
         (Protocol::NetQuake15 | Protocol::QuakeWorld28, 32) => {
             let (track, length) = read_cd_track(protocol, bytes)?;
             Ok((NativeService::CdTrack(track), length))
@@ -106,6 +113,16 @@ fn control(protocol: Protocol, disconnect: bool, output: &mut [u8]) -> Result<us
     };
     let mut writer = Writer::new(output, Encoding::Bytes);
     writer.write_bits(opcode + u32::from(disconnect), 8)?;
+    Ok(writer.size())
+}
+
+fn pause(protocol: Protocol, paused: bool, output: &mut [u8]) -> Result<usize, Error> {
+    if !matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28) {
+        return Err(Error::Unsupported);
+    }
+    let mut writer = Writer::new(output, Encoding::Bytes);
+    writer.write_bits(24, 8)?;
+    writer.write_bits(u32::from(paused), 8)?;
     Ok(writer.size())
 }
 
@@ -183,6 +200,7 @@ pub fn native(
                 target,
             ),
             NativeService::Nop => control(protocol, false, target),
+            NativeService::Pause(paused) => pause(protocol, paused, target),
             NativeService::Disconnect => control(protocol, true, target),
         };
         match result {

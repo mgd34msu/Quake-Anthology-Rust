@@ -232,6 +232,10 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         let sent = self.slots[slot(sequence)].sent_move;
         (sent.sequence == Some(sequence)).then_some(sent.command)
     }
+    pub(crate) fn submitted_time(&self, sequence: u32) -> Option<qa_core::sys_events::EventTime> {
+        let sent = self.slots[slot(sequence)].sent_move;
+        (sent.sequence == Some(sequence)).then_some(sent.time)
+    }
     pub fn load(
         capacity: usize,
         native_numbers: usize,
@@ -864,6 +868,15 @@ impl Storage {
             Self::Quake2(ring) => ring.submitted_command(sequence),
             Self::Quake2Repro { ring, .. } => ring.submitted_command(sequence),
             Self::Quake3(ring) => ring.submitted_command(sequence),
+        }
+    }
+    pub(crate) fn submitted_time(&self, sequence: u32) -> Option<qa_core::sys_events::EventTime> {
+        match self {
+            Self::NetQuake(storage) => storage.ring.submitted_time(sequence),
+            Self::QuakeWorld { ring, .. } => ring.submitted_time(sequence),
+            Self::Quake2(ring) => ring.submitted_time(sequence),
+            Self::Quake2Repro { ring, .. } => ring.submitted_time(sequence),
+            Self::Quake3(ring) => ring.submitted_time(sequence),
         }
     }
     pub(crate) fn frame(&self, sequence: u32) -> Option<ReceivedFrame<'_>> {

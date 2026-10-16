@@ -9,6 +9,8 @@ use qa_render::world::{SurfaceMaterial, VisibleSurface, WorldId};
 use qa_render::{Assets, Command, FrontEnd, Limits, Refdef, SceneEntity, ShaderBindingId, Vertex};
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
+#[path = "scene/mdl_groups.rs"]
+mod mdl_groups;
 #[path = "scene/view_policy.rs"]
 mod view_policy;
 

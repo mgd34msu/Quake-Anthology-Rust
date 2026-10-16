@@ -11,7 +11,8 @@ use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Mesh, Model, ModelFormat};
 use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSource};
 use qa_render::assets::{
-    AssetCounts, ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture,
+    AssetCounts, ImageId, MaterialSettings, ModelAnimation, SoftwareAlias, Stage, StageTexture,
+    TimedGroup,
 };
 use qa_render::material::resources::{
     ImageRegistrationMark, ImageReload, ImageRole, ImageSearchOrder, ImageSettings, ImageUse,
@@ -402,11 +403,11 @@ impl ModelLodInfo<'_> {
     pub fn base_frames(self) -> usize {
         self.radii.len()
     }
-    pub fn frame_count(self, physical_frames: u32) -> u32 {
+    pub fn frame_count(self, native_frames: u32) -> u32 {
         if self.md3 {
             self.radii.len() as u32
         } else {
-            physical_frames
+            native_frames
         }
     }
     pub fn radius(self, frame: u32) -> Option<f32> {
@@ -698,6 +699,7 @@ enum ModelSourceFile {
     Ready {
         bytes: Arc<[u8]>,
         metadata: ModelMetadata,
+        animation: Option<Arc<ModelAnimation>>,
         radii: Arc<[f32]>,
         tags: Option<TagLayout>,
         meshes: Vec<Option<ModelId>>,
@@ -3343,6 +3345,10 @@ impl ModelAssets {
             .iter()
             .map(|frame| frame.bounds.radius())
             .collect::<Arc<[_]>>();
+        let animation = model_animation(&model).map_err(|message| FileError {
+            kind: CallError::File,
+            message,
+        })?;
         let tags = self.admit_tags(&model).map_err(FileError::tag)?;
         let meshes = vec![
             None;
@@ -3356,6 +3362,7 @@ impl ModelAssets {
         self.catalog.sources[name.0 as usize] = ModelSourceFile::Ready {
             bytes,
             metadata,
+            animation,
             radii,
             tags,
             meshes,
@@ -3545,8 +3552,12 @@ impl ModelAssets {
             let ModelLodSlot::Source(source) = lods.slots[slot] else {
                 continue;
             };
-            let ModelSourceFile::Ready { bytes, meshes, .. } =
-                &self.catalog.sources[source.0 as usize]
+            let ModelSourceFile::Ready {
+                bytes,
+                meshes,
+                animation,
+                ..
+            } = &self.catalog.sources[source.0 as usize]
             else {
                 return Err(self.fail_file(
                     name,
@@ -3555,6 +3566,7 @@ impl ModelAssets {
                 ));
             };
             let bytes = Arc::clone(bytes);
+            let animation = animation.clone();
             let meshes = meshes.clone();
             let model = match Model::parse(&bytes) {
                 Ok(model) => model,
@@ -3592,7 +3604,7 @@ impl ModelAssets {
                 }
             }
             drop(model);
-            inputs.push((slot, source, bytes, surfaces, meshes));
+            inputs.push((slot, source, bytes, surfaces, meshes, animation));
         }
         if lods.md3 {
             self.shader_catalog(vfs);
@@ -3636,7 +3648,7 @@ impl ModelAssets {
                 images.with_images(vfs, &mut self.assets, |temporary| {
                     let mut compiled = Vec::new();
                     let mut registrations = Vec::new();
-                    for (slot, _, bytes, _, meshes) in &mut inputs {
+                    for (slot, _, bytes, _, meshes, animation) in &mut inputs {
                         let model =
                             Model::parse(bytes).map_err(|error| format!("decode: {error:?}"))?;
                         validate_model(&model)?;
@@ -3647,6 +3659,7 @@ impl ModelAssets {
                             model_policy,
                             native_default,
                             meshes,
+                            animation.as_ref(),
                             self.catalog.shader_catalog.as_ref(),
                             &mut self.catalog.capacity,
                             self.catalog.limits,
@@ -3735,7 +3748,7 @@ impl ModelAssets {
                 }
             };
         }
-        for (_, source, _, _, meshes) in inputs {
+        for (_, source, _, _, meshes, _) in inputs {
             if let ModelSourceFile::Ready {
                 meshes: current, ..
             } = &mut self.catalog.sources[source.0 as usize]
@@ -5523,6 +5536,39 @@ fn append_inline_bindings(
     Ok(())
 }
 
+fn model_animation(model: &Model<'_>) -> Result<Option<Arc<ModelAnimation>>, String> {
+    if model.format != ModelFormat::Mdl {
+        return Ok(None);
+    }
+    let span = |range: &std::ops::Range<usize>| -> Result<IndexSpan, String> {
+        Ok(IndexSpan {
+            first: u32::try_from(range.start).map_err(|_| "model animation range")?,
+            count: u32::try_from(range.len()).map_err(|_| "model animation range")?,
+        })
+    };
+    let groups = |groups: &[qa_formats::model::Group]| -> Result<Box<[TimedGroup]>, String> {
+        groups
+            .iter()
+            .map(|group| {
+                Ok(TimedGroup {
+                    members: span(&group.members)?,
+                    endpoints: span(&group.intervals)?,
+                    bounds: group.bounds,
+                })
+            })
+            .collect()
+    };
+    let animation = ModelAnimation::new(
+        groups(&model.frame_groups)?,
+        groups(&model.skin_groups)?,
+        model.intervals.clone().into_boxed_slice(),
+        model.sync,
+        u32::try_from(model.frames.len()).map_err(|_| "model animation frames")?,
+        u32::try_from(model.skins.len()).map_err(|_| "model animation skins")?,
+    )?;
+    Ok(Some(Arc::new(animation)))
+}
+
 fn validate_model(model: &Model<'_>) -> Result<(), String> {
     if !matches!(
         model.format,
@@ -5537,12 +5583,8 @@ fn validate_model(model: &Model<'_>) -> Result<(), String> {
         .skin_groups
         .iter()
         .any(|group| group.members.len() != 1)
-        || model
-            .frame_groups
-            .iter()
-            .any(|group| group.members.len() != 1)
     {
-        return Err("grouped MDL frame/skin timing is not yet registered".to_owned());
+        return Err("grouped MDL skin timing is not yet registered".to_owned());
     }
     if model.format != ModelFormat::Md3
         && model.format != ModelFormat::Sp2
@@ -5565,6 +5607,7 @@ fn register(
     model_policy: ModelPolicy,
     native_default: ShaderBindingId,
     shared_meshes: &mut [Option<ModelId>],
+    animation: Option<&Arc<ModelAnimation>>,
     shader_catalog: Option<&Result<ShaderCatalog, String>>,
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
@@ -5680,6 +5723,11 @@ fn register(
             let id = images
                 .assets
                 .register_animated_model(&vertices, frame_size, &indices, material)?;
+            if let Some(animation) = animation {
+                images
+                    .assets
+                    .set_model_animation(id, Arc::clone(animation))?;
+            }
             if let Some(frames) = native {
                 let frames: Vec<_> = frames
                     .iter()

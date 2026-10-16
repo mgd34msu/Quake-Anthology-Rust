@@ -1577,3 +1577,283 @@ fn embedded_mdl_skin_choices_preserve_distinct_images_in_a_native_view() {
         );
     }
 }
+
+fn interleaved_mdl_frames() -> Vec<u8> {
+    let original = support::mdl();
+    let mut bytes = original[..142].to_vec();
+    bytes[68..72].copy_from_slice(&4i32.to_le_bytes());
+    bytes[72..76].copy_from_slice(&1i32.to_le_bytes());
+    let pose = |index: u8| {
+        let mut body = original[146..182].to_vec();
+        body[..8].copy_from_slice(&[0, 0, 0, 0, 32, 32, 32, 0]);
+        body[8..24].fill(0);
+        body[8] = b'a' + index;
+        for vertex in 0..3 {
+            body[24 + vertex * 4] = 8 + index * 2;
+        }
+        body
+    };
+    for (members, endpoints) in [
+        (0..1u8, &[][..]),
+        (1..4, &[0.125f32, 0.375, 1.0][..]),
+        (4..5, &[][..]),
+        (5..7, &[0.25, 0.75][..]),
+    ] {
+        bytes.extend(i32::from(!endpoints.is_empty()).to_le_bytes());
+        if !endpoints.is_empty() {
+            bytes.extend((members.len() as i32).to_le_bytes());
+            bytes.extend([0, 0, 0, 0, 32, 32, 32, 0]);
+            bytes.extend(endpoints.iter().flat_map(|value| value.to_le_bytes()));
+        }
+        for member in members {
+            bytes.extend(pose(member));
+        }
+    }
+    bytes
+}
+
+#[test]
+fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_without_source() {
+    let mut fixture = support::Fixture::new(&[
+        ("progs/grouped.mdl", interleaved_mdl_frames()),
+        (
+            "progs/skins.mdl",
+            include_bytes!("../../../formats/tests/fixtures/models/group.mdl").to_vec(),
+        ),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let original = ModelRequest::native("", RuleSetId::Quake, Some(palette)).profile();
+    let mut owner = ModelAssets::new(assets, [original], [], Default::default()).unwrap();
+    owner.set_image_search_order(ImageSearchOrder::parse(b"").unwrap());
+    owner
+        .adopt_palettes(
+            crate::render_settings::PaletteRegistrations::from_registered([
+                Some(palette),
+                Some(palette),
+                None,
+                None,
+                None,
+            ]),
+        )
+        .unwrap();
+    let handle = owner
+        .register_model(&fixture.vfs, b"progs/grouped.mdl", original.source_rules)
+        .unwrap();
+    let registration = owner
+        .catalog()
+        .renderer_registration(handle, original)
+        .unwrap();
+    let binding = owner
+        .catalog()
+        .bindings(registration, 0, Default::default())
+        .unwrap()
+        .next()
+        .unwrap();
+    let model = owner.assets().model(binding.model).unwrap();
+    assert_eq!(model.frame_count(), 7);
+    assert_eq!(model.native_frame_count(), 4);
+    assert_eq!(model.native_skin_count(), 1);
+    let recipe = model.animation().unwrap();
+    assert_eq!(recipe.sync(), 1);
+    assert_eq!(recipe.endpoints(), &[0.125, 0.375, 1., 0.25, 0.75]);
+    assert_eq!(
+        recipe
+            .frame_groups()
+            .iter()
+            .map(|group| group.members)
+            .collect::<Vec<_>>(),
+        [
+            IndexSpan { first: 0, count: 1 },
+            IndexSpan { first: 1, count: 3 },
+            IndexSpan { first: 4, count: 1 },
+            IndexSpan { first: 5, count: 2 },
+        ]
+    );
+    assert_eq!(
+        recipe.frame_groups()[1].bounds.maxs,
+        qa_core::primitives::Vec3([32.; 3])
+    );
+    let recipe_address = recipe as *const qa_render::assets::ModelAnimation;
+    for (frame, x) in [8., 10., 12., 14., 16., 18., 20.].into_iter().enumerate() {
+        assert_eq!(
+            model
+                .frames(frame as u32, frame as u32, 0.)
+                .unwrap()
+                .vertex(0)
+                .position
+                .0[0],
+            x
+        );
+    }
+    let models = owner.assets().counts().models;
+    assert!(
+        owner
+            .register_model(&fixture.vfs, b"progs/skins.mdl", original.source_rules)
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts().models, models);
+    let (mut owner, mut cpu) = publish(owner);
+    fixture.remove("progs/grouped.mdl");
+    let (mount, path) = {
+        let mount = fixture.vfs.mounts().next().unwrap();
+        (mount.id, mount.path.clone())
+    };
+    assert!(fixture.vfs.unmount(mount));
+    fixture.vfs.mount_directory(&path, 0).unwrap();
+    assert!(fixture.vfs.open(b"progs/grouped.mdl").is_none());
+    fixture.vfs.take_lookup_count();
+    let finish = MaterialFinishPolicy {
+        vertex_light: true,
+        ..original.finish
+    };
+    let prefix = owner.assets().counts();
+    let capacity = owner.catalog().capacity();
+    let mut prepared = None;
+    let failed: Result<(), String> = owner.image_transaction(
+        &fixture.vfs,
+        None,
+        ImageRefreshMode::Reconfigure,
+        |owner, _| {
+            let refresh = owner.refresh_images(
+                &fixture.vfs,
+                &[original],
+                &[],
+                [None; 5],
+                finish,
+                false,
+                |_| Ok(()),
+            )?;
+            let selected = refresh.registration(registration, owner.catalog())?;
+            assert_eq!(
+                owner
+                    .catalog()
+                    .bindings(selected, 0, Default::default())
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .model,
+                binding.model
+            );
+            prepared =
+                Some(CpuBackend::load_with_assets(8, 8, owner.assets()).map_err(str::to_owned)?);
+            Err("reject retained grouped model profile".to_owned())
+        },
+    );
+    assert!(failed.is_err());
+    drop(prepared.take());
+    assert_eq!(owner.assets().counts(), prefix);
+    assert_eq!(owner.catalog().capacity(), capacity);
+    assert_eq!(cpu.admitted_assets(), Some(prefix));
+    assert_eq!(
+        owner
+            .catalog()
+            .bindings(registration, 0, Default::default())
+            .unwrap()
+            .next(),
+        Some(binding)
+    );
+    let refresh = owner
+        .image_transaction(
+            &fixture.vfs,
+            None,
+            ImageRefreshMode::Reconfigure,
+            |owner, _| {
+                let refresh = owner.refresh_images(
+                    &fixture.vfs,
+                    &[original],
+                    &[],
+                    [None; 5],
+                    finish,
+                    false,
+                    |_| Ok(()),
+                )?;
+                prepared = Some(
+                    CpuBackend::load_with_assets(8, 8, owner.assets()).map_err(str::to_owned)?,
+                );
+                Ok(refresh)
+            },
+        )
+        .unwrap();
+    let current = refresh.profile(original);
+    cpu = prepared.take().unwrap();
+    assert_eq!(cpu.admitted_assets(), Some(owner.assets().counts()));
+    assert_ne!(current, original);
+    let current_registration = owner
+        .catalog()
+        .renderer_registration(handle, current)
+        .unwrap();
+    assert_eq!(
+        refresh.registration(registration, owner.catalog()).unwrap(),
+        current_registration
+    );
+    let current_binding = owner
+        .catalog()
+        .bindings(current_registration, 0, Default::default())
+        .unwrap()
+        .next()
+        .unwrap();
+    assert_eq!(current_binding.model, binding.model);
+    assert!(std::ptr::eq(
+        owner
+            .assets()
+            .model(binding.model)
+            .unwrap()
+            .animation()
+            .unwrap(),
+        recipe_address
+    ));
+    let capacity = owner.catalog().capacity();
+    let refresh = owner
+        .image_transaction(&fixture.vfs, None, ImageRefreshMode::Reload, |owner, _| {
+            let refresh = owner.refresh_images(
+                &fixture.vfs,
+                &[current],
+                &[],
+                [None; 5],
+                finish,
+                false,
+                |_| Ok(()),
+            )?;
+            prepared =
+                Some(CpuBackend::load_with_assets(8, 8, owner.assets()).map_err(str::to_owned)?);
+            Ok(refresh)
+        })
+        .unwrap();
+    cpu = prepared.unwrap();
+    assert_eq!(refresh.profile(current), current);
+    assert_eq!(
+        refresh
+            .registration(current_registration, owner.catalog())
+            .unwrap(),
+        current_registration
+    );
+    let reloaded = owner
+        .catalog()
+        .bindings(current_registration, 0, Default::default())
+        .unwrap()
+        .next()
+        .unwrap();
+    assert_eq!(reloaded.model, binding.model);
+    assert_eq!(owner.assets().counts().models, models);
+    assert_eq!(owner.catalog().capacity(), capacity);
+    assert!(std::ptr::eq(
+        owner
+            .assets()
+            .model(reloaded.model)
+            .unwrap()
+            .animation()
+            .unwrap(),
+        recipe_address
+    ));
+    assert_eq!(
+        owner
+            .assets()
+            .model(reloaded.model)
+            .unwrap()
+            .native_frame_count(),
+        4
+    );
+    assert_eq!(cpu.admitted_assets(), Some(owner.assets().counts()));
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+}
