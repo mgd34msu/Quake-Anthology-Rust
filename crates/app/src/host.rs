@@ -668,6 +668,8 @@ impl FrameHost {
                 &self.console.cvars,
                 profiles.iter().map(|profile| profile.rules),
             )?;
+            let subdivisions =
+                crate::render_settings::SubdivisionSettingsPlan::prepare(&self.console.cvars)?;
             let owner = self
                 .runtime
                 .model_assets
@@ -715,6 +717,7 @@ impl FrameHost {
                         band_settings,
                         window_plan,
                         image_plan,
+                        subdivisions,
                         profiles,
                         presentations,
                     )
@@ -727,6 +730,7 @@ impl FrameHost {
             band_settings,
             window_plan,
             image_plan,
+            subdivisions,
             profiles,
             presentations,
         ) = match candidate {
@@ -746,6 +750,7 @@ impl FrameHost {
             .restart_client_modules(crate::modules::RendererRestart::Video, &mut source.driver());
         let published = stopped.and_then(|()| {
             image_plan.validate(&self.console.cvars)?;
+            subdivisions.validate(&self.console.cvars)?;
             window_plan.validate(&self.console.cvars)?;
             if band_settings
                 .as_ref()
@@ -760,13 +765,21 @@ impl FrameHost {
                 .model_assets
                 .take()
                 .ok_or("missing model assets")?;
-            let result = owner.image_transaction(|owner| {
+            let result = owner.image_transaction(Some(subdivisions.value()), |owner, changed| {
                 let limits = self
                     .runtime
                     .scene
                     .as_ref()
                     .ok_or("missing scene composer")?
                     .limits();
+                if changed.iter().any(|&world| {
+                    self.runtime
+                        .scene
+                        .as_ref()
+                        .is_none_or(|scene| !scene.has_world(world))
+                }) {
+                    return Err("subdivided world has no scene scratch".into());
+                }
                 let refresh = owner.refresh_images(
                     &self.runtime.vfs,
                     &profiles,
@@ -845,6 +858,7 @@ impl FrameHost {
                     .renderer_contexts
                     .stage_graphics(staged.graphic_registrations())?;
                 image_plan.validate(&self.console.cvars)?;
+                subdivisions.validate(&self.console.cvars)?;
                 window_plan.validate(&self.console.cvars)?;
                 let configuration = source.publish_video(
                     candidate
@@ -913,6 +927,11 @@ impl FrameHost {
                         self.runtime.server.events.console_formatted(format_args!(
                             "Image latch publication: {error:?}\n"
                         ));
+                }
+                if let Err(error) = subdivisions.apply(&mut self.console.cvars) {
+                    let _ = self.runtime.server.events.console_formatted(format_args!(
+                        "Subdivision latch publication: {error:?}\n"
+                    ));
                 }
                 match kind {
                     crate::renderer::Kind::Cpu => {

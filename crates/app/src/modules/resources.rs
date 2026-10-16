@@ -516,7 +516,7 @@ impl FrameHost {
                 crate::model_assets::WorldRegistration {
                     profile,
                     presentation,
-                    options: Default::default(),
+                    options: crate::render_settings::world_load_options(&self.console.cvars)?,
                     trace_rules,
                 },
                 |view, store, loaded| {

@@ -1560,7 +1560,8 @@ impl ModelAssets {
     /// its backend and frontend candidates have both committed.
     pub(crate) fn image_transaction<T>(
         &mut self,
-        operation: impl FnOnce(&mut Self) -> Result<T, String>,
+        subdivisions: Option<f32>,
+        operation: impl FnOnce(&mut Self, &[WorldId]) -> Result<T, String>,
     ) -> Result<T, String> {
         if self.image_transaction_active {
             return Err("image refresh is already active".to_owned());
@@ -1570,15 +1571,45 @@ impl ModelAssets {
         }
         let mut checkpoint = ProfileCheckpoint::capture(self)?;
         checkpoint.registration.capture_all(self)?;
+        let mut retessellation = None;
         self.image_transaction_active = true;
-        let result = operation(self);
+        let result = (|| {
+            if let Some(tolerance) = subdivisions {
+                let worlds: Vec<_> = (0..self.assets.worlds().len())
+                    .map(|index| WorldId(index as u32))
+                    .collect();
+                retessellation = Some(
+                    self.assets
+                        .retessellate_worlds(&worlds, tolerance)
+                        .map_err(|error| format!("world subdivision: {error}"))?,
+                );
+            }
+            let changed: Vec<WorldId> = retessellation
+                .as_ref()
+                .map(|receipt| receipt.worlds().collect())
+                .unwrap_or_default();
+            operation(self, &changed)
+        })();
         self.image_transaction_active = false;
         match result {
-            Ok(ready) => Ok(ready),
-            Err(error) => {
-                checkpoint
-                    .rollback(self)
-                    .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
+            Ok(ready) => {
+                if let Some(receipt) = retessellation {
+                    receipt.commit();
+                }
+                Ok(ready)
+            }
+            Err(mut error) => {
+                let world_rollback = retessellation.map_or(Ok(()), |receipt| {
+                    receipt.rollback(&mut self.assets).map_err(str::to_owned)
+                });
+                // Existing WorldIds and presentation ranges must be restored
+                // before the appended mesh/resource suffix is discarded.
+                let resource_rollback = checkpoint.rollback(self);
+                for rollback in [world_rollback, resource_rollback] {
+                    if let Err(rollback) = rollback {
+                        error = format!("{error}; rollback: {rollback}");
+                    }
+                }
                 Err(error)
             }
         }

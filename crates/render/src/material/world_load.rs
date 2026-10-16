@@ -272,6 +272,13 @@ pub(crate) struct WorldMaterialSource {
     catalog: ShaderCatalog,
 }
 impl WorldMaterialSource {
+    pub(crate) fn geometry_options(&self) -> GeometryOptions {
+        self.options.geometry
+    }
+    pub(crate) fn set_patch_subdivisions(&mut self, tolerance: f32) {
+        self.options.geometry.patch_subdivisions = tolerance;
+    }
+
     fn load(
         vfs: &Vfs,
         map: &Map<'_>,

@@ -12,7 +12,7 @@ use qa_console::{
 };
 use qa_core::sys_events::{DeviceId, SeatId};
 use qa_platform::EventPump;
-use qa_render::{Assets, material::world_load::WorldLoadOptions};
+use qa_render::Assets;
 use qa_session::timing::TickRate;
 use std::time::Duration;
 
@@ -527,7 +527,7 @@ fn run() -> Result<(), String> {
             &mut runtime.geometry,
             source_palette,
             &presentations,
-            WorldLoadOptions::default(),
+            qa_app::render_settings::world_load_options(&console.cvars)?,
         )?;
         world_rate = qa_app::client_policy::tick_rate(policy.client, &mut console.cvars)?;
         let tick_ms = match world_rate {

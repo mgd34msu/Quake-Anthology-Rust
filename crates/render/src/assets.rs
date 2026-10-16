@@ -1,8 +1,10 @@
 //! Registration is a load operation. Frames use numeric handles only.
 mod admission;
+mod retessellation;
 pub mod upload;
 pub(crate) use admission::AssetAdmission;
 pub use admission::AssetCounts;
+pub use retessellation::WorldRetessellation;
 
 use crate::scene::Span;
 pub use crate::shader::{AlphaFunc as AlphaTest, Cull, TexCoordGen as TcGen};
@@ -572,6 +574,8 @@ pub struct Assets {
     material_shader_heads: Vec<Option<u32>>,
     shader_capacity: usize,
     models: Vec<Model>,
+    /// Cold in-place mesh replacement invalidates both backend preparations.
+    model_preparation_revision: u64,
     worlds: Vec<World>,
     presentations: Vec<WorldPresentation>,
     palettes: Vec<PaletteLighting>,
@@ -638,6 +642,7 @@ impl Assets {
                 sprite: None,
                 alias: None,
             }],
+            model_preparation_revision: 0,
             worlds: Vec::new(),
             presentations: Vec::new(),
             palettes: Vec::new(),
@@ -1060,6 +1065,19 @@ impl Assets {
         indices: &[u32],
         shader: ShaderBindingId,
     ) -> Result<ModelId, &'static str> {
+        let model = self.prepare_model(vertices, vertices_per_frame, indices, shader)?;
+        let id = ModelId(u32::try_from(self.models.len()).map_err(|_| "model table full")?);
+        self.models.push(model);
+        Ok(id)
+    }
+
+    fn prepare_model(
+        &self,
+        vertices: &[Vertex],
+        vertices_per_frame: usize,
+        indices: &[u32],
+        shader: ShaderBindingId,
+    ) -> Result<Model, &'static str> {
         let frame_count = if vertices_per_frame == 0 {
             if !vertices.is_empty() || !indices.is_empty() {
                 return Err("invalid mesh frames");
@@ -1082,8 +1100,7 @@ impl Assets {
         {
             return Err("invalid mesh");
         }
-        let id = ModelId(u32::try_from(self.models.len()).map_err(|_| "model table full")?);
-        self.models.push(Model {
+        Ok(Model {
             vertices: vertices.into(),
             indices: indices.into(),
             shader,
@@ -1091,8 +1108,7 @@ impl Assets {
             frame_count,
             sprite: None,
             alias: None,
-        });
-        Ok(id)
+        })
     }
     pub fn register_sprite(
         &mut self,
@@ -1345,23 +1361,7 @@ impl Assets {
             first
                 .checked_add(count)
                 .ok_or("world presentation table full")?;
-            let mut indices = Vec::new();
-            let mut mesh_ranges = Vec::with_capacity(geometry.surfaces.len());
-            for (source, surface) in geometry.surfaces.iter().enumerate() {
-                let range = surface.indices.range();
-                if source != surface.source_id as usize
-                    || range.end > geometry.indices.len()
-                    || !range.len().is_multiple_of(3)
-                {
-                    return Err("invalid world triangle range");
-                }
-                let first = u32::try_from(indices.len()).map_err(|_| "world mesh full")?;
-                indices.extend_from_slice(&geometry.indices[range]);
-                mesh_ranges.push(Span {
-                    first,
-                    count: surface.indices.count,
-                });
-            }
+            let mesh = retessellation::world_mesh(&geometry)?;
             let mut registrations = Vec::with_capacity(variants.len());
             for (index, &input) in variants.iter().enumerate() {
                 let (shaders, native_registrations) =
@@ -1369,7 +1369,7 @@ impl Assets {
                 registrations.push(WorldPresentation::bind(
                     id,
                     input.surfaces,
-                    mesh_ranges.iter().copied(),
+                    mesh.ranges.iter().copied(),
                     shaders.into_iter(),
                     native_registrations,
                     input.native_page0,
@@ -1378,8 +1378,7 @@ impl Assets {
                     self.shader_binding_capacity(),
                 )?);
             }
-            let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();
-            let mesh = self.register_model(&vertices, &indices, ShaderBindingId(0))?;
+            let mesh = self.register_model(&mesh.vertices, &mesh.indices, ShaderBindingId(0))?;
             self.worlds.push(World {
                 geometry,
                 visibility: visibility.into(),

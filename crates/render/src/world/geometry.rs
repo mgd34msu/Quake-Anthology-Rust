@@ -188,14 +188,7 @@ pub fn load_geometry(
     map: &Map<'_>,
     options: GeometryOptions,
 ) -> Result<WorldGeometry, GeometryError> {
-    if !options.patch_subdivisions.is_finite()
-        || options.patch_subdivisions <= 0.0
-        || options.max_surface_vertices < 3
-        || options.max_surface_vertices > u32::MAX as usize
-        || !(-8..=8).contains(&options.vertex_color_shift)
-    {
-        return Err(GeometryError::InvalidOptions);
-    }
+    validate_options(options)?;
     let mut geometry = WorldGeometry {
         partition: if matches!(map.bsp.format.rule_set(), RuleSetId::Quake3) {
             GeometryPartition::Unpartitioned
@@ -223,6 +216,110 @@ pub fn load_geometry(
         load_modern(map, options, &mut geometry)?;
     } else {
         load_legacy(map, options, &mut geometry)?;
+    }
+    geometry.patch_stats = prepare_patches(&mut geometry, options)?;
+    Ok(geometry)
+}
+
+fn validate_options(options: GeometryOptions) -> Result<(), GeometryError> {
+    if !options.patch_subdivisions.is_finite()
+        || options.max_surface_vertices < 3
+        || options.max_surface_vertices > u32::MAX as usize
+        || !(-8..=8).contains(&options.vertex_color_shift)
+    {
+        return Err(GeometryError::InvalidOptions);
+    }
+    Ok(())
+}
+
+/// Rebuild patch grids from their retained authored controls. Existing vertex
+/// colors already passed source conversion and are never normalized again.
+pub fn retessellate_patches(
+    source: &WorldGeometry,
+    options: GeometryOptions,
+) -> Result<WorldGeometry, GeometryError> {
+    validate_options(options)?;
+    let mut prefix = 0;
+    for surface in &source.surfaces {
+        let vertices = surface
+            .patch
+            .as_ref()
+            .map_or(surface.vertices, |patch| patch.control_vertices);
+        section(
+            &source.vertices,
+            vertices,
+            "source vertices",
+            surface.source_id,
+        )?;
+        prefix = prefix.max(vertices.range().end);
+    }
+    let mut geometry = WorldGeometry {
+        partition: source.partition,
+        world_has_lightdata: source.world_has_lightdata,
+        vertices: source.vertices[..prefix].to_vec(),
+        indices: Vec::new(),
+        boundaries: Vec::new(),
+        surfaces: Vec::with_capacity(source.surfaces.len()),
+        light_samples: source.light_samples.clone(),
+        models: source.models.clone(),
+        patch_stats: PatchStats::default(),
+    };
+    for old in &source.surfaces {
+        let mut surface = old.clone();
+        let first_index = geometry.indices.len();
+        let first_boundary = geometry.boundaries.len();
+        if let Some(patch) = &old.patch {
+            let (vertices, patch) = append_patch(
+                &mut geometry,
+                patch.control_vertices,
+                patch.control_dimensions.map(i32::from),
+                old.lightmap_vectors,
+                old.no_draw,
+                options,
+                old.source_id,
+            )?;
+            surface.vertices = vertices;
+            surface.patch = Some(patch);
+            surface.bounds = vertex_bounds(section(
+                &geometry.vertices,
+                vertices,
+                "patch vertices",
+                old.source_id,
+            )?)?;
+            surface.indices = span(first_index, geometry.indices.len() - first_index)?;
+        } else {
+            let triangles = section(
+                &source.indices,
+                old.indices,
+                "triangle indices",
+                old.source_id,
+            )?;
+            geometry.indices.extend_from_slice(triangles);
+            surface.indices = span(first_index, triangles.len())?;
+            for &boundary in section(
+                &source.boundaries,
+                old.boundaries,
+                "surface boundaries",
+                old.source_id,
+            )? {
+                if boundary.range().start >= old.indices.range().start
+                    && boundary.range().end <= old.indices.range().end
+                {
+                    geometry.boundaries.push(Span {
+                        first: surface.indices.first + (boundary.first - old.indices.first),
+                        count: boundary.count,
+                    });
+                } else {
+                    let loop_indices =
+                        section(&source.indices, boundary, "boundary indices", old.source_id)?;
+                    let first = geometry.indices.len();
+                    geometry.indices.extend_from_slice(loop_indices);
+                    geometry.boundaries.push(span(first, loop_indices.len())?);
+                }
+            }
+        }
+        surface.boundaries = span(first_boundary, geometry.boundaries.len() - first_boundary)?;
+        geometry.surfaces.push(surface);
     }
     geometry.patch_stats = prepare_patches(&mut geometry, options)?;
     Ok(geometry)
@@ -542,32 +639,17 @@ fn load_modern(
         let mut patch = None;
         let kind = match source.kind {
             SurfaceKind::Patch => {
-                let grid =
-                    patch::subdivide(controls, source.patch, options.patch_subdivisions, id)?;
-                if grid.vertices.len() > options.max_surface_vertices {
-                    return Err(GeometryError::TooManySurfaceVertices(id));
-                }
-                vertices = span(out.vertices.len(), grid.vertices.len())?;
-                out.vertices.extend_from_slice(&grid.vertices);
-                let [width, height] = grid.dimensions;
-                if !no_draw {
-                    push_grid_triangles(out, vertices.first, width as u32, height as u32)?;
-                }
-                let origin =
-                    qa_core::math::midpoint(source.lightmap_vectors[0], source.lightmap_vectors[1]);
-                let radius = length(source.lightmap_vectors[0] - origin);
-                if !radius.is_finite() {
-                    return Err(GeometryError::NonFinite("patch LOD", id));
-                }
-                patch = Some(PatchGrid {
-                    control_vertices: source.vertices,
-                    control_dimensions: [source.patch[0] as u16, source.patch[1] as u16],
-                    dimensions: grid.dimensions,
-                    width_lod_error: grid.width_lod_error,
-                    height_lod_error: grid.height_lod_error,
-                    lod_origin: origin,
-                    lod_radius: radius,
-                });
+                let (grid_vertices, grid) = append_patch(
+                    out,
+                    source.vertices,
+                    source.patch,
+                    source.lightmap_vectors,
+                    no_draw,
+                    options,
+                    id,
+                )?;
+                vertices = grid_vertices;
+                patch = Some(grid);
                 GeometryKind::Patch
             }
             SurfaceKind::Flare => GeometryKind::Flare,
@@ -675,6 +757,49 @@ fn load_modern(
         });
     }
     Ok(())
+}
+
+fn append_patch(
+    out: &mut WorldGeometry,
+    controls: Span,
+    dimensions: [i32; 2],
+    lightmap_vectors: [Vec3; 3],
+    no_draw: bool,
+    options: GeometryOptions,
+    id: u32,
+) -> Result<(Span, PatchGrid), GeometryError> {
+    let grid = patch::subdivide(
+        section(&out.vertices, controls, "patch controls", id)?,
+        dimensions,
+        options.patch_subdivisions,
+        id,
+    )?;
+    if grid.vertices.len() > options.max_surface_vertices {
+        return Err(GeometryError::TooManySurfaceVertices(id));
+    }
+    let vertices = span(out.vertices.len(), grid.vertices.len())?;
+    out.vertices.extend_from_slice(&grid.vertices);
+    let [width, height] = grid.dimensions;
+    if !no_draw {
+        push_grid_triangles(out, vertices.first, width as u32, height as u32)?;
+    }
+    let origin = qa_core::math::midpoint(lightmap_vectors[0], lightmap_vectors[1]);
+    let radius = length(lightmap_vectors[0] - origin);
+    if !radius.is_finite() {
+        return Err(GeometryError::NonFinite("patch LOD", id));
+    }
+    Ok((
+        vertices,
+        PatchGrid {
+            control_vertices: controls,
+            control_dimensions: dimensions.map(|dimension| dimension as u16),
+            dimensions: grid.dimensions,
+            width_lod_error: grid.width_lod_error,
+            height_lod_error: grid.height_lod_error,
+            lod_origin: origin,
+            lod_radius: radius,
+        },
+    ))
 }
 
 pub(super) fn push_grid_triangles(

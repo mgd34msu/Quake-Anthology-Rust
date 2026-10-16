@@ -2673,6 +2673,12 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
         ..Context::default()
     };
     let picmip = host.console.cvars.bind("r_picmip", context).unwrap();
+    let subdivisions = host.console.cvars.bind("r_subdivisions", context).unwrap();
+    // The planar fixture checks latch publication; render fixtures cover the
+    // changed patch triangle counts.
+    assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "4");
+    assert!(host.console.cvars.latched(subdivisions).unwrap().is_none());
+    let subdivision_generation = host.console.cvars.view_generation(subdivisions);
     let width = host.console.cvars.bind("r_customwidth", context).unwrap();
     let height = host.console.cvars.bind("r_customheight", context).unwrap();
     let old_limits = host.runtime.scene.as_ref().unwrap().limits();
@@ -2690,11 +2696,27 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     source.video_reject = true;
     host.console
         .append(
-            &format!("r_customwidth 96\nr_customheight 80\nr_customaspect {explicit_aspect}\nr_picmip 2\nvid_restart cpu\n"),
+            &format!("r_customwidth 96\nr_customheight 80\nr_customaspect {explicit_aspect}\nr_picmip 2\nr_subdivisions 8\nvid_restart cpu\n"),
             context,
         )
         .unwrap();
     host.execute_commands_with_driver(&mut source.driver());
+    assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "4");
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(subdivisions)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "8"
+    );
+    assert_eq!(
+        host.console.cvars.view_generation(subdivisions),
+        subdivision_generation
+    );
+    let pending_subdivision_generation = host.console.cvars.view_update_generation(subdivisions);
+    assert!(pending_subdivision_generation > subdivision_generation);
     assert_eq!(host.console.cvars.read(picmip).unwrap().as_str(), "1");
     assert_eq!(
         host.console
@@ -2707,6 +2729,24 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     );
     source.step(&mut host);
     assert_eq!((source.video_prepares, source.video_publishes), (1, 0));
+    assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "4");
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(subdivisions)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "8"
+    );
+    assert_eq!(
+        host.console.cvars.view_generation(subdivisions),
+        subdivision_generation
+    );
+    assert_eq!(
+        host.console.cvars.view_update_generation(subdivisions),
+        pending_subdivision_generation
+    );
     assert_eq!(source.backend.cpu.dimensions(), [64, 48]);
     assert_eq!(query(&mut host, ModuleId(1), 4), Ok(old_cgame_aspect));
     assert_eq!(ui_query(&mut host, ModuleId(3), 3), Ok(old_ui_aspect));
@@ -2773,6 +2813,24 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     source.step(&mut host);
     until_running(&mut host, &mut source);
     assert_eq!((source.video_prepares, source.video_publishes), (2, 0));
+    assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "4");
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(subdivisions)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "8"
+    );
+    assert_eq!(
+        host.console.cvars.view_generation(subdivisions),
+        subdivision_generation
+    );
+    assert_eq!(
+        host.console.cvars.view_update_generation(subdivisions),
+        pending_subdivision_generation
+    );
     assert_eq!(source.backend.cpu.dimensions(), [64, 48]);
     assert_eq!(query(&mut host, ModuleId(1), 4), Ok(old_cgame_aspect));
     assert_eq!(ui_query(&mut host, ModuleId(3), 3), Ok(old_ui_aspect));
@@ -2883,6 +2941,12 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     source.step(&mut host);
     until_running(&mut host, &mut source);
     assert_eq!((source.video_prepares, source.video_publishes), (3, 1));
+    assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "8");
+    assert!(host.console.cvars.latched(subdivisions).unwrap().is_none());
+    assert!(host.console.cvars.view_generation(subdivisions) > subdivision_generation);
+    assert!(
+        host.console.cvars.view_update_generation(subdivisions) > pending_subdivision_generation
+    );
     assert_eq!(source.backend.cpu.dimensions(), [96, 80]);
     assert_eq!(
         source

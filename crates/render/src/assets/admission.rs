@@ -86,6 +86,7 @@ impl ImageVersion {
 pub(crate) struct AssetAdmission {
     counts: AssetCounts,
     images: Box<[ImageVersion]>,
+    model_preparation_revision: u64,
 }
 impl AssetAdmission {
     pub(crate) fn prepare(
@@ -113,13 +114,16 @@ impl AssetAdmission {
             {
                 return Err("renderer image preparation changed");
             }
-            if old == counts {
+            if old == counts
+                && previous.model_preparation_revision == assets.model_preparation_revision
+            {
                 return Ok(None);
             }
         }
         Ok(Some(Self {
             counts,
             images: assets.images().iter().map(ImageVersion::of).collect(),
+            model_preparation_revision: assets.model_preparation_revision,
         }))
     }
 

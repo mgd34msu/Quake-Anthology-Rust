@@ -6,6 +6,7 @@ use qa_render::scene::Span;
 use qa_render::world::geometry::{
     GeometryError, GeometryKind, GeometryOptions, LightEncoding, LightSource, PatchGrid,
     TextureCoordinates, WorldGeometry, WorldVertex, load_geometry, prepare_patches,
+    retessellate_patches,
 };
 
 fn bsp_bytes(family: u8, lighting: &[u8]) -> Vec<u8> {
@@ -363,6 +364,239 @@ fn q3_patch_uses_native_curve_deviation_collinear_pruning_and_triangle_order() {
     );
     let flat = load_geometry(&curved_patch(&bytes, 0.0), GeometryOptions::default()).unwrap();
     assert_eq!(flat.surfaces[0].patch.as_ref().unwrap().dimensions, [2, 2]);
+}
+
+#[test]
+fn patch_retessellation_reuses_authored_controls_and_keeps_color_conversion_once() {
+    let bytes = bsp_bytes(3, &[]);
+    let mut map = curved_patch(&bytes, 64.0);
+    for (index, vertex) in map.vertices.iter_mut().enumerate() {
+        vertex.color = [17 + index as u8, 43, 91, 127];
+    }
+    let options = GeometryOptions {
+        vertex_color_shift: 2,
+        ..Default::default()
+    };
+    let fine = load_geometry(&map, options).unwrap();
+    let coarse_options = GeometryOptions {
+        patch_subdivisions: 100.0,
+        ..options
+    };
+    let coarse = retessellate_patches(&fine, coarse_options).unwrap();
+    let native_coarse = load_geometry(&map, coarse_options).unwrap();
+    assert_eq!(coarse.vertices, native_coarse.vertices);
+    assert_eq!(coarse.indices, native_coarse.indices);
+    assert_eq!(coarse.boundaries, native_coarse.boundaries);
+    assert_eq!(
+        coarse.surfaces[0].patch.as_ref().unwrap().dimensions,
+        [3, 2]
+    );
+    let restored = retessellate_patches(&coarse, options).unwrap();
+    assert_eq!(restored.vertices, fine.vertices);
+    assert_eq!(restored.indices, fine.indices);
+    assert_eq!(restored.boundaries, fine.boundaries);
+    assert_eq!(restored.surfaces[0].bounds, fine.surfaces[0].bounds);
+    let zero_options = GeometryOptions {
+        patch_subdivisions: 0.0,
+        ..options
+    };
+    let zero = retessellate_patches(&coarse, zero_options).unwrap();
+    let native_zero = load_geometry(&map, zero_options).unwrap();
+    let negative = retessellate_patches(
+        &coarse,
+        GeometryOptions {
+            patch_subdivisions: -1.0,
+            ..options
+        },
+    )
+    .unwrap();
+    assert_eq!(zero.vertices, native_zero.vertices);
+    assert_eq!(zero.indices, native_zero.indices);
+    assert_eq!(negative.vertices, zero.vertices);
+    assert_eq!(negative.indices, zero.indices);
+    let dimensions = zero.surfaces[0].patch.as_ref().unwrap().dimensions;
+    assert!(dimensions[0] > 9 && dimensions[0] <= 65);
+    assert!(dimensions[1] >= 2 && dimensions[1] <= 65);
+}
+
+fn registered_patch_world(assets: &mut qa_render::Assets) -> qa_render::world::WorldId {
+    use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
+    let bytes = bsp_bytes(3, &[]);
+    let map = curved_patch(&bytes, 64.0);
+    let geometry = load_geometry(&map, GeometryOptions::default()).unwrap();
+    let visibility = VisibilityWorld::load(
+        vec![],
+        vec![],
+        vec![VisLeaf {
+            selector: None,
+            area: None,
+            solid: false,
+            bounds: geometry.surfaces[0].bounds,
+            surfaces: SurfaceSpan { first: 0, count: 1 },
+        }],
+        vec![0],
+        1,
+        -1,
+        PvsRows::all_visible(0),
+    )
+    .unwrap();
+    let materials = [qa_render::world::SurfaceMaterial::default()];
+    assets
+        .register_world(
+            geometry,
+            visibility,
+            &[qa_render::world::WorldPresentationInput::new(&materials); 2],
+        )
+        .unwrap()
+}
+
+fn render_patch_world(
+    cpu: &mut qa_render::cpu::CpuBackend,
+    assets: &qa_render::Assets,
+    world: qa_render::world::WorldId,
+) -> Vec<u32> {
+    let mut frontend = qa_render::FrontEnd::load(qa_render::Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
+    assert!(frame.add_world(
+        world,
+        assets.world(world).unwrap().presentations()[0],
+        &[qa_render::world::VisibleSurface {
+            surface: 0,
+            depth_key: 0,
+        }],
+    ));
+    assert!(frame.render_scene(
+        qa_render::Refdef {
+            viewport: qa_render::Viewport {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64
+            },
+            origin: Vec3([64.0, 64.0, 256.0]),
+            axes: [
+                Vec3([0.0, 0.0, -1.0]),
+                Vec3([0.0, 1.0, 0.0]),
+                Vec3([1.0, 0.0, 0.0])
+            ],
+            fov: [90.0; 2],
+            ..Default::default()
+        },
+        &[],
+        assets,
+        qa_render::shader::reference::ShaderView::direct(),
+    ));
+    let mut packet = frame.finish();
+    packet.resolve_shaders(assets, &());
+    assert_eq!(cpu.render(&packet, assets).rejected, 0);
+    assert!(cpu.world_stats().curve_pixels > 0);
+    cpu.pixels().to_vec()
+}
+
+#[test]
+fn world_retessellation_updates_all_presentations_and_rolls_back_rejected_preparation() {
+    let mut assets = qa_render::Assets::load().unwrap();
+    let world = registered_patch_world(&mut assets);
+    let original_mesh = assets.world(world).unwrap().mesh();
+    let original_vertices = assets.model(original_mesh).unwrap().vertices.to_vec();
+    let original_indices = assets.model(original_mesh).unwrap().indices.to_vec();
+    let presentations = assets.world(world).unwrap().presentations().to_vec();
+    let retained = assets.counts();
+    let mut cpu = qa_render::cpu::CpuBackend::load_with_assets(64, 64, &assets).unwrap();
+    let original_pixels = render_patch_world(&mut cpu, &assets, world);
+    assert_eq!(cpu.world_stats().patch_polygons, 16);
+    let original_config = cpu.raster_config();
+
+    assert!(
+        assets
+            .retessellate_worlds(&[world, qa_render::world::WorldId(u32::MAX)], 100.0)
+            .is_err()
+    );
+    assert_eq!(assets.counts(), retained);
+    assert_eq!(assets.world(world).unwrap().mesh(), original_mesh);
+    assert_eq!(
+        assets.model(original_mesh).unwrap().vertices.as_ref(),
+        original_vertices
+    );
+    assert_eq!(
+        assets.model(original_mesh).unwrap().indices.as_ref(),
+        original_indices
+    );
+    for &presentation in &presentations {
+        assert_eq!(
+            assets
+                .surface_binding(presentation, 0)
+                .unwrap()
+                .mesh_indices
+                .count,
+            48
+        );
+    }
+
+    let receipt = assets.retessellate_worlds(&[world, world], 100.0).unwrap();
+    assert_eq!(receipt.worlds().collect::<Vec<_>>(), [world]);
+    assert_eq!(assets.counts(), retained);
+    assert_eq!(assets.world(world).unwrap().presentations(), presentations);
+    assert_eq!(assets.world(world).unwrap().mesh(), original_mesh);
+    assert_eq!(assets.model(original_mesh).unwrap().vertices.len(), 15);
+    for &presentation in &presentations {
+        assert_eq!(
+            assets
+                .surface_binding(presentation, 0)
+                .unwrap()
+                .mesh_indices
+                .count,
+            12
+        );
+    }
+    let rejected = qa_render::Limits {
+        draws: 1,
+        ..Default::default()
+    };
+    assert!(cpu.prepare_assets(&assets, Some(rejected)).is_err());
+    assert_eq!(cpu.admitted_assets(), Some(retained));
+    assert_eq!(cpu.raster_config(), original_config);
+    receipt.rollback(&mut assets).unwrap();
+    assets.discard_registration_suffix(retained).unwrap();
+    assert_eq!(
+        assets.model(original_mesh).unwrap().vertices.as_ref(),
+        original_vertices
+    );
+    assert_eq!(
+        assets.model(original_mesh).unwrap().indices.as_ref(),
+        original_indices
+    );
+    assert_eq!(
+        render_patch_world(&mut cpu, &assets, world),
+        original_pixels
+    );
+
+    for _ in 0..3 {
+        let receipt = assets.retessellate_worlds(&[world], 100.0).unwrap();
+        assert_eq!(assets.counts(), retained);
+        assert_eq!(assets.world(world).unwrap().mesh(), original_mesh);
+        cpu.prepare_assets(&assets, None).unwrap();
+        assert!(
+            cpu.raster_config().preparation_capacity_bytes
+                < original_config.preparation_capacity_bytes
+        );
+        receipt.commit();
+        render_patch_world(&mut cpu, &assets, world);
+        assert_eq!(cpu.world_stats().patch_polygons, 4);
+        assert_eq!(assets.world(world).unwrap().geometry().vertices.len(), 15);
+        let receipt = assets.retessellate_worlds(&[world], 4.0).unwrap();
+        assert_eq!(assets.counts(), retained);
+        assert_eq!(assets.world(world).unwrap().mesh(), original_mesh);
+        cpu.prepare_assets(&assets, None).unwrap();
+        assert_eq!(cpu.raster_config(), original_config);
+        receipt.commit();
+        assert_eq!(
+            render_patch_world(&mut cpu, &assets, world),
+            original_pixels
+        );
+        assert_eq!(cpu.world_stats().patch_polygons, 16);
+        assert_eq!(assets.world(world).unwrap().geometry().vertices.len(), 27);
+    }
 }
 
 #[test]

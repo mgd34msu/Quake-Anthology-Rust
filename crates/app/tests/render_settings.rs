@@ -1,4 +1,4 @@
-use qa_app::render_settings::image_settings;
+use qa_app::render_settings::{image_settings, world_load_options};
 use qa_console::{
     cvars::Cvars,
     views::{Context, RuleSetId},
@@ -183,4 +183,57 @@ fn native_integer_limits_clamp_before_upload_and_rerelease_retains_large_images(
             .unwrap()
             .round_images_down
     );
+}
+
+#[test]
+fn subdivision_policy_is_global_and_current_until_its_selected_latch_is_applied() {
+    use qa_console::{cvars::RuntimePolicy, pending::PendingSettings};
+    for context in RuleSetId::ALL {
+        let mut vars = vars(context);
+        assert_eq!(
+            world_load_options(&vars)
+                .unwrap()
+                .geometry
+                .patch_subdivisions,
+            4.0
+        );
+        let subdivision = vars.bind("r_subdivisions", Context::default()).unwrap();
+        vars.set_latch_active(subdivision.canonical(), true);
+        vars.set_runtime_policy(RuntimePolicy {
+            initialized: true,
+            server_active: true,
+        });
+        vars.write(subdivision, "2").unwrap();
+        assert_eq!(
+            world_load_options(&vars)
+                .unwrap()
+                .geometry
+                .patch_subdivisions,
+            4.0
+        );
+        let game = vars.bind("g_gametype", Context::default()).unwrap();
+        vars.write(game, "4").unwrap();
+        let selected = PendingSettings::capture(&vars, [subdivision]);
+        selected.apply(&mut vars).unwrap();
+        assert_eq!(
+            world_load_options(&vars)
+                .unwrap()
+                .geometry
+                .patch_subdivisions,
+            2.0
+        );
+        assert!(vars.latched(game).unwrap().is_some());
+        for value in ["0", "-1.5"] {
+            vars.force_write(subdivision, value).unwrap();
+            assert_eq!(
+                world_load_options(&vars)
+                    .unwrap()
+                    .geometry
+                    .patch_subdivisions,
+                qa_console::numbers::number(value, RuleSetId::Quake3)
+            );
+        }
+        vars.force_write(subdivision, "nan").unwrap();
+        assert!(world_load_options(&vars).is_err());
+    }
 }
