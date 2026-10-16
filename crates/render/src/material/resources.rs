@@ -513,6 +513,20 @@ pub fn load_palette(
         .map_err(ResourceError::Asset)
 }
 
+#[derive(Clone, Copy)]
+struct ImageRecord {
+    key: ImageKey,
+    image: ResolvedImage,
+    first_use: ImageUse,
+    first_requested: NameId,
+}
+
+/// Cold rollback storage for the same image owner; it is never a live lookup cache.
+pub struct ImageReload {
+    resolved: Vec<ImageRecord>,
+    conflicts: Vec<ImageConflict>,
+}
+
 /// Canonical file names form a sorted load index. No content fingerprints or
 /// strings participate in a frame lookup. Different palettes stay distinct.
 /// The existing recipe cache can outlive a temporary borrow of cold Assets.
@@ -522,7 +536,7 @@ pub struct ImagesState {
     source_rules: RuleSetId,
     indexed_remap: Option<IndexedRemap>,
     raster_target: Option<IndexedTarget>,
-    resolved: Vec<(ImageKey, ResolvedImage, ImageUse)>,
+    resolved: Vec<ImageRecord>,
     conflicts: Vec<ImageConflict>,
 }
 #[derive(Clone, Copy)]
@@ -530,6 +544,28 @@ pub struct ImageRegistrationMark {
     conflicts: usize,
 }
 impl ImagesState {
+    /// Start a cold replay while retaining procedural helpers under this same policy.
+    /// The receipt must be restored before discarding Assets on rejection.
+    pub fn begin_reload(&mut self) -> ImageReload {
+        let resolved = std::mem::take(&mut self.resolved);
+        self.resolved
+            .extend(resolved.iter().copied().filter(|entry| {
+                matches!(
+                    entry.key.recipe,
+                    ImageRecipe::NativeDefault { .. } | ImageRecipe::MissingSkin { .. }
+                )
+            }));
+        ImageReload {
+            resolved,
+            conflicts: std::mem::take(&mut self.conflicts),
+        }
+    }
+
+    pub fn restore_reload(&mut self, reload: ImageReload) {
+        self.resolved = reload.resolved;
+        self.conflicts = reload.conflicts;
+    }
+
     pub fn registration_mark(&self) -> ImageRegistrationMark {
         ImageRegistrationMark {
             conflicts: self.conflicts.len(),
@@ -540,7 +576,7 @@ impl ImagesState {
     /// identity rather than truncating it to its previous number of entries.
     pub fn rollback_registration(&mut self, mark: ImageRegistrationMark, images: usize) {
         self.resolved
-            .retain(|entry| (entry.1.id.0 as usize) < images);
+            .retain(|entry| (entry.image.id.0 as usize) < images);
         self.conflicts.truncate(mark.conflicts);
     }
 
@@ -603,7 +639,7 @@ impl ImagesState {
             recipe: ImageRecipe::NativeDefault { indexed },
         };
         if let Some(index) = self.find(key) {
-            return Ok(self.resolved[index].1);
+            return Ok(self.resolved[index].image);
         }
         let usage = ImageUse {
             role: ImageRole::NativeDefault,
@@ -638,17 +674,17 @@ impl ImagesState {
             self.prepare(assets, id, usage, None)?;
             id
         };
-        Ok(self.remember(key, id, usage))
+        Ok(self.remember(key, key.name, id, usage))
     }
     fn native_default_key(&self, name: NameId) -> Option<ImageKey> {
         self.named_range(name).find_map(|index| {
-            let key = self.resolved[index].0;
+            let key = self.resolved[index].key;
             matches!(key.recipe, ImageRecipe::NativeDefault { .. }).then_some(key)
         })
     }
     fn cached_use(&mut self, key: ImageKey, usage: ImageUse) -> Option<ResolvedImage> {
         let index = self.find(key)?;
-        let first = self.resolved[index].2;
+        let first = self.recipes.effective_use(self.resolved[index].first_use);
         let requested = self.recipes.effective_use(usage);
         if self.recipes.rules == RuleSetId::Quake3
             && (first.sampler != requested.sampler || first.allow_picmip != requested.allow_picmip)
@@ -663,7 +699,7 @@ impl ImagesState {
                 requested,
             });
         }
-        Some(self.resolved[index].1)
+        Some(self.resolved[index].image)
     }
     fn prepare(
         &mut self,
@@ -688,13 +724,13 @@ impl ImagesState {
     fn named_range(&self, name: NameId) -> std::ops::Range<usize> {
         let first = self
             .resolved
-            .partition_point(|entry| entry.0.name.0 < name.0);
-        let count = self.resolved[first..].partition_point(|entry| entry.0.name == name);
+            .partition_point(|entry| entry.key.name.0 < name.0);
+        let count = self.resolved[first..].partition_point(|entry| entry.key.name == name);
         first..first + count
     }
     fn find(&self, key: ImageKey) -> Option<usize> {
         self.named_range(key.name).find(|&index| {
-            let old = self.resolved[index].0;
+            let old = self.resolved[index].key;
             old == key
                 || self.source_rules == RuleSetId::Quake2Rerelease
                     && self
@@ -757,16 +793,29 @@ impl ImagesState {
             .filter(|remap| remap.target == target)
             .map_or(target, |remap| remap.source)
     }
-    fn remember(&mut self, key: ImageKey, id: ImageId, usage: ImageUse) -> ResolvedImage {
-        let usage = self.recipes.effective_use(usage);
+    fn remember(
+        &mut self,
+        key: ImageKey,
+        first_requested: NameId,
+        id: ImageId,
+        usage: ImageUse,
+    ) -> ResolvedImage {
         let resolved = ResolvedImage {
             id,
-            sampler: usage.sampler,
+            sampler: self.recipes.effective_use(usage).sampler,
         };
         let at = self
             .resolved
-            .partition_point(|entry| entry.0.name.0 <= key.name.0);
-        self.resolved.insert(at, (key, resolved, usage));
+            .partition_point(|entry| entry.key.name.0 <= key.name.0);
+        self.resolved.insert(
+            at,
+            ImageRecord {
+                key,
+                image: resolved,
+                first_use: usage,
+                first_requested,
+            },
+        );
         resolved
     }
 }
@@ -776,6 +825,93 @@ pub struct Images<'a> {
     state: ImagesState,
 }
 impl<'a> Images<'a> {
+    /// Replay admitted file requests in original image-admission order. Generated
+    /// and embedded resources are retained or rebuilt by their owning source.
+    /// A missing file is left for the material compiler's ordinary fallback.
+    pub fn replay_reload(&mut self, reload: &ImageReload) -> Result<(), ResourceError> {
+        let mut ordered: Vec<_> = reload.resolved.iter().collect();
+        ordered.sort_by_key(|entry| entry.image.id.0);
+        for entry in ordered {
+            if matches!(
+                entry.key.recipe,
+                ImageRecipe::Embedded { .. }
+                    | ImageRecipe::LayeredSky { .. }
+                    | ImageRecipe::NativeDefault { .. }
+                    | ImageRecipe::MissingSkin { .. }
+            ) {
+                continue;
+            }
+            let name = self
+                .assets
+                .name(entry.first_requested)
+                .ok_or(ResourceError::Asset("missing image replay name"))?
+                .to_owned();
+            let result = self.try_registration(|images| match entry.key.recipe {
+                ImageRecipe::Raster { indexed, .. } => {
+                    images.raster(&name, entry.first_use, indexed).map(|_| ())
+                }
+                ImageRecipe::Wal { palette, cutout } => {
+                    images.wal(&name, palette, cutout).map(|_| ())
+                }
+                ImageRecipe::Lmp {
+                    palette,
+                    transparent_index,
+                    ..
+                } => images
+                    .indexed_lmp(&name, palette, transparent_index, entry.first_use)
+                    .map(|_| ()),
+                ImageRecipe::Wad {
+                    lump,
+                    palette,
+                    transparent_index,
+                    ..
+                } => {
+                    let lump = images
+                        .assets
+                        .resource_name(lump)
+                        .ok_or(ResourceError::Asset("missing image replay lump"))?
+                        .to_vec();
+                    images
+                        .indexed_wad(&name, &lump, palette, transparent_index, entry.first_use)
+                        .map(|_| ())
+                }
+                ImageRecipe::Pcx {
+                    palette,
+                    transparent_index,
+                    rgba_override,
+                    ..
+                } => {
+                    let rgba_override = rgba_override
+                        .map(|id| {
+                            images
+                                .assets
+                                .name(id)
+                                .map(str::to_owned)
+                                .ok_or(ResourceError::Asset("missing image replay override"))
+                        })
+                        .transpose()?;
+                    images
+                        .indexed_pcx(
+                            &name,
+                            palette,
+                            transparent_index,
+                            rgba_override.as_deref(),
+                            entry.first_use,
+                        )
+                        .map(|_| ())
+                }
+                ImageRecipe::Embedded { .. }
+                | ImageRecipe::LayeredSky { .. }
+                | ImageRecipe::NativeDefault { .. }
+                | ImageRecipe::MissingSkin { .. } => Ok(()),
+            });
+            match result {
+                Ok(()) | Err(ResourceError::Missing(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
     pub fn set_search_order(&mut self, order: ImageSearchOrder) {
         self.assets.set_image_search_order(order);
     }
@@ -948,8 +1084,13 @@ impl<'a> Images<'a> {
             Some(self.rgba_file(&selected, Some(palette))?)
         };
         let native_fringe = format.native_fringe(self.state.recipes.rules);
+        let first_requested = self
+            .assets
+            .intern_name(name)
+            .map_err(ResourceError::Asset)?;
         self.finish_indexed(
             key,
+            first_requested,
             texture,
             rgba,
             palette,
@@ -961,6 +1102,7 @@ impl<'a> Images<'a> {
     fn finish_indexed(
         &mut self,
         key: ImageKey,
+        first_requested: NameId,
         texture: Option<IndexedTexture>,
         rgba: Option<RgbaImage>,
         palette: PaletteId,
@@ -1010,7 +1152,7 @@ impl<'a> Images<'a> {
             )?;
             id
         };
-        Ok(self.remember(key, id, usage))
+        Ok(self.remember(key, first_requested, id, usage))
     }
     /// Decode using source provenance, then upload with the presentation role.
     /// An optional source/target palette pair remaps software indices at load;
@@ -1079,7 +1221,7 @@ impl<'a> Images<'a> {
             recipe: ImageRecipe::MissingSkin { palette },
         };
         if let Some(index) = self.find(key) {
-            return Ok(self.state.resolved[index].1.id);
+            return Ok(self.state.resolved[index].image.id);
         }
         // quake-2/ref_gl/gl_rmisc.c R_InitParticleTexture uses this 4x4
         // portion of dottexture, indexed [x&3][y&3], for r_notexture.
@@ -1113,7 +1255,7 @@ impl<'a> Images<'a> {
         };
         let usage = ImageUse::default();
         self.prepare(id, usage, None)?;
-        self.remember(key, id, usage);
+        self.remember(key, key.name, id, usage);
         Ok(id)
     }
     fn remap_texture(
@@ -1265,7 +1407,7 @@ impl<'a> Images<'a> {
             },
         };
         if let Some(index) = self.find(key) {
-            let id = self.state.resolved[index].1.id;
+            let id = self.state.resolved[index].image.id;
             let image = self
                 .assets
                 .image(id)
@@ -1293,6 +1435,7 @@ impl<'a> Images<'a> {
         Ok(self
             .finish_indexed(
                 key,
+                key.name,
                 Some(texture),
                 rgba,
                 palette,
@@ -1323,7 +1466,10 @@ impl<'a> Images<'a> {
                 overlay,
             },
         });
-        let cached = keys.map(|key| self.find(key).map(|index| self.state.resolved[index].1.id));
+        let cached = keys.map(|key| {
+            self.find(key)
+                .map(|index| self.state.resolved[index].image.id)
+        });
         if let [Some(opaque), Some(masked)] = cached {
             return Ok([opaque, masked]);
         }
@@ -1406,7 +1552,7 @@ impl<'a> Images<'a> {
                 self.assets
                     .prepare_image_with_rgba(id, corrected, params)
                     .map_err(ResourceError::Asset)?;
-                self.remember(keys[index], id, usage);
+                self.remember(keys[index], name, id, usage);
                 id
             };
         }
@@ -1423,7 +1569,7 @@ impl<'a> Images<'a> {
             recipe: ImageRecipe::Wal { palette, cutout },
         };
         if let Some(index) = self.find(key) {
-            return Ok(self.state.resolved[index].1.id);
+            return Ok(self.state.resolved[index].image.id);
         }
         Ok(self
             .indexed_file(
@@ -1455,7 +1601,7 @@ impl<'a> Images<'a> {
             },
         };
         if let Some(index) = self.find(key) {
-            return Ok(self.state.resolved[index].1);
+            return Ok(self.state.resolved[index].image);
         }
         self.indexed_file(
             key,
@@ -1493,7 +1639,7 @@ impl<'a> Images<'a> {
             },
         };
         if let Some(index) = self.find(key) {
-            return Ok(self.state.resolved[index].1);
+            return Ok(self.state.resolved[index].image);
         }
         let replacement = if let Ok(lump_name) = std::str::from_utf8(lump) {
             let archive = qa_core::names::canonical_path(name);
@@ -1534,7 +1680,16 @@ impl<'a> Images<'a> {
             .as_ref()
             .map(|selected| self.rgba_file(selected, Some(palette)))
             .transpose()?;
-        self.finish_indexed(key, texture, rgba, palette, transparent_index, usage, false)
+        self.finish_indexed(
+            key,
+            key.name,
+            texture,
+            rgba,
+            palette,
+            transparent_index,
+            usage,
+            false,
+        )
     }
     /// Retain original PCX indices and select the presentation's global palette.
     /// A separate native RGBA resource supplies GL pixels (Q2 sky TGA). If the
@@ -1562,7 +1717,7 @@ impl<'a> Images<'a> {
             },
         };
         if let Some(index) = self.find(key) {
-            return Ok(self.state.resolved[index].1.id);
+            return Ok(self.state.resolved[index].image.id);
         }
         Ok(self
             .indexed_file(
@@ -1638,6 +1793,10 @@ impl<'a> Images<'a> {
         if let Some(resolved) = self.state.cached_use(key, usage) {
             return Ok(resolved);
         }
+        let first_requested = self
+            .assets
+            .intern_name(name)
+            .map_err(ResourceError::Asset)?;
         if let Some(target) = indexed
             && let Some(format) = SourceFormat::from_path(name)
             && format.retains_indices(rules)
@@ -1663,6 +1822,7 @@ impl<'a> Images<'a> {
             let native_fringe = selected.format.native_fringe(self.state.recipes.rules);
             return self.finish_indexed(
                 key,
+                first_requested,
                 Some(texture),
                 None,
                 self.state.source_palette(target.palette),
@@ -1694,7 +1854,7 @@ impl<'a> Images<'a> {
         }
         .map_err(ResourceError::Asset)?;
         self.prepare(id, usage, None)?;
-        let resolved = self.remember(key, id, usage);
+        let resolved = self.remember(key, first_requested, id, usage);
         Ok(resolved)
     }
     fn prepare(
@@ -1708,7 +1868,13 @@ impl<'a> Images<'a> {
     fn find(&self, key: ImageKey) -> Option<usize> {
         self.state.find(key)
     }
-    fn remember(&mut self, key: ImageKey, id: ImageId, usage: ImageUse) -> ResolvedImage {
-        self.state.remember(key, id, usage)
+    fn remember(
+        &mut self,
+        key: ImageKey,
+        first_requested: NameId,
+        id: ImageId,
+        usage: ImageUse,
+    ) -> ResolvedImage {
+        self.state.remember(key, first_requested, id, usage)
     }
 }

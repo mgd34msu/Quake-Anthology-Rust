@@ -2917,3 +2917,126 @@ fn physical_lightmap_recipes_ignore_raster_finish_and_palette_policies() -> Resu
     }
     Ok(())
 }
+
+#[test]
+fn format_reload_recompiles_each_world_family_without_replacing_geometry_or_lightmaps()
+-> Result<(), String> {
+    use qa_render::material::{
+        resources::ImageSearchOrder,
+        world_load::{append_world_presentation, reload_world_presentation},
+    };
+    for family in [1, 2, 3] {
+        let root = resources(&format!("reload-world-{family}"))?;
+        let tga = std::fs::read(root.join("textures/modern.tga")).unwrap();
+        for name in ["wall", "other", "modern"] {
+            std::fs::write(root.join(format!("textures/{name}.tga")), &tga).unwrap();
+            std::fs::write(
+                root.join(format!("textures/{name}.jpeg")),
+                include_bytes!("resources/blue.jpg"),
+            )
+            .unwrap();
+        }
+        let vfs = mount(&root)?;
+        let bytes = map_bytes(family);
+        let map = if family == 3 {
+            modern_map(&bytes)?
+        } else {
+            legacy_map(&bytes, family)?
+        };
+        let mut assets = Assets::load().unwrap();
+        assets.set_image_search_order(ImageSearchOrder::parse(b"tga").unwrap());
+        let loaded = load_native_world(
+            &vfs,
+            &map,
+            &mut assets,
+            map.bsp.format.rule_set(),
+            Default::default(),
+        )
+        .map_err(|error| format!("family {family}: {error:?}"))?;
+        drop(map);
+        let world = loaded.world;
+        let old = loaded.presentations[0];
+        let old_image = surface_image(&assets, old.id);
+        let old_rgba = assets.image(old_image).unwrap().rgba.to_vec();
+        let indices = assets
+            .image(old_image)
+            .unwrap()
+            .indexed
+            .as_ref()
+            .map(|image| image.mip(0).unwrap().indices().to_vec());
+        let mesh = assets.world(world).unwrap().mesh();
+        let vertices = assets.model(mesh).unwrap().vertices.to_vec();
+        let lightmap = assets
+            .shader_binding(assets.surface_shader(old.id, 0).unwrap())
+            .unwrap()
+            .lightmap;
+        assert_ne!(lightmap, ImageId(0));
+        let light_rgba = assets.image(lightmap).unwrap().rgba.to_vec();
+        let light_revision = assets.image(lightmap).unwrap().preparation_revision;
+        let prefix = assets.counts();
+        assets.set_image_search_order(ImageSearchOrder::parse(b"jpeg").unwrap());
+        let rejected = assets.begin_world_image_reload().unwrap();
+        rejected.replay(&vfs, &mut assets).unwrap();
+        let candidate =
+            reload_world_presentation(&vfs, &mut assets, world, old.id, old.profile.into(), false)
+                .map_err(|error| format!("family {family}: {error:?}"))?
+                .presentations[0];
+        let candidate_image = surface_image(&assets, candidate.id);
+        assert_ne!(candidate_image, old_image);
+        assert_eq!(candidate.profile, old.profile);
+        assert_eq!(
+            assets.world(world).unwrap().presentations(),
+            &[candidate.id, old.id]
+        );
+        assert_eq!(assets.world_presentation_registration(old.id), Some(old));
+        CpuBackend::load_with_assets(16, 16, &assets).unwrap();
+        rejected.restore(&mut assets).unwrap();
+        assets.discard_registration_suffix(prefix).unwrap();
+        assert_eq!(assets.counts(), prefix);
+        assert_eq!(assets.world(world).unwrap().presentations(), &[old.id]);
+        assert_eq!(surface_image(&assets, old.id), old_image);
+        let reload = assets.begin_world_image_reload().unwrap();
+        reload.replay(&vfs, &mut assets).unwrap();
+        let next =
+            reload_world_presentation(&vfs, &mut assets, world, old.id, old.profile.into(), false)
+                .map_err(|error| format!("family {family}: {error:?}"))?
+                .presentations[0];
+        assert_eq!(next.id, candidate.id);
+        let image = surface_image(&assets, next.id);
+        assert_eq!(image, candidate_image);
+        let refreshed = assets.image(image).unwrap();
+        assert!(refreshed.rgba[2] > 230 && refreshed.rgba[0] < 10);
+        assert_eq!(
+            refreshed
+                .indexed
+                .as_ref()
+                .map(|image| image.mip(0).unwrap().indices().to_vec()),
+            indices
+        );
+        assert_eq!(assets.counts().models, prefix.models);
+        assert_eq!(assets.world(world).unwrap().mesh(), mesh);
+        assert_eq!(assets.model(mesh).unwrap().vertices.as_ref(), vertices);
+        assert_eq!(assets.image(old_image).unwrap().rgba.as_ref(), old_rgba);
+        assert_eq!(assets.image(lightmap).unwrap().rgba.as_ref(), light_rgba);
+        assert_eq!(
+            assets.image(lightmap).unwrap().preparation_revision,
+            light_revision
+        );
+        assert_eq!(
+            assets
+                .shader_binding(assets.surface_shader(next.id, 0).unwrap())
+                .unwrap()
+                .lightmap,
+            lightmap
+        );
+        let count = assets.counts();
+        vfs.take_lookup_count();
+        let cached =
+            append_world_presentation(&vfs, &mut assets, world, old.profile.into(), false).unwrap();
+        assert_eq!(cached.presentations[0], next);
+        assert_eq!(vfs.take_lookup_count(), 0);
+        assert_eq!(assets.counts(), count);
+        std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}

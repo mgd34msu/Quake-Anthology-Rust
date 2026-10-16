@@ -4,8 +4,8 @@ use super::{
     finish::{BundleImage, ShaderSlot, finish_material},
     load_catalog,
     resources::{
-        ImageProfile, ImageRole, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget,
-        ResolvedImage, ResourceError,
+        ImageProfile, ImageReload, ImageRole, ImageSettings, ImageUse, Images, ImagesState,
+        IndexedTarget, ResolvedImage, ResourceError,
     },
 };
 use crate::{
@@ -275,6 +275,22 @@ struct MaterialSurface {
     light_source: LightSource,
     no_draw: bool,
 }
+/// Rollback storage for retained world image owners. Geometry and lightmap
+/// recipes remain in their original owners throughout the reload.
+pub struct WorldImageReload {
+    pub(crate) states: Vec<(WorldId, Vec<(ImageProfile, ImageReload)>)>,
+}
+impl WorldImageReload {
+    pub fn replay(&self, vfs: &Vfs, assets: &mut Assets) -> Result<(), WorldMaterialError> {
+        assets.replay_world_image_reload(vfs, self)
+    }
+
+    /// Restore every cache before the caller discards its uncommitted Assets suffix.
+    pub fn restore(self, assets: &mut Assets) -> Result<(), &'static str> {
+        assets.restore_world_image_reload(self)
+    }
+}
+
 struct WorldImages {
     profile: ImageProfile,
     state: Option<ImagesState>,
@@ -313,6 +329,67 @@ pub(crate) struct WorldMaterialSource {
     lightmaps: Vec<WorldLightmaps>,
 }
 impl WorldMaterialSource {
+    pub(crate) fn image_reload_ready(&self) -> bool {
+        self.images.iter().all(|entry| entry.state.is_some())
+    }
+
+    pub(crate) fn begin_image_reload(&mut self) -> Vec<(ImageProfile, ImageReload)> {
+        self.images
+            .iter_mut()
+            .filter_map(|entry| {
+                entry
+                    .state
+                    .as_mut()
+                    .map(|state| (entry.profile, state.begin_reload()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn image_reload_matches(&self, states: &[(ImageProfile, ImageReload)]) -> bool {
+        self.images.len() >= states.len()
+            && self
+                .images
+                .iter()
+                .zip(states)
+                .all(|(entry, (profile, _))| entry.profile == *profile && entry.state.is_some())
+    }
+
+    pub(crate) fn restore_image_reload(&mut self, states: Vec<(ImageProfile, ImageReload)>) {
+        let retained = states.len();
+        for (entry, (_, reload)) in self.images.iter_mut().zip(states) {
+            if let Some(state) = &mut entry.state {
+                state.restore_reload(reload);
+            }
+        }
+        self.images.truncate(retained);
+    }
+
+    pub(crate) fn replay_images(
+        &mut self,
+        vfs: &Vfs,
+        assets: &mut Assets,
+        states: &[(ImageProfile, ImageReload)],
+    ) -> Result<(), WorldMaterialError> {
+        if !self.image_reload_matches(states) {
+            return Err(WorldMaterialError::Boundary(
+                "world image reload owner changed",
+            ));
+        }
+        for (index, (_, reload)) in states.iter().enumerate() {
+            let state = self.images[index]
+                .state
+                .take()
+                .ok_or(WorldMaterialError::Boundary(
+                    "world images already borrowed",
+                ))?;
+            let mut images = Images::from_state(vfs, assets, state);
+            let result = images.replay_reload(reload);
+            self.images[index].state = Some(images.into_state());
+            result?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn prune_registration(
         &mut self,
         images: usize,
@@ -919,19 +996,53 @@ pub fn append_world_presentation(
     request: WorldPresentationRequest,
     ui_fullscreen: bool,
 ) -> Result<LoadedWorld, WorldMaterialError> {
+    append_world_presentation_inner(vfs, assets, world, request, ui_fullscreen, None)
+}
+
+/// Recompile an exact policy after file-cache replay, retaining the replaced
+/// presentation for explicit historical selectors.
+pub fn reload_world_presentation(
+    vfs: &Vfs,
+    assets: &mut Assets,
+    world: WorldId,
+    old: WorldPresentationId,
+    request: WorldPresentationRequest,
+    ui_fullscreen: bool,
+) -> Result<LoadedWorld, WorldMaterialError> {
+    append_world_presentation_inner(vfs, assets, world, request, ui_fullscreen, Some(old))
+}
+
+fn append_world_presentation_inner(
+    vfs: &Vfs,
+    assets: &mut Assets,
+    world: WorldId,
+    request: WorldPresentationRequest,
+    ui_fullscreen: bool,
+    replaced: Option<WorldPresentationId>,
+) -> Result<LoadedWorld, WorldMaterialError> {
     let profile = request.profile;
     let policy = profile.finish.compile(ui_fullscreen);
     let row = assets
         .world(world)
         .ok_or(WorldMaterialError::Boundary("missing presentation world"))?;
+    if replaced.is_some_and(|old| !row.presentations().contains(&old)) {
+        return Err(WorldMaterialError::Boundary(
+            "missing replaced world presentation",
+        ));
+    }
     let current_lighting = row.render_settings().map(|settings| settings.lighting);
-    let existing = row.presentations().iter().find_map(|&id| {
-        assets.world_presentation_registration(id).filter(|entry| {
-            entry.profile == profile
-                && current_lighting.is_none_or(|lighting| entry.lighting == lighting)
-                && entry.compile_policy.collapse_vertex() == policy.collapse_vertex()
+    let existing = replaced
+        .is_none()
+        .then(|| {
+            row.presentations().iter().find_map(|&id| {
+                assets.world_presentation_registration(id).filter(|entry| {
+                    entry.profile == profile
+                        && current_lighting.is_none_or(|lighting| entry.lighting == lighting)
+                        && entry.compile_policy.collapse_vertex() == policy.collapse_vertex()
+                })
+            })
         })
-    });
+        .flatten();
     if let Some(existing) = existing {
         return Ok(LoadedWorld {
             world,
@@ -961,7 +1072,7 @@ pub fn append_world_presentation(
             &mut diagnostics,
         )?;
         let id = assets
-            .append_world_presentation(world, bindings.input())
+            .append_world_presentation(world, bindings.input(), replaced)
             .map_err(WorldMaterialError::Boundary)?;
         assets
             .register_world_presentation_metadata(

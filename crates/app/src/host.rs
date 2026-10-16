@@ -802,134 +802,142 @@ impl FrameHost {
                 .take()
                 .ok_or("missing model assets")?;
             let ui_fullscreen = self.renderer_fullscreen_ui();
-            let result = owner.image_transaction(Some(world_plan.settings()), |owner, changed| {
-                let limits = self
-                    .runtime
-                    .scene
-                    .as_ref()
-                    .ok_or("missing scene composer")?
-                    .limits();
-                if changed.iter().any(|&world| {
-                    self.runtime
+            let vfs = std::mem::take(&mut self.runtime.vfs);
+            let result = owner.image_transaction(
+                &vfs,
+                Some(world_plan.settings()),
+                crate::model_assets::ImageRefreshMode::Reload,
+                |owner, changed| {
+                    let limits = self
+                        .runtime
                         .scene
                         .as_ref()
-                        .is_none_or(|scene| !scene.has_world(world))
-                }) {
-                    return Err("rebuilt world has no scene scratch".into());
-                }
-                let refresh = owner.refresh_images(
-                    &self.runtime.vfs,
-                    &profiles,
-                    &presentations,
-                    resource_plan.selections(),
-                    resource_plan.finish(),
-                    ui_fullscreen,
-                    |assets| {
-                        candidate
-                            .as_mut()
-                            .ok_or("replacement renderer was consumed")?
-                            .prepare_assets(assets, limits)
-                    },
-                )?;
-                let configuration = candidate
-                    .as_ref()
-                    .ok_or("replacement renderer was consumed")?
-                    .configuration();
-                let (width, height) = (configuration.display.width, configuration.display.height);
-                let scene = self
-                    .runtime
-                    .scene
-                    .as_mut()
-                    .ok_or("missing scene composer")?;
-                let graphics = scene.load_video_graphics(
-                    &self.runtime.vfs,
-                    owner,
-                    &refresh,
-                    ui_fullscreen,
-                    width,
-                    height,
-                )?;
-                // Graphics use the same registration owner, so admit their final
-                // suffix before staging numeric CLIENT and shader-bank selectors.
-                let counts = owner.assets().counts();
-                candidate
-                    .as_mut()
-                    .ok_or("replacement renderer was consumed")?
-                    .prepare_assets(owner.assets(), limits)?;
-                owner
-                    .publish_admission(counts)
-                    .map_err(|error| format!("video resource publication: {error:?}"))?;
-                let mut clients = Vec::new();
-                for (index, resources) in self.runtime.client_resources.iter().enumerate() {
-                    if let Some(resources) = resources {
-                        clients.push((
-                            index,
-                            resources
-                                .state
-                                .stage_image_refresh(&refresh, owner.catalog())?,
-                        ));
+                        .ok_or("missing scene composer")?
+                        .limits();
+                    if changed.iter().any(|&world| {
+                        self.runtime
+                            .scene
+                            .as_ref()
+                            .is_none_or(|scene| !scene.has_world(world))
+                    }) {
+                        return Err("rebuilt world has no scene scratch".into());
                     }
-                }
-                let roles = self.stage_video_image_roles(&refresh, width, height)?;
-                let scene = self
-                    .runtime
-                    .scene
-                    .as_mut()
-                    .ok_or("missing scene composer")?;
-                let staged = scene.stage_video_graphics(owner.assets(), graphics, &refresh)?;
-                if staged.limits() != limits {
+                    let refresh = owner.refresh_images(
+                        &vfs,
+                        &profiles,
+                        &presentations,
+                        resource_plan.selections(),
+                        resource_plan.finish(),
+                        ui_fullscreen,
+                        |assets| {
+                            candidate
+                                .as_mut()
+                                .ok_or("replacement renderer was consumed")?
+                                .prepare_assets(assets, limits)
+                        },
+                    )?;
+                    let configuration = candidate
+                        .as_ref()
+                        .ok_or("replacement renderer was consumed")?
+                        .configuration();
+                    let (width, height) =
+                        (configuration.display.width, configuration.display.height);
+                    let scene = self
+                        .runtime
+                        .scene
+                        .as_mut()
+                        .ok_or("missing scene composer")?;
+                    let graphics = scene.load_video_graphics(
+                        &vfs,
+                        owner,
+                        &refresh,
+                        ui_fullscreen,
+                        width,
+                        height,
+                    )?;
+                    // Graphics use the same registration owner, so admit their final
+                    // suffix before staging numeric CLIENT and shader-bank selectors.
+                    let counts = owner.assets().counts();
                     candidate
                         .as_mut()
                         .ok_or("replacement renderer was consumed")?
-                        .prepare_assets(owner.assets(), staged.limits())?;
-                }
-                if candidate
-                    .as_ref()
-                    .and_then(|candidate| candidate.admitted_assets())
-                    != Some(counts)
-                {
-                    return Err("video restart resource prefix".into());
-                }
-                for (profile, _) in staged.graphic_registrations() {
-                    self.renderer_contexts.ensure_owner(
-                        qa_render::shader::registration::ShaderOwner::Engine,
-                        profile,
-                        owner.assets(),
-                        owner.shader_occurrence_budget(),
-                        None,
-                    )?;
-                }
-                let appends = self
-                    .renderer_contexts
-                    .stage_graphics(staged.graphic_registrations())?;
-                resource_plan.validate(&self.console.cvars)?;
-                world_plan.validate(&self.console.cvars)?;
-                window_plan.validate(&self.console.cvars)?;
-                let configuration = source.publish_video(
-                    candidate
-                        .take()
-                        .ok_or("replacement renderer was consumed")?,
-                )?;
-                for append in appends {
-                    append.commit();
-                }
-                staged.commit(kind);
-                for (index, staged) in clients {
-                    if let Some(resources) = self.runtime.client_resources[index].as_mut() {
-                        resources.state.commit_image_refresh(staged);
+                        .prepare_assets(owner.assets(), limits)?;
+                    owner
+                        .publish_admission(counts)
+                        .map_err(|error| format!("video resource publication: {error:?}"))?;
+                    let mut clients = Vec::new();
+                    for (index, resources) in self.runtime.client_resources.iter().enumerate() {
+                        if let Some(resources) = resources {
+                            clients.push((
+                                index,
+                                resources
+                                    .state
+                                    .stage_image_refresh(&refresh, owner.catalog())?,
+                            ));
+                        }
                     }
-                }
-                for seat in 0..SeatId::COUNT {
-                    if let Some((world, previous)) = self.local_worlds[seat]
-                        && let Some(next) = refresh.presentation(world, previous)
+                    let roles = self.stage_video_image_roles(&refresh, width, height)?;
+                    let scene = self
+                        .runtime
+                        .scene
+                        .as_mut()
+                        .ok_or("missing scene composer")?;
+                    let staged = scene.stage_video_graphics(owner.assets(), graphics, &refresh)?;
+                    if staged.limits() != limits {
+                        candidate
+                            .as_mut()
+                            .ok_or("replacement renderer was consumed")?
+                            .prepare_assets(owner.assets(), staged.limits())?;
+                    }
+                    if candidate
+                        .as_ref()
+                        .and_then(|candidate| candidate.admitted_assets())
+                        != Some(counts)
                     {
-                        self.local_worlds[seat] = Some((world, next.id));
-                        self.local_presentations[seat] = next.defaults;
+                        return Err("video restart resource prefix".into());
                     }
-                }
-                self.commit_video_image_roles(roles);
-                Ok(configuration)
-            });
+                    for (profile, _) in staged.graphic_registrations() {
+                        self.renderer_contexts.ensure_owner(
+                            qa_render::shader::registration::ShaderOwner::Engine,
+                            profile,
+                            owner.assets(),
+                            owner.shader_occurrence_budget(),
+                            None,
+                        )?;
+                    }
+                    let appends = self
+                        .renderer_contexts
+                        .stage_graphics(staged.graphic_registrations())?;
+                    resource_plan.validate(&self.console.cvars)?;
+                    world_plan.validate(&self.console.cvars)?;
+                    window_plan.validate(&self.console.cvars)?;
+                    let configuration = source.publish_video(
+                        candidate
+                            .take()
+                            .ok_or("replacement renderer was consumed")?,
+                    )?;
+                    for append in appends {
+                        append.commit();
+                    }
+                    staged.commit(kind);
+                    for (index, staged) in clients {
+                        if let Some(resources) = self.runtime.client_resources[index].as_mut() {
+                            resources.state.commit_image_refresh(staged);
+                        }
+                    }
+                    for seat in 0..SeatId::COUNT {
+                        if let Some((world, previous)) = self.local_worlds[seat]
+                            && let Some(next) = refresh.presentation(world, previous)
+                        {
+                            self.local_worlds[seat] = Some((world, next.id));
+                            self.local_presentations[seat] = next.defaults;
+                        }
+                    }
+                    self.commit_video_image_roles(roles);
+                    Ok(configuration)
+                },
+            );
+            self.runtime.vfs = vfs;
             self.runtime.model_assets = Some(owner);
             if result.is_err() {
                 let catalog = self

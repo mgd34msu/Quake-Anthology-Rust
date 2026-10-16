@@ -1309,10 +1309,21 @@ impl Assets {
         &mut self,
         world: WorldId,
         input: WorldPresentationInput<'_>,
+        replaced: Option<WorldPresentationId>,
     ) -> Result<WorldPresentationId, &'static str> {
         let retained = self.counts();
         let result = (|| {
             let existing = self.world(world).ok_or("missing presentation world")?;
+            let insert = replaced
+                .map(|old| {
+                    existing
+                        .presentations()
+                        .iter()
+                        .position(|&id| id == old)
+                        .ok_or("missing replaced world presentation")
+                })
+                .transpose()?
+                .unwrap_or(existing.presentations().len());
             if !self.world_materials_valid(input.surfaces, existing.geometry.surfaces.len()) {
                 return Err("invalid world surface bindings");
             }
@@ -1346,7 +1357,9 @@ impl Assets {
                 self.shader_binding_capacity(),
             )?;
             self.presentations.push(presentation);
-            self.worlds[world.0 as usize].presentations.push(id);
+            self.worlds[world.0 as usize]
+                .presentations
+                .insert(insert, id);
             Ok(id)
         })();
         if result.is_err() {
@@ -1413,6 +1426,66 @@ impl Assets {
             self.discard_registration_suffix(retained)?;
         }
         result
+    }
+
+    /// Clear file-derived image caches once per retained world owner. The caller
+    /// keeps this receipt in its existing cold registration transaction.
+    pub fn begin_world_image_reload(
+        &mut self,
+    ) -> Result<crate::material::world_load::WorldImageReload, &'static str> {
+        if self
+            .worlds
+            .iter()
+            .filter_map(|world| world.material_source.as_ref())
+            .any(|source| !source.image_reload_ready())
+        {
+            return Err("world images already borrowed");
+        }
+        let states = self
+            .worlds
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, world)| {
+                world
+                    .material_source
+                    .as_mut()
+                    .map(|source| (WorldId(index as u32), source.begin_image_reload()))
+            })
+            .collect();
+        Ok(crate::material::world_load::WorldImageReload { states })
+    }
+
+    pub(crate) fn restore_world_image_reload(
+        &mut self,
+        reload: crate::material::world_load::WorldImageReload,
+    ) -> Result<(), &'static str> {
+        if reload.states.iter().any(|(id, states)| {
+            self.worlds
+                .get(id.0 as usize)
+                .and_then(|world| world.material_source.as_ref())
+                .is_none_or(|source| !source.image_reload_matches(states))
+        }) {
+            return Err("world image reload owner changed");
+        }
+        for (id, states) in reload.states {
+            if let Some(source) = self.worlds[id.0 as usize].material_source.as_mut() {
+                source.restore_image_reload(states);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn replay_world_image_reload(
+        &mut self,
+        vfs: &qa_content::vfs::Vfs,
+        reload: &crate::material::world_load::WorldImageReload,
+    ) -> Result<(), crate::material::world_load::WorldMaterialError> {
+        for (world, states) in &reload.states {
+            self.with_world_material_source(*world, |assets, source| {
+                source.replay_images(vfs, assets, states)
+            })?;
+        }
+        Ok(())
     }
 
     pub(crate) fn retain_world_material_source(

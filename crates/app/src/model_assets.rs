@@ -14,11 +14,12 @@ use qa_render::assets::{
     AssetCounts, ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture,
 };
 use qa_render::material::resources::{
-    ImageRegistrationMark, ImageRole, ImageSearchOrder, ImageSettings, ImageUse, Images,
-    ImagesState, IndexedTarget, ResourceError,
+    ImageRegistrationMark, ImageReload, ImageRole, ImageSearchOrder, ImageSettings, ImageUse,
+    Images, ImagesState, IndexedTarget, ResourceError,
 };
 use qa_render::material::world_load::{
-    NamedShaderLighting, WorldPresentationRequest, compile_named_shader, native_default_shader,
+    NamedShaderLighting, WorldImageReload, WorldPresentationRequest, compile_named_shader,
+    native_default_shader,
 };
 use qa_render::material::{MaterialFinishPolicy, ShaderCompilePolicy};
 use qa_render::shader::reference::{ShaderChoice, ShaderDefault, ShaderOccurrence, ShaderView};
@@ -95,6 +96,13 @@ impl RegistrationVariant {
             Self::Retained => Err("retained renderer resource is unavailable".into()),
         }
     }
+    fn from_collapse(profile: ModelProfile, collapse: bool) -> Result<Self, String> {
+        [false, true]
+            .into_iter()
+            .find(|&guard| profile.finish.compile(guard).collapse_vertex() == collapse)
+            .map(Self::Guard)
+            .ok_or_else(|| "renderer registration finish variant".to_owned())
+    }
 }
 
 fn with_image_owner<T>(
@@ -134,6 +142,11 @@ pub(crate) struct ImageRefresh {
         WorldPresentationId,
         qa_render::material::world_load::LoadedWorldPresentation,
     )>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImageRefreshMode {
+    Reconfigure,
+    Reload,
 }
 impl ImageRefresh {
     pub(crate) fn profile(&self, old: ModelProfile) -> ModelProfile {
@@ -521,6 +534,7 @@ struct ShaderProfileBinding {
 }
 enum RegistrationState<T> {
     Unattempted,
+    Reload,
     Failed(String),
     Ready {
         value: T,
@@ -528,18 +542,21 @@ enum RegistrationState<T> {
     },
 }
 impl<T> RegistrationState<T> {
+    fn pending(&self) -> bool {
+        matches!(self, Self::Unattempted | Self::Reload)
+    }
     fn ready(&self) -> Option<(&T, Option<AssetCounts>)> {
         match self {
             Self::Ready {
                 value,
                 required_assets,
             } => Some((value, *required_assets)),
-            Self::Unattempted | Self::Failed(_) => None,
+            Self::Unattempted | Self::Reload | Self::Failed(_) => None,
         }
     }
     fn cached(&self, handle: i32, admitted: Option<AssetCounts>) -> Option<i32> {
         match self {
-            Self::Unattempted => None,
+            Self::Unattempted | Self::Reload => None,
             Self::Failed(_) => Some(0),
             Self::Ready {
                 required_assets, ..
@@ -558,7 +575,7 @@ impl<T> RegistrationState<T> {
             Self::Ready {
                 required_assets, ..
             } => Some(required_assets),
-            Self::Unattempted | Self::Failed(_) => None,
+            Self::Unattempted | Self::Reload | Self::Failed(_) => None,
         }
     }
 }
@@ -568,6 +585,7 @@ enum RegistrationRollback {
     Source,
 }
 struct RegisteredSkin {
+    name: NameId,
     profiles: Vec<SkinProfile>,
     source: Option<Arc<[u8]>>,
 }
@@ -581,7 +599,7 @@ fn source_handle<'a, T: 'a>(
     for state in states {
         configured = true;
         match state {
-            RegistrationState::Unattempted => return None,
+            RegistrationState::Unattempted | RegistrationState::Reload => return None,
             RegistrationState::Ready { value, .. } => ready |= public(value),
             RegistrationState::Failed(_) => {}
         }
@@ -931,7 +949,7 @@ pub struct ModelAssets {
     catalog: ModelCatalog,
     palettes: crate::render_settings::PaletteRegistrations,
     initial_registration: bool,
-    image_transaction_active: bool,
+    image_transaction_active: Option<ImageRefreshMode>,
 }
 
 #[derive(Clone, Copy)]
@@ -1076,6 +1094,124 @@ struct RegistrationCheckpoint {
     skin_indices: Vec<(NameId, Option<u32>)>,
     inline_before: Vec<(usize, Option<NameId>)>,
     images: Vec<Option<ImageRegistrationMark>>,
+    reload: Option<ReloadCheckpoint>,
+}
+struct ReloadCheckpoint {
+    models: Vec<(usize, RegistrationState<ModelReady>)>,
+    shaders: Vec<(usize, RegistrationState<ShaderRegistration>)>,
+    skins: Vec<(usize, usize, RegistrationState<SkinReady>)>,
+    bindings: Vec<ModelMaterials>,
+    surfaces: Vec<SurfaceMaterials>,
+    images: Vec<(usize, ImageReload)>,
+    worlds: WorldImageReload,
+}
+impl ReloadCheckpoint {
+    fn replay(&self, vfs: &Vfs, owner: &mut ModelAssets) -> Result<(), String> {
+        for (index, receipt) in &self.images {
+            owner.catalog.profiles[*index].with_images(vfs, &mut owner.assets, |images| {
+                images
+                    .replay_reload(receipt)
+                    .map_err(|error| format!("image replay: {error:?}"))
+            })?;
+        }
+        self.worlds
+            .replay(vfs, &mut owner.assets)
+            .map_err(|error| format!("world image replay: {error:?}"))?;
+        for &(index, _) in &self.models {
+            let entry = &owner.catalog.registrations[index];
+            let profile = entry.profile;
+            let guard =
+                RegistrationVariant::from_collapse(profile, entry.vertex_collapse)?.guard()?;
+            let path = owner
+                .catalog
+                .name(entry.file)
+                .ok_or("model replay filename")?
+                .to_owned();
+            owner
+                .ensure_file_profile(vfs, &path, Some(profile), guard)
+                .map_err(|error| format!("model replay: {}", error.message))?;
+            if owner.catalog.registrations[index].state.ready().is_none() {
+                return Err("model replay did not restore its registered presentation".to_owned());
+            }
+        }
+        for &(skin, row, _) in &self.skins {
+            let entry = &owner.catalog.skins[skin];
+            let profile = entry.profiles[row].profile;
+            let guard =
+                RegistrationVariant::from_collapse(profile, entry.profiles[row].vertex_collapse)?
+                    .guard()?;
+            let name = owner
+                .catalog
+                .names
+                .get(entry.name)
+                .ok_or("skin replay filename")?
+                .to_vec();
+            owner
+                .admit_skin_profile(vfs, &name, profile.source_rules, Some(profile), guard)
+                .map_err(|error| format!("skin replay: {error:?}"))?;
+            if owner.catalog.skins[skin].profiles[row]
+                .state
+                .ready()
+                .is_none()
+            {
+                return Err("skin replay did not restore its registered presentation".to_owned());
+            }
+        }
+        for &(index, _) in &self.shaders {
+            let binding = &owner.catalog.shader_bindings[index];
+            let profile = binding.profile;
+            let guard =
+                RegistrationVariant::from_collapse(profile, binding.vertex_collapse)?.guard()?;
+            let lighting = binding.lighting;
+            let request = binding.request.clone().ok_or("shader replay request")?;
+            owner
+                .admit_shader_profile(
+                    vfs,
+                    request.name.as_bytes(),
+                    profile.source_rules,
+                    request.mipmaps,
+                    lighting,
+                    Some(profile),
+                    guard,
+                )
+                .map_err(|error| format!("shader replay: {error:?}"))?;
+            if owner.catalog.shader_bindings[index].state.ready().is_none() {
+                return Err("shader replay did not restore its registered presentation".to_owned());
+            }
+        }
+        // This prefix is visible only inside the callback-free cold transaction.
+        // Its caller still prepares and publishes the complete backend candidate.
+        let counts = owner.assets.counts();
+        owner
+            .validate_admission(counts)
+            .map_err(|error| format!("image replay admission: {error:?}"))?;
+        owner.apply_admission(counts);
+        Ok(())
+    }
+
+    fn restore(self, owner: &mut ModelAssets) -> Result<(), String> {
+        self.worlds
+            .restore(&mut owner.assets)
+            .map_err(str::to_owned)?;
+        for (index, receipt) in self.images {
+            let Some(Ok(state)) = &mut owner.catalog.profiles[index].state else {
+                return Err("image replay owner unavailable".to_owned());
+            };
+            state.restore_reload(receipt);
+        }
+        owner.catalog.bindings = self.bindings;
+        owner.catalog.surfaces = self.surfaces;
+        for (index, state) in self.models {
+            owner.catalog.registrations[index].state = state;
+        }
+        for (index, state) in self.shaders {
+            owner.catalog.shader_bindings[index].state = state;
+        }
+        for (skin, row, state) in self.skins {
+            owner.catalog.skins[skin].profiles[row].state = state;
+        }
+        Ok(())
+    }
 }
 struct ShaderCheckpoint {
     index: usize,
@@ -1138,6 +1274,65 @@ impl ProfileCheckpoint {
     }
 }
 impl RegistrationCheckpoint {
+    fn begin_reload(&mut self, owner: &mut ModelAssets) -> Result<(), String> {
+        let worlds = owner
+            .assets
+            .begin_world_image_reload()
+            .map_err(str::to_owned)?;
+        let catalog = &mut owner.catalog;
+        let mut images = Vec::new();
+        for (index, profile) in catalog.profiles.iter_mut().enumerate() {
+            if profile.image_owner.is_none()
+                && let Some(Ok(state)) = &mut profile.state
+            {
+                images.push((index, state.begin_reload()));
+            }
+        }
+        let mut models = Vec::new();
+        for (index, entry) in catalog.registrations.iter_mut().enumerate() {
+            if entry.state.ready().is_some() {
+                models.push((
+                    index,
+                    std::mem::replace(&mut entry.state, RegistrationState::Reload),
+                ));
+            }
+        }
+        let mut shaders = Vec::new();
+        for (index, entry) in catalog.shader_bindings.iter_mut().enumerate() {
+            if entry.state.ready().is_some() {
+                shaders.push((
+                    index,
+                    std::mem::replace(&mut entry.state, RegistrationState::Reload),
+                ));
+            }
+        }
+        let mut skins = Vec::new();
+        for (skin, entry) in catalog.skins.iter_mut().enumerate() {
+            for (profile, entry) in entry.profiles.iter_mut().enumerate() {
+                if entry.state.ready().is_some() {
+                    skins.push((
+                        skin,
+                        profile,
+                        std::mem::replace(&mut entry.state, RegistrationState::Reload),
+                    ));
+                }
+            }
+        }
+        self.reload = Some(ReloadCheckpoint {
+            models,
+            shaders,
+            skins,
+            bindings: std::mem::take(&mut catalog.bindings),
+            surfaces: std::mem::take(&mut catalog.surfaces),
+            images,
+            worlds,
+        });
+        catalog.capacity.bindings = 0;
+        catalog.capacity.surfaces = 0;
+        catalog.capacity.skins = 0;
+        Ok(())
+    }
+
     fn base(owner: &ModelAssets) -> Result<Self, String> {
         let catalog = &owner.catalog;
         let images = catalog
@@ -1174,6 +1369,7 @@ impl RegistrationCheckpoint {
             skin_indices: Vec::new(),
             inline_before: Vec::new(),
             images,
+            reload: None,
         })
     }
     fn capture<const N: usize>(
@@ -1245,7 +1441,7 @@ impl RegistrationCheckpoint {
                     .copied()
                     .filter(|&index| {
                         let binding = &catalog.shader_bindings[index];
-                        matches!(binding.state, RegistrationState::Unattempted)
+                        binding.state.pending()
                     })
                     .map(|index| (index, catalog.shader_bindings[index].request.clone()))
                     .collect(),
@@ -1270,9 +1466,7 @@ impl RegistrationCheckpoint {
                     .profiles
                     .iter()
                     .enumerate()
-                    .filter_map(|(index, profile)| {
-                        matches!(profile.state, RegistrationState::Unattempted).then_some(index)
-                    })
+                    .filter_map(|(index, profile)| profile.state.pending().then_some(index))
                     .collect(),
                 source: catalog.skins[index].source.clone(),
             });
@@ -1287,12 +1481,7 @@ impl RegistrationCheckpoint {
                 unattempted: profiles
                     .iter()
                     .copied()
-                    .filter(|&index| {
-                        matches!(
-                            catalog.registrations[index].state,
-                            RegistrationState::Unattempted
-                        )
-                    })
+                    .filter(|&index| catalog.registrations[index].state.pending())
                     .collect(),
                 profiles,
             });
@@ -1375,7 +1564,14 @@ impl RegistrationCheckpoint {
         Ok(())
     }
 
-    fn rollback(self, owner: &mut ModelAssets, mode: RegistrationRollback) -> Result<(), String> {
+    fn rollback(
+        mut self,
+        owner: &mut ModelAssets,
+        mode: RegistrationRollback,
+    ) -> Result<(), String> {
+        if let Some(reload) = self.reload.take() {
+            reload.restore(owner)?;
+        }
         owner.assets.discard_registration_suffix(self.assets)?;
         owner.palettes.restore(self.palettes);
         let catalog = &mut owner.catalog;
@@ -1430,7 +1626,7 @@ impl RegistrationCheckpoint {
             }
             for entry in &mut catalog.shader_bindings[self.shader_bindings..] {
                 entry.state.rollback(mode);
-                if matches!(entry.state, RegistrationState::Unattempted) {
+                if entry.state.pending() {
                     entry.request = None;
                 }
             }
@@ -1458,7 +1654,7 @@ impl RegistrationCheckpoint {
             for (index, request) in shader.bindings {
                 let binding = &mut catalog.shader_bindings[index];
                 binding.state.rollback(mode);
-                if matches!(binding.state, RegistrationState::Unattempted) {
+                if binding.state.pending() {
                     binding.request = request;
                 }
             }
@@ -1626,7 +1822,7 @@ impl ModelAssets {
             profile.source_rules,
             true,
             ShaderLighting::TwoDimensional,
-            self.image_transaction_active.then_some(profile),
+            self.image_transaction_active.map(|_| profile),
             ui_fullscreen,
         )
         .map_err(|error| format!("graphic shader: {error:?}"))?;
@@ -1835,10 +2031,12 @@ impl ModelAssets {
     /// its backend and frontend candidates have both committed.
     pub(crate) fn image_transaction<T>(
         &mut self,
+        vfs: &Vfs,
         world_settings: Option<qa_render::world::WorldRenderSettings>,
+        mode: ImageRefreshMode,
         operation: impl FnOnce(&mut Self, &[WorldId]) -> Result<T, String>,
     ) -> Result<T, String> {
-        if self.image_transaction_active {
+        if self.image_transaction_active.is_some() {
             return Err("image refresh is already active".to_owned());
         }
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
@@ -1847,8 +2045,17 @@ impl ModelAssets {
         let mut checkpoint = ProfileCheckpoint::capture(self)?;
         checkpoint.registration.capture_all(self)?;
         let mut world_rebuild = None;
-        self.image_transaction_active = true;
+        self.image_transaction_active = Some(mode);
         let result = (|| {
+            if mode == ImageRefreshMode::Reload {
+                checkpoint.registration.begin_reload(self)?;
+                checkpoint
+                    .registration
+                    .reload
+                    .as_ref()
+                    .ok_or("image reload checkpoint")?
+                    .replay(vfs, self)?;
+            }
             if let Some(settings) = world_settings {
                 let worlds: Vec<_> = (0..self.assets.worlds().len())
                     .map(|index| WorldId(index as u32))
@@ -1865,7 +2072,7 @@ impl ModelAssets {
                 .unwrap_or_default();
             operation(self, &changed)
         })();
-        self.image_transaction_active = false;
+        self.image_transaction_active = None;
         match result {
             Ok(ready) => {
                 if let Some(receipt) = world_rebuild {
@@ -1902,7 +2109,7 @@ impl ModelAssets {
         ui_fullscreen: bool,
         mut prepare: impl FnMut(&Assets) -> Result<(), String>,
     ) -> Result<ImageRefresh, String> {
-        if !self.image_transaction_active {
+        if self.image_transaction_active.is_none() {
             return Err("image refresh requires its cold transaction".to_owned());
         }
         let mut refresh = ImageRefresh::default();
@@ -1961,12 +2168,15 @@ impl ModelAssets {
                 finish,
                 ..previous.profile
             };
-            let (loaded, (), _) = self.prepare_world_presentation(
+            let reload =
+                (self.image_transaction_active == Some(ImageRefreshMode::Reload)).then_some(old);
+            let (loaded, (), _) = self.prepare_world_presentation_value(
                 vfs,
                 world,
                 profile,
                 policy,
                 ui_fullscreen,
+                reload,
                 |_, _| Ok(()),
                 |assets, ()| prepare(assets),
             )?;
@@ -2126,7 +2336,7 @@ impl ModelAssets {
             assets,
             palettes: Default::default(),
             initial_registration: true,
-            image_transaction_active: false,
+            image_transaction_active: None,
             catalog: ModelCatalog {
                 reader: ArchiveReader::default(),
                 names,
@@ -2299,13 +2509,13 @@ impl ModelAssets {
                         .find(|row| {
                             row.profile == profile
                                 && variant.matches(row.profile, row.vertex_collapse)
-                                && !matches!(row.state, RegistrationState::Unattempted)
+                                && !row.state.pending()
                         })
                         .ok_or("skin shader membership")?;
                     let registrations = match &row.state {
                         RegistrationState::Ready { value, .. } => value.registrations.as_ref(),
                         RegistrationState::Failed(_) => &[],
-                        RegistrationState::Unattempted => continue,
+                        RegistrationState::Unattempted | RegistrationState::Reload => continue,
                     };
                     RendererAdmission {
                         resource: Some(ShaderResource::Skin(
@@ -2555,7 +2765,7 @@ impl ModelAssets {
                     continue;
                 }
                 let raw = request.name.as_ref();
-                let selected = self.image_transaction_active.then_some(profile);
+                let selected = self.image_transaction_active.map(|_| profile);
                 let handle = match request.kind {
                     RendererRegistration::Model if raw.starts_with(b"*") => request
                         .world
@@ -2740,6 +2950,32 @@ impl ModelAssets {
         ) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(qa_render::material::world_load::LoadedWorld, T, AssetCounts), String> {
+        self.prepare_world_presentation_value(
+            vfs,
+            world,
+            profile,
+            presentation,
+            ui_fullscreen,
+            None,
+            stage,
+            prepare,
+        )
+    }
+
+    fn prepare_world_presentation_value<T>(
+        &mut self,
+        vfs: &Vfs,
+        world: WorldId,
+        profile: ModelProfile,
+        presentation: qa_render::material::world_load::WorldPresentationProfile,
+        ui_fullscreen: bool,
+        reload: Option<WorldPresentationId>,
+        stage: impl FnOnce(
+            ModelView<'_>,
+            &qa_render::material::world_load::LoadedWorld,
+        ) -> Result<T, String>,
+        prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
+    ) -> Result<(qa_render::material::world_load::LoadedWorld, T, AssetCounts), String> {
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("world presentation requires a published resource prefix".to_owned());
         }
@@ -2747,16 +2983,27 @@ impl ModelAssets {
         let native_default = self.catalog.native_default(profile);
         let checkpoint = RegistrationCheckpoint::base(self)?;
         let result = (|| {
-            let loaded = qa_render::material::world_load::append_world_presentation(
-                vfs,
-                &mut self.assets,
-                world,
-                WorldPresentationRequest {
-                    profile: presentation,
-                    native_default,
-                },
-                ui_fullscreen,
-            )
+            let request = WorldPresentationRequest {
+                profile: presentation,
+                native_default,
+            };
+            let loaded = match reload {
+                Some(old) => qa_render::material::world_load::reload_world_presentation(
+                    vfs,
+                    &mut self.assets,
+                    world,
+                    old,
+                    request,
+                    ui_fullscreen,
+                ),
+                None => qa_render::material::world_load::append_world_presentation(
+                    vfs,
+                    &mut self.assets,
+                    world,
+                    request,
+                    ui_fullscreen,
+                ),
+            }
             .map_err(|error| format!("world presentation: {error:?}"))?;
             let staged = stage(self.view(), &loaded)?;
             let counts = self.assets.counts();
@@ -3018,12 +3265,7 @@ impl ModelAssets {
             && !self.catalog.models[name.0 as usize]
                 .iter()
                 .copied()
-                .any(|index| {
-                    !matches!(
-                        self.catalog.registrations[index].state,
-                        RegistrationState::Unattempted
-                    )
-                })
+                .any(|index| !self.catalog.registrations[index].state.pending())
         {
             if !request.required && matches!(error.kind, CallError::File) {
                 return Ok(());
@@ -3228,15 +3470,13 @@ impl ModelAssets {
                     .iter()
                     .copied()
                     .any(|index| {
-                        matches!(
-                            self.catalog.registrations[index].state,
-                            RegistrationState::Unattempted
-                        ) && self.catalog.registrations[index].vertex_collapse
-                            == self.catalog.registrations[index]
-                                .profile
-                                .finish
-                                .compile(ui_fullscreen)
-                                .collapse_vertex()
+                        self.catalog.registrations[index].state.pending()
+                            && self.catalog.registrations[index].vertex_collapse
+                                == self.catalog.registrations[index]
+                                    .profile
+                                    .finish
+                                    .compile(ui_fullscreen)
+                                    .collapse_vertex()
                             && selected.is_none_or(|profile| {
                                 self.catalog.registrations[index].profile == profile
                             })
@@ -3371,7 +3611,7 @@ impl ModelAssets {
                 .iter()
                 .position(|images| images.profile == entry.profile)
                 .ok_or_else(|| FileError::capacity("model profile"))?;
-            if !matches!(entry.state, RegistrationState::Unattempted)
+            if !entry.state.pending()
                 || entry.vertex_collapse
                     != entry
                         .profile
@@ -3534,7 +3774,7 @@ impl ModelAssets {
             });
         for &index in rows {
             let entry = &mut self.catalog.registrations[index];
-            if matches!(entry.state, RegistrationState::Unattempted) {
+            if entry.state.pending() {
                 self.catalog.diagnostics.push(ModelDiagnostic {
                     name,
                     profile: entry.profile,
@@ -3740,12 +3980,25 @@ impl ModelAssets {
         let cached = find_shader_index(&self.catalog.names, &self.catalog.shader_indices, raw)
             .and_then(|(_, index)| index);
         if let Some(index) = cached {
-            if let Some(handle) = self.catalog.shader_source_handle(
-                index as i32 + 1,
-                lighting,
-                matches_profile,
-                RegistrationVariant::Guard(ui_fullscreen),
-            ) {
+            let reloading = self.catalog.shaders[index as usize]
+                .profiles
+                .iter()
+                .any(|&row| {
+                    let entry = &self.catalog.shader_bindings[row];
+                    matches_profile(entry.profile)
+                        && entry.lighting == lighting
+                        && RegistrationVariant::Guard(ui_fullscreen)
+                            .matches(entry.profile, entry.vertex_collapse)
+                        && matches!(entry.state, RegistrationState::Reload)
+                });
+            if !reloading
+                && let Some(handle) = self.catalog.shader_source_handle(
+                    index as i32 + 1,
+                    lighting,
+                    matches_profile,
+                    RegistrationVariant::Guard(ui_fullscreen),
+                )
+            {
                 return Ok(handle);
             }
         }
@@ -3863,26 +4116,33 @@ impl ModelAssets {
         let mut first_request_row = None;
         for &row in &self.catalog.shaders[index].profiles {
             let profile = self.catalog.shader_bindings[row].profile;
-            let existing_default = self.catalog.shaders[index]
-                .profiles
-                .iter()
-                .map(|&row| &self.catalog.shader_bindings[row])
-                .filter(|entry| {
-                    entry.profile == profile
-                        && entry.vertex_collapse
-                            == entry
-                                .profile
-                                .finish
-                                .compile(ui_fullscreen)
-                                .collapse_vertex()
-                })
-                .find_map(|entry| {
-                    entry
-                        .state
-                        .ready()
-                        .filter(|(registration, _)| registration.defaulted.is_some())
-                })
-                .map(|(registration, required)| (*registration, required));
+            let existing_default = (!matches!(
+                self.catalog.shader_bindings[row].state,
+                RegistrationState::Reload
+            ))
+            .then(|| {
+                self.catalog.shaders[index]
+                    .profiles
+                    .iter()
+                    .map(|&row| &self.catalog.shader_bindings[row])
+                    .filter(|entry| {
+                        entry.profile == profile
+                            && entry.vertex_collapse
+                                == entry
+                                    .profile
+                                    .finish
+                                    .compile(ui_fullscreen)
+                                    .collapse_vertex()
+                    })
+                    .find_map(|entry| {
+                        entry
+                            .state
+                            .ready()
+                            .filter(|(registration, _)| registration.defaulted.is_some())
+                    })
+                    .map(|(registration, required)| (*registration, required))
+            })
+            .flatten();
             let binding = &mut self.catalog.shader_bindings[row];
             if !matches_profile(binding.profile)
                 || binding.lighting != lighting
@@ -3892,7 +4152,7 @@ impl ModelAssets {
                         .finish
                         .compile(ui_fullscreen)
                         .collapse_vertex()
-                || !matches!(binding.state, RegistrationState::Unattempted)
+                || !binding.state.pending()
             {
                 continue;
             }
@@ -4072,6 +4332,7 @@ impl ModelAssets {
             let index = self.catalog.skins.len();
             self.catalog.skin_indices[group.0 as usize] = Some(index as u32);
             self.catalog.skins.push(RegisteredSkin {
+                name,
                 source: None,
                 profiles: self
                     .catalog
@@ -4115,7 +4376,7 @@ impl ModelAssets {
             .profiles
             .iter()
             .filter(|entry| {
-                matches!(entry.state, RegistrationState::Unattempted)
+                entry.state.pending()
                     && entry.vertex_collapse
                         == entry
                             .profile
@@ -4193,7 +4454,7 @@ impl ModelAssets {
             Ok(mappings) => mappings,
             Err(error) => {
                 for profile in &mut self.catalog.skins[index].profiles {
-                    if matches!(profile.state, RegistrationState::Unattempted)
+                    if profile.state.pending()
                         && RegistrationVariant::Guard(ui_fullscreen)
                             .matches(profile.profile, profile.vertex_collapse)
                         && selected.is_none_or(|selected| selected == profile.profile)
@@ -4207,7 +4468,7 @@ impl ModelAssets {
         };
         for row in 0..self.catalog.skins[index].profiles.len() {
             let profile = &mut self.catalog.skins[index].profiles[row];
-            if !matches!(profile.state, RegistrationState::Unattempted)
+            if !profile.state.pending()
                 || profile.vertex_collapse
                     != profile
                         .profile
@@ -4666,7 +4927,7 @@ impl ModelCatalog {
                         .find(|entry| {
                             entry.profile == profile
                                 && variant.matches(entry.profile, entry.vertex_collapse)
-                                && !matches!(entry.state, RegistrationState::Unattempted)
+                                && !entry.state.pending()
                         })?
                         .state
                         .cached(handle, self.admitted_assets),
@@ -4907,7 +5168,7 @@ impl ModelCatalog {
                         entry.profile == profile
                             && variant.matches(entry.profile, entry.vertex_collapse)
                             && entry.lighting == lighting
-                            && !matches!(entry.state, RegistrationState::Unattempted)
+                            && !entry.state.pending()
                     })
             })
     }
@@ -5008,7 +5269,7 @@ impl ModelCatalog {
         self.skins.get(index)?.profiles.iter().find(|entry| {
             entry.profile == profile
                 && variant.matches(entry.profile, entry.vertex_collapse)
-                && !matches!(entry.state, RegistrationState::Unattempted)
+                && !entry.state.pending()
         })
     }
     fn published_registration(
@@ -5135,7 +5396,7 @@ impl ModelCatalog {
                             Some(value)
                         }
                         RegistrationState::Failed(_) => None,
-                        RegistrationState::Unattempted => return None,
+                        RegistrationState::Unattempted | RegistrationState::Reload => return None,
                     },
                     None => None,
                 },

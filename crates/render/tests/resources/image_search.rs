@@ -70,6 +70,83 @@ fn parsed_image_order_uses_shared_named_suffixes_comments_and_legacy_initials() 
 }
 
 #[test]
+fn reload_preserves_rr_original_request_native_dimensions_and_rejected_cache() {
+    let root = Fixture::new();
+    root.tga("env/native.tga", 4, 2, [91, 37, 13]);
+    std::fs::write(root.0.join("env/native.jpeg"), JPEG).unwrap();
+    let vfs = mount(&root);
+    let mut assets = Assets::load().unwrap();
+    let palette = assets.register_palette(palette()).unwrap();
+    let target = Some(IndexedTarget {
+        palette,
+        transparent_index: None,
+    });
+    let rules = RuleSetId::Quake2Rerelease;
+    let mut images =
+        Images::new(&vfs, &mut assets, rules, rules, settings(2, u32::MAX), None).unwrap();
+    images.set_search_order(order(b"tga"));
+    let usage = bitmap_use();
+    let first = images.raster("env/native.pcx", usage, target).unwrap();
+    let native = images.assets.image(first.id).unwrap();
+    assert_eq!(native.logical_size(), [2, 1]);
+    assert_eq!([native.width, native.height], [4, 2]);
+    let indices = native
+        .indexed
+        .as_ref()
+        .unwrap()
+        .mip(0)
+        .unwrap()
+        .indices()
+        .to_vec();
+    let old_rgba = native.rgba.clone();
+    let prefix = images.assets.counts();
+    images.set_search_order(order(b"jpeg"));
+    let mut state = images.into_state();
+    let reload = state.begin_reload();
+    std::fs::write(root.0.join("env/native.jpeg"), vec![0; JPEG.len()]).unwrap();
+    let mut images = Images::from_state(&vfs, &mut assets, state);
+    assert!(matches!(
+        images.replay_reload(&reload),
+        Err(ResourceError::Format(_))
+    ));
+    let mut state = images.into_state();
+    state.restore_reload(reload);
+    assets.discard_registration_suffix(prefix).unwrap();
+    let mut images = Images::from_state(&vfs, &mut assets, state);
+    vfs.take_lookup_count();
+    assert_eq!(
+        images.raster("ENV\\NATIVE.TGA", usage, target).unwrap(),
+        first
+    );
+    assert_eq!(vfs.take_lookup_count(), 0);
+    assert_eq!(images.assets.image(first.id).unwrap().rgba, old_rgba);
+    std::fs::write(root.0.join("env/native.jpeg"), JPEG).unwrap();
+    let mut state = images.into_state();
+    let reload = state.begin_reload();
+    let mut images = Images::from_state(&vfs, &mut assets, state);
+    images.replay_reload(&reload).unwrap();
+    vfs.take_lookup_count();
+    let next = images.raster("env/native.tga", usage, target).unwrap();
+    assert_eq!(vfs.take_lookup_count(), 0);
+    assert_ne!(next.id, first.id);
+    assert_eq!(next.sampler, first.sampler);
+    let refreshed = images.assets.image(next.id).unwrap();
+    assert_eq!(refreshed.logical_size(), [2, 1]);
+    assert_eq!(
+        refreshed
+            .indexed
+            .as_ref()
+            .unwrap()
+            .mip(0)
+            .unwrap()
+            .indices(),
+        indices
+    );
+    assert!(refreshed.rgba[2] > 230 && refreshed.rgba[0] < 10);
+    assert_eq!(images.assets.image(first.id).unwrap().rgba, old_rgba);
+}
+
+#[test]
 fn rr_original_first_still_falls_back_and_override_levels_keep_distinct_native_branches() {
     let root = Fixture::new();
     root.tga("env/native.tga", 4, 2, [91, 37, 13]);

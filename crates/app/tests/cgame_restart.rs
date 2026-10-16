@@ -1002,13 +1002,14 @@ fn setup_renderers_with_graphics(
     [ClientId; 2],
     [EntityId; 2],
 ) {
-    setup_renderers_with_images(module, ui, graphics, false)
+    setup_renderers_with_images(module, ui, graphics, false, false)
 }
 fn setup_renderers_with_images(
     module: Vec<u8>,
     ui: Option<Vec<u8>>,
     graphics: bool,
     image_backed: bool,
+    override_all: bool,
 ) -> (
     files::Fixture,
     FrameHost,
@@ -1028,7 +1029,9 @@ fn setup_renderers_with_images(
         entries.push(("vm/ui", ui));
     }
     if graphics {
-        let script = if image_backed {
+        let script = if override_all {
+            b"gfx/2d/bigchars { { map textures/restart.tga } }\nwhite { { map $whiteimage } }\nconsole { { map textures/restart.tga } }\ngraphics/after-engine { { map textures/restart.tga } }\ngraphics/replacement { { map $whiteimage rgbGen const ( 0.25 0.5 0.75 ) } }\n".as_slice()
+        } else if image_backed {
             b"gfx/2d/bigchars { { map textures/restart.tga } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\ngraphics/after-engine { { map textures/restart.tga } }\ngraphics/replacement { { map $whiteimage rgbGen const ( 0.25 0.5 0.75 ) } }\n".as_slice()
         } else {
             b"gfx/2d/bigchars { { map $whiteimage } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\ngraphics/after-engine { { map $whiteimage } }\ngraphics/replacement { { map $whiteimage rgbGen const ( 0.25 0.5 0.75 ) } }\n".as_slice()
@@ -1048,6 +1051,12 @@ fn setup_renderers_with_images(
                 })
                 .collect::<Vec<_>>();
             entries.push(("textures/restart.tga", files::tga(8, 8, &pixels)));
+            if override_all {
+                entries.push((
+                    "textures/restart.jpeg",
+                    include_bytes!("../../render/tests/resources/blue.jpg").to_vec(),
+                ));
+            }
         }
     }
     let mut fixture = files::Fixture::new(&entries);
@@ -1105,8 +1114,16 @@ fn setup_renderers_with_images(
     let mut assets = Assets::load().unwrap();
     let palette = files::palette(&mut assets);
     let (scene, _) = SceneComposer::load(Limits::default(), &mut assets, vec![]).unwrap();
-    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    if override_all {
+        profile.image_settings.override_textures = 2;
+    }
     let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    if override_all {
+        owner.set_image_search_order(
+            qa_render::material::resources::ImageSearchOrder::parse(b"tga").unwrap(),
+        );
+    }
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([
@@ -1123,7 +1140,7 @@ fn setup_renderers_with_images(
             &runtime.vfs,
             &mut owner,
             RuleSetId::Quake3,
-            qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+            profile.image_settings,
             qa_render::material::ShaderCompilePolicy::default(),
             64,
             48,
@@ -1140,6 +1157,12 @@ fn setup_renderers_with_images(
         requests,
     )
     .unwrap();
+    if override_all {
+        for (name, value) in [("r_override_textures", "2"), ("r_texture_formats", "tga")] {
+            let handle = host.console.cvars.find(name).unwrap();
+            host.console.cvars.set_text(handle, value).unwrap();
+        }
+    }
     let bands = host.console.cvars.find("r_cpuBands").unwrap();
     host.console.cvars.set_text(bands, "1").unwrap();
     host.console.cvars.set_latch_active(bands, true);
@@ -1193,7 +1216,19 @@ fn setup_renderers_with_images(
             },
             ..Default::default()
         });
-        let huds = std::array::from_fn(|_| None);
+        let mut huds = std::array::from_fn(|_| None);
+        if override_all {
+            huds[RuleSetId::Quake3 as usize] = Some(
+                qa_app::renderer::hud::HudAssets::load(
+                    &host.runtime.vfs,
+                    host.runtime.model_assets.as_mut().unwrap(),
+                    RuleSetId::Quake3,
+                    console.font_assets(),
+                    64,
+                )
+                .unwrap(),
+            );
+        }
         let (assets, staged) = host.stage_engine_graphics(&console, &huds).unwrap();
         let (renderer, scene) = Renderer::load(
             qa_app::renderer::Context::Cpu(configuration),
@@ -2074,6 +2109,18 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
     );
     let lifetimes = ids.map(|id| host.runtime.server.clients[id.0 as usize].entity);
     let worlds = host.local_worlds;
+    let meshes = worlds.map(|world| {
+        world.map(|(world, _)| {
+            host.runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .assets()
+                .world(world)
+                .unwrap()
+                .mesh()
+        })
+    });
     let server_geometry = host.runtime.collision.as_ref().map(|world| world.geometry);
     let clients = ids.map(|id| {
         let row = &host.runtime.server.clients[id.0 as usize];
@@ -2339,22 +2386,53 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
     assert_eq!(query(&mut host, ModuleId(2), 9), Ok(22));
     assert_eq!(query(&mut host, ModuleId(1), 8), Ok(2));
     assert_eq!(query(&mut host, ModuleId(2), 8), Ok(2));
-    assert_eq!(host.local_worlds, worlds);
+    for (seat, previous) in worlds.iter().enumerate().take(2) {
+        let previous = previous.unwrap();
+        let current = host.local_worlds[seat].unwrap();
+        assert_eq!(current.0, previous.0);
+        assert_ne!(current.1, previous.1);
+        let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+        assert_eq!(Some(assets.world(current.0).unwrap().mesh()), meshes[seat]);
+        assert_eq!(
+            assets
+                .world_presentation_registration(current.1)
+                .unwrap()
+                .profile,
+            assets
+                .world_presentation_registration(previous.1)
+                .unwrap()
+                .profile
+        );
+    }
     assert_eq!(
         host.runtime.collision.as_ref().map(|world| world.geometry),
         server_geometry
     );
+    let admitted = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    assert!(admitted.contains(prefix));
     assert_eq!(
-        host.runtime
-            .model_assets
-            .as_ref()
-            .unwrap()
-            .assets()
-            .counts(),
-        prefix
+        (admitted.worlds, admitted.models),
+        (prefix.worlds, prefix.models)
     );
-    assert_eq!(source.backend.cpu.admitted_assets(), Some(prefix));
-    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert!(admitted.presentations > prefix.presentations);
+    assert_eq!(source.backend.cpu.admitted_assets(), Some(admitted));
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+    let current_font = host
+        .runtime
+        .scene
+        .as_ref()
+        .unwrap()
+        .hud_font(RuleSetId::Quake3)
+        .unwrap();
+    assert_eq!(current_font.profile, profile);
+    let current_font_receipt = current_font.registration.unwrap();
+    assert_eq!(current_font_receipt.key, font_receipt.key);
     for seat in 0..2 {
         assert_eq!(host.local_clients[seat], Some(ids[seat]));
         let row = &host.runtime.server.clients[ids[seat].0 as usize];
@@ -2425,7 +2503,7 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
                 })
                 .unwrap()
                 .shader,
-            font_receipt.shader
+            current_font_receipt.shader
         );
     }
     let queued = host
@@ -2579,7 +2657,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
         registration::ShaderOwner,
     };
     let (_fixture, mut host, mut source, ids, anchors) =
-        setup_renderers_with_images(module, Some(ui), true, true);
+        setup_renderers_with_images(module, Some(ui), true, true, false);
     assert!(host.renderer_fullscreen_ui());
     queue_gamestate(&mut host, ids[0], "a", 11, false);
     queue_gamestate(&mut host, ids[1], "a", 22, false);
@@ -3256,6 +3334,254 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     }
 }
 
+fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
+    use qa_compat::services::ShaderLighting;
+    use qa_render::shader::{
+        context::ShaderNodeId,
+        reference::{NativeShaderRef, ShaderRef},
+        registration::{ShaderOwner, ShaderResource},
+    };
+    let (_fixture, mut host, mut source, ids, anchors) =
+        setup_renderers_with_images(module, Some(ui), true, true, true);
+    queue_gamestate(&mut host, ids[0], "a", 11, false);
+    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    until_running(&mut host, &mut source);
+    queue_snapshot(&mut host, ids[0], 11, 1000);
+    queue_snapshot(&mut host, ids[1], 22, 1000);
+    source.step(&mut host);
+
+    let graphics = |host: &FrameHost| {
+        let scene = host.runtime.scene.as_ref().unwrap();
+        assert!(scene.has_hud(RuleSetId::Quake3));
+        let font = scene.hud_font(RuleSetId::Quake3).unwrap();
+        let console = *host
+            .runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .catalog()
+            .shader_outcome(b"console", font.profile, ShaderLighting::TwoDimensional)
+            .unwrap();
+        (font.profile, [font.registration.unwrap(), console])
+    };
+    let image = |host: &FrameHost, shader| {
+        let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+        let material = assets
+            .material(assets.shader_binding(shader).unwrap().material)
+            .unwrap();
+        let qa_render::assets::StageTexture::Image(image) = material.stages[0].texture else {
+            panic!("image-backed registration")
+        };
+        image
+    };
+    let (profile, receipts) = graphics(&host);
+    assert_eq!(profile.image_settings.override_textures, 2);
+    assert_eq!(
+        qa_app::render_settings::image_settings(&host.console.cvars, RuleSetId::Quake3).unwrap(),
+        profile.image_settings
+    );
+    let old_image = image(&host, receipts[0].shader);
+    assert_eq!(image(&host, receipts[1].shader), old_image);
+    let old_pixels = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .image(old_image)
+        .unwrap()
+        .rgba
+        .to_vec();
+    let old_pixel = source.backend.cpu.pixels()[0];
+    let lifetimes = ids.map(|id| host.runtime.server.clients[id.0 as usize].entity);
+    let owners = [
+        ShaderOwner::Client(ids[0], lifetimes[0]),
+        ShaderOwner::Client(ids[1], lifetimes[1]),
+        ShaderOwner::Engine,
+    ];
+    let contexts = owners.map(|owner| host.native_shaders().context(owner, profile).unwrap());
+    let handles = [
+        ui_query(&mut host, ModuleId(3), 8).unwrap(),
+        ui_query(&mut host, ModuleId(4), 8).unwrap(),
+    ];
+    assert_eq!(handles, [4; 2]);
+    let refs = std::array::from_fn::<_, 2, _>(|seat| {
+        let shader = ShaderRef::Native(NativeShaderRef {
+            context: contexts[seat],
+            node: ShaderNodeId(handles[seat] - 1),
+        });
+        assert_eq!(
+            image(&host, shader.source(host.native_shaders()).unwrap()),
+            old_image
+        );
+        shader
+    });
+    let worlds = host.local_worlds;
+    let meshes = worlds.map(|world| {
+        world.map(|(id, _)| {
+            host.runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .assets()
+                .world(id)
+                .unwrap()
+                .mesh()
+        })
+    });
+    let connections = ids.map(|id| {
+        let row = host.runtime.network.get(id, Endpoint::Client).unwrap();
+        (row.phase, row.route, row.output, row.channel.endpoint())
+    });
+    let prefix = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    let markers = renderer_markers(&host).len();
+    let prepares = source.video_prepares;
+    let publications = source.video_publishes;
+    let context = Context {
+        source: RuleSetId::Quake3,
+        seat: SeatId::FIRST,
+        ..Context::default()
+    };
+    host.console
+        .append("r_texture_formats jpeg\nvid_restart cpu\n", context)
+        .unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    host.runtime.vfs.take_lookup_count();
+    source.step(&mut host);
+    until_running(&mut host, &mut source);
+    assert_eq!(source.video_prepares, prepares + 1);
+    assert_eq!(source.video_publishes, publications + 1);
+    assert_eq!(&renderer_markers(&host)[markers..], b"uuccUUCC");
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+
+    let (current_profile, current_receipts) = graphics(&host);
+    assert_eq!(current_profile, profile);
+    let current_image = image(&host, current_receipts[0].shader);
+    assert_ne!(current_image, old_image);
+    assert_eq!(image(&host, current_receipts[1].shader), current_image);
+    for (old, current) in receipts.into_iter().zip(current_receipts) {
+        assert_eq!(current.key, old.key);
+        assert_ne!(current.shader, old.shader);
+        assert!(current.defaulted.is_none());
+    }
+    for (index, owner) in owners.into_iter().enumerate() {
+        let current = host.native_shaders().context(owner, profile).unwrap();
+        assert_ne!(current, contexts[index]);
+        for receipt in current_receipts {
+            let nodes = host
+                .native_shaders()
+                .resource_nodes(current, ShaderResource::Graphic(receipt.key))
+                .unwrap();
+            assert_eq!(nodes.len(), 1);
+            assert_eq!(
+                host.native_shaders()
+                    .source(NativeShaderRef {
+                        context: current,
+                        node: nodes[0]
+                    })
+                    .unwrap(),
+                &receipt
+            );
+        }
+    }
+    for seat in 0..2 {
+        assert_eq!(
+            ui_query(&mut host, ModuleId(seat as u16 + 3), 8),
+            Ok(handles[seat])
+        );
+        assert_eq!(
+            query(&mut host, ModuleId(seat as u16 + 1), 6),
+            Ok(handles[seat])
+        );
+        assert_eq!(refs[seat].source(host.native_shaders()), None);
+        let renewed = host
+            .native_shaders()
+            .context(owners[seat], profile)
+            .unwrap();
+        let shader = ShaderRef::Native(NativeShaderRef {
+            context: renewed,
+            node: ShaderNodeId(handles[seat] - 1),
+        });
+        assert_eq!(
+            image(&host, shader.source(host.native_shaders()).unwrap()),
+            current_image
+        );
+        assert_eq!(host.local_clients[seat], Some(ids[seat]));
+        assert_eq!(
+            host.runtime.server.clients[ids[seat].0 as usize].entity,
+            lifetimes[seat]
+        );
+        assert!(
+            host.runtime
+                .server
+                .entities
+                .resolve(anchors[seat])
+                .is_some()
+        );
+        let connection = host
+            .runtime
+            .network
+            .get(ids[seat], Endpoint::Client)
+            .unwrap();
+        assert_eq!(
+            (
+                connection.phase,
+                connection.route,
+                connection.output,
+                connection.channel.endpoint()
+            ),
+            connections[seat]
+        );
+        let previous = worlds[seat].unwrap();
+        let current = host.local_worlds[seat].unwrap();
+        assert_eq!(current.0, previous.0);
+        assert_ne!(current.1, previous.1);
+        let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+        assert_eq!(Some(assets.world(current.0).unwrap().mesh()), meshes[seat]);
+        assert_eq!(
+            assets
+                .world_presentation_registration(current.1)
+                .unwrap()
+                .profile,
+            assets
+                .world_presentation_registration(previous.1)
+                .unwrap()
+                .profile
+        );
+    }
+    let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+    let counts = assets.counts();
+    assert!(counts.contains(prefix));
+    assert_eq!(
+        (counts.worlds, counts.models),
+        (prefix.worlds, prefix.models)
+    );
+    assert!(counts.presentations > prefix.presentations);
+    assert_eq!(assets.image(old_image).unwrap().rgba.as_ref(), old_pixels);
+    let rgba = &assets.image(current_image).unwrap().rgba;
+    assert!(rgba[2] > 230 && rgba[0] < 10);
+    assert_eq!(source.backend.cpu.admitted_assets(), Some(counts));
+    queue_snapshot(&mut host, ids[0], 11, 2000);
+    queue_snapshot(&mut host, ids[1], 22, 2000);
+    source.step(&mut host);
+    let pixel = source.backend.cpu.pixels()[0];
+    assert_ne!(pixel, old_pixel);
+    assert_eq!(pixel, source.backend.cpu.pixels()[32]);
+    let [r, _, b, a] = pixel.to_le_bytes();
+    assert!(b > 230 && r < 10 && a == 255);
+    paint(&host, &mut source);
+    for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_state(module), Some(State::Running));
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
@@ -3265,6 +3591,10 @@ fn main() {
         qvm_role_with_graphics(true, false, true),
     );
     verify_video_restart(
+        qvm_role_with_graphics(false, false, true),
+        qvm_role_with_graphics(true, false, true),
+    );
+    verify_video_format_restart(
         qvm_role_with_graphics(false, false, true),
         qvm_role_with_graphics(true, false, true),
     );
@@ -3284,6 +3614,10 @@ fn main() {
             native_role_with_graphics(true, false, true),
         );
         verify_video_restart(
+            native_role_with_graphics(false, false, true),
+            native_role_with_graphics(true, false, true),
+        );
+        verify_video_format_restart(
             native_role_with_graphics(false, false, true),
             native_role_with_graphics(true, false, true),
         );

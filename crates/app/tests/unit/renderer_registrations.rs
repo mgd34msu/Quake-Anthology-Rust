@@ -55,6 +55,252 @@ fn shader_fixture() -> support::Fixture {
     ])
 }
 
+fn paint_shader(cpu: &mut CpuBackend, assets: &Assets, shader: ShaderBindingId) -> Vec<u32> {
+    let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
+    let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
+    assert!(frame.draw_2d(qa_render::Draw2d {
+        rect: [0.0, 0.0, 8.0, 8.0],
+        texcoords: [0.0, 0.0, 1.0, 1.0],
+        color: [255; 4],
+        shader: shader.into(),
+    }));
+    let packet = frame.finish();
+    assert_eq!(packet.rejected, 0);
+    assert_eq!(cpu.render(&packet, assets).rejected, 0);
+    cpu.pixels().to_vec()
+}
+
+#[test]
+fn same_profile_reload_reselects_formats_and_rolls_back_late_rejection_without_derived_growth() {
+    let jpeg = include_bytes!("../../../render/tests/resources/blue.jpg");
+    let mut fixture = support::Fixture::new(&[
+        ("models/test.md3", support::md3_surfaces()),
+        (
+            "models/test.skin",
+            b"body,textures/body\nglow,textures/glow\n".to_vec(),
+        ),
+        (
+            "textures/body.tga",
+            support::tga(4, 4, &[[211, 17, 29, 255]; 16]),
+        ),
+        (
+            "textures/alternate.tga",
+            support::tga(4, 4, &[[31, 223, 47, 255]; 16]),
+        ),
+        (
+            "textures/glow.tga",
+            support::tga(4, 4, &[[53, 67, 229, 255]; 16]),
+        ),
+        ("textures/body.jpeg", jpeg.to_vec()),
+        ("textures/alternate.jpeg", jpeg.to_vec()),
+        ("textures/glow.jpeg", jpeg.to_vec()),
+    ]);
+    let mut profile = profile(RuleSetId::Quake3);
+    profile.image_settings.override_textures = 2;
+    let mut owner =
+        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    owner.set_image_search_order(ImageSearchOrder::parse(b"tga").unwrap());
+    let shader = owner
+        .register_shader(
+            &fixture.vfs,
+            b"textures/body.tga",
+            profile.source_rules,
+            false,
+            ShaderLighting::TwoDimensional,
+        )
+        .unwrap();
+    let model = owner
+        .register_model(&fixture.vfs, b"models/test.md3", profile.source_rules)
+        .unwrap();
+    let skin = owner
+        .register_skin(&fixture.vfs, b"models/test.skin", profile.source_rules)
+        .unwrap();
+    let registration = owner
+        .catalog()
+        .renderer_registration(model, profile)
+        .unwrap();
+    let policy = ModelMaterialPolicy {
+        custom_skin: skin,
+        ..Default::default()
+    };
+    let original_bindings = owner
+        .catalog()
+        .bindings(registration, 0, policy)
+        .unwrap()
+        .collect::<Vec<_>>();
+    let original_shader = owner.catalog().shader_binding(shader, profile).unwrap();
+    let StageTexture::Image(original_image) = owner
+        .assets()
+        .material(
+            owner
+                .assets()
+                .shader_binding(original_shader)
+                .unwrap()
+                .material,
+        )
+        .unwrap()
+        .stages[0]
+        .texture
+    else {
+        panic!("original image")
+    };
+    let original_rgba = owner.assets().image(original_image).unwrap().rgba.clone();
+    let (mut owner, mut cpu) = publish(owner);
+    let original_pixels = paint_shader(&mut cpu, owner.assets(), original_shader);
+    assert!(
+        original_pixels
+            .iter()
+            .all(|pixel| *pixel == u32::from_le_bytes([211, 17, 29, 255]))
+    );
+    let prefix = owner.assets().counts();
+    let capacity = owner.catalog().capacity();
+    fixture.remove("models/test.md3");
+    fixture.remove("models/test.skin");
+    let (mount, path) = {
+        let mount = fixture.vfs.mounts().next().unwrap();
+        (mount.id, mount.path.clone())
+    };
+    assert!(fixture.vfs.unmount(mount));
+    fixture.vfs.mount_directory(&path, 0).unwrap();
+    assert!(fixture.vfs.open(b"models/test.md3").is_none());
+    assert!(fixture.vfs.open(b"models/test.skin").is_none());
+    owner.set_image_search_order(ImageSearchOrder::parse(b"jpeg").unwrap());
+    let mut prepared = None;
+    let failed: Result<(), String> =
+        owner.image_transaction(&fixture.vfs, None, ImageRefreshMode::Reload, |owner, _| {
+            let refresh = owner.refresh_images(
+                &fixture.vfs,
+                &[profile],
+                &[],
+                [None; 5],
+                profile.finish,
+                false,
+                |_| Ok(()),
+            )?;
+            prepared =
+                Some(CpuBackend::load_with_assets(8, 8, owner.assets()).map_err(str::to_owned)?);
+            assert_eq!(refresh.profile(profile), profile);
+            assert_eq!(
+                refresh.registration(registration, owner.catalog())?,
+                registration
+            );
+            let selected = owner.catalog().shader_binding(shader, profile).unwrap();
+            assert_ne!(selected, original_shader);
+            let pixels = paint_shader(prepared.as_mut().unwrap(), owner.assets(), selected);
+            assert!(pixels.iter().all(|pixel| {
+                let [r, _, b, _] = pixel.to_le_bytes();
+                b > 230 && r < 10
+            }));
+            Err("reject after complete backend preparation".to_owned())
+        });
+    assert!(failed.is_err());
+    drop(prepared);
+    assert_eq!(owner.assets().counts(), prefix);
+    assert_eq!(owner.catalog().capacity(), capacity);
+    assert_eq!(cpu.admitted_assets(), Some(prefix));
+    assert_eq!(
+        owner.catalog().shader_binding(shader, profile),
+        Some(original_shader)
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .bindings(registration, 0, policy)
+            .unwrap()
+            .collect::<Vec<_>>(),
+        original_bindings
+    );
+    assert_eq!(
+        paint_shader(&mut cpu, owner.assets(), original_shader),
+        original_pixels
+    );
+    fixture.vfs.take_lookup_count();
+    let retained = request(
+        b"textures/body.tga",
+        profile.source_rules,
+        RendererRegistration::Shader {
+            mipmaps: false,
+            lighting: ShaderLighting::TwoDimensional,
+        },
+    );
+    assert_eq!(
+        owner
+            .prepare_registration(
+                &fixture.vfs,
+                &retained,
+                profile,
+                RegistrationVariant::Retained,
+                |_| Ok(()),
+                |_, _| panic!("rollback must retain original cache")
+            )
+            .unwrap()
+            .0,
+        shader
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    for _ in 0..2 {
+        let mut prepared = None;
+        let refresh = owner
+            .image_transaction(&fixture.vfs, None, ImageRefreshMode::Reload, |owner, _| {
+                let refresh = owner.refresh_images(
+                    &fixture.vfs,
+                    &[profile],
+                    &[],
+                    [None; 5],
+                    profile.finish,
+                    false,
+                    |_| Ok(()),
+                )?;
+                prepared = Some(
+                    CpuBackend::load_with_assets(8, 8, owner.assets()).map_err(str::to_owned)?,
+                );
+                Ok(refresh)
+            })
+            .unwrap();
+        cpu = prepared.unwrap();
+        assert_eq!(refresh.profile(profile), profile);
+        assert_eq!(
+            refresh.registration(registration, owner.catalog()).unwrap(),
+            registration
+        );
+        assert_eq!(
+            owner.catalog().renderer_registration(model, profile),
+            Some(registration)
+        );
+        assert!(owner.catalog().renderer_skin(skin, profile));
+        assert_eq!(owner.catalog().capacity(), capacity);
+        assert_eq!(owner.assets().counts().models, prefix.models);
+        assert_eq!(
+            owner.assets().image(original_image).unwrap().rgba,
+            original_rgba
+        );
+        let bindings = owner
+            .catalog()
+            .bindings(registration, 0, policy)
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bindings
+                .iter()
+                .map(|binding| binding.model)
+                .collect::<Vec<_>>(),
+            original_bindings
+                .iter()
+                .map(|binding| binding.model)
+                .collect::<Vec<_>>()
+        );
+        let selected = owner.catalog().shader_binding(shader, profile).unwrap();
+        assert_ne!(selected, original_shader);
+        assert_eq!(cpu.admitted_assets(), Some(owner.assets().counts()));
+        let pixels = paint_shader(&mut cpu, owner.assets(), selected);
+        assert_ne!(pixels, original_pixels);
+        assert!(pixels.iter().all(|pixel| {
+            let [r, _, b, _] = pixel.to_le_bytes();
+            b > 230 && r < 10
+        }));
+    }
+}
+
 #[test]
 fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_resources() {
     use qa_render::{
@@ -88,21 +334,26 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
         lighting: WorldLighting::from_requests(1, 1, None).unwrap(),
         ..WorldRenderSettings::default()
     };
-    let rejected: Result<(), String> = owner.image_transaction(Some(settings), |owner, _| {
-        owner.refresh_images(
-            &fixture.vfs,
-            &[profile],
-            &[(world, previous.id)],
-            [None; 5],
-            qa_render::material::MaterialFinishPolicy::default(),
-            false,
-            |assets| {
-                assert!(assets.counts().presentations > retained.presentations);
-                Err("candidate backend rejected".to_owned())
-            },
-        )?;
-        Ok(())
-    });
+    let rejected: Result<(), String> = owner.image_transaction(
+        &fixture.vfs,
+        Some(settings),
+        ImageRefreshMode::Reconfigure,
+        |owner, _| {
+            owner.refresh_images(
+                &fixture.vfs,
+                &[profile],
+                &[(world, previous.id)],
+                [None; 5],
+                qa_render::material::MaterialFinishPolicy::default(),
+                false,
+                |assets| {
+                    assert!(assets.counts().presentations > retained.presentations);
+                    Err("candidate backend rejected".to_owned())
+                },
+            )?;
+            Ok(())
+        },
+    );
     assert!(rejected.unwrap_err().contains("candidate backend rejected"));
     assert_eq!(owner.assets().counts(), retained);
     assert_eq!(owner.catalog().admitted_assets, Some(retained));
@@ -122,17 +373,22 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
         Some(previous)
     );
     let refresh = owner
-        .image_transaction(Some(settings), |owner, _| {
-            owner.refresh_images(
-                &fixture.vfs,
-                &[profile],
-                &[(world, previous.id)],
-                [None; 5],
-                qa_render::material::MaterialFinishPolicy::default(),
-                false,
-                |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
-            )
-        })
+        .image_transaction(
+            &fixture.vfs,
+            Some(settings),
+            ImageRefreshMode::Reconfigure,
+            |owner, _| {
+                owner.refresh_images(
+                    &fixture.vfs,
+                    &[profile],
+                    &[(world, previous.id)],
+                    [None; 5],
+                    qa_render::material::MaterialFinishPolicy::default(),
+                    false,
+                    |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+                )
+            },
+        )
         .unwrap();
     let selected = refresh.presentation(world, previous.id).unwrap();
     assert_eq!(refresh.profile(profile), profile);
@@ -198,27 +454,32 @@ fn finish_refresh_reuses_world_images_after_backend_rejection() {
         ..profile.finish
     };
     let candidate = Cell::new(None);
-    let rejected: Result<(), String> = owner.image_transaction(None, |owner, _| {
-        owner.refresh_images(
-            &fixture.vfs,
-            &[profile],
-            &[(world, previous.id)],
-            [None; 5],
-            finish,
-            false,
-            |assets| {
-                if assets.counts().presentations == retained.presentations {
-                    return Ok(());
-                }
-                assert_eq!(assets.counts().images, retained.images);
-                candidate.set(Some(assets.world(world).unwrap().presentations()[1]));
-                let prepared = CpuBackend::load_with_assets(8, 8, assets).unwrap();
-                assert_eq!(prepared.admitted_assets(), Some(assets.counts()));
-                Err("reject staged renderer".to_owned())
-            },
-        )?;
-        Ok(())
-    });
+    let rejected: Result<(), String> = owner.image_transaction(
+        &fixture.vfs,
+        None,
+        ImageRefreshMode::Reconfigure,
+        |owner, _| {
+            owner.refresh_images(
+                &fixture.vfs,
+                &[profile],
+                &[(world, previous.id)],
+                [None; 5],
+                finish,
+                false,
+                |assets| {
+                    if assets.counts().presentations == retained.presentations {
+                        return Ok(());
+                    }
+                    assert_eq!(assets.counts().images, retained.images);
+                    candidate.set(Some(assets.world(world).unwrap().presentations()[1]));
+                    let prepared = CpuBackend::load_with_assets(8, 8, assets).unwrap();
+                    assert_eq!(prepared.admitted_assets(), Some(assets.counts()));
+                    Err("reject staged renderer".to_owned())
+                },
+            )?;
+            Ok(())
+        },
+    );
     assert!(rejected.unwrap_err().contains("reject staged renderer"));
     assert_eq!(owner.assets().counts(), retained);
     assert_eq!(cpu.admitted_assets(), Some(retained));
@@ -228,17 +489,22 @@ fn finish_refresh_reuses_world_images_after_backend_rejection() {
     );
 
     let refresh = owner
-        .image_transaction(None, |owner, _| {
-            owner.refresh_images(
-                &fixture.vfs,
-                &[profile],
-                &[(world, previous.id)],
-                [None; 5],
-                finish,
-                false,
-                |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
-            )
-        })
+        .image_transaction(
+            &fixture.vfs,
+            None,
+            ImageRefreshMode::Reconfigure,
+            |owner, _| {
+                owner.refresh_images(
+                    &fixture.vfs,
+                    &[profile],
+                    &[(world, previous.id)],
+                    [None; 5],
+                    finish,
+                    false,
+                    |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+                )
+            },
+        )
         .unwrap();
     let selected = refresh.presentation(world, previous.id).unwrap();
     assert_eq!(Some(selected.id), candidate.get());
@@ -314,17 +580,22 @@ fn initial_worlds_keep_their_own_default_image_when_the_catalog_adopts_a_peer() 
     let mut finish = profile.finish;
     finish.detail_textures = false;
     let refresh = owner
-        .image_transaction(None, |owner, _| {
-            owner.refresh_images(
-                &fixture.vfs,
-                &[profile],
-                &[(world, previous.id)],
-                [None; 5],
-                finish,
-                false,
-                |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
-            )
-        })
+        .image_transaction(
+            &fixture.vfs,
+            None,
+            ImageRefreshMode::Reconfigure,
+            |owner, _| {
+                owner.refresh_images(
+                    &fixture.vfs,
+                    &[profile],
+                    &[(world, previous.id)],
+                    [None; 5],
+                    finish,
+                    false,
+                    |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+                )
+            },
+        )
         .unwrap();
     let selected = refresh.presentation(world, previous.id).unwrap();
     assert_eq!(default_image(owner.assets(), selected.id), images[1]);
