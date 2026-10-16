@@ -2402,6 +2402,7 @@ fn renderer_configuration_uses_shared_services(factory: fn() -> (Program, u64)) 
             depth_bits: 24,
             stencil_bits: 8,
             stereo: false,
+            window_aspect: None,
         },
         max_texture_size: 16384,
         max_active_textures: 32,

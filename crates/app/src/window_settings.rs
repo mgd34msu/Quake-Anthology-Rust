@@ -1,21 +1,26 @@
 //! Cold window settings use the console's shared native mode conversion policy.
 use crate::renderer::Kind;
 use qa_console::{
-    cvars::{Cvars, WriteError},
+    cvars::{Cvars, View, WriteError},
     pending::PendingSettings,
     views::Context,
 };
-use qa_core::presentation::WindowRequest;
+use qa_core::presentation::{DisplayConfiguration, ExclusivePolicy, WindowMode, WindowRequest};
 
 pub struct WindowSettingsPlan {
     request: WindowRequest,
     pending: PendingSettings,
+    fullscreen: View,
 }
 impl WindowSettingsPlan {
-    pub fn prepare(vars: &Cvars, kind: Kind) -> Result<Self, String> {
+    pub fn prepare(
+        vars: &Cvars,
+        kind: Kind,
+        baseline: Option<WindowRequest>,
+    ) -> Result<Self, String> {
         let gl = matches!(kind, Kind::Gl);
         let request = vars
-            .window_request(true, gl)
+            .window_request(true, gl, baseline)
             .map_err(|error| format!("window settings: {error:?}"))?;
         let views = vars
             .window_views(gl)
@@ -23,6 +28,9 @@ impl WindowSettingsPlan {
         Ok(Self {
             request,
             pending: PendingSettings::capture(vars, views),
+            fullscreen: vars
+                .bind("r_fullscreen", Context::default())
+                .ok_or("missing fullscreen cvar")?,
         })
     }
     pub fn request(&self) -> WindowRequest {
@@ -34,8 +42,42 @@ impl WindowSettingsPlan {
         }
         Ok(())
     }
-    pub fn apply(&self, vars: &mut Cvars) -> Result<(), WriteError> {
-        self.pending.apply(vars)
+    pub fn apply(
+        &self,
+        vars: &mut Cvars,
+        display: &DisplayConfiguration,
+    ) -> Result<(), WriteError> {
+        self.pending.apply(vars)?;
+        if self.request.exclusive_policy == ExclusivePolicy::ExactOrWindowed
+            && matches!(self.request.mode, WindowMode::Exclusive { .. })
+            && !display.fullscreen
+        {
+            vars.set_text(self.fullscreen.canonical(), "0")?;
+        }
+        Ok(())
+    }
+    pub fn report_outcome(
+        &self,
+        actual: Option<WindowRequest>,
+        events: &mut qa_core::events::EventRing,
+    ) {
+        let Some(actual) = actual else {
+            return;
+        };
+        if matches!(self.request.mode, WindowMode::Exclusive { .. })
+            && actual.mode == WindowMode::Windowed
+        {
+            let _ = events.console_formatted(format_args!(
+                "Fullscreen unavailable; using a {}x{} window.\n",
+                actual.width, actual.height
+            ));
+        }
+        if self.request.gl.swap_interval != actual.gl.swap_interval {
+            let _ = events.console_formatted(format_args!(
+                "Swap interval {} unavailable; using {}.\n",
+                self.request.gl.swap_interval, actual.gl.swap_interval
+            ));
+        }
     }
 }
 
@@ -49,7 +91,7 @@ pub fn startup(
 ) -> Result<WindowSettingsPlan, String> {
     if width.is_some() || height.is_some() {
         let current = vars
-            .window_request(true, matches!(kind, Kind::Gl))
+            .window_request(true, matches!(kind, Kind::Gl), None)
             .map_err(|error| format!("window settings: {error:?}"))?;
         let width = width
             .map(|value| u32::try_from(value).map_err(|_| "invalid window width"))
@@ -67,9 +109,13 @@ pub fn startup(
             let view = vars
                 .bind(name, Context::default())
                 .ok_or("missing window cvar")?;
-            vars.force_write(view, &value)
-                .map_err(|error| format!("window override: {error:?}"))?;
+            let result = if name == "r_mode" && current.window_aspect.is_some() {
+                vars.force_write(view, &value)
+            } else {
+                vars.set_text(view.canonical(), &value)
+            };
+            result.map_err(|error| format!("window override: {error:?}"))?;
         }
     }
-    WindowSettingsPlan::prepare(vars, kind)
+    WindowSettingsPlan::prepare(vars, kind, None)
 }

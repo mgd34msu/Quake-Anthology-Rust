@@ -121,17 +121,102 @@ struct PendingDetail {
     modified: bool,
 }
 struct PendingWrite {
-    first: Option<(CvarHandle, FixedText<MAX_TEXT>)>,
-    changes: [Option<(CvarHandle, FixedText<64>)>; 32],
-    detail: Option<PendingDetail>,
+    texts: [Option<(CvarHandle, FixedText<MAX_TEXT>)>; 2],
+    changes: [Option<(CvarHandle, FixedText<64>)>; 33],
+    details: [Option<PendingDetail>; 2],
 }
 impl PendingWrite {
-    fn handles(&self) -> impl Iterator<Item = CvarHandle> + '_ {
-        self.first
+    fn values(&self) -> impl Iterator<Item = (CvarHandle, &str)> {
+        self.texts
             .iter()
-            .map(|(h, _)| *h)
-            .chain(self.changes.iter().flatten().map(|(h, _)| *h))
-            .chain(self.detail.iter().map(|detail| detail.view.handle))
+            .flatten()
+            .map(|(handle, text)| (*handle, text.as_str()))
+            .chain(
+                self.changes
+                    .iter()
+                    .flatten()
+                    .map(|(handle, text)| (*handle, text.as_str())),
+            )
+    }
+    fn value(&mut self, handle: CvarHandle, value: &str) -> Result<(), WriteError> {
+        if let Some((_, text)) = self
+            .texts
+            .iter_mut()
+            .flatten()
+            .find(|(old, _)| *old == handle)
+        {
+            text.set(value)
+                .map_err(|_| conversion::Error::TextTooLong)?;
+            return Ok(());
+        }
+        if value.len() > 64 {
+            let slot = self
+                .texts
+                .iter_mut()
+                .find(|slot| slot.is_none())
+                .ok_or(WriteError::Capacity)?;
+            let mut text = FixedText::default();
+            text.set(value)
+                .map_err(|_| conversion::Error::TextTooLong)?;
+            *slot = Some((handle, text));
+            for slot in &mut self.changes {
+                if slot.as_ref().is_some_and(|(old, _)| *old == handle) {
+                    *slot = None;
+                }
+            }
+            return Ok(());
+        }
+        let index = self
+            .changes
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|(old, _)| *old == handle))
+            .or_else(|| self.changes.iter().position(Option::is_none))
+            .ok_or(WriteError::Capacity)?;
+        let mut text = FixedText::default();
+        text.set(value)
+            .map_err(|_| conversion::Error::TextTooLong)?;
+        self.changes[index] = Some((handle, text));
+        Ok(())
+    }
+    fn detail(&mut self, view: View, text: &str, modified: bool) -> Result<(), WriteError> {
+        let index = self
+            .details
+            .iter()
+            .position(|slot| {
+                slot.as_ref()
+                    .is_some_and(|old| old.view.binding == view.binding)
+            })
+            .or_else(|| self.details.iter().position(Option::is_none))
+            .ok_or(WriteError::Capacity)?;
+        let detail = self.details[index].get_or_insert_with(|| PendingDetail {
+            view,
+            text: FixedText::default(),
+            modified,
+        });
+        detail.view = view;
+        detail
+            .text
+            .set(text)
+            .map_err(|_| conversion::Error::TextTooLong)?;
+        detail.modified = modified;
+        Ok(())
+    }
+    fn append(&mut self, other: &Self) -> Result<(), WriteError> {
+        for (handle, value) in other.values() {
+            self.value(handle, value)?;
+        }
+        for detail in other.details.iter().flatten() {
+            self.detail(detail.view, detail.text.as_str(), detail.modified)?;
+        }
+        Ok(())
+    }
+    fn handles(&self) -> impl Iterator<Item = CvarHandle> + '_ {
+        self.values().map(|(handle, _)| handle).chain(
+            self.details
+                .iter()
+                .flatten()
+                .map(|detail| detail.view.handle),
+        )
     }
 }
 type Projections = [[Result<(f32, i32), conversion::Error>; 3]; 5];
@@ -302,9 +387,13 @@ impl Cvars {
                         (conversion.detail
                             || matches!(
                                 conversion.operation,
-                                Operation::MusicMute | Operation::VideoMode | Operation::Fullscreen
-                            ))
-                        .then(Box::default)
+                                Operation::MusicMute
+                                    | Operation::VideoMode
+                                    | Operation::Fullscreen
+                                    | Operation::WindowGeometry
+                            )
+                            || row.name == "r_mode")
+                            .then(Box::default)
                     })
                 })
                 .collect(),
@@ -516,19 +605,13 @@ impl Cvars {
             if let Some(default) = default
                 && (adopt_user_default || !self.default_available(view.handle, context.source))
             {
-                let (changes, _) = self.prepare_write(view, default, false)?;
-                for (handle, text) in changes
-                    .first
-                    .iter()
-                    .map(|(handle, text)| (*handle, text.as_str()))
-                    .chain(
-                        changes
-                            .changes
-                            .iter()
-                            .flatten()
-                            .map(|(handle, text)| (*handle, text.as_str())),
-                    )
-                {
+                let mut changes = PendingWrite {
+                    texts: [None, None],
+                    changes: std::array::from_fn(|_| None),
+                    details: [None, None],
+                };
+                self.prepare_write(view, default, false, &mut changes)?;
+                for (handle, text) in changes.values() {
                     if (adopt_user_default && handle == view.handle)
                         || !self.default_available(handle, context.source)
                     {
@@ -727,14 +810,6 @@ impl Cvars {
             cursor = row.next;
         }
     }
-    fn refresh_native_handle(&mut self, handle: CvarHandle) {
-        for at in 0..self.dependents[handle.0 as usize].len() {
-            self.refresh_native(self.dependents[handle.0 as usize][at] as usize);
-        }
-        if handle.0 as usize >= self.catalog_values {
-            self.refresh_native(BINDINGS.len() + handle.0 as usize - self.catalog_values);
-        }
-    }
     pub fn name(&self, view: View) -> &str {
         BINDINGS.get(view.binding as usize).map_or_else(
             || self.name_text(self.values[view.handle.0 as usize].name_id),
@@ -783,15 +858,12 @@ impl Cvars {
         self.video_policy
             .as_ref()
             .ok_or(conversion::Error::VideoPolicyRequired)?;
-        let color = gl
-            || matches!(
-                self.window_request(true, false)?.mode,
-                qa_core::presentation::WindowMode::Exclusive { .. }
-            );
+        let custom = self.custom_aspect(true);
         crate::video::WINDOW_CVARS
             .iter()
-            .filter(|&&name| color || name != crate::video::WINDOW_CVARS[5])
+            .filter(|&&name| gl || name != crate::video::WINDOW_CVARS[5])
             .chain(crate::video::GL_CVARS.iter().filter(|_| gl))
+            .chain(std::iter::once(&"r_customaspect").filter(|_| custom))
             .map(|name| {
                 self.bind(
                     name,
@@ -808,6 +880,7 @@ impl Cvars {
         &self,
         pending: bool,
         gl: bool,
+        baseline: Option<qa_core::presentation::WindowRequest>,
     ) -> Result<qa_core::presentation::WindowRequest, conversion::Error> {
         let policy = self
             .video_policy
@@ -822,28 +895,63 @@ impl Cvars {
                 self.effective(handle, source)
             }
         };
-        let rr = self
-            .bind(
-                "vid_fullscreen",
+        let detail_for = |name, source| {
+            let view = self.bind(
+                name,
                 Context {
-                    source: RuleSetId::Quake2Rerelease,
+                    source,
                     role: Role::Engine,
                     ..self.context
                 },
-            )
-            .ok_or(conversion::Error::VideoPolicyRequired)?;
-        let detail = if pending {
-            self.pending_detail(rr)
-        } else {
-            self.detail(rr)
+            )?;
+            if pending {
+                self.pending_detail(view)
+            } else {
+                self.detail(view)
+            }
         };
+        let fullscreen = detail_for("vid_fullscreen", RuleSetId::Quake2Rerelease);
+        let mut geometry = self
+            .retained_detail("vid_geometry", pending)
+            .map(|(_, text)| text);
+        let custom = self.custom_aspect(pending);
+        let native_mode = [
+            ("vid_mode", RuleSetId::Quake),
+            ("vid_mode", RuleSetId::QuakeWorld),
+            ("gl_mode", RuleSetId::Quake2),
+        ]
+        .into_iter()
+        .find_map(|(name, source)| detail_for(name, source).map(|detail| (source, detail)));
         let mode = self.slot(policy.rows[0] as usize, 0);
         let mode_pending = pending
             && self
                 .pending
                 .iter()
                 .any(|entry| entry.handles().any(|handle| handle == mode));
-        let baseline = policy.windowed();
+        if geometry.is_none()
+            && source == RuleSetId::Quake2Rerelease
+            && !self.is_explicit(mode)
+            && !mode_pending
+        {
+            geometry = Some(value(policy.geometry));
+        }
+        let positioned = policy.position.iter().any(|&row| {
+            let handle = self.slot(row as usize, 0);
+            self.is_explicit(handle)
+                || pending
+                    && self
+                        .pending
+                        .iter()
+                        .any(|entry| entry.handles().any(|h| h == handle))
+        }) || policy
+            .position
+            .iter()
+            .all(|&row| self.native_default_available(self.slot(row as usize, 0), source));
+        let mut default = policy.windowed();
+        if source == RuleSetId::Quake2Rerelease {
+            default.width = 640;
+            default.height = 480;
+        }
         let default_window = !self.is_explicit(mode)
             && !mode_pending
             && (!self.native_default_available(mode, source)
@@ -852,8 +960,8 @@ impl Cvars {
         let mut width = FixedText::<64>::default();
         let mut height = FixedText::<64>::default();
         if default_window {
-            write!(width, "{}", baseline.width).map_err(|_| conversion::Error::TextTooLong)?;
-            write!(height, "{}", baseline.height).map_err(|_| conversion::Error::TextTooLong)?;
+            write!(width, "{}", default.width).map_err(|_| conversion::Error::TextTooLong)?;
+            write!(height, "{}", default.height).map_err(|_| conversion::Error::TextTooLong)?;
         }
         policy.request(
             &|row| {
@@ -868,35 +976,75 @@ impl Cvars {
                         return height.as_str();
                     }
                 }
+                if row == policy.aspect {
+                    let handle = self.slot(row as usize, 0);
+                    return if pending {
+                        self.pending_text(handle, RuleSetId::Quake3)
+                    } else {
+                        self.effective(handle, RuleSetId::Quake3)
+                    };
+                }
                 value(row)
             },
-            detail,
+            fullscreen,
+            geometry,
+            native_mode,
+            custom,
+            positioned,
+            source,
+            baseline,
             gl,
         )
+    }
+    fn custom_aspect(&self, pending: bool) -> bool {
+        let Some(policy) = &self.video_policy else {
+            return false;
+        };
+        let mode = self.slot(policy.rows[0] as usize, 0);
+        let text = if pending {
+            self.pending_text(mode, self.context.source)
+        } else {
+            self.effective(mode, self.context.source)
+        };
+        let aspect = self.slot(policy.aspect as usize, 0);
+        integer(text) == -1
+            && (self.retained_detail("r_mode", pending).is_some()
+                || self.is_explicit(aspect)
+                || pending
+                    && self
+                        .pending
+                        .iter()
+                        .any(|group| group.handles().any(|handle| handle == aspect)))
+    }
+    fn retained_detail(&self, name: &str, pending: bool) -> Option<(View, &str)> {
+        RuleSetId::ALL.into_iter().find_map(|source| {
+            let view = self.bind(
+                name,
+                Context {
+                    source,
+                    role: Role::Engine,
+                    ..self.context
+                },
+            )?;
+            let detail = if pending {
+                self.pending_detail(view)
+            } else {
+                self.detail(view)
+            }?;
+            Some((view, detail))
+        })
     }
     fn pending_text(&self, handle: CvarHandle, source: RuleSetId) -> &str {
         self.pending
             .iter()
-            .flat_map(|pending| {
-                pending
-                    .first
-                    .iter()
-                    .map(|(h, text)| (*h, text.as_str()))
-                    .chain(
-                        pending
-                            .changes
-                            .iter()
-                            .flatten()
-                            .map(|(h, text)| (*h, text.as_str())),
-                    )
-            })
+            .flat_map(PendingWrite::values)
             .find_map(|(h, text)| (h == handle).then_some(text))
             .unwrap_or_else(|| self.effective(handle, source))
     }
     fn pending_detail(&self, view: View) -> Option<&str> {
         self.pending
             .iter()
-            .filter_map(|pending| pending.detail.as_ref())
+            .flat_map(|pending| pending.details.iter().flatten())
             .find(|detail| {
                 detail.view.binding == view.binding
                     && detail.view.context.source == view.context.source
@@ -1057,6 +1205,7 @@ impl Cvars {
     fn reads_stored(&self, view: View) -> Option<bool> {
         BINDINGS.get(view.binding as usize).map(|binding| {
             binding.canonical
+                && self.conversion(view).operation != Operation::WindowGeometry
                 && view.context.role == Role::Engine
                 && DEFINITIONS[binding.row as usize].stored
         })
@@ -1186,8 +1335,30 @@ impl Cvars {
         view: View,
         text: &str,
         enforce: bool,
-    ) -> Result<(PendingWrite, bool), WriteError> {
-        let (mut changes, mut pending) = self.prepare_write_value(view, text, enforce, None)?;
+        changes: &mut PendingWrite,
+    ) -> Result<bool, WriteError> {
+        let fullscreen_group = self.video_policy.as_ref().and_then(|policy| {
+            if view.handle != self.slot(policy.geometry as usize, 0) {
+                return None;
+            }
+            let fullscreen = self.slot(policy.rows[3] as usize, 0);
+            self.pending
+                .iter()
+                .find(|group| group.handles().any(|handle| handle == fullscreen))
+                .map(|group| {
+                    (
+                        group,
+                        policy.rows[3],
+                        self.pending_text(fullscreen, view.context.source),
+                    )
+                })
+        });
+        let operand = fullscreen_group.map(|(_, row, value)| (row, value));
+        if let Some((previous, _, _)) = fullscreen_group {
+            changes.append(previous)?;
+        }
+        let mut pending = self.prepare_write_value(view, text, enforce, operand, changes)?
+            || fullscreen_group.is_some();
         if let Some(policy) = &self.video_policy
             && view.handle == self.slot(policy.rows[6] as usize, 0)
             && let Some(selector) = self.bind(
@@ -1199,35 +1370,36 @@ impl Cvars {
                 },
             )
             && let Some(index) = self.pending_detail(selector)
+            && integer(index) != 0
         {
-            let (projection, projected_pending) =
-                self.prepare_write_value(selector, index, enforce, Some((policy.rows[6], text)))?;
-            for (handle, value) in projection
-                .first
-                .iter()
-                .map(|(handle, value)| (*handle, value.as_str()))
-                .chain(
-                    projection
-                        .changes
-                        .iter()
-                        .flatten()
-                        .map(|(handle, value)| (*handle, value.as_str())),
-                )
-            {
-                let slot = changes
-                    .changes
-                    .iter_mut()
-                    .find(|slot| slot.is_none())
-                    .ok_or(WriteError::Capacity)?;
-                let mut text = FixedText::default();
-                text.set(value)
-                    .map_err(|_| conversion::Error::TextTooLong)?;
-                *slot = Some((handle, text));
-            }
-            changes.detail = projection.detail;
-            pending |= projected_pending;
+            pending |= self.prepare_write_value(
+                selector,
+                index,
+                enforce,
+                Some((policy.rows[6], text)),
+                changes,
+            )?;
         }
-        Ok((changes, pending))
+        if let Some(policy) = &self.video_policy {
+            let fullscreen = self.slot(policy.rows[3] as usize, 0);
+            let selected = changes
+                .values()
+                .find_map(|(handle, value)| (handle == fullscreen).then_some(integer(value)))
+                .map(|value| if value == 0 { "0" } else { "1" });
+            if let Some(selected) = selected
+                && let Some((geometry, raw)) = self.retained_detail("vid_geometry", true)
+                && view.handle != geometry.handle
+            {
+                pending |= self.prepare_write_value(
+                    geometry,
+                    raw,
+                    enforce,
+                    Some((policy.rows[3], selected)),
+                    changes,
+                )?;
+            }
+        }
+        Ok(pending)
     }
     fn prepare_write_value(
         &self,
@@ -1235,7 +1407,8 @@ impl Cvars {
         text: &str,
         enforce: bool,
         operand_override: Option<(u16, &str)>,
-    ) -> Result<(PendingWrite, bool), WriteError> {
+        changes: &mut PendingWrite,
+    ) -> Result<bool, WriteError> {
         if enforce {
             self.check_write(view, text)?;
         }
@@ -1255,7 +1428,7 @@ impl Cvars {
         } else {
             self.conversion(view)
         };
-        let out = conversion::write(Input {
+        let mut out = conversion::write(Input {
             context: view.context,
             conversion: c,
             name: self.binding_names[view.binding as usize],
@@ -1266,24 +1439,15 @@ impl Cvars {
             operand: &operands,
             video: self.video_policy.as_ref(),
         })?;
-        let detail = if out.detail {
-            let mut value = FixedText::default();
-            value
-                .set(out.detail_value.unwrap_or(text))
-                .map_err(|_| conversion::Error::TextTooLong)?;
-            Some(value)
-        } else {
-            None
-        };
-        let detail_modified = detail.as_ref().map(FixedText::as_str) != self.detail(view);
-        let mut changes = PendingWrite {
-            first: None,
-            changes: std::array::from_fn(|_| None),
-            detail: None,
-        };
+        if self.video_policy.as_ref().is_some_and(|policy| {
+            view.handle == self.slot(policy.rows[0] as usize, 0)
+                && binding.is_some_and(|binding| binding.canonical)
+        }) {
+            out.detail = true;
+        }
         let mut pending = enforce && self.latch_pending(view);
         if binding.is_none_or(|b| DEFINITIONS[b.row as usize].stored) {
-            let mut value = FixedText::default();
+            let mut value = FixedText::<MAX_TEXT>::default();
             if let Some(prefix) = out.prefix {
                 value
                     .write_str(prefix)
@@ -1292,15 +1456,9 @@ impl Cvars {
             value
                 .write_str(out.text.as_str())
                 .map_err(|_| conversion::Error::TextTooLong)?;
-            changes.first = Some((view.handle, value));
+            changes.value(view.handle, value.as_str())?;
         }
-        for (i, change) in out
-            .changes
-            .into_iter()
-            .take(out.change_count)
-            .flatten()
-            .enumerate()
-        {
+        for change in out.changes.into_iter().take(out.change_count).flatten() {
             let handle = self.slot(change.row as usize, 0);
             let target = self.values[handle.0 as usize].name_id;
             if let Some(target_view) = self.bind_id(target, view.context) {
@@ -1308,18 +1466,14 @@ impl Cvars {
                     self.check_write(target_view, change.text.as_str())?;
                 }
                 pending |= enforce && self.latch_pending(target_view);
-                let mut text = FixedText::default();
-                text.set(change.text.as_str())
-                    .map_err(|_| conversion::Error::TextTooLong)?;
-                changes.changes[i] = Some((handle, text));
+                changes.value(handle, change.text.as_str())?;
             }
         }
-        changes.detail = detail.map(|text| PendingDetail {
-            view,
-            text,
-            modified: detail_modified,
-        });
-        Ok((changes, pending))
+        if out.detail {
+            let detail = out.detail_value.unwrap_or(text);
+            changes.detail(view, detail, Some(detail) != self.detail(view))?;
+        }
+        Ok(pending)
     }
     fn write_inner(&mut self, view: View, text: &str, enforce: bool) -> Result<(), WriteError> {
         let native_q3 = self.runtime_policy.initialized && view.context.source == RuleSetId::Quake3;
@@ -1331,7 +1485,12 @@ impl Cvars {
         {
             return Ok(());
         }
-        let (changes, pending) = self.prepare_write(view, text, enforce)?;
+        let mut changes = PendingWrite {
+            texts: [None, None],
+            changes: std::array::from_fn(|_| None),
+            details: [None, None],
+        };
+        let pending = self.prepare_write(view, text, enforce, &mut changes)?;
         if native_q3
             && pending
             && self
@@ -1344,10 +1503,10 @@ impl Cvars {
         if pending {
             self.mark_pending(&changes);
             self.pending.push(changes);
-            self.refresh_native_handle(view.handle);
+            self.refresh_changes();
             return Ok(());
         }
-        self.publish_group(changes)?;
+        self.publish_group(&changes)?;
         self.refresh_changes();
         Ok(())
     }
@@ -1362,12 +1521,7 @@ impl Cvars {
             })
             .map(|d| d.text.as_str())
     }
-    fn save_detail(
-        &mut self,
-        view: View,
-        text: FixedText<MAX_TEXT>,
-        modified: bool,
-    ) -> Result<(), WriteError> {
+    fn save_detail(&mut self, view: View, text: &str, modified: bool) -> Result<(), WriteError> {
         if modified {
             self.mark_change(view.handle);
         }
@@ -1382,7 +1536,10 @@ impl Cvars {
         let detail = self.details[view.binding as usize][view.context.source as usize]
             .as_mut()
             .ok_or(conversion::Error::PolicyRequired)?;
-        detail.text = text;
+        detail
+            .text
+            .set(text)
+            .map_err(|_| conversion::Error::TextTooLong)?;
         detail.revisions = revisions;
         detail.count = count;
         detail.present = true;
@@ -1425,6 +1582,7 @@ impl Cvars {
         for handle in pending.handles() {
             self.revision_clock = self.revision_clock.wrapping_add(1);
             self.values[handle.0 as usize].pending_revision = self.revision_clock;
+            self.mark_dirty(handle);
         }
     }
     fn publish(&mut self, handle: CvarHandle, text: FixedText<MAX_TEXT>) {
@@ -1435,27 +1593,26 @@ impl Cvars {
             self.mark_change(handle);
         }
     }
-    fn publish_group(&mut self, pending: PendingWrite) -> Result<(), WriteError> {
-        if let Some((handle, text)) = pending.first {
-            self.clear_details(handle);
-            self.publish(handle, text);
-        }
-        for (handle, text) in pending.changes.into_iter().flatten() {
+    fn publish_group(&mut self, pending: &PendingWrite) -> Result<(), WriteError> {
+        for (handle, text) in pending.values() {
             let mut value = FixedText::default();
             value
-                .set(text.as_str())
+                .set(text)
                 .map_err(|_| conversion::Error::TextTooLong)?;
             self.clear_details(handle);
             self.publish(handle, value);
         }
-        if let Some(detail) = pending.detail {
-            self.save_detail(detail.view, detail.text, detail.modified)?;
+        for detail in pending.details.iter().flatten() {
+            self.save_detail(detail.view, detail.text.as_str(), detail.modified)?;
         }
         Ok(())
     }
     fn mark_change(&mut self, handle: CvarHandle) {
         self.revision_clock = self.revision_clock.wrapping_add(1);
         self.values[handle.0 as usize].revision = self.revision_clock;
+        self.mark_dirty(handle);
+    }
+    fn mark_dirty(&mut self, handle: CvarHandle) {
         if !self.dirty_values.test_and_set(handle.0 as usize) {
             self.dirty_handles.push(handle);
         }
@@ -1518,7 +1675,7 @@ impl Cvars {
     fn apply_pending(&mut self, index: usize) -> Result<(), WriteError> {
         let pending = self.pending.remove(index);
         self.mark_pending(&pending);
-        self.publish_group(pending)
+        self.publish_group(&pending)
     }
     pub fn entries(
         &self,

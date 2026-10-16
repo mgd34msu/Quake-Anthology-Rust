@@ -4,7 +4,7 @@ use qa_console::{
     pending::PendingSettings,
     views::{Context, RuleSetId},
 };
-use qa_core::presentation::{DisplayMode, VideoCapabilities, WindowMode};
+use qa_core::presentation::{DisplayMode, ExclusivePolicy, VideoCapabilities, WindowMode};
 use std::sync::Arc;
 
 fn context(source: RuleSetId) -> Context {
@@ -54,19 +54,19 @@ fn native_tables_convert_to_one_canonical_mode_and_preserve_dynamic_window_zero(
     let mut vars = registry();
     write(&mut vars, "gl_mode", "4", RuleSetId::Quake2);
     assert_eq!(read(&vars, "r_mode", RuleSetId::Quake3), "4.000000");
-    assert_eq!(vars.window_request(false, false).unwrap().width, 800);
+    assert_eq!(vars.window_request(false, false, None).unwrap().width, 800);
     write(&mut vars, "vid_mode", "2", RuleSetId::Quake);
     assert_eq!(read(&vars, "vid_mode", RuleSetId::Quake), "2");
     assert_eq!(read(&vars, "r_mode", RuleSetId::Quake3), "4.000000");
     assert_eq!(
-        vars.window_request(false, false).unwrap().mode,
+        vars.window_request(false, false, None).unwrap().mode,
         WindowMode::Exclusive {
             frequency: 75,
             color_bits: 24
         }
     );
     write(&mut vars, "vid_mode", "0", RuleSetId::Quake);
-    let request = vars.window_request(false, false).unwrap();
+    let request = vars.window_request(false, false, None).unwrap();
     assert_eq!(
         (request.width, request.height, request.mode),
         (640, 400, WindowMode::Windowed)
@@ -74,7 +74,7 @@ fn native_tables_convert_to_one_canonical_mode_and_preserve_dynamic_window_zero(
     assert_eq!(read(&vars, "vid_mode", RuleSetId::Quake), "0");
     let view = vars.bind("gl_mode", context(RuleSetId::Quake2)).unwrap();
     vars.write(view, "10").unwrap();
-    let safe = vars.window_request(false, false).unwrap();
+    let safe = vars.window_request(false, false, None).unwrap();
     assert_eq!(
         (safe.width, safe.height, safe.mode),
         (640, 480, WindowMode::Windowed)
@@ -86,14 +86,14 @@ fn native_tables_convert_to_one_canonical_mode_and_preserve_dynamic_window_zero(
         Err(WriteError::Conversion(Error::InvalidVideoMode))
     );
     write(&mut vars, "r_mode", "999", RuleSetId::Quake3);
-    let safe = vars.window_request(false, false).unwrap();
+    let safe = vars.window_request(false, false, None).unwrap();
     assert_eq!((safe.width, safe.height), (640, 480));
     assert_eq!(read(&vars, "r_mode", RuleSetId::Quake3), "999");
     write(&mut vars, "r_mode", "11", RuleSetId::Quake3);
     assert_eq!(
         (
-            vars.window_request(false, false).unwrap().width,
-            vars.window_request(false, false).unwrap().height
+            vars.window_request(false, false, None).unwrap().width,
+            vars.window_request(false, false, None).unwrap().height
         ),
         (856, 480)
     );
@@ -101,6 +101,7 @@ fn native_tables_convert_to_one_canonical_mode_and_preserve_dynamic_window_zero(
 #[test]
 fn rerelease_fullscreen_preserves_desktop_frequency_depth_and_original_index() {
     let mut vars = registry();
+    write(&mut vars, "r_colorbits", "16", RuleSetId::Quake3);
     write(
         &mut vars,
         "vid_modelist",
@@ -108,7 +109,7 @@ fn rerelease_fullscreen_preserves_desktop_frequency_depth_and_original_index() {
         RuleSetId::Quake2Rerelease,
     );
     write(&mut vars, "vid_fullscreen", "2", RuleSetId::Quake2Rerelease);
-    let request = vars.window_request(false, true).unwrap();
+    let request = vars.window_request(false, true, None).unwrap();
     assert_eq!((request.width, request.height), (1024, 768));
     assert_eq!(
         request.mode,
@@ -117,14 +118,14 @@ fn rerelease_fullscreen_preserves_desktop_frequency_depth_and_original_index() {
             color_bits: 24
         }
     );
-    assert_eq!(request.gl.color_bits, 24);
+    assert_eq!(request.gl.color_bits, 16);
     assert_eq!(
         read(&vars, "vid_fullscreen", RuleSetId::Quake2Rerelease),
         "2"
     );
     write(&mut vars, "vid_fullscreen", "3", RuleSetId::Quake2Rerelease);
     assert_eq!(
-        vars.window_request(false, false).unwrap().mode,
+        vars.window_request(false, false, None).unwrap().mode,
         WindowMode::Exclusive {
             frequency: 60,
             color_bits: 32
@@ -132,12 +133,12 @@ fn rerelease_fullscreen_preserves_desktop_frequency_depth_and_original_index() {
     );
     write(&mut vars, "vid_fullscreen", "1", RuleSetId::Quake2Rerelease);
     assert_eq!(
-        vars.window_request(false, false).unwrap().mode,
+        vars.window_request(false, false, None).unwrap().mode,
         WindowMode::Desktop
     );
     write(&mut vars, "vid_fullscreen", "0", RuleSetId::Quake2Rerelease);
     assert_eq!(
-        vars.window_request(false, false).unwrap().mode,
+        vars.window_request(false, false, None).unwrap().mode,
         WindowMode::Windowed
     );
     write(
@@ -155,7 +156,7 @@ fn rerelease_fullscreen_preserves_desktop_frequency_depth_and_original_index() {
         "2"
     );
     assert_eq!(
-        vars.window_request(false, false).unwrap().mode,
+        vars.window_request(false, false, None).unwrap().mode,
         WindowMode::Desktop
     );
     vars.write(view, "99").unwrap();
@@ -164,7 +165,7 @@ fn rerelease_fullscreen_preserves_desktop_frequency_depth_and_original_index() {
         "99"
     );
     assert_eq!(
-        vars.window_request(false, false).unwrap().mode,
+        vars.window_request(false, false, None).unwrap().mode,
         WindowMode::Desktop
     );
     write(
@@ -174,7 +175,7 @@ fn rerelease_fullscreen_preserves_desktop_frequency_depth_and_original_index() {
         RuleSetId::Quake2Rerelease,
     );
     vars.write(view, "2").unwrap();
-    let request = vars.window_request(false, false).unwrap();
+    let request = vars.window_request(false, false, None).unwrap();
     assert_eq!((request.width, request.height), (800, 600));
     assert_eq!(
         request.mode,
@@ -201,14 +202,14 @@ fn pending_alias_groups_update_native_dependencies_and_apply_without_server_latc
     assert!(!selected.unchanged(&vars));
     assert!(vars.native_snapshot(native).unwrap().1 > before);
     assert_eq!(vars.latched(alias).unwrap().unwrap().as_str(), "3");
-    assert_eq!(vars.window_request(false, false).unwrap().width, 640);
-    assert_eq!(vars.window_request(true, false).unwrap().width, 1280);
+    assert_eq!(vars.window_request(false, false, None).unwrap().width, 640);
+    assert_eq!(vars.window_request(true, false, None).unwrap().width, 1280);
     let game = vars.bind("g_gametype", Context::default()).unwrap();
     vars.write(game, "4").unwrap();
     let selected = PendingSettings::capture(&vars, vars.window_views(false).unwrap());
     assert!(selected.unchanged(&vars));
     selected.apply(&mut vars).unwrap();
-    assert_eq!(vars.window_request(false, false).unwrap().width, 1280);
+    assert_eq!(vars.window_request(false, false, None).unwrap().width, 1280);
     assert!(vars.latched(alias).unwrap().is_none());
     assert!(vars.latched(game).unwrap().is_some());
 }
@@ -216,14 +217,14 @@ fn pending_alias_groups_update_native_dependencies_and_apply_without_server_latc
 fn unresolved_defaults_use_the_supplied_window_and_cpu_ignores_gl_only_pending_values() {
     let mut vars = registry();
     vars.select_context(context(RuleSetId::Quake));
-    let request = vars.window_request(false, false).unwrap();
+    let request = vars.window_request(false, false, None).unwrap();
     assert_eq!((request.width, request.height), (640, 400));
     vars.select_context(Context::default());
     write(&mut vars, "r_mode", "3", RuleSetId::Quake3);
     write(&mut vars, "r_depthbits", "-1", RuleSetId::Quake3);
-    assert!(vars.window_request(false, false).is_ok());
+    assert!(vars.window_request(false, false, None).is_ok());
     assert_eq!(
-        vars.window_request(false, true),
+        vars.window_request(false, true, None),
         Err(Error::InvalidVideoMode)
     );
     assert!(
@@ -321,15 +322,15 @@ fn windowed_cpu_publication_keeps_unused_gl_latches_pending() {
         .unwrap();
     let views = vars.window_views(false).unwrap();
     assert!(
-        views
+        !views
             .iter()
             .any(|view| view.canonical() == color.canonical())
     );
     assert_eq!(
-        vars.window_request(true, false).unwrap().mode,
+        vars.window_request(true, false, None).unwrap().mode,
         WindowMode::Exclusive {
             frequency: 0,
-            color_bits: 16
+            color_bits: 0
         }
     );
 }
@@ -348,10 +349,10 @@ fn rewriting_modelist_reprojects_the_retained_index_in_one_pending_group() {
         server_active: true,
     });
     write(&mut vars, "vid_modelist", "640x480 1024x768@75:24", source);
-    assert_eq!(vars.window_request(false, false).unwrap().width, 800);
+    assert_eq!(vars.window_request(false, false, None).unwrap().width, 800);
     assert_eq!(read(&vars, "vid_fullscreen", source), "2");
     assert_eq!(vars.latched(selector).unwrap().unwrap().as_str(), "2");
-    let pending = vars.window_request(true, false).unwrap();
+    let pending = vars.window_request(true, false, None).unwrap();
     assert_eq!((pending.width, pending.height), (1024, 768));
     assert_eq!(
         pending.mode,
@@ -363,18 +364,18 @@ fn rewriting_modelist_reprojects_the_retained_index_in_one_pending_group() {
     assert!(vars.native_snapshot(native).unwrap().1 > before);
     // Replacing the same pending list must not preserve its previous target.
     write(&mut vars, "vid_modelist", "desktop 1280x720:32@60", source);
-    let pending = vars.window_request(true, false).unwrap();
+    let pending = vars.window_request(true, false, None).unwrap();
     assert_eq!((pending.width, pending.height), (1280, 720));
     assert_eq!(vars.latched(selector).unwrap().unwrap().as_str(), "2");
     PendingSettings::capture(&vars, vars.window_views(false).unwrap())
         .apply(&mut vars)
         .unwrap();
-    assert_eq!(vars.window_request(false, false).unwrap(), pending);
+    assert_eq!(vars.window_request(false, false, None).unwrap(), pending);
     assert_eq!(read(&vars, "vid_fullscreen", source), "2");
     assert!(vars.latched(selector).unwrap().is_none());
     write(&mut vars, "vid_modelist", "bad", source);
     assert_eq!(
-        vars.window_request(true, false).unwrap().mode,
+        vars.window_request(true, false, None).unwrap().mode,
         WindowMode::Desktop
     );
     PendingSettings::capture(&vars, vars.window_views(false).unwrap())
@@ -382,7 +383,7 @@ fn rewriting_modelist_reprojects_the_retained_index_in_one_pending_group() {
         .unwrap();
     assert_eq!(read(&vars, "vid_fullscreen", source), "2");
     assert_eq!(
-        vars.window_request(false, false).unwrap().mode,
+        vars.window_request(false, false, None).unwrap().mode,
         WindowMode::Desktop
     );
 }
@@ -394,9 +395,9 @@ fn modelist_edit_does_not_restore_a_replaced_or_absent_native_selector() {
         let mut vars = registry();
         write(&mut vars, "r_mode", "4", selected);
         write(&mut vars, "r_fullscreen", "0", selected);
-        let before = vars.window_request(false, false).unwrap();
+        let before = vars.window_request(false, false, None).unwrap();
         write(&mut vars, "vid_modelist", "desktop 1024x768", source);
-        assert_eq!(vars.window_request(false, false).unwrap(), before);
+        assert_eq!(vars.window_request(false, false, None).unwrap(), before);
     }
     for pending in [false, true] {
         let mut vars = registry();
@@ -409,15 +410,394 @@ fn modelist_edit_does_not_restore_a_replaced_or_absent_native_selector() {
             });
         }
         write(&mut vars, "r_mode", "6", RuleSetId::Quake3);
-        let before = vars.window_request(true, false).unwrap();
+        let before = vars.window_request(true, false, None).unwrap();
         assert_eq!(before.width, 1024);
         write(&mut vars, "vid_modelist", "desktop 1280x720", source);
-        assert_eq!(vars.window_request(true, false).unwrap(), before);
+        assert_eq!(vars.window_request(true, false, None).unwrap(), before);
         if pending {
             PendingSettings::capture(&vars, vars.window_views(false).unwrap())
                 .apply(&mut vars)
                 .unwrap();
-            assert_eq!(vars.window_request(false, false).unwrap(), before);
+            assert_eq!(vars.window_request(false, false, None).unwrap(), before);
         }
     }
+}
+
+#[test]
+fn native_geometry_updates_the_existing_size_and_position_rows() {
+    let mut vars = registry();
+    write(&mut vars, "r_fullscreen", "0", RuleSetId::Quake3);
+    for (text, size, position) in [
+        ("800X600-100+20tail", [800, 600], [-100, 20]),
+        ("640x480junk", [640, 480], [0, 0]),
+        ("700x500+4294967295-4294967297", [700, 500], [-1, -1]),
+    ] {
+        write(&mut vars, "vid_geometry", text, RuleSetId::Quake2Rerelease);
+        let request = vars.window_request(false, false, None).unwrap();
+        assert_eq!([request.width, request.height], size);
+        assert_eq!(request.position, Some(position));
+        assert_eq!(
+            read(&vars, "vid_geometry", RuleSetId::Quake2Rerelease),
+            text
+        );
+        assert_eq!(
+            vars.integer_view(vars.bind("vid_xpos", Context::default()).unwrap())
+                .unwrap(),
+            position[0]
+        );
+        assert_eq!(
+            vars.integer_view(vars.bind("vid_ypos", Context::default()).unwrap())
+                .unwrap(),
+            position[1]
+        );
+    }
+}
+
+#[test]
+fn rerelease_default_and_invalid_geometry_follow_native_startup_and_restart_rules() {
+    let mut vars = registry();
+    vars.select_context(context(RuleSetId::Quake2Rerelease));
+    assert_eq!(
+        read(&vars, "vid_fullscreen", RuleSetId::Quake2Rerelease),
+        "0.000000"
+    );
+    assert!(!vars.default_available(
+        vars.find("vid_geometry").unwrap(),
+        RuleSetId::Quake2Rerelease
+    ));
+    assert!(!vars.default_available(
+        vars.find("vid_modelist").unwrap(),
+        RuleSetId::Quake2Rerelease
+    ));
+    let initial = vars.window_request(false, false, None).unwrap();
+    assert_eq!(
+        (
+            initial.width,
+            initial.height,
+            initial.position,
+            initial.mode
+        ),
+        (640, 480, None, WindowMode::Windowed)
+    );
+    write(
+        &mut vars,
+        "vid_geometry",
+        "800x600-10+25",
+        RuleSetId::Quake2Rerelease,
+    );
+    let live = vars.window_request(false, false, None).unwrap();
+    write(
+        &mut vars,
+        "vid_geometry",
+        "invalid",
+        RuleSetId::Quake2Rerelease,
+    );
+    let restart = vars.window_request(false, false, Some(live)).unwrap();
+    assert_eq!(
+        (restart.width, restart.height, restart.position),
+        (800, 600, Some([-10, 25]))
+    );
+    assert_eq!(
+        (
+            vars.window_request(false, false, None).unwrap().width,
+            vars.window_request(false, false, None).unwrap().position
+        ),
+        (640, None)
+    );
+    write(
+        &mut vars,
+        "vid_modelist",
+        "desktop",
+        RuleSetId::Quake2Rerelease,
+    );
+    write(&mut vars, "vid_fullscreen", "1", RuleSetId::Quake2Rerelease);
+    let desktop = vars.window_request(false, false, Some(live)).unwrap();
+    assert_eq!(
+        (
+            desktop.width,
+            desktop.height,
+            desktop.mode,
+            desktop.position
+        ),
+        (1920, 1080, WindowMode::Desktop, None)
+    );
+}
+
+#[test]
+fn fullscreen_retains_dormant_geometry_and_reprojects_it_in_the_same_latch_group() {
+    let mut vars = registry();
+    write(&mut vars, "r_colorbits", "16", RuleSetId::Quake3);
+    let rr = RuleSetId::Quake2Rerelease;
+    write(&mut vars, "r_fullscreen", "0", RuleSetId::Quake3);
+    write(&mut vars, "vid_geometry", "800x600-20+30", rr);
+    write(&mut vars, "vid_modelist", "desktop 1280x720@75:32", rr);
+    write(&mut vars, "vid_fullscreen", "2", rr);
+    let fullscreen = vars.window_request(false, true, None).unwrap();
+    assert_eq!(
+        (fullscreen.width, fullscreen.height, fullscreen.position),
+        (1280, 720, None)
+    );
+    assert_eq!(
+        fullscreen.mode,
+        WindowMode::Exclusive {
+            frequency: 75,
+            color_bits: 32
+        }
+    );
+    assert_eq!(fullscreen.gl.color_bits, 16);
+    write(&mut vars, "vid_geometry", "1024x768+40-50", rr);
+    assert_eq!(vars.window_request(false, true, None).unwrap(), fullscreen);
+    vars.set_runtime_policy(RuntimePolicy {
+        initialized: true,
+        server_active: true,
+    });
+    write(&mut vars, "vid_fullscreen", "0", rr);
+    let pending = vars.window_request(true, true, Some(fullscreen)).unwrap();
+    assert_eq!(
+        (
+            pending.width,
+            pending.height,
+            pending.position,
+            pending.mode
+        ),
+        (1024, 768, Some([40, -50]), WindowMode::Windowed)
+    );
+    assert_eq!(vars.window_request(false, true, None).unwrap(), fullscreen);
+    assert_eq!(
+        vars.latched(vars.bind("vid_fullscreen", context(rr)).unwrap())
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "0.000000"
+    );
+    PendingSettings::capture(&vars, vars.window_views(true).unwrap())
+        .apply(&mut vars)
+        .unwrap();
+    assert_eq!(vars.window_request(false, true, None).unwrap(), pending);
+    // A later explicit common mode replaces the old native geometry intent.
+    write(&mut vars, "r_mode", "5", RuleSetId::Quake3);
+    PendingSettings::capture(&vars, vars.window_views(false).unwrap())
+        .apply(&mut vars)
+        .unwrap();
+    write(&mut vars, "vid_fullscreen", "2", rr);
+    PendingSettings::capture(&vars, vars.window_views(false).unwrap())
+        .apply(&mut vars)
+        .unwrap();
+    write(&mut vars, "vid_fullscreen", "0", rr);
+    let selected = vars.window_request(true, false, None).unwrap();
+    assert_ne!((selected.width, selected.height), (1024, 768));
+}
+
+#[test]
+fn custom_aspect_requires_an_actual_custom_mode_selection() {
+    let mut vars = registry();
+    vars.select_context(context(RuleSetId::Quake));
+    assert_eq!(
+        vars.window_request(false, false, None)
+            .unwrap()
+            .window_aspect,
+        None
+    );
+    write(&mut vars, "r_fullscreen", "0", RuleSetId::Quake3);
+    write(
+        &mut vars,
+        "vid_geometry",
+        "700x500+1+2",
+        RuleSetId::Quake2Rerelease,
+    );
+    assert_eq!(read(&vars, "r_mode", RuleSetId::Quake3), "-1.000000");
+    assert_eq!(
+        vars.window_request(false, false, None)
+            .unwrap()
+            .window_aspect,
+        None
+    );
+    write(&mut vars, "r_mode", "-1", RuleSetId::Quake3);
+    // Native Q3 aspect defaults remain Q3 data under a Q1 console context.
+    assert_eq!(
+        vars.window_request(false, false, None)
+            .unwrap()
+            .window_aspect,
+        Some(1.0)
+    );
+    write(&mut vars, "r_customaspect", "2.75", RuleSetId::Quake3);
+    assert_eq!(
+        vars.window_request(false, false, None)
+            .unwrap()
+            .window_aspect,
+        Some(2.75)
+    );
+    assert!(
+        vars.window_views(false)
+            .unwrap()
+            .iter()
+            .any(|&view| vars.name(view) == "r_customaspect")
+    );
+    write(&mut vars, "r_mode", "3", RuleSetId::Quake3);
+    assert_eq!(
+        vars.window_request(false, false, None)
+            .unwrap()
+            .window_aspect,
+        None
+    );
+    // A user aspect write also applies to an existing engine-selected custom extent.
+    vars.set_text(vars.find("r_mode").unwrap(), "-1").unwrap();
+    assert_eq!(
+        vars.window_request(false, false, None)
+            .unwrap()
+            .window_aspect,
+        Some(2.75)
+    );
+    write(&mut vars, "r_customaspect", "-0", RuleSetId::Quake3);
+    assert_eq!(
+        vars.window_request(false, false, None)
+            .unwrap()
+            .window_aspect
+            .unwrap()
+            .to_bits(),
+        (-0.0f32).to_bits()
+    );
+}
+
+#[test]
+fn native_display_storage_depth_is_independent_of_gl_precision_and_rr_modelist() {
+    let mut vars = Cvars::new().unwrap();
+    vars.set_video_policy(
+        Arc::new(VideoCapabilities {
+            desktop: mode(1920, 1080, 60, 32),
+            fullscreen: vec![mode(640, 480, 60, 24), mode(640, 480, 60, 32)].into_boxed_slice(),
+        }),
+        mode(640, 400, 0, 0),
+    )
+    .unwrap();
+    write(&mut vars, "vid_mode", "2", RuleSetId::Quake);
+    write(
+        &mut vars,
+        "vid_modelist",
+        "desktop",
+        RuleSetId::Quake2Rerelease,
+    );
+    write(&mut vars, "r_colorbits", "16", RuleSetId::Quake3);
+    let request = vars.window_request(false, true, None).unwrap();
+    assert_eq!(
+        request.mode,
+        WindowMode::Exclusive {
+            frequency: 60,
+            color_bits: 32
+        }
+    );
+    assert_eq!(request.gl.color_bits, 16);
+    assert_eq!(request.exclusive_policy, ExclusivePolicy::Exact);
+    let alias = vars.bind("vid_mode", context(RuleSetId::Quake)).unwrap();
+    assert_eq!(vars.integer_view(alias).unwrap(), 2);
+    vars.select_context(context(RuleSetId::Quake2));
+    write(&mut vars, "gl_mode", "4", RuleSetId::Quake2);
+    write(&mut vars, "r_fullscreen", "1", RuleSetId::Quake2);
+    let request = vars.window_request(false, true, None).unwrap();
+    assert_eq!(
+        request.mode,
+        WindowMode::Exclusive {
+            frequency: 60,
+            color_bits: 0
+        }
+    );
+    assert_eq!(request.exclusive_policy, ExclusivePolicy::ExactOrWindowed);
+    assert_eq!(request.gl.color_bits, 16);
+}
+
+#[test]
+fn pending_fullscreen_and_long_native_text_values_stay_in_one_group() {
+    let mut vars = registry();
+    let rr = RuleSetId::Quake2Rerelease;
+    write(&mut vars, "r_fullscreen", "0", RuleSetId::Quake3);
+    let original = format!("800x600-20+30{}", "a".repeat(100));
+    write(&mut vars, "vid_geometry", &original, rr);
+    write(&mut vars, "vid_modelist", "desktop 1280x720@75:32", rr);
+    vars.set_runtime_policy(RuntimePolicy {
+        initialized: true,
+        server_active: true,
+    });
+    write(&mut vars, "vid_fullscreen", "2", rr);
+    let geometry = format!("1024x768+40-50{}", "b".repeat(150));
+    write(&mut vars, "vid_geometry", &geometry, rr);
+    let modelist = format!("desktop 1280x720@75:32 {}", "800x600 ".repeat(16));
+    write(&mut vars, "vid_modelist", &modelist, rr);
+    assert_eq!(read(&vars, "vid_geometry", rr), original);
+    assert_eq!(
+        vars.latched(vars.bind("vid_geometry", context(rr)).unwrap())
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        geometry
+    );
+    assert_eq!(
+        vars.latched(vars.bind("vid_fullscreen", context(rr)).unwrap())
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "2"
+    );
+    let fullscreen = vars.window_request(true, false, None).unwrap();
+    assert_eq!(
+        (fullscreen.width, fullscreen.height, fullscreen.position),
+        (1280, 720, None)
+    );
+    PendingSettings::capture(&vars, vars.window_views(false).unwrap())
+        .apply(&mut vars)
+        .unwrap();
+    assert_eq!(read(&vars, "vid_geometry", rr), geometry);
+    assert_eq!(read(&vars, "vid_modelist", rr), modelist);
+    assert_eq!(vars.window_request(false, false, None).unwrap(), fullscreen);
+    write(&mut vars, "vid_fullscreen", "0", rr);
+    let windowed = vars.window_request(true, false, Some(fullscreen)).unwrap();
+    assert_eq!(
+        (
+            windowed.width,
+            windowed.height,
+            windowed.position,
+            windowed.mode
+        ),
+        (1024, 768, Some([40, -50]), WindowMode::Windowed)
+    );
+    PendingSettings::capture(&vars, vars.window_views(false).unwrap())
+        .apply(&mut vars)
+        .unwrap();
+    assert_eq!(vars.window_request(false, false, None).unwrap(), windowed);
+    assert_eq!(read(&vars, "vid_geometry", rr), geometry);
+    assert_eq!(read(&vars, "vid_modelist", rr), modelist);
+}
+
+#[test]
+fn pending_geometry_refreshes_cached_native_mode_without_changing_current_generation() {
+    let mut vars = registry();
+    write(&mut vars, "r_fullscreen", "0", RuleSetId::Quake3);
+    write(
+        &mut vars,
+        "vid_geometry",
+        "800x600",
+        RuleSetId::Quake2Rerelease,
+    );
+    let alias = vars.bind("gl_mode", context(RuleSetId::Quake2)).unwrap();
+    let native = vars.native_view(alias).unwrap();
+    let modifications = vars.native_snapshot(native).unwrap().1;
+    let generation = vars.view_generation(alias);
+    vars.set_runtime_policy(RuntimePolicy {
+        initialized: true,
+        server_active: true,
+    });
+    write(
+        &mut vars,
+        "vid_geometry",
+        "1024x768+3+4",
+        RuleSetId::Quake2Rerelease,
+    );
+    assert_eq!(vars.integer_view(alias).unwrap(), 4);
+    assert_eq!(vars.latched(alias).unwrap().unwrap().as_str(), "6.000000");
+    assert_eq!(vars.view_generation(alias), generation);
+    assert!(vars.native_snapshot(native).unwrap().1 > modifications);
+    PendingSettings::capture(&vars, vars.window_views(false).unwrap())
+        .apply(&mut vars)
+        .unwrap();
+    assert_eq!(vars.integer_view(alias).unwrap(), 6);
+    assert!(vars.view_generation(alias) > generation);
 }

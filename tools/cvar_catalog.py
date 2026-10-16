@@ -23,7 +23,7 @@ KINDS = ('IDENTITY', 'RECIPROCAL', 'BOOL_INVERT', 'LINEAR', 'ENUM_DETAIL',
 NUMBER = r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?'
 NAME = r'[A-Za-z_][A-Za-z_0-9<>*-]*'
 CONDITIONS = ('ALWAYS', 'MAC', 'NOT_MAC', 'LINUX', 'NOT_LINUX', 'DEDICATED', 'CLIENT', 'ENGINE', 'GAME', 'CGAME', 'UNRESOLVED', 'WINDOWS', 'NOT_WINDOWS')
-OPERATIONS = ('NONE', 'KHZ_HZ', 'SKILL', 'VIEW_SIZE', 'BOOL_DETAIL', 'AUTOSWITCH', 'GUN', 'FOOTSTEPS', 'LAGOMETER', 'DRAW_2D', 'SHADOWS', 'OLD_RAIL', 'INPUT_GRAB', 'SOUND_BACKEND', 'NO_SKINS', 'FORCE_RESPAWN', 'DEATHMATCH', 'COOP', 'TEAMPLAY', 'CTF', 'QW_SKIN', 'SEX', 'COLOR', 'PLAYER_COLORS', 'NEEDPASS', 'SAME_LEVEL', 'NO_EXIT', 'DOWNLOAD', 'CLEAR_COLOR', 'FULLSCREEN', 'VIDEO_MODE', 'MUSIC_MUTE', 'SPECTATOR')
+OPERATIONS = ('NONE', 'KHZ_HZ', 'SKILL', 'VIEW_SIZE', 'BOOL_DETAIL', 'AUTOSWITCH', 'GUN', 'FOOTSTEPS', 'LAGOMETER', 'DRAW_2D', 'SHADOWS', 'OLD_RAIL', 'INPUT_GRAB', 'SOUND_BACKEND', 'NO_SKINS', 'FORCE_RESPAWN', 'DEATHMATCH', 'COOP', 'TEAMPLAY', 'CTF', 'QW_SKIN', 'SEX', 'COLOR', 'PLAYER_COLORS', 'NEEDPASS', 'SAME_LEVEL', 'NO_EXIT', 'DOWNLOAD', 'CLEAR_COLOR', 'FULLSCREEN', 'VIDEO_MODE', 'WINDOW_GEOMETRY', 'MUSIC_MUTE', 'SPECTATOR')
 
 
 def aliases(cell):
@@ -290,6 +290,8 @@ class Catalog:
         raw = self.rows_input[row_index]['conversion']
         lower = raw.lower()
         named = re.escape(name)
+        if self.rows_input[row_index]['canonical'] == 'vid_geometry':
+            return 'WINDOW_GEOMETRY'
         if '30..100' in raw and 'status bar' in lower:
             return 'VIEW_SIZE'
         if 'Q3 dialect reads (needpass != 0)' in raw and dialect == 4:

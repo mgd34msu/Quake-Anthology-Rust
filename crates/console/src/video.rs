@@ -7,8 +7,8 @@ use crate::{
 };
 use qa_core::{
     presentation::{
-        DisplayMode, GlContextRequest, MAX_WINDOW_DIMENSION, VideoCapabilities, WindowMode,
-        WindowRequest,
+        DisplayMode, ExclusivePolicy, GlContextRequest, MAX_WINDOW_DIMENSION, VideoCapabilities,
+        WindowMode, WindowRequest,
     },
     primitives::RuleSetId,
 };
@@ -22,6 +22,9 @@ pub const WINDOW_CVARS: &[&str] = &[
     "r_displayRefresh",
     "r_colorbits",
     "vid_modelist",
+    "vid_geometry",
+    "vid_xpos",
+    "vid_ypos",
 ];
 pub const GL_CVARS: &[&str] = &["r_depthbits", "r_stencilbits", "r_stereo", "r_swapInterval"];
 
@@ -45,6 +48,12 @@ pub struct VideoPolicy {
     capabilities: Arc<VideoCapabilities>,
     windowed: DisplayMode,
     pub(crate) rows: [u16; 11],
+    pub(crate) geometry: u16,
+    pub(crate) position: [u16; 2],
+    pub(crate) aspect: u16,
+    mode_dependencies: [u16; 5],
+    fullscreen_dependencies: [u16; 6],
+    geometry_dependencies: [u16; 5],
 }
 impl VideoPolicy {
     pub(crate) fn load(
@@ -52,7 +61,10 @@ impl VideoPolicy {
         windowed: DisplayMode,
     ) -> Result<Self, Error> {
         let mut rows = [0; 11];
-        for (row, name) in rows.iter_mut().zip(WINDOW_CVARS.iter().chain(GL_CVARS)) {
+        for (row, name) in rows
+            .iter_mut()
+            .zip(WINDOW_CVARS[..7].iter().chain(GL_CVARS))
+        {
             *row = u16::try_from(
                 DEFINITIONS
                     .iter()
@@ -68,10 +80,26 @@ impl VideoPolicy {
         {
             return Err(Error::InvalidVideoMode);
         }
+        let find = |name| {
+            DEFINITIONS
+                .iter()
+                .position(|definition| definition.name == name)
+                .and_then(|row| u16::try_from(row).ok())
+                .ok_or(Error::VideoPolicyRequired)
+        };
+        let geometry = find("vid_geometry")?;
+        let position = [find("vid_xpos")?, find("vid_ypos")?];
+        let aspect = find("r_customaspect")?;
         Ok(Self {
             capabilities,
             windowed,
             rows,
+            geometry,
+            position,
+            aspect,
+            mode_dependencies: [rows[0], rows[1], rows[2], rows[3], rows[4]],
+            fullscreen_dependencies: [rows[0], rows[1], rows[2], rows[3], rows[4], rows[6]],
+            geometry_dependencies: [rows[0], rows[1], rows[2], position[0], position[1]],
         })
     }
     pub(crate) fn windowed(&self) -> DisplayMode {
@@ -79,7 +107,9 @@ impl VideoPolicy {
     }
     pub(crate) fn dependencies(&self, operation: Operation) -> &[u16] {
         match operation {
-            Operation::VideoMode | Operation::Fullscreen => &self.rows[..7],
+            Operation::VideoMode => &self.mode_dependencies,
+            Operation::Fullscreen => &self.fullscreen_dependencies,
+            Operation::WindowGeometry => &self.geometry_dependencies,
             _ => &[],
         }
     }
@@ -164,7 +194,7 @@ impl VideoPolicy {
         self.fullscreen_entry(list, index)
             .unwrap_or(NativeMode::Desktop)
     }
-    fn matches(&self, mode: NativeMode, extent: (u32, u32), frequency: i32, color: i32) -> bool {
+    fn matches(&self, mode: NativeMode, extent: (u32, u32), frequency: i32) -> bool {
         match mode {
             NativeMode::Desktop => {
                 extent
@@ -174,13 +204,14 @@ impl VideoPolicy {
                     )
             }
             NativeMode::Exclusive(mode) => {
-                extent == (mode.width, mode.height)
-                    && frequency == mode.frequency
-                    && color == mode.color_bits as i32
+                extent == (mode.width, mode.height) && frequency == mode.frequency
             }
         }
     }
     pub(crate) fn read<'a>(&self, input: &Input<'a, '_>) -> Result<Text<'a>, Error> {
+        if input.conversion.operation == Operation::WindowGeometry {
+            return Ok(Text::Borrowed(input.value));
+        }
         if input.conversion.operation == Operation::Fullscreen && integer(input.value) == 0 {
             return Text::numeric(0.0);
         }
@@ -231,13 +262,11 @@ impl VideoPolicy {
                 }
                 let list = (input.operand)(self.rows[6]);
                 let frequency = integer((input.operand)(self.rows[4]));
-                let color = integer((input.operand)(self.rows[5]));
                 if let Some(detail) = input.detail
                     && self.matches(
                         self.requested_fullscreen(list, integer(detail)),
                         extent,
                         frequency,
-                        color,
                     )
                 {
                     return Ok(Text::Borrowed(detail));
@@ -249,7 +278,6 @@ impl VideoPolicy {
                             .unwrap_or(NativeMode::Desktop),
                         extent,
                         frequency,
-                        color,
                     ) {
                         found = Some(index as i32 + 1);
                         break;
@@ -289,7 +317,6 @@ impl VideoPolicy {
                 ) {
                     out.change(self.rows[3], f64::from(u8::from(full)))?;
                     out.change(self.rows[4], f64::from(mode.frequency))?;
-                    out.change(self.rows[5], f64::from(mode.color_bits))?;
                 }
             }
             Operation::Fullscreen => {
@@ -309,7 +336,24 @@ impl VideoPolicy {
                     out.text = Text::numeric(1.0)?;
                     out.change(self.rows[0], f64::from(canonical))?;
                     out.change(self.rows[4], f64::from(display.frequency))?;
-                    out.change(self.rows[5], f64::from(display.color_bits))?;
+                }
+            }
+            Operation::WindowGeometry => {
+                if integer((input.operand)(self.rows[3])) == 0
+                    && let Some(geometry) = Geometry::parse(input.value)
+                {
+                    let mode = self.store_extent(
+                        &mut out,
+                        DisplayMode {
+                            width: geometry.width,
+                            height: geometry.height,
+                            frequency: 0,
+                            color_bits: 0,
+                        },
+                    )?;
+                    out.change(self.rows[0], f64::from(mode))?;
+                    out.change(self.position[0], f64::from(geometry.position[0]))?;
+                    out.change(self.position[1], f64::from(geometry.position[1]))?;
                 }
             }
             _ => return Err(Error::VideoPolicyRequired),
@@ -321,12 +365,44 @@ impl VideoPolicy {
         &self,
         value: &dyn Fn(u16) -> &'a str,
         fullscreen_detail: Option<&str>,
+        geometry_detail: Option<&str>,
+        native_mode: Option<(RuleSetId, &str)>,
+        custom_mode: bool,
+        positioned: bool,
+        source: RuleSetId,
+        baseline: Option<WindowRequest>,
         gl: bool,
     ) -> Result<WindowRequest, Error> {
-        let (width, height) = self.extent(value)?;
+        let (mut width, mut height) = self.extent(value)?;
         let fullscreen = integer(value(self.rows[3])) != 0;
         let frequency = integer(value(self.rows[4]));
-        let color = integer(value(self.rows[5]));
+        let native_fullscreen = fullscreen_detail
+            .map(|detail| self.requested_fullscreen(value(self.rows[6]), integer(detail)));
+        let native_mode = native_mode.and_then(|(source, detail)| {
+            self.mode(source, integer(detail))
+                .ok()
+                .map(|mode| (source, mode.0))
+        });
+        let physical_bits = match native_fullscreen {
+            Some(NativeMode::Exclusive(mode)) => mode.color_bits,
+            _ => native_mode
+                .filter(|(source, _)| matches!(source, RuleSetId::Quake | RuleSetId::QuakeWorld))
+                .map_or(0, |(_, mode)| mode.color_bits),
+        };
+        let exclusive_policy = match (native_fullscreen, native_mode) {
+            (Some(_), _) => ExclusivePolicy::Exact,
+            (_, Some((RuleSetId::Quake | RuleSetId::QuakeWorld, _))) => ExclusivePolicy::Exact,
+            (_, Some((RuleSetId::Quake2, _))) => ExclusivePolicy::ExactOrWindowed,
+            _ if source == RuleSetId::Quake2 => ExclusivePolicy::ExactOrWindowed,
+            _ if matches!(
+                source,
+                RuleSetId::Quake | RuleSetId::QuakeWorld | RuleSetId::Quake2Rerelease
+            ) =>
+            {
+                ExclusivePolicy::Exact
+            }
+            _ => ExclusivePolicy::EnclosingOrWindowed,
+        };
         let mode = if !fullscreen {
             WindowMode::Windowed
         } else if fullscreen_detail
@@ -335,21 +411,50 @@ impl VideoPolicy {
             })
             .is_some_and(|mode| {
                 matches!(mode, NativeMode::Desktop)
-                    && self.matches(mode, (width, height), frequency, color)
+                    && self.matches(mode, (width, height), frequency)
             })
         {
             WindowMode::Desktop
         } else {
             WindowMode::Exclusive {
                 frequency,
-                color_bits: u32::try_from(color).map_err(|_| Error::InvalidVideoMode)?,
+                color_bits: physical_bits,
             }
         };
+        let mut position = if positioned {
+            Some(self.position.map(|row| integer(value(row))))
+        } else {
+            None
+        };
+        if !fullscreen {
+            if let Some(raw) = geometry_detail {
+                if let Some(geometry) = Geometry::parse(raw) {
+                    width = geometry.width;
+                    height = geometry.height;
+                    position = Some(geometry.position);
+                } else {
+                    let previous = baseline.unwrap_or_else(|| WindowRequest::windowed(640, 480));
+                    width = previous.width;
+                    height = previous.height;
+                    position = previous.position;
+                }
+            } else if position.is_none()
+                && let Some(previous) = baseline
+            {
+                position = previous.position;
+            }
+        } else {
+            position = None;
+        }
         let mut request = WindowRequest {
             width,
             height,
             mode,
             gl: GlContextRequest::default(),
+            exclusive_policy,
+            position,
+            window_aspect: custom_mode
+                .then(|| crate::numbers::number(value(self.aspect), RuleSetId::Quake3)),
         };
         if gl {
             let bits =
@@ -364,6 +469,40 @@ impl VideoPolicy {
         }
         request.validate(gl).map_err(|_| Error::InvalidVideoMode)?;
         Ok(request)
+    }
+}
+#[derive(Clone, Copy)]
+struct Geometry {
+    width: u32,
+    height: u32,
+    position: [i32; 2],
+}
+impl Geometry {
+    fn parse(text: &str) -> Option<Self> {
+        let mut cursor = Modelist::new(text);
+        let width = u32::try_from(cursor.number()).ok()?;
+        if !cursor.remaining.starts_with(['x', 'X']) {
+            return None;
+        }
+        cursor.remaining = &cursor.remaining[1..];
+        let height = u32::try_from(cursor.number()).ok()?;
+        if !(320..=MAX_WINDOW_DIMENSION).contains(&width)
+            || !(240..=MAX_WINDOW_DIMENSION).contains(&height)
+        {
+            return None;
+        }
+        let mut position = [0, 0];
+        for coordinate in &mut position {
+            if !cursor.remaining.starts_with(['+', '-']) {
+                break;
+            }
+            *coordinate = cursor.number() as i32;
+        }
+        Some(Self {
+            width,
+            height,
+            position,
+        })
     }
 }
 #[derive(Clone, Copy)]

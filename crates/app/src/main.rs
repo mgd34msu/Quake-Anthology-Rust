@@ -1013,8 +1013,17 @@ fn run() -> Result<(), String> {
     host.runtime.scene = Some(scene);
     window_settings.validate(&host.console.cvars)?;
     window_settings
-        .apply(&mut host.console.cvars)
+        .apply(
+            &mut host.console.cvars,
+            &host
+                .runtime
+                .renderer_configuration
+                .as_ref()
+                .ok_or("missing renderer configuration")?
+                .display,
+        )
         .map_err(|error| format!("window latch publication: {error:?}"))?;
+    window_settings.report_outcome(Some(window.request()), &mut host.runtime.server.events);
     // Startup commands can retire a seat before Com_Frame begins. Complete
     // those real Presentation records before a deferred connect may retry.
     host.dispatch_output(

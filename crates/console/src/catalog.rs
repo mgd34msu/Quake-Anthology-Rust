@@ -124,6 +124,7 @@ pub enum Operation {
     ClearColor,
     Fullscreen,
     VideoMode,
+    WindowGeometry,
     MusicMute,
     Spectator,
 }

@@ -223,7 +223,7 @@ pub fn write_q3(configuration: &RendererConfiguration, output: &mut [u8]) -> Res
         u32::from(configuration.texture_env_add),
         display.width,
         display.height,
-        (display.width as f32 / display.height as f32).to_bits(),
+        display.aspect().to_bits(),
         display.frequency as u32,
         u32::from(display.fullscreen),
         u32::from(display.stereo),

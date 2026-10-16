@@ -251,7 +251,7 @@ pub fn read<'a>(in_: Input<'a, '_>) -> Result<Text<'a>, Error> {
         }
         Operation::ClearColor => return Ok(Text::Borrowed(in_.value)),
         Operation::Fullscreen if value == 0.0 && in_.video.is_none() => value = 0.0,
-        Operation::Fullscreen | Operation::VideoMode => {
+        Operation::Fullscreen | Operation::VideoMode | Operation::WindowGeometry => {
             return in_.video.ok_or(Error::VideoPolicyRequired)?.read(&in_);
         }
         Operation::None => match c.kind {
@@ -428,7 +428,7 @@ pub fn write<'a>(in_: Input<'a, '_>) -> Result<Output<'a>, Error> {
             }
         }
         Operation::Fullscreen if value == 0.0 && in_.video.is_none() => value = 0.0,
-        Operation::Fullscreen | Operation::VideoMode => {
+        Operation::Fullscreen | Operation::VideoMode | Operation::WindowGeometry => {
             return in_.video.ok_or(Error::VideoPolicyRequired)?.write(&in_);
         }
         _ => match c.kind {

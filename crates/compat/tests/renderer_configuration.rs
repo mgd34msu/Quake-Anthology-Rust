@@ -16,6 +16,7 @@ fn native_layout_is_exact_and_terminated() {
             depth_bits: 24,
             stencil_bits: 8,
             stereo: true,
+            window_aspect: None,
         },
         max_texture_size: 16384,
         max_active_textures: 32,
@@ -83,4 +84,26 @@ fn rejected_projection_leaves_destination_unchanged() {
         Err(CallError::Memory)
     );
     assert!(output.iter().all(|&b| b == 0x77));
+}
+
+#[test]
+fn explicit_native_window_aspect_preserves_its_exact_float_bits() {
+    let aspect = f32::from_bits(0x3fa1_2345);
+    let configuration = RendererConfiguration {
+        display: DisplayConfiguration {
+            width: 1234,
+            height: 567,
+            window_aspect: Some(aspect),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut output = [0; Q3_GL_CONFIG_BYTES];
+    write_q3(&configuration, &mut output).unwrap();
+    let first = 11264 + 12 * 4;
+    assert_eq!(
+        u32::from_le_bytes(output[first..first + 4].try_into().unwrap()),
+        aspect.to_bits()
+    );
+    assert_ne!(aspect.to_bits(), (1234.0f32 / 567.0).to_bits());
 }

@@ -52,7 +52,16 @@ impl Default for GlContextRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExclusivePolicy {
+    #[default]
+    Exact,
+    ExactOrWindowed,
+    /// Native enclosing display selection keeps the requested renderer extent.
+    EnclosingOrWindowed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowRequest {
     /// Fixed software framebuffer and ordinary window dimensions. Desktop
     /// fullscreen changes the display extent without changing this selection.
@@ -60,6 +69,11 @@ pub struct WindowRequest {
     pub height: u32,
     pub mode: WindowMode,
     pub gl: GlContextRequest,
+    pub exclusive_policy: ExclusivePolicy,
+    /// Absolute windowed position. None lets the platform choose placement.
+    pub position: Option<[i32; 2]>,
+    /// Native published aspect metadata, independent of OS window constraints.
+    pub window_aspect: Option<f32>,
 }
 impl WindowRequest {
     pub fn windowed(width: u32, height: u32) -> Self {
@@ -68,6 +82,9 @@ impl WindowRequest {
             height,
             mode: WindowMode::Windowed,
             gl: GlContextRequest::default(),
+            exclusive_policy: ExclusivePolicy::Exact,
+            position: None,
+            window_aspect: None,
         }
     }
     pub fn validate(&self, gl: bool) -> Result<(), &'static str> {
@@ -76,10 +93,11 @@ impl WindowRequest {
         {
             return Err("window dimensions must be between 1 and 8192");
         }
-        if let WindowMode::Exclusive {
-            frequency,
-            color_bits,
-        } = self.mode
+        if self.exclusive_policy != ExclusivePolicy::EnclosingOrWindowed
+            && let WindowMode::Exclusive {
+                frequency,
+                color_bits,
+            } = self.mode
         {
             if frequency < 0 {
                 return Err("invalid fullscreen frequency");
@@ -104,7 +122,7 @@ impl Default for WindowRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DisplayConfiguration {
     pub width: u32,
     pub height: u32,
@@ -114,6 +132,13 @@ pub struct DisplayConfiguration {
     pub depth_bits: u32,
     pub stencil_bits: u32,
     pub stereo: bool,
+    pub window_aspect: Option<f32>,
+}
+impl DisplayConfiguration {
+    pub fn aspect(&self) -> f32 {
+        self.window_aspect
+            .unwrap_or_else(|| self.width as f32 / self.height as f32)
+    }
 }
 
 /// Backend capabilities, captured once before client-module registration.

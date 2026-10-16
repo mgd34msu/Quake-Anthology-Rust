@@ -1,7 +1,7 @@
 //! SDL3 ABI definitions follow SDL 3.4 headers, never SDL2 byte offsets.
 use crate::clock::Clock;
 use qa_core::presentation::{
-    DisplayMode, GlContextRequest, VideoCapabilities, WindowMode, WindowRequest,
+    DisplayMode, ExclusivePolicy, GlContextRequest, VideoCapabilities, WindowMode, WindowRequest,
 };
 use qa_core::sys_events::{
     DeviceId, EventKind, EventTime, MAX_INPUT_DEVICES, SysEvent, SysEventQueue,
@@ -175,6 +175,34 @@ struct SdlDisplayMode {
     internal: *mut c_void,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PhysicalMode {
+    display: u32,
+    format: u32,
+    width: c_int,
+    height: c_int,
+    pixel_density: u32,
+    refresh_rate: u32,
+    refresh_numerator: c_int,
+    refresh_denominator: c_int,
+}
+impl SdlDisplayMode {
+    fn physical_mode(&self) -> PhysicalMode {
+        // Retain numeric identity only. SDL mode-list pointers may change while
+        // this window lives, and integer frequency loses fractional precision.
+        PhysicalMode {
+            display: self.display,
+            format: self.format,
+            width: self.width,
+            height: self.height,
+            pixel_density: self.pixel_density.to_bits(),
+            refresh_rate: self.refresh_rate.to_bits(),
+            refresh_numerator: self.refresh_numerator,
+            refresh_denominator: self.refresh_denominator,
+        }
+    }
+}
+
 struct DisplayModes {
     modes: NonNull<*mut SdlDisplayMode>,
     count: usize,
@@ -284,6 +312,56 @@ fn exclusive_mode(
         .map(|(index, _)| index)
 }
 
+fn enclosing_mode(
+    modes: impl Iterator<Item = (usize, DisplayMode)>,
+    width: u32,
+    height: u32,
+) -> Option<usize> {
+    let mut selected = None;
+    let mut distance = 9_999_999u64;
+    for (index, mode) in modes {
+        if mode.width < width || mode.height < height {
+            continue;
+        }
+        let x = u64::from(mode.width - width);
+        let y = u64::from(mode.height - height);
+        let next = x * x + y * y;
+        if next < distance {
+            selected = Some(index);
+            distance = next;
+        }
+    }
+    selected
+}
+
+#[derive(Clone, Copy)]
+struct WindowState {
+    request: WindowRequest,
+    physical_mode: Option<PhysicalMode>,
+}
+
+fn configure_request(
+    request: WindowRequest,
+    mut configure: impl FnMut(WindowRequest) -> Result<WindowState, String>,
+) -> Result<WindowState, String> {
+    match configure(request) {
+        Ok(state) => Ok(state),
+        Err(exclusive_error)
+            if matches!(request.mode, WindowMode::Exclusive { .. })
+                && request.exclusive_policy != ExclusivePolicy::Exact =>
+        {
+            configure(WindowRequest {
+                mode: WindowMode::Windowed,
+                ..request
+            })
+            .map_err(|windowed_error| {
+                format!("{exclusive_error}; windowed fallback: {windowed_error}")
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn gl_attributes(request: GlContextRequest) -> Result<[Option<(c_int, c_int)>; 13], String> {
     let bits = c_int::try_from(request.color_bits).map_err(|_| "invalid GL color precision")?;
     let depth = c_int::try_from(request.depth_bits).map_err(|_| "invalid GL depth precision")?;
@@ -316,10 +394,10 @@ fn configure_swap_interval(
     interval: i32,
     mut set: impl FnMut(i32) -> bool,
     mut get: impl FnMut(&mut i32) -> bool,
-) -> bool {
+) -> Option<i32> {
     set(interval);
     let mut actual = 0;
-    get(&mut actual) && actual == interval
+    get(&mut actual).then_some(actual)
 }
 
 fn window_dimensions(request: WindowRequest, gl: bool) -> Result<(i32, i32), String> {
@@ -327,15 +405,37 @@ fn window_dimensions(request: WindowRequest, gl: bool) -> Result<(i32, i32), Str
     Ok((request.width as i32, request.height as i32))
 }
 
-fn configure_window(window: NonNull<c_void>, request: WindowRequest) -> Result<(), String> {
+fn configure_position(
+    position: Option<[i32; 2]>,
+    mut set: impl FnMut(i32, i32) -> bool,
+) -> Option<[i32; 2]> {
+    position.filter(|&[x, y]| set(x, y))
+}
+
+fn configure_window(
+    window: NonNull<c_void>,
+    mut request: WindowRequest,
+    retained_mode: Option<PhysicalMode>,
+) -> Result<WindowState, String> {
     // SAFETY: the sole window constructor owns this live SDL window and an
     // initialized video reference on the main thread for this entire scope.
     unsafe {
         let expected = match request.mode {
             WindowMode::Windowed => {
-                if !SDL_SetWindowFullscreen(window.as_ptr(), false) {
+                if !SDL_SetWindowFullscreen(window.as_ptr(), false)
+                    || !SDL_SetWindowSize(
+                        window.as_ptr(),
+                        request.width as c_int,
+                        request.height as c_int,
+                    )
+                {
                     return Err(error());
                 }
+                // Compositors may decline global placement for an otherwise
+                // usable toplevel. Keep only an accepted effective position.
+                request.position = configure_position(request.position, |x, y| {
+                    SDL_SetWindowPosition(window.as_ptr(), x, y)
+                });
                 None
             }
             WindowMode::Desktop => {
@@ -360,14 +460,22 @@ fn configure_window(window: NonNull<c_void>, request: WindowRequest) -> Result<(
                     .iter()
                     .map(|(index, mode)| display_mode(mode).map(|mode| (index, mode)))
                     .collect::<Result<Vec<_>, _>>()?;
-                let selected = exclusive_mode(
-                    choices.into_iter(),
-                    request.width,
-                    request.height,
-                    frequency,
-                    color_bits,
-                    desktop,
-                )
+                let selected = if let Some(retained) = retained_mode {
+                    modes.iter().find_map(|(index, mode)| {
+                        (mode.physical_mode() == retained).then_some(index)
+                    })
+                } else if request.exclusive_policy == ExclusivePolicy::EnclosingOrWindowed {
+                    enclosing_mode(choices.into_iter(), request.width, request.height)
+                } else {
+                    exclusive_mode(
+                        choices.into_iter(),
+                        request.width,
+                        request.height,
+                        frequency,
+                        color_bits,
+                        desktop,
+                    )
+                }
                 .ok_or("requested fullscreen display mode is unavailable")?;
                 let mode = modes
                     .iter()
@@ -378,7 +486,7 @@ fn configure_window(window: NonNull<c_void>, request: WindowRequest) -> Result<(
                 {
                     return Err(error());
                 }
-                Some(display_mode(mode)?)
+                Some(mode.physical_mode())
             }
         };
         if !SDL_SyncWindow(window.as_ptr()) {
@@ -393,13 +501,15 @@ fn configure_window(window: NonNull<c_void>, request: WindowRequest) -> Result<(
             let actual = SDL_GetCurrentDisplayMode(display)
                 .as_ref()
                 .ok_or_else(error)?;
-            let actual = display_mode(actual)?;
-            if actual != expected {
+            if actual.physical_mode() != expected {
                 return Err("window system declined fullscreen display mode".to_owned());
             }
         }
+        Ok(WindowState {
+            request,
+            physical_mode: expected,
+        })
     }
-    Ok(())
 }
 
 #[link(name = "SDL3")]
@@ -413,6 +523,8 @@ unsafe extern "C" {
     fn SDL_GetWindowID(window: *mut c_void) -> u32;
     fn SDL_GetWindowFlags(window: *mut c_void) -> u64;
     fn SDL_GetWindowSizeInPixels(window: *mut c_void, w: *mut c_int, h: *mut c_int) -> bool;
+    fn SDL_SetWindowSize(window: *mut c_void, w: c_int, h: c_int) -> bool;
+    fn SDL_SetWindowPosition(window: *mut c_void, x: c_int, y: c_int) -> bool;
     fn SDL_GetDisplayForWindow(window: *mut c_void) -> u32;
     fn SDL_GetPrimaryDisplay() -> u32;
     fn SDL_GetDesktopDisplayMode(display: u32) -> *const SdlDisplayMode;
@@ -526,7 +638,7 @@ impl Presentation {
             })
         }
     }
-    fn gl(window: NonNull<c_void>, request: GlContextRequest) -> Result<Self, String> {
+    fn gl(window: NonNull<c_void>, request: GlContextRequest) -> Result<(Self, i32), String> {
         unsafe {
             let context = NonNull::new(SDL_GL_CreateContext(window.as_ptr())).ok_or_else(error)?;
             let result = (|| {
@@ -543,27 +655,22 @@ impl Presentation {
                 if (major, minor) < (4, 4) || profile & GL_CONTEXT_PROFILE_CORE == 0 {
                     return Err("OpenGL 4.4 core context required".into());
                 }
-                // Xvfb GLX has no swap-control extension: setting zero returns
-                // unsupported, but SDL's GLX getter reports its zero interval.
-                // Accept the requested state only after a successful query.
-                if !configure_swap_interval(
+                // Swap control is optional. Keep the usable context and report
+                // its queried interval without replacing the caller's intent.
+                configure_swap_interval(
                     request.swap_interval,
                     |interval| SDL_GL_SetSwapInterval(interval),
                     |interval| SDL_GL_GetSwapInterval(interval),
-                ) {
-                    return Err(format!(
-                        "OpenGL swap interval {} is unavailable: {}",
-                        request.swap_interval,
-                        error()
-                    ));
-                }
-                Ok(())
+                )
+                .ok_or_else(|| format!("OpenGL swap interval could not be queried: {}", error()))
             })();
-            if let Err(message) = result {
-                SDL_GL_DestroyContext(context.as_ptr());
-                return Err(message);
+            match result {
+                Ok(interval) => Ok((Self::Gl { context }, interval)),
+                Err(message) => {
+                    SDL_GL_DestroyContext(context.as_ptr());
+                    Err(message)
+                }
             }
-            Ok(Self::Gl { context })
         }
     }
 }
@@ -810,6 +917,7 @@ impl SdlInput {
 pub struct Window {
     window: NonNull<c_void>,
     request: WindowRequest,
+    physical_mode: Option<PhysicalMode>,
     presentation: Presentation,
     gamepads: [Option<(u32, NonNull<c_void>)>; 16],
     input: SdlInput,
@@ -857,7 +965,7 @@ impl Window {
             }
             failure
         };
-        let configured = configure_window(self.window, self.request);
+        let configured = configure_window(self.window, self.request, self.physical_mode);
         // Even a denied mode/focus request must not leave the other backend's
         // context current when control returns to the retained renderer.
         if !self.ensure_gl_current() {
@@ -865,7 +973,7 @@ impl Window {
         }
         match window_error {
             Some(error) => Err(error),
-            None => configured,
+            None => configured.map(|_| ()),
         }
     }
 
@@ -941,6 +1049,7 @@ impl Window {
         &self,
     ) -> Result<qa_core::presentation::DisplayConfiguration, String> {
         let mut result = qa_core::presentation::DisplayConfiguration::default();
+        result.window_aspect = self.request.window_aspect;
         // SAFETY: the owned SDL window and current GL context remain live on
         // this thread; SDL owns the returned display-mode record.
         unsafe {
@@ -964,8 +1073,13 @@ impl Window {
                     {
                         return Err(error());
                     }
-                    result.width = width as u32;
-                    result.height = height as u32;
+                    if self.request.exclusive_policy == ExclusivePolicy::EnclosingOrWindowed {
+                        result.width = self.request.width;
+                        result.height = self.request.height;
+                    } else {
+                        result.width = width as u32;
+                        result.height = height as u32;
+                    }
                     let mut attributes = [0; 6];
                     for (target, attribute) in attributes.iter_mut().zip([0, 1, 2, 6, 7, 12]) {
                         if !SDL_GL_GetAttribute(attribute, target) || *target < 0 {
@@ -1026,13 +1140,21 @@ impl Window {
             };
             // SDL3 window state is asynchronous on Wayland. Complete creation
             // before reporting window_ready or selecting input/capture targets.
-            if let Err(message) = configure_window(window, request) {
-                SDL_DestroyWindow(window.as_ptr());
-                SDL_QuitSubSystem(SUBSYSTEMS);
-                return Err(message);
-            }
+            let mut state =
+                match configure_request(request, |request| configure_window(window, request, None))
+                {
+                    Ok(state) => state,
+                    Err(message) => {
+                        SDL_DestroyWindow(window.as_ptr());
+                        SDL_QuitSubSystem(SUBSYSTEMS);
+                        return Err(message);
+                    }
+                };
             let presentation = match if gl {
-                Presentation::gl(window, request.gl)
+                Presentation::gl(window, request.gl).map(|(presentation, interval)| {
+                    state.request.gl.swap_interval = interval;
+                    presentation
+                })
             } else {
                 Presentation::software(window, width, height)
             } {
@@ -1046,7 +1168,8 @@ impl Window {
             SDL_StartTextInput(window.as_ptr());
             let mut opened = Self {
                 window,
-                request,
+                request: state.request,
+                physical_mode: state.physical_mode,
                 presentation,
                 gamepads: [None; 16],
                 input: SdlInput::new(

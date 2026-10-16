@@ -65,6 +65,8 @@ const COMMAND_SHARED: u32 = 0x46a0;
 const CLIENT_TEXT: u32 = 0x46c0;
 const BSS: u32 = 0x7000;
 const GAMESTATE: u32 = 0x8000;
+const GLCONFIG: u32 = 0xd000;
+const GLCONFIG_ASPECT: u32 = GLCONFIG + 11264 + 12 * 4;
 
 fn data() -> Vec<u8> {
     let mut data = vec![0; 0x5000];
@@ -202,6 +204,10 @@ fn qvm_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<
                         qvm_store(&mut ops, BSS, 0xbeef);
                         ops.push((Const, 0));
                     }
+                }
+                3 if graphics => {
+                    qvm_call(&mut ops, 43, &[ImportArg::Pointer(GLCONFIG)]);
+                    ops.extend([(Pop, 0), (Const, GLCONFIG_ASPECT as i32), (Load4, 0)]);
                 }
                 5 => {
                     qvm_store(&mut ops, INITIAL, 99);
@@ -373,6 +379,10 @@ fn qvm_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<
                 ],
             ),
             6 if graphics => ops.extend([(Const, GRAPHICS_HANDLE as i32), (Load4, 0)]),
+            4 if graphics => {
+                qvm_call(&mut ops, 49, &[ImportArg::Pointer(GLCONFIG)]);
+                ops.extend([(Pop, 0), (Const, GLCONFIG_ASPECT as i32), (Load4, 0)]);
+            }
             4 | 5 | 6 => {
                 let (ordinal, pointer) = match command {
                     4 => (72, COMMAND_OWNED),
@@ -524,6 +534,13 @@ fn native_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> V
                     code.extend([0x48, 0x83, 0xc4, 8]);
                     // Same exact role-Shutdown/finalizer trap as the cgame.
                     rip(&mut code, &[0xe9], 0x360c, base);
+                }
+                3 if graphics => {
+                    code.extend([0x48, 0x83, 0xec, 8]);
+                    call(&mut code, 43, &[ImportArg::Pointer(GLCONFIG)], base);
+                    code.extend([0x48, 0x83, 0xc4, 8]);
+                    rip(&mut code, &[0x8b, 0x05], GLCONFIG_ASPECT, base);
+                    code.push(0xc3);
                 }
                 5 => {
                     rip(&mut code, &[0xff, 0x05], BSS, base);
@@ -728,6 +745,13 @@ fn native_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> V
                 rip(&mut code, &[0x8b, 0x05], GRAPHICS_HANDLE, base);
                 code.push(0xc3);
             }
+            4 if graphics => {
+                code.extend([0x48, 0x83, 0xec, 8]);
+                call(&mut code, 49, &[ImportArg::Pointer(GLCONFIG)], base);
+                code.extend([0x48, 0x83, 0xc4, 8]);
+                rip(&mut code, &[0x8b, 0x05], GLCONFIG_ASPECT, base);
+                code.push(0xc3);
+            }
             4 | 5 | 6 => {
                 let (ordinal, pointer) = match command {
                     4 => (72, COMMAND_OWNED),
@@ -772,6 +796,8 @@ struct Source {
     video_publish_reject: bool,
     video_kinds: Vec<Option<qa_app::renderer::Kind>>,
     video_configuration: Arc<qa_core::presentation::RendererConfiguration>,
+    video_window: qa_core::presentation::WindowRequest,
+    video_pending_window: Option<qa_core::presentation::WindowRequest>,
     views: Vec<(
         qa_render::Viewport,
         qa_render::world::WorldId,
@@ -787,6 +813,9 @@ impl FrameSource for Source {
     fn video_kind(&self) -> Option<qa_app::renderer::Kind> {
         Some(qa_app::renderer::Kind::Cpu)
     }
+    fn video_window_request(&self) -> Option<qa_core::presentation::WindowRequest> {
+        Some(self.video_window)
+    }
     fn prepare_video(
         &mut self,
         policy: qa_app::renderer::VideoPolicy,
@@ -801,12 +830,15 @@ impl FrameSource for Source {
         let mut configuration = self.video_configuration.as_ref().clone();
         configuration.display.width = policy.window.width;
         configuration.display.height = policy.window.height;
-        qa_app::renderer::PreparedVideo::cpu(
+        configuration.display.window_aspect = policy.window.window_aspect;
+        let candidate = qa_app::renderer::PreparedVideo::cpu(
             Arc::new(configuration),
             assets,
             limits,
             policy.cpu_bands,
-        )
+        )?;
+        self.video_pending_window = Some(policy.window);
+        Ok(candidate)
     }
     fn publish_video(
         &mut self,
@@ -815,8 +847,16 @@ impl FrameSource for Source {
         if self.video_publish_reject {
             return Err("headless candidate publication rejected".into());
         }
+        let mut window = self
+            .video_pending_window
+            .take()
+            .ok_or("headless window request is missing")?;
         let (cpu, configuration) = candidate.into_cpu()?;
+        if !configuration.display.fullscreen {
+            window.mode = qa_core::presentation::WindowMode::Windowed;
+        }
         self.backend.cpu = cpu;
+        self.video_window = window;
         self.video_configuration = Arc::clone(&configuration);
         self.video_publishes += 1;
         Ok(configuration)
@@ -1101,13 +1141,16 @@ fn setup_renderers_with_images(
         frequency: 60,
         color_bits: 32,
     };
-    host.console.cvars.set_video_policy(
-        Arc::new(qa_core::presentation::VideoCapabilities {
-            desktop: display,
-            fullscreen: Box::default(),
-        }),
-        display,
-    );
+    host.console
+        .cvars
+        .set_video_policy(
+            Arc::new(qa_core::presentation::VideoCapabilities {
+                desktop: display,
+                fullscreen: Box::default(),
+            }),
+            display,
+        )
+        .unwrap();
     for (name, value) in [
         ("r_mode", "-1"),
         ("r_customwidth", "64"),
@@ -1194,6 +1237,8 @@ fn setup_renderers_with_images(
         video_publish_reject: false,
         video_kinds: Vec::new(),
         video_configuration,
+        video_window: qa_core::presentation::WindowRequest::windowed(width, height),
+        video_pending_window: None,
         backend,
         mixer: Mixer::load(rate, 16, SeatId::COUNT),
         reject_reset: None,
@@ -2632,12 +2677,20 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     let height = host.console.cvars.bind("r_customheight", context).unwrap();
     let old_limits = host.runtime.scene.as_ref().unwrap().limits();
     assert_eq!(source.backend.cpu.dimensions(), [64, 48]);
+    let explicit_aspect = f32::from_bits(0x3fa1_2345);
+    // Both roles captured CLIENT0's half of this 64x48 output. The UI's
+    // render-only association grants the same 32x48 viewport, without CLIENT
+    // service authority. No explicit aspect overrides these initial extents.
+    let old_cgame_aspect = (32.0f32 / 48.0).to_bits();
+    let old_ui_aspect = (32.0f32 / 48.0).to_bits();
+    assert_eq!(query(&mut host, ModuleId(1), 4), Ok(old_cgame_aspect));
+    assert_eq!(ui_query(&mut host, ModuleId(3), 3), Ok(old_ui_aspect));
     let markers = renderer_markers(&host);
     let resets = source.reset_receipts;
     source.video_reject = true;
     host.console
         .append(
-            "r_customwidth 96\nr_customheight 80\nr_picmip 2\nvid_restart cpu\n",
+            &format!("r_customwidth 96\nr_customheight 80\nr_customaspect {explicit_aspect}\nr_picmip 2\nvid_restart cpu\n"),
             context,
         )
         .unwrap();
@@ -2655,6 +2708,8 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     source.step(&mut host);
     assert_eq!((source.video_prepares, source.video_publishes), (1, 0));
     assert_eq!(source.backend.cpu.dimensions(), [64, 48]);
+    assert_eq!(query(&mut host, ModuleId(1), 4), Ok(old_cgame_aspect));
+    assert_eq!(ui_query(&mut host, ModuleId(3), 3), Ok(old_ui_aspect));
     assert_eq!(host.console.cvars.read(width).unwrap().as_str(), "64");
     assert_eq!(host.console.cvars.read(height).unwrap().as_str(), "48");
     assert_eq!(
@@ -2719,6 +2774,8 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     until_running(&mut host, &mut source);
     assert_eq!((source.video_prepares, source.video_publishes), (2, 0));
     assert_eq!(source.backend.cpu.dimensions(), [64, 48]);
+    assert_eq!(query(&mut host, ModuleId(1), 4), Ok(old_cgame_aspect));
+    assert_eq!(ui_query(&mut host, ModuleId(3), 3), Ok(old_ui_aspect));
     assert_eq!(host.console.cvars.read(width).unwrap().as_str(), "64");
     assert_eq!(host.console.cvars.read(height).unwrap().as_str(), "48");
     assert_eq!(
@@ -2827,6 +2884,27 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     until_running(&mut host, &mut source);
     assert_eq!((source.video_prepares, source.video_publishes), (3, 1));
     assert_eq!(source.backend.cpu.dimensions(), [96, 80]);
+    assert_eq!(
+        source
+            .video_configuration
+            .display
+            .window_aspect
+            .unwrap()
+            .to_bits(),
+        explicit_aspect.to_bits()
+    );
+    assert_eq!(
+        source.video_window.window_aspect.unwrap().to_bits(),
+        explicit_aspect.to_bits()
+    );
+    assert_eq!(
+        query(&mut host, ModuleId(1), 4),
+        Ok(explicit_aspect.to_bits())
+    );
+    assert_eq!(
+        ui_query(&mut host, ModuleId(3), 3),
+        Ok(explicit_aspect.to_bits())
+    );
     assert_eq!(
         [
             source.video_configuration.display.width,

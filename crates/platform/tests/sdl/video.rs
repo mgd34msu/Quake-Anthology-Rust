@@ -87,6 +87,7 @@ fn desktop_fullscreen_preserves_the_requested_software_framebuffer_extent() {
             color_bits: u32::MAX,
             ..Default::default()
         },
+        ..WindowRequest::default()
     };
     assert_eq!(window_dimensions(request, false).unwrap(), (320, 200));
     // An unused GL policy never rejects a software window's dimensions.
@@ -163,40 +164,188 @@ fn gl_attributes_keep_native_precision_stereo_and_independent_context_ownership(
 }
 
 #[test]
-fn swap_intervals_keep_the_full_native_integer_and_require_confirmed_state() {
+fn swap_intervals_keep_native_intent_and_accept_queried_state_when_control_is_optional() {
     for requested in [-1, 0, 1, 3, i32::MAX] {
         let mut received = None;
-        assert!(configure_swap_interval(
-            requested,
-            |interval| {
-                received = Some(interval);
-                true
-            },
-            |actual| {
-                *actual = requested;
-                true
-            }
-        ));
+        assert_eq!(
+            configure_swap_interval(
+                requested,
+                |interval| {
+                    received = Some(interval);
+                    true
+                },
+                |actual| {
+                    *actual = requested;
+                    true
+                }
+            ),
+            Some(requested)
+        );
         assert_eq!(received, Some(requested));
     }
-    // Unsupported swap control may still confirm the already-active zero mode.
-    assert!(configure_swap_interval(
-        0,
-        |_| false,
-        |actual| {
-            *actual = 0;
-            true
-        }
-    ));
-    for requested in [-1, 1, 3] {
-        assert!(!configure_swap_interval(
-            requested,
-            |_| false,
+    // GLX without swap control keeps its usable zero-interval context, even
+    // when a native default requests interval one.
+    for requested in [-1, 0, 1, 3] {
+        assert_eq!(
+            configure_swap_interval(
+                requested,
+                |_| false,
+                |actual| {
+                    *actual = 0;
+                    true
+                }
+            ),
+            Some(0)
+        );
+    }
+    assert_eq!(
+        configure_swap_interval(
+            3,
+            |_| true,
             |actual| {
-                *actual = 0;
+                *actual = 1;
                 true
             }
-        ));
+        ),
+        Some(1)
+    );
+    assert_eq!(configure_swap_interval(0, |_| true, |_| false), None);
+    assert_eq!(configure_swap_interval(1, |_| false, |_| false), None);
+}
+
+#[test]
+fn enclosing_modes_keep_native_distance_first_tie_and_cutoff() {
+    let modes = [
+        mode(800, 600, 60, 16),
+        mode(800, 600, 144, 32),
+        mode(1024, 768, 120, 32),
+        mode(640, 480, 60, 32),
+    ];
+    let select = |width, height| enclosing_mode(modes.iter().copied().enumerate(), width, height);
+    assert_eq!(select(700, 500), Some(0));
+    assert_eq!(select(640, 480), Some(3));
+    assert_eq!(select(1000, 700), Some(2));
+    assert_eq!(select(1600, 900), None);
+    assert_eq!(
+        enclosing_mode([mode(3803, 600, 60, 32)].into_iter().enumerate(), 640, 600),
+        None
+    );
+    assert_eq!(
+        enclosing_mode([mode(3802, 600, 60, 32)].into_iter().enumerate(), 640, 600),
+        Some(0)
+    );
+}
+
+#[test]
+fn exclusive_fallback_is_bounded_and_retains_extent_position_and_aspect() {
+    for policy in [
+        ExclusivePolicy::Exact,
+        ExclusivePolicy::ExactOrWindowed,
+        ExclusivePolicy::EnclosingOrWindowed,
+    ] {
+        let request = WindowRequest {
+            mode: WindowMode::Exclusive {
+                frequency: 144,
+                color_bits: 32,
+            },
+            exclusive_policy: policy,
+            position: Some([-100, 20]),
+            window_aspect: Some(1.25),
+            ..WindowRequest::windowed(800, 600)
+        };
+        let mut attempts = Vec::new();
+        let result = configure_request(request, |attempt| {
+            attempts.push(attempt);
+            if attempt.mode == WindowMode::Windowed {
+                Ok(WindowState {
+                    request: attempt,
+                    physical_mode: None,
+                })
+            } else {
+                Err("unsupported exclusive mode".to_owned())
+            }
+        });
+        if policy == ExclusivePolicy::Exact {
+            assert!(result.is_err());
+            assert_eq!(attempts, [request]);
+        } else {
+            let expected = WindowRequest {
+                mode: WindowMode::Windowed,
+                ..request
+            };
+            assert_eq!(result.unwrap().request, expected);
+            assert_eq!(attempts, [request, expected]);
+        }
+        let mut attempts = 0;
+        assert!(
+            configure_request(request, |_| {
+                attempts += 1;
+                Err("mode failure".to_owned())
+            })
+            .is_err()
+        );
+        assert_eq!(
+            attempts,
+            if policy == ExclusivePolicy::Exact {
+                1
+            } else {
+                2
+            }
+        );
     }
-    assert!(!configure_swap_interval(0, |_| true, |_| false));
+}
+
+#[test]
+fn retained_mode_identity_keeps_fractional_refresh_and_density() {
+    let first = SdlDisplayMode {
+        display: 1,
+        format: 0x1616_1804,
+        width: 1920,
+        height: 1080,
+        pixel_density: 1.0,
+        refresh_rate: 59.94,
+        refresh_numerator: 60000,
+        refresh_denominator: 1001,
+        internal: std::ptr::null_mut(),
+    };
+    let second = SdlDisplayMode {
+        refresh_rate: 59.95,
+        ..first
+    };
+    assert_eq!(
+        display_mode(&first).unwrap(),
+        display_mode(&second).unwrap()
+    );
+    assert!(first.physical_mode() != second.physical_mode());
+    let density = SdlDisplayMode {
+        width: 960,
+        height: 540,
+        pixel_density: 2.0,
+        ..first
+    };
+    assert_eq!(
+        display_mode(&first).unwrap(),
+        display_mode(&density).unwrap()
+    );
+    assert!(first.physical_mode() != density.physical_mode());
+}
+
+#[test]
+fn denied_global_position_preserves_a_usable_window_without_claiming_placement() {
+    let mut attempts = Vec::new();
+    assert_eq!(
+        configure_position(Some([-100, 20]), |x, y| {
+            attempts.push([x, y]);
+            false
+        }),
+        None
+    );
+    assert_eq!(attempts, [[-100, 20]]);
+    assert_eq!(configure_position(Some([0, 0]), |_, _| true), Some([0, 0]));
+    assert_eq!(
+        configure_position(None, |_, _| panic!(
+            "unspecified position must not call SDL"
+        )),
+        None
+    );
 }

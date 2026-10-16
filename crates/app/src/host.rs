@@ -33,6 +33,9 @@ pub trait FrameSource {
     fn video_kind(&self) -> Option<crate::renderer::Kind> {
         None
     }
+    fn video_window_request(&self) -> Option<qa_core::presentation::WindowRequest> {
+        None
+    }
     fn prepare_video(
         &mut self,
         _policy: crate::renderer::VideoPolicy,
@@ -148,6 +151,9 @@ pub struct LiveFrame<'a> {
     pub audio: Option<&'a mut crate::audio::Output>,
 }
 impl FrameSource for LiveFrame<'_> {
+    fn video_window_request(&self) -> Option<qa_core::presentation::WindowRequest> {
+        Some(self.window.request())
+    }
     fn video_kind(&self) -> Option<crate::renderer::Kind> {
         self.renderer
             .as_deref()
@@ -671,8 +677,11 @@ impl FrameHost {
                 .kind
                 .or_else(|| source.video_kind())
                 .ok_or("missing active video backend")?;
-            let window_plan =
-                crate::window_settings::WindowSettingsPlan::prepare(&self.console.cvars, kind)?;
+            let window_plan = crate::window_settings::WindowSettingsPlan::prepare(
+                &self.console.cvars,
+                kind,
+                source.video_window_request(),
+            )?;
             let (cpu_bands, band_settings) = if matches!(kind, crate::renderer::Kind::Cpu) {
                 (
                     crate::renderer::pending_cpu_band_setting(
@@ -886,14 +895,19 @@ impl FrameHost {
         }
         match published {
             Ok(configuration) => {
+                let display = configuration.display;
                 self.runtime.renderer_configuration = Some(configuration);
                 self.video_serial = serial;
-                if let Err(error) = window_plan.apply(&mut self.console.cvars) {
+                if let Err(error) = window_plan.apply(&mut self.console.cvars, &display) {
                     let _ =
                         self.runtime.server.events.console_formatted(format_args!(
                             "Window latch publication: {error:?}\n"
                         ));
                 }
+                window_plan.report_outcome(
+                    source.video_window_request(),
+                    &mut self.runtime.server.events,
+                );
                 if let Err(error) = image_plan.apply(&mut self.console.cvars) {
                     let _ =
                         self.runtime.server.events.console_formatted(format_args!(

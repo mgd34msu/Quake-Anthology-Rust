@@ -881,10 +881,15 @@ struct VideoSource {
     time: u64,
     prepare_models: bool,
     configuration: std::sync::Arc<qa_core::presentation::RendererConfiguration>,
+    window: qa_core::presentation::WindowRequest,
+    pending_window: Option<qa_core::presentation::WindowRequest>,
 }
 impl qa_app::host::FrameSource for VideoSource {
     fn video_kind(&self) -> Option<qa_app::renderer::Kind> {
         Some(qa_app::renderer::Kind::Cpu)
+    }
+    fn video_window_request(&self) -> Option<qa_core::presentation::WindowRequest> {
+        Some(self.window)
     }
     fn prepare_video(
         &mut self,
@@ -895,19 +900,30 @@ impl qa_app::host::FrameSource for VideoSource {
         let mut configuration = self.configuration.as_ref().clone();
         configuration.display.width = policy.window.width;
         configuration.display.height = policy.window.height;
-        qa_app::renderer::PreparedVideo::cpu(
+        configuration.display.window_aspect = policy.window.window_aspect;
+        let candidate = qa_app::renderer::PreparedVideo::cpu(
             std::sync::Arc::new(configuration),
             assets,
             limits,
             policy.cpu_bands,
-        )
+        )?;
+        self.pending_window = Some(policy.window);
+        Ok(candidate)
     }
     fn publish_video(
         &mut self,
         candidate: qa_app::renderer::PreparedVideo,
     ) -> Result<std::sync::Arc<qa_core::presentation::RendererConfiguration>, String> {
+        let mut window = self
+            .pending_window
+            .take()
+            .ok_or("headless window request is missing")?;
         let (backend, configuration) = candidate.into_cpu()?;
+        if !configuration.display.fullscreen {
+            window.mode = qa_core::presentation::WindowMode::Windowed;
+        }
         self.assets.cpu = backend;
+        self.window = window;
         self.configuration = std::sync::Arc::clone(&configuration);
         Ok(configuration)
     }
@@ -1027,13 +1043,16 @@ fn image_restart_remaps_captured_players_and_statics_without_following_rewritten
         frequency: 60,
         color_bits: 32,
     };
-    host.console.cvars.set_video_policy(
-        std::sync::Arc::new(qa_core::presentation::VideoCapabilities {
-            desktop: display,
-            fullscreen: Box::default(),
-        }),
-        display,
-    );
+    host.console
+        .cvars
+        .set_video_policy(
+            std::sync::Arc::new(qa_core::presentation::VideoCapabilities {
+                desktop: display,
+                fullscreen: Box::default(),
+            }),
+            display,
+        )
+        .unwrap();
     for (name, value) in [
         ("r_mode", "-1"),
         ("r_customwidth", "64"),
@@ -1057,6 +1076,8 @@ fn image_restart_remaps_captured_players_and_statics_without_following_rewritten
         time: 0,
         prepare_models: false,
         configuration,
+        window: qa_core::presentation::WindowRequest::windowed(64, 48),
+        pending_window: None,
     };
     let player = player_record(rules, 1 << 8);
     let ordinary = EntityRecord {
