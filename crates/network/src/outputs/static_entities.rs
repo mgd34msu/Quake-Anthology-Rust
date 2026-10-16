@@ -22,9 +22,7 @@ pub fn read_static_entity(
         return Err(Error::Opcode);
     }
     let mut reader = Reader::new(&bytes[1..], Encoding::Bytes);
-    let baseline = states::read_q1_baseline(&mut reader)?;
-    let mut words = [0; states::QW_ENTITY_WORDS];
-    words[..states::NQ_ENTITY_WORDS].copy_from_slice(&baseline);
+    let words = states::read_q1_baseline::<{ states::QW_ENTITY_WORDS }>(&mut reader)?;
     let mut record = EntityRecord::default();
     if !EntityProjection::load(protocol).apply(&words, &mut record, namespace) {
         return Err(Error::Unsupported);

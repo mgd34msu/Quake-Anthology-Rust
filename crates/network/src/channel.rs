@@ -298,6 +298,25 @@ impl Channel {
             None => false,
         }
     }
+    pub(crate) fn read_q1_baseline(
+        &mut self,
+        reader: &mut crate::message::Reader<'_>,
+    ) -> Result<(), crate::commands::packet::Error> {
+        use crate::{commands::packet::Error, snapshots::Storage, states};
+        let number = reader.read_bits(16)?;
+        let replaced = match &mut self.snapshots {
+            Some(Storage::NetQuake(storage)) => {
+                let words = states::read_q1_baseline(reader)?;
+                storage.ring.replace_baseline(number, &words)
+            }
+            Some(Storage::QuakeWorld { ring, .. }) => {
+                let words = states::read_q1_baseline(reader)?;
+                ring.replace_baseline(number, &words)
+            }
+            _ => return Err(Error::Context),
+        };
+        if replaced { Ok(()) } else { Err(Error::Count) }
+    }
     pub fn set_nq_weapon_mask(
         &mut self,
         enabled: bool,

@@ -639,6 +639,11 @@ impl Commands {
                         consume(Incoming::StaticEntity(record));
                         at += length;
                     }
+                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 22) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        channel.read_q1_baseline(&mut reader)?;
+                        at += 1 + reader.byte_position();
+                    }
                     (Protocol::NetQuake15, opcode) if opcode & 128 != 0 => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;
                         let mut reader = Reader::new(&scratch[at..], Encoding::Bytes);

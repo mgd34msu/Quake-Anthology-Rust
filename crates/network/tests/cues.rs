@@ -81,6 +81,48 @@ fn nq_qw_dynamic_sounds_keep_native_field_order_presence_and_coordinate_widths()
 }
 
 #[test]
+fn common_qw_sound_uses_the_full_native_edict_namespace() {
+    use qa_core::primitives::SoundEvent;
+    let event = SoundEvent {
+        channel: 2,
+        volume: 1.0,
+        attenuation: 1.0,
+        ..Default::default()
+    };
+    let mut bytes = [0xcc; 32];
+    for entity in [511, 512, 767] {
+        let length = outputs::sound(
+            Protocol::QuakeWorld28,
+            event,
+            1,
+            Some(entity),
+            false,
+            &mut bytes,
+        )
+        .unwrap();
+        let Cue::Sound(wire) = exact(Protocol::QuakeWorld28, &bytes[..length]) else {
+            panic!("QW dynamic sound");
+        };
+        assert_eq!(wire.entity(), Some(entity as u16));
+        assert_eq!((wire.channel, wire.index), (2, 1));
+        if entity == 767 {
+            assert_eq!(&bytes[..length], &[6, 250, 23, 1, 0, 0, 0, 0, 0, 0]);
+        }
+    }
+    assert_eq!(
+        outputs::sound(
+            Protocol::QuakeWorld28,
+            event,
+            1,
+            Some(768),
+            false,
+            &mut bytes
+        ),
+        Err(outputs::Error::Unsupported),
+    );
+}
+
+#[test]
 fn dynamic_sound_field_limits_keep_world_zero_and_native_optional_byte_values() {
     for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
         for presence in 0..4 {

@@ -1744,8 +1744,8 @@ static QW_BASELINE_GROUP: [Group<true, true, false, false>; 1] = [Group {
     fields: &Q1_BASELINE_FIELDS,
     presence: Presence::Fixed,
 }];
-pub(crate) fn read_q1_baseline(reader: &mut Reader<'_>) -> Result<[u32; NQ_ENTITY_WORDS], Error> {
-    let mut words = [0; NQ_ENTITY_WORDS];
+pub(crate) fn read_q1_baseline<const N: usize>(reader: &mut Reader<'_>) -> Result<[u32; N], Error> {
+    let mut words = [0; N];
     delta::read(&Q1_BASELINE_GROUP, &mut words, u64::MAX, reader)?;
     Ok(words)
 }

@@ -44,7 +44,8 @@ pub const fn snapshot_limits(protocol: packet::Protocol) -> SnapshotLimits {
     ) = match protocol {
         packet::Protocol::NetQuake15 => (600, 600, 0, 16, 1, 600, None),
         packet::Protocol::QuakeWorld28 => {
-            (512, 64, 0, states::QW_PLAYER_SLOTS as u32, 1, 512, None)
+            // Baselines/sounds address 768 edicts; packetentities use nine bits.
+            (768, 64, 0, states::QW_PLAYER_SLOTS as u32, 1, 512, None)
         }
         packet::Protocol::Quake2_34 => (
             1024,
@@ -317,6 +318,9 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         if self.latest.is_some() || self.parsed_rows != 0 {
             return false;
         }
+        self.replace_baseline(number, words)
+    }
+    pub(crate) fn replace_baseline(&mut self, number: u32, words: &[u32; E]) -> bool {
         let Some(to) = self.baselines.get_mut(number as usize) else {
             return false;
         };

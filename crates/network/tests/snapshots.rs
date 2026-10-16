@@ -1495,6 +1495,53 @@ fn server_payload(
     Ok(())
 }
 
+fn q1_service_payload(
+    protocol: Protocol,
+    server: &mut Channel,
+    commands: &mut Commands,
+    connections: &mut Connections,
+    payload: &[u8],
+    consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
+) -> Result<(), Error> {
+    if protocol == Protocol::QuakeWorld28 {
+        qw_move(connections, server, commands, true)?;
+    }
+    server_payload(server, connections, payload, consume)
+}
+
+fn q1_frame_row<'a>(frame: snapshots::ReceivedFrame<'a>, number: u32) -> Result<&'a [u32], Error> {
+    match frame {
+        snapshots::ReceivedFrame::NetQuake(frame) => frame
+            .entities
+            .iter()
+            .find(|entity| entity.number == number)
+            .map(|entity| entity.words.as_slice())
+            .ok_or(Error::Context),
+        snapshots::ReceivedFrame::QuakeWorld(frame) => frame
+            .entities
+            .iter()
+            .find(|entity| entity.number == number)
+            .map(|entity| entity.words.as_slice())
+            .ok_or(Error::Context),
+        _ => Err(Error::Context),
+    }
+}
+
+// Original baseline256: model7/frame3/colormap2/skin4, followed by the
+// same signed coordinate/angle oracle as static_entities.rs's literal.
+const Q1_BASELINE: [u8; 16] = [22, 0, 1, 7, 3, 2, 4, 247, 255, 255, 162, 0, 64, 1, 4, 128];
+const NQ_BASELINE_UPDATE: &[u8] = b"\x07\0\0\x80\x3f\x81\x40\0\x01";
+const QW_BASELINE_UPDATE: &[u8] = b"\x2f\0\x01\0\0";
+
+fn assert_q1_baseline_row(words: &[u32], model: u32) {
+    assert_eq!(&words[..5], &[model, 3, 2, 4, 0]);
+    assert_eq!(
+        &words[5..11],
+        &[-1.125f32, -1.40625, 20.25, 90., 128.125, -180.].map(f32::to_bits)
+    );
+    assert!(words[11..].iter().all(|&word| word == 0));
+}
+
 #[test]
 fn qw_connected_playerinfo_retains_native_slot_commands_and_imports_common_players()
 -> Result<(), Error> {
@@ -2303,6 +2350,402 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
 }
 
 #[test]
+fn q1_wire_baselines_replace_future_rows_without_mutating_retained_frames() -> Result<(), Error> {
+    for (protocol, update) in [
+        (Protocol::NetQuake15, NQ_BASELINE_UPDATE),
+        (Protocol::QuakeWorld28, QW_BASELINE_UPDATE),
+    ] {
+        let (mut server, mut commands, mut connections) = byte_connection(protocol)?;
+        let mut payload = Q1_BASELINE.to_vec();
+        payload.extend_from_slice(update);
+        let mut frames = 0;
+        q1_service_payload(
+            protocol,
+            &mut server,
+            &mut commands,
+            &mut connections,
+            &payload,
+            |_, _, incoming| match incoming {
+                Incoming::Snapshot(frame) => {
+                    assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 7);
+                    frames += 1;
+                }
+                Incoming::CommandProgress(_) => {}
+                _ => panic!("baseline/update published an unrelated event"),
+            },
+        )?;
+        assert_eq!(frames, 1);
+        let old = connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel
+            .current_snapshot()
+            .ok_or(Error::Context)?
+            .sequence();
+        // Complete duplicate records replace in service order, including after
+        // a snapshot exists. Neither record manufactures another snapshot.
+        let mut replacement = Q1_BASELINE;
+        replacement[3] = 8;
+        let mut payload = replacement.to_vec();
+        replacement[3] = 9;
+        payload.extend_from_slice(&replacement);
+        q1_service_payload(
+            protocol,
+            &mut server,
+            &mut commands,
+            &mut connections,
+            &payload,
+            |_, _, _| panic!("baseline-only replacement published an event"),
+        )?;
+        {
+            let channel = &mut connections
+                .get_mut(ClientId(0), Endpoint::Client)
+                .ok_or(Error::Context)?
+                .channel;
+            let frame = channel.current_snapshot().ok_or(Error::Context)?;
+            assert_eq!(frame.sequence(), old);
+            assert_q1_baseline_row(q1_frame_row(frame, 256)?, 7);
+            let words = q1_frame_row(frame, 256)?.to_vec();
+            assert!(!channel.set_snapshot_baseline(256, &words));
+        }
+        q1_service_payload(
+            protocol,
+            &mut server,
+            &mut commands,
+            &mut connections,
+            update,
+            |_, _, incoming| match incoming {
+                Incoming::Snapshot(frame) => {
+                    assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 9)
+                }
+                Incoming::CommandProgress(_) => {}
+                _ => panic!("baseline-derived update"),
+            },
+        )?;
+        let channel = &connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel;
+        let current = channel.current_snapshot().ok_or(Error::Context)?;
+        assert_ne!(current.sequence(), old);
+        assert_q1_baseline_row(q1_frame_row(current, 256)?, 9);
+        assert_q1_baseline_row(
+            q1_frame_row(channel.snapshot(old).ok_or(Error::Context)?, 256)?,
+            7,
+        );
+        assert_eq!(connections.command_errors, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn qw_late_baselines_leave_matched_delta_rows_on_the_requested_old_frame() -> Result<(), Error> {
+    let protocol = Protocol::QuakeWorld28;
+    let (mut server, mut commands, mut connections) = byte_connection(protocol)?;
+    let mut payload = Q1_BASELINE.to_vec();
+    payload.extend_from_slice(QW_BASELINE_UPDATE);
+    q1_service_payload(
+        protocol,
+        &mut server,
+        &mut commands,
+        &mut connections,
+        &payload,
+        |_, _, _| {},
+    )?;
+    let old = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?
+        .channel
+        .current_snapshot()
+        .ok_or(Error::Context)?
+        .sequence();
+    let mut replacement = Q1_BASELINE;
+    replacement[3] = 9;
+    let mut payload = replacement.to_vec();
+    replacement[1..3].copy_from_slice(&257u16.to_le_bytes());
+    replacement[3] = 11;
+    payload.extend_from_slice(&replacement);
+    q1_service_payload(
+        protocol,
+        &mut server,
+        &mut commands,
+        &mut connections,
+        &payload,
+        |_, _, _| panic!("baseline-only replacement published an event"),
+    )?;
+    // Matched entity256 uses the old row; new entity257 uses its new baseline.
+    let delta = [48, old as u8, 0, 1, 1, 1, 0, 0];
+    let mut frames = 0;
+    q1_service_payload(
+        protocol,
+        &mut server,
+        &mut commands,
+        &mut connections,
+        &delta,
+        |_, _, incoming| match incoming {
+            Incoming::Snapshot(frame) => {
+                assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 7);
+                assert_q1_baseline_row(q1_frame_row(frame, 257).unwrap(), 11);
+                frames += 1;
+            }
+            Incoming::CommandProgress(_) => {}
+            _ => panic!("matched delta update"),
+        },
+    )?;
+    assert_eq!(frames, 1);
+    q1_service_payload(
+        protocol,
+        &mut server,
+        &mut commands,
+        &mut connections,
+        QW_BASELINE_UPDATE,
+        |_, _, incoming| {
+            if let Incoming::Snapshot(frame) = incoming {
+                assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 9);
+                frames += 1;
+            }
+        },
+    )?;
+    assert_eq!(frames, 2);
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn q1_baseline_replacements_are_atomic_per_record_and_keep_accepted_prefixes() -> Result<(), Error>
+{
+    for (protocol, update) in [
+        (Protocol::NetQuake15, NQ_BASELINE_UPDATE),
+        (Protocol::QuakeWorld28, QW_BASELINE_UPDATE),
+    ] {
+        let (mut server, mut commands, mut connections) = byte_connection(protocol)?;
+        q1_service_payload(
+            protocol,
+            &mut server,
+            &mut commands,
+            &mut connections,
+            &Q1_BASELINE,
+            |_, _, _| panic!("baseline-only packet published an event"),
+        )?;
+        let mut replacement = Q1_BASELINE;
+        replacement[3..7].fill(255);
+        for cut in 1..replacement.len() {
+            q1_service_payload(
+                protocol,
+                &mut server,
+                &mut commands,
+                &mut connections,
+                &replacement[..cut],
+                |_, _, _| panic!("truncated baseline published an event"),
+            )?;
+        }
+        q1_service_payload(
+            protocol,
+            &mut server,
+            &mut commands,
+            &mut connections,
+            update,
+            |_, _, incoming| {
+                if let Incoming::Snapshot(frame) = incoming {
+                    assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 7);
+                }
+            },
+        )?;
+        for (model, tail) in [(11, &replacement[..8]), (13, &[0][..])] {
+            let mut accepted = Q1_BASELINE;
+            accepted[3] = model;
+            let mut payload = accepted.to_vec();
+            payload.extend_from_slice(tail);
+            q1_service_payload(
+                protocol,
+                &mut server,
+                &mut commands,
+                &mut connections,
+                &payload,
+                |_, _, _| panic!("baseline prefix/tail published an event"),
+            )?;
+            q1_service_payload(
+                protocol,
+                &mut server,
+                &mut commands,
+                &mut connections,
+                update,
+                |_, _, incoming| {
+                    if let Incoming::Snapshot(frame) = incoming {
+                        assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), u32::from(model));
+                    }
+                },
+            )?;
+            let channel = &connections
+                .get(ClientId(0), Endpoint::Client)
+                .ok_or(Error::Context)?
+                .channel;
+            assert_q1_baseline_row(
+                q1_frame_row(channel.current_snapshot().ok_or(Error::Context)?, 256)?,
+                u32::from(model),
+            );
+        }
+        assert_eq!(connections.command_errors, 17);
+    }
+    Ok(())
+}
+
+#[test]
+fn q1_baseline_native_capacities_do_not_widen_qw_packet_entity_numbers() -> Result<(), Error> {
+    for (protocol, capacity) in [
+        (Protocol::NetQuake15, 600u16),
+        (Protocol::QuakeWorld28, 768),
+    ] {
+        let (mut server, mut commands, mut connections) = byte_connection(protocol)?;
+        let mut baseline = Q1_BASELINE;
+        baseline[3..7].fill(255);
+        for number in [0, 256, capacity - 1] {
+            baseline[1..3].copy_from_slice(&number.to_le_bytes());
+            q1_service_payload(
+                protocol,
+                &mut server,
+                &mut commands,
+                &mut connections,
+                &baseline,
+                |_, _, _| panic!("baseline-only boundary record published an event"),
+            )?;
+        }
+        assert_eq!(connections.command_errors, 0);
+        for number in [capacity, u16::MAX] {
+            baseline[1..3].copy_from_slice(&number.to_le_bytes());
+            q1_service_payload(
+                protocol,
+                &mut server,
+                &mut commands,
+                &mut connections,
+                &baseline,
+                |_, _, _| panic!("rejected baseline published an event"),
+            )?;
+        }
+        assert_eq!(connections.command_errors, 2);
+        assert!(
+            connections
+                .get(ClientId(0), Endpoint::Client)
+                .ok_or(Error::Context)?
+                .channel
+                .current_snapshot()
+                .is_none()
+        );
+        let update = if protocol == Protocol::NetQuake15 {
+            NQ_BASELINE_UPDATE
+        } else {
+            QW_BASELINE_UPDATE
+        };
+        q1_service_payload(
+            protocol,
+            &mut server,
+            &mut commands,
+            &mut connections,
+            update,
+            |_, _, incoming| {
+                if let Incoming::Snapshot(frame) = incoming {
+                    assert_eq!(
+                        &q1_frame_row(frame, 256).unwrap()[..5],
+                        &[255, 255, 255, 255, 0]
+                    );
+                }
+            },
+        )?;
+        assert_eq!(connections.command_errors, 2);
+        let frame = connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel
+            .current_snapshot()
+            .ok_or(Error::Context)?;
+        assert_eq!(&q1_frame_row(frame, 256)?[..5], &[255, 255, 255, 255, 0]);
+    }
+    let limits = snapshots::snapshot_limits(Protocol::QuakeWorld28);
+    assert_eq!((limits.native_numbers, limits.end_entity), (768, 512));
+    let words = [0; states::QW_ENTITY_WORDS];
+    let mut bytes = [0; 32];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    assert!(states::write_qw_entity(
+        &mut writer,
+        511,
+        &words,
+        Some(&words),
+        true
+    )?);
+    assert!(!states::write_qw_entity(
+        &mut writer,
+        512,
+        &words,
+        Some(&words),
+        true
+    )?);
+    assert!(!states::write_qw_entity(
+        &mut writer,
+        767,
+        &words,
+        Some(&words),
+        true
+    )?);
+    Ok(())
+}
+
+#[test]
+fn q1_wire_baselines_are_independent_between_connected_namespaces() -> Result<(), Error> {
+    for (protocol, update) in [
+        (Protocol::NetQuake15, NQ_BASELINE_UPDATE),
+        (Protocol::QuakeWorld28, QW_BASELINE_UPDATE),
+    ] {
+        let (mut first_server, mut first_commands, mut first) = byte_connection(protocol)?;
+        let (mut second_server, mut second_commands, mut second) = byte_connection(protocol)?;
+        let mut baseline = Q1_BASELINE;
+        q1_service_payload(
+            protocol,
+            &mut first_server,
+            &mut first_commands,
+            &mut first,
+            &baseline,
+            |_, _, _| {},
+        )?;
+        baseline[3] = 19;
+        q1_service_payload(
+            protocol,
+            &mut second_server,
+            &mut second_commands,
+            &mut second,
+            &baseline,
+            |_, _, _| {},
+        )?;
+        q1_service_payload(
+            protocol,
+            &mut second_server,
+            &mut second_commands,
+            &mut second,
+            update,
+            |_, _, _| {},
+        )?;
+        q1_service_payload(
+            protocol,
+            &mut first_server,
+            &mut first_commands,
+            &mut first,
+            update,
+            |_, _, _| {},
+        )?;
+        for (connections, model) in [(&first, 7), (&second, 19)] {
+            let frame = connections
+                .get(ClientId(0), Endpoint::Client)
+                .ok_or(Error::Context)?
+                .channel
+                .current_snapshot()
+                .ok_or(Error::Context)?;
+            assert_q1_baseline_row(q1_frame_row(frame, 256)?, model);
+            assert_eq!(connections.command_errors, 0);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_import()
 -> Result<(), Error> {
     let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
@@ -2314,8 +2757,13 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
     let client = connections
         .get_mut(ClientId(0), Endpoint::Client)
         .ok_or(Error::Context)?;
-    assert!(client.channel.set_snapshot_baseline(256, &baseline));
     client.channel.set_nq_weapon_mask(true)?;
+    server_payload(
+        &mut server,
+        &mut connections,
+        &[22, 0, 1, 7, 0, 1, 0, 98, 0, 0, 0, 0, 0, 0, 0, 0],
+        |_, _, _| panic!("baseline-only packet created a presentation event"),
+    )?;
     let projection = PlayerProjection::load(Protocol::NetQuake15, &[]);
     let mut imported = PlayerState {
         movement_rules: RuleSetId::Quake3,
