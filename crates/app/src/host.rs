@@ -312,6 +312,7 @@ pub struct FrameHost {
         qa_render::world::WorldPresentationId,
     )>; SeatId::COUNT],
     pub local_presentations: [qa_render::material::world_load::PresentationDefaults; SeatId::COUNT],
+    pub local_presentation_rules: [Option<qa_core::primitives::RuleSetId>; SeatId::COUNT],
     maxfps: CvarHandle,
     zombie_time: CvarHandle,
     fov: CvarHandle,
@@ -672,6 +673,7 @@ impl FrameHost {
             connection_commands,
             local_worlds: [None; SeatId::COUNT],
             local_presentations: [Default::default(); SeatId::COUNT],
+            local_presentation_rules: [None; SeatId::COUNT],
             maxfps,
             zombie_time,
             fov,
@@ -1377,7 +1379,7 @@ impl FrameHost {
                 }))
     }
 
-    fn reject_nq_signon(&mut self, client: ClientId, reason: std::fmt::Arguments<'_>) {
+    pub(crate) fn reject_nq_signon(&mut self, client: ClientId, reason: std::fmt::Arguments<'_>) {
         if let Some(resources) = self.runtime.client_resources[client.0 as usize].as_mut() {
             resources.state.rejected += 1;
         }

@@ -113,8 +113,8 @@ impl ClientCollision {
         })
     }
 
-    pub(crate) fn prepare_scratch(&mut self, store: &CollisionStore) {
-        self.scratch = store.scratch();
+    pub(crate) fn trace_scratch(&mut self) -> &mut TraceScratch {
+        &mut self.scratch
     }
 
     pub fn reset(&mut self) {

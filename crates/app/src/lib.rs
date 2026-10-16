@@ -106,6 +106,44 @@ impl WorldCollision {
     }
 }
 
+pub(crate) struct TraceScratchStage<'a> {
+    replacements: Vec<(
+        &'a mut qa_world::collision::TraceScratch,
+        qa_world::collision::TraceScratch,
+    )>,
+}
+impl<'a> TraceScratchStage<'a> {
+    pub(crate) fn prepare(
+        store: &qa_world::collision::CollisionStore,
+        destinations: impl IntoIterator<Item = &'a mut qa_world::collision::TraceScratch>,
+    ) -> Self {
+        Self {
+            replacements: destinations
+                .into_iter()
+                .map(|destination| (destination, store.scratch()))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn commit(self) {
+        for (destination, scratch) in self.replacements {
+            *destination = scratch;
+        }
+    }
+}
+
+pub(crate) fn runtime_trace_scratches<'a>(
+    collision: &'a mut Option<WorldCollision>,
+    clients: &'a mut [Option<client_collision::ClientCollision>],
+) -> impl Iterator<Item = &'a mut qa_world::collision::TraceScratch> {
+    collision.iter_mut().map(|world| &mut world.scratch).chain(
+        clients
+            .iter_mut()
+            .flatten()
+            .map(client_collision::ClientCollision::trace_scratch),
+    )
+}
+
 impl Runtime {
     pub fn sound_bank(&self) -> Option<&qa_audio::Bank> {
         self.sound_assets.as_deref().map(audio::SoundAssets::bank)
@@ -114,7 +152,7 @@ impl Runtime {
         &mut self,
         module_rules: impl Iterator<Item = qa_core::primitives::RuleSetId>,
     ) -> Result<(), String> {
-        let Some(rules) = self
+        if let Some(rules) = self
             .server
             .clients
             .iter()
@@ -123,20 +161,16 @@ impl Runtime {
             .chain(module_rules)
             .map(|rules| qa_world::collision::trace_policy(rules).0)
             .find(|rules| rules.hull_shape == qa_world::collision::HullShape::ExactBox)
-        else {
-            return Ok(());
-        };
-        if self
-            .geometry
-            .prepare_traces(rules, Default::default())
-            .map_err(|error| format!("caller hull capability: {error:?}"))?
-            && let Some(collision) = &mut self.collision
         {
-            collision.scratch = self.geometry.scratch();
+            self.geometry
+                .prepare_traces(rules, Default::default())
+                .map_err(|error| format!("caller hull capability: {error:?}"))?;
         }
-        for collision in self.client_collision.iter_mut().flatten() {
-            collision.prepare_scratch(&self.geometry);
-        }
+        TraceScratchStage::prepare(
+            &self.geometry,
+            runtime_trace_scratches(&mut self.collision, &mut self.client_collision),
+        )
+        .commit();
         Ok(())
     }
 

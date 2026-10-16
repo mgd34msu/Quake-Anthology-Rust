@@ -382,14 +382,12 @@ fn run() -> Result<(), String> {
     if (movement_rules.is_some()
         || input_rules.is_some()
         || seat_input_rules.iter().any(Option::is_some)
-        || presentation_rules.is_some()
-        || seat_presentations.iter().any(Option::is_some)
         || trace_rules.is_some()
         || client_module.is_some()
         || seat_policies.iter().any(Option::is_some))
         && map_name.is_none()
     {
-        return Err("input, movement, trace and presentation roles need a loaded --map".into());
+        return Err("input, movement, trace and client roles need a loaded --map".into());
     }
     if max_clients < seat_count {
         return Err("client capacity must cover the local seats".into());
@@ -626,6 +624,15 @@ fn run() -> Result<(), String> {
         .collect();
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
     host.local_clients = local_clients;
+    host.local_presentation_rules = std::array::from_fn(|seat| {
+        seat_presentations[seat].or(presentation_rules).or_else(|| {
+            loaded_world
+                .as_ref()?
+                .presentations
+                .get(seat)
+                .map(|presentation| presentation.profile.rules)
+        })
+    });
     let startup_clients = host.local_clients.map(|id| {
         let id = id?;
         let row = &host.runtime.server.clients[id.0 as usize];

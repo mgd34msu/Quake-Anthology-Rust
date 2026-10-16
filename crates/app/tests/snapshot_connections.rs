@@ -3054,6 +3054,647 @@ fn nq_admission_snapshot(rows: &[(u32, Vec3)]) -> Vec<u8> {
     writer.bytes().to_vec()
 }
 
+fn install_received_world_owner(
+    host: &mut FrameHost,
+    clients: &[ClientId],
+) -> asset_frames::Source {
+    use qa_app::model_assets::{ModelAssets, ModelRequest};
+    use qa_render::material::world_load::{
+        LoadedWorld, LoadedWorldPresentation, WorldPresentationProfile,
+    };
+    let geometry = host.runtime.client_resources[clients[0].0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .models
+        .collision_world()
+        .unwrap()
+        .0;
+    let mut assets = qa_render::Assets::load().unwrap();
+    let palette = assets_support::palette(&mut assets);
+    let world = assets_support::world(&mut assets, 0.0);
+    let presentation =
+        qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first);
+    let profile = ModelRequest::native("", RuleSetId::QuakeWorld, Some(palette)).profile();
+    let loaded = LoadedWorld {
+        world,
+        presentations: vec![LoadedWorldPresentation {
+            id: presentation,
+            profile: WorldPresentationProfile::native(profile.rules, profile.palette),
+            defaults: Default::default(),
+        }]
+        .into_boxed_slice(),
+        diagnostics: Box::default(),
+    };
+    let (scene, _) = qa_app::renderer::SceneComposer::load(
+        qa_render::Limits::default(),
+        &mut assets,
+        vec![loaded],
+    )
+    .unwrap();
+    let mut owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    owner
+        .adopt_palettes(
+            qa_app::render_settings::PaletteRegistrations::from_registered([
+                Some(palette),
+                Some(palette),
+                None,
+                None,
+                None,
+            ]),
+        )
+        .unwrap();
+    owner
+        .bind_loaded_world(
+            "maps/ready.bsp",
+            world,
+            Some(geometry),
+            host.runtime.geometry.model_bounds(geometry, 0).unwrap(),
+        )
+        .unwrap();
+    let backend = asset_frames::Source::load(owner.assets());
+    host.runtime.model_assets = Some(owner);
+    host.runtime.scene = Some(scene);
+    host.publish_model_admission(backend.cpu.admitted_assets().unwrap())
+        .unwrap();
+    host.bind_client_model_assets(
+        clients
+            .iter()
+            .copied()
+            .map(|client| (client, profile, Some((world, presentation)))),
+    );
+    host.runtime.collision = Some(qa_app::WorldCollision::new(
+        &host.runtime.geometry,
+        geometry,
+        0,
+    ));
+    backend
+}
+
+#[test]
+fn queued_unseen_client_world_waits_for_cold_capacity_then_activates_without_changing_server() {
+    use qa_compat::services::ModelLookup;
+    use qa_world::collision::{TraceQuery, trace_policy};
+    let fixture =
+        assets_support::Fixture::new(&[("maps/unseen.bsp", assets_support::world_map(8.0))]);
+    let (mut host, local, remote, mut server) =
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
+    let mut backend = install_received_world_owner(&mut host, &[local, remote]);
+    for mount in fixture.vfs.mounts() {
+        host.runtime
+            .vfs
+            .mount_directory(&mount.path, mount.priority)
+            .unwrap();
+    }
+    // No ExactBox role is present. Appending authored cells must still refresh
+    // every existing store-sized workspace.
+    for client in &mut host.runtime.server.clients {
+        client.player.trace_rules = RuleSetId::QuakeWorld;
+    }
+    for prediction in &mut host.runtime.prediction {
+        prediction.player.trace_rules = RuleSetId::QuakeWorld;
+    }
+    host.local_presentation_rules[1] = Some(RuleSetId::Quake3);
+    let old_world = host.runtime.collision.as_ref().unwrap().geometry;
+    let old_local = host.local_worlds[0];
+    let remote_entity = host.runtime.server.clients[remote.0 as usize].entity;
+    let server_position = host.runtime.server.clients[remote.0 as usize]
+        .player
+        .body
+        .position;
+    let old_common = host
+        .runtime
+        .server
+        .entities
+        .columns
+        .body(remote_entity.slot as usize);
+    let old_bounds = host.runtime.server.area.bounds(remote_entity);
+    let counts = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    let mut stale_scratch = host.runtime.geometry.scratch();
+    let mut payload = nq_server_info(b"unseen", &[b"maps/unseen.bsp", b"*1"], &[]);
+    payload.extend([5, 6, 0, 25, 1, 25, 2, 25, 3]);
+    payload.extend(nq_admission_snapshot(&[(6, Vec3([20., 0., 0.]))]));
+    queue_accepted_netquake(&mut host, remote, &mut server, &payload);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.runtime.vfs.take_lookup_count();
+    for _ in 0..3 {
+        host.register_client_model_assets(None);
+    }
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.attempts, 0);
+    assert_eq!(host.local_worlds[1], None);
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        counts
+    );
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    host.register_client_model_assets(Some(&mut backend));
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.attempts, 0);
+    let scene = host.runtime.scene.as_mut().unwrap();
+    let packet = scene.finish_frame().unwrap();
+    assert!(scene.recycle(packet).is_ok());
+
+    host.register_client_model_assets(Some(&mut backend));
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+    assert!(backend.attempts > 0);
+    let (world, presentation) = host.local_worlds[1].unwrap();
+    assert_ne!(Some((world, presentation)), old_local);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let loaded = owner.catalog().loaded_world(b"maps/unseen.bsp").unwrap();
+    let geometry = loaded.collision.unwrap();
+    assert_eq!(loaded.render, world);
+    assert_eq!(owner.assets().counts().worlds, counts.worlds + 1);
+    assert_eq!(backend.cpu.admitted_assets(), Some(owner.assets().counts()));
+    assert_eq!(host.runtime.collision.as_ref().unwrap().geometry, old_world);
+    assert_eq!(host.local_worlds[0], old_local);
+    assert_eq!(
+        host.runtime.server.clients[remote.0 as usize]
+            .player
+            .body
+            .position,
+        server_position
+    );
+    assert_eq!(
+        host.runtime
+            .server
+            .entities
+            .columns
+            .body(remote_entity.slot as usize)
+            .position,
+        old_common.position
+    );
+    assert_eq!(host.runtime.server.area.bounds(remote_entity), old_bounds);
+    assert!(host.runtime.network.get(remote, Endpoint::Server).is_none());
+    assert_eq!(
+        (
+            host.runtime.prediction[1].player.movement_rules,
+            host.runtime.prediction[1].player.trace_rules
+        ),
+        (RuleSetId::Quake3, RuleSetId::QuakeWorld)
+    );
+    assert!(matches!(
+        host.local_presentations[1].cpu,
+        qa_render::CpuPresentation::Rgb
+    ));
+    let (rules, entities) = trace_policy(RuleSetId::QuakeWorld);
+    let query = TraceQuery::point(Vec3([-2., 0.5, 0.5]), Vec3([2., 0.5, 0.5]), rules, entities);
+    assert!(
+        host.runtime
+            .geometry
+            .trace_model(geometry, 0, query, &mut stale_scratch)
+            .is_err()
+    );
+    let world_scratch = &mut host.runtime.collision.as_mut().unwrap().scratch;
+    assert!(
+        host.runtime
+            .geometry
+            .trace_model(geometry, 0, query, world_scratch)
+            .unwrap()
+            .fraction
+            < 1.0
+    );
+
+    // A later accepted frame uses the newly selected CLIENT collision world.
+    queue_accepted_netquake(
+        &mut host,
+        remote,
+        &mut server,
+        &nq_admission_snapshot(&[(6, Vec3([20., 0., 0.]))]),
+    );
+    host.drain(&mut Default::default());
+    let mut trace = host.runtime.client_collision[remote.0 as usize]
+        .as_mut()
+        .unwrap()
+        .trace(&host.runtime.geometry, PatchClip::All)
+        .unwrap();
+    assert!(trace.trace(query).unwrap().fraction < 1.0);
+
+    let scene = host.runtime.scene.as_mut().unwrap();
+    assert!(scene.begin_frame());
+    let frame = scene.frame_mut().unwrap();
+    assert!(frame.add_world(
+        world,
+        presentation,
+        &[qa_render::world::VisibleSurface {
+            surface: 0,
+            depth_key: 0
+        }]
+    ));
+    assert!(frame.render_scene(
+        qa_render::Refdef {
+            origin: Vec3([32., 0., 0.]),
+            axes: qa_core::math::angle_vectors(Vec3([0., 180., 0.])).axes(),
+            viewport: qa_render::Viewport {
+                width: 64,
+                height: 48,
+                ..Default::default()
+            },
+            fov: [90., 73.],
+            near: 0.25,
+            far: 128.,
+            ..Default::default()
+        },
+        &[],
+        host.runtime.model_assets.as_ref().unwrap().assets()
+    ));
+    let packet = scene.finish_frame().unwrap();
+    let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+    let rendered = backend.cpu.render(&packet, assets);
+    assert_eq!(rendered.rejected, 0);
+    assert!(
+        backend.cpu.world_stats().spans > 0,
+        "backend={rendered:?} world={:?}",
+        backend.cpu.world_stats(),
+    );
+    assert!(scene.recycle(packet).is_ok());
+    let attempts = backend.attempts;
+    host.runtime.vfs.take_lookup_count();
+    host.register_client_model_assets(Some(&mut backend));
+    assert_eq!(backend.attempts, attempts);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+
+    // The same filename in a new admitted header reuses exact geometry and
+    // presentation instead of decoding or publishing another world.
+    queue_accepted_netquake(&mut host, remote, &mut server, &payload);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.runtime.vfs.take_lookup_count();
+    host.register_client_model_assets(Some(&mut backend));
+    assert_eq!(backend.attempts, attempts);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(host.local_worlds[1], Some((world, presentation)));
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .catalog()
+            .loaded_world(b"maps/unseen.bsp")
+            .unwrap()
+            .collision,
+        Some(geometry)
+    );
+}
+
+#[test]
+fn frame_admits_received_client_world_before_sending_native_prespawn() {
+    use qa_compat::services::ModelLookup;
+    use qa_network::{
+        channel::Delivery,
+        commands::packet::{self, Key, Record},
+    };
+    use qa_render::assets::AssetCounts;
+
+    struct Frame {
+        transport: Source,
+        backend: asset_frames::Source,
+        admissions: Vec<(usize, Option<AssetCounts>)>,
+    }
+    impl FrameSource for Frame {
+        fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
+            self.backend.asset_preparer()
+        }
+        fn begin_frame(&mut self) -> Duration {
+            self.transport.begin_frame()
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            self.transport.poll_events(queue);
+        }
+        fn wait_time(&mut self, remaining: Duration) -> Duration {
+            self.transport.wait_time(remaining)
+        }
+        fn elapsed(&self) -> Duration {
+            self.transport.elapsed()
+        }
+        fn present(&mut self) {
+            self.transport.present();
+        }
+        fn send_packet(&mut self, socket: u16, peer: std::net::SocketAddr, bytes: &[u8]) -> bool {
+            let admitted = self.transport.send_packet(socket, peer, bytes);
+            if admitted {
+                self.admissions
+                    .push((self.backend.attempts, self.backend.cpu.admitted_assets()));
+            }
+            admitted
+        }
+    }
+
+    let fixture =
+        assets_support::Fixture::new(&[("maps/unseen.bsp", assets_support::world_map(8.0))]);
+    let (mut host, local, remote, mut server) =
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
+    let backend = install_received_world_owner(&mut host, &[local, remote]);
+    let mut source = Frame {
+        transport: Source {
+            time: EventTime::from_milliseconds(100),
+            ..Default::default()
+        },
+        backend,
+        admissions: Vec::new(),
+    };
+    source.backend.enabled = false;
+    for mount in fixture.vfs.mounts() {
+        host.runtime
+            .vfs
+            .mount_directory(&mount.path, mount.priority)
+            .unwrap();
+    }
+    let old_server_world = host.runtime.collision.as_ref().unwrap().geometry;
+    let old_local_world = host.local_worlds[0];
+    let old_assets = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    let mut header = nq_server_info(b"frame admission", &[b"maps/unseen.bsp"], &[]);
+    header.extend([5, 6, 0, 25, 1]);
+    queue_accepted_netquake(&mut host, remote, &mut server, &header);
+    host.runtime.vfs.take_lookup_count();
+
+    let waiting = host.frame(&mut source, true);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(source.backend.attempts, 0);
+    assert_eq!(host.local_worlds[1], None);
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        old_assets
+    );
+    assert_eq!(waiting.commands[1].duration_ms, 0);
+    assert_eq!(waiting.commands[1].movement, [0.; 3]);
+    for bytes in &source.transport.packets {
+        assert!(
+            !matches!(
+                server.receive(bytes, host.time).unwrap().delivery,
+                Delivery::Payload(_)
+            ),
+            "no native signon command may precede world admission"
+        );
+    }
+    let before = source.transport.packets.len();
+    source.backend.enabled = true;
+    source.transport.time = EventTime::from_milliseconds(200);
+    let admitted = host.frame(&mut source, true);
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+    assert!(source.backend.attempts > 0);
+    let (world, _) = host.local_worlds[1].unwrap();
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let loaded = owner.catalog().loaded_world(b"maps/unseen.bsp").unwrap();
+    assert_eq!(loaded.render, world);
+    assert_eq!(
+        host.runtime.client_resources[remote.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .models
+            .collision_world(),
+        Some((loaded.collision.unwrap(), 0))
+    );
+    assert_eq!(
+        source.backend.cpu.admitted_assets(),
+        Some(owner.assets().counts())
+    );
+    assert_eq!(
+        host.runtime.collision.as_ref().unwrap().geometry,
+        old_server_world
+    );
+    assert_eq!(host.local_worlds[0], old_local_world);
+    assert!(host.runtime.network.get(remote, Endpoint::Server).is_none());
+    assert_eq!(admitted.commands[1].duration_ms, 0);
+    assert_eq!(admitted.commands[1].movement, [0.; 3]);
+
+    let mut commands = Vec::new();
+    let mut moves = 0;
+    for (index, bytes) in source.transport.packets.iter().enumerate().skip(before) {
+        let received = server.receive(bytes, host.time).unwrap();
+        if let Delivery::Payload(payload) = received.delivery {
+            assert!(source.admissions[index].0 > 0);
+            assert_eq!(source.admissions[index].1, Some(owner.assets().counts()));
+            let mut payload = payload.to_vec();
+            packet::read_with_commands(
+                Protocol::NetQuake15,
+                &mut payload,
+                received.header.sequence,
+                Key::default(),
+                |record| {
+                    match record {
+                        Record::String { text, .. } => commands.push(text.to_vec()),
+                        Record::Move(_) => moves += 1,
+                        _ => {}
+                    }
+                    Ok(ControlFlow::Continue(()))
+                },
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(commands, [b"prespawn".to_vec()]);
+    assert_eq!(moves, 0);
+    assert_eq!(
+        host.runtime.client_resources[remote.0 as usize]
+            .as_ref()
+            .unwrap()
+            .nq_signon_stage(),
+        Some(1)
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(remote, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        0
+    );
+}
+
+#[test]
+fn queued_client_world_parse_or_backend_failure_is_attempted_once_and_keeps_the_peer() {
+    use qa_compat::services::ModelLookup;
+    for (path, bytes) in [
+        ("maps/bad.bsp", b"invalid BSP".to_vec()),
+        ("maps/large.bsp", assets_support::world_map(256.0)),
+    ] {
+        let fixture = assets_support::Fixture::new(&[(path, bytes)]);
+        let (mut host, local, remote, mut server) =
+            socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
+        let mut backend = install_received_world_owner(&mut host, &[local, remote]);
+        for mount in fixture.vfs.mounts() {
+            host.runtime
+                .vfs
+                .mount_directory(&mount.path, mount.priority)
+                .unwrap();
+        }
+        let counts = host
+            .runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts();
+        let geometries = host.runtime.geometry.geometries().collect::<Vec<_>>();
+        let old_world = host.runtime.collision.as_ref().unwrap().geometry;
+        let local_lifetime = host.runtime.server.clients[local.0 as usize].entity;
+        let mut payload = nq_server_info(b"rejected", &[path.as_bytes()], &[]);
+        payload.extend([5, 6, 0, 25, 1]);
+        queue_accepted_netquake(&mut host, remote, &mut server, &payload);
+        host.drain(&mut Default::default());
+        dispatch_nq_startup_reset(&mut host);
+        host.runtime.vfs.take_lookup_count();
+        host.register_client_model_assets(Some(&mut backend));
+        assert!(host.runtime.vfs.take_lookup_count() > 0, "{path}");
+        let attempted = backend.attempts;
+        assert!(
+            host.runtime.snapshots[remote.0 as usize]
+                .as_ref()
+                .unwrap()
+                .presentation_closed(),
+            "{path}"
+        );
+        for _ in 0..3 {
+            host.register_client_model_assets(Some(&mut backend));
+        }
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0, "{path}");
+        assert_eq!(backend.attempts, attempted, "{path}");
+        assert_eq!(
+            host.runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .assets()
+                .counts(),
+            counts,
+            "{path}"
+        );
+        assert_eq!(
+            host.runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .catalog()
+                .loaded_world(path.as_bytes()),
+            None
+        );
+        assert_eq!(
+            host.runtime.geometry.geometries().collect::<Vec<_>>(),
+            geometries
+        );
+        assert_eq!(host.runtime.collision.as_ref().unwrap().geometry, old_world);
+        assert_eq!(
+            host.runtime.server.clients[local.0 as usize].entity,
+            local_lifetime
+        );
+        assert!(
+            !host.runtime.snapshots[local.0 as usize]
+                .as_ref()
+                .unwrap()
+                .presentation_closed()
+        );
+        assert!(host.runtime.network.get(local, Endpoint::Server).is_some());
+    }
+}
+
+#[test]
+fn pending_client_world_cannot_activate_after_disconnect_reuses_the_seat() {
+    let fixture =
+        assets_support::Fixture::new(&[("maps/unseen.bsp", assets_support::world_map(8.0))]);
+    let (mut host, local, remote, mut server) =
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
+    let mut backend = install_received_world_owner(&mut host, &[local, remote]);
+    for mount in fixture.vfs.mounts() {
+        host.runtime
+            .vfs
+            .mount_directory(&mount.path, mount.priority)
+            .unwrap();
+    }
+    host.local_presentation_rules[1] = Some(RuleSetId::Quake3);
+    queue_accepted_netquake(
+        &mut host,
+        remote,
+        &mut server,
+        &nq_server_info(b"pending", &[b"maps/unseen.bsp"], &[]),
+    );
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.register_client_model_assets(None);
+    let old = host.runtime.server.clients[remote.0 as usize].entity;
+    assert!(host.runtime.disconnect_client(remote));
+    dispatch_nq_startup_reset(&mut host);
+    assert!(
+        host.runtime.server.clients[remote.0 as usize]
+            .audio_retirement
+            .is_none()
+    );
+    let replacement = host
+        .runtime
+        .connect_client(
+            SeatId::new(1).unwrap(),
+            ClientPolicy::select(
+                Some(RuleSetId::QuakeWorld),
+                None,
+                Some(RuleSetId::Quake3),
+                Some(RuleSetId::Quake2),
+                None,
+            )
+            .unwrap(),
+            NativePlayerBinding::Awaiting,
+            accepted_connection(Protocol::NetQuake15),
+            None,
+        )
+        .unwrap();
+    host.local_clients[1] = Some(replacement);
+    assert_ne!(
+        host.runtime.server.clients[replacement.0 as usize].entity,
+        old
+    );
+    host.runtime.vfs.take_lookup_count();
+    host.register_client_model_assets(Some(&mut backend));
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.attempts, 0);
+    assert!(
+        host.runtime.client_resources[replacement.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .server_info()
+            .is_none()
+    );
+    assert_eq!(host.local_presentation_rules[1], Some(RuleSetId::Quake3));
+    let mut replacement_server =
+        Channel::load(Protocol::NetQuake15.channel(), Endpoint::Server, 8192, 16).unwrap();
+    let mut payload = nq_server_info(b"new lifetime", &[b"maps/unseen.bsp"], &[]);
+    payload.extend([5, 6, 0, 25, 1]);
+    queue_accepted_netquake(&mut host, replacement, &mut replacement_server, &payload);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.register_client_model_assets(Some(&mut backend));
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+    assert!(host.local_worlds[1].is_some());
+}
+
 #[test]
 fn accepted_socket_client_assigns_only_the_initial_player_and_keeps_cameras_independent() {
     let (mut host, local, remote, mut server) =

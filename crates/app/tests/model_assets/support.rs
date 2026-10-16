@@ -39,9 +39,9 @@ pub fn world_map(size: f32) -> Vec<u8> {
         .concat();
         lumps[3] = [
             [0.0, -size, -size],
-            [0.0, size, -size],
-            [0.0, size, size],
             [0.0, -size, size],
+            [0.0, size, size],
+            [0.0, size, -size],
         ]
         .into_iter()
         .flatten()

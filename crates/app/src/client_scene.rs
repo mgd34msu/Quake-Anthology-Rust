@@ -166,6 +166,24 @@ impl ClientModelBindings {
         self.world
     }
 
+    pub(crate) fn profile(&self) -> Option<ModelProfile> {
+        self.profile
+    }
+
+    pub(crate) fn pending_world<'a>(
+        &self,
+        configs: &'a ConfigStrings,
+    ) -> Option<qa_core::configstrings::ConfigRef<'a>> {
+        self.cold
+            .contains(1)
+            .then(|| self.range.get(1).and_then(|index| configs.config(index)))
+            .flatten()
+    }
+
+    pub(crate) fn take_world_attempt(&mut self) {
+        self.cold.remove(1);
+    }
+
     pub(crate) fn reset_received(
         &mut self,
         world: Option<(qa_compat::services::LoadedWorldBinding, WorldPresentationId)>,
@@ -181,8 +199,15 @@ impl ClientModelBindings {
     /// Native startup checks existing numeric bindings only while its reply is
     /// pending. Config receipt and the cold pass own all filename work.
     pub(crate) fn required_models(&self, configs: &ConfigStrings) -> RequiredModels {
-        if self.profile.is_none() || self.world.and_then(|(world, _)| world.collision).is_none() {
+        if self.profile.is_none() {
             return RequiredModels::Waiting;
+        }
+        if self.world.and_then(|(world, _)| world.collision).is_none() {
+            return if self.cold.contains(1) {
+                RequiredModels::Waiting
+            } else {
+                RequiredModels::Missing(1)
+            };
         }
         for ordinal in 1..self.range.count as usize {
             let Some(row) = self

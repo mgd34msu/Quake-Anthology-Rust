@@ -343,7 +343,40 @@ fn scene_surface_limits(mut limits: Limits, surfaces: usize) -> Result<Limits, S
     Ok(limits)
 }
 
+fn world_presentation(
+    scenes: &[Option<WorldScene>],
+    world: qa_render::world::WorldId,
+    profile: crate::model_assets::ModelProfile,
+    selected: Option<qa_render::world::WorldPresentationId>,
+) -> Option<&qa_render::material::world_load::LoadedWorldPresentation> {
+    let scene = scenes.get(world.0 as usize)?.as_ref()?;
+    if let Some(selected) = selected {
+        return scene
+            .presentations
+            .iter()
+            .find(|entry| entry.id == selected);
+    }
+    scene.presentations.iter().find(|entry| {
+        entry.profile.rules == profile.rules
+            && entry.profile.indexed_palette == profile.palette
+            && entry.profile.image_settings == profile.image_settings
+    })
+}
+
 impl SceneComposer {
+    pub(crate) fn world_presentation(
+        &self,
+        world: qa_render::world::WorldId,
+        profile: crate::model_assets::ModelProfile,
+        selected: Option<qa_render::world::WorldPresentationId>,
+    ) -> Option<&qa_render::material::world_load::LoadedWorldPresentation> {
+        world_presentation(&self.scenes, world, profile, selected)
+    }
+
+    pub(crate) fn world_stage_ready(&mut self) -> bool {
+        self.frame.is_none() && self.frontend.stage_capacity(self.frontend.limits()).is_ok()
+    }
+
     pub fn load(
         mut limits: Limits,
         assets: &mut Assets,

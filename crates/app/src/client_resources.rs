@@ -222,6 +222,10 @@ impl ClientResources {
             .as_ref()
             .is_some_and(|signon| !signon.resources_admitted)
     }
+    pub(crate) fn pending_nq_world(&self) -> Option<qa_core::configstrings::ConfigRef<'_>> {
+        self.state.server_info.as_ref()?;
+        self.state.models.pending_world(&self.state.configs)
+    }
     pub(crate) fn nq_resources_admitted(&mut self) {
         if let Some(signon) = &mut self.nq_signon {
             signon.resources_admitted = true;

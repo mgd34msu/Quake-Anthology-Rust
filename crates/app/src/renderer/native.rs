@@ -29,20 +29,14 @@ impl Target {
         scenes: &'a [Option<super::WorldScene>],
         world: WorldId,
     ) -> Option<&'a qa_render::material::world_load::LoadedWorldPresentation> {
-        let scene = scenes.get(world.0 as usize)?.as_ref()?;
-        if let Some((selected, presentation)) = self.world
-            && selected == world
-        {
-            return scene
-                .presentations
-                .iter()
-                .find(|entry| entry.id == presentation);
-        }
-        scene.presentations.iter().find(|entry| {
-            entry.profile.rules == self.profile.rules
-                && entry.profile.indexed_palette == self.profile.palette
-                && entry.profile.image_settings == self.profile.image_settings
-        })
+        super::world_presentation(
+            scenes,
+            world,
+            self.profile,
+            self.world
+                .filter(|&(selected, _)| selected == world)
+                .map(|(_, presentation)| presentation),
+        )
     }
 }
 

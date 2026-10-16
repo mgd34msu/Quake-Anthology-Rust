@@ -41,10 +41,15 @@ impl FrameHost {
         &mut self,
         mut preparer: Option<&mut dyn crate::renderer::AssetPreparer>,
     ) {
-        let runtime = &mut self.runtime;
         let mut published = false;
-        for (index, resources) in runtime.client_resources.iter_mut().enumerate() {
-            let Some(resources) = resources else { continue };
+        for index in 0..self.runtime.client_resources.len() {
+            if !self.prepare_received_world(ClientId(index as u32), &mut preparer) {
+                continue;
+            }
+            let runtime = &mut self.runtime;
+            let Some(resources) = runtime.client_resources[index].as_mut() else {
+                continue;
+            };
             let source = self
                 .modules
                 .as_ref()
@@ -93,6 +98,310 @@ impl FrameHost {
         }
         if published {
             self.refresh_model_consumers();
+        }
+    }
+
+    fn prepare_received_world(
+        &mut self,
+        client: ClientId,
+        preparer: &mut Option<&mut dyn crate::renderer::AssetPreparer>,
+    ) -> bool {
+        use qa_compat::services::{LoadedWorldBinding, ModelLookup};
+        use qa_network::{commands::packet::Protocol, ingress::ConnectionPhase};
+        let slot = client.0 as usize;
+        let Some(resources) = self
+            .runtime
+            .client_resources
+            .get(slot)
+            .and_then(Option::as_ref)
+        else {
+            return true;
+        };
+        if resources.state.server_info().is_none() {
+            return true;
+        }
+        if self
+            .runtime
+            .snapshots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .is_none_or(|binding| binding.presentation_closed())
+        {
+            return false;
+        }
+        let Some(request) = resources.pending_nq_world() else {
+            return resources
+                .state
+                .models
+                .world_binding()
+                .is_some_and(|(world, _)| world.collision.is_some());
+        };
+        let revision = request.revision;
+        let epoch = resources.state.models.revision();
+        let Some(binding) = self.runtime.snapshots.get(slot).and_then(Option::as_ref) else {
+            return false;
+        };
+        let Some(seat) = binding
+            .seat()
+            .filter(|_| binding.protocol == Protocol::NetQuake15)
+        else {
+            return false;
+        };
+        let Some(row) = self.runtime.server.clients.get(slot) else {
+            return false;
+        };
+        let lifetime = row.entity;
+        let output = binding.output;
+        let source_rules = resources
+            .state
+            .models
+            .profile()
+            .map_or(resources.state.layout.rules, |profile| profile.source_rules);
+        let presentation_rules = self.local_presentation_rules[seat.index()]
+            .or_else(|| {
+                resources
+                    .state
+                    .models
+                    .profile()
+                    .map(|profile| profile.rules)
+            })
+            .unwrap_or(row.client_rules);
+        if self.local_clients[seat.index()] != Some(client)
+            || row.connection != Some(qa_session::clients::Connection::Local)
+            || row.output != Some(output)
+            || self.runtime.server.entities.resolve(lifetime).is_none()
+            || resources.state.presentation_reset_pending()
+            || self
+                .runtime
+                .network
+                .get(client, qa_core::loopback::Endpoint::Client)
+                .is_none_or(|connection| !matches!(connection.phase, ConnectionPhase::Connected))
+            || self
+                .runtime
+                .model_assets
+                .as_ref()
+                .is_none_or(|owner| owner.initial_registration())
+        {
+            return false;
+        }
+        if resources.state.models.profile().is_some_and(|profile| {
+            profile.source_rules == source_rules && profile.rules == presentation_rules
+        }) && let Some((selected, _)) = resources.state.models.world_binding()
+            && self
+                .runtime
+                .model_assets
+                .as_ref()
+                .is_some_and(|owner| owner.catalog().loaded_world(request.text) == Some(selected))
+        {
+            if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                resources.state.models.take_world_attempt();
+            }
+            return true;
+        }
+        if self
+            .runtime
+            .scene
+            .as_mut()
+            .is_none_or(|scene| !scene.world_stage_ready())
+        {
+            return false;
+        }
+        let Some(preparer) = preparer.as_mut() else {
+            return false;
+        };
+        let preparer = &mut **preparer;
+        let trace_rules = self
+            .runtime
+            .server
+            .clients
+            .iter()
+            .filter(|row| row.connection.is_some())
+            .map(|row| row.player.trace_rules)
+            .chain(
+                self.runtime
+                    .prediction
+                    .iter()
+                    .map(|prediction| prediction.player.trace_rules),
+            )
+            .chain(
+                self.modules
+                    .iter()
+                    .flat_map(|modules| modules.rows.iter().flatten())
+                    .map(|row| row.request.context.trace_rules),
+            )
+            .map(|rules| qa_world::collision::trace_policy(rules).0)
+            .find(|rules| rules.hull_shape == qa_world::collision::HullShape::ExactBox)
+            .unwrap_or_else(|| {
+                qa_world::collision::trace_policy(
+                    self.runtime.prediction[seat.index()].player.trace_rules,
+                )
+                .0
+            });
+        let before = self
+            .runtime
+            .model_assets
+            .as_ref()
+            .map(|owner| owner.assets().counts());
+        let result = (|| {
+            let runtime = &mut self.runtime;
+            let resources = runtime.client_resources[slot]
+                .as_mut()
+                .ok_or("missing CLIENT resources")?;
+            let request = resources
+                .state
+                .models
+                .pending_world(&resources.state.configs)
+                .ok_or("CLIENT world request changed")?;
+            resources.state.models.take_world_attempt();
+            let path =
+                std::str::from_utf8(request.text).map_err(|_| "CLIENT world path is not UTF-8")?;
+            let owner = runtime
+                .model_assets
+                .as_mut()
+                .ok_or("missing model assets")?;
+            let scene = runtime.scene.as_mut().ok_or("missing scene owner")?;
+            let image_settings = resources
+                .state
+                .models
+                .profile()
+                .filter(|profile| profile.rules == presentation_rules)
+                .map_or_else(
+                    || {
+                        crate::render_settings::image_settings(
+                            &self.console.cvars,
+                            presentation_rules,
+                        )
+                    },
+                    |profile| Ok(profile.image_settings),
+                )?;
+            let (profile, _) = owner.prepare_profile(
+                &runtime.vfs,
+                source_rules,
+                presentation_rules,
+                image_settings,
+                |assets| preparer.prepare_assets(assets, None),
+            )?;
+            let current = || {
+                runtime.server.clients.get(slot).is_some_and(|row| {
+                    row.entity == lifetime
+                        && row.output == Some(output)
+                        && row.connection == Some(qa_session::clients::Connection::Local)
+                        && runtime.server.entities.resolve(lifetime).is_some()
+                }) && runtime.snapshots[slot].as_ref().is_some_and(|binding| {
+                    binding.output == output
+                        && binding.seat() == Some(seat)
+                        && binding.protocol == Protocol::NetQuake15
+                }) && runtime
+                    .network
+                    .get(client, qa_core::loopback::Endpoint::Client)
+                    .is_some_and(|connection| connection.phase.is_connected())
+                    && resources.state.server_info().is_some()
+                    && resources.state.models.revision() == epoch
+                    && resources
+                        .state
+                        .configs
+                        .config(1)
+                        .is_some_and(|row| row.revision == revision)
+                    && !resources.state.presentation_reset_pending()
+            };
+            if !current() {
+                return Err("CLIENT world admission lifetime changed".to_owned());
+            }
+            if let Some(world) = owner.catalog().loaded_world(request.text) {
+                if world.collision.is_none() {
+                    return Err("CLIENT world has no collision model".to_owned());
+                }
+                let presentation = scene
+                    .world_presentation(world.render, profile, None)
+                    .copied()
+                    .ok_or("CLIENT world presentation is not loaded")?;
+                return Ok((profile, world, presentation));
+            }
+            let input = crate::map::read(&runtime.vfs, path)?;
+            let mut presentation =
+                qa_render::material::world_load::WorldPresentationProfile::native(
+                    profile.rules,
+                    profile.palette,
+                );
+            presentation.image_settings = profile.image_settings;
+            let (loaded, (append, scratches), _) = owner.prepare_world(
+                &runtime.vfs,
+                &mut runtime.geometry,
+                input,
+                crate::model_assets::WorldRegistration {
+                    profile,
+                    presentation,
+                    options: Default::default(),
+                    trace_rules,
+                },
+                |view, store, loaded| {
+                    let append = scene.stage_world(view.assets, &loaded.render)?;
+                    let destinations = crate::runtime_trace_scratches(
+                        &mut runtime.collision,
+                        &mut runtime.client_collision,
+                    )
+                    .chain(
+                        self.modules
+                            .iter_mut()
+                            .flat_map(|modules| modules.rows.iter_mut().flatten())
+                            .map(|row| &mut row.scratch),
+                    );
+                    let scratches = crate::TraceScratchStage::prepare(store, destinations);
+                    Ok((append, scratches))
+                },
+                |assets, (append, _)| {
+                    if !current() {
+                        return Err("CLIENT world admission lifetime changed".to_owned());
+                    }
+                    preparer.prepare_assets(assets, Some(append.limits()))
+                },
+            )?;
+            let presentation = loaded.render.presentations[0];
+            append.commit();
+            scratches.commit();
+            Ok((
+                profile,
+                LoadedWorldBinding {
+                    render: loaded.render.world,
+                    collision: Some(loaded.collision),
+                },
+                presentation,
+            ))
+        })();
+        if self
+            .runtime
+            .model_assets
+            .as_ref()
+            .map(|owner| owner.assets().counts())
+            != before
+        {
+            self.refresh_model_consumers();
+        }
+        match result {
+            Ok((profile, world, presentation)) => {
+                let owner = self.runtime.model_assets.as_ref();
+                if let (Some(resources), Some(owner)) =
+                    (self.runtime.client_resources[slot].as_mut(), owner)
+                {
+                    resources.state.rejected += u64::from(resources.state.models.bind_all(
+                        &resources.state.configs,
+                        owner.catalog(),
+                        profile,
+                        Some((world.render, presentation.id)),
+                    ));
+                    resources.state.models.take_world_attempt();
+                }
+                self.local_worlds[seat.index()] = Some((world.render, presentation.id));
+                self.local_presentations[seat.index()] = presentation.defaults;
+                if let Some(collision) = self.runtime.client_collision[slot].as_mut() {
+                    collision.invalidate();
+                }
+                true
+            }
+            Err(error) => {
+                self.reject_nq_signon(client, format_args!("{error}"));
+                false
+            }
         }
     }
     /// Module renderer provenance is independent of the SERVER publisher's
