@@ -3077,6 +3077,7 @@ fn install_received_world_owner(
             id: presentation,
             profile: WorldPresentationProfile::native(profile.rules, profile.palette),
             lighting: Default::default(),
+            compile_policy: Default::default(),
             defaults: Default::default(),
         }]
         .into_boxed_slice(),

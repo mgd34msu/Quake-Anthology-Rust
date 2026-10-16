@@ -80,6 +80,7 @@ fn fixture() -> (Assets, Reader, [ShaderRef; 3]) {
                 source: LightSource::Page(0),
                 lightmap: ImageId(0),
             },
+            qa_render::material::ShaderCompilePolicy::default(),
             &mut images,
         )
         .unwrap()
@@ -973,6 +974,7 @@ fn sky_batches_keep_distinct_resolved_offsets_for_the_same_physical_body() {
             source: LightSource::Page(0),
             lightmap: ImageId(0),
         },
+        qa_render::material::ShaderCompilePolicy::default(),
         &mut images,
     )
     .unwrap();
@@ -984,6 +986,7 @@ fn sky_batches_keep_distinct_resolved_offsets_for_the_same_physical_body() {
             source: LightSource::Page(1),
             lightmap: green_lightmap,
         },
+        qa_render::material::ShaderCompilePolicy::default(),
         &mut images,
     )
     .unwrap()

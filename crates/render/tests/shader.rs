@@ -30,6 +30,7 @@ fn compile(catalog: &ShaderCatalog, name: &str) -> (qa_render::Assets, qa_render
                 source: qa_render::world::geometry::LightSource::TwoDimensional,
                 lightmap: qa_render::ImageId(0),
             },
+            qa_render::material::ShaderCompilePolicy::default(),
             &mut images,
         )
         .unwrap();

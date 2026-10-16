@@ -968,7 +968,14 @@ fn generated_native_default_keeps_pixels_first_sampler_and_indexed_profile_capab
             palette,
             transparent_index: None,
         });
-        let fallback = native_default_shader(&mut state, &mut assets, target, None).unwrap();
+        let fallback = native_default_shader(
+            &mut state,
+            &mut assets,
+            target,
+            None,
+            qa_render::material::ShaderCompilePolicy::default(),
+        )
+        .unwrap();
         let binding = assets.shader_binding(fallback).unwrap();
         let material = assets.material(binding.material).unwrap();
         assert_eq!(material.settings.sort, 3.0);
@@ -1017,7 +1024,14 @@ fn generated_native_default_keeps_pixels_first_sampler_and_indexed_profile_capab
         // A seeded capability also survives a foreign geometry-source borrow.
         let mut state = ImagesState::new(RuleSetId::Quake2, presentation, settings, None).unwrap();
         assert_eq!(
-            native_default_shader(&mut state, images.assets, target, Some(fallback)).unwrap(),
+            native_default_shader(
+                &mut state,
+                images.assets,
+                target,
+                Some(fallback),
+                qa_render::material::ShaderCompilePolicy::default(),
+            )
+            .unwrap(),
             fallback
         );
         let mut mixed = Images::from_state(&vfs, images.assets, state);

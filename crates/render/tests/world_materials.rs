@@ -47,6 +47,7 @@ fn load_native_world(
         source_palette,
         &[WorldPresentationProfile::native(rules, target_palette).into()],
         options,
+        qa_render::material::ShaderCompilePolicy::default(),
     )
 }
 
@@ -745,6 +746,7 @@ fn one_world_registers_exact_profiles_once_without_mutating_previous_assets() ->
         Some(palette),
         &[first.into(), second.into(), third.into(), first.into()],
         WorldLoadOptions::default(),
+        qa_render::material::ShaderCompilePolicy::default(),
     )
     .map_err(|e| format!("material variants: {e:?}"))?;
     assert_eq!(assets.worlds().len(), 1);
@@ -892,6 +894,7 @@ fn one_geometry_presents_explicit_palette_variants_in_both_seat_orders() -> Resu
             Some(source),
             &profiles.map(Into::into),
             WorldLoadOptions::default(),
+            qa_render::material::ShaderCompilePolicy::default(),
         )
         .map_err(|e| format!("palette variants: {e:?}"))?;
         assert_eq!(assets.worlds().len(), 1);
@@ -1101,9 +1104,15 @@ fn world_lighting_rebuild_restores_authored_bytes_and_keeps_old_presentations_im
         .sample(Vec3::default(), 1., 1.);
     assert_eq!(light.ambient, [200., 100., 50.]);
     assert_eq!(light.directed, [20., 30., 40.]);
-    let changed = append_world_presentation(&vfs, &mut assets, world, original.profile.into())
-        .map_err(|error| format!("lighting presentation: {error:?}"))?
-        .presentations[0];
+    let changed = append_world_presentation(
+        &vfs,
+        &mut assets,
+        world,
+        original.profile.into(),
+        qa_render::material::ShaderCompilePolicy::default(),
+    )
+    .map_err(|error| format!("lighting presentation: {error:?}"))?
+    .presentations[0];
     assert_ne!(changed.id, original.id);
     assert_eq!(changed.profile, original.profile);
     assert_eq!(changed.lighting, settings.lighting);
@@ -1161,23 +1170,41 @@ fn world_lighting_rebuild_restores_authored_bytes_and_keeps_old_presentations_im
     );
 
     let rebuild = assets.rebuild_worlds(&[world], settings).unwrap();
-    let retry = append_world_presentation(&vfs, &mut assets, world, original.profile.into())
-        .map_err(|error| format!("retry presentation: {error:?}"))?
-        .presentations[0];
+    let retry = append_world_presentation(
+        &vfs,
+        &mut assets,
+        world,
+        original.profile.into(),
+        qa_render::material::ShaderCompilePolicy::default(),
+    )
+    .map_err(|error| format!("retry presentation: {error:?}"))?
+    .presentations[0];
     assert_eq!(retry, changed);
     cpu.prepare_assets(&assets, None).unwrap();
     rebuild.commit();
     let retained = assets.counts();
-    let cached = append_world_presentation(&vfs, &mut assets, world, original.profile.into())
-        .map_err(|error| format!("cached presentation: {error:?}"))?;
+    let cached = append_world_presentation(
+        &vfs,
+        &mut assets,
+        world,
+        original.profile.into(),
+        qa_render::material::ShaderCompilePolicy::default(),
+    )
+    .map_err(|error| format!("cached presentation: {error:?}"))?;
     assert_eq!(cached.presentations[0], retry);
     assert_eq!(assets.counts(), retained);
     assert_eq!(assets.world(world).unwrap().mesh(), source_mesh);
     let rebuild = assets
         .rebuild_worlds(&[world], WorldRenderSettings::default())
         .unwrap();
-    let restored = append_world_presentation(&vfs, &mut assets, world, original.profile.into())
-        .map_err(|error| format!("restored presentation: {error:?}"))?;
+    let restored = append_world_presentation(
+        &vfs,
+        &mut assets,
+        world,
+        original.profile.into(),
+        qa_render::material::ShaderCompilePolicy::default(),
+    )
+    .map_err(|error| format!("restored presentation: {error:?}"))?;
     assert_eq!(restored.presentations[0], original);
     assert_eq!(assets.counts(), retained);
     assert_eq!(
@@ -1478,8 +1505,14 @@ fn unreferenced_native_page_zero_is_real_converted_resource_and_late_metadata_ro
     let old_mesh = assets.world(loaded.world).unwrap().mesh();
     let mut profile = loaded.presentations[0].profile;
     profile.image_settings.picmip = 0;
-    let candidate = append_world_presentation(&vfs, &mut assets, loaded.world, profile.into())
-        .map_err(|error| format!("{error:?}"))?;
+    let candidate = append_world_presentation(
+        &vfs,
+        &mut assets,
+        loaded.world,
+        profile.into(),
+        qa_render::material::ShaderCompilePolicy::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
     let candidate_id = candidate.presentations[0].id;
     assert_eq!(assets.world(loaded.world).unwrap().mesh(), old_mesh);
     assert_eq!(
@@ -1509,8 +1542,14 @@ fn unreferenced_native_page_zero_is_real_converted_resource_and_late_metadata_ro
         &assets.image(page_zero).unwrap().rgba[..4],
         &[4, 8, 12, 255]
     );
-    let retry = append_world_presentation(&vfs, &mut assets, loaded.world, profile.into())
-        .map_err(|error| format!("{error:?}"))?;
+    let retry = append_world_presentation(
+        &vfs,
+        &mut assets,
+        loaded.world,
+        profile.into(),
+        qa_render::material::ShaderCompilePolicy::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
     assert_eq!(retry.presentations[0].id, candidate_id);
     let admitted = assets.world_presentation(candidate_id).unwrap();
     assert!(
@@ -1614,6 +1653,7 @@ fn named_outcomes_keep_requested_finished_modes_and_typed_native_defaults() -> R
                 b"Textures/Plain.tga",
                 true,
                 NamedShaderLighting { source, lightmap },
+                qa_render::material::ShaderCompilePolicy::default(),
                 &mut images,
             )
             .map_err(|error| format!("{error:?}"))?,
@@ -1652,6 +1692,7 @@ fn named_outcomes_keep_requested_finished_modes_and_typed_native_defaults() -> R
             source: LightSource::Page(0),
             lightmap,
         },
+        qa_render::material::ShaderCompilePolicy::default(),
         &mut images,
     )
     .map_err(|error| format!("{error:?}"))?;
@@ -1666,6 +1707,7 @@ fn named_outcomes_keep_requested_finished_modes_and_typed_native_defaults() -> R
             b"textures/implicit_missing",
             true,
             NamedShaderLighting { source, lightmap },
+            qa_render::material::ShaderCompilePolicy::default(),
             &mut images,
         )
         .map_err(|error| format!("{error:?}"))?;
@@ -1714,6 +1756,7 @@ fn named_outcomes_keep_requested_finished_modes_and_typed_native_defaults() -> R
                 source: LightSource::None,
                 lightmap,
             },
+            qa_render::material::ShaderCompilePolicy::default(),
             &mut images,
         )
         .map_err(|error| format!("{error:?}"))?;
@@ -1745,6 +1788,7 @@ fn named_outcomes_keep_requested_finished_modes_and_typed_native_defaults() -> R
                 source: LightSource::None,
                 lightmap,
             },
+            qa_render::material::ShaderCompilePolicy::default(),
             &mut images,
         );
         assert!(matches!(
@@ -1849,6 +1893,7 @@ fn q3_default_world_uses_independent_indexed_presentation_without_dropping_nativ
         None,
         &[profile.into()],
         WorldLoadOptions::default(),
+        qa_render::material::ShaderCompilePolicy::default(),
     )
     .map_err(|error| format!("{error:?}"))?;
     let presentation = assets

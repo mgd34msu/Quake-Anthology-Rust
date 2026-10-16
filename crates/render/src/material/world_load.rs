@@ -1,5 +1,7 @@
 //! File-boundary conversion into the one runtime world/material table.
 use super::{
+    ShaderCompilePolicy,
+    finish::{BundleImage, ShaderSlot, finish_material},
     load_catalog,
     resources::{
         ImageRole, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget, ResolvedImage,
@@ -190,6 +192,7 @@ pub struct LoadedWorldPresentation {
     pub profile: WorldPresentationProfile,
     pub defaults: PresentationDefaults,
     pub lighting: WorldLighting,
+    pub compile_policy: ShaderCompilePolicy,
 }
 pub struct LoadedWorld {
     pub world: WorldId,
@@ -435,6 +438,7 @@ fn compile_profile(
     source: &WorldMaterialSource,
     request: WorldPresentationRequest,
     prepared: PreparedPresentation,
+    policy: ShaderCompilePolicy,
     diagnostics: &mut Vec<String>,
 ) -> Result<(CompiledPresentation, PresentationDefaults), WorldMaterialError> {
     let lightmaps = register_lightmap_pages(assets, &source.layout, prepared.pages)?;
@@ -443,6 +447,7 @@ fn compile_profile(
         source,
         assets,
         request,
+        policy,
         &source.layout.regions,
         &lightmaps.surfaces,
         prepared.conversion,
@@ -494,6 +499,7 @@ pub fn load_world(
     source_palette: Option<crate::PaletteId>,
     profiles: &[WorldPresentationRequest],
     mut options: WorldLoadOptions,
+    policy: ShaderCompilePolicy,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let geometry_source = map.bsp.format.rule_set();
     validate_profiles(assets, geometry_source, source_palette, profiles)?;
@@ -608,8 +614,15 @@ pub fn load_world(
     let mut defaults = Vec::with_capacity(distinct.len());
     for &request in &distinct {
         let prepared = prepare_presentation(&geometry, &source, request.profile)?;
-        let (bindings, presentation) =
-            compile_profile(vfs, assets, &source, request, prepared, &mut diagnostics)?;
+        let (bindings, presentation) = compile_profile(
+            vfs,
+            assets,
+            &source,
+            request,
+            prepared,
+            policy,
+            &mut diagnostics,
+        )?;
         variants.push(bindings);
         defaults.push(presentation);
     }
@@ -647,6 +660,7 @@ pub fn load_world(
                     profile: request.profile,
                     defaults,
                     lighting,
+                    compile_policy: policy,
                 }],
             )
             .map_err(WorldMaterialError::Boundary)?;
@@ -661,6 +675,7 @@ pub fn load_world(
             profile: distinct[index].profile,
             defaults: defaults[index],
             lighting,
+            compile_policy: policy,
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
@@ -679,6 +694,7 @@ pub fn append_world_presentation(
     assets: &mut Assets,
     world: WorldId,
     request: WorldPresentationRequest,
+    policy: ShaderCompilePolicy,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let profile = request.profile;
     let row = assets
@@ -689,6 +705,7 @@ pub fn append_world_presentation(
         assets.world_presentation_registration(id).filter(|entry| {
             entry.profile == profile
                 && current_lighting.is_none_or(|lighting| entry.lighting == lighting)
+                && entry.compile_policy == policy
         })
     });
     if let Some(existing) = existing {
@@ -710,8 +727,15 @@ pub fn append_world_presentation(
             profile,
         )?;
         let mut diagnostics = Vec::new();
-        let (bindings, defaults) =
-            compile_profile(vfs, assets, source, request, prepared, &mut diagnostics)?;
+        let (bindings, defaults) = compile_profile(
+            vfs,
+            assets,
+            source,
+            request,
+            prepared,
+            policy,
+            &mut diagnostics,
+        )?;
         let id = assets
             .append_world_presentation(world, bindings.input())
             .map_err(WorldMaterialError::Boundary)?;
@@ -723,6 +747,7 @@ pub fn append_world_presentation(
                     profile,
                     defaults,
                     lighting,
+                    compile_policy: policy,
                 }],
             )
             .map_err(WorldMaterialError::Boundary)?;
@@ -733,6 +758,7 @@ pub fn append_world_presentation(
                 profile,
                 defaults,
                 lighting,
+                compile_policy: policy,
             }]
             .into_boxed_slice(),
             diagnostics: diagnostics.into_boxed_slice(),
@@ -797,6 +823,7 @@ fn compile_presentation(
     source: &WorldMaterialSource,
     assets: &mut Assets,
     request: WorldPresentationRequest,
+    policy: ShaderCompilePolicy,
     regions: &[Option<AtlasRegion>],
     lightmaps: &[Option<ImageId>],
     lightmap_conversion: LightmapConversion,
@@ -895,6 +922,7 @@ fn compile_presentation(
                 transparent_index: None,
             }),
             request.native_default,
+            policy,
         )?)
     } else {
         None
@@ -935,6 +963,7 @@ fn compile_presentation(
                 source: LightSource::None,
                 lightmap: ImageId(0),
             },
+            policy,
             &mut images,
             diagnostics,
         )?;
@@ -982,6 +1011,7 @@ fn compile_presentation(
                     },
                     lightmap: lightmaps[surface.source_id as usize].unwrap_or(ImageId(0)),
                 },
+                policy,
                 &mut images,
                 diagnostics,
             )?;
@@ -1105,6 +1135,7 @@ fn compile_presentation(
                     source: surface.light_source,
                     lightmap,
                 },
+                policy,
             )?;
             let mut registration = images
                 .assets
@@ -1130,6 +1161,7 @@ fn compile_presentation(
                         source: surface.light_source,
                         lightmap,
                     },
+                    policy,
                     &mut images,
                 )?;
                 let material = registration.shader.material;
@@ -1239,12 +1271,13 @@ fn optional_named_binding(
     catalog: &ShaderCatalog,
     raw: &[u8],
     lighting: NamedShaderLighting,
+    policy: ShaderCompilePolicy,
     images: &mut Images<'_>,
     diagnostics: &mut Vec<String>,
 ) -> Result<Option<ShaderRegistration<ShaderBinding>>, WorldMaterialError> {
-    match images
-        .try_registration(|images| compile_named_binding(catalog, raw, true, lighting, images))
-    {
+    match images.try_registration(|images| {
+        compile_named_binding(catalog, raw, true, lighting, policy, images)
+    }) {
         Ok(registration) => Ok(Some(registration)),
         Err(
             error @ (WorldMaterialError::Shader(_)
@@ -1507,9 +1540,11 @@ fn write_lightmap_region(
 fn default_material(
     name: &str,
     image: ResolvedImage,
-    light: LightSource,
+    lighting: NamedShaderLighting,
+    policy: ShaderCompilePolicy,
     images: &mut Images<'_>,
 ) -> Result<MaterialId, WorldMaterialError> {
+    let light = lighting.source;
     let base = Stage {
         texture: StageTexture::Image(image.id),
         sampler: image.sampler,
@@ -1569,21 +1604,21 @@ fn default_material(
             ..base
         }],
     };
-    images
-        .assets
-        .register_material(
-            name,
-            &stages,
-            MaterialSettings {
-                sort: if light == LightSource::TwoDimensional {
-                    9.0
-                } else {
-                    3.0
-                },
-                ..MaterialSettings::default()
+    finish_material(
+        name,
+        stages.into_iter().map(ShaderSlot::from_stage).collect(),
+        MaterialSettings {
+            sort: if light == LightSource::TwoDimensional {
+                9.0
+            } else {
+                3.0
             },
-        )
-        .map_err(WorldMaterialError::Boundary)
+            ..MaterialSettings::default()
+        },
+        lighting,
+        policy,
+        images.assets,
+    )
 }
 
 /// One generated native fallback; its draw body is distinct from named defaults and white helpers.
@@ -1592,6 +1627,7 @@ pub fn native_default_shader(
     assets: &mut Assets,
     indexed: Option<IndexedTarget>,
     existing: Option<ShaderBindingId>,
+    policy: ShaderCompilePolicy,
 ) -> Result<ShaderBindingId, WorldMaterialError> {
     let image = existing
         .map(|id| {
@@ -1621,19 +1657,23 @@ pub fn native_default_shader(
         })
         .transpose()?;
     let image = state.native_default_image(assets, indexed, image)?;
-    let material = assets
-        .register_material(
-            "<default>",
-            &[Stage {
-                texture: StageTexture::Image(image.id),
-                sampler: image.sampler,
-                rgb_gen: RgbGen::IdentityLighting,
-                alpha_gen: AlphaGen::Identity,
-                ..Stage::default()
-            }],
-            MaterialSettings::default(),
-        )
-        .map_err(WorldMaterialError::Boundary)?;
+    let material = finish_material(
+        "<default>",
+        vec![ShaderSlot::from_stage(Stage {
+            texture: StageTexture::Image(image.id),
+            sampler: image.sampler,
+            rgb_gen: RgbGen::IdentityLighting,
+            alpha_gen: AlphaGen::Identity,
+            ..Stage::default()
+        })],
+        MaterialSettings::default(),
+        NamedShaderLighting {
+            source: LightSource::None,
+            lightmap: ImageId(0),
+        },
+        policy,
+        assets,
+    )?;
     let shader = assets
         .register_shader_binding(ShaderBinding::material(material, LightSource::None))
         .map_err(WorldMaterialError::Boundary)?;
@@ -1658,9 +1698,10 @@ pub fn compile_named_shader(
     raw: &[u8],
     mipmaps: bool,
     lighting: NamedShaderLighting,
+    policy: ShaderCompilePolicy,
     images: &mut Images<'_>,
 ) -> Result<ShaderRegistration, WorldMaterialError> {
-    let registration = compile_named_binding(catalog, raw, mipmaps, lighting, images)?;
+    let registration = compile_named_binding(catalog, raw, mipmaps, lighting, policy, images)?;
     let shader = images
         .assets
         .register_shader_binding(registration.shader)
@@ -1673,6 +1714,7 @@ fn compile_named_binding(
     raw: &[u8],
     mipmaps: bool,
     lighting: NamedShaderLighting,
+    policy: ShaderCompilePolicy,
     images: &mut Images<'_>,
 ) -> Result<ShaderRegistration<ShaderBinding>, WorldMaterialError> {
     let image = std::str::from_utf8(raw)
@@ -1683,7 +1725,7 @@ fn compile_named_binding(
     let mut defaulted = None;
     let mut sun = None;
     let material = if let Some(definition) = definition {
-        let compiled = compile_definition(definition, images, lighting)?;
+        let compiled = compile_definition(definition, images, lighting, policy)?;
         defaulted = compiled.defaulted;
         sun = compiled.sun;
         compiled.material
@@ -1710,24 +1752,21 @@ fn compile_named_binding(
             images.raster_target(),
         );
         match image {
-            Ok(image) => default_material(display, image, lighting.source, images)?,
+            Ok(image) => default_material(display, image, lighting, policy, images)?,
             Err(ResourceError::Missing(_)) => {
                 let kind = NativeDefaultKind::MissingImage;
                 defaulted = Some(kind);
-                images
-                    .assets
-                    .register_native_material(
-                        display,
-                        crate::assets::NativeMaterialFinish {
-                            stages: &[],
-                            settings: MaterialSettings {
-                                sort: 7.,
-                                ..Default::default()
-                            },
-                            has_lightmap: false,
-                        },
-                    )
-                    .map_err(WorldMaterialError::Boundary)?
+                finish_material(
+                    display,
+                    Vec::new(),
+                    MaterialSettings {
+                        sort: 7.,
+                        ..Default::default()
+                    },
+                    lighting,
+                    policy,
+                    images.assets,
+                )?
             }
             Err(error) => return Err(error.into()),
         }
@@ -1742,92 +1781,6 @@ fn compile_named_binding(
     Ok(registration)
 }
 
-#[derive(Clone, Copy)]
-enum BundleImage {
-    Image(ImageId),
-    Lightmap,
-}
-struct ShaderSlot {
-    active: bool,
-    images: [Option<BundleImage>; crate::shader::MAX_ANIMATIONS],
-    count: usize,
-    frequency: f32,
-    stage: Stage,
-    rgb: Option<RgbGen>,
-    rgb_wave: crate::shader::Waveform,
-    alpha_wave: crate::shader::Waveform,
-    vectors: [[f32; 3]; 2],
-    tcgen: bool,
-    texmods: usize,
-    source: Option<BlendFactor>,
-    destination: Option<BlendFactor>,
-    pending_depth: bool,
-    depth_explicit: bool,
-    pending_alpha: AlphaFunc,
-    pending_func: DepthFunc,
-}
-impl ShaderSlot {
-    fn new() -> Self {
-        let wave = crate::shader::Waveform {
-            function: crate::shader::WaveFunction::Sin,
-            base: 0.,
-            amplitude: 0.,
-            phase: 0.,
-            frequency: 0.,
-        };
-        Self {
-            active: true,
-            images: [None; crate::shader::MAX_ANIMATIONS],
-            count: 0,
-            frequency: 0.,
-            stage: Stage {
-                depth_write: false,
-                ..Default::default()
-            },
-            rgb: None,
-            rgb_wave: wave,
-            alpha_wave: wave,
-            vectors: [[0.; 3]; 2],
-            tcgen: false,
-            texmods: 0,
-            source: None,
-            destination: None,
-            pending_depth: true,
-            depth_explicit: false,
-            pending_alpha: AlphaFunc::None,
-            pending_func: DepthFunc::Lequal,
-        }
-    }
-    fn commit(&mut self) -> Result<(), WorldMaterialError> {
-        let rgb = self.rgb.unwrap_or(match self.source {
-            None | Some(BlendFactor::One | BlendFactor::SourceAlpha) => RgbGen::IdentityLighting,
-            _ => RgbGen::Identity,
-        });
-        self.stage.rgb_gen = rgb;
-        self.rgb = Some(rgb);
-        self.stage.blend = match (self.source, self.destination) {
-            (None, None) => None,
-            (Some(BlendFactor::One), Some(BlendFactor::Zero)) => {
-                self.pending_depth = true;
-                None
-            }
-            (Some(source), Some(destination)) => Some(StageBlend {
-                source,
-                destination,
-            }),
-            _ => return Err(WorldMaterialError::Shader("incomplete native blend state")),
-        };
-        self.stage.depth_write = self.pending_depth;
-        self.stage.alpha_test = self.pending_alpha;
-        self.stage.depth_func = self.pending_func;
-        if self.stage.alpha_gen == AlphaGen::Entity
-            && matches!(rgb, RgbGen::Identity | RgbGen::LightingDiffuse)
-        {
-            self.stage.alpha_gen = AlphaGen::Skip
-        }
-        Ok(())
-    }
-}
 fn update_wave(wave: &mut crate::shader::Waveform, update: crate::shader::WaveUpdate) {
     if let Some(function) = update.function {
         wave.function = function
@@ -1856,6 +1809,7 @@ pub fn compile_definition(
     definition: &ShaderDef,
     images: &mut Images<'_>,
     lighting: NamedShaderLighting,
+    policy: ShaderCompilePolicy,
 ) -> Result<CompiledShader, WorldMaterialError> {
     use crate::shader::{HeaderOp, ShaderAction, ShaderFailure, ShaderMap, StageOp};
     let mut settings = MaterialSettings {
@@ -2150,87 +2104,15 @@ pub fn compile_definition(
             rotation: None,
             params: CubeSkyParams::default(),
         });
-        settings.sort = 2.
     }
-    if settings.polygon_offset && settings.sort == 0. {
-        settings.sort = 4.
-    }
-    let first_blended = slots.first().is_some_and(|slot| slot.stage.blend.is_some());
-    let mut finish_has_lightmap = false;
-    let mut scan = 0;
-    for slot in &mut slots {
-        if !slot.active {
-            break;
-        }
-        scan += 1;
-        if slot.images[0].is_none() {
-            slot.active = false;
-            continue;
-        }
-        if !slot.tcgen {
-            slot.stage.texgen = if slot.stage.is_lightmap {
-                TexCoordGen::Lightmap
-            } else {
-                TexCoordGen::Texture
-            }
-        }
-        finish_has_lightmap |= slot.stage.is_lightmap;
-        if first_blended && slot.stage.blend.is_some() && settings.sort == 0. {
-            settings.sort = if slot.stage.depth_write { 5. } else { 9. }
-        }
-        if slot.rgb.is_none() {
-            slot.stage.rgb_gen = RgbGen::IdentityLighting
-        }
-        if sky && slot.stage.texgen == TexCoordGen::Texture {
-            slot.stage.texgen = TexCoordGen::CloudSky {
-                radius: 4096.,
-                height: cloud_height,
-            }
-        }
-        slot.stage.texture = if slot.count == 0 {
-            match slot.images[0] {
-                Some(BundleImage::Image(id)) => StageTexture::Image(id),
-                Some(BundleImage::Lightmap) => StageTexture::Lightmap,
-                None => continue,
-            }
-        } else {
-            let mut frames = [ImageId(0); crate::shader::MAX_ANIMATIONS];
-            for (target, source) in frames.iter_mut().zip(slot.images.iter()).take(slot.count) {
-                *target = match source {
-                    Some(BundleImage::Image(id)) => *id,
-                    Some(BundleImage::Lightmap) => lighting.lightmap,
-                    None => ImageId(0),
-                }
-            }
-            StageTexture::Animation {
-                images: frames,
-                count: slot.count as u8,
-                frequency: slot.frequency,
-            }
-        };
-    }
-    if settings.sort == 0. {
-        settings.sort = 3.
-    }
-    if scan == 0 {
-        settings.sort = 7.
-    }
-    let stages = slots
-        .iter()
-        .take_while(|slot| slot.active)
-        .map(|slot| slot.stage)
-        .collect::<Vec<_>>();
-    let material = images
-        .assets
-        .register_native_material(
-            &definition.name,
-            crate::assets::NativeMaterialFinish {
-                stages: &stages,
-                settings,
-                has_lightmap: finish_has_lightmap,
-            },
-        )
-        .map_err(WorldMaterialError::Boundary)?;
+    let material = finish_material(
+        &definition.name,
+        slots,
+        settings,
+        lighting,
+        policy,
+        images.assets,
+    )?;
     let defaulted = reason
         .map(|reason| images.assets.explicit_default(material, reason))
         .transpose()

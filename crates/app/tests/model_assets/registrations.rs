@@ -113,6 +113,7 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
                 id: presentation,
                 profile: world_registration(profile).presentation,
                 lighting: Default::default(),
+                compile_policy: Default::default(),
                 defaults: Default::default(),
             }],
         )

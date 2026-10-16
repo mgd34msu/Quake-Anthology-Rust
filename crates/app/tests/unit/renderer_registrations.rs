@@ -727,6 +727,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         id,
         profile: WorldPresentationProfile::native(profile.rules, profile.palette),
         lighting: Default::default(),
+        compile_policy: Default::default(),
         defaults: Default::default(),
     });
     assets

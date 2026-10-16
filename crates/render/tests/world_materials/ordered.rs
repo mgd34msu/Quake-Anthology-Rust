@@ -4,6 +4,7 @@ use qa_render::{
     Assets, ShaderRegistration,
     assets::{ImageId, StageTexture, TcGen, Wrap},
     material::{
+        MaterialFinishPolicy, ShaderCompilePolicy,
         resources::{ImageSettings, Images},
         world_load::{NamedShaderLighting, compile_named_shader},
     },
@@ -23,6 +24,7 @@ fn compile(
     names: &[&[u8]],
     lighting: LightSource,
     settings: ImageSettings,
+    policy: ShaderCompilePolicy,
 ) -> Compiled {
     let root = resources(label).unwrap();
     let mut second = std::fs::read(root.join("textures/modern.tga")).unwrap();
@@ -64,6 +66,7 @@ fn compile(
                     source: lighting,
                     lightmap: ImageId(0),
                 },
+                policy,
                 &mut images,
             )
             .unwrap()
@@ -91,6 +94,330 @@ fn native() -> ImageSettings {
 }
 
 #[test]
+fn detail_removal_shifts_one_slot_and_does_not_refinish_or_filter_the_tail() {
+    let result = compile(
+        "finish-detail-slots",
+        br#"
+        shifted {
+            { map textures/modern.tga
+              detail
+              tcGen texture
+            }
+            { map $lightmap
+              map textures/second.tga
+              tcGen environment
+            }
+            { map $whiteimage
+              tcGen texture
+            }
+        }
+        last {
+            { map $whiteimage tcGen texture }
+            { map $whiteimage tcGen texture }
+            { map $whiteimage tcGen texture }
+            { map $whiteimage tcGen texture }
+            { map $whiteimage tcGen texture }
+            { map $whiteimage tcGen texture }
+            { map $whiteimage tcGen texture }
+            { map $whiteimage tcGen texture detail }
+        }
+        "#,
+        &[b"shifted", b"last"],
+        LightSource::Page(0),
+        native(),
+        ShaderCompilePolicy {
+            finish: MaterialFinishPolicy {
+                detail_textures: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    assert!(result.rows.iter().all(|row| row.defaulted.is_none()));
+    let shifted = material(&result, 0);
+    assert_eq!(shifted.stages.len(), 1);
+    assert_eq!(
+        shifted.stages[0].texture,
+        StageTexture::Image(ImageId((result.image_first + 1) as u32))
+    );
+    assert_eq!(shifted.stages[0].texgen, TcGen::Environment);
+    assert!(shifted.stages[0].is_lightmap);
+    assert!(!shifted.finish_has_lightmap());
+    assert_eq!(result.rows[0].finished, LightSource::None);
+    let last = material(&result, 1);
+    assert_eq!(last.stages.len(), 8);
+    assert!(last.stages[7].detail);
+}
+
+#[test]
+fn opaque_vertex_collapse_copies_only_the_winning_bundle_and_retains_slot_zero_state() {
+    let source = br#"
+        copied { sort opaque
+            { map textures/modern.tga
+              tcGen environment
+              tcMod scroll 1 2
+              rgbGen const ( 0.25 0.5 0.75 )
+              alphaGen const 0.25
+              alphaFunc GE128
+              depthFunc equal
+              blendFunc blend
+            }
+            { clampmap textures/second.tga
+              tcGen texture
+              rgbGen identity
+              alphaFunc GT0
+              depthFunc lequal
+            }
+        }
+        sticky { sort opaque
+            { map $lightmap
+              map textures/modern.tga
+              tcGen environment
+              rgbGen vertex
+            }
+            { map $lightmap
+              clampmap textures/second.tga
+              tcGen texture
+              rgbGen identity
+            }
+        }
+    "#;
+    for lighting in [LightSource::Page(0), LightSource::None] {
+        let result = compile(
+            "finish-opaque-bundle",
+            source,
+            &[b"copied", b"sticky"],
+            lighting,
+            native(),
+            ShaderCompilePolicy {
+                finish: MaterialFinishPolicy {
+                    vertex_light: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(result.rows.iter().all(|row| row.defaulted.is_none()));
+        let copied = material(&result, 0);
+        assert_eq!(copied.settings.sort, 3.0);
+        assert_eq!(copied.stages.len(), 1);
+        let stage = copied.stages[0];
+        assert_eq!(
+            stage.texture,
+            StageTexture::Image(ImageId((result.image_first + 1) as u32))
+        );
+        assert_eq!(stage.sampler.wrap, Wrap::Clamp);
+        assert_eq!(stage.texgen, TcGen::Texture);
+        assert!(stage.tcmods.iter().all(Option::is_none));
+        assert_eq!(stage.alpha_test, qa_render::shader::AlphaFunc::AtLeastHalf);
+        assert_eq!(stage.depth_func, qa_render::assets::DepthFunc::Equal);
+        assert!(stage.depth_write);
+        assert!(stage.blend.is_none());
+        assert_eq!(stage.alpha_gen, qa_render::shader::AlphaGen::Skip);
+        assert_eq!(
+            stage.rgb_gen,
+            if lighting == LightSource::None {
+                RgbGen::LightingDiffuse
+            } else {
+                RgbGen::ExactVertex
+            }
+        );
+        let sticky = material(&result, 1);
+        assert_eq!(sticky.stages.len(), 1);
+        assert_eq!(sticky.stages[0].texture, stage.texture);
+        assert!(sticky.stages[0].is_lightmap);
+        assert!(!sticky.finish_has_lightmap());
+        assert_eq!(result.rows[1].finished, LightSource::None);
+    }
+}
+
+#[test]
+fn declared_noop_texmod_still_penalizes_the_first_bundle_in_vertex_ranking() {
+    let result = compile(
+        "finish-noop-rank",
+        br#"
+        ranked { sort opaque
+            { map textures/modern.tga
+              tcGen texture
+              rgbGen identity
+              tcMod bogus
+            }
+            { map textures/second.tga
+              tcGen texture
+              rgbGen identity
+            }
+        }
+        "#,
+        &[b"ranked"],
+        LightSource::Page(0),
+        native(),
+        ShaderCompilePolicy {
+            finish: MaterialFinishPolicy {
+                vertex_light: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    assert!(result.rows[0].defaulted.is_none());
+    let stages = &material(&result, 0).stages;
+    assert_eq!(stages.len(), 1);
+    assert_eq!(
+        stages[0].texture,
+        StageTexture::Image(ImageId((result.image_first + 1) as u32))
+    );
+    assert!(stages[0].tcmods.iter().all(Option::is_none));
+    assert_eq!(stages[0].rgb_gen, RgbGen::ExactVertex);
+}
+
+#[test]
+fn nonopaque_vertex_collapse_keeps_the_first_pass_and_native_crossfade_rules() {
+    let result = compile(
+        "finish-nonopaque",
+        br#"
+        entity { sort additive
+            { map textures/modern.tga rgbGen oneMinusEntity blendFunc add }
+            { map textures/second.tga rgbGen entity blendFunc add }
+        }
+        saw { sort additive
+            { map textures/modern.tga rgbGen wave sawtooth 0 1 0 1 blendFunc add }
+            { map textures/second.tga rgbGen wave inverseSawtooth 0 1 0 1 blendFunc add }
+        }
+        inverse { sort additive
+            { map textures/modern.tga rgbGen wave inverseSawtooth 0 1 0 1 blendFunc add }
+            { map textures/second.tga rgbGen wave sawtooth 0 1 0 1 blendFunc add }
+        }
+        skiplightmap { sort additive
+            { map $lightmap tcGen lightmap }
+            { map textures/second.tga
+              tcGen texture
+              rgbGen entity
+              alphaGen const 0.375
+              alphaFunc GE128
+              depthFunc equal
+              blendFunc blend
+              depthWrite
+            }
+        }
+        "#,
+        &[b"entity", b"saw", b"inverse", b"skiplightmap"],
+        LightSource::Page(0),
+        native(),
+        ShaderCompilePolicy {
+            finish: MaterialFinishPolicy {
+                vertex_light: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    assert!(result.rows.iter().all(|row| row.defaulted.is_none()));
+    for row in 0..3 {
+        let body = material(&result, row);
+        assert_eq!(body.settings.sort, 10.0);
+        assert_eq!(body.stages.len(), 1);
+        assert_eq!(
+            body.stages[0].texture,
+            StageTexture::Image(ImageId(result.image_first as u32))
+        );
+        assert_eq!(body.stages[0].rgb_gen, RgbGen::IdentityLighting);
+        assert_eq!(
+            body.stages[0].blend,
+            Some(qa_render::shader::StageBlend {
+                source: qa_render::shader::BlendFactor::One,
+                destination: qa_render::shader::BlendFactor::One,
+            })
+        );
+        assert!(!body.stages[0].depth_write);
+    }
+    let body = material(&result, 3);
+    assert_eq!(body.stages.len(), 1);
+    let stage = body.stages[0];
+    assert_eq!(
+        stage.texture,
+        StageTexture::Image(ImageId((result.image_first + 1) as u32))
+    );
+    assert_eq!(stage.rgb_gen, RgbGen::Entity);
+    assert_eq!(stage.alpha_gen, qa_render::shader::AlphaGen::Const(0.375));
+    assert_eq!(stage.alpha_test, qa_render::shader::AlphaFunc::AtLeastHalf);
+    assert_eq!(stage.depth_func, qa_render::assets::DepthFunc::Equal);
+    assert!(stage.depth_write);
+    assert_eq!(stage.blend, Some(qa_render::shader::StageBlend::ALPHA));
+    assert_eq!(result.rows[3].finished, LightSource::None);
+}
+
+#[test]
+fn implicit_lightmapped_material_uses_the_same_vertex_finish_and_fullscreen_guard() {
+    for (vertex_light, ui_fullscreen, passes, finished) in [
+        (false, false, 2, LightSource::Page(0)),
+        (true, false, 1, LightSource::None),
+        (true, true, 2, LightSource::Page(0)),
+    ] {
+        let result = compile(
+            "finish-implicit",
+            b"",
+            &[b"textures/modern.tga"],
+            LightSource::Page(0),
+            native(),
+            ShaderCompilePolicy {
+                finish: MaterialFinishPolicy {
+                    vertex_light,
+                    ..Default::default()
+                },
+                ui_fullscreen,
+            },
+        );
+        assert!(result.rows[0].defaulted.is_none());
+        assert_eq!(result.rows[0].requested, LightSource::Page(0));
+        assert_eq!(result.rows[0].finished, finished);
+        let body = material(&result, 0);
+        assert_eq!(body.stages.len(), passes);
+        assert_eq!(body.finish_has_lightmap(), passes == 2);
+        if passes == 1 {
+            assert_eq!(
+                body.stages[0].texture,
+                StageTexture::Image(ImageId(result.image_first as u32))
+            );
+            assert_eq!(body.stages[0].rgb_gen, RgbGen::ExactVertex);
+            assert_eq!(body.stages[0].alpha_gen, qa_render::shader::AlphaGen::Skip);
+        }
+    }
+    for (lighting, rgb) in [
+        (LightSource::None, RgbGen::LightingDiffuse),
+        (LightSource::TwoDimensional, RgbGen::Vertex),
+        (LightSource::Vertex, RgbGen::ExactVertex),
+        (LightSource::White, RgbGen::ExactVertex),
+    ] {
+        let result = compile(
+            "finish-implicit-sentinels",
+            b"",
+            &[b"textures/modern.tga", b"textures/not-present.tga"],
+            lighting,
+            native(),
+            ShaderCompilePolicy {
+                finish: MaterialFinishPolicy {
+                    vertex_light: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(result.rows[0].defaulted.is_none());
+        assert_eq!(result.rows[0].requested, lighting);
+        assert_eq!(result.rows[0].finished, lighting);
+        let body = material(&result, 0);
+        assert_eq!(body.stages.len(), 1);
+        assert_eq!(body.stages[0].rgb_gen, rgb);
+        assert!(!body.finish_has_lightmap());
+        assert!(result.rows[1].defaulted.is_some());
+        assert_eq!(result.rows[1].requested, lighting);
+        assert_eq!(result.rows[1].finished, lighting);
+        assert!(material(&result, 1).stages.is_empty());
+        assert_eq!(material(&result, 1).settings.sort, 7.0);
+    }
+}
+
+#[test]
 fn repeated_maps_load_in_order_and_preserve_lightmap_classification() {
     let result = compile(
         "recipe-repeat",
@@ -102,6 +429,7 @@ fn repeated_maps_load_in_order_and_preserve_lightmap_classification() {
         &[b"repeated"],
         LightSource::Page(0),
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows[0].defaulted.is_none());
     assert_eq!(result.rows[0].finished, LightSource::None);
@@ -127,6 +455,7 @@ fn repeated_maps_load_in_order_and_preserve_lightmap_classification() {
         &[b"sticky"],
         LightSource::Page(0),
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert_eq!(sticky.rows[0].finished, LightSource::Page(0));
     let stage = &material(&sticky, 0).stages[0];
@@ -155,6 +484,7 @@ fn mip_flags_only_affect_later_image_requests_and_keep_first_registration() {
         &[b"ordered"],
         LightSource::None,
         settings,
+        ShaderCompilePolicy::default(),
     );
     assert!(distinct.rows[0].defaulted.is_none());
     let first = &distinct.assets.images()[distinct.image_first];
@@ -178,6 +508,7 @@ fn mip_flags_only_affect_later_image_requests_and_keep_first_registration() {
         &[b"ordered"],
         LightSource::None,
         settings,
+        ShaderCompilePolicy::default(),
     );
     assert_eq!(reused.assets.images().len(), reused.image_first + 1);
     assert_eq!(reused.conflicts, 1);
@@ -206,6 +537,7 @@ fn header_abort_keeps_committed_stage_without_loading_or_applying_later_directiv
         &[b"failed"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows[0].defaulted.is_some());
     assert_eq!(result.assets.images().len(), result.image_first + 1);
@@ -232,6 +564,7 @@ fn stage_abort_retains_immediate_writes_without_committing_pipeline_state() {
         &[b"failed"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows[0].defaulted.is_some());
     let body = material(&result, 0);
@@ -261,6 +594,7 @@ fn missing_image_stops_at_its_request_and_finish_retains_native_slot_count() {
         &[b"failed", b"absent", b"implicit-absent"],
         LightSource::Page(0),
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows.iter().all(|row| row.defaulted.is_some()));
     assert_eq!(result.assets.images().len(), result.image_first + 1);
@@ -284,6 +618,7 @@ fn empty_committed_prefix_keeps_lightmap_finish_truth_without_fabricating_a_defa
         &[b"empty", b"laterlightmap"],
         LightSource::Page(0),
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows.iter().all(|row| row.defaulted.is_none()));
     assert!(material(&result, 0).stages.is_empty());
@@ -308,6 +643,7 @@ fn trailing_lexical_failure_retains_good_definition_and_failed_committed_prefix(
         &[b"good", b"bad"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows[0].defaulted.is_none());
     assert!(result.rows[1].defaulted.is_some());
@@ -330,6 +666,7 @@ fn repeated_animation_appends_frames_and_later_map_replaces_only_frame_zero() {
         &[b"animation"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows[0].defaulted.is_none());
     assert_eq!(result.assets.images().len(), result.image_first + 2);
@@ -369,6 +706,7 @@ fn sun_receipt_follows_only_reached_prefix_even_for_native_defaults() {
         &[b"before", b"after", b"imagefirst"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows.iter().all(|row| row.defaulted.is_some()));
     let reached = result.rows[0].sun.unwrap();
@@ -387,6 +725,7 @@ fn quote_at_eof_loads_its_returned_image_before_stage_failure() {
         &[b"quoted"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows[0].defaulted.is_some());
     assert_eq!(result.assets.images().len(), result.image_first + 1);
@@ -411,6 +750,7 @@ fn initialized_constant_vector_with_bad_closing_token_continues_to_its_map() {
         &[b"vector"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows[0].defaulted.is_none());
     assert_eq!(result.assets.images().len(), result.image_first + 1);
@@ -433,6 +773,7 @@ fn repeated_line_sensitive_reads_cross_a_newline_once_without_losing_its_token()
         &[b"vector"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(vectors.rows[0].defaulted.is_none());
     assert_eq!(vectors.assets.images().len(), vectors.image_first + 1);
@@ -453,6 +794,7 @@ fn repeated_line_sensitive_reads_cross_a_newline_once_without_losing_its_token()
         &[b"sun"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(sun.rows[0].defaulted.is_none());
     assert_eq!(sun.assets.images().len(), sun.image_first + 1);
@@ -476,6 +818,7 @@ fn incomplete_stretch_keeps_its_noop_slot_and_stops_later_coordinate_modifiers()
         &[b"stretch"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows[0].defaulted.is_none());
     let body = material(&result, 0);
@@ -514,6 +857,7 @@ fn repeated_sky_dash_retains_faces_and_missing_faces_use_the_shared_native_bitma
         &[b"sky"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(retained.rows[0].defaulted.is_none());
     let qa_render::assets::Sky::Cube {
@@ -541,6 +885,7 @@ fn repeated_sky_dash_retains_faces_and_missing_faces_use_the_shared_native_bitma
         &[b"sky"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(missing.rows[0].defaulted.is_none());
     let qa_render::assets::Sky::Cube {
@@ -571,6 +916,7 @@ fn empty_quoted_blend_operand_is_consumed_without_swallowing_later_directives() 
         &[b"empty"],
         LightSource::None,
         native(),
+        ShaderCompilePolicy::default(),
     );
     assert!(result.rows[0].defaulted.is_none());
     let body = material(&result, 0);

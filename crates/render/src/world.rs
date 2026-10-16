@@ -99,6 +99,7 @@ pub struct WorldPresentation {
         crate::material::world_load::WorldPresentationProfile,
         crate::material::world_load::PresentationDefaults,
         WorldLighting,
+        crate::material::ShaderCompilePolicy,
     )>,
 }
 impl WorldPresentation {

@@ -425,6 +425,7 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
                         None,
                     ),
                     lighting: Default::default(),
+                    compile_policy: Default::default(),
                     defaults: Default::default(),
                 }],
             )

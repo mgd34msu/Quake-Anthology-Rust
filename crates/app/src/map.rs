@@ -276,7 +276,15 @@ impl MapInput {
         let (spawns, entity_count, sky_environment) = spawns(&map, self.native_source)?;
         let (collision, collision_brushes) = collision(&map, geometry)?;
         options.sky_environment = sky_environment;
-        let render = match load_world(vfs, &map, assets, source_palette, presentations, options) {
+        let render = match load_world(
+            vfs,
+            &map,
+            assets,
+            source_palette,
+            presentations,
+            options,
+            qa_render::material::ShaderCompilePolicy::default(),
+        ) {
             Ok(render) => render,
             Err(error) => {
                 geometry.remove(collision);

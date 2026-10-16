@@ -401,6 +401,7 @@ fn named_zero_pass_body_is_safe_as_a_generic_world_draw_without_cpu_rejection() 
                 source: LightSource::None,
                 lightmap: qa_render::ImageId(0),
             },
+            qa_render::material::ShaderCompilePolicy::default(),
             &mut images,
         )
         .unwrap()
@@ -580,6 +581,7 @@ fn explicit_native_default_reason_cannot_be_transplanted_to_another_material() {
                 source: LightSource::None,
                 lightmap: qa_render::ImageId(0),
             },
+            qa_render::material::ShaderCompilePolicy::default(),
             &mut images,
         )
         .unwrap()

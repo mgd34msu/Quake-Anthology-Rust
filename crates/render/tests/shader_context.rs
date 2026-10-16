@@ -60,6 +60,7 @@ fn registrations() -> Registrations {
                 source,
                 lightmap: ImageId(0),
             },
+            qa_render::material::ShaderCompilePolicy::default(),
             &mut images,
         )
         .unwrap()

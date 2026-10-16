@@ -13,6 +13,7 @@ use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSo
 use qa_render::assets::{
     AssetCounts, ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture,
 };
+use qa_render::material::ShaderCompilePolicy;
 use qa_render::material::resources::{
     ImageRegistrationMark, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget,
     ResourceError,
@@ -630,6 +631,7 @@ impl ProfileImages {
                             transparent_index: None,
                         }),
                         existing,
+                        ShaderCompilePolicy::default(),
                     )
                     .map_err(|error| format!("native default shader: {error:?}"))?;
                     Some((shader, assets.counts()))
@@ -682,8 +684,15 @@ impl ProfileImages {
         lighting: NamedShaderLighting,
     ) -> Result<ShaderRegistration, String> {
         self.with_images(vfs, assets, |images| {
-            compile_named_shader(catalog?, name, mipmaps, lighting, images)
-                .map_err(|error| format!("shader material: {error:?}"))
+            compile_named_shader(
+                catalog?,
+                name,
+                mipmaps,
+                lighting,
+                ShaderCompilePolicy::default(),
+                images,
+            )
+            .map_err(|error| format!("shader material: {error:?}"))
         })
     }
 }
@@ -2379,6 +2388,7 @@ impl ModelAssets {
                     profile: presentation,
                     native_default,
                 },
+                ShaderCompilePolicy::default(),
             )
             .map_err(|error| format!("world presentation: {error:?}"))?;
             let staged = stage(self.view(), &loaded)?;
@@ -4476,6 +4486,7 @@ fn register(
                             source: LightSource::None,
                             lightmap: ImageId(0),
                         },
+                        ShaderCompilePolicy::default(),
                         images,
                     )
                     .map_err(|error| format!("model shader: {error:?}"))?;
