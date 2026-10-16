@@ -8,6 +8,341 @@ use qa_render::{
     material::resources::ImageSettings,
 };
 
+fn shader_image_policy(
+    owner: &ModelAssets,
+    handle: i32,
+    profile: ModelProfile,
+) -> (qa_render::ImageId, qa_render::assets::Sampler, [u8; 4]) {
+    let shader = owner.catalog().shader_binding(handle, profile).unwrap();
+    let stage = &owner
+        .assets()
+        .material(owner.assets().shader_binding(shader).unwrap().material)
+        .unwrap()
+        .stages[0];
+    let StageTexture::Image(image) = stage.texture else {
+        panic!("registered shader image")
+    };
+    (
+        image,
+        stage.sampler,
+        owner.assets().image(image).unwrap().rgba[..4]
+            .try_into()
+            .unwrap(),
+    )
+}
+
+#[test]
+fn precreated_profiles_follow_first_published_source_request_not_profile_order() {
+    use qa_app::model_assets::RegistrationVariant;
+    use qa_compat::services::ShaderLighting;
+    let fixture = support::Fixture::new(&[
+        (
+            "ui/shared.tga",
+            support::tga(4, 4, &[[211, 17, 29, 255]; 16]),
+        ),
+        (
+            "ui/shared.jpeg",
+            include_bytes!("../../../render/tests/resources/blue.jpg").to_vec(),
+        ),
+    ]);
+    for reverse in [false, true] {
+        let mut native = shader_profile(RuleSetId::Quake3);
+        native.image_settings.picmip = 0;
+        native.image_settings.override_textures = 0;
+        let foreign = ModelProfile {
+            source_rules: RuleSetId::Quake,
+            ..native
+        };
+        let profiles = if reverse {
+            [native, foreign]
+        } else {
+            [foreign, native]
+        };
+        let mut owner =
+            ModelAssets::new(Assets::load().unwrap(), profiles, [], Default::default()).unwrap();
+        let mut cpu = cpu(&mut owner);
+        let kind = |mipmaps| RendererRegistration::Shader {
+            mipmaps,
+            lighting: ShaderLighting::TwoDimensional,
+        };
+        let rejected = renderer_request("ui/shared.tga", kind(true), native.source_rules, None);
+        let before = owner.assets().counts();
+        assert!(
+            owner
+                .prepare_registration(
+                    &fixture.vfs,
+                    &rejected,
+                    native,
+                    RegistrationVariant::Guard(false),
+                    |_| Ok(()),
+                    |_, _| Err("reject first request".to_owned())
+                )
+                .is_err()
+        );
+        assert_eq!(owner.assets().counts(), before);
+        assert_eq!(cpu.admitted_assets(), Some(before));
+        assert_eq!(
+            owner
+                .catalog()
+                .registration_cached(rejected.kind, b"ui/shared.tga", native, None,),
+            None
+        );
+        let first = renderer_request("ui/shared.jpeg", kind(false), native.source_rules, None);
+        let handle = owner
+            .prepare_registration(
+                &fixture.vfs,
+                &first,
+                native,
+                RegistrationVariant::Guard(false),
+                |_| Ok(()),
+                |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+            )
+            .unwrap()
+            .0;
+        assert!(handle > 0);
+        let original = shader_image_policy(&owner, handle, native);
+        assert!(!original.1.mipmaps);
+        assert!(original.2[2] > 230 && original.2[0] < 10);
+        let other = renderer_request("ui/shared.tga", kind(true), foreign.source_rules, None);
+        assert_eq!(
+            owner
+                .prepare_registration(
+                    &fixture.vfs,
+                    &other,
+                    foreign,
+                    RegistrationVariant::Guard(false),
+                    |_| Ok(()),
+                    |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+                )
+                .unwrap()
+                .0,
+            handle
+        );
+        let independent = shader_image_policy(&owner, handle, foreign);
+        assert!(independent.1.mipmaps);
+        assert_eq!(independent.2, [211, 17, 29, 255]);
+        let mut settings = native.image_settings;
+        settings.picmip += 1;
+        let (later, _) = owner
+            .prepare_profile(
+                &fixture.vfs,
+                native.source_rules,
+                native.rules,
+                settings,
+                native.finish,
+                |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+            )
+            .unwrap();
+        let changed = renderer_request("ui/shared.tga", kind(true), native.source_rules, None);
+        assert_eq!(
+            owner
+                .prepare_registration(
+                    &fixture.vfs,
+                    &changed,
+                    later,
+                    RegistrationVariant::Guard(false),
+                    |_| Ok(()),
+                    |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+                )
+                .unwrap()
+                .0,
+            handle
+        );
+        let rebuilt = shader_image_policy(&owner, handle, later);
+        assert!(!rebuilt.1.mipmaps);
+        assert_eq!(rebuilt.2, original.2);
+        assert_eq!(shader_image_policy(&owner, handle, native), original);
+        assert_eq!(shader_image_policy(&owner, handle, foreign), independent);
+        fixture.vfs.take_lookup_count();
+        assert_eq!(
+            owner
+                .prepare_registration(
+                    &fixture.vfs,
+                    &changed,
+                    later,
+                    RegistrationVariant::Retained,
+                    |_| Ok(()),
+                    |_, _| panic!("retained first request must not prepare again")
+                )
+                .unwrap()
+                .0,
+            handle
+        );
+        assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    }
+}
+
+#[test]
+fn positive_skin_source_survives_unlink_and_new_finish_backend_rejection() {
+    use qa_app::model_assets::RegistrationVariant;
+    let mut fixture = support::Fixture::surfaces();
+    let first = shader_profile(RuleSetId::Quake3);
+    let mut owner =
+        ModelAssets::new(Assets::load().unwrap(), [first], [], Default::default()).unwrap();
+    let model = owner
+        .register_model(&fixture.vfs, b"models/test.md3", first.source_rules)
+        .unwrap();
+    let skin = owner
+        .register_skin(&fixture.vfs, b"models/test.skin", first.source_rules)
+        .unwrap();
+    let registration = owner.catalog().renderer_registration(model, first).unwrap();
+    let policy = ModelMaterialPolicy {
+        custom_skin: skin,
+        ..Default::default()
+    };
+    let original = owner
+        .catalog()
+        .bindings(registration, 0, policy)
+        .unwrap()
+        .collect::<Vec<_>>();
+    let old_receipts = owner
+        .catalog()
+        .renderer_registrations(RendererRegistration::Skin, skin, first)
+        .unwrap()
+        .to_vec();
+    let mut cpu = cpu(&mut owner);
+    let meshes = owner.assets().counts().models;
+    fixture.remove("models/test.skin");
+    fixture.remove("models/test.md3");
+    let mount = fixture.vfs.mounts().next().unwrap().id;
+    assert!(fixture.vfs.unmount(mount));
+    assert!(fixture.vfs.open(b"models/test.skin").is_none());
+    fixture.vfs.take_lookup_count();
+    let finish = qa_render::material::MaterialFinishPolicy {
+        vertex_light: true,
+        ..first.finish
+    };
+    let (later, _) = owner
+        .prepare_profile(
+            &fixture.vfs,
+            first.source_rules,
+            first.rules,
+            first.image_settings,
+            finish,
+            |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    let model_request = renderer_request(
+        "models/test.md3",
+        RendererRegistration::Model,
+        first.source_rules,
+        None,
+    );
+    assert_eq!(
+        owner
+            .prepare_registration(
+                &fixture.vfs,
+                &model_request,
+                later,
+                RegistrationVariant::Guard(false),
+                |_| Ok(()),
+                |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            )
+            .unwrap()
+            .0,
+        model
+    );
+    let request = renderer_request(
+        "models/test.skin",
+        RendererRegistration::Skin,
+        first.source_rules,
+        None,
+    );
+    let before = owner.assets().counts();
+    let capacity = owner.catalog().capacity();
+    assert!(
+        owner
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                later,
+                RegistrationVariant::Guard(false),
+                |_| Ok(()),
+                |_, _| Err("reject retained skin variant".to_owned())
+            )
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(owner.catalog().capacity(), capacity);
+    assert_eq!(cpu.admitted_assets(), Some(before));
+    assert!(!owner.catalog().renderer_skin(skin, later));
+    assert!(owner.catalog().renderer_skin(skin, first));
+    assert_eq!(
+        owner
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                later,
+                RegistrationVariant::Guard(false),
+                |_| Ok(()),
+                |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            )
+            .unwrap()
+            .0,
+        skin
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    let new_registration = owner.catalog().renderer_registration(model, later).unwrap();
+    let rebuilt = owner
+        .catalog()
+        .bindings(new_registration, 0, policy)
+        .unwrap()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rebuilt
+            .iter()
+            .map(|binding| binding.model)
+            .collect::<Vec<_>>(),
+        original
+            .iter()
+            .map(|binding| binding.model)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(owner.assets().counts().models, meshes);
+    assert_eq!(
+        owner
+            .catalog()
+            .bindings(registration, 0, policy)
+            .unwrap()
+            .collect::<Vec<_>>(),
+        original
+    );
+    let new_receipts = owner
+        .catalog()
+        .renderer_registrations(RendererRegistration::Skin, skin, later)
+        .unwrap();
+    assert_eq!(
+        new_receipts.iter().map(|row| row.key).collect::<Vec<_>>(),
+        old_receipts.iter().map(|row| row.key).collect::<Vec<_>>()
+    );
+    let stages = |shader| {
+        owner
+            .assets()
+            .material(owner.assets().shader_binding(shader).unwrap().material)
+            .unwrap()
+            .stages
+            .len()
+    };
+    assert_eq!(stages(old_receipts[1].shader), 2);
+    assert_eq!(stages(new_receipts[1].shader), 1);
+    fixture.vfs.take_lookup_count();
+    assert_eq!(
+        owner
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                later,
+                RegistrationVariant::Retained,
+                |_| Ok(()),
+                |_, _| panic!("retained skin must not prepare again")
+            )
+            .unwrap()
+            .0,
+        skin
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+}
+
 fn cpu(owner: &mut ModelAssets) -> CpuBackend {
     let cpu = CpuBackend::load_with_limits(
         64,

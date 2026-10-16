@@ -991,9 +991,8 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         profile_rows
     );
     assert_eq!(owner.catalog.shader_bindings.len(), all_rows);
-    let ordinary_request = owner.catalog.shaders[shader_index].requests
-        [profile.source_rules as usize]
-        .as_ref()
+    let ordinary_request = owner.catalog.shaders[shader_index]
+        .first_request(&owner.catalog.shader_bindings, profile.source_rules)
         .unwrap();
     assert_eq!(ordinary_request.name.as_bytes(), ordinary.name);
     assert!(!ordinary_request.mipmaps);
@@ -1048,9 +1047,8 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         owner.catalog.shaders[shader_index].profiles.len(),
         profile_rows + 2
     );
-    let ordinary_request = owner.catalog.shaders[shader_index].requests
-        [profile.source_rules as usize]
-        .as_ref()
+    let ordinary_request = owner.catalog.shaders[shader_index]
+        .first_request(&owner.catalog.shader_bindings, profile.source_rules)
         .unwrap();
     assert_eq!(ordinary_request.name.as_bytes(), ordinary.name);
     assert!(!ordinary_request.mipmaps);

@@ -493,7 +493,19 @@ struct ModelReady {
 struct RegisteredShader {
     name: NameId,
     profiles: Vec<usize>,
-    requests: [Option<ShaderRequest>; 5],
+    first_request_rows: [Option<usize>; 5],
+}
+impl RegisteredShader {
+    fn first_request<'a>(
+        &self,
+        bindings: &'a [ShaderProfileBinding],
+        source: RuleSetId,
+    ) -> Option<&'a ShaderRequest> {
+        bindings
+            .get(self.first_request_rows[source as usize]?)?
+            .request
+            .as_ref()
+    }
 }
 #[derive(Clone)]
 struct ShaderRequest {
@@ -504,6 +516,7 @@ struct ShaderProfileBinding {
     profile: ModelProfile,
     vertex_collapse: bool,
     lighting: ShaderLighting,
+    request: Option<ShaderRequest>,
     state: RegistrationState<ShaderRegistration>,
 }
 enum RegistrationState<T> {
@@ -556,6 +569,7 @@ enum RegistrationRollback {
 }
 struct RegisteredSkin {
     profiles: Vec<SkinProfile>,
+    source: Option<Arc<[u8]>>,
 }
 fn source_handle<'a, T: 'a>(
     states: impl Iterator<Item = &'a RegistrationState<T>>,
@@ -1066,8 +1080,8 @@ struct RegistrationCheckpoint {
 struct ShaderCheckpoint {
     index: usize,
     profiles: usize,
-    requests: [Option<ShaderRequest>; 5],
-    bindings: Vec<usize>,
+    first_request_rows: [Option<usize>; 5],
+    bindings: Vec<(usize, Option<ShaderRequest>)>,
 }
 struct ModelCheckpoint {
     name: NameId,
@@ -1079,6 +1093,7 @@ struct SkinCheckpoint {
     index: usize,
     profiles: usize,
     unattempted: Vec<usize>,
+    source: Option<Arc<[u8]>>,
 }
 struct ProfileCheckpoint {
     registration: RegistrationCheckpoint,
@@ -1223,7 +1238,7 @@ impl RegistrationCheckpoint {
             self.shaders_before.push(ShaderCheckpoint {
                 index,
                 profiles: shader.profiles.len(),
-                requests: shader.requests.clone(),
+                first_request_rows: shader.first_request_rows,
                 bindings: shader
                     .profiles
                     .iter()
@@ -1232,6 +1247,7 @@ impl RegistrationCheckpoint {
                         let binding = &catalog.shader_bindings[index];
                         matches!(binding.state, RegistrationState::Unattempted)
                     })
+                    .map(|index| (index, catalog.shader_bindings[index].request.clone()))
                     .collect(),
             });
         }
@@ -1258,6 +1274,7 @@ impl RegistrationCheckpoint {
                         matches!(profile.state, RegistrationState::Unattempted).then_some(index)
                     })
                     .collect(),
+                source: catalog.skins[index].source.clone(),
             });
         }
         if let Some(name) = file_name
@@ -1413,9 +1430,12 @@ impl RegistrationCheckpoint {
             }
             for entry in &mut catalog.shader_bindings[self.shader_bindings..] {
                 entry.state.rollback(mode);
+                if matches!(entry.state, RegistrationState::Unattempted) {
+                    entry.request = None;
+                }
             }
             for shader in &mut catalog.shaders[self.shaders..] {
-                shader.requests = std::array::from_fn(|_| None);
+                shader.first_request_rows = [None; 5];
             }
             for skin in &mut catalog.skins[self.skins..] {
                 for profile in &mut skin.profiles {
@@ -1429,19 +1449,24 @@ impl RegistrationCheckpoint {
             }
         }
         for shader in self.shaders_before {
-            catalog.shaders[shader.index].requests = shader.requests;
+            catalog.shaders[shader.index].first_request_rows = shader.first_request_rows;
             if matches!(mode, RegistrationRollback::Retry) {
                 catalog.shaders[shader.index]
                     .profiles
                     .truncate(shader.profiles);
             }
-            for index in shader.bindings {
-                catalog.shader_bindings[index].state.rollback(mode);
+            for (index, request) in shader.bindings {
+                let binding = &mut catalog.shader_bindings[index];
+                binding.state.rollback(mode);
+                if matches!(binding.state, RegistrationState::Unattempted) {
+                    binding.request = request;
+                }
             }
         }
         for skin in self.skins_before {
             if matches!(mode, RegistrationRollback::Retry) {
                 catalog.skins[skin.index].profiles.truncate(skin.profiles);
+                catalog.skins[skin.index].source = skin.source;
             }
             for index in skin.unattempted {
                 catalog.skins[skin.index].profiles[index]
@@ -1716,6 +1741,7 @@ impl ModelAssets {
                 profile,
                 vertex_collapse: profile.finish.compile(false).collapse_vertex(),
                 lighting: ShaderLighting::TwoDimensional,
+                request: None,
                 state: RegistrationState::Unattempted,
             });
         }
@@ -2005,6 +2031,57 @@ impl ModelAssets {
                 kind: RendererRegistration::Skin,
                 world: None,
             };
+            self.prepare_registration(
+                vfs,
+                &request,
+                profile,
+                RegistrationVariant::Guard(ui_fullscreen),
+                |_| Ok(()),
+                |assets, ()| prepare(assets),
+            )?;
+        }
+        let mut shaders = Vec::new();
+        for shader in &self.catalog.shaders {
+            for &row in &shader.profiles {
+                let binding = &self.catalog.shader_bindings[row];
+                let profile = refresh.profile(binding.profile);
+                if profile == binding.profile || binding.state.ready().is_none() {
+                    continue;
+                }
+                let request = binding
+                    .request
+                    .as_ref()
+                    .ok_or("image refresh shader request")?
+                    .clone();
+                let (lighting, world) = match binding.lighting {
+                    ShaderLighting::World(Some(previous)) => {
+                        let world = self
+                            .assets
+                            .world_presentation(previous)
+                            .ok_or("image refresh shader world")?
+                            .world();
+                        let Some(next) = refresh.presentation(world, previous) else {
+                            continue;
+                        };
+                        (ShaderLighting::World(Some(next.id)), Some(world))
+                    }
+                    lighting => (lighting, None),
+                };
+                shaders.push((
+                    RendererRequest {
+                        name: request.name,
+                        source: profile.source_rules,
+                        kind: RendererRegistration::Shader {
+                            mipmaps: request.mipmaps,
+                            lighting,
+                        },
+                        world,
+                    },
+                    profile,
+                ));
+            }
+        }
+        for (request, profile) in shaders {
             self.prepare_registration(
                 vfs,
                 &request,
@@ -3704,7 +3781,7 @@ impl ModelAssets {
                 self.catalog.shaders.push(RegisteredShader {
                     name,
                     profiles: (self.catalog.shader_bindings.len()..next).collect(),
-                    requests: std::array::from_fn(|_| None),
+                    first_request_rows: [None; 5],
                 });
                 self.catalog
                     .shader_bindings
@@ -3717,6 +3794,7 @@ impl ModelAssets {
                                 .collapse_vertex(),
                             profile: images.profile,
                             lighting: ShaderLighting::TwoDimensional,
+                            request: None,
                             state: RegistrationState::Unattempted,
                         }
                     }));
@@ -3752,6 +3830,7 @@ impl ModelAssets {
                             .collapse_vertex(),
                         profile: images.profile,
                         lighting,
+                        request: None,
                         state: RegistrationState::Unattempted,
                     });
                 }
@@ -3760,21 +3839,16 @@ impl ModelAssets {
         let name = self.catalog.shaders[index].name;
         let ordinary = lighting == ShaderLighting::TwoDimensional;
         let first_request =
-            ordinary && self.catalog.shaders[index].requests[source as usize].is_none();
-        let request = match ordinary
-            .then(|| self.catalog.shaders[index].requests[source as usize].as_ref())
-            .flatten()
-        {
-            Some(request) => request.clone(),
-            None => {
-                let mut name = qa_core::text::FixedText::default();
-                name.set_bytes(raw).map_err(|_| CallError::Text)?;
-                let request = ShaderRequest { name, mipmaps };
-                if ordinary {
-                    self.catalog.shaders[index].requests[source as usize] = Some(request.clone());
-                }
-                request
-            }
+            ordinary && self.catalog.shaders[index].first_request_rows[source as usize].is_none();
+        let request = if ordinary && !first_request {
+            self.catalog.shaders[index]
+                .first_request(&self.catalog.shader_bindings, source)
+                .cloned()
+                .ok_or(CallError::Aborted)?
+        } else {
+            let mut name = qa_core::text::FixedText::default();
+            name.set_bytes(raw).map_err(|_| CallError::Text)?;
+            ShaderRequest { name, mipmaps }
         };
         let named_lighting = self.shader_lighting(lighting)?;
         self.shader_catalog(vfs);
@@ -3786,6 +3860,7 @@ impl ModelAssets {
             .as_ref()
             .map_err(Clone::clone);
         let mut ready = false;
+        let mut first_request_row = None;
         for &row in &self.catalog.shaders[index].profiles {
             let profile = self.catalog.shader_bindings[row].profile;
             let existing_default = self.catalog.shaders[index]
@@ -3821,6 +3896,8 @@ impl ModelAssets {
             {
                 continue;
             }
+            binding.request = Some(request.clone());
+            first_request_row.get_or_insert(row);
             if let Some((registration, required_assets)) = existing_default {
                 ready = true;
                 binding.state = RegistrationState::Ready {
@@ -3865,6 +3942,10 @@ impl ModelAssets {
             };
         }
         if ready {
+            if first_request {
+                self.catalog.shaders[index].first_request_rows[source as usize] =
+                    Some(first_request_row.ok_or(CallError::Aborted)?);
+            }
             self.catalog
                 .shader_source_handle(
                     index as i32 + 1,
@@ -3874,9 +3955,6 @@ impl ModelAssets {
                 )
                 .ok_or(CallError::Aborted)
         } else {
-            if first_request {
-                self.catalog.shaders[index].requests[source as usize] = None;
-            }
             Err(CallError::File)
         }
     }
@@ -3994,6 +4072,7 @@ impl ModelAssets {
             let index = self.catalog.skins.len();
             self.catalog.skin_indices[group.0 as usize] = Some(index as u32);
             self.catalog.skins.push(RegisteredSkin {
+                source: None,
                 profiles: self
                     .catalog
                     .profiles
@@ -4053,16 +4132,22 @@ impl ModelAssets {
             .saturating_sub(self.catalog.capacity.skins)
             / profile_count.max(1);
         let skin_file = raw.ends_with(b".skin");
+        let mut retained_source = self.catalog.skins[index].source.clone();
         let mappings = (|| {
             let bytes = if skin_file {
-                vfs.read_file(
-                    path.as_bytes(),
-                    self.catalog.limits.file_bytes,
-                    &mut self.catalog.reader,
-                )
-                .map_err(|_| CallError::File)?
+                match &retained_source {
+                    Some(bytes) => Arc::clone(bytes),
+                    None => Arc::from(
+                        vfs.read_file(
+                            path.as_bytes(),
+                            self.catalog.limits.file_bytes,
+                            &mut self.catalog.reader,
+                        )
+                        .map_err(|_| CallError::File)?,
+                    ),
+                }
             } else {
-                Vec::new()
+                Arc::from([])
             };
             let rows = if skin_file {
                 let mut rows = Vec::new();
@@ -4098,6 +4183,9 @@ impl ModelAssets {
                     .folded(surface)
                     .ok_or(CallError::Aborted)?;
                 mappings.push((surface, row.shader.to_vec()));
+            }
+            if skin_file {
+                retained_source = Some(bytes);
             }
             Ok(mappings)
         })();
@@ -4238,6 +4326,13 @@ impl ModelAssets {
                     Ok(())
                 },
             )?;
+        }
+        if self.catalog.skins[index]
+            .profiles
+            .iter()
+            .any(|entry| entry.state.ready().is_some())
+        {
+            self.catalog.skins[index].source = retained_source;
         }
         if let Some(selected) = selected {
             self.catalog.skins[index]
