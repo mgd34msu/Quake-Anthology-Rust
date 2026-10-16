@@ -2561,7 +2561,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 runtime.server.clients[id.0 as usize].output.unwrap(),
                 qa_network::commands::packet::Protocol::Quake2_34,
                 RuleSetId::Quake2,
-                1,
+                qa_app::snapshots::NativePlayerBinding::Supplied(1),
                 &runtime.catalog.hud.values,
             ));
             let game =

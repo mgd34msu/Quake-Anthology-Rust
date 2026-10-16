@@ -991,10 +991,12 @@ fn separate_stats_and_set_angles_reach_client_state_only_through_queued_native_p
         // The QW request also opens its native server reply window.
         for step in 1..=4 {
             source.now = EventTime::from_milliseconds(step * 20);
-            assert!(
-                host.runtime
-                    .send_local_command(id, &UserCmd::default(), source.now,)
-            );
+            assert!(host.runtime.send_client_command(
+                id,
+                &UserCmd::default(),
+                source.now,
+                &mut source
+            ));
             host.drain(&mut Default::default());
             dispatch(&mut host.runtime, &mut source);
             host.drain(&mut Default::default());

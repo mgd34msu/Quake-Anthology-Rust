@@ -98,12 +98,21 @@ pub struct Client {
     pub audio_retirement: Option<AudioRetirement>,
     /// An admitted native Q2 client advances inside ClientThink through Pmove.
     pub module_movement: bool,
+    server_authoritative: bool,
     command_pending: bool,
 }
 
 impl Client {
     pub fn is_active(&self) -> bool {
         self.connection.is_some() && self.phase == ClientPhase::Active
+    }
+
+    pub fn server_authoritative(&self) -> bool {
+        self.server_authoritative
+    }
+
+    pub fn is_server_active(&self) -> bool {
+        self.is_active() && self.server_authoritative
     }
 
     // audio_retirement is completed by Presentation, never by a state reset.
@@ -120,6 +129,7 @@ impl Client {
         self.value_publication.clear();
         self.command_pending = false;
         self.module_movement = false;
+        self.server_authoritative = false;
         self.intent = CommandIntent::default();
         self.module = module;
         self.client_rules = RuleSetId::default();
@@ -230,6 +240,7 @@ impl Server {
                 intent: CommandIntent::default(),
                 command_pending: false,
                 module_movement: false,
+                server_authoritative: false,
                 output: None,
                 audio_retirement: None,
                 hud: HudState::with_capacity(items, powerups, weapons, values),
@@ -276,6 +287,20 @@ impl Server {
         module: ModuleId,
         native: Option<NativeEntity>,
     ) -> Option<ClientId> {
+        self.connect_with_authority(connection, module, native, true)
+    }
+
+    pub fn connect_client(&mut self) -> Option<ClientId> {
+        self.connect_with_authority(Connection::Local, ModuleId::default(), None, false)
+    }
+
+    fn connect_with_authority(
+        &mut self,
+        connection: Connection,
+        module: ModuleId,
+        native: Option<NativeEntity>,
+        server_authoritative: bool,
+    ) -> Option<ClientId> {
         let slot = self.clients.iter().position(|client| {
             client.connection.is_none()
                 && client.audio_retirement.is_none()
@@ -284,16 +309,20 @@ impl Server {
         let output = if connection == Connection::Bot {
             None
         } else {
-            Some(
-                self.events
-                    .bind(OutputTarget::Client(ClientId(slot as u32)))?,
-            )
+            let id = ClientId(slot as u32);
+            Some(self.events.bind(if server_authoritative {
+                OutputTarget::Client(id)
+            } else {
+                OutputTarget::Local(id)
+            })?)
         };
         let client = &mut self.clients[slot];
         client.output = output;
         client.reset(&mut self.events.texts, module);
         client.connection = Some(connection);
+        client.server_authoritative = server_authoritative;
         let entity_slot = client.entity.slot as usize;
+        self.entities.columns.appearance[entity_slot].snapshot_excluded = !server_authoritative;
         self.entities.columns.published_fields[entity_slot] = Default::default();
         self.entities.columns.owner[entity_slot] = module;
         // A native module supplies its own raw namespace. Q3's client zero is
@@ -312,6 +341,7 @@ impl Server {
             .iter()
             .position(|client| {
                 client.connection.is_some()
+                    && client.server_authoritative
                     && self.entities.resolve(client.entity).is_some()
                     && self.entities.columns.native_entity[client.entity.slot as usize]
                         == Some(native)
@@ -384,7 +414,7 @@ impl Server {
     /// routes movement through ClientThink instead of the engine mover.
     pub fn module_moves(&self, id: ClientId) -> Option<NativeEntity> {
         let client = self.clients.get(id.0 as usize)?;
-        if !client.is_active() || !client.module_movement {
+        if !client.is_server_active() || !client.module_movement {
             return None;
         }
         let slot = self.entities.resolve(client.entity)?;
@@ -396,7 +426,10 @@ impl Server {
         let Some(client) = self.clients.get(id.0 as usize) else {
             return false;
         };
-        if client.connection.is_none() || self.entities.resolve(client.entity).is_none() {
+        if !client.server_authoritative
+            || client.connection.is_none()
+            || self.entities.resolve(client.entity).is_none()
+        {
             return false;
         }
         if self
@@ -557,7 +590,7 @@ impl Server {
         let Some(client) = self
             .clients
             .get_mut(id.0 as usize)
-            .filter(|client| client.is_active())
+            .filter(|client| client.is_server_active())
         else {
             return;
         };
@@ -596,7 +629,7 @@ impl Server {
         id: ClientId,
     ) -> Option<(UserCmd, Option<SnapshotObservation>)> {
         let client = self.clients.get_mut(id.0 as usize)?;
-        if !client.is_active() || !client.command_pending {
+        if !client.is_server_active() || !client.command_pending {
             return None;
         }
         client.command_pending = false;

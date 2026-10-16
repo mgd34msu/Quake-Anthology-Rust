@@ -1574,7 +1574,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
         consumer,
         Protocol::Quake2Repro1038,
         RuleSetId::Quake2Rerelease,
-        0,
+        qa_app::snapshots::NativePlayerBinding::Supplied(0),
         &values,
     );
     let mut player = PlayerState::with_capacity(0, 0, values.capacity());

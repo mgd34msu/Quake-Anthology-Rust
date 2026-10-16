@@ -222,7 +222,7 @@ impl FrameHost {
             }
             let Some(native_client) = runtime.snapshots[index]
                 .as_ref()
-                .map(|binding| binding.native_client())
+                .and_then(|binding| binding.native_client())
             else {
                 continue;
             };
@@ -497,7 +497,7 @@ impl FrameHost {
                     .server
                     .clients
                     .iter()
-                    .filter(|client| client.is_active())
+                    .filter(|client| client.is_server_active())
                     .map(|client| client.entity),
             );
             if publish_limits && let Some(destination) = target.max_clients() {

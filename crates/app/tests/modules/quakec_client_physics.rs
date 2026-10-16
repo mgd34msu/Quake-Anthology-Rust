@@ -33,7 +33,7 @@ fn mode_vm(mode: f32, velocity: Vec3, alive: bool) -> Vm {
 }
 
 fn queue(host: &mut FrameHost, id: ClientId, movement: [f32; 3]) {
-    assert!(host.runtime.send_local_command(
+    assert!(host.runtime.send_client_command(
         id,
         &UserCmd {
             movement,
@@ -41,6 +41,10 @@ fn queue(host: &mut FrameHost, id: ClientId, movement: [f32; 3]) {
             ..Default::default()
         },
         EventTime::from_milliseconds(20),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
     ));
     host.drain(&mut Default::default());
 }

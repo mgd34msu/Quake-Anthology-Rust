@@ -1,3 +1,6 @@
+#[path = "support/frame_source.rs"]
+mod frame_source;
+
 #[path = "model_assets/support.rs"]
 #[allow(dead_code)]
 mod model_files;
@@ -709,10 +712,12 @@ fn game_state_pointer_and_aggregate_limits() {
         .unwrap()
         .revision;
     // Retire the first native command flight through a real queued CLIENT ACK.
-    assert!(
-        host.runtime
-            .send_local_command(ids[0], &UserCmd::default(), host.time)
-    );
+    assert!(host.runtime.send_client_command(
+        ids[0],
+        &UserCmd::default(),
+        host.time,
+        &mut frame_source::Sink::default()
+    ));
     host.drain(&mut FrameResult::default());
     let commands = config_commands(&mut host, ids[0], &[(700, &first)]);
     select_configs(&mut host, 0, commands);
@@ -988,27 +993,10 @@ fn accepted_connection_snapshot_bytes(factory: fn() -> (Program, u64)) {
 }
 
 fn complete_presentation(host: &mut FrameHost) {
-    struct Sink;
-    impl qa_app::host::FrameSource for Sink {
-        fn begin_frame(&mut self) -> std::time::Duration {
-            std::time::Duration::ZERO
-        }
-        fn poll_events(&mut self, _: &mut qa_core::sys_events::SysEventQueue) {}
-        fn wait_time(&mut self, _: std::time::Duration) -> std::time::Duration {
-            std::time::Duration::ZERO
-        }
-        fn elapsed(&self) -> std::time::Duration {
-            std::time::Duration::ZERO
-        }
-        fn present(&mut self) {}
-        fn sound(&mut self, _bank: Option<&qa_audio::Bank>, _: SoundEvent) -> bool {
-            true
-        }
-    }
     // A slot remains reserved until its retirement reaches Presentation.
     qa_app::output::dispatch(
         &mut host.runtime,
-        &mut Sink,
+        &mut frame_source::Sink::default(),
         &mut host.console.scrollback,
         &host.local_clients,
         host.time,
@@ -1255,7 +1243,7 @@ fn queued_gamestate_precedes_first_snapshot(factory: fn() -> (Program, u64)) {
     assert!(channel.current_snapshot().is_none());
     assert_eq!(
         host.runtime.snapshots[0].as_ref().unwrap().native_client(),
-        13
+        Some(13)
     );
     assert_eq!(call(&mut host, 0, GET_GAME_STATE, &[output]), Ok(0));
     let offset = word(&mut host, 0, output + 20 * 4);
@@ -1299,7 +1287,7 @@ fn queued_gamestate_precedes_first_snapshot(factory: fn() -> (Program, u64)) {
     receive_gamestate_packets(&mut host, ids[1], &packets);
     assert_eq!(
         host.runtime.snapshots[1].as_ref().unwrap().native_client(),
-        57
+        Some(57)
     );
     assert_eq!(call(&mut host, 1, GET_GAME_STATE, &[output]), Ok(0));
     let offset = word(&mut host, 1, output + 20 * 4);
@@ -1358,7 +1346,7 @@ fn rejected_gamestate_preserves_accepted_client_and_reuse_starts_empty() {
     );
     assert_eq!(
         host.runtime.snapshots[0].as_ref().unwrap().native_client(),
-        13
+        Some(13)
     );
 
     let packets = gamestate_packets(&mut host, ids[0], 15, &[(20, b"replacement")]);
@@ -1376,7 +1364,7 @@ fn rejected_gamestate_preserves_accepted_client_and_reuse_starts_empty() {
     );
     assert_eq!(
         host.runtime.snapshots[0].as_ref().unwrap().native_client(),
-        15
+        Some(15)
     );
     assert!(host.runtime.disconnect_client(ids[0]));
     assert!(host.runtime.client_resources[0].is_none());

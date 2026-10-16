@@ -200,6 +200,10 @@ impl ClientResources {
     pub fn nq_signon_stage(&self) -> Option<u8> {
         self.nq_signon.as_ref().map(|signon| signon.stage)
     }
+    pub(crate) fn nq_assignment_max_clients(&self) -> Option<u8> {
+        (self.nq_signon.as_ref()?.stage == 0)
+            .then_some(self.state.server_info.as_ref()?.max_clients)
+    }
     pub(crate) fn awaiting_nq_signon(&self) -> bool {
         self.nq_signon
             .as_ref()

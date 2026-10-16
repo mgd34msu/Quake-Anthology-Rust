@@ -98,10 +98,12 @@ fn queued_authoritative_commands_resolve_aliases_and_do_not_keep_removed_overrid
         duration_ms: 16,
         ..Default::default()
     };
-    assert!(
-        host.runtime
-            .send_local_command(id, &command, EventTime::from_milliseconds(16))
-    );
+    assert!(host.runtime.send_client_command(
+        id,
+        &command,
+        EventTime::from_milliseconds(16),
+        &mut Source(0)
+    ));
     host.drain(&mut Default::default());
     check_velocity(&host, id, -1.6, None);
     let gravity = host.console.cvars.find("g_gravity").unwrap();
@@ -110,10 +112,12 @@ fn queued_authoritative_commands_resolve_aliases_and_do_not_keep_removed_overrid
         .player
         .body
         .velocity = Vec3::default();
-    assert!(
-        host.runtime
-            .send_local_command(id, &command, EventTime::from_milliseconds(32))
-    );
+    assert!(host.runtime.send_client_command(
+        id,
+        &command,
+        EventTime::from_milliseconds(32),
+        &mut Source(0)
+    ));
     host.drain(&mut Default::default());
     check_velocity(&host, id, -12.8, None);
 }

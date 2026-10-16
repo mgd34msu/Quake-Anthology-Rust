@@ -482,10 +482,14 @@ pub(super) fn commands_move_a_native_client_once() {
                 )
                 .unwrap();
             }
-            assert!(host.runtime.send_local_command(
+            assert!(host.runtime.send_client_command(
                 id,
                 &command,
-                EventTime::from_milliseconds(calls * 16)
+                EventTime::from_milliseconds(calls * 16),
+                &mut Source {
+                    time: EventTime(0),
+                    polls: 0
+                }
             ));
             host.drain(&mut Default::default());
             let client = &host.runtime.server.clients[id.0 as usize];
@@ -535,10 +539,14 @@ pub(super) fn commands_move_a_native_client_once() {
         // Both packets share one event drain. Module-owned clients must consume
         // each command once, without leaving another engine movement pending.
         for frame in 3..=4 {
-            assert!(host.runtime.send_local_command(
+            assert!(host.runtime.send_client_command(
                 id,
                 &command,
-                EventTime::from_milliseconds(frame * 16)
+                EventTime::from_milliseconds(frame * 16),
+                &mut Source {
+                    time: EventTime(0),
+                    polls: 0
+                }
             ));
         }
         host.drain(&mut Default::default());

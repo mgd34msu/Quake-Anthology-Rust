@@ -1,3 +1,6 @@
+#[path = "support/frame_source.rs"]
+mod frame_source;
+
 #[path = "client_commands/input.rs"]
 mod input;
 #[path = "model_assets/support.rs"]
@@ -445,7 +448,7 @@ fn retained_usercmds_reach_the_selected_module(program: impl Fn() -> Program) {
     }
     let count = capacity + 129;
     for number in 1..=count {
-        host.runtime.send_local_command(
+        host.runtime.send_client_command(
             ids[0],
             &UserCmd {
                 server_time_ms: number as i32,
@@ -456,6 +459,7 @@ fn retained_usercmds_reach_the_selected_module(program: impl Fn() -> Program) {
                 ..UserCmd::default()
             },
             EventTime::from_milliseconds(number as u64),
+            &mut frame_source::Sink::default(),
         );
     }
     // Back-pressure does not erase commands produced while a flight is pending.
@@ -479,13 +483,14 @@ fn retained_usercmds_reach_the_selected_module(program: impl Fn() -> Program) {
     // An expired row returns false before dereferencing the caller's pointer.
     assert_eq!(probe_args(&mut host, 0, 10, &[expired, u64::MAX]), 0);
     assert_eq!(probe(&mut host, 0, 9, 0), previous);
-    host.runtime.send_local_command(
+    host.runtime.send_client_command(
         ids[1],
         &UserCmd {
             server_time_ms: 777,
             ..UserCmd::default()
         },
         EventTime(1),
+        &mut frame_source::Sink::default(),
     );
     assert_eq!(probe(&mut host, 1, 7, 0), 1);
     assert_eq!(probe(&mut host, 1, 8, 1), 1);
@@ -852,30 +857,14 @@ fn disconnect_and_slot_reuse_do_not_lend_a_new_connection() {
     assert!(host.runtime.network.get(ids[0], Endpoint::Client).is_some());
     assert!(host.runtime.server.clients[1].connection.is_some());
     // Audio retirement is completed by the real Presentation consumer.
-    struct Sink;
-    impl qa_app::host::FrameSource for Sink {
-        fn begin_frame(&mut self) -> Duration {
-            Duration::ZERO
-        }
-        fn poll_events(&mut self, _: &mut SysEventQueue) {}
-        fn wait_time(&mut self, _: Duration) -> Duration {
-            Duration::ZERO
-        }
-        fn elapsed(&self) -> Duration {
-            Duration::ZERO
-        }
-        fn present(&mut self) {}
-        fn sound(&mut self, _bank: Option<&qa_audio::Bank>, _: SoundEvent) -> bool {
-            true
-        }
-    }
+
     // Retain the transport until an ordinary frame submits its final control.
-    host.frame(&mut Sink, true);
+    host.frame(&mut frame_source::Sink::default(), true);
     assert!(host.runtime.server.clients[0].connection.is_none());
     assert!(host.runtime.server.clients[1].connection.is_some());
     qa_app::output::dispatch(
         &mut host.runtime,
-        &mut Sink,
+        &mut frame_source::Sink::default(),
         &mut qa_console::presentation::Scrollback::default(),
         &host.local_clients,
         EventTime(0),

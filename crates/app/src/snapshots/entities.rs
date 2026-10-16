@@ -433,7 +433,7 @@ impl EntityScratch {
             source
                 .players
                 .iter()
-                .filter(|client| client.is_active())
+                .filter(|client| client.is_server_active())
                 .map(|client| client.entity),
         );
         let number = numbers.number(source.self_entity).ok_or(Error::Context)?;
@@ -471,7 +471,7 @@ impl EntityScratch {
             return Ok(());
         }
         for client in source.players {
-            if !client.is_active() {
+            if !client.is_server_active() {
                 continue;
             }
             let Some(slot) = source.entities.resolve(client.entity) else {

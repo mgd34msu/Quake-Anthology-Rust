@@ -237,7 +237,12 @@ fn replacing_client_resources_tears_down_then_reconnects_after_consumption() {
     };
     assert!(
         runtime
-            .bind_server_connection(client, replacement, 0, Some(SeatId::FIRST))
+            .bind_connection(
+                client,
+                replacement,
+                qa_app::snapshots::NativePlayerBinding::Supplied(0),
+                Some(SeatId::FIRST)
+            )
             .is_err()
     );
     assert!(runtime.server.clients[0].connection.is_none());

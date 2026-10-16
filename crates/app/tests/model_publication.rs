@@ -168,7 +168,7 @@ impl Harness {
             }
         ));
         runtime
-            .bind_server_connection(
+            .bind_connection(
                 client,
                 NativeConnection {
                     route: Route {
@@ -186,7 +186,7 @@ impl Harness {
                     pending_output: None,
                     commands: Some(Commands::load(Protocol::Quake2_34, 8192)),
                 },
-                0,
+                qa_app::snapshots::NativePlayerBinding::Supplied(0),
                 None,
             )
             .unwrap();

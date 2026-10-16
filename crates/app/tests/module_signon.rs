@@ -357,7 +357,7 @@ fn blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ti
         .unwrap();
     let protocol = Protocol::QuakeWorld28;
     host.runtime
-        .bind_server_connection(
+        .bind_connection(
             stalled,
             NativeConnection {
                 route: Route {
@@ -369,7 +369,7 @@ fn blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ti
                 pending_output: None,
                 commands: Some(Commands::load(protocol, 8192)),
             },
-            0,
+            qa_app::snapshots::NativePlayerBinding::Supplied(0),
             None,
         )
         .unwrap();

@@ -422,10 +422,11 @@ fn acknowledge_configs(host: &mut FrameHost, client: ClientId, source: &mut Sour
     for _ in 0..8 {
         dispatch(host, source);
         drain(host, milliseconds);
-        assert!(host.runtime.send_local_command(
+        assert!(host.runtime.send_client_command(
             client,
             &UserCmd::default(),
             EventTime::from_milliseconds(milliseconds),
+            source
         ));
         drain(host, milliseconds);
     }

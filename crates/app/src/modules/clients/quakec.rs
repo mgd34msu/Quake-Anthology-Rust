@@ -165,7 +165,7 @@ pub(super) fn connect(
         .snapshots
         .get(id.0 as usize)
         .and_then(Option::as_ref)
-        .map(|binding| binding.native_client())
+        .and_then(|binding| binding.native_client())
         .or_else(|| {
             host.runtime
                 .server

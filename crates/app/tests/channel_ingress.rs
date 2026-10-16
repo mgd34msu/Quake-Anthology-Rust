@@ -215,10 +215,12 @@ fn local_moves_submit_only_after_native_channel_packet_dispatch() -> Result<(), 
             units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
             ..Default::default()
         };
-        assert!(
-            host.runtime
-                .send_local_command(client, &command, EventTime(0))
-        );
+        assert!(host.runtime.send_client_command(
+            client,
+            &command,
+            EventTime(0),
+            &mut Clock::default()
+        ));
         assert_eq!(host.runtime.server.clients[0].command.server_time_ms, 0);
         assert_eq!(host.runtime.network.commands, 0);
         let mut clock = Clock::default();
@@ -293,10 +295,12 @@ fn netquake_move_duration_uses_queued_server_frame_time_instead_of_packet_or_pac
         ..Default::default()
     };
     for (packet_ms, marker_ms, duration_ms) in [(41, 50, 50), (83, 90, 40)] {
-        assert!(
-            host.runtime
-                .send_local_command(client, &command, EventTime::default())
-        );
+        assert!(host.runtime.send_client_command(
+            client,
+            &command,
+            EventTime::default(),
+            &mut Clock::default()
+        ));
         assert_eq!(
             host.runtime
                 .loopback
@@ -351,10 +355,12 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
         predicted.movement_rules = RuleSetId::Quake3;
         predicted.trace_rules = RuleSetId::Quake2;
         if protocol == Protocol::QuakeWorld28 {
-            assert!(
-                host.runtime
-                    .send_local_command(client, &Default::default(), EventTime(0))
-            );
+            assert!(host.runtime.send_client_command(
+                client,
+                &Default::default(),
+                EventTime(0),
+                &mut Clock::default()
+            ));
         }
         let before = host.runtime.prediction[0].player.body.position;
         assert_eq!(before, Vec3::default());
@@ -539,10 +545,12 @@ fn old_connection_commands_cannot_mutate_a_reused_client_lifetime() -> Result<()
         units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
         ..Default::default()
     };
-    assert!(
-        host.runtime
-            .send_local_command(client, &command, EventTime(0))
-    );
+    assert!(host.runtime.send_client_command(
+        client,
+        &command,
+        EventTime(0),
+        &mut Clock::default()
+    ));
     assert!(host.runtime.server.disconnect(client));
     assert_eq!(
         host.runtime
@@ -567,10 +575,12 @@ fn q3_duplicate_usercmd_time_does_not_submit_a_second_command() -> Result<(), St
     };
     let mut clock = Clock::default();
     for _ in 0..2 {
-        assert!(
-            host.runtime
-                .send_local_command(client, &command, EventTime(0))
-        );
+        assert!(host.runtime.send_client_command(
+            client,
+            &command,
+            EventTime(0),
+            &mut Clock::default()
+        ));
         host.frame(&mut clock, true);
     }
     assert_eq!(host.runtime.network.commands, 1);
@@ -660,10 +670,12 @@ fn repro_connections_use_negotiated_qport_and_frame_clock_with_native_feedback()
             units: qa_gameplay::rules::command_units(qa_core::primitives::RuleSetId::QuakeWorld),
             ..Default::default()
         };
-        assert!(
-            host.runtime
-                .send_local_command(client, &command, EventTime(1_050_000_000))
-        );
+        assert!(host.runtime.send_client_command(
+            client,
+            &command,
+            EventTime(1_050_000_000),
+            &mut Clock::default()
+        ));
         clock.time = 1_040_000_000;
         host.frame(&mut clock, true);
         let connection = host

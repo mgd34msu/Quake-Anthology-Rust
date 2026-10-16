@@ -22,7 +22,7 @@ use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
 use qa_core::loopback::Loopback;
 use qa_core::primitives::{
-    ClientId, GeometryId, ModuleId, NATIVE_PAYLOAD_BYTES, NATIVE_WIRE_BYTES, PrintKind,
+    ClientId, GeometryId, ModuleId, NATIVE_PAYLOAD_BYTES, NATIVE_WIRE_BYTES, PrintKind, Vec3,
 };
 use qa_network::ingress::Connections;
 use qa_session::clients::{Connection, Server};
@@ -362,6 +362,57 @@ impl Runtime {
         })
     }
 
+    fn reserve_client_seat(
+        &mut self,
+        seat: qa_core::sys_events::SeatId,
+        policy: client_policy::ClientPolicy,
+        authority: qa_core::loopback::Endpoint,
+    ) -> Result<ClientId, String> {
+        if self.snapshots.iter().flatten().any(|binding| {
+            binding.seat() == Some(seat)
+                && self
+                    .server
+                    .clients
+                    .get(binding.client.0 as usize)
+                    .is_some_and(|client| {
+                        client.connection.is_some()
+                            && client.output == Some(binding.output)
+                            && self.server.entities.resolve(client.entity).is_some()
+                    })
+        }) {
+            return Err("local seat already connected".into());
+        }
+        let id = match authority {
+            qa_core::loopback::Endpoint::Server => {
+                self.server
+                    .connect(Connection::Local, ModuleId::default(), None)
+            }
+            qa_core::loopback::Endpoint::Client => self.server.connect_client(),
+        }
+        .ok_or("no local client slot")?;
+        self.output_duplicates.reset_client(id);
+        self.network.unbind(id);
+        self.input.reset_usercmd_value(seat);
+        self.prediction[seat.index()].clear_history();
+        self.loopback.clear_client(id);
+        let client = &mut self.server.clients[id.0 as usize];
+        client.client_rules = policy.client;
+        client.input_rules = policy.input;
+        client.link_order = qa_gameplay::rules::link_order(policy.client);
+        for player in [
+            &mut client.player,
+            &mut self.prediction[seat.index()].player,
+        ] {
+            player.reset();
+            player.movement_rules = policy.movement;
+            player.trace_rules = policy.trace;
+            qa_movement::set_bounds(player);
+            player.health = 100;
+        }
+        self.input.set_view_angles(seat, Vec3::default());
+        Ok(id)
+    }
+
     /// A local connection uses the existing SERVER command consumer and CLIENT
     /// prediction state. Map anchors never choose the player's movement rules.
     pub fn connect_local(
@@ -372,31 +423,15 @@ impl Runtime {
         protocol: qa_network::commands::packet::Protocol,
         native_client: u32,
     ) -> Result<ClientId, String> {
-        let id = self
-            .server
-            .connect(Connection::Local, ModuleId::default(), None)
-            .ok_or("no local client slot")?;
+        let id = self.reserve_client_seat(seat, policy, qa_core::loopback::Endpoint::Server)?;
         let result = (|| {
-            self.output_duplicates.reset_client(id);
-            self.network.unbind(id);
-            self.input.reset_usercmd_value(seat);
-            self.prediction[seat.index()].clear_history();
-            self.loopback.clear_client(id);
             let client = &mut self.server.clients[id.0 as usize];
-            client.client_rules = policy.client;
-            client.input_rules = policy.input;
-            client.link_order = qa_gameplay::rules::link_order(policy.client);
             for player in [
                 &mut client.player,
                 &mut self.prediction[seat.index()].player,
             ] {
-                player.reset();
-                player.movement_rules = policy.movement;
-                player.trace_rules = policy.trace;
-                qa_movement::set_bounds(player);
                 player.body.position = spawn.position;
                 player.view_angles = spawn.angles;
-                player.health = 100;
             }
             self.server
                 .entities
@@ -441,13 +476,12 @@ impl Runtime {
                         maximum_message,
                     )),
                 };
-                if endpoint == qa_core::loopback::Endpoint::Server {
-                    self.bind_server_connection(id, connection, native_client, Some(seat))?;
-                } else {
-                    self.network
-                        .bind(id, endpoint, connection)
-                        .map_err(|e| format!("local channel {e:?}"))?;
-                }
+                self.bind_connection(
+                    id,
+                    connection,
+                    snapshots::NativePlayerBinding::Supplied(native_client),
+                    Some(seat),
+                )?;
             }
             self.input.set_view_angles(seat, spawn.angles);
             Ok(id)
@@ -456,6 +490,28 @@ impl Runtime {
             self.disconnect_client(id);
         }
         result
+    }
+
+    /// Admit an already accepted native socket CLIENT. Transport negotiation
+    /// supplies the channel; no local SERVER endpoint or actor is created.
+    pub fn connect_accepted_client(
+        &mut self,
+        seat: qa_core::sys_events::SeatId,
+        policy: client_policy::ClientPolicy,
+        native_player: snapshots::NativePlayerBinding,
+        connection: qa_network::ingress::Connection,
+    ) -> Result<ClientId, String> {
+        if connection.channel.endpoint() != qa_core::loopback::Endpoint::Client
+            || !matches!(connection.route.peer, qa_core::sys_events::Peer::Socket(_))
+        {
+            return Err("accepted CLIENT requires a socket channel".into());
+        }
+        let id = self.reserve_client_seat(seat, policy, qa_core::loopback::Endpoint::Client)?;
+        if let Err(error) = self.bind_connection(id, connection, native_player, Some(seat)) {
+            self.disconnect_client(id);
+            return Err(error);
+        }
+        Ok(id)
     }
 
     pub(crate) fn ensure_client_presentation_reset(&mut self, id: ClientId) -> bool {
@@ -623,47 +679,32 @@ impl Runtime {
         }
     }
 
-    /// A connected native channel supplies its client number explicitly.
-    /// Local and remote SERVERs share the same serializer and number owner;
-    /// only a local connection creates CLIENT presentation resources.
-    pub fn bind_server_connection(
-        &mut self,
+    fn prepare_connection_binding(
+        &self,
         id: ClientId,
-        mut connection: qa_network::ingress::Connection,
-        native_client: u32,
+        protocol: qa_network::commands::packet::Protocol,
+        native_player: snapshots::NativePlayerBinding,
         seat: Option<qa_core::sys_events::SeatId>,
-    ) -> Result<(), String> {
-        let slot = id.0 as usize;
-        if self.client_resources.get(slot).is_some_and(Option::is_some) {
-            self.disconnect_client(id);
-            return Err(
-                "CLIENT resource replacement requires reconnect after audio retirement".into(),
-            );
-        }
-        let client = self.server.clients.get(slot).ok_or("client slot")?;
-        if !matches!(
-            (client.connection, seat),
-            (Some(Connection::Local), Some(_)) | (Some(Connection::Remote), None)
-        ) {
-            return Err("CLIENT seat must belong to a local connection".into());
-        }
-        let protocol = connection
-            .commands
-            .as_ref()
-            .ok_or("connection needs native command policy")?
-            .protocol;
-        let limits = qa_network::snapshots::snapshot_limits(protocol);
-        if native_client >= limits.client_capacity {
-            return Err("native client outside protocol capacity".into());
-        }
-        let output = client.output.ok_or("client output consumer")?;
+    ) -> Result<
+        (
+            snapshots::SnapshotBinding,
+            Option<client_resources::ClientResources>,
+            Option<client_collision::ClientCollision>,
+        ),
+        String,
+    > {
+        let client = self
+            .server
+            .clients
+            .get(id.0 as usize)
+            .ok_or("client slot")?;
         let mut binding = snapshots::SnapshotBinding::load(
             id,
             seat,
-            output,
+            client.output.ok_or("client output consumer")?,
             protocol,
             client.client_rules,
-            native_client,
+            native_player,
             &self.catalog.hud.values,
         );
         binding.bind_particles(&self.catalog.registry.effects);
@@ -683,43 +724,124 @@ impl Runtime {
         {
             resources.state.bind_sounds(assets.bank());
         }
-        let collision_view = seat
+        let collision = seat
             .map(|_| client_collision::ClientCollision::load(id, protocol, &self.geometry))
             .transpose()
             .map_err(|error| format!("CLIENT collision: {error:?}"))?;
+        Ok((binding, resources, collision))
+    }
+
+    /// Both local endpoints share one connection binding. An accepted socket
+    /// CLIENT owns a seat; a remote client of this SERVER owns no local seat.
+    pub fn bind_connection(
+        &mut self,
+        id: ClientId,
+        mut connection: qa_network::ingress::Connection,
+        native_player: snapshots::NativePlayerBinding,
+        seat: Option<qa_core::sys_events::SeatId>,
+    ) -> Result<(), String> {
+        use qa_core::loopback::Endpoint;
+        let slot = id.0 as usize;
+        let endpoint = connection.channel.endpoint();
+        if self.network.get(id, endpoint).is_some() {
+            if self.client_resources.get(slot).is_some_and(Option::is_some) {
+                self.disconnect_client(id);
+                return Err(
+                    "CLIENT resource replacement requires reconnect after audio retirement".into(),
+                );
+            }
+            return Err("connection endpoint already bound".into());
+        }
+        let client = self.server.clients.get(slot).ok_or("client slot")?;
+        if endpoint == Endpoint::Server && !client.server_authoritative() {
+            return Err("CLIENT-only reservation cannot bind a SERVER endpoint".into());
+        }
+        if !matches!(
+            (endpoint, client.connection, seat),
+            (Endpoint::Server, Some(Connection::Local), Some(_))
+                | (Endpoint::Server, Some(Connection::Remote), None)
+                | (Endpoint::Client, Some(Connection::Local), Some(_))
+        ) {
+            return Err("CLIENT seat must belong to a local connection".into());
+        }
+        let protocol = connection
+            .commands
+            .as_ref()
+            .ok_or("connection needs native command policy")?
+            .protocol;
+        let limits = qa_network::snapshots::snapshot_limits(protocol);
+        match native_player.number() {
+            Some(number) if number < limits.client_capacity => {}
+            None if endpoint == Endpoint::Client
+                && protocol == qa_network::commands::packet::Protocol::NetQuake15
+                && matches!(connection.route.peer, qa_core::sys_events::Peer::Socket(_)) => {}
+            _ => {
+                return Err(
+                    "native client outside protocol capacity or awaiting SERVER identity".into(),
+                );
+            }
+        }
+        let output = client.output.ok_or("client output consumer")?;
         let self_entity = client.entity;
+        let prepared = if let Some(binding) = self.snapshots[slot].as_ref() {
+            let paired = self
+                .network
+                .get(id, Endpoint::from_index(endpoint.index() ^ 1));
+            if binding.protocol != protocol
+                || binding.native_client() != native_player.number()
+                || binding.seat() != seat
+                || binding.output != output
+                || !matches!(connection.route.peer, qa_core::sys_events::Peer::Loopback(peer) if peer == id)
+                || !paired.is_some_and(|paired| matches!(paired.route.peer, qa_core::sys_events::Peer::Loopback(peer) if peer == id))
+            {
+                return Err("connection binding does not match its paired endpoint".into());
+            }
+            None
+        } else {
+            Some(self.prepare_connection_binding(id, protocol, native_player, seat)?)
+        };
         connection.output = Some(output);
         self.network
-            .bind(id, qa_core::loopback::Endpoint::Server, connection)
-            .map_err(|e| format!("server channel {e:?}"))?;
-        self.snapshots[slot] = Some(binding);
-        self.client_resources[slot] = resources;
-        self.client_collision[slot] = collision_view;
-        self.config_publications[slot].reset();
-        self.native_numbers[slot].configure(protocol);
-        self.native_numbers[slot].reset();
-        self.native_numbers[slot].set_native_clients(
-            (self.server.clients.len() as u32)
-                .max(native_client + 1)
-                .min(limits.client_capacity),
-            limits.first_entity,
-        );
-        self.native_numbers[slot].set_self(self_entity, native_client, protocol);
+            .bind(id, endpoint, connection)
+            .map_err(|error| format!("native channel {error:?}"))?;
+        if let Some((binding, resources, collision)) = prepared {
+            self.snapshots[slot] = Some(binding);
+            self.client_resources[slot] = resources;
+            self.client_collision[slot] = collision;
+            self.config_publications[slot].reset();
+        }
+        if let (Endpoint::Server, Some(native_client)) = (endpoint, native_player.number()) {
+            self.native_numbers[slot].configure(protocol);
+            self.native_numbers[slot].reset();
+            self.native_numbers[slot].set_native_clients(
+                (self.server.clients.len() as u32)
+                    .max(native_client + 1)
+                    .min(limits.client_capacity),
+                limits.first_entity,
+            );
+            self.native_numbers[slot].set_self(self_entity, native_client, protocol);
+        }
         Ok(())
     }
 
     /// Commands are submitted only after native framing and queued ingress.
-    pub fn send_local_command(
+    pub fn send_client_command(
         &mut self,
         id: ClientId,
         command: &qa_core::primitives::UserCmd,
         time: qa_core::sys_events::EventTime,
+        source: &mut impl host::FrameSource,
     ) -> bool {
         let signing_on = self
             .client_resources
             .get(id.0 as usize)
             .and_then(Option::as_ref)
-            .is_some_and(|resources| resources.awaiting_nq_signon());
+            .is_some_and(|resources| resources.awaiting_nq_signon())
+            || self
+                .snapshots
+                .get(id.0 as usize)
+                .and_then(Option::as_ref)
+                .is_some_and(|binding| binding.native_client().is_none());
         let Some(connection) = self
             .network
             .get_mut(id, qa_core::loopback::Endpoint::Client)
@@ -729,6 +851,7 @@ impl Runtime {
         let Some(commands) = &mut connection.commands else {
             return false;
         };
+        let route = connection.route;
         let recorded = if signing_on {
             None
         } else {
@@ -758,9 +881,13 @@ impl Runtime {
                         .is_ok_and(|packet| packet.is_some())
                 },
                 |bytes| {
-                    self.loopback
-                        .send(qa_core::loopback::Endpoint::Client, id, bytes)
-                        .is_ok()
+                    transport::admit_output(
+                        &mut self.loopback,
+                        source,
+                        qa_core::loopback::Endpoint::Client,
+                        route,
+                        bytes,
+                    )
                 },
                 |channel, (), _| !channel.pending_fragments(),
             );
@@ -803,9 +930,13 @@ impl Runtime {
                     .is_ok_and(|packet| packet.is_some())
             },
             |bytes| {
-                self.loopback
-                    .send(qa_core::loopback::Endpoint::Client, id, bytes)
-                    .is_ok()
+                transport::admit_output(
+                    &mut self.loopback,
+                    source,
+                    qa_core::loopback::Endpoint::Client,
+                    route,
+                    bytes,
+                )
             },
             |channel, included, disposition| {
                 *included |= disposition == qa_network::channel::Unreliable::Included;
@@ -937,7 +1068,15 @@ impl Runtime {
                     true
                 }
             },
-            |bytes| transport::admit_output(&mut self.loopback, source, route, bytes),
+            |bytes| {
+                transport::admit_output(
+                    &mut self.loopback,
+                    source,
+                    qa_core::loopback::Endpoint::Server,
+                    route,
+                    bytes,
+                )
+            },
             |channel, binding, disposition| {
                 if disposition == Unreliable::Dropped {
                     binding.pending = None;

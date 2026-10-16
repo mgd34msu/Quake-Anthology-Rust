@@ -238,10 +238,12 @@ fn queued_q3_weapon_selection_uses_the_registry_for_independent_seats_and_module
             })
         };
         for (seat, client) in clients.into_iter().enumerate() {
-            assert!(
-                host.runtime
-                    .send_local_command(client, &commands[seat], host.time)
-            );
+            assert!(host.runtime.send_client_command(
+                client,
+                &commands[seat],
+                host.time,
+                &mut RetirementSource::default()
+            ));
         }
         assert_eq!(
             clients.map(|id| host.runtime.server.clients[id.0 as usize].command.weapon),
@@ -296,14 +298,15 @@ fn queued_weapon_selection_cannot_cross_a_reused_connection_generation() {
         .registry
         .native_weapon(RuleSetId::Quake3, 7)
         .unwrap();
-    assert!(host.runtime.send_local_command(
+    assert!(host.runtime.send_client_command(
         client,
         &UserCmd {
             server_time_ms: 16,
             weapon: Some(rail),
             ..Default::default()
         },
-        EventTime(0)
+        EventTime(0),
+        &mut RetirementSource::default()
     ));
     assert!(host.runtime.server.disconnect(client));
     assert_eq!(

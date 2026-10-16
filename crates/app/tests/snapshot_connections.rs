@@ -10,6 +10,7 @@ use qa_app::{
     client_policy::ClientPolicy,
     host::{FrameHost, FrameSource},
     map::SpawnAnchor,
+    snapshots::NativePlayerBinding,
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{loopback::Endpoint, primitives::*, sys_events::*};
@@ -291,7 +292,7 @@ fn host(protocol: Protocol) -> (FrameHost, ClientId, ClientId, RemoteReceiver) {
     let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
     channel.set_qport(REMOTE);
     runtime
-        .bind_server_connection(
+        .bind_connection(
             remote,
             NativeConnection {
                 route: Route {
@@ -303,7 +304,7 @@ fn host(protocol: Protocol) -> (FrameHost, ClientId, ClientId, RemoteReceiver) {
                 pending_output: None,
                 commands: Some(Commands::load(protocol, 8192)),
             },
-            1,
+            qa_app::snapshots::NativePlayerBinding::Supplied(1),
             None,
         )
         .unwrap();
@@ -494,14 +495,15 @@ fn queued_local_and_remote_connections_share_snapshot_projection_for_every_proto
             None
         );
         let time = EventTime::from_milliseconds(100);
-        assert!(host.runtime.send_local_command(
+        assert!(host.runtime.send_client_command(
             local,
             &UserCmd {
                 duration_ms: 16,
                 server_time_ms: 100,
                 ..Default::default()
             },
-            time
+            time,
+            &mut Source::default()
         ));
         peer.queue_command(&mut host, time);
         let mut source = Source {
@@ -979,7 +981,7 @@ fn queued_netquake_view_entity_updates_only_client_origin_across_native_frames()
         );
         let binding = host.runtime.snapshots[client.0 as usize].as_ref().unwrap();
         assert_eq!((binding.applied, binding.rejected), (index as u64 + 1, 0));
-        assert_eq!(binding.native_client(), 5);
+        assert_eq!(binding.native_client(), Some(5));
         let frame = host
             .runtime
             .network
@@ -1105,7 +1107,7 @@ fn queued_netquake_setview_selects_retained_camera_without_reassigning_the_physi
     assert_eq!(binding.view_entity(Some(frame)), Some(42));
     assert_eq!(
         (binding.native_client(), binding.applied, binding.rejected),
-        (5, 1, 0)
+        (Some(5), 1, 0)
     );
     assert_eq!(
         host.client_entities_inputs()[0]
@@ -1174,7 +1176,7 @@ fn queued_netquake_setview_selects_retained_camera_without_reassigning_the_physi
             .unwrap();
         assert_eq!(
             (binding.native_client(), binding.applied, binding.rejected),
-            (5, 1, 0)
+            (Some(5), 1, 0)
         );
         assert_eq!(frame.sequence(), sequence);
         assert_eq!(binding.player_entity(Some(frame)), Some(6));
@@ -1195,7 +1197,7 @@ fn queued_netquake_setview_selects_retained_camera_without_reassigning_the_physi
                 second_binding.native_client(),
                 second_binding.applied
             ),
-            (Some(10), 9, 1)
+            (Some(10), Some(9), 1)
         );
     }
     // An absent target keeps its metadata and resolves when a later accepted row appears.
@@ -1652,7 +1654,7 @@ fn queued_netquake_serverinfo_replaces_client_resources_without_reassigning_the_
             binding.player_entity(None),
             binding.view_entity(None)
         ),
-        (5, Some(6), Some(6))
+        (Some(5), Some(6), Some(6))
     );
     assert_eq!(host.runtime.prediction[0].player.health, 0);
     assert_eq!(host.runtime.prediction[0].player.inventory.collectibles, 0);
@@ -2333,7 +2335,7 @@ fn flush_nq_client_commands(host: &mut FrameHost, rounds: usize) -> (Vec<Vec<u8>
     let mut queue = SysEventQueue::load(256, 256 * 1024).unwrap();
     for _ in 0..rounds {
         for client in host.local_clients.into_iter().flatten() {
-            host.runtime.send_local_command(
+            host.runtime.send_client_command(
                 client,
                 &UserCmd {
                     duration_ms: 16,
@@ -2341,6 +2343,7 @@ fn flush_nq_client_commands(host: &mut FrameHost, rounds: usize) -> (Vec<Vec<u8>
                     ..Default::default()
                 },
                 host.time,
+                &mut Source::default(),
             );
         }
         host.runtime.loopback.enqueue(&mut queue, host.time);
@@ -2569,13 +2572,14 @@ fn queued_netquake_signon_replies_preserve_native_text_retry_progress_and_stage_
             .nq_signon_stage(),
         Some(4)
     );
-    assert!(host.runtime.send_local_command(
+    assert!(host.runtime.send_client_command(
         client,
         &UserCmd {
             duration_ms: 16,
             ..Default::default()
         },
-        host.time
+        host.time,
+        &mut Source::default()
     ));
     assert_eq!(
         host.runtime
@@ -2629,14 +2633,15 @@ fn queued_netquake_stage_jumps_require_resources_and_reset_before_movement_and_r
         .history()
         .unwrap()
         .number();
-    assert!(!host.runtime.send_local_command(
+    assert!(!host.runtime.send_client_command(
         first,
         &UserCmd {
             duration_ms: 100,
             movement: [200., 0., 0.],
             ..Default::default()
         },
-        host.time
+        host.time,
+        &mut Source::default()
     ));
     assert_eq!(
         host.runtime
@@ -2666,13 +2671,14 @@ fn queued_netquake_stage_jumps_require_resources_and_reset_before_movement_and_r
     bytes.extend([25, 4]);
     queue_netquake_control(&mut host, first, &bytes);
     host.drain(&mut Default::default());
-    assert!(!host.runtime.send_local_command(
+    assert!(!host.runtime.send_client_command(
         first,
         &UserCmd {
             duration_ms: 100,
             ..Default::default()
         },
-        host.time
+        host.time,
+        &mut Source::default()
     ));
     assert_eq!(
         host.runtime
@@ -2736,7 +2742,7 @@ fn queued_netquake_stage_jumps_require_resources_and_reset_before_movement_and_r
             .as_ref()
             .unwrap()
             .native_client(),
-        9
+        Some(9)
     );
 }
 
@@ -2911,4 +2917,623 @@ fn queued_netquake_required_model_waits_without_backend_then_closes_on_real_cold
             .number(),
         0
     );
+}
+
+fn accepted_connection(protocol: Protocol) -> NativeConnection {
+    NativeConnection {
+        route: Route {
+            socket: 0,
+            peer: Peer::Socket(([127, 0, 0, 1], REMOTE).into()),
+        },
+        channel: Channel::load(protocol.channel(), Endpoint::Client, 8192, 16).unwrap(),
+        output: None,
+        pending_output: None,
+        commands: Some(Commands::load(protocol, 8192)),
+    }
+}
+
+fn accepted_netquake_host(
+    binding: NativePlayerBinding,
+) -> (FrameHost, ClientId, ClientId, Channel) {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let policy = ClientPolicy::select(
+        Some(RuleSetId::QuakeWorld),
+        None,
+        Some(RuleSetId::Quake3),
+        Some(RuleSetId::Quake2),
+        None,
+    )
+    .unwrap();
+    let local = runtime
+        .connect_local(
+            SeatId::FIRST,
+            SpawnAnchor {
+                position: Vec3([10., 20., 30.]),
+                angles: Vec3::default(),
+                entity: 0,
+                fixture_fallback: false,
+            },
+            policy,
+            Protocol::QuakeWorld28,
+            5,
+        )
+        .unwrap();
+    let remote = runtime
+        .connect_accepted_client(
+            SeatId::new(1).unwrap(),
+            policy,
+            binding,
+            accepted_connection(Protocol::NetQuake15),
+        )
+        .unwrap();
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(25).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    host.local_clients[0] = Some(local);
+    host.local_clients[1] = Some(remote);
+    bind_nq_preloaded_world(&mut host, &[local, remote]);
+    let server = Channel::load(Protocol::NetQuake15.channel(), Endpoint::Server, 8192, 16).unwrap();
+    (host, local, remote, server)
+}
+
+fn queue_accepted_netquake(
+    host: &mut FrameHost,
+    client: ClientId,
+    server: &mut Channel,
+    payload: &[u8],
+) {
+    let route = host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .route;
+    let time = EventTime(host.time.0 + 1);
+    server
+        .prepare_server_message(payload, time)
+        .unwrap()
+        .unwrap();
+    assert!(
+        server
+            .submit_with(time, |bytes| host
+                .queue
+                .push(SysEvent {
+                    time,
+                    kind: EventKind::Packet {
+                        socket: route.socket,
+                        from: route.peer,
+                        bytes
+                    },
+                })
+                .is_ok())
+            .unwrap()
+            .is_some()
+    );
+    host.time = time;
+}
+
+fn nq_admission_snapshot(rows: &[(u32, Vec3)]) -> Vec<u8> {
+    use qa_network::{
+        message::{Encoding, Writer},
+        states,
+    };
+    let mut bytes = [0; 512];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_bits(7, 8).unwrap();
+    writer.write_bits(1.0f32.to_bits(), 32).unwrap();
+    let mut player = [0; states::NQ_PLAYER_WORDS];
+    player[0] = 22.0f32.to_bits();
+    player[3] = 32.0f32.to_bits();
+    player[12] = 87.0f32.to_bits();
+    states::write_nq_player(&mut writer, &player).unwrap();
+    for &(number, position) in rows {
+        let mut words = [0; states::NQ_ENTITY_WORDS];
+        words[0] = 2.0f32.to_bits();
+        for (word, value) in [5, 7, 9].into_iter().zip(position.0) {
+            words[word] = value.to_bits();
+        }
+        assert!(
+            states::write_nq_entity(
+                &mut writer,
+                number,
+                &[0; states::NQ_ENTITY_WORDS],
+                &words,
+                false,
+            )
+            .unwrap()
+        );
+    }
+    writer.bytes().to_vec()
+}
+
+#[test]
+fn accepted_socket_client_assigns_only_the_initial_player_and_keeps_cameras_independent() {
+    let (mut host, local, remote, mut server) =
+        accepted_netquake_host(NativePlayerBinding::Awaiting);
+    let entity = host.runtime.server.clients[remote.0 as usize].entity;
+    let server_origin = host.runtime.server.clients[remote.0 as usize]
+        .player
+        .body
+        .position;
+    assert!(host.runtime.network.get(remote, Endpoint::Server).is_none());
+    assert!(host.runtime.server.area.bounds(entity).is_none());
+    assert!(host.runtime.server.entities.columns.native_entity[entity.slot as usize].is_none());
+    let before = host.runtime.prediction[1].player.body.position;
+    queue_accepted_netquake(
+        &mut host,
+        remote,
+        &mut server,
+        &nq_admission_snapshot(&[(1, Vec3([900., 901., 902.])), (6, Vec3([100., 101., 102.]))]),
+    );
+    host.drain(&mut Default::default());
+    let binding = host.runtime.snapshots[remote.0 as usize].as_ref().unwrap();
+    assert_eq!(binding.native_client(), None);
+    assert_eq!(binding.player_entity(None), None);
+    assert_eq!(host.runtime.prediction[1].player.body.position, before);
+    assert_eq!(binding.applied, 0);
+    // A SetView before an admitted header is only a camera, even if its value
+    // falls in the usual player range.
+    queue_accepted_netquake(&mut host, remote, &mut server, &[5, 2, 0]);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.snapshots[remote.0 as usize]
+            .as_ref()
+            .unwrap()
+            .native_client(),
+        None
+    );
+    let physical = Vec3([120.375, -24.625, 48.125]);
+    let mut bytes = nq_server_info(b"assigned", &[b"maps/ready.bsp", b"*1"], &[]);
+    bytes.extend([5, 6, 0, 25, 1]);
+    bytes.extend(nq_admission_snapshot(&[
+        (1, Vec3([900., 901., 902.])),
+        (6, physical),
+        (42, Vec3([-200., -300., -400.])),
+    ]));
+    queue_accepted_netquake(&mut host, remote, &mut server, &bytes);
+    host.drain(&mut Default::default());
+    let binding = host.runtime.snapshots[remote.0 as usize].as_ref().unwrap();
+    assert_eq!(binding.native_client(), Some(5));
+    assert_eq!(binding.player_entity(None), Some(6));
+    assert_ne!(entity.slot, 6);
+    assert_eq!(host.runtime.prediction[1].player.body.position, physical);
+    assert_eq!(host.runtime.prediction[1].player.body.velocity.0[0], 32.);
+    assert_eq!(
+        (
+            host.runtime.prediction[1].player.movement_rules,
+            host.runtime.prediction[1].player.trace_rules
+        ),
+        (RuleSetId::Quake3, RuleSetId::Quake2)
+    );
+    let next = Vec3([128.5, -32.25, 56.75]);
+    let mut bytes = vec![5, 2, 0];
+    bytes.extend(nq_admission_snapshot(&[
+        (2, Vec3([-64., -128., -256.])),
+        (6, next),
+    ]));
+    queue_accepted_netquake(&mut host, remote, &mut server, &bytes);
+    host.drain(&mut Default::default());
+    let binding = host.runtime.snapshots[remote.0 as usize].as_ref().unwrap();
+    assert_eq!(binding.native_client(), Some(5));
+    assert_eq!(binding.player_entity(None), Some(6));
+    assert_eq!(binding.view_entity(None), Some(2));
+    assert_eq!(host.runtime.prediction[1].player.body.position, next);
+    assert_eq!(
+        host.runtime.server.clients[remote.0 as usize]
+            .player
+            .body
+            .position,
+        server_origin
+    );
+    assert!(host.runtime.server.area.bounds(entity).is_none());
+    assert_eq!(
+        host.runtime.snapshots[local.0 as usize]
+            .as_ref()
+            .unwrap()
+            .native_client(),
+        Some(5)
+    );
+    assert_eq!(
+        (
+            host.runtime.network.malformed,
+            host.runtime.network.command_errors
+        ),
+        (0, 0)
+    );
+}
+
+#[test]
+fn accepted_netquake_replacement_reopens_assignment_but_never_guesses_from_updates() {
+    let (mut host, _, remote, mut server) = accepted_netquake_host(NativePlayerBinding::Awaiting);
+    let mut bytes = nq_server_info(b"first", &[b"maps/ready.bsp", b"*1"], &[]);
+    bytes.extend([5, 6, 0, 25, 1]);
+    bytes.extend(nq_admission_snapshot(&[(6, Vec3([100., 0., 40.]))]));
+    queue_accepted_netquake(&mut host, remote, &mut server, &bytes);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.snapshots[remote.0 as usize]
+            .as_ref()
+            .unwrap()
+            .native_client(),
+        Some(5)
+    );
+    queue_accepted_netquake(
+        &mut host,
+        remote,
+        &mut server,
+        &nq_server_info(b"replacement", &[b"maps/ready.bsp", b"*1"], &[]),
+    );
+    host.drain(&mut Default::default());
+    let before = host.runtime.prediction[1].player.body.position;
+    let mut update = nq_admission_snapshot(&[(1, Vec3([900.; 3])), (6, Vec3([600.; 3]))]);
+    queue_accepted_netquake(&mut host, remote, &mut server, &update);
+    host.drain(&mut Default::default());
+    let binding = host.runtime.snapshots[remote.0 as usize].as_ref().unwrap();
+    assert_eq!(
+        (
+            binding.native_client(),
+            binding.player_entity(None),
+            binding.view_entity(None)
+        ),
+        (None, None, None)
+    );
+    assert_eq!(host.runtime.prediction[1].player.body.position, before);
+    update.clear();
+    update.extend([5, 7, 0, 25, 1]);
+    update.extend(nq_admission_snapshot(&[(7, Vec3([112., 224., 56.]))]));
+    queue_accepted_netquake(&mut host, remote, &mut server, &update);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.snapshots[remote.0 as usize]
+            .as_ref()
+            .unwrap()
+            .native_client(),
+        Some(6)
+    );
+    assert_eq!(
+        host.runtime.prediction[1].player.body.position,
+        Vec3([112., 224., 56.])
+    );
+    assert!(host.runtime.network.get(remote, Endpoint::Server).is_none());
+}
+
+#[test]
+fn accepted_netquake_rejects_invalid_or_missing_initial_assignment_without_harming_local_peer() {
+    for entity in [None, Some(0u16), Some(17), Some(u16::MAX)] {
+        let (mut host, local, remote, mut server) =
+            accepted_netquake_host(NativePlayerBinding::Awaiting);
+        let local_lifetime = host.runtime.server.clients[local.0 as usize].entity;
+        let mut bytes = nq_server_info(b"invalid assignment", &[b"maps/ready.bsp"], &[]);
+        if let Some(entity) = entity {
+            bytes.push(5);
+            bytes.extend(entity.to_le_bytes());
+        }
+        bytes.extend([25, 1, 5, 6, 0]);
+        queue_accepted_netquake(&mut host, remote, &mut server, &bytes);
+        host.drain(&mut Default::default());
+        let binding = host.runtime.snapshots[remote.0 as usize].as_ref().unwrap();
+        assert_eq!(binding.native_client(), None);
+        assert!(binding.presentation_closed());
+        let healthy = host.runtime.snapshots[local.0 as usize].as_ref().unwrap();
+        assert!(!healthy.presentation_closed());
+        assert_eq!(healthy.native_client(), Some(5));
+        assert_eq!(
+            host.runtime.server.clients[local.0 as usize].entity,
+            local_lifetime
+        );
+    }
+    // An explicitly supplied physical identity permits an initial custom
+    // camera without treating that camera as a player assignment.
+    let (mut host, _, remote, mut server) =
+        accepted_netquake_host(NativePlayerBinding::Supplied(5));
+    let mut bytes = nq_server_info(b"custom camera", &[b"maps/ready.bsp", b"*1"], &[]);
+    bytes.extend([5, 42, 0, 25, 1]);
+    bytes.extend(nq_admission_snapshot(&[
+        (6, Vec3([80., 40., 20.])),
+        (42, Vec3([-80., -40., -20.])),
+    ]));
+    queue_accepted_netquake(&mut host, remote, &mut server, &bytes);
+    host.drain(&mut Default::default());
+    let binding = host.runtime.snapshots[remote.0 as usize].as_ref().unwrap();
+    assert!(!binding.presentation_closed());
+    assert_eq!(
+        (
+            binding.native_client(),
+            binding.player_entity(None),
+            binding.view_entity(None)
+        ),
+        (Some(5), Some(6), Some(42))
+    );
+    assert_eq!(
+        host.runtime.prediction[1].player.body.position,
+        Vec3([80., 40., 20.])
+    );
+}
+
+#[test]
+fn accepted_client_setup_preserves_owned_seats_and_requires_native_assignment_capability() {
+    let (mut host, local, remote, _) = accepted_netquake_host(NativePlayerBinding::Awaiting);
+    let lifetime = host.runtime.server.clients[local.0 as usize].entity;
+    let owner = host.runtime.server.clients[local.0 as usize].output;
+    let position = Vec3([123., 456., 789.]);
+    let angles = Vec3([11.25, 22.5, 0.]);
+    host.runtime.prediction[0].player.body.position = position;
+    host.runtime.prediction[0].player.view_angles = angles;
+    host.runtime.input.set_view_angles(SeatId::FIRST, angles);
+    let policy = ClientPolicy::select(Some(RuleSetId::Quake), None, None, None, None).unwrap();
+    assert!(
+        host.runtime
+            .connect_accepted_client(
+                SeatId::FIRST,
+                policy,
+                NativePlayerBinding::Awaiting,
+                accepted_connection(Protocol::NetQuake15),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        host.runtime.server.clients[local.0 as usize].entity,
+        lifetime
+    );
+    assert_eq!(host.runtime.server.clients[local.0 as usize].output, owner);
+    assert_eq!(host.runtime.prediction[0].player.body.position, position);
+    assert_eq!(host.runtime.prediction[0].player.view_angles, angles);
+    let inputs = qa_console::input_settings::InputHandles::load(&host.console.cvars).unwrap();
+    let input = inputs.policy(&host.console.cvars, RuleSetId::QuakeWorld);
+    let commands = host
+        .runtime
+        .input
+        .build_frame_with_policy(EventTime::from_milliseconds(1), &[input; SeatId::COUNT]);
+    assert_eq!(commands[0].view_angles, angles);
+    assert!(host.runtime.network.get(remote, Endpoint::Server).is_none());
+    for (protocol, binding, allowed) in [
+        (Protocol::Quake3_68, NativePlayerBinding::Awaiting, false),
+        (Protocol::Quake3_68, NativePlayerBinding::Supplied(63), true),
+        (
+            Protocol::Quake3_68,
+            NativePlayerBinding::Supplied(64),
+            false,
+        ),
+        (
+            Protocol::NetQuake15,
+            NativePlayerBinding::Supplied(15),
+            true,
+        ),
+        (
+            Protocol::NetQuake15,
+            NativePlayerBinding::Supplied(16),
+            false,
+        ),
+    ] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let result = runtime.connect_accepted_client(
+            SeatId::FIRST,
+            policy,
+            binding,
+            accepted_connection(protocol),
+        );
+        assert_eq!(result.is_ok(), allowed);
+        assert!(runtime.network.get(ClientId(0), Endpoint::Server).is_none());
+        if let Ok(client) = result {
+            assert_eq!(
+                runtime.snapshots[client.0 as usize]
+                    .as_ref()
+                    .unwrap()
+                    .native_client(),
+                binding.number()
+            );
+            assert!(
+                runtime
+                    .server
+                    .area
+                    .bounds(runtime.server.clients[client.0 as usize].entity)
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[test]
+fn accepted_client_stays_unlinked_while_the_local_server_peer_advances() {
+    let (mut host, local, remote, _) = accepted_netquake_host(NativePlayerBinding::Awaiting);
+    let geometry = host.runtime.client_resources[local.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .models
+        .collision_world()
+        .unwrap()
+        .0;
+    host.runtime.collision = Some(qa_app::WorldCollision::new(
+        &host.runtime.geometry,
+        geometry,
+        0,
+    ));
+    let remote_entity = host.runtime.server.clients[remote.0 as usize].entity;
+    host.runtime.server.entities.columns.appearance[remote_entity.slot as usize]
+        .native
+        .effects = 1;
+    let remote_origin = host.runtime.server.clients[remote.0 as usize]
+        .player
+        .body
+        .position;
+    let local_origin = host.runtime.server.clients[local.0 as usize]
+        .player
+        .body
+        .position;
+    let history = host
+        .runtime
+        .network
+        .get(remote, Endpoint::Client)
+        .unwrap()
+        .commands
+        .as_ref()
+        .unwrap()
+        .history()
+        .unwrap()
+        .number();
+    let mut source = Source::default();
+    host.frame(&mut source, true);
+    source.time = EventTime::from_milliseconds(100);
+    host.frame(&mut source, true);
+    source.time = EventTime::from_milliseconds(200);
+    let frame = host.frame(&mut source, true);
+    assert!(frame.server_ticks > 0);
+    assert_ne!(
+        host.runtime.server.clients[local.0 as usize]
+            .player
+            .body
+            .position,
+        local_origin
+    );
+    assert_eq!(
+        host.runtime.server.clients[remote.0 as usize]
+            .player
+            .body
+            .position,
+        remote_origin
+    );
+    assert_eq!(
+        host.runtime.server.clients[remote.0 as usize]
+            .command
+            .duration_ms,
+        0
+    );
+    assert!(host.runtime.server.take_pending_command(remote).is_none());
+    assert!(host.runtime.server.area.bounds(remote_entity).is_none());
+    assert!(host.runtime.network.get(remote, Endpoint::Server).is_none());
+    let frame = host
+        .runtime
+        .network
+        .get(local, Endpoint::Client)
+        .unwrap()
+        .channel
+        .current_snapshot()
+        .unwrap();
+    let ReceivedFrame::QuakeWorld(frame) = frame else {
+        panic!("local QW peer did not accept its SERVER frame")
+    };
+    assert_eq!(frame.qw_peers, 1 << 5);
+    assert_eq!(
+        host.runtime.native_numbers[local.0 as usize].number(remote_entity),
+        None
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(remote, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        history
+    );
+}
+
+#[test]
+fn accepted_client_hud_receives_only_its_wire_prints_and_client_publications() {
+    use qa_compat::services::{ENGINE_CALLS, ServiceStorage};
+    let (mut host, local, remote, mut peer) = accepted_netquake_host(NativePlayerBinding::Awaiting);
+    let mut storage = ServiceStorage::load(&[], 0, &host.console.cvars).unwrap();
+    let mut scratch = host.runtime.geometry.scratch();
+    {
+        let mut services =
+            host.runtime
+                .engine_services(&mut host.console, &mut storage, &mut scratch);
+        (ENGINE_CALLS.print)(
+            &mut services,
+            None,
+            None,
+            PrintKind::Notify,
+            2,
+            b"local SERVER broadcast",
+        )
+        .unwrap();
+    }
+    let dispatch = |host: &mut FrameHost| {
+        qa_app::output::dispatch(
+            &mut host.runtime,
+            &mut Source::default(),
+            &mut host.console.scrollback,
+            &host.local_clients,
+            host.time,
+            3.,
+            2.,
+        );
+    };
+    dispatch(&mut host);
+    let local_text = host.runtime.server.clients[local.0 as usize].hud.notify[3]
+        .as_ref()
+        .unwrap()
+        .text
+        .id();
+    assert_eq!(
+        host.runtime.server.events.texts.get(local_text),
+        Some(b"local SERVER broadcast".as_slice())
+    );
+    assert!(
+        host.runtime.server.clients[remote.0 as usize]
+            .hud
+            .notify
+            .iter()
+            .all(Option::is_none)
+    );
+    let mut bytes = [0; 128];
+    let length = qa_network::outputs::print(
+        Protocol::NetQuake15,
+        PrintKind::Center,
+        2,
+        b"received remote text",
+        None,
+        &mut bytes,
+    )
+    .unwrap();
+    queue_accepted_netquake(&mut host, remote, &mut peer, &bytes[..length]);
+    host.drain(&mut Default::default());
+    host.runtime.prediction[1].player.inventory.item_counts[1] = 7;
+    {
+        let server = &mut host.runtime.server;
+        server.clients[remote.0 as usize]
+            .hud_publication
+            .publish_changes(
+                &host.runtime.prediction[1].player,
+                &mut server.events,
+                remote,
+            );
+    }
+    dispatch(&mut host);
+    let remote_text = host.runtime.server.clients[remote.0 as usize]
+        .hud
+        .centerprint
+        .as_ref()
+        .unwrap()
+        .text
+        .id();
+    assert_eq!(
+        host.runtime.server.events.texts.get(remote_text),
+        Some(b"received remote text".as_slice())
+    );
+    assert_eq!(
+        host.runtime.server.clients[local.0 as usize].hud.notify[3]
+            .as_ref()
+            .unwrap()
+            .text
+            .id(),
+        local_text
+    );
+    assert_eq!(
+        host.runtime.server.clients[remote.0 as usize]
+            .hud
+            .inventory
+            .item_counts[1],
+        7
+    );
+    assert!(host.runtime.server.events.is_empty());
 }

@@ -339,6 +339,15 @@ impl FrameHost {
         userinfo: &[u8],
         driver: &mut crate::modules::Driver<'_>,
     ) -> Result<u32, String> {
+        if self
+            .runtime
+            .server
+            .clients
+            .get(id.0 as usize)
+            .is_none_or(|client| !client.is_server_active())
+        {
+            return Err("module connection requires a SERVER client".into());
+        }
         let table = self
             .module_row(module)
             .and_then(|row| row.client_lifecycle)
@@ -701,7 +710,9 @@ impl FrameHost {
                 .get(id.0 as usize)
                 .and_then(Option::as_ref)
                 .ok_or("native client needs connection metadata")?;
-            let native_client = snapshot.native_client();
+            let native_client = snapshot
+                .native_client()
+                .ok_or("native client assignment is pending")?;
             let seat = snapshot.seat();
             let row = self.module_row(api.module).ok_or("missing client module")?;
             if row.state != State::Running || native_client >= 256 {

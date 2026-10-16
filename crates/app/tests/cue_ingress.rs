@@ -1,3 +1,6 @@
+#[path = "support/frame_source.rs"]
+mod frame_source;
+
 use qa_app::{
     Runtime,
     client_policy::ClientPolicy,
@@ -60,10 +63,12 @@ fn send(host: &mut FrameHost, client: ClientId, payload: &[u8], time: EventTime)
         .protocol
         == Protocol::QuakeWorld28
     {
-        assert!(
-            host.runtime
-                .send_local_command(client, &UserCmd::default(), time)
-        );
+        assert!(host.runtime.send_client_command(
+            client,
+            &UserCmd::default(),
+            time,
+            &mut frame_source::Sink::default()
+        ));
         drain(host, time);
     }
     let runtime = &mut host.runtime;

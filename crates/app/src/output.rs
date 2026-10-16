@@ -418,7 +418,7 @@ pub(crate) fn dispatch_frame(
                 server
                     .clients
                     .iter()
-                    .filter(|client| client.is_active())
+                    .filter(|client| client.is_server_active())
                     .map(|client| client.entity),
             );
         }
@@ -433,7 +433,13 @@ pub(crate) fn dispatch_frame(
         {
             let route = connection.route;
             let (disposition, submitted) = match native::transmit(connection, None, time, |bytes| {
-                crate::transport::admit_output(&mut runtime.loopback, source, route, bytes)
+                crate::transport::admit_output(
+                    &mut runtime.loopback,
+                    source,
+                    qa_core::loopback::Endpoint::Server,
+                    route,
+                    bytes,
+                )
             }) {
                 Ok(submitted) => submitted,
                 Err(_) => {
@@ -682,6 +688,7 @@ pub(crate) fn dispatch_frame(
                                             crate::transport::admit_output(
                                                 &mut runtime.loopback,
                                                 source,
+                                                qa_core::loopback::Endpoint::Server,
                                                 route,
                                                 bytes,
                                             )
@@ -718,6 +725,7 @@ pub(crate) fn dispatch_frame(
                                         crate::transport::admit_output(
                                             &mut runtime.loopback,
                                             source,
+                                            qa_core::loopback::Endpoint::Server,
                                             route,
                                             bytes,
                                         )
@@ -787,6 +795,7 @@ pub(crate) fn dispatch_frame(
                                             crate::transport::admit_output(
                                                 &mut runtime.loopback,
                                                 source,
+                                                qa_core::loopback::Endpoint::Server,
                                                 route,
                                                 bytes,
                                             )
@@ -894,6 +903,7 @@ pub(crate) fn dispatch_frame(
                                 crate::transport::admit_output(
                                     &mut runtime.loopback,
                                     source,
+                                    qa_core::loopback::Endpoint::Server,
                                     route,
                                     bytes,
                                 )
@@ -937,6 +947,7 @@ pub(crate) fn dispatch_frame(
                 .get_mut(client_id, qa_core::loopback::Endpoint::Server)
             && connection.pending_output.is_none()
         {
+            let route = connection.route;
             let submitted = crate::transport::send(
                 &mut connection.channel,
                 time,
@@ -951,7 +962,8 @@ pub(crate) fn dispatch_frame(
                     crate::transport::admit_output(
                         &mut runtime.loopback,
                         source,
-                        connection.route,
+                        qa_core::loopback::Endpoint::Server,
+                        route,
                         bytes,
                     )
                 },

@@ -123,6 +123,55 @@ fn received_local_text_shares_one_record_and_independent_hud_lease() {
     ring.texts.release(display);
     assert_eq!(ring.texts.get(print.text), None);
 }
+
+#[test]
+fn local_client_cursor_accepts_only_its_explicit_received_scope() {
+    let mut ring = EventRing::load(8, 4, 8, 64).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let server_client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let local = ring.bind(OutputTarget::Local(ClientId(1))).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(7))).unwrap();
+    let broadcast = ring
+        .print_level_bytes(None, None, PrintKind::Notify, 2, b"SERVER broadcast")
+        .unwrap();
+    ring.print_level_bytes(
+        Some(OutputTarget::Client(ClientId(1))),
+        Some(ClientId(1)),
+        PrintKind::Center,
+        2,
+        b"SERVER unicast",
+    )
+    .unwrap();
+    let native = ring
+        .push_delivered(native_delivery(NativeTarget::All), sound(3))
+        .unwrap();
+    let received = ring
+        .print_level_bytes(
+            Some(OutputTarget::Local(ClientId(1))),
+            Some(ClientId(1)),
+            PrintKind::Center,
+            2,
+            b"received CLIENT text",
+        )
+        .unwrap();
+    assert_eq!(
+        consume(&mut ring, local, OutputSubmission::BestEffort),
+        [received]
+    );
+    assert_eq!(
+        consume(&mut ring, server_client, OutputSubmission::BestEffort),
+        [broadcast, native]
+    );
+    assert_eq!(
+        consume(&mut ring, module, OutputSubmission::BestEffort),
+        [broadcast, native]
+    );
+    assert_eq!(
+        consume(&mut ring, presentation, OutputSubmission::BestEffort),
+        [broadcast, received]
+    );
+    assert!(ring.is_empty());
+}
 #[test]
 fn oversized_group_rejection_does_not_cancel_a_stalled_peer() {
     let mut ring = EventRing::load(2, 2, 2, 32).unwrap();

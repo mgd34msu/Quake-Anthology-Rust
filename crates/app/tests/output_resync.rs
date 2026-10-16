@@ -253,7 +253,10 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
             units: qa_gameplay::rules::command_units(RuleSetId::Quake2),
             ..Default::default()
         };
-        assert!(host.runtime.send_local_command(stalled, &command, source.0));
+        assert!(
+            host.runtime
+                .send_client_command(stalled, &command, source.0, &mut source)
+        );
         host.drain(&mut FrameResult::default());
         let received = host.runtime.server.clients[stalled.0 as usize].command;
         assert_eq!(

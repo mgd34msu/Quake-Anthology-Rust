@@ -717,21 +717,25 @@ fn q3_native_metadata_survives_ordinary_snapshot_and_client_import_with_hot_flag
 fn q3_followed_player_number_does_not_replace_the_native_callback_identity() {
     let (mut host, client) = fixture(1200, 250, 1);
     connect_followed_client(&mut host);
-    assert!(host.runtime.send_local_command(
+    assert!(host.runtime.send_client_command(
         client,
         &UserCmd {
             server_time_ms: 50,
             duration_ms: 50,
             ..Default::default()
         },
-        EventTime::from_milliseconds(50)
+        EventTime::from_milliseconds(50),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
     ));
     host.drain(&mut Default::default());
     assert_eq!(read(&mut host, THINK_CLIENT), 0);
     assert_eq!(read(&mut host, THINK_COUNT), 1);
     assert_eq!(
         host.runtime.snapshots[1].as_ref().unwrap().native_client(),
-        0
+        Some(0)
     );
     assert_eq!(
         host.runtime.server.module_moves(client),
@@ -745,7 +749,7 @@ fn q3_followed_player_number_does_not_replace_the_native_callback_identity() {
     assert_eq!(presented_entity(&host, client), Some(1));
     assert_eq!(
         host.runtime.snapshots[1].as_ref().unwrap().native_client(),
-        0
+        Some(0)
     );
     assert_eq!(
         host.runtime.prediction[0]
@@ -897,7 +901,7 @@ fn q3_server_follow_target_changes_presentation_only_after_client_packet_accepta
     );
     assert_eq!(
         host.runtime.snapshots[1].as_ref().unwrap().native_client(),
-        0
+        Some(0)
     );
 }
 
@@ -1083,7 +1087,7 @@ fn q3_clientthink_between_ticks_preserves_native_frame_clock_and_ta_marker() {
     assert_eq!(player.inventory.item_counts[item.0 as usize], 1);
     assert_eq!(player.inventory.powerup_until[timer.0 as usize], 1.0);
     queued_time(&mut host, 1050);
-    assert!(host.runtime.send_local_command(
+    assert!(host.runtime.send_client_command(
         client,
         &UserCmd {
             server_time_ms: 1050,
@@ -1091,6 +1095,10 @@ fn q3_clientthink_between_ticks_preserves_native_frame_clock_and_ta_marker() {
             ..Default::default()
         },
         host.time,
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
     ));
     host.drain(&mut Default::default());
     assert_eq!(read(&mut host, THINK_COUNT), 1);

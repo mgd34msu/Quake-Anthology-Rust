@@ -1075,7 +1075,7 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                 .unwrap();
         channel.set_qport(4000);
         runtime
-            .bind_server_connection(
+            .bind_connection(
                 remote,
                 qa_network::ingress::Connection {
                     route: qa_network::ingress::Route {
@@ -1089,7 +1089,7 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                         protocol, 8192,
                     )),
                 },
-                1,
+                qa_app::snapshots::NativePlayerBinding::Supplied(1),
                 None,
             )
             .unwrap();

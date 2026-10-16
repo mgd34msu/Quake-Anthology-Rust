@@ -351,10 +351,12 @@ fn netquake_and_quakeworld_project_entities_through_the_same_source_path() -> Re
             Vec3([12.375, -24.625, 48.125]),
         );
         if protocol == Protocol::QuakeWorld28 {
-            assert!(
-                host.runtime
-                    .send_local_command(client, &Default::default(), EventTime(0))
-            );
+            assert!(host.runtime.send_client_command(
+                client,
+                &Default::default(),
+                EventTime(0),
+                &mut Clock::default()
+            ));
             dispatch(&mut host, EventTime(1_000_000_000));
         }
         transmit(
@@ -789,10 +791,12 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
         },
         ..Default::default()
     };
-    assert!(
-        host.runtime
-            .send_local_command(client, &Default::default(), EventTime(0))
-    );
+    assert!(host.runtime.send_client_command(
+        client,
+        &Default::default(),
+        EventTime(0),
+        &mut Clock::default()
+    ));
     dispatch(&mut host, EventTime(1_000_000_000));
     let first = transmit(
         &mut host,
@@ -822,10 +826,12 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
     host.runtime.server.clients[peer.0 as usize].connection = None;
     // QW deltas answer a submitted client request; the advisory byte in the
     // server message is not an independent choice of a CLIENT delta base.
-    assert!(
-        host.runtime
-            .send_local_command(client, &Default::default(), EventTime(1_100_000_000))
-    );
+    assert!(host.runtime.send_client_command(
+        client,
+        &Default::default(),
+        EventTime(1_100_000_000),
+        &mut Clock::default()
+    ));
     dispatch(&mut host, EventTime(1_100_000_000));
     transmit(
         &mut host,
@@ -890,10 +896,12 @@ fn snapshot_exclusion_is_a_shared_capability_independent_of_source_and_wire_flag
                 .snapshot_excluded = true;
         }
         if protocol == Protocol::QuakeWorld28 {
-            assert!(
-                host.runtime
-                    .send_local_command(client, &Default::default(), EventTime(0))
-            );
+            assert!(host.runtime.send_client_command(
+                client,
+                &Default::default(),
+                EventTime(0),
+                &mut Clock::default()
+            ));
             dispatch(&mut host, EventTime(1_000_000_000));
         }
         transmit(
@@ -1078,10 +1086,12 @@ fn oversized_worlds_select_a_native_packet_without_publishing_failed_trials() ->
             entities.push(entity);
         }
         if protocol == Protocol::QuakeWorld28 {
-            assert!(
-                host.runtime
-                    .send_local_command(client, &Default::default(), EventTime(0))
-            );
+            assert!(host.runtime.send_client_command(
+                client,
+                &Default::default(),
+                EventTime(0),
+                &mut Clock::default()
+            ));
             dispatch(&mut host, EventTime(1_000_000_000));
         }
         let first = transmit(
@@ -1131,10 +1141,11 @@ fn oversized_worlds_select_a_native_packet_without_publishing_failed_trials() ->
             *position = *position + Vec3([64., 32., 16.]);
         }
         if protocol == Protocol::QuakeWorld28 {
-            assert!(host.runtime.send_local_command(
+            assert!(host.runtime.send_client_command(
                 client,
                 &Default::default(),
-                EventTime(1_100_000_000)
+                EventTime(1_100_000_000),
+                &mut Clock::default()
             ));
             dispatch(&mut host, EventTime(1_100_000_000));
         }

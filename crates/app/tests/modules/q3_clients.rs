@@ -402,7 +402,7 @@ fn q3_queued_commands_use_native_zero_once_and_import_the_module_pose() {
     );
     tick(&mut host, 0);
     for (time, forward, expected) in [(20, 50.0, 11.0), (40, 100.0, 12.0)] {
-        assert!(host.runtime.send_local_command(
+        assert!(host.runtime.send_client_command(
             client,
             &UserCmd {
                 server_time_ms: time,
@@ -412,7 +412,11 @@ fn q3_queued_commands_use_native_zero_once_and_import_the_module_pose() {
                 buttons: buttons::ATTACK,
                 ..Default::default()
             },
-            EventTime::from_milliseconds(time as u64)
+            EventTime::from_milliseconds(time as u64),
+            &mut Source {
+                time: EventTime(0),
+                polls: 0
+            }
         ));
         host.drain(&mut Default::default());
         assert_eq!(read(&mut host, COMMAND), time as u32);

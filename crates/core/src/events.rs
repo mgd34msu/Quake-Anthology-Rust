@@ -491,6 +491,10 @@ impl EventRing {
             let consumer = self.active[index];
             let c = &mut self.consumers[consumer];
             let relevant = c.target.is_some()
+                && match c.target {
+                    Some(OutputTarget::Local(id)) => target == Some(OutputTarget::Local(id)),
+                    _ => true,
+                }
                 && target.is_none_or(|target| match target {
                     OutputTarget::Local(id) => {
                         c.target == Some(OutputTarget::Presentation)

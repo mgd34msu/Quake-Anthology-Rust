@@ -74,6 +74,23 @@ fn player_context(
     context
 }
 
+/// Physical native identity is supplied explicitly or assigned during startup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativePlayerBinding {
+    Supplied(u32),
+    Awaiting,
+    Assigned(u32),
+}
+
+impl NativePlayerBinding {
+    pub const fn number(self) -> Option<u32> {
+        match self {
+            Self::Supplied(number) | Self::Assigned(number) => Some(number),
+            Self::Awaiting => None,
+        }
+    }
+}
+
 /// Connection policy and projection metadata; player storage remains in the
 /// existing SERVER array and independently owned CLIENT prediction state.
 pub struct SnapshotBinding {
@@ -84,7 +101,7 @@ pub struct SnapshotBinding {
     pub rejected: u64,
     presentation_closed: bool,
     pub(crate) close_control_pending: bool,
-    native_client: u32,
+    native_client: NativePlayerBinding,
     view_entity_override: Option<u16>,
     projection: PlayerProjection,
     player_stats: Q3StatLayout,
@@ -168,18 +185,31 @@ impl SnapshotBinding {
     pub(crate) fn close_presentation(&mut self) -> bool {
         !std::mem::replace(&mut self.presentation_closed, true)
     }
-    pub fn native_client(&self) -> u32 {
-        self.native_client
+    pub fn native_client(&self) -> Option<u32> {
+        self.native_client.number()
+    }
+    pub(crate) fn assign_nq_player(&mut self, entity: u16, max_clients: u8) -> bool {
+        if self.protocol != Protocol::NetQuake15
+            || self.native_client != NativePlayerBinding::Awaiting
+            || entity == 0
+            || entity > u16::from(max_clients)
+        {
+            return false;
+        }
+        self.native_client = NativePlayerBinding::Assigned(u32::from(entity) - 1);
+        true
     }
     pub(crate) fn receive_gamestate(
         &mut self,
         gamestate: &qa_network::channel::commands::Q3GameState<'_>,
     ) {
-        self.native_client = gamestate.client_num;
+        self.native_client = NativePlayerBinding::Assigned(gamestate.client_num);
         self.reset_received();
     }
     pub(crate) fn receive_server_info(&mut self) {
-        // A camera service never supplies the physical native player number.
+        if matches!(self.native_client, NativePlayerBinding::Assigned(_)) {
+            self.native_client = NativePlayerBinding::Awaiting;
+        }
         self.reset_received();
     }
     fn reset_received(&mut self) {
@@ -216,10 +246,11 @@ impl SnapshotBinding {
         true
     }
     pub fn player_entity(&self, frame: Option<ReceivedFrame<'_>>) -> Option<u32> {
+        let supplied = self.native_client()?;
         let client = frame
             .and_then(ReceivedFrame::player_words)
             .and_then(|words| self.projection.client_number(words))
-            .unwrap_or(self.native_client);
+            .unwrap_or(supplied);
         crate::output_namespace::native_client_entity(self.protocol, client)
     }
     pub fn view_entity(&self, frame: Option<ReceivedFrame<'_>>) -> Option<u32> {
@@ -532,7 +563,7 @@ impl SnapshotBinding {
         output: OutputConsumerId,
         protocol: Protocol,
         view_source: qa_core::primitives::RuleSetId,
-        native_client: u32,
+        native_client: NativePlayerBinding,
         values: &qa_ui::values::ValueLayout,
     ) -> Self {
         let native = values.native(states::player_value_layout(protocol).0);
@@ -609,6 +640,7 @@ impl SnapshotBinding {
         delta: Option<u32>,
         bytes: &mut [u8],
     ) -> Result<usize, Error> {
+        let native_client = self.native_client().ok_or(Error::Context)?;
         let time = if self.protocol == Protocol::NetQuake15 {
             ThinkTime::Seconds(0.0).at(time)
         } else if self.protocol == Protocol::Quake3_68
@@ -629,7 +661,7 @@ impl SnapshotBinding {
             player,
             &source,
             self.protocol,
-            self.native_client,
+            native_client,
             player.view_angles.0[1],
             None,
             true,
@@ -811,6 +843,9 @@ impl SnapshotBinding {
             }
             return false;
         }
+        let Some(native_client) = self.native_client() else {
+            return false;
+        };
         let Some(client) = self.presentation.as_mut() else {
             return false;
         };
@@ -826,7 +861,7 @@ impl SnapshotBinding {
             },
             Incoming::PlayerInfo(ref info)
                 if self.protocol == Protocol::QuakeWorld28
-                    && u32::from(info.number) == self.native_client =>
+                    && u32::from(info.number) == native_client =>
             {
                 (Some(&info.words), None)
             }

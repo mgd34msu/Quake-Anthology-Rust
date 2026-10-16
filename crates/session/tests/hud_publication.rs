@@ -38,6 +38,12 @@ fn hud_publication_keeps_float_bits_and_resets_for_the_next_client_lifetime() {
     assert!(
         matches!(changes[1], HudChange::Powerup { slot: 1, until } if until.to_bits() == 0x7ff8_0000_0000_0001)
     );
+    dispatch_consumer(
+        &mut server.events,
+        server.presentation,
+        &mut |_: qa_core::events::OutputRecord, _: &mut TextStore| OutputSubmission::BestEffort,
+    );
+    assert!(server.events.is_empty());
     assert!(server.disconnect(id));
     assert_eq!(
         server.connect(Connection::Local, ModuleId(0), None),

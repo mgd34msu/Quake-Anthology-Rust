@@ -378,7 +378,7 @@ impl FrameHost {
         let builtin =
             self.runtime.collision.is_some()
                 && self.runtime.server.clients.iter().any(|client| {
-                    client.connection.is_some() && client.module == ModuleId::default()
+                    client.is_server_active() && client.module == ModuleId::default()
                 });
         self.console
             .cvars
@@ -860,11 +860,9 @@ impl FrameHost {
                 .map(|sample| sample.time)
         });
         self.advance_client_presentation(&mut crate::modules::Driver::new(source.asset_preparer()));
-        self.flush_closing_client_controls(&mut crate::modules::Driver::new(
-            source.asset_preparer(),
-        ));
+        self.flush_closing_client_controls(source);
         self.queue_client_userinfo();
-        result.commands = self.client_frame(command_times);
+        result.commands = self.client_frame(command_times, source);
         let native_owners = std::array::from_fn(|seat| {
             self.local_clients[seat]
                 .and_then(|id| self.runtime.snapshots.get(id.0 as usize)?.as_ref())
@@ -1803,7 +1801,7 @@ impl FrameHost {
         }
     }
 
-    fn flush_closing_client_controls(&mut self, driver: &mut crate::modules::Driver<'_>) {
+    fn flush_closing_client_controls(&mut self, source: &mut impl FrameSource) {
         use qa_core::loopback::Endpoint;
         use qa_session::clients::ClientPhase;
         for slot in 0..self.runtime.server.clients.len() {
@@ -1820,13 +1818,17 @@ impl FrameHost {
             }
             let Some(connection) = self.runtime.network.get_mut(id, Endpoint::Client) else {
                 if closed && !closing {
-                    self.disconnect_client_with_driver(id, driver);
+                    self.disconnect_client_with_driver(
+                        id,
+                        &mut crate::modules::Driver::new(source.asset_preparer()),
+                    );
                 }
                 continue;
             };
             let Some(binding) = self.runtime.snapshots[slot].as_mut() else {
                 continue;
             };
+            let route = connection.route;
             let mut complete = false;
             if connection.channel.pending_packet().is_some()
                 || connection.channel.pending_fragments()
@@ -1841,10 +1843,13 @@ impl FrameHost {
                             .is_ok_and(|packet| packet.is_some())
                     },
                     |bytes| {
-                        self.runtime
-                            .loopback
-                            .send(Endpoint::Client, id, bytes)
-                            .is_ok()
+                        crate::transport::admit_output(
+                            &mut self.runtime.loopback,
+                            source,
+                            Endpoint::Client,
+                            route,
+                            bytes,
+                        )
                     },
                     |channel, (), _| !channel.pending_fragments(),
                 );
@@ -1878,10 +1883,13 @@ impl FrameHost {
                             .is_ok_and(|packet| packet.is_some())
                     },
                     |bytes| {
-                        self.runtime
-                            .loopback
-                            .send(Endpoint::Client, id, bytes)
-                            .is_ok()
+                        crate::transport::admit_output(
+                            &mut self.runtime.loopback,
+                            source,
+                            Endpoint::Client,
+                            route,
+                            bytes,
+                        )
                     },
                     |channel, included, disposition| {
                         *included |= disposition == qa_network::channel::Unreliable::Included;
@@ -1894,7 +1902,10 @@ impl FrameHost {
                         || connection.channel.pending_fragments());
             }
             if complete && closed && !closing {
-                self.disconnect_client_with_driver(id, driver);
+                self.disconnect_client_with_driver(
+                    id,
+                    &mut crate::modules::Driver::new(source.asset_preparer()),
+                );
             }
         }
     }
@@ -1937,8 +1948,24 @@ impl FrameHost {
                             == Some(qa_session::clients::Connection::Local)
                         && server.clients[id.0 as usize].output == Some(binding.output)
                     {
+                        let awaiting_player = binding.native_client().is_none();
+                        if awaiting_player
+                            && let Incoming::SetView { entity } = &incoming
+                            && let Some(max_clients) = self.runtime.client_resources[id.0 as usize]
+                                .as_ref()
+                                .and_then(crate::client_resources::ClientResources::nq_assignment_max_clients)
+                            && !self.runtime.snapshots[id.0 as usize].as_mut()
+                                .is_some_and(|binding| binding.assign_nq_player(*entity, max_clients))
+                        {
+                            self.reject_nq_signon(id, format_args!("invalid initial player edict {entity}"));
+                            return std::ops::ControlFlow::Break(());
+                        }
                         match incoming {
                             Incoming::SignonStage { stage } => {
+                                if awaiting_player {
+                                    self.reject_nq_signon(id, format_args!("player assignment missing before native stage {stage}"));
+                                    return std::ops::ControlFlow::Break(());
+                                }
                                 let accepted = self.runtime.client_resources[id.0 as usize].as_mut()
                                     .is_some_and(|resources| resources.receive_nq_stage(stage));
                                 if !accepted {
@@ -2411,6 +2438,7 @@ impl FrameHost {
     fn client_frame(
         &mut self,
         command_times: [Option<qa_core::primitives::ThinkTime>; SeatId::COUNT],
+        source: &mut impl FrameSource,
     ) -> [UserCmd; SeatId::COUNT] {
         let rules: [_; SeatId::COUNT] = std::array::from_fn(|seat| {
             self.local_clients[seat].map_or(qa_core::primitives::RuleSetId::default(), |_| {
@@ -2443,7 +2471,9 @@ impl FrameHost {
                     || !self.runtime.server.clients[id.0 as usize].is_active()
                     || self.runtime.snapshots[id.0 as usize]
                         .as_ref()
-                        .is_some_and(|binding| binding.presentation_closed())
+                        .is_some_and(|binding| {
+                            binding.presentation_closed() || binding.native_client().is_none()
+                        })
             }) {
                 *command = UserCmd::default();
                 continue;
@@ -2477,10 +2507,13 @@ impl FrameHost {
                     commands.set_packet_dup(self.console.cvars.integer(self.packet_dup));
                 }
                 self.runtime
-                    .send_local_command(*id, &commands[seat], self.time);
+                    .send_client_command(*id, &commands[seat], self.time, source);
                 if self.runtime.client_resources[id.0 as usize]
                     .as_ref()
                     .is_some_and(|resources| resources.awaiting_nq_signon())
+                    || self.runtime.snapshots[id.0 as usize]
+                        .as_ref()
+                        .is_some_and(|binding| binding.native_client().is_none())
                 {
                     continue;
                 }

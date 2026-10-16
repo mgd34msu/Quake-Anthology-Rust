@@ -4026,10 +4026,15 @@ fn qw_client_lifecycle_uses_canonical_slot_shared_movement_and_packet_postthink_
         .unwrap();
     }
     let before = host.module_counts(ModuleId(1)).unwrap().calls;
-    assert!(
-        host.runtime
-            .send_local_command(id, &command, EventTime::from_milliseconds(200))
-    );
+    assert!(host.runtime.send_client_command(
+        id,
+        &command,
+        EventTime::from_milliseconds(200),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
+    ));
     host.drain(&mut Default::default());
     let client = &host.runtime.server.clients[id.0 as usize];
     assert_eq!(client.player.body.position, expected.body.position);
@@ -4195,10 +4200,15 @@ fn netquake_queued_client_runs_none_phases_and_shared_think_at_native_frame_time
         impulse: 9,
         ..Default::default()
     };
-    assert!(
-        host.runtime
-            .send_local_command(id, &command, EventTime::from_milliseconds(20))
-    );
+    assert!(host.runtime.send_client_command(
+        id,
+        &command,
+        EventTime::from_milliseconds(20),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
+    ));
     // Framed command ingress consumes no client physics or callbacks.
     host.drain(&mut Default::default());
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, before);
@@ -4751,17 +4761,27 @@ fn qw_recovered_packet_stops_at_client_callback_trap_and_reconnects_cleanly() {
         units: qa_gameplay::rules::command_units(RuleSetId::QuakeWorld),
         ..Default::default()
     };
-    assert!(
-        host.runtime
-            .send_local_command(id, &command, EventTime::from_milliseconds(100))
-    );
+    assert!(host.runtime.send_client_command(
+        id,
+        &command,
+        EventTime::from_milliseconds(100),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
+    ));
     // Drop exactly one framed packet, causing native QW command recovery on
     // the next packet. No command history or direct ACK is invented here.
     host.runtime.loopback.clear_client(id);
-    assert!(
-        host.runtime
-            .send_local_command(id, &command, EventTime::from_milliseconds(200))
-    );
+    assert!(host.runtime.send_client_command(
+        id,
+        &command,
+        EventTime::from_milliseconds(200),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
+    ));
     host.drain(&mut Default::default());
     assert_eq!(host.runtime.network.commands, 1);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, before + 2); // one failed PreThink, then Disconnect; no tail/PostThink
@@ -4859,10 +4879,15 @@ fn qw_native_command_subdivision_precedes_foreign_q3_movement_limits() {
         .unwrap();
     }
     let before = host.module_counts(ModuleId(1)).unwrap().calls;
-    assert!(
-        host.runtime
-            .send_local_command(id, &command, EventTime::from_milliseconds(250))
-    );
+    assert!(host.runtime.send_client_command(
+        id,
+        &command,
+        EventTime::from_milliseconds(250),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
+    ));
     host.drain(&mut Default::default());
     let client = &host.runtime.server.clients[id.0 as usize];
     assert_eq!(client.player.body.position, expected.body.position);
@@ -4961,10 +4986,15 @@ fn netquake_noclip_control_precedes_frame_and_integrates_think_velocity_once() {
         buttons: buttons::JUMP | buttons::CROUCH,
         ..Default::default()
     };
-    assert!(
-        host.runtime
-            .send_local_command(id, &command, EventTime::from_milliseconds(20))
-    );
+    assert!(host.runtime.send_client_command(
+        id,
+        &command,
+        EventTime::from_milliseconds(20),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
+    ));
     host.drain(&mut Default::default());
     assert_eq!(
         host.runtime.server.clients[id.0 as usize]
@@ -5192,10 +5222,15 @@ fn netquake_foreign_noclip_preserves_substeps_and_final_native_snap() {
             assert_eq!(expected.body.position, Vec3::default());
         }
         assert_ne!(expected.body.velocity, player.body.velocity);
-        assert!(
-            host.runtime
-                .send_local_command(id, &command, EventTime::from_milliseconds(20))
-        );
+        assert!(host.runtime.send_client_command(
+            id,
+            &command,
+            EventTime::from_milliseconds(20),
+            &mut Source {
+                time: EventTime(0),
+                polls: 0
+            }
+        ));
         host.drain(&mut Default::default());
         tick(&mut host, 20);
         let actual = &host.runtime.server.clients[id.0 as usize].player;
@@ -7511,7 +7546,7 @@ fn qw_remote_output_overflow_retires_the_connection_and_retains_its_native_body(
     let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
     channel.set_qport(2000);
     runtime
-        .bind_server_connection(
+        .bind_connection(
             client,
             Connection {
                 route: Route {
@@ -7523,7 +7558,7 @@ fn qw_remote_output_overflow_retires_the_connection_and_retains_its_native_body(
                 pending_output: None,
                 commands: Some(Commands::load(protocol, 8192)),
             },
-            0,
+            qa_app::snapshots::NativePlayerBinding::Supplied(0),
             None,
         )
         .unwrap();

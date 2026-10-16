@@ -1,3 +1,6 @@
+#[path = "support/frame_source.rs"]
+mod frame_source;
+
 use qa_app::{
     Runtime,
     client_policy::ClientPolicy,
@@ -190,10 +193,12 @@ fn config(host: &mut FrameHost, client: ClientId, protocol: Protocol, ordinal: u
     ack_client(host, client, time);
 }
 fn ack_client(host: &mut FrameHost, client: ClientId, time: EventTime) {
-    assert!(
-        host.runtime
-            .send_local_command(client, &UserCmd::default(), time)
-    );
+    assert!(host.runtime.send_client_command(
+        client,
+        &UserCmd::default(),
+        time,
+        &mut frame_source::Sink::default()
+    ));
     drain(host, time);
 }
 fn record(protocol: Protocol, client: ClientId, sound: u32, entity_type: u32) -> EntityRecord {

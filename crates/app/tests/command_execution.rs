@@ -126,10 +126,12 @@ fn q2_input_is_canonicalized_once_for_q3_history_server_and_prediction() {
         units: qa_gameplay::rules::command_units(RuleSetId::Quake2),
         ..Default::default()
     };
-    assert!(
-        host.runtime
-            .send_local_command(client, &command, EventTime::default())
-    );
+    assert!(host.runtime.send_client_command(
+        client,
+        &command,
+        EventTime::default(),
+        &mut Clock(EventTime(0))
+    ));
     let retained = *host
         .runtime
         .network
@@ -181,7 +183,12 @@ fn two_native_packets_in_one_drain_move_the_engine_client_twice_without_a_pendin
             command(16, [127.0, 0.0, 0.0]),
             command(32, [0.0, 127.0, 0.0]),
         ] {
-            assert!(host.runtime.send_local_command(client, &command, host.time));
+            assert!(host.runtime.send_client_command(
+                client,
+                &command,
+                host.time,
+                &mut Clock(EventTime(0))
+            ));
         }
         host.drain(&mut FrameResult::default());
         assert_eq!(host.runtime.network.commands, 2, "{protocol:?}");
@@ -282,7 +289,12 @@ fn netquake_packets_keep_only_the_latest_move_and_apply_one_server_frame() {
         command(16, [127.0, 0.0, 0.0]),
         command(16, [0.0, 127.0, 0.0]),
     ] {
-        assert!(host.runtime.send_local_command(client, &command, host.time));
+        assert!(host.runtime.send_client_command(
+            client,
+            &command,
+            host.time,
+            &mut Clock(EventTime(0))
+        ));
     }
     host.drain(&mut FrameResult::default());
     assert_eq!(host.runtime.network.commands, 2);

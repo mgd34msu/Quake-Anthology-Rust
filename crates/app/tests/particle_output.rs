@@ -319,7 +319,7 @@ fn rejected_remote_particle_keeps_local_receipt_and_provider_ticks_running() {
         .connect(Connection::Remote, MODULE, None)
         .unwrap();
     host.runtime
-        .bind_server_connection(
+        .bind_connection(
             remote,
             NativeConnection {
                 route: Route {
@@ -332,7 +332,7 @@ fn rejected_remote_particle_keeps_local_receipt_and_provider_ticks_running() {
                 pending_output: None,
                 commands: Some(Commands::load(Protocol::NetQuake15, 8192)),
             },
-            1,
+            qa_app::snapshots::NativePlayerBinding::Supplied(1),
             None,
         )
         .unwrap();

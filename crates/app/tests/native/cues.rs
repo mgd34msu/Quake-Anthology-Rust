@@ -87,7 +87,7 @@ fn accept_client_resources_and_pose(host: &mut FrameHost, client: ClientId) -> V
     use qa_core::loopback::Endpoint;
     let binding = host.runtime.snapshots[client.0 as usize].as_ref().unwrap();
     let protocol = binding.protocol;
-    let native_slot = binding.native_client() + 1;
+    let native_slot = binding.native_client().unwrap() + 1;
     let resource = host.runtime.client_resources[client.0 as usize]
         .as_ref()
         .unwrap()

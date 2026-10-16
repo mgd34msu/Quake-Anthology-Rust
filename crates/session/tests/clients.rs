@@ -4,6 +4,66 @@ use qa_core::primitives::{
 use qa_session::clients::{Connection, Server};
 
 #[test]
+fn client_only_reservation_keeps_its_lifetime_without_server_admission() {
+    use qa_core::primitives::{CommandExecution, UserCmd};
+    let mut server = Server::load(3, 8, 2, 2, 2, 0).unwrap();
+    let presentation = server.connect_client().unwrap();
+    let native = NativeEntity {
+        module: ModuleId(7),
+        slot: 1,
+    };
+    let authoritative = server
+        .connect(Connection::Local, native.module, Some(native))
+        .unwrap();
+    let bot = server.connect(Connection::Bot, ModuleId(9), None).unwrap();
+    let row = &server.clients[presentation.0 as usize];
+    let lifetime = row.entity;
+    assert_eq!(row.connection, Some(Connection::Local));
+    assert!(row.is_active());
+    assert!(!row.server_authoritative());
+    assert!(!row.is_server_active());
+    assert!(server.entities.resolve(lifetime).is_some());
+    assert!(server.entities.columns.appearance[lifetime.slot as usize].snapshot_excluded);
+    assert!(server.area.bounds(lifetime).is_none());
+    for id in [authoritative, bot] {
+        let row = &server.clients[id.0 as usize];
+        assert!(row.is_server_active());
+        assert!(!server.entities.columns.appearance[row.entity.slot as usize].snapshot_excluded);
+    }
+    assert!(!server.bind_client_native(presentation, NativeEntity { slot: 2, ..native }));
+    assert!(server.module_moves(presentation).is_none());
+    let command = UserCmd {
+        duration_ms: 50,
+        ..Default::default()
+    };
+    server.submit_command(presentation, command, CommandExecution::PerCommand, None);
+    assert!(server.take_pending_command(presentation).is_none());
+    assert_eq!(
+        server.clients[presentation.0 as usize].command.duration_ms,
+        0
+    );
+    server.submit_command(authoritative, command, CommandExecution::PerCommand, None);
+    assert_eq!(
+        server
+            .take_pending_command(authoritative)
+            .unwrap()
+            .0
+            .duration_ms,
+        50
+    );
+    assert!(server.disconnect(presentation));
+    assert!(!server.clients[presentation.0 as usize].server_authoritative());
+    let reused = server
+        .connect(Connection::Remote, ModuleId(3), None)
+        .unwrap();
+    assert_eq!(reused, presentation);
+    let row = &server.clients[reused.0 as usize];
+    assert_ne!(row.entity, lifetime);
+    assert!(row.is_server_active());
+    assert!(!server.entities.columns.appearance[row.entity.slot as usize].snapshot_excluded);
+}
+
+#[test]
 fn post_load_native_binding_rejects_duplicate_lifetimes_without_changing_roles() {
     use qa_core::primitives::RuleSetId;
     let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();

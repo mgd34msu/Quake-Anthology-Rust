@@ -28,7 +28,7 @@ impl HudPublication {
         let mut publish = |change| {
             events
                 .push_to(
-                    OutputTarget::Client(client),
+                    OutputTarget::Local(client),
                     FrameEvent::Hud(HudEvent { client, change }),
                 )
                 .is_ok()

@@ -13,13 +13,14 @@ pub(crate) struct Submission {
 pub(crate) fn admit_output(
     loopback: &mut qa_core::loopback::Loopback,
     source: &mut impl crate::host::FrameSource,
+    endpoint: qa_core::loopback::Endpoint,
     route: qa_network::ingress::Route,
     bytes: &[u8],
 ) -> bool {
     match route.peer {
-        qa_core::sys_events::Peer::Loopback(client) => loopback
-            .send(qa_core::loopback::Endpoint::Server, client, bytes)
-            .is_ok(),
+        qa_core::sys_events::Peer::Loopback(client) => {
+            loopback.send(endpoint, client, bytes).is_ok()
+        }
         qa_core::sys_events::Peer::Socket(to) => source.send_packet(route.socket, to, bytes),
     }
 }
