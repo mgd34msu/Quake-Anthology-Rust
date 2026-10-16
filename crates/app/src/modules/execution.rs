@@ -57,9 +57,6 @@ impl<'a> Driver<'a> {
     pub fn cache_only() -> Self {
         Self::new(None)
     }
-    fn available(&self) -> bool {
-        self.preparer.is_some()
-    }
     pub(super) fn complete(
         &mut self,
         host: &mut FrameHost,
@@ -173,6 +170,7 @@ struct Pending {
 }
 enum Operation {
     RegisterRenderer(Option<qa_compat::services::RendererRequest>),
+    SelectRendererWorld(qa_render::world::WorldId),
     CommandRegistration {
         name: u64,
         remove: bool,
@@ -877,11 +875,14 @@ fn guest_step(
             OperationStep::Console { context, text } => FrameStep::Console { context, text },
         };
     }
-    match advance(host, frame, command, access, driver) {
+    match advance(host, frame, command, access) {
         Ok(GuestStep::Host(request, point)) => {
             let operation = match request {
                 HostRequest::RegisterRenderer(request) => {
                     Ok(Operation::RegisterRenderer(Some(request)))
+                }
+                HostRequest::SelectRendererWorld(world) => {
+                    Ok(Operation::SelectRendererWorld(world))
                 }
                 HostRequest::CommandRegistration { name, remove } => {
                     Ok(Operation::CommandRegistration {
@@ -1377,6 +1378,7 @@ fn operation(
                 return OperationStep::Abort;
             };
             let result = (|| {
+                let context = host.module_renderer_context(start.module)?;
                 let row = host
                     .module_row(start.module)
                     .ok_or_else(|| "missing renderer module".to_owned())?;
@@ -1384,32 +1386,34 @@ fn operation(
                     .scene_role
                     .profile()
                     .ok_or_else(|| "missing renderer presentation".to_owned())?;
-                if matches!(
-                    request.kind,
-                    qa_compat::services::RendererRegistration::Model
-                ) && request.name.as_bytes().starts_with(b"*")
-                    && !request.world.is_some_and(|world| {
-                        row.scene_role.registration_world_available(
-                            host.runtime.scene.as_ref(),
-                            host.runtime.model_assets.as_ref().map(|owner| owner.view()),
-                            world,
-                        )
-                    })
-                {
-                    return Err("missing inline model presentation".to_owned());
-                }
-                let preparer = driver
-                    .preparer
+                let selected = request
+                    .world
+                    .and_then(|world| row.scene_role.presentation_for(world));
+                let contexts = &mut host
+                    .modules
                     .as_mut()
-                    .ok_or_else(|| "renderer registration has no backend".to_owned())?;
+                    .ok_or("missing renderer modules")?
+                    .renderer_contexts;
                 let owner = host
                     .runtime
                     .model_assets
                     .as_mut()
                     .ok_or_else(|| "missing model assets".to_owned())?;
-                owner.prepare_registration(&host.runtime.vfs, &request, profile, |assets| {
-                    (**preparer).prepare_assets(assets, None)
-                })
+                let (handle, staged, counts) = owner.prepare_registration(
+                    &host.runtime.vfs,
+                    &request,
+                    profile,
+                    |candidate| contexts.stage(context, candidate.selected_presentation(selected)?),
+                    |assets, _| {
+                        driver
+                            .preparer
+                            .as_mut()
+                            .ok_or_else(|| "renderer registration has no backend".to_owned())?
+                            .prepare_assets(assets, None)
+                    },
+                )?;
+                staged.commit();
+                Ok::<_, String>((handle, counts))
             })();
             let value = match result {
                 Ok((handle, _)) => {
@@ -1426,6 +1430,48 @@ fn operation(
                 }
             };
             OperationStep::Reply(value)
+        }
+        Operation::SelectRendererWorld(world) => {
+            let result = (|| {
+                let context = host.module_renderer_context(start.module)?;
+                let row = host
+                    .module_row(start.module)
+                    .ok_or("missing renderer module")?;
+                let profile = row.scene_role.profile().ok_or("missing renderer profile")?;
+                let selected = row.scene_role.presentation_for(*world);
+                let owner = host
+                    .runtime
+                    .model_assets
+                    .as_ref()
+                    .ok_or("missing renderer assets")?;
+                if !owner.initial_registration()
+                    && owner
+                        .view()
+                        .world_presentation(*world, Some(profile), selected)
+                        .is_none()
+                {
+                    return Err("world shader membership".to_owned());
+                }
+                let admission = owner.world_admission(*world, profile, selected)?;
+                let modules = host.modules.as_mut().ok_or("missing renderer modules")?;
+                let staged = modules.renderer_contexts.stage(context, admission)?;
+                staged.commit();
+                modules
+                    .row_mut(start.module)
+                    .ok_or("missing renderer module")?
+                    .scene_role
+                    .select_world(*world);
+                Ok::<_, String>(())
+            })();
+            if let Err(error) = result {
+                let _ = host
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("renderer world: {error}\n"));
+                return OperationStep::Abort;
+            }
+            OperationStep::Reply(0)
         }
         Operation::Console {
             context,
@@ -1625,7 +1671,6 @@ fn advance(
     frame: &mut Activation,
     command: Arguments<'_>,
     access: TraceAccess<'_>,
-    driver: &mut Driver<'_>,
 ) -> Result<GuestStep, ()> {
     let start = frame.start;
     let Some(functions) = host
@@ -1635,6 +1680,11 @@ fn advance(
     else {
         return Err(());
     };
+    let sun_direction = host.modules.as_ref().and_then(|modules| {
+        modules
+            .row(start.module)
+            .and_then(|row| modules.renderer_contexts.sun(row.renderer_context))
+    });
     let (row, storage, traces) = host
         .modules
         .as_mut()
@@ -1765,8 +1815,8 @@ fn advance(
             .map(|client| client.connection())
             .or(start.connection)
             .map(|(client, lifetime)| qa_render::effects::EffectClient { client, lifetime }),
+        sun_direction,
     );
-    scene.set_registration_available(driver.available());
     services.callbacks = Some(functions.as_ref());
     services.client_disconnect = row
         .client_lifecycle

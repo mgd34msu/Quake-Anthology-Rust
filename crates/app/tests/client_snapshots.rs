@@ -2176,6 +2176,16 @@ fn registration_wait_rejects_unreceived_state_instead_of_freezing_it() {
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
 }
 
+fn configure_model_renderer(host: &mut FrameHost, profile: qa_app::model_assets::ModelProfile) {
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
+        320,
+        200,
+    )
+    .unwrap();
+}
+
 fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
     use qa_app::model_assets::{ModelAssets, ModelProfile};
     use qa_compat::services::ModelLookup;
@@ -2206,6 +2216,7 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
         )
         .unwrap(),
     );
+    configure_model_renderer(&mut host, profile);
     let path = if output == QVM_OUTPUT {
         192
     } else {
@@ -2223,7 +2234,7 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
     );
     assert!(catalog.registration("models/test.md2", profile).is_some());
     host.bind_client_model_assets([]);
-    // No backend or scene profile admitted this logical registration.
+    // No backend admitted this configured profile's physical resources.
     assert_eq!(call(&mut host, 0, 12, &[path]), Ok(0));
     // The two checked destinations retain native mins-then-maxs write order.
     for (mins, maxs) in [(output + 16, output + 32), (output + 48, output + 48)] {
@@ -2275,6 +2286,7 @@ fn model_tags_use_shared_services(factory: fn() -> (Program, u64), returns_resul
         )
         .unwrap(),
     );
+    configure_model_renderer(&mut host, profile);
     let (path, name) = if output == QVM_OUTPUT {
         (224, 240)
     } else {

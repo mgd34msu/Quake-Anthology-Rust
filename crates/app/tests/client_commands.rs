@@ -413,9 +413,11 @@ fn wire(host: &mut FrameHost, client: ClientId, texts: &[&[u8]]) {
     host.time = EventTime(1);
     host.drain(&mut FrameResult::default());
 }
+#[track_caller]
 fn probe(host: &mut FrameHost, seat: usize, command: u32, value: u64) -> u32 {
     probe_args(host, seat, command, &[value])
 }
+#[track_caller]
 fn probe_args(host: &mut FrameHost, seat: usize, command: u32, values: &[u64]) -> u32 {
     let client = ClientId(seat as u32);
     let module = ModuleId(seat as u16 + 1);

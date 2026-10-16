@@ -33,6 +33,7 @@ pub use clients::{ClientCommandError, ClientLifecycleInfo};
 mod cues;
 mod execution;
 mod input;
+mod renderer_contexts;
 pub use execution::Driver;
 use execution::ModuleDispatch;
 pub(crate) use execution::{ExecutionSlot, TraceAccess};
@@ -397,6 +398,7 @@ struct Module {
     produces_client_view: bool,
     input: Option<qa_compat::abi::ClientInputExports>,
     command: Option<execution::CommandBinding>,
+    renderer_context: Option<renderer_contexts::Handle>,
     scene_role: crate::renderer::native::SceneRole,
     collision_role: qa_compat::services::ClientCollision,
 }
@@ -425,6 +427,7 @@ pub struct Modules {
     functions: Arc<FunctionTable<FrameHost, ModuleDispatch>>,
     rows: Box<[Option<Module>]>,
     storage: ServiceStorage,
+    renderer_contexts: renderer_contexts::Contexts,
     signon: Box<[SignonCursor]>,
     input: [input::Recipients; qa_core::sys_events::SeatId::COUNT],
 }
@@ -1031,6 +1034,7 @@ impl FrameHost {
                 produces_client_view,
                 input,
                 command,
+                renderer_context: None,
                 scene_role: Default::default(),
                 collision_role: Default::default(),
                 clock,
@@ -1054,6 +1058,7 @@ impl FrameHost {
         });
         host.modules = Some(Modules {
             functions: Arc::new(functions),
+            renderer_contexts: renderer_contexts::Contexts::load(rows.len()),
             rows,
             storage,
             signon,
@@ -1118,6 +1123,12 @@ impl FrameHost {
         self.retain_command_producers(|current| current != producer);
         if let Some(row) = self.module_row_mut(module) {
             row.collision_role.reset();
+        }
+        if let Some(modules) = self.modules.as_mut() {
+            let handle = modules
+                .row_mut(module)
+                .and_then(|row| row.renderer_context.take());
+            modules.renderer_contexts.release(handle);
         }
         self.runtime.server.retire_module_entities(module, time);
         if let Some(modules) = &mut self.modules {
@@ -1322,6 +1333,82 @@ impl FrameHost {
             .get(client.0 as usize)?
             .as_ref()?;
         resources.state.completed_presentation_reset()
+    }
+
+    fn module_renderer_context(
+        &mut self,
+        module: ModuleId,
+    ) -> Result<renderer_contexts::Handle, String> {
+        if let Some(handle) = self
+            .module_row(module)
+            .ok_or("missing renderer module")?
+            .renderer_context
+        {
+            return Ok(handle);
+        }
+        self.bind_module_renderer_context(module)?;
+        self.module_row(module)
+            .and_then(|row| row.renderer_context)
+            .ok_or_else(|| "missing renderer context".into())
+    }
+
+    fn bind_module_renderer_context(&mut self, module: ModuleId) -> Result<(), String> {
+        let Some(row) = self.module_row(module) else {
+            return Err("missing renderer module".into());
+        };
+        let Some(profile) = row.scene_role.profile() else {
+            return Ok(());
+        };
+        let Some(stamp) = row
+            .renderer_generation
+            .and_then(RendererGeneration::stamp)
+            .or_else(|| self.renderer_stamp(row))
+        else {
+            return Ok(());
+        };
+        let captured = stamp.client;
+        let owner = captured.map_or(
+            renderer_contexts::Owner::Private(module, row.request.anchor),
+            |client| renderer_contexts::Owner::Client(client.client, client.lifetime),
+        );
+        let previous = row.renderer_context;
+        let reset = stamp.reset;
+        let Some(assets) = self.runtime.model_assets.as_ref() else {
+            return Ok(());
+        };
+        let modules = self.modules.as_mut().ok_or("missing renderer modules")?;
+        let capacity = self
+            .runtime
+            .server
+            .clients
+            .len()
+            .checked_mul(assets.profile_count())
+            .and_then(|clients| clients.checked_add(modules.rows.len()))
+            .ok_or("renderer context slots")?;
+        modules.renderer_contexts.reserve(capacity)?;
+        modules
+            .renderer_contexts
+            .retain_clients(|client, lifetime| {
+                self.runtime
+                    .server
+                    .clients
+                    .get(client.0 as usize)
+                    .is_some_and(|row| row.entity == lifetime && row.connection.is_some())
+                    && self.runtime.server.entities.resolve(lifetime).is_some()
+            });
+        let handle = modules.renderer_contexts.bind(
+            previous,
+            owner,
+            profile,
+            assets.assets(),
+            assets.shader_occurrence_budget(),
+            reset,
+        )?;
+        modules
+            .row_mut(module)
+            .ok_or("missing renderer module")?
+            .renderer_context = Some(handle);
+        Ok(())
     }
 
     fn renderer_stamp(&self, row: &Module) -> Option<RendererStamp> {
@@ -1597,6 +1684,20 @@ impl FrameHost {
                 }
             }
         }
+        if let Some(modules) = self.modules.as_mut() {
+            for index in 0..modules.rows.len() {
+                let handle = modules.rows[index]
+                    .as_mut()
+                    .filter(|row| {
+                        matches!(
+                            row.renderer_generation,
+                            Some(RendererGeneration::Stopped { .. })
+                        )
+                    })
+                    .and_then(|row| row.renderer_context.take());
+                modules.renderer_contexts.release(handle);
+            }
+        }
         // All old callback/finalizer vectors complete before one reset per CLIENT.
         for client_index in 0..self.runtime.server.clients.len() {
             let client = ClientId(client_index as u32);
@@ -1607,6 +1708,20 @@ impl FrameHost {
                         if stamp.client.is_some_and(|owner| owner.connection() == (client, lifetime)))
                 }));
             if reset {
+                if let Some(modules) = self.modules.as_mut() {
+                    for row in modules.rows.iter_mut().flatten() {
+                        if row.renderer_context.is_some_and(|handle| {
+                            modules
+                                .renderer_contexts
+                                .owns_client(handle, client, lifetime)
+                        }) {
+                            modules
+                                .renderer_contexts
+                                .release(row.renderer_context.take());
+                        }
+                    }
+                    let _ = modules.renderer_contexts.reset_client(client, lifetime);
+                }
                 if let Some(resources) = self.runtime.client_resources[client_index].as_mut() {
                     resources.state.request_presentation_reset(lifetime);
                 }
@@ -1852,6 +1967,15 @@ impl FrameHost {
             if let Some(row) = self.module_row_mut(module) {
                 row.renderer_generation = Some(RendererGeneration::Uninitialized(Some(stamp)));
             }
+        }
+        if !shutdown && let Err(error) = self.bind_module_renderer_context(module) {
+            let _ = self
+                .runtime
+                .server
+                .events
+                .console_formatted(format_args!("renderer context: {error}\n"));
+            self.fail_renderer_restart(module, driver);
+            return;
         }
         let sequence = if shutdown {
             LifecycleSequence::Shutdown

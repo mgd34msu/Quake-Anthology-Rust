@@ -24,6 +24,8 @@ pub struct WorldPresentation {
     registrations: Box<[ShaderRegistration]>,
     native_page0: Option<ImageId>,
     native_default: Option<ShaderBindingId>,
+    initial_sun_direction: qa_core::primitives::Vec3,
+    initial_sun_light: qa_core::primitives::Vec3,
     pub(crate) profile: Option<(
         crate::material::world_load::WorldPresentationProfile,
         crate::material::world_load::PresentationDefaults,
@@ -38,8 +40,20 @@ impl WorldPresentation {
         registrations: Box<[ShaderRegistration]>,
         native_page0: Option<ImageId>,
         native_default: Option<ShaderBindingId>,
-    ) -> Self {
-        Self {
+        name_capacity: usize,
+        shader_capacity: usize,
+    ) -> Result<Self, &'static str> {
+        let mut context =
+            crate::shader::context::ShaderContext::load(name_capacity, shader_capacity)?;
+        let mut append = context.append();
+        append.reset_sun_direction();
+        for &registration in &registrations {
+            append.admit(registration)?;
+        }
+        append.commit();
+        let initial_sun_direction = context.sun_direction();
+        let initial_sun_light = context.sun_light();
+        Ok(Self {
             world,
             bindings: materials
                 .iter()
@@ -55,7 +69,15 @@ impl WorldPresentation {
             registrations,
             native_page0,
             native_default,
-        }
+            initial_sun_direction,
+            initial_sun_light,
+        })
+    }
+    pub fn sun_direction(&self) -> qa_core::primitives::Vec3 {
+        self.initial_sun_direction
+    }
+    pub fn sun_light(&self) -> qa_core::primitives::Vec3 {
+        self.initial_sun_light
     }
     pub fn shader_registrations(&self) -> &[ShaderRegistration] {
         &self.registrations
@@ -129,12 +151,8 @@ pub struct World {
     pub(crate) material_source: Option<crate::material::world_load::WorldMaterialSource>,
     pub(crate) light_grid: Option<crate::lighting::LightGrid>,
     pub(crate) point_lighting: Option<crate::lighting::PointLighting>,
-    pub(crate) sun_direction: qa_core::primitives::Vec3,
 }
 impl World {
-    pub fn sun_direction(&self) -> qa_core::primitives::Vec3 {
-        self.sun_direction
-    }
     pub fn light_grid(&self) -> Option<&crate::lighting::LightGrid> {
         self.light_grid.as_ref()
     }

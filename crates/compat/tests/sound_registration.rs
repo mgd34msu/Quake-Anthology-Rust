@@ -1,5 +1,8 @@
 use qa_compat::{
-    abi::{Addresses, Invocation, Q3_CLIENT, Q3_UI, UnknownCalls},
+    abi::{
+        Addresses, HostRequest, ImportContinuation, ImportStep, Invocation, Q3_CLIENT, Q3_UI,
+        UnknownCalls,
+    },
     memory::ModuleMemory,
     services::{
         CallContext, CallError, ClientAudio, ENGINE_CALLS, EngineServices, ServiceStorage,
@@ -267,31 +270,58 @@ fn invoke_call(
     number: u32,
     arguments: &[u64],
 ) -> Result<u64, CallError> {
-    let mut call = Invocation {
-        services,
-        memory,
-        native_cvars: None,
-        native_resources: None,
-        native_entities: None,
-        native_surfaces: None,
-        native_command: None,
-        native_configs: None,
-        native_pmove: None,
-        native_player: None,
-        context: context(),
-        platform_time: EventTime(123_456_789),
-        command: Default::default(),
-        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
-        addresses,
-        arguments,
-    };
     let mut unknown = UnknownCalls::load(1).unwrap();
-    let result = table.invoke(number, &mut call, &mut unknown);
+    let result = renderer_requests::with_call(services, memory, addresses, arguments, |call| {
+        table.invoke(number, call, &mut unknown)
+    });
     assert_eq!(unknown.calls, 0);
-    result.map(|step| match step {
-        qa_compat::abi::ImportStep::Return(value) => value,
-        qa_compat::abi::ImportStep::Host { .. } => panic!("unexpected host request"),
-    })
+    match result? {
+        ImportStep::Return(value) => Ok(value),
+        ImportStep::Host {
+            request: HostRequest::RegisterRenderer(request),
+            continuation,
+        } => {
+            assert!(matches!(continuation, ImportContinuation::HostValue));
+            let value = shader_reply(services, &request);
+            renderer_requests::with_call(services, memory, addresses, &[], |call| {
+                continuation.resume(call, value)
+            })
+            .map(renderer_requests::returned)
+        }
+        ImportStep::Host { .. } => panic!("unexpected host request"),
+    }
+}
+
+fn shader_reply(
+    services: &mut EngineServices<'_>,
+    request: &qa_compat::services::RendererRequest,
+) -> u64 {
+    let qa_compat::services::RendererRegistration::Shader { mipmaps, lighting } = request.kind
+    else {
+        panic!("expected shader registration")
+    };
+    assert!(matches!(
+        lighting,
+        qa_compat::services::ShaderLighting::TwoDimensional
+    ));
+    assert_eq!(request.world, None);
+    let handle = if let Some(loader) = services.model_loader.as_deref_mut() {
+        loader
+            .register_shader(
+                services.vfs,
+                request.name.as_bytes(),
+                request.source,
+                mipmaps,
+                lighting,
+            )
+            .unwrap_or(0)
+    } else {
+        services
+            .model_lookup
+            .and_then(|lookup| lookup.shader_handle(request.name.as_bytes(), request.source))
+            .unwrap_or(0)
+    };
+    handle as u32 as u64
 }
 
 #[test]
@@ -478,16 +508,55 @@ fn executed_qvm_shader_imports_share_the_same_cold_service() {
     {
         let mut engine = fixture.engine(true);
         engine.model_loader = Some(&mut shader);
-        let mut calls = qa_compat::abi::QvmCalls {
-            services: &mut engine,
-            table: &Q3_CLIENT,
-            context: context(),
-            platform_time: EventTime(19),
-            command: Default::default(),
-            argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
-            unknown: &mut unknown,
-        };
-        assert_eq!(vm.call(&mut calls, [0; 10], 100, false), Ok(42));
+        let mut run = vm.begin_root([0; 10], 100, false).unwrap();
+        let mut step = vm.advance(&mut run).unwrap();
+        let mut requests = 0;
+        loop {
+            let syscall = match step {
+                qa_compat::qvm::Step::Returned(value) => {
+                    assert_eq!(value, 42);
+                    break;
+                }
+                qa_compat::qvm::Step::Syscall(syscall) => syscall,
+            };
+            let imported = qa_compat::abi::QvmCalls {
+                services: &mut engine,
+                table: &Q3_CLIENT,
+                context: context(),
+                platform_time: EventTime(19),
+                command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
+                unknown: &mut unknown,
+            }
+            .import(&mut vm, &syscall)
+            .unwrap();
+            let ImportStep::Host {
+                request: HostRequest::RegisterRenderer(request),
+                continuation,
+            } = imported
+            else {
+                panic!("executed shader import must park")
+            };
+            requests += 1;
+            assert!(requests <= 2);
+            assert!(matches!(continuation, ImportContinuation::HostValue));
+            let value = shader_reply(&mut engine, &request);
+            let resumed = qa_compat::abi::QvmCalls {
+                services: &mut engine,
+                table: &Q3_CLIENT,
+                context: context(),
+                platform_time: EventTime(19),
+                command: Default::default(),
+                argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
+                unknown: &mut unknown,
+            }
+            .resume_import(&mut vm, continuation, value)
+            .unwrap();
+            step = vm
+                .resume(&mut run, renderer_requests::returned(resumed) as i32)
+                .unwrap();
+        }
+        assert_eq!(requests, 2);
     }
     assert_eq!(
         shader.calls,

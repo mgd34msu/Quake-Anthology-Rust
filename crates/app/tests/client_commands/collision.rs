@@ -1,5 +1,8 @@
 use super::*;
-use qa_app::{map::collision, model_assets::ModelAssets};
+use qa_app::{
+    map::collision,
+    model_assets::{ModelAssets, ModelRequest},
+};
 use qa_compat::services::ModelLookup;
 
 #[path = "../fixtures/map_collision.rs"]
@@ -410,7 +413,23 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
     let mut assets = qa_render::Assets::load().unwrap();
     let a = model_support::world(&mut assets, 0.0);
     let b = model_support::world(&mut assets, 100.0);
-    let mut catalog = ModelAssets::new(assets, [], [a, b], Default::default()).unwrap();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    for world in [a, b] {
+        assets
+            .register_world_presentation_metadata(
+                world,
+                &[qa_render::material::world_load::LoadedWorldPresentation {
+                    id: assets.world(world).unwrap().presentations()[0],
+                    profile: qa_render::material::world_load::WorldPresentationProfile::native(
+                        RuleSetId::Quake3,
+                        None,
+                    ),
+                    defaults: Default::default(),
+                }],
+            )
+            .unwrap();
+    }
+    let mut catalog = ModelAssets::new(assets, [profile], [a, b], Default::default()).unwrap();
     for (name, world, geometry) in [("maps/q2.bsp", a, q2), ("maps/q3.bsp", b, q3)] {
         let bounds = host.runtime.geometry.model_bounds(geometry, 0).unwrap();
         catalog
@@ -421,6 +440,16 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
         .bind_loaded_world("maps/render-only.bsp", a, None, Bounds::default())
         .unwrap();
     host.runtime.model_assets = Some(catalog);
+    for (seat, &client) in ids.iter().enumerate() {
+        host.local_clients[seat] = Some(client);
+    }
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
+        320,
+        200,
+    )
+    .unwrap();
     for seat in 0..2 {
         assert_eq!(probe(&mut host, seat, 0, 0), 0);
         assert_eq!(probe(&mut host, seat, 26, 0), 0); // No nodes: unused invalid point/handle.

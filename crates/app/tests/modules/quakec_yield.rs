@@ -324,7 +324,6 @@ fn qc_host_yield_publishes_unrelated_dirty_body_without_relinking_it() {
             &mut frame,
             Arguments::default(),
             TraceAccess::empty(),
-            &mut crate::modules::Driver::cache_only(),
         )
         .unwrap() else {
             panic!("walkmove must yield before its trigger callback");
@@ -412,8 +411,7 @@ fn qc_rejected_host_publication_consumes_continuation_before_cancel_and_recovers
                 &mut host,
                 &mut frame,
                 Arguments::default(),
-                TraceAccess::empty(),
-                &mut crate::modules::Driver::cache_only()
+                TraceAccess::empty()
             )
             .is_err()
         );

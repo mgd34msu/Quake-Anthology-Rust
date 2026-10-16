@@ -370,13 +370,13 @@ fn mount(root: &std::path::Path) -> Result<Vfs, String> {
 }
 
 #[test]
-fn registered_suns_follow_used_material_order_and_remain_owned_by_each_world() -> Result<(), String>
-{
+fn registered_suns_follow_creation_order_and_remain_owned_by_each_presentation()
+-> Result<(), String> {
     let root = resources("world-suns")?;
     let bytes = map_bytes(1);
     let map = legacy_map(&bytes, 1)?;
     let mut assets = Assets::load().unwrap();
-    let mut worlds = Vec::new();
+    let mut presentations = Vec::new();
     for (shader, expected) in [
         (
             "unused {\n q3map_sun 1 1 1 200 90 0\n { map $whiteimage }\n }",
@@ -405,19 +405,23 @@ fn registered_suns_follow_used_material_order_and_remain_owned_by_each_world() -
         )
         .map_err(|error| format!("sun world: {error:?}"))?;
         assert_eq!(
-            assets.world(loaded.world).unwrap().sun_direction(),
+            assets
+                .world_presentation(loaded.presentations[0].id)
+                .unwrap()
+                .sun_direction(),
             expected
         );
-        worlds.push((loaded.world, expected));
-        for &(world, expected) in &worlds {
-            assert_eq!(assets.world(world).unwrap().sun_direction(), expected);
+        presentations.push((loaded.presentations[0].id, expected));
+        for &(presentation, expected) in &presentations {
+            assert_eq!(
+                assets
+                    .world_presentation(presentation)
+                    .unwrap()
+                    .sun_direction(),
+                expected
+            );
         }
     }
-    assert!(
-        assets
-            .set_world_sun(worlds[0].0, Vec3([f32::NAN, 0., 1.]))
-            .is_err()
-    );
     std::fs::remove_dir_all(root).unwrap();
     Ok(())
 }
@@ -965,7 +969,13 @@ fn foreign_presentation_keeps_q3_geometry_coordinates_and_source_overbright() ->
         let loaded = load_native_world(&vfs, &map, &mut assets, rules, WorldLoadOptions::default())
             .map_err(|e| format!("material: {e:?}"))?;
         let world = assets.world(loaded.world).unwrap();
-        assert_eq!(world.sun_direction(), Vec3([1., 0., 0.]));
+        assert_eq!(
+            assets
+                .world_presentation(loaded.presentations[0].id)
+                .unwrap()
+                .sun_direction(),
+            Vec3([1., 0., 0.])
+        );
         assert_eq!(
             world.geometry().surfaces[0].texture_coordinates,
             TextureCoordinates::Normalized

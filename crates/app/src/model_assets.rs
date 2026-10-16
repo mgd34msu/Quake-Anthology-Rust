@@ -612,10 +612,46 @@ pub struct ModelAssets {
     initial_registration: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShaderResource {
+    World(u32),
+    Model(u32),
+    Skin(u32),
+}
+#[derive(Clone, Copy)]
+pub struct RendererAdmission<'a> {
+    pub resource: Option<ShaderResource>,
+    pub registrations: &'a [ShaderRegistration],
+    owner: &'a ModelAssets,
+    profile: ModelProfile,
+}
+
 #[derive(Clone, Copy)]
 pub struct ModelView<'a> {
     pub assets: &'a Assets,
     pub catalog: &'a ModelCatalog,
+}
+impl RendererAdmission<'_> {
+    pub(crate) fn selected_presentation(
+        self,
+        selected: Option<WorldPresentationId>,
+    ) -> Result<Self, String> {
+        if let (Some(ShaderResource::World(id)), Some(selected)) = (self.resource, selected) {
+            let world = self
+                .owner
+                .assets
+                .world_presentation(WorldPresentationId(id))
+                .ok_or("world shader membership")?
+                .world();
+            self.owner
+                .world_admission(world, self.profile, Some(selected))
+        } else {
+            Ok(self)
+        }
+    }
+    pub(crate) fn budget(self) -> (usize, usize) {
+        self.owner.shader_occurrence_budget()
+    }
 }
 impl<'a> ModelView<'a> {
     pub fn world_registrations(
@@ -653,7 +689,16 @@ impl<'a> ModelView<'a> {
         profile: Option<ModelProfile>,
         selected: Option<qa_render::world::WorldPresentationId>,
     ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
-        let admitted = self.catalog.admitted_assets?;
+        self.select_world_presentation(world, profile, selected, self.catalog.admitted_assets)
+    }
+    fn select_world_presentation(
+        self,
+        world: WorldId,
+        profile: Option<ModelProfile>,
+        selected: Option<WorldPresentationId>,
+        admitted: Option<AssetCounts>,
+    ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
+        let admitted = admitted?;
         if world.0 as usize >= admitted.worlds {
             return None;
         }
@@ -1377,27 +1422,179 @@ impl ModelAssets {
         self.initial_registration = false;
     }
 
+    fn registration_candidates<const N: usize>(
+        &self,
+        requests: [&RendererRequest<impl AsRef<[u8]>>; N],
+        handles: [i32; N],
+        profile: ModelProfile,
+    ) -> Result<[RendererAdmission<'_>; N], String> {
+        let mut candidates = [RendererAdmission {
+            resource: None,
+            registrations: &[],
+            owner: self,
+            profile,
+        }; N];
+        for ((candidate, request), handle) in candidates.iter_mut().zip(requests).zip(handles) {
+            if handle <= 0 && !matches!(request.kind, RendererRegistration::Shader { .. }) {
+                continue;
+            }
+            if handle <= 0
+                && let RendererRegistration::Shader { lighting, .. } = request.kind
+                && self
+                    .catalog
+                    .shader_outcome_candidate(request.name.as_ref(), profile, lighting)
+                    .is_none()
+            {
+                continue;
+            }
+            *candidate = match request.kind {
+                RendererRegistration::Model => {
+                    if let Some(inline) = self.catalog.renderer_inline(handle) {
+                        self.world_admission(inline.world, profile, None)?
+                    } else {
+                        let id = self
+                            .catalog
+                            .renderer_model_candidate(handle, profile)
+                            .ok_or("model shader membership")?;
+                        let (ready, _) = self.catalog.registrations[id.0 as usize]
+                            .state
+                            .ready()
+                            .ok_or("model shader membership")?;
+                        RendererAdmission {
+                            resource: Some(ShaderResource::Model(id.0)),
+                            registrations: &ready.registrations,
+                            owner: self,
+                            profile,
+                        }
+                    }
+                }
+                RendererRegistration::Skin => {
+                    let index =
+                        usize::try_from(handle - 1).map_err(|_| "skin shader membership")?;
+                    let rows = &self
+                        .catalog
+                        .skins
+                        .get(index)
+                        .ok_or("skin shader membership")?
+                        .profiles;
+                    let (index, row) = rows
+                        .iter()
+                        .enumerate()
+                        .find(|(_, row)| row.profile == profile)
+                        .ok_or("skin shader membership")?;
+                    let (ready, _) = row.state.ready().ok_or("skin shader membership")?;
+                    let _ = index;
+                    RendererAdmission {
+                        resource: Some(ShaderResource::Skin(handle as u32)),
+                        registrations: &ready.registrations,
+                        owner: self,
+                        profile,
+                    }
+                }
+                RendererRegistration::Shader { lighting, .. } => {
+                    let (registration, _) = self
+                        .catalog
+                        .shader_outcome_candidate(request.name.as_ref(), profile, lighting)
+                        .ok_or("shader membership")?;
+                    RendererAdmission {
+                        resource: None,
+                        registrations: std::slice::from_ref(registration),
+                        owner: self,
+                        profile,
+                    }
+                }
+            };
+        }
+        Ok(candidates)
+    }
+    pub(crate) fn world_admission(
+        &self,
+        world: WorldId,
+        profile: ModelProfile,
+        selected: Option<WorldPresentationId>,
+    ) -> Result<RendererAdmission<'_>, String> {
+        let id = self
+            .view()
+            .select_world_presentation(world, Some(profile), selected, Some(self.assets.counts()))
+            .ok_or("world shader membership")?
+            .id;
+        let presentation = self
+            .assets
+            .world_presentation(id)
+            .ok_or("world shader membership")?;
+        Ok(RendererAdmission {
+            resource: Some(ShaderResource::World(id.0)),
+            registrations: presentation.shader_registrations(),
+            owner: self,
+            profile,
+        })
+    }
+    pub(crate) fn profile_count(&self) -> usize {
+        self.catalog.profiles.len()
+    }
+    pub(crate) fn shader_occurrence_budget(&self) -> (usize, usize) {
+        let occurrences = self
+            .assets
+            .world_presentations()
+            .iter()
+            .map(|world| world.shader_registrations().len())
+            .sum::<usize>()
+            + self
+                .catalog
+                .registrations
+                .iter()
+                .filter_map(|row| row.state.ready())
+                .map(|(ready, _)| ready.registrations.len())
+                .sum::<usize>()
+            + self
+                .catalog
+                .skins
+                .iter()
+                .flat_map(|skin| &skin.profiles)
+                .filter_map(|row| row.state.ready())
+                .map(|(ready, _)| ready.registrations.len())
+                .sum::<usize>();
+        let resources = self.assets.world_presentations().len()
+            + self.catalog.registrations.len()
+            + self
+                .catalog
+                .skins
+                .iter()
+                .map(|skin| skin.profiles.len())
+                .sum::<usize>();
+        (occurrences, resources)
+    }
+
     /// Register one late native request and publish it only after the backend
     /// accepts the complete appended resource prefix.
-    pub fn prepare_registration(
+    pub fn prepare_registration<T>(
         &mut self,
         vfs: &Vfs,
         request: &RendererRequest<impl AsRef<[u8]>>,
         profile: ModelProfile,
-        prepare: impl FnOnce(&Assets) -> Result<(), String>,
-    ) -> Result<(i32, AssetCounts), String> {
-        self.prepare_registrations(vfs, [request], profile, prepare)
-            .map(|([handle], counts)| (handle, counts))
+        stage: impl FnOnce(RendererAdmission<'_>) -> Result<T, String>,
+        prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
+    ) -> Result<(i32, T, AssetCounts), String> {
+        self.prepare_registrations(
+            vfs,
+            [request],
+            profile,
+            |[candidate]| stage(candidate),
+            prepare,
+        )
+        .map(|([handle], staged, counts)| (handle, staged, counts))
     }
 
-    fn prepare_registrations<const N: usize>(
+    fn prepare_registrations<T, const N: usize>(
         &mut self,
         vfs: &Vfs,
         requests: [&RendererRequest<impl AsRef<[u8]>>; N],
         profile: ModelProfile,
-        prepare: impl FnOnce(&Assets) -> Result<(), String>,
-    ) -> Result<([i32; N], AssetCounts), String> {
-        if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
+        stage: impl FnOnce([RendererAdmission<'_>; N]) -> Result<T, String>,
+        prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
+    ) -> Result<([i32; N], T, AssetCounts), String> {
+        let initial = self.initial_registration;
+        if !initial && self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("late registration requires a published resource prefix".to_owned());
         }
         if !self
@@ -1446,7 +1643,9 @@ impl ModelAssets {
             }
         }
         if cached.iter().all(Option::is_some) {
-            return Ok((handles, self.assets.counts()));
+            let candidates = self.registration_candidates(requests, handles, profile)?;
+            let staged = stage(candidates)?;
+            return Ok((handles, staged, self.assets.counts()));
         }
         if requests.iter().zip(cached).any(|(request, cached)| {
             cached == Some(0)
@@ -1462,7 +1661,7 @@ impl ModelAssets {
         }
         let checkpoint = RegistrationCheckpoint::capture(self, requests)?;
         let mut rollback = RegistrationRollback::Source;
-        let result: Result<([i32; N], AssetCounts), String> = (|| {
+        let result: Result<([i32; N], T, AssetCounts), String> = (|| {
             for (index, request) in requests.into_iter().enumerate() {
                 if cached[index].is_some() {
                     continue;
@@ -1502,13 +1701,21 @@ impl ModelAssets {
             }
             let counts = self.assets.counts();
             rollback = RegistrationRollback::Retry;
-            self.validate_admission(counts)
-                .map_err(|error| format!("renderer publication: {error:?}"))?;
-            prepare(&self.assets)?;
+            if !initial {
+                self.validate_admission(counts)
+                    .map_err(|error| format!("renderer publication: {error:?}"))?;
+            }
+            let candidates = self.registration_candidates(requests, handles, profile)?;
+            let staged = stage(candidates)?;
+            if !initial {
+                prepare(&self.assets, &staged)?;
+            }
             // The backend has committed this prefix. All owner checks already
             // passed, so publication cannot fail or discard accepted resources.
-            self.apply_admission(counts);
-            Ok((handles, counts))
+            if !initial {
+                self.apply_admission(counts);
+            }
+            Ok((handles, staged, counts))
         })();
         match result {
             Ok(ready) => Ok(ready),

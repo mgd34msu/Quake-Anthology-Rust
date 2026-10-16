@@ -1,9 +1,9 @@
 //! Checked projection of the shared renderer configuration into native ABIs.
-use crate::services::{CallError, RendererRegistration};
+use crate::services::CallError;
 use qa_core::presentation::{
     RENDERER_EXTENSIONS_BYTES, RENDERER_TEXT_BYTES, RendererConfiguration,
 };
-use qa_core::primitives::{IndexSpan, RuleSetId, Vec3};
+use qa_core::primitives::{IndexSpan, Vec3};
 use qa_render::{
     Vertex,
     scene::{EntityVisibility, Light, Refdef, SceneEntity},
@@ -13,18 +13,6 @@ use qa_render::{
 /// The caller owns its renderer role; each invocation borrows the session's
 /// one scene owner. Guest addresses never cross this interface.
 pub trait SceneService {
-    fn registration_available(&self) -> bool {
-        false
-    }
-    fn registration_cached(
-        &self,
-        kind: RendererRegistration,
-        name: &[u8],
-        source: RuleSetId,
-    ) -> Option<i32> {
-        let _ = (kind, name, source);
-        None
-    }
     fn active(&self) -> bool;
     fn viewport(&self) -> Option<qa_render::Viewport>;
     fn select_world(&mut self, world: WorldId) -> Result<(), CallError>;

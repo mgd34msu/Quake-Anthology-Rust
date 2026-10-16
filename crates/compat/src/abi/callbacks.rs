@@ -11,6 +11,7 @@ pub struct CallbackRequest {
 #[derive(Clone, Debug)]
 pub enum HostRequest {
     RegisterRenderer(crate::services::RendererRequest),
+    SelectRendererWorld(qa_render::world::WorldId),
     CommandRegistration {
         name: u64,
         remove: bool,

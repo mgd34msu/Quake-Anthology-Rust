@@ -50,25 +50,10 @@ impl ModelLookup for Catalog {
     }
 }
 struct Scene<'a> {
-    available: &'a Cell<bool>,
-    ready: &'a Cell<Option<i32>>,
     submitted: &'a Cell<Option<i32>>,
     world: Option<WorldId>,
 }
 impl SceneService for Scene<'_> {
-    fn registration_available(&self) -> bool {
-        self.available.get()
-    }
-    fn registration_cached(
-        &self,
-        _: RendererRegistration,
-        _: &[u8],
-        source: RuleSetId,
-    ) -> Option<i32> {
-        (source == RuleSetId::Quake3)
-            .then(|| self.ready.get())
-            .flatten()
-    }
     fn active(&self) -> bool {
         true
     }
@@ -105,7 +90,7 @@ impl SceneService for Scene<'_> {
         Ok(true)
     }
 }
-fn with_call<T>(
+pub(super) fn with_call<T>(
     services: &mut EngineServices<'_>,
     memory: &mut ModuleMemory<'_>,
     addresses: Addresses,
@@ -132,7 +117,7 @@ fn with_call<T>(
     };
     run(&mut call)
 }
-fn step(
+pub(super) fn step(
     services: &mut EngineServices<'_>,
     memory: &mut ModuleMemory<'_>,
     addresses: Addresses,
@@ -145,7 +130,7 @@ fn step(
         table.invoke(number, call, &mut unknown)
     })
 }
-fn returned(step: ImportStep) -> u64 {
+pub(super) fn returned(step: ImportStep) -> u64 {
     match step {
         ImportStep::Return(word) => word,
         ImportStep::Host { .. } => panic!("unexpected host operation"),
@@ -156,10 +141,8 @@ fn returned(step: ImportStep) -> u64 {
 fn deferred_renderer_handle_owns_name_and_resumes_before_bounds_and_scene_use() {
     for addresses in modes() {
         let mut fixture = Fixture::new();
-        let (available, ready, submitted) = (Cell::new(true), Cell::new(None), Cell::new(None));
+        let submitted = Cell::new(None);
         let mut scene = Scene {
-            available: &available,
-            ready: &ready,
             submitted: &submitted,
             world: Some(WorldId(9)),
         };
@@ -232,17 +215,27 @@ fn deferred_renderer_handle_owns_name_and_resumes_before_bounds_and_scene_use() 
             0
         );
         assert_eq!(submitted.get(), Some(91));
-        ready.set(Some(91));
+        let ImportStep::Host {
+            request: HostRequest::RegisterRenderer(request),
+            continuation,
+        } = step(
+            &mut engine,
+            &mut memory,
+            addresses,
+            &Q3_CLIENT,
+            37,
+            &[base + 16],
+        )
+        .unwrap()
+        else {
+            panic!("cached registrations must enter logical admission")
+        };
+        assert_eq!(request.name.as_bytes(), b"changed");
         assert_eq!(
             returned(
-                step(
-                    &mut engine,
-                    &mut memory,
-                    addresses,
-                    &Q3_CLIENT,
-                    37,
-                    &[base + 16]
-                )
+                with_call(&mut engine, &mut memory, addresses, &[], |call| {
+                    continuation.resume(call, 91)
+                })
                 .unwrap()
             ),
             91
@@ -259,10 +252,8 @@ fn deferred_renderer_handle_owns_name_and_resumes_before_bounds_and_scene_use() 
 fn renderer_requests_keep_kind_inline_world_and_native_name_width() {
     for addresses in modes() {
         let mut fixture = Fixture::new();
-        let (available, ready, submitted) = (Cell::new(true), Cell::new(None), Cell::new(None));
+        let submitted = Cell::new(None);
         let mut scene = Scene {
-            available: &available,
-            ready: &ready,
             submitted: &submitted,
             world: Some(WorldId(9)),
         };
@@ -402,194 +393,128 @@ fn renderer_requests_keep_kind_inline_world_and_native_name_width() {
 }
 
 #[test]
-fn unavailable_registration_stays_cache_only_and_cold_loader_does_not_defer() {
+fn cached_headless_failed_and_initial_loader_requests_share_the_parked_operation() {
     for addresses in modes() {
         let mut fixture = Fixture::new();
-        let (available, ready, submitted) = (Cell::new(false), Cell::new(None), Cell::new(None));
-        let mut scene = Scene {
-            available: &available,
-            ready: &ready,
-            submitted: &submitted,
-            world: None,
-        };
         let catalog = Catalog;
+        let mut loader = ShaderLoader::default();
         let base = base(addresses);
-        let mut bytes = [0; 512];
+        let mut bytes = [0; 256];
         let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
-        memory.write(base + 16, b"known\0").unwrap();
-        memory.write(base + 48, b"unknown\0").unwrap();
-        let mut shader = ShaderLoader::default();
-        {
-            let mut engine = fixture.engine(false);
-            engine.model_lookup = Some(&catalog);
-            engine.scene = Some(&mut scene);
-            for kind in [
-                RendererRegistration::Model,
-                RendererRegistration::Skin,
-                RendererRegistration::Shader {
-                    mipmaps: true,
-                    lighting: qa_compat::services::ShaderLighting::TwoDimensional,
-                },
-            ] {
-                assert_eq!(
-                    engine.register_renderer(b"known", RuleSetId::Quake3, kind),
-                    Ok(0)
-                );
+        for initial in [false, true] {
+            {
+                let mut engine = fixture.engine(false);
+                engine.model_lookup = Some(&catalog);
+                if initial {
+                    engine.model_loader = Some(&mut loader);
+                }
+                for name in [b"known".as_slice(), b"unknown", b"failed"] {
+                    memory.write(base + 16, name).unwrap();
+                    memory.write(base + 16 + name.len() as u64, &[0]).unwrap();
+                    for number in [37, 38, 39] {
+                        let ImportStep::Host {
+                            request: HostRequest::RegisterRenderer(request),
+                            continuation,
+                        } = step(
+                            &mut engine,
+                            &mut memory,
+                            addresses,
+                            &Q3_CLIENT,
+                            number,
+                            &[base + 16],
+                        )
+                        .unwrap()
+                        else {
+                            panic!("all resource states require logical admission")
+                        };
+                        assert_eq!(request.name.as_bytes(), name);
+                        assert!(matches!(continuation, ImportContinuation::HostValue));
+                        assert_eq!(
+                            returned(
+                                with_call(&mut engine, &mut memory, addresses, &[], |call| {
+                                    continuation.resume(call, 0)
+                                })
+                                .unwrap()
+                            ),
+                            0
+                        );
+                    }
+                }
+                engine.model_loader = None;
             }
-            assert_eq!(
-                returned(
-                    step(
-                        &mut engine,
-                        &mut memory,
-                        addresses,
-                        &Q3_CLIENT,
-                        37,
-                        &[base + 16]
-                    )
-                    .unwrap()
-                ),
-                0
-            );
-            ready.set(Some(91));
-            assert_eq!(
-                returned(
-                    step(
-                        &mut engine,
-                        &mut memory,
-                        addresses,
-                        &Q3_CLIENT,
-                        37,
-                        &[base + 16]
-                    )
-                    .unwrap()
-                ),
-                91
-            );
-            assert_eq!(
-                engine.register_renderer(b"known", RuleSetId::Quake2, RendererRegistration::Model),
-                Ok(0)
-            );
-            ready.set(None);
-            assert_eq!(
-                returned(
-                    step(
-                        &mut engine,
-                        &mut memory,
-                        addresses,
-                        &Q3_CLIENT,
-                        37,
-                        &[base + 48]
-                    )
-                    .unwrap()
-                ),
-                0
-            );
-            available.set(true);
-            engine.model_loader = Some(&mut shader);
-            memory.write(base + 16, b"ui/pic\0").unwrap();
-            assert_eq!(
-                returned(
-                    step(
-                        &mut engine,
-                        &mut memory,
-                        addresses,
-                        &Q3_CLIENT,
-                        39,
-                        &[base + 16]
-                    )
-                    .unwrap()
-                ),
-                42
-            );
         }
-        assert_eq!(
-            shader.calls,
-            [(b"ui/pic".to_vec(), RuleSetId::Quake3, true)]
+        assert!(
+            loader.calls.is_empty(),
+            "the parked ABI must not call the initial loader directly"
         );
     }
 }
 
 #[test]
-fn failed_renderer_cache_returns_zero_before_host_or_headless_aggregate_lookup() {
+fn load_world_keeps_a_long_cached_name_out_of_the_host_request() {
     for addresses in modes() {
         let mut fixture = Fixture::new();
-        let (available, ready, submitted) = (Cell::new(true), Cell::new(Some(0)), Cell::new(None));
-        let mut scene = Scene {
-            available: &available,
-            ready: &ready,
-            submitted: &submitted,
-            world: None,
-        };
-        let catalog = Catalog;
-        let base = base(addresses);
-        let mut bytes = [0; 128];
-        let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
-        memory.write(base + 16, b"known\0").unwrap();
-        let mut engine = fixture.engine(false);
-        engine.model_lookup = Some(&catalog);
-        engine.scene = Some(&mut scene);
-        for enabled in [true, false] {
-            available.set(enabled);
-            for _ in 0..3 {
-                assert_eq!(
-                    returned(
-                        step(
-                            &mut engine,
-                            &mut memory,
-                            addresses,
-                            &Q3_CLIENT,
-                            39,
-                            &[base + 16],
-                        )
-                        .unwrap()
-                    ),
-                    0
-                );
+        struct WorldCatalog;
+        impl ModelLookup for WorldCatalog {
+            fn loaded_world(&self, name: &[u8]) -> Option<qa_compat::services::LoadedWorldBinding> {
+                (name.len() == 96).then_some(qa_compat::services::LoadedWorldBinding {
+                    render: WorldId(9),
+                    collision: None,
+                })
+            }
+            fn bounds(&self, _: &[u8], _: RuleSetId) -> Option<Bounds> {
+                None
+            }
+            fn shader_handle(&self, _: &[u8], _: RuleSetId) -> Option<i32> {
+                None
+            }
+            fn model_handle(&self, _: &[u8], _: RuleSetId) -> Option<i32> {
+                None
+            }
+            fn model_bounds(&self, _: i32) -> Option<Bounds> {
+                None
+            }
+            fn model_has_tags(&self, _: i32) -> bool {
+                false
+            }
+            fn lerp_tag(&self, _: i32, _: i32, _: i32, _: f32, _: &[u8]) -> Option<Orientation> {
+                None
             }
         }
-        available.set(true);
-        ready.set(None);
-        assert!(matches!(
-            step(
-                &mut engine,
-                &mut memory,
-                addresses,
-                &Q3_CLIENT,
-                39,
-                &[base + 16],
-            )
-            .unwrap(),
-            ImportStep::Host { .. }
-        ));
-        engine.scene = None;
-        memory.write(base + 16, b"failed\0").unwrap();
+        let catalog = WorldCatalog;
+        let base = base(addresses);
+        let mut bytes = [0; 256];
+        let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
+        memory.write(base + 16, &[b'w'; 96]).unwrap();
+        memory.write(base + 112, &[0]).unwrap();
+        let mut engine = fixture.engine(false);
+        engine.model_lookup = Some(&catalog);
+        let ImportStep::Host {
+            request: HostRequest::SelectRendererWorld(world),
+            continuation,
+        } = step(
+            &mut engine,
+            &mut memory,
+            addresses,
+            &Q3_CLIENT,
+            36,
+            &[base + 16],
+        )
+        .unwrap()
+        else {
+            panic!("world selection requires logical admission")
+        };
+        assert_eq!(world, WorldId(9));
+        assert!(matches!(continuation, ImportContinuation::Return(0)));
+        memory.write(base + 16, b"changed\0").unwrap();
         assert_eq!(
             returned(
-                step(
-                    &mut engine,
-                    &mut memory,
-                    addresses,
-                    &Q3_CLIENT,
-                    39,
-                    &[base + 16],
-                )
+                with_call(&mut engine, &mut memory, addresses, &[], |call| {
+                    continuation.resume(call, 0)
+                })
                 .unwrap()
             ),
             0
         );
-        assert_eq!(
-            engine
-                .register_renderer(
-                    b"failed",
-                    RuleSetId::Quake2,
-                    RendererRegistration::Shader {
-                        mipmaps: false,
-                        lighting: qa_compat::services::ShaderLighting::TwoDimensional
-                    }
-                )
-                .unwrap(),
-            93
-        );
-        assert_eq!(catalog.shader_handle(b"failed", RuleSetId::Quake), None);
     }
 }

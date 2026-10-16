@@ -139,6 +139,9 @@ fn ordinal(ui: bool, value: u8) -> u8 {
     }
 }
 fn qvm_scene(ui: bool) -> Program {
+    qvm_scene_data(ui, &data())
+}
+fn qvm_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 96)];
     let mut branches = vec![];
@@ -212,7 +215,7 @@ fn qvm_scene(ui: bool) -> Program {
         operations.push((Leave, 96));
     }
     Program::Qvm {
-        vm: Box::new(service_program::program(&operations, &data())),
+        vm: Box::new(service_program::program(&operations, initial)),
         imports: if ui {
             &qa_compat::abi::Q3_UI
         } else {
@@ -223,6 +226,10 @@ fn qvm_scene(ui: bool) -> Program {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn native_scene(ui: bool) -> Program {
+    native_scene_data(ui, &data())
+}
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     use native_image::*;
     use qa_compat::native::{NamedExport, Vm};
     use qa_formats::program::native::{Image, LoadRole};
@@ -338,7 +345,7 @@ fn native_scene(ui: bool) -> Program {
     code.extend([0x31, 0xc0, 0xc3]);
     assert!(code.len() < 0xc00);
     vm.process.memory_mut().unwrap()[0x1800..0x1800 + code.len()].copy_from_slice(&code);
-    vm.process.memory_mut().unwrap()[0x2400..0x2800].copy_from_slice(&data());
+    vm.process.memory_mut().unwrap()[0x2400..0x2800].copy_from_slice(initial);
     Program::Native {
         vm: Box::new(vm),
         imports: if ui {
@@ -352,6 +359,7 @@ fn native_scene(ui: bool) -> Program {
 pub(super) fn submissions(native: bool, ui: bool) {
     if !ui {
         mark_fragments(native);
+        sun_contexts(native);
     }
     let mut fixture = model_support::Fixture::new(&[(
         "ui/pic.tga",
@@ -371,6 +379,9 @@ pub(super) fn submissions(native: bool, ui: bool) {
         .into_boxed_slice(),
         diagnostics: Box::default(),
     };
+    assets
+        .register_world_presentation_metadata(world, &loaded.presentations)
+        .unwrap();
     let program = || {
         if native {
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -527,6 +538,281 @@ pub(super) fn submissions(native: bool, ui: bool) {
     assert_eq!(peer.shader, peer_material);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+}
+
+fn sun_program(native: bool, ui: bool, name: &[u8]) -> Program {
+    let mut initial = data();
+    assert!(name.len() < 16);
+    initial[16..32].fill(0);
+    initial[16..16 + name.len()].copy_from_slice(name);
+    if native {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            return native_scene_data(ui, &initial);
+        }
+    }
+    qvm_scene_data(ui, &initial)
+}
+
+fn sun_probe(
+    host: &mut FrameHost,
+    module: ModuleId,
+    client: Option<ClientId>,
+    command: u32,
+    value: u64,
+    preparer: Option<&mut dyn qa_app::renderer::AssetPreparer>,
+) -> u32 {
+    host.call_module_export_with_driver(
+        module,
+        Export {
+            client,
+            ..Export::words(CallbackId(command), &[value])
+        },
+        ThinkTime::Milliseconds(1),
+        &mut qa_app::modules::Driver::new(preparer),
+    )
+    .unwrap();
+    match host.module_counts(module).unwrap().last_result.unwrap() {
+        ModuleResult::Qvm(value) => value as u32,
+        ModuleResult::Native(value) => value as u32,
+        _ => panic!("word module"),
+    }
+}
+
+fn sun_direction(host: &mut FrameHost, module: ModuleId, client: Option<ClientId>) -> Vec3 {
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(sun_probe(host, module, client, 13, 0, None), 0);
+    assert_eq!(sun_probe(host, module, client, 3, 0, None), 0);
+    let composer = host.runtime.scene.as_mut().unwrap();
+    let packet = composer.finish_frame().unwrap();
+    let Command::View(view) = packet.commands()[1] else {
+        panic!("sun lighting view")
+    };
+    assert_eq!(packet.rejected, 0);
+    let direction = packet.entities(view.scene.entities)[0]
+        .lighting
+        .unwrap()
+        .direction;
+    assert!(composer.recycle(packet).is_ok());
+    direction
+}
+
+fn assert_sun(actual: Vec3, expected: [f32; 3]) {
+    for (actual, expected) in actual.0.into_iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() < 0.00001,
+            "sun {actual} != {expected}"
+        );
+    }
+}
+
+fn sun_contexts(native: bool) {
+    use qa_app::renderer::AssetPreparer;
+
+    struct Backend {
+        cpu: qa_render::cpu::CpuBackend,
+        attempts: usize,
+        reject_next: bool,
+    }
+    impl AssetPreparer for Backend {
+        fn prepare_assets(
+            &mut self,
+            assets: &qa_render::Assets,
+            scene: Option<qa_render::Limits>,
+        ) -> Result<(), String> {
+            self.attempts += 1;
+            if std::mem::take(&mut self.reject_next) {
+                return Err("reject this sun shader publication".into());
+            }
+            self.cpu
+                .prepare_assets(assets, scene)
+                .map_err(str::to_owned)
+        }
+    }
+
+    let mut fixture = model_support::Fixture::new(&[
+        ("models/test.md3", model_support::md3_surfaces()),
+        (
+            "textures/body.tga",
+            model_support::tga(2, 2, &[[90, 20, 10, 255]; 4]),
+        ),
+        (
+            "textures/glow.tga",
+            model_support::tga(2, 2, &[[20, 10, 90, 255]; 4]),
+        ),
+        (
+            "scripts/sun.shader",
+            br#"
+                sun/a { q3map_sun 1 0 0 100 0 0 { map $whiteimage } }
+                sun/b { q3map_sun 0 1 0 100 90 0 { map $whiteimage } }
+                sun/c { q3map_sun 1 1 0 100 180 0 { map $whiteimage } }
+                sun/d { q3map_sun 0 0 1 100 0 90 bogus }
+            "#
+            .to_vec(),
+        ),
+    ]);
+    let (mut runtime, clients) = runtime(2);
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
+    // UI shares rendering with its captured seat, without a network binding.
+    let modules = [
+        (false, Some(clients[0]), 0, b"sun/a".as_slice()),
+        (true, None, 0, b"sun/b".as_slice()),
+        (true, None, 0, b"sun/d".as_slice()),
+        (true, None, 0, b"sun/c".as_slice()),
+        (false, Some(clients[1]), 1, b"sun/a".as_slice()),
+        (true, None, 2, b"sun/a".as_slice()),
+    ];
+    let requests = modules
+        .iter()
+        .enumerate()
+        .map(|(index, &(ui, client, seat, name))| {
+            let mut row = request(
+                &mut runtime,
+                ModuleId(index as u16 + 1),
+                client.unwrap_or(clients[0]),
+                sun_program(native, ui, name),
+            );
+            row.entries = (0..26).collect();
+            row.frame.client = client;
+            row.context.console.seat = SeatId::new(seat).unwrap();
+            row
+        })
+        .collect();
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    host.local_clients[..2].copy_from_slice(&clients.iter().copied().map(Some).collect::<Vec<_>>());
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut peer_profile = profile;
+    peer_profile.rules = RuleSetId::Quake2;
+    peer_profile.image_settings =
+        qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2);
+    host.runtime.model_assets = Some(
+        ModelAssets::new(
+            qa_render::Assets::load().unwrap(),
+            [profile, peer_profile],
+            [],
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let mut seat_profiles = [[None, None, None, None, Some(profile)]; SeatId::COUNT];
+    seat_profiles[1][RuleSetId::Quake3 as usize] = Some(peer_profile);
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &seat_profiles,
+        320,
+        200,
+    )
+    .unwrap();
+    for (index, &(_, client, _, _)) in modules.iter().enumerate() {
+        let id = ModuleId(index as u16 + 1);
+        let model = sun_probe(&mut host, id, client, 12, 0, None);
+        assert!(model > 0);
+        assert_eq!(sun_probe(&mut host, id, client, 14, model as u64, None), 0);
+    }
+    // Native logical admission does not require a SceneComposer to exist.
+    assert!(host.runtime.scene.is_none());
+    let a = sun_probe(&mut host, ModuleId(1), Some(clients[0]), 0, 0, None);
+    let b = sun_probe(&mut host, ModuleId(2), None, 0, 0, None);
+    assert!(a > 0 && b > 0 && a != b);
+    assert_eq!(
+        sun_probe(&mut host, ModuleId(5), Some(clients[1]), 0, 0, None),
+        a
+    );
+    assert_eq!(sun_probe(&mut host, ModuleId(6), None, 0, 0, None), a);
+    assert_eq!(
+        sun_probe(&mut host, ModuleId(1), Some(clients[0]), 0, 0, None),
+        a
+    );
+    host.bind_client_model_assets([]);
+    host.runtime.scene = Some(
+        qa_app::renderer::SceneComposer::load(
+            Default::default(),
+            host.runtime.model_assets.as_mut().unwrap().assets_mut(),
+            vec![],
+        )
+        .unwrap()
+        .0,
+    );
+    let mut backend = Backend {
+        cpu: admit_assets(&mut host),
+        attempts: 0,
+        reject_next: false,
+    };
+    assert_sun(
+        sun_direction(&mut host, ModuleId(1), Some(clients[0])),
+        [0., 1., 0.],
+    );
+    assert_sun(sun_direction(&mut host, ModuleId(2), None), [0., 1., 0.]);
+    assert_sun(
+        sun_direction(&mut host, ModuleId(5), Some(clients[1])),
+        [1., 0., 0.],
+    );
+    assert_sun(sun_direction(&mut host, ModuleId(6), None), [1., 0., 0.]);
+
+    // A reached native prefix applies even when public registration returns zero.
+    assert_eq!(
+        sun_probe(&mut host, ModuleId(3), None, 0, 0, Some(&mut backend)),
+        0
+    );
+    assert_eq!(backend.attempts, 1);
+    assert_sun(
+        sun_direction(&mut host, ModuleId(1), Some(clients[0])),
+        [0., 0., 1.],
+    );
+    let retained = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    backend.reject_next = true;
+    assert_eq!(
+        sun_probe(&mut host, ModuleId(4), None, 0, 0, Some(&mut backend)),
+        0
+    );
+    assert_eq!(backend.attempts, 2);
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        retained
+    );
+    assert_eq!(backend.cpu.admitted_assets(), Some(retained));
+    assert_sun(sun_direction(&mut host, ModuleId(2), None), [0., 0., 1.]);
+    assert!(sun_probe(&mut host, ModuleId(4), None, 0, 0, Some(&mut backend)) > 0);
+    assert_eq!(backend.attempts, 3);
+    assert_sun(
+        sun_direction(&mut host, ModuleId(1), Some(clients[0])),
+        [-1., 0., 0.],
+    );
+
+    host.runtime.vfs.take_lookup_count();
+    assert_eq!(sun_probe(&mut host, ModuleId(3), None, 0, 0, None), 0);
+    assert_eq!(
+        sun_probe(&mut host, ModuleId(1), Some(clients[0]), 0, 0, None),
+        a
+    );
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.attempts, 3);
+    assert_sun(sun_direction(&mut host, ModuleId(2), None), [-1., 0., 0.]);
+    assert_sun(
+        sun_direction(&mut host, ModuleId(5), Some(clients[1])),
+        [1., 0., 0.],
+    );
+    assert_sun(sun_direction(&mut host, ModuleId(6), None), [1., 0., 0.]);
+    for index in 1..=modules.len() {
+        assert_eq!(host.module_counts(ModuleId(index as u16)).unwrap().traps, 0);
+    }
 }
 
 pub(super) fn ownership() {
@@ -884,7 +1170,12 @@ pub(super) fn entities(native: bool, ui: bool) {
 }
 
 pub(super) fn inline_entities(native: bool) {
+    let mut fixture = model_support::Fixture::new(&[(
+        "scripts/inline.shader",
+        b"ui/pic { q3map_sun 0 1 0 100 90 0 { map $whiteimage } }".to_vec(),
+    )]);
     let (mut runtime, ids) = runtime(1);
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
     let program = if native {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
@@ -991,6 +1282,19 @@ pub(super) fn inline_entities(native: bool) {
         },
     );
     let presentation = qa_render::world::WorldPresentationId(0);
+    let loaded = LoadedWorld {
+        world,
+        presentations: vec![LoadedWorldPresentation {
+            id: presentation,
+            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            defaults: Default::default(),
+        }]
+        .into_boxed_slice(),
+        diagnostics: Box::default(),
+    };
+    assets
+        .register_world_presentation_metadata(world, &loaded.presentations)
+        .unwrap();
     let bounds = assets.world(world).unwrap().geometry().models[1].bounds;
     let grid = qa_render::lighting::LightGrid::load(
         qa_core::primitives::Bounds {
@@ -1009,18 +1313,26 @@ pub(super) fn inline_entities(native: bool) {
     )
     .unwrap();
     assets.set_light_grid(world, Some(grid)).unwrap();
-    assets.set_world_sun(world, Vec3([0., 1., 0.])).unwrap();
     let meshes = assets.models().len();
     let mut builder = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
     builder
         .bind_loaded_world("maps/probe.bsp", world, None, bounds)
         .unwrap();
     host.runtime.model_assets = Some(builder);
+    host.local_clients[0] = Some(ids[0]);
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
+        320,
+        200,
+    )
+    .unwrap();
     // No scene world is inferred just because geometry exists in the catalog.
     assert_eq!(probe(&mut host, 0, 19, 0), 0);
     assert_eq!(probe(&mut host, 0, 6, 0), 0);
     let model = probe(&mut host, 0, 19, 0);
     assert!(model > 0);
+    assert!(probe(&mut host, 0, 0, 0) > 0);
     host.bind_client_model_assets([]);
     let models = host.runtime.model_assets.as_ref().unwrap().catalog();
     assert_eq!(
@@ -1044,16 +1356,6 @@ pub(super) fn inline_entities(native: bool) {
         200,
     )
     .unwrap();
-    let loaded = LoadedWorld {
-        world,
-        presentations: vec![LoadedWorldPresentation {
-            id: presentation,
-            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
-            defaults: Default::default(),
-        }]
-        .into_boxed_slice(),
-        diagnostics: Box::default(),
-    };
     host.runtime.scene = Some(
         qa_app::renderer::SceneComposer::load(
             Default::default(),
@@ -1086,11 +1388,7 @@ pub(super) fn inline_entities(native: bool) {
         }
     );
     assert_eq!(entity.origin.0, [8., 0., 0.]);
-    assert_eq!(
-        entity.lighting.unwrap().direction,
-        Vec3([0., 1., 0.]),
-        "a no-world native view retains the selected world's sun instead of its grid"
-    );
+    assert_sun(entity.lighting.unwrap().direction, [0., 1., 0.]);
     assert_eq!(
         entity.axes.map(|axis| axis.0),
         [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]

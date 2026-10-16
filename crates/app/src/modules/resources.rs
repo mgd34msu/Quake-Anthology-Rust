@@ -680,6 +680,16 @@ impl FrameHost {
                 software_waterwarp,
             );
         }
+        let count = modules.rows.len();
+        for index in 0..count {
+            let module = qa_core::primitives::ModuleId(index as u16);
+            if self
+                .module_row(module)
+                .is_some_and(|row| row.renderer_context.is_some())
+            {
+                self.bind_module_renderer_context(module)?;
+            }
+        }
         Ok(())
     }
     /// Native Q3 SERVER storage supplies its own gamestate. Encoding borrows

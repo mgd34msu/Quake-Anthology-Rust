@@ -261,9 +261,13 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
         };
         assert_eq!(
             owner
-                .prepare_registration(&fixture.vfs, &request, second, |assets| cpu
-                    .prepare_assets(assets, None)
-                    .map_err(str::to_owned))
+                .prepare_registration(
+                    &fixture.vfs,
+                    &request,
+                    second,
+                    |_| Ok(()),
+                    |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+                )
                 .unwrap()
                 .0,
             id
@@ -286,9 +290,13 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
     };
     assert_eq!(
         owner
-            .prepare_registration(&fixture.vfs, &request, second, |assets| cpu
-                .prepare_assets(assets, None)
-                .map_err(str::to_owned))
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                second,
+                |_| Ok(()),
+                |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            )
             .unwrap()
             .0,
         sprite
@@ -328,9 +336,13 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
         };
         assert_eq!(
             owner
-                .prepare_registration(&fixture.vfs, &request, second, |assets| cpu
-                    .prepare_assets(assets, None)
-                    .map_err(str::to_owned))
+                .prepare_registration(
+                    &fixture.vfs,
+                    &request,
+                    second,
+                    |_| Ok(()),
+                    |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+                )
                 .unwrap()
                 .0,
             shaders[index]
@@ -362,9 +374,13 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
     };
     assert_eq!(
         owner
-            .prepare_registration(&fixture.vfs, &request, second, |assets| cpu
-                .prepare_assets(assets, None)
-                .map_err(str::to_owned))
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                second,
+                |_| Ok(()),
+                |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            )
             .unwrap()
             .0,
         skin
@@ -450,9 +466,13 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
         world: None,
     };
     owner
-        .prepare_registration(&fixture.vfs, &request, second, |assets| {
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+        .prepare_registration(
+            &fixture.vfs,
+            &request,
+            second,
+            |_| Ok(()),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
         .unwrap();
     let material = owner.catalog().shader_binding(shader, second).unwrap();
     let StageTexture::Image(image) = owner
@@ -498,9 +518,13 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
     };
     assert!(
         owner
-            .prepare_registration(&fixture.vfs, &request, third, |_| Err(
-                "new Source backend reject".to_owned()
-            ))
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                third,
+                |_| Ok(()),
+                |_, _| Err("new Source backend reject".to_owned())
+            )
             .is_err()
     );
     assert_eq!(
@@ -514,9 +538,13 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
     assert_eq!(owner.catalog().shader_binding(shader, third), None);
     assert_eq!(
         owner
-            .prepare_registration(&fixture.vfs, &request, third, |assets| cpu
-                .prepare_assets(assets, None)
-                .map_err(str::to_owned))
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                third,
+                |_| Ok(()),
+                |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            )
             .unwrap()
             .0,
         shader
@@ -608,9 +636,13 @@ fn metadata_only_model_gets_its_first_stable_row_when_a_profile_is_admitted() {
     };
     assert_eq!(
         owner
-            .prepare_registration(&fixture.vfs, &request, profile, |assets| cpu
-                .prepare_assets(assets, None)
-                .map_err(str::to_owned))
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                profile,
+                |_| Ok(()),
+                |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            )
             .unwrap()
             .0,
         handle

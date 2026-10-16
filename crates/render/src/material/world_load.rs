@@ -407,16 +407,9 @@ fn compile_profile(
     request: WorldPresentationRequest,
     prepared: PreparedPresentation,
     diagnostics: &mut Vec<String>,
-) -> Result<
-    (
-        CompiledPresentation,
-        Option<qa_core::primitives::Vec3>,
-        PresentationDefaults,
-    ),
-    WorldMaterialError,
-> {
+) -> Result<(CompiledPresentation, PresentationDefaults), WorldMaterialError> {
     let lightmaps = register_lightmap_pages(assets, &source.layout, prepared.pages)?;
-    let (bindings, sun) = compile_presentation(
+    let bindings = compile_presentation(
         vfs,
         source,
         assets,
@@ -433,7 +426,6 @@ fn compile_profile(
             native_page0: lightmaps.native_page0,
             native_default: bindings.2,
         },
-        sun,
         prepared.defaults,
     ))
 }
@@ -593,24 +585,17 @@ pub fn load_world(
     }
     let mut variants = Vec::with_capacity(distinct.len());
     let mut defaults = Vec::with_capacity(distinct.len());
-    let mut sun = None;
     for &request in &distinct {
         let prepared = prepare_presentation(&geometry, &source, request.profile)?;
-        let (bindings, registered_sun, presentation) =
+        let (bindings, presentation) =
             compile_profile(vfs, assets, &source, request, prepared, &mut diagnostics)?;
         variants.push(bindings);
-        sun = registered_sun.or(sun);
         defaults.push(presentation);
     }
     let variant_slices: Vec<_> = variants.iter().map(CompiledPresentation::input).collect();
     let world = assets
         .register_world(geometry, visibility, &variant_slices)
         .map_err(WorldMaterialError::Boundary)?;
-    if let Some(sun) = sun {
-        assets
-            .set_world_sun(world, sun)
-            .map_err(WorldMaterialError::Boundary)?;
-    }
     if !matches!(geometry_source, RuleSetId::Quake3) {
         let lighting = crate::lighting::PointLighting::load(
             matches!(geometry_source, RuleSetId::Quake),
@@ -709,7 +694,7 @@ pub fn append_world_presentation(
             profile,
         )?;
         let mut diagnostics = Vec::new();
-        let (bindings, _, defaults) =
+        let (bindings, defaults) =
             compile_profile(vfs, assets, source, request, prepared, &mut diagnostics)?;
         let id = assets
             .append_world_presentation(world, bindings.input())
@@ -800,12 +785,9 @@ fn compile_presentation(
     diagnostics: &mut Vec<String>,
 ) -> Result<
     (
-        (
-            Vec<SurfaceMaterial>,
-            Vec<ShaderRegistration<PreparedShader>>,
-            Option<ShaderBindingId>,
-        ),
-        Option<qa_core::primitives::Vec3>,
+        Vec<SurfaceMaterial>,
+        Vec<ShaderRegistration<PreparedShader>>,
+        Option<ShaderBindingId>,
     ),
     WorldMaterialError,
 > {
@@ -942,7 +924,6 @@ fn compile_presentation(
             registrations.push(registration.map_shader(PreparedShader::Binding));
         }
     }
-    let mut sun = None;
     for ((surface, &kind), definition) in source
         .surfaces
         .iter()
@@ -1100,7 +1081,6 @@ fn compile_presentation(
                     lightmap,
                 },
             )?;
-            sun = compiled.sun.map(|sun| sun.direction()).or(sun);
             let mut registration = images
                 .assets
                 .shader_registration_value(
@@ -1198,7 +1178,7 @@ fn compile_presentation(
             conflict.requested
         ));
     }
-    Ok(((bindings, registrations, native_default), sun))
+    Ok((bindings, registrations, native_default))
 }
 
 fn source_surface_name<'a>(

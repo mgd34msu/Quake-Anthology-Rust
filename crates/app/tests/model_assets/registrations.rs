@@ -157,10 +157,16 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
     fixture.vfs.take_lookup_count();
     assert!(
         owner
-            .prepare_registration(&fixture.vfs, &request, profile, |_| {
-                attempts.set(attempts.get() + 1);
-                Err("backend rejected named body".to_owned())
-            })
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                profile,
+                |_| Ok(()),
+                |_, _| {
+                    attempts.set(attempts.get() + 1);
+                    Err("backend rejected named body".to_owned())
+                }
+            )
             .is_err()
     );
     assert_eq!(attempts.get(), 1);
@@ -179,11 +185,17 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
             .shader_outcome(b"ui/missing.tga", profile, ShaderLighting::TwoDimensional)
             .is_none()
     );
-    let (handle, admitted) = owner
-        .prepare_registration(&fixture.vfs, &request, profile, |assets| {
-            attempts.set(attempts.get() + 1);
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (handle, _, admitted) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &request,
+            profile,
+            |_| Ok(()),
+            |assets, _| {
+                attempts.set(attempts.get() + 1);
+                cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            },
+        )
         .unwrap();
     assert_eq!(handle, 0);
     assert_eq!(attempts.get(), 2);
@@ -233,11 +245,15 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
         );
         assert_eq!(
             owner
-                .prepare_registration(&fixture.vfs, &cached, profile, |_| {
-                    panic!("published native default reached backend")
-                })
+                .prepare_registration(
+                    &fixture.vfs,
+                    &cached,
+                    profile,
+                    |_| Ok(()),
+                    |_, _| { panic!("published native default reached backend") }
+                )
                 .unwrap(),
-            (0, admitted)
+            (0, (), admitted)
         );
         assert_eq!(
             owner

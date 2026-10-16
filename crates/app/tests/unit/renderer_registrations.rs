@@ -70,11 +70,17 @@ fn pair_publishes_once_then_uses_both_cached_handles_without_io() {
     let first = request(b"textures/first.tga", profile.source_rules, kind);
     let second = request(b"textures/second.tga", profile.source_rules, kind);
     let prepares = Cell::new(0);
-    let (handles, counts) = owner
-        .prepare_registrations(&fixture.vfs, [&first, &second], profile, |assets| {
-            prepares.set(prepares.get() + 1);
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (handles, _, counts) = owner
+        .prepare_registrations(
+            &fixture.vfs,
+            [&first, &second],
+            profile,
+            |_| Ok(()),
+            |assets, _| {
+                prepares.set(prepares.get() + 1);
+                cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            },
+        )
         .unwrap();
     assert_eq!(prepares.get(), 1);
     assert!(handles.iter().all(|&handle| handle > 0));
@@ -98,11 +104,15 @@ fn pair_publishes_once_then_uses_both_cached_handles_without_io() {
     fixture.vfs.take_lookup_count();
     assert_eq!(
         owner
-            .prepare_registrations(&fixture.vfs, [&first, &second], profile, |_| {
-                panic!("cached pair reached backend")
-            })
+            .prepare_registrations(
+                &fixture.vfs,
+                [&first, &second],
+                profile,
+                |_| Ok(()),
+                |_, _| { panic!("cached pair reached backend") }
+            )
             .unwrap(),
-        (handles, counts)
+        (handles, (), counts)
     );
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
     assert_eq!(owner.catalog().capacity(), capacity);
@@ -142,9 +152,13 @@ fn pair_backend_rejection_restores_both_existing_shaders_and_admitted_peer() {
     let requests = names.map(|name| request(name, target.source_rules, kind));
     assert!(
         owner
-            .prepare_registrations(&fixture.vfs, requests.each_ref(), target, |_| {
-                Err("backend rejected both candidates".to_owned())
-            })
+            .prepare_registrations(
+                &fixture.vfs,
+                requests.each_ref(),
+                target,
+                |_| Ok(()),
+                |_, _| { Err("backend rejected both candidates".to_owned()) }
+            )
             .is_err()
     );
     assert_eq!(owner.assets().counts(), before);
@@ -166,10 +180,14 @@ fn pair_backend_rejection_restores_both_existing_shaders_and_admitted_peer() {
         lighting: qa_compat::services::ShaderLighting::TwoDimensional,
     };
     let retries = names.map(|name| request(name, target.source_rules, retry_kind));
-    let (retried, counts) = owner
-        .prepare_registrations(&fixture.vfs, retries.each_ref(), target, |assets| {
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (retried, _, counts) = owner
+        .prepare_registrations(
+            &fixture.vfs,
+            retries.each_ref(),
+            target,
+            |_| Ok(()),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
         .unwrap();
     assert_eq!(retried, handles);
     assert_eq!(cpu.admitted_assets(), Some(counts));
@@ -238,9 +256,13 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
     let missing = request(b"textures/missing.tga", profile.source_rules, kind);
     assert!(
         owner
-            .prepare_registrations(&fixture.vfs, [&first, &missing], profile, |_| {
-                panic!("failed second resource reached backend")
-            })
+            .prepare_registrations(
+                &fixture.vfs,
+                [&first, &missing],
+                profile,
+                |_| Ok(()),
+                |_, _| { panic!("failed second resource reached backend") }
+            )
             .is_err()
     );
     assert_eq!(owner.assets().counts(), before);
@@ -272,18 +294,26 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
     for _ in 0..2 {
         assert!(
             owner
-                .prepare_registrations(&fixture.vfs, [&first, &missing], profile, |_| {
-                    panic!("cached failed member reached backend")
-                })
+                .prepare_registrations(
+                    &fixture.vfs,
+                    [&first, &missing],
+                    profile,
+                    |_| Ok(()),
+                    |_, _| { panic!("cached failed member reached backend") }
+                )
                 .is_err()
         );
         assert_eq!(
             owner
-                .prepare_registration(&fixture.vfs, &missing, profile, |_| {
-                    panic!("cached negative single reached backend")
-                })
+                .prepare_registration(
+                    &fixture.vfs,
+                    &missing,
+                    profile,
+                    |_| Ok(()),
+                    |_, _| { panic!("cached negative single reached backend") }
+                )
                 .unwrap(),
-            (0, before)
+            (0, (), before)
         );
     }
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
@@ -297,10 +327,14 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
             lighting: qa_compat::services::ShaderLighting::TwoDimensional,
         },
     );
-    let (handle, counts) = owner
-        .prepare_registration(&fixture.vfs, &retry, profile, |assets| {
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (handle, _, counts) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &retry,
+            profile,
+            |_| Ok(()),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
         .unwrap();
     assert_eq!(handle, retained);
     assert_eq!(
@@ -375,17 +409,25 @@ fn duplicate_folded_shader_requests_preserve_first_flags_after_atomic_retry() {
     );
     assert!(
         owner
-            .prepare_registrations(&fixture.vfs, [&first, &duplicate], target, |_| {
-                Err("reject shared candidate".to_owned())
-            })
+            .prepare_registrations(
+                &fixture.vfs,
+                [&first, &duplicate],
+                target,
+                |_| Ok(()),
+                |_, _| { Err("reject shared candidate".to_owned()) }
+            )
             .is_err()
     );
     assert_eq!(owner.assets().counts(), before);
     assert_eq!(owner.catalog().shader_binding(handle, peer), Some(retained));
-    let (handles, counts) = owner
-        .prepare_registrations(&fixture.vfs, [&first, &duplicate], target, |assets| {
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (handles, _, counts) = owner
+        .prepare_registrations(
+            &fixture.vfs,
+            [&first, &duplicate],
+            target,
+            |_| Ok(()),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
         .unwrap();
     assert_eq!(handles, [handle, handle]);
     assert_eq!(cpu.admitted_assets(), Some(counts));
@@ -434,9 +476,13 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
     for _ in 0..2 {
         assert!(
             owner
-                .prepare_registrations(&fixture.vfs, [&model, &skin], profile, |_| {
-                    Err("reject appended model and skin".to_owned())
-                })
+                .prepare_registrations(
+                    &fixture.vfs,
+                    [&model, &skin],
+                    profile,
+                    |_| Ok(()),
+                    |_, _| { Err("reject appended model and skin".to_owned()) }
+                )
                 .is_err()
         );
         assert_eq!(owner.assets().counts(), before);
@@ -466,10 +512,14 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
         model_name = Some(captured_model);
         skin_name = Some(captured_skin);
     }
-    let (handles, counts) = owner
-        .prepare_registrations(&fixture.vfs, [&model, &skin], profile, |assets| {
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (handles, _, counts) = owner
+        .prepare_registrations(
+            &fixture.vfs,
+            [&model, &skin],
+            profile,
+            |_| Ok(()),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
         .unwrap();
     assert_eq!(Some(NameId(handles[0] as u32)), model_name);
     assert!(
@@ -513,11 +563,15 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
     fixture.vfs.take_lookup_count();
     assert_eq!(
         owner
-            .prepare_registrations(&fixture.vfs, [&model, &skin], profile, |_| {
-                panic!("cached model/skin pair reached backend")
-            })
+            .prepare_registrations(
+                &fixture.vfs,
+                [&model, &skin],
+                profile,
+                |_| Ok(()),
+                |_, _| { panic!("cached model/skin pair reached backend") }
+            )
             .unwrap(),
-        (handles, counts)
+        (handles, (), counts)
     );
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
 }
@@ -591,10 +645,14 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
             lighting: ShaderLighting::TwoDimensional,
         },
     );
-    let (handle, _) = owner
-        .prepare_registration(&fixture.vfs, &ordinary, profile, |assets| {
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (handle, _, _) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &ordinary,
+            profile,
+            |_| Ok(()),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
         .unwrap();
     let original = owner.catalog().shader_binding(handle, profile).unwrap();
     let original_material = owner.assets().shader_binding(original).unwrap().material;
@@ -617,9 +675,13 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     });
     assert!(
         owner
-            .prepare_registrations(&fixture.vfs, requests.each_ref(), profile, |_| {
-                Err("reject both lightmap variants".to_owned())
-            })
+            .prepare_registrations(
+                &fixture.vfs,
+                requests.each_ref(),
+                profile,
+                |_| Ok(()),
+                |_, _| { Err("reject both lightmap variants".to_owned()) }
+            )
             .is_err()
     );
     assert_eq!(owner.assets().counts(), before);
@@ -653,10 +715,14 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
                 .is_none()
         );
     }
-    let (handles, counts) = owner
-        .prepare_registrations(&fixture.vfs, requests.each_ref(), profile, |assets| {
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (handles, _, counts) = owner
+        .prepare_registrations(
+            &fixture.vfs,
+            requests.each_ref(),
+            profile,
+            |_| Ok(()),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
         .unwrap();
     assert_eq!(handles, [handle; 2]);
     assert_eq!(cpu.admitted_assets(), Some(counts));
@@ -694,20 +760,28 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     fixture.vfs.take_lookup_count();
     assert_eq!(
         owner
-            .prepare_registrations(&fixture.vfs, requests.each_ref(), profile, |_| {
-                panic!("cached lighting variants reached backend")
-            })
+            .prepare_registrations(
+                &fixture.vfs,
+                requests.each_ref(),
+                profile,
+                |_| Ok(()),
+                |_, _| { panic!("cached lighting variants reached backend") }
+            )
             .unwrap(),
-        (handles, counts)
+        (handles, (), counts)
     );
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
     let mut wrong_world = requests[0].clone();
     wrong_world.world = None;
     assert!(
         owner
-            .prepare_registration(&fixture.vfs, &wrong_world, profile, |_| {
-                panic!("missing selected world reached backend")
-            })
+            .prepare_registration(
+                &fixture.vfs,
+                &wrong_world,
+                profile,
+                |_| Ok(()),
+                |_, _| { panic!("missing selected world reached backend") }
+            )
             .is_err()
     );
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
@@ -721,10 +795,14 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         },
         world: Some(world),
     };
-    let (vertex_handle, _) = owner
-        .prepare_registration(&fixture.vfs, &vertex, profile, |assets| {
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (vertex_handle, _, _) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &vertex,
+            profile,
+            |_| Ok(()),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
         .unwrap();
     let registration = owner
         .catalog()
@@ -768,10 +846,14 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         name: b"textures/absent".as_slice(),
         ..vertex
     };
-    let (public, _) = owner
-        .prepare_registration(&fixture.vfs, &missing, profile, |assets| {
-            cpu.prepare_assets(assets, None).map_err(str::to_owned)
-        })
+    let (public, _, _) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &missing,
+            profile,
+            |_| Ok(()),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
         .unwrap();
     assert_eq!(public, 0);
     let outcome = *owner
@@ -808,9 +890,13 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     fixture.vfs.take_lookup_count();
     assert_eq!(
         owner
-            .prepare_registration(&fixture.vfs, &missing, profile, |_| {
-                panic!("cached missing world shader reached backend")
-            })
+            .prepare_registration(
+                &fixture.vfs,
+                &missing,
+                profile,
+                |_| Ok(()),
+                |_, _| { panic!("cached missing world shader reached backend") }
+            )
             .unwrap()
             .0,
         0
@@ -826,9 +912,13 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     };
     assert_eq!(
         owner
-            .prepare_registration(&fixture.vfs, &ordinary_missing, profile, |_| {
-                panic!("wildcard default reached backend")
-            })
+            .prepare_registration(
+                &fixture.vfs,
+                &ordinary_missing,
+                profile,
+                |_| Ok(()),
+                |_, _| { panic!("wildcard default reached backend") }
+            )
             .unwrap()
             .0,
         0

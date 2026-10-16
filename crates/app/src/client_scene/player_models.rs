@@ -262,10 +262,14 @@ impl ClientAssets<'_> {
             kind,
             world: None,
         };
-        let (handle, _) = owner
-            .prepare_registration(vfs, &request, *profile, |assets| {
-                preparer.prepare_assets(assets, None)
-            })
+        let (handle, _, _) = owner
+            .prepare_registration(
+                vfs,
+                &request,
+                *profile,
+                |_| Ok(()),
+                |assets, _| preparer.prepare_assets(assets, None),
+            )
             .ok()?;
         if handle <= 0 {
             return None;

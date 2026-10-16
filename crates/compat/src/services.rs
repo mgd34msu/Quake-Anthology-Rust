@@ -1202,7 +1202,7 @@ pub struct EngineCallTable {
         Vec3,
         BodyTraceMode,
     ) -> Result<Trace, CallError>,
-    pub render_world: fn(&mut EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
+    pub renderer_world: fn(&mut EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
     pub mark_fragments: fn(
         &mut EngineServices<'_>,
         &qa_render::marks::MarkProjection,
@@ -1314,12 +1314,6 @@ pub struct EngineCallTable {
     ) -> Result<u64, CallError>,
     pub stop_background: fn(&mut EngineServices<'_>) -> Result<u64, CallError>,
     pub register_sound: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
-    pub register_renderer: fn(
-        &mut EngineServices<'_>,
-        &[u8],
-        RuleSetId,
-        RendererRegistration,
-    ) -> Result<i32, CallError>,
     pub registered_model_bounds: fn(&EngineServices<'_>, i32) -> Option<Bounds>,
     pub lerp_tag: fn(&EngineServices<'_>, i32, i32, i32, f32, &[u8]) -> Option<Orientation>,
     pub model_has_tags: fn(&EngineServices<'_>, i32) -> bool,
@@ -1473,17 +1467,14 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             )
             .map_err(|_| CallError::Geometry)
     },
-    render_world: |s, name| {
+    renderer_world: |s, name| {
         let world = s
             .model_loader
             .as_deref()
             .and_then(|loader| loader.lookup().loaded_world(name))
             .or_else(|| s.model_lookup.and_then(|lookup| lookup.loaded_world(name)))
             .ok_or(CallError::Geometry)?;
-        s.scene
-            .as_deref_mut()
-            .ok_or(CallError::Geometry)?
-            .select_world(world.render)?;
+
         Ok(world.render.0)
     },
     mark_fragments: |s, projection, max_points, max_fragments, emit| {
@@ -1711,7 +1702,6 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         Ok(sequence)
     },
     register_sound: |s, sample, source| s.register_sound(sample, source),
-    register_renderer: |s, name, source, kind| s.register_renderer(name, source, kind),
     registered_model_bounds: |s, handle| s.models()?.model_bounds(handle),
     model_has_tags: |s, handle| {
         s.models()
@@ -2113,84 +2103,6 @@ impl EngineServices<'_> {
             }
             Err(error) => Err(error),
         }
-    }
-    pub(crate) fn renderer_handle(
-        &self,
-        name: &[u8],
-        source: RuleSetId,
-        kind: RendererRegistration,
-    ) -> Option<i32> {
-        let lookup = self.models()?;
-        if matches!(kind, RendererRegistration::Model) && name.starts_with(b"*") {
-            let world = self.scene.as_deref()?.selected_world()?;
-            let index = qa_core::text::inline_model_index(name)?;
-            lookup.inline_handle(world, index)
-        } else {
-            match kind {
-                RendererRegistration::Model => lookup.model_handle(name, source),
-                RendererRegistration::Skin => lookup.skin_handle(name, source),
-                RendererRegistration::Shader {
-                    lighting: ShaderLighting::TwoDimensional,
-                    ..
-                } => lookup.shader_handle(name, source),
-                RendererRegistration::Shader {
-                    lighting: ShaderLighting::World(_),
-                    ..
-                } => None,
-            }
-        }
-    }
-    pub fn register_renderer(
-        &mut self,
-        name: &[u8],
-        source: RuleSetId,
-        kind: RendererRegistration,
-    ) -> Result<i32, CallError> {
-        if name.is_empty() {
-            return Ok(0);
-        }
-        let result = if name.len() >= 64 {
-            Err(CallError::Text)
-        } else if matches!(kind, RendererRegistration::Model)
-            && name.starts_with(b"*")
-            && self.model_loader.is_some()
-        {
-            let world = self
-                .scene
-                .as_deref()
-                .and_then(|scene| scene.selected_world())
-                .ok_or(CallError::File);
-            let index = qa_core::text::inline_model_index(name).ok_or(CallError::File);
-            world.and_then(|world| {
-                index.and_then(|index| {
-                    self.model_loader
-                        .as_deref_mut()
-                        .ok_or(CallError::File)?
-                        .register_inline(world, index)
-                })
-            })
-        } else if let Some(loader) = self.model_loader.as_deref_mut() {
-            match kind {
-                RendererRegistration::Model => loader.register_model(self.vfs, name, source),
-                RendererRegistration::Skin => loader.register_skin(self.vfs, name, source),
-                RendererRegistration::Shader { mipmaps, lighting } => {
-                    loader.register_shader(self.vfs, name, source, mipmaps, lighting)
-                }
-            }
-        } else if let Some(scene) = self.scene.as_deref() {
-            Ok(scene.registration_cached(kind, name, source).unwrap_or(0))
-        } else {
-            self.renderer_handle(name, source, kind)
-                .ok_or(CallError::File)
-        };
-        self.registration_result(
-            match kind {
-                RendererRegistration::Model => "model",
-                RendererRegistration::Skin => "skin",
-                RendererRegistration::Shader { .. } => "shader",
-            },
-            result,
-        )
     }
     pub fn effect(
         &mut self,

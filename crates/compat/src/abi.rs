@@ -138,24 +138,11 @@ fn register_renderer(
         return Ok(CallValue::Word(0));
     }
     let name = c.memory.cstring(c.required_pointer(0)?)?;
-    if c.services.model_loader.is_none()
-        && name.len() < 64
-        && let Some(handle) = c
-            .services
-            .scene
-            .as_deref()
-            .and_then(|scene| scene.registration_cached(kind, name, c.context.native_rules))
-    {
-        return Ok(CallValue::Word(handle as u32 as u64));
+    if name.is_empty() {
+        return Ok(CallValue::Word(0));
     }
-    let available = c.services.model_loader.is_none()
-        && c.services
-            .scene
-            .as_deref()
-            .is_some_and(|scene| scene.registration_available());
-    if !available || name.is_empty() || name.len() >= 64 {
-        return (ENGINE_CALLS.register_renderer)(c.services, name, c.context.native_rules, kind)
-            .map(|handle| CallValue::Word(handle as u32 as u64));
+    if name.len() >= 64 {
+        return Ok(CallValue::Word(0));
     }
     let mut copied = qa_core::text::FixedText::default();
     copied.set_bytes(name).map_err(|_| CallError::Text)?;
@@ -648,7 +635,7 @@ const fn client() -> CallTable {
     t.entries[34] = scalar!(register_sound);
     t.entries[35] = scalar!(client_sound::start_background);
     t.entries[69] = scalar!(client_sound::stop_background);
-    t.entries[36] = scalar!(renderer_load_world);
+    t.entries[36] = value!(renderer_load_world);
     t.entries[37] = value!(register_model);
     t.entries[38] = value!(register_skin);
     t.entries[40] = scalar!(renderer_clear_scene);
@@ -1565,7 +1552,8 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
                             HostRequest::TouchTriggers { .. }
                             | HostRequest::ExecuteNow { .. }
                             | HostRequest::CommandRegistration { .. }
-                            | HostRequest::RegisterRenderer(_) => {
+                            | HostRequest::RegisterRenderer(_)
+                            | HostRequest::SelectRendererWorld(_) => {
                                 return Err(qvm::Trap::Syscall);
                             }
                         };
@@ -2220,10 +2208,13 @@ fn renderer_configuration(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
     crate::renderer::write_q3(&configuration, output)?;
     Ok(0)
 }
-fn renderer_load_world(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn renderer_load_world(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
     let name = c.memory.cstring(c.required_pointer(0)?)?;
-    (ENGINE_CALLS.render_world)(c.services, name)?;
-    Ok(0)
+    let world = (ENGINE_CALLS.renderer_world)(c.services, name)?;
+    Ok(CallValue::Host(
+        HostRequest::SelectRendererWorld(qa_render::world::WorldId(world)),
+        ImportContinuation::Return(0),
+    ))
 }
 fn client_collision_load(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name = c.memory.cstring(c.required_pointer(0)?)?;

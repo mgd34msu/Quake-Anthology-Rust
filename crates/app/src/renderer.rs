@@ -251,11 +251,9 @@ pub(crate) fn light_view_entities(
     scales: [f32; 2],
     mut point_view: Option<&mut WorldView>,
     modulate: f32,
+    sun: qa_core::primitives::Vec3,
 ) {
     let world = world.and_then(|world| assets.world(world));
-    let sun = world.map_or_else(qa_render::lighting::default_sun_direction, |world| {
-        world.sun_direction()
-    });
     let world = world.filter(|_| use_world_lighting);
     let grid = world.and_then(|world| world.light_grid());
     let unlit = qa_render::lighting::unlit_sample(view.identity_light, sun);
@@ -937,6 +935,12 @@ impl Renderer {
                     client.lighting_scales,
                     Some(&mut scene.views[seat]),
                     presentation.profile.q2_modulate,
+                    resources
+                        .assets
+                        .world_presentation(presentation.id)
+                        .map_or_else(qa_render::lighting::default_sun_direction, |presentation| {
+                            presentation.sun_direction()
+                        }),
                 );
                 let rendered = if no_world {
                     frame.render_scene(refdef, hidden_areas, resources.assets)

@@ -3,7 +3,7 @@ use super::SceneComposer;
 use crate::model_assets::{ModelCatalog, ModelProfile, ModelView};
 use qa_compat::{
     renderer::{EntityKind, EntitySubmission, SceneService, SceneView},
-    services::{CallError, RendererRegistration},
+    services::CallError,
 };
 use qa_core::{primitives::ModuleId, sys_events::SeatId};
 use qa_render::{
@@ -63,22 +63,19 @@ impl SceneRole {
         }
     }
 
+    pub(crate) fn select_world(&mut self, world: WorldId) {
+        self.selected_world = Some(world);
+    }
+    pub(crate) fn presentation_for(&self, world: WorldId) -> Option<WorldPresentationId> {
+        self.target.and_then(|target| {
+            target
+                .world
+                .filter(|selected| selected.0 == world)
+                .map(|selected| selected.1)
+        })
+    }
     pub(crate) fn profile(&self) -> Option<ModelProfile> {
         self.target.map(|target| target.profile)
-    }
-
-    pub(crate) fn registration_world_available(
-        &self,
-        composer: Option<&SceneComposer>,
-        resources: Option<ModelView<'_>>,
-        world: WorldId,
-    ) -> bool {
-        let (Some(target), Some(composer), Some(resources)) =
-            (self.target.as_ref(), composer, resources)
-        else {
-            return false;
-        };
-        composer.has_world(world) && target.world_presentation(resources, world).is_some()
     }
 
     pub(crate) fn configure(
@@ -114,7 +111,7 @@ pub(crate) struct SceneBorrow<'a> {
     lighting: [f32; 2],
     software_waterwarp: bool,
     client: Option<qa_render::effects::EffectClient>,
-    registration_available: bool,
+    sun_direction: Option<qa_core::primitives::Vec3>,
 }
 impl<'a> SceneBorrow<'a> {
     pub(crate) fn new(
@@ -123,6 +120,7 @@ impl<'a> SceneBorrow<'a> {
         role: &'a mut SceneRole,
         cvars: &qa_console::cvars::Cvars,
         client: Option<qa_render::effects::EffectClient>,
+        sun_direction: Option<qa_core::primitives::Vec3>,
     ) -> Self {
         let rails = role.target.as_ref().map_or((6, 16, 32.), |target| {
             (
@@ -149,12 +147,8 @@ impl<'a> SceneBorrow<'a> {
             lighting,
             software_waterwarp,
             client,
-            registration_available: false,
+            sun_direction,
         }
-    }
-
-    pub(crate) fn set_registration_available(&mut self, available: bool) {
-        self.registration_available = available;
     }
 }
 
@@ -176,38 +170,6 @@ pub(crate) fn select_publisher(
     }
 }
 impl SceneService for SceneBorrow<'_> {
-    fn registration_available(&self) -> bool {
-        self.registration_available && self.role.target.is_some() && self.composer.is_some()
-    }
-    fn registration_cached(
-        &self,
-        kind: RendererRegistration,
-        name: &[u8],
-        source: qa_core::primitives::RuleSetId,
-    ) -> Option<i32> {
-        let target = self.role.target.as_ref()?;
-        let models = self.models?;
-        if target.profile.source_rules != source {
-            return None;
-        }
-        let world = self.selected_world();
-        if matches!(kind, RendererRegistration::Model) && name.starts_with(b"*") {
-            let Some(world) = world else {
-                return Some(0);
-            };
-            if !self.role.registration_world_available(
-                self.composer.as_deref(),
-                Some(ModelView {
-                    assets: self.assets?,
-                    catalog: models,
-                }),
-                world,
-            ) {
-                return Some(0);
-            }
-        }
-        models.registration_cached(kind, name, target.profile, world)
-    }
     fn active(&self) -> bool {
         self.composer
             .as_deref()
@@ -540,6 +502,8 @@ impl SceneService for SceneBorrow<'_> {
             self.lighting,
             point_view,
             modulate,
+            self.sun_direction
+                .unwrap_or_else(qa_render::lighting::default_sun_direction),
         );
         let recipient = (view.world && !view.refdef.hyperspace)
             .then_some(self.client)

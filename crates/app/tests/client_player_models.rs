@@ -826,16 +826,22 @@ fn registered_static_player_capture_waits_for_its_profile_across_peer_publicatio
             kind: RendererRegistration::Model,
             world: None,
         };
-        let (_, counts) = runtime
+        let (_, _, counts) = runtime
             .model_assets
             .as_mut()
             .unwrap()
-            .prepare_registration(&runtime.vfs, &request, profile, |assets| {
-                source
-                    .cpu
-                    .prepare_assets(assets, None)
-                    .map_err(str::to_owned)
-            })
+            .prepare_registration(
+                &runtime.vfs,
+                &request,
+                profile,
+                |_| Ok(()),
+                |assets, _| {
+                    source
+                        .cpu
+                        .prepare_assets(assets, None)
+                        .map_err(str::to_owned)
+                },
+            )
             .unwrap();
         counts
     };
