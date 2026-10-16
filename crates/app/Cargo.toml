@@ -54,3 +54,8 @@ harness = false
 name = "client_loops"
 path = "tests/client_loops.rs"
 harness = false
+
+[[test]]
+name = "cgame_restart"
+path = "tests/cgame_restart.rs"
+harness = false

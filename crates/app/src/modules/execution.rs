@@ -96,7 +96,13 @@ impl CallOutcome<FrameHost> for ModuleDispatch {
 }
 
 #[derive(Clone, Copy)]
+pub(super) enum EntryScope {
+    Ordinary,
+    Lifecycle,
+}
+#[derive(Clone, Copy)]
 pub(super) struct GuestStart {
+    scope: EntryScope,
     module: ModuleId,
     call: CallbackCall<'static>,
     anchor: EntityId,
@@ -107,6 +113,16 @@ pub(super) struct GuestStart {
 }
 
 impl GuestStart {
+    fn child_scope(self, module: ModuleId) -> EntryScope {
+        if module == self.module {
+            self.scope
+        } else {
+            EntryScope::Ordinary
+        }
+    }
+    fn lifecycle_module(self) -> Option<ModuleId> {
+        matches!(self.scope, EntryScope::Lifecycle).then_some(self.module)
+    }
     fn words(self) -> [u64; 9] {
         match self.call {
             CallbackCall::Think { time, .. } => {
@@ -305,12 +321,11 @@ pub(super) struct CommandBinding {
     callback: CallbackId,
 }
 impl CommandBinding {
-    pub(super) fn load(request: &super::ModuleRequest) -> Result<Option<Self>, String> {
-        let Some(export) = request.program.command_export() else {
+    pub(super) fn load(program: &Program, entries: &[u32]) -> Result<Option<Self>, String> {
+        let Some(export) = program.command_export() else {
             return Ok(None);
         };
-        let index = request
-            .entries
+        let index = entries
             .iter()
             .position(|&entry| entry == export.entry)
             .ok_or("missing command export")?;
@@ -383,10 +398,22 @@ pub(super) fn start(
     entry: u32,
     call: CallbackCall<'_>,
 ) -> ModuleDispatch {
+    start_scoped(host, module, entry, call, EntryScope::Ordinary)
+}
+
+pub(super) fn start_scoped(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entry: u32,
+    call: CallbackCall<'_>,
+    scope: EntryScope,
+) -> ModuleDispatch {
     let Some(row) = host.module_row(module) else {
         return ModuleDispatch::Completed(Err(()));
     };
-    if !row.state.can_invoke() {
+    if !row.state.can_invoke()
+        || matches!(scope, EntryScope::Ordinary) && !host.module_generation_ready(module)
+    {
         return ModuleDispatch::Completed(Err(()));
     }
     // Command tokens remain in complete()'s external lease. The activation owns
@@ -478,6 +505,7 @@ pub(super) fn start(
         _ => return ModuleDispatch::Completed(Err(())),
     };
     let start = GuestStart {
+        scope,
         module,
         call,
         anchor: row.request.anchor,
@@ -506,6 +534,8 @@ fn valid(host: &FrameHost, start: GuestStart, live_self: bool) -> bool {
         return false;
     };
     if !row.state.can_invoke()
+        || matches!(start.scope, EntryScope::Ordinary)
+            && !host.module_generation_ready(start.module)
         || row.request.anchor != start.anchor
         || row.client_connection != start.connection
     {
@@ -775,6 +805,7 @@ fn guest_step(
             OperationStep::FailedInput(module) => {
                 if let Some(row) = host.module_row(module).filter(|row| row.state.can_invoke()) {
                     let start = GuestStart {
+                        scope: frame.start.child_scope(module),
                         module,
                         call: CallbackCall::Think {
                             entity: row.request.anchor,
@@ -923,7 +954,12 @@ impl FallbackRun {
                                 .is_none_or(|snapshot| !snapshot.presentation_closed())))
             })
     }
-    fn next(&mut self, host: &mut FrameHost, context: ConsoleContext) -> Option<ModuleDispatch> {
+    fn next(
+        &mut self,
+        host: &mut FrameHost,
+        context: ConsoleContext,
+        owner: Option<GuestStart>,
+    ) -> Option<ModuleDispatch> {
         use qa_core::sys_events::key_catchers;
         if !self.current(host, context) {
             return None;
@@ -991,7 +1027,12 @@ impl FallbackRun {
                     {
                         continue;
                     }
-                    if let Some(time) = host.client_module_time(module, context.seat, true) {
+                    if let Some(time) = host.client_module_time_scoped(
+                        module,
+                        context.seat,
+                        true,
+                        owner.and_then(GuestStart::lifecycle_module),
+                    ) {
                         selected = Some((module, time));
                         // One selected CLIENT owner per native tier.
                         self.next = candidates.len();
@@ -1015,11 +1056,14 @@ impl FallbackRun {
                     command: CommandArgs::default(),
                 };
                 let functions = Arc::clone(&host.modules.as_ref()?.functions);
-                return Some(
+                let dispatched = if let Some(owner) = owner {
                     functions
-                        .dispatch(host, callback, call)
-                        .unwrap_or(ModuleDispatch::Completed(Err(()))),
-                );
+                        .resolve(&host.runtime.server.entities, callback, call.entity())
+                        .and_then(|target| dispatch_child(host, owner, target, call))
+                } else {
+                    functions.dispatch(host, callback, call)
+                };
+                return Some(dispatched.unwrap_or(ModuleDispatch::Completed(Err(()))));
             }
             self.tier += 1;
             self.next = 0;
@@ -1139,7 +1183,7 @@ fn console_step(
         }
     }
     if let Some(fallback) = frame.fallback.as_mut() {
-        if let Some(outcome) = fallback.next(host, frame.run.context()) {
+        if let Some(outcome) = fallback.next(host, frame.run.context(), frame.owner) {
             return match outcome {
                 ModuleDispatch::Completed(result) => {
                     frame.child = Some(result);
@@ -1227,6 +1271,32 @@ fn disconnect(
         functions
             .dispatch(host, callback, call)
             .unwrap_or(ModuleDispatch::Completed(Err(()))),
+    ))
+}
+
+fn dispatch_child(
+    host: &mut FrameHost,
+    parent: GuestStart,
+    target: qa_session::dispatch::ResolvedCall,
+    call: CallbackCall<'_>,
+) -> Result<ModuleDispatch, qa_session::dispatch::CallError> {
+    let functions = Arc::clone(
+        &host
+            .modules
+            .as_ref()
+            .ok_or(qa_session::dispatch::CallError::MissingModule)?
+            .functions,
+    );
+    let target = functions.revalidate(&host.runtime.server.entities, target, call.entity())?;
+    if functions.is_missing(target) {
+        return functions.dispatch_resolved(host, target, call);
+    }
+    Ok(start_scoped(
+        host,
+        target.module(),
+        target.entry(),
+        call,
+        parent.child_scope(target.module()),
     ))
 }
 
@@ -1322,13 +1392,8 @@ fn operation(
         }
         Operation::Callback(request) => {
             if let Some(request) = request.take() {
-                let Some(modules) = host.modules.as_ref() else {
-                    return OperationStep::Abort;
-                };
-                let functions = Arc::clone(&modules.functions);
                 OperationStep::Call(
-                    functions
-                        .dispatch_resolved(host, request.target, request.call)
+                    dispatch_child(host, *start, request.target, request.call)
                         .unwrap_or(ModuleDispatch::Completed(Err(()))),
                 )
             } else if matches!(child.take(), Some(Ok(_))) {
@@ -1350,11 +1415,7 @@ fn operation(
                 Ok(Some(prepared)) => {
                     let request = prepared.request();
                     *touch = Some(prepared);
-                    let Some(modules) = host.modules.as_ref() else {
-                        return OperationStep::Abort;
-                    };
-                    let functions = Arc::clone(&modules.functions);
-                    match functions.dispatch_resolved(host, request.target, request.call) {
+                    match dispatch_child(host, *start, request.target, request.call) {
                         Ok(outcome) => OperationStep::Call(outcome),
                         Err(_) => OperationStep::Abort,
                     }
@@ -1446,7 +1507,9 @@ fn operation(
                     *resume = Some(next);
                     host.console
                         .sync_editor_input(&mut host.runtime.input, *time);
-                    if let Some((module, callback, call)) = host.input_call(atom, true) {
+                    if let Some((module, callback, call)) =
+                        host.input_call(atom, true, start.lifecycle_module())
+                    {
                         *recipient = Some(module);
                         let Some(modules) = host.modules.as_ref() else {
                             return OperationStep::Abort;
@@ -1454,7 +1517,8 @@ fn operation(
                         let functions = Arc::clone(&modules.functions);
                         OperationStep::Call(
                             functions
-                                .dispatch(host, callback, call)
+                                .resolve(&host.runtime.server.entities, callback, call.entity())
+                                .and_then(|target| dispatch_child(host, *start, target, call))
                                 .unwrap_or(ModuleDispatch::Completed(Err(()))),
                         )
                     } else {

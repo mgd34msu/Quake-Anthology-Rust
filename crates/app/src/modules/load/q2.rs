@@ -133,6 +133,7 @@ pub fn load_q2(
             let mut api_arguments = [Argument::Word(0); 9];
             api_arguments[0] = Argument::Word(game.imports_address);
             requests.push(ModuleRequest {
+                q3_image: None,
                 context: super::call_context(
                     module,
                     clock,

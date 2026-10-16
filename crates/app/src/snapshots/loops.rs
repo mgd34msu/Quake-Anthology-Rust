@@ -422,6 +422,11 @@ impl LoopPublication {
     pub(crate) fn owns_native(&self) -> bool {
         self.producer.is_some()
     }
+    pub(super) fn request_producer_reset(&mut self, module: ModuleId, lifetime: EntityId) {
+        if self.producer == Some(module) && self.lifetime == Some(lifetime) && !self.releasing {
+            self.request_reset();
+        }
+    }
     pub(crate) fn request_reset(&mut self) {
         // Keep any older fence tracked. Cleanup serializes its completion
         // before publishing the reset required by the new gamestate.

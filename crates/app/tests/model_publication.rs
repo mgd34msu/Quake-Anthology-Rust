@@ -110,6 +110,7 @@ fn request(runtime: &mut Runtime, module: ModuleId, first: &[u8]) -> ModuleReque
     }
     let context = Context::default();
     ModuleRequest {
+        q3_image: None,
         context: CallContext {
             module,
             native_rules: RuleSetId::Quake3,

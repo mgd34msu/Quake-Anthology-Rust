@@ -325,6 +325,7 @@ fn request(
         .unwrap()
         .id;
     ModuleRequest {
+        q3_image: None,
         context: CallContext {
             module: id,
             clock: ThinkTime::Milliseconds(0),

@@ -549,6 +549,22 @@ impl ServiceStorage {
         }
         Ok(())
     }
+    /// End one guest instance while retaining its module namespace and resources.
+    pub fn reset_instance(&mut self, module: ModuleId) -> Result<(), CallError> {
+        let span = self.file_span(module)?;
+        for file in &mut self.files[span.range()] {
+            if file.as_ref().is_some_and(|file| file.owner == module) {
+                *file = None;
+            }
+        }
+        let row = self.range_mut(module).ok_or(CallError::ConfigString)?;
+        row.written = 0;
+        if let Some(text) = &mut row.entity_text {
+            text.position = 0;
+        }
+        Ok(())
+    }
+
     /// Freeze the native client boundary before the first module callback.
     /// Identical rebinding preserves a level's retained client records.
     pub fn bind_client_capacity(

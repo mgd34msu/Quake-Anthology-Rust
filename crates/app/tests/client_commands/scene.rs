@@ -6,6 +6,18 @@ use qa_render::material::world_load::{
 };
 use qa_render::scene::Command;
 
+fn admit_assets(host: &mut FrameHost) -> qa_render::cpu::CpuBackend {
+    let backend = qa_render::cpu::CpuBackend::load_with_assets(
+        320,
+        200,
+        host.runtime.model_assets.as_ref().unwrap().assets(),
+    )
+    .unwrap();
+    host.publish_model_admission(backend.admitted_assets().unwrap())
+        .unwrap();
+    backend
+}
+
 const CALLS: &[(u8, &[u32])] = &[
     (39, &[16]),
     (45, &[32]),
@@ -297,6 +309,16 @@ pub(super) fn submissions(native: bool, ui: bool) {
     let mut assets = qa_render::Assets::load().unwrap();
     let world = model_support::world(&mut assets, -1.);
     let presentation = qa_render::world::WorldPresentationId(0);
+    let loaded = LoadedWorld {
+        world,
+        presentations: vec![LoadedWorldPresentation {
+            id: presentation,
+            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            defaults: Default::default(),
+        }]
+        .into_boxed_slice(),
+        diagnostics: Box::default(),
+    };
     let program = || {
         if native {
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -373,16 +395,6 @@ pub(super) fn submissions(native: bool, ui: bool) {
     let material = models.shader_binding(1, profile).unwrap();
     let peer_material = models.shader_binding(1, peer_profile).unwrap();
     assert_ne!(material, peer_material);
-    let loaded = LoadedWorld {
-        world,
-        presentations: vec![LoadedWorldPresentation {
-            id: presentation,
-            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
-            defaults: Default::default(),
-        }]
-        .into_boxed_slice(),
-        diagnostics: Box::default(),
-    };
     host.runtime.scene = Some(
         qa_app::renderer::SceneComposer::load(
             qa_render::Limits {
@@ -396,6 +408,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
         .unwrap()
         .0,
     );
+    let _backend = admit_assets(&mut host);
     assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
     assert_eq!(probe(&mut host, 0, 1, 0), 0);
     assert_eq!(probe(&mut host, 0, 2, 0), 0);
@@ -545,6 +558,8 @@ pub(super) fn ownership() {
         effects,
     )
     .unwrap();
+    host.publish_model_admission(renderer.admitted_assets().unwrap())
+        .unwrap();
     host.runtime.scene = Some(scene);
     struct Source {
         renderer: Renderer,
@@ -700,6 +715,7 @@ pub(super) fn entities(native: bool, ui: bool) {
         .unwrap()
         .0,
     );
+    let _backend = admit_assets(&mut host);
     assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
     assert_eq!(probe(&mut host, 0, 13, 0), 0);
     assert_eq!(probe(&mut host, 0, 13, 0), 0); // A full two-surface model fails atomically.
@@ -971,6 +987,7 @@ pub(super) fn inline_entities(native: bool) {
         .unwrap()
         .0,
     );
+    let _backend = admit_assets(&mut host);
     assert_eq!(probe(&mut host, 0, 19, 0), model);
     assert_eq!(probe(&mut host, 0, 14, model as u64), 0);
     assert!(host.runtime.scene.as_mut().unwrap().begin_frame());

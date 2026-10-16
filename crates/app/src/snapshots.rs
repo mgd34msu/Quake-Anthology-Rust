@@ -507,6 +507,20 @@ impl SnapshotBinding {
             loops.maintain(self.client, lifetime, owner, events, budget);
         }
     }
+    pub(crate) fn reset_module_audio(
+        &mut self,
+        module: qa_core::primitives::ModuleId,
+        lifetime: qa_core::primitives::EntityId,
+    ) {
+        if let Some(loops) = self
+            .presentation
+            .as_mut()
+            .and_then(|client| client.loops.as_mut())
+        {
+            loops.request_producer_reset(module, lifetime);
+        }
+    }
+
     pub(crate) fn owns_client_audio(&self) -> bool {
         self.presentation
             .as_ref()

@@ -55,6 +55,14 @@ impl Default for SceneRole {
     }
 }
 impl SceneRole {
+    pub(crate) fn reset_instance(&mut self) {
+        self.selected_world = None;
+        self.color = [255; 4];
+        if let Some(target) = &mut self.target {
+            target.world = None;
+        }
+    }
+
     pub(crate) fn profile(&self) -> Option<ModelProfile> {
         self.target.map(|target| target.profile)
     }

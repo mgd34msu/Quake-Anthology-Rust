@@ -121,6 +121,7 @@ fn request(
         }
     }
     ModuleRequest {
+        q3_image: None,
         context: CallContext {
             module,
             native_rules: RuleSetId::Quake3,

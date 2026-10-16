@@ -451,6 +451,7 @@ fn host_with_initializer(
         }
         output = address;
         requests.push(ModuleRequest {
+            q3_image: None,
             context: CallContext {
                 module,
                 clock: ThinkTime::Milliseconds(9000),
@@ -527,6 +528,7 @@ fn host_with_initializer(
         }
         operations.extend([(Const, 0), (Leave, 64)]);
         requests.push(ModuleRequest {
+            q3_image: None,
             context,
             phase: Phase::Server,
             timing_rules: RuleSetId::Quake3,

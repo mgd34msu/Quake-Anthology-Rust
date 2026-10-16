@@ -352,6 +352,7 @@ fn request(
     let callback = entries.iter().position(|&entry| entry == frame).unwrap() as u32;
     (
         ModuleRequest {
+            q3_image: None,
             context: CallContext {
                 native_rules: rules,
                 trace_rules: RuleSetId::Quake3,

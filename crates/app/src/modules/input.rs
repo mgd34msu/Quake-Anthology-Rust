@@ -39,11 +39,17 @@ struct Recipient {
 }
 
 impl FrameHost {
-    fn input_recipient(&self, seat: SeatId, catcher: u32, active: bool) -> Option<Recipient> {
+    fn input_recipient(
+        &self,
+        seat: SeatId,
+        catcher: u32,
+        active: bool,
+        lifecycle: Option<ModuleId>,
+    ) -> Option<Recipient> {
         self.client_module_candidates(seat, catcher)
             .into_iter()
             .flatten()
-            .find_map(|module| self.input_binding(module, seat, catcher, active))
+            .find_map(|module| self.input_binding(module, seat, catcher, active, lifecycle))
     }
 
     pub(super) fn client_module_candidates(
@@ -85,13 +91,14 @@ impl FrameHost {
         seat: SeatId,
         catcher: u32,
         active: bool,
+        lifecycle: Option<ModuleId>,
     ) -> Option<Recipient> {
         let row = self.module_row(module)?;
         let input = row.input?;
         if input.catcher != catcher {
             return None;
         }
-        let time = self.client_module_time(module, seat, active)?;
+        let time = self.client_module_time_scoped(module, seat, active, lifecycle)?;
         Some(Recipient {
             module,
             input,
@@ -99,14 +106,17 @@ impl FrameHost {
         })
     }
 
-    pub(super) fn client_module_time(
+    pub(super) fn client_module_time_scoped(
         &self,
         module: ModuleId,
         seat: SeatId,
         active: bool,
+        lifecycle: Option<ModuleId>,
     ) -> Option<ThinkTime> {
         let row = self.module_row(module)?;
+        let lifecycle = lifecycle == Some(module) && active && row.request.program.is_active();
         if !row.ready_for_callback(active)
+            || !lifecycle && !self.module_generation_ready(module)
             || row.request.phase != Phase::Client
             || row.request.context.console.seat != seat
             || self
@@ -182,7 +192,7 @@ impl FrameHost {
             && qa_input::keys::native_number(source.control) == Some(27)
         {
             if catchers & key_catchers::CGAME != 0 {
-                let recipient = self.input_recipient(seat, key_catchers::CGAME, false);
+                let recipient = self.input_recipient(seat, key_catchers::CGAME, false, None);
                 self.runtime
                     .input
                     .set_catcher(seat, key_catchers::CGAME, false, time);
@@ -194,7 +204,7 @@ impl FrameHost {
                 return InputCapture::Caught;
             }
             if catchers & key_catchers::UI == 0
-                && let Some(recipient) = self.input_recipient(seat, key_catchers::UI, false)
+                && let Some(recipient) = self.input_recipient(seat, key_catchers::UI, false, None)
                 && let Some(callback) = recipient.input.menu
             {
                 let active = self.local_clients[seat.index()]
@@ -210,7 +220,7 @@ impl FrameHost {
         if catchers & (key_catchers::UI | key_catchers::CGAME) == 0 {
             return InputCapture::Pass;
         }
-        if let Some((module, callback, call)) = self.input_call(atom, false)
+        if let Some((module, callback, call)) = self.input_call(atom, false, None)
             && self
                 .call_module_with_driver(callback, call, driver)
                 .is_err()
@@ -228,6 +238,7 @@ impl FrameHost {
         &self,
         atom: InputAtom,
         active: bool,
+        lifecycle: Option<ModuleId>,
     ) -> Option<(
         ModuleId,
         CallbackId,
@@ -246,7 +257,7 @@ impl FrameHost {
         } else {
             return None;
         };
-        let recipient = self.input_recipient(seat, catcher, active)?;
+        let recipient = self.input_recipient(seat, catcher, active, lifecycle)?;
         let (callback, words) = match atom {
             InputAtom::Key { source, down, .. } => (
                 recipient.input.key,
@@ -296,7 +307,9 @@ impl FrameHost {
             mask & key_catchers::CONSOLE == 0
                 && [key_catchers::UI, key_catchers::CGAME]
                     .into_iter()
-                    .any(|bit| mask & bit != 0 && self.input_recipient(seat, bit, false).is_some())
+                    .any(|bit| {
+                        mask & bit != 0 && self.input_recipient(seat, bit, false, None).is_some()
+                    })
         })
     }
 
@@ -324,7 +337,7 @@ impl FrameHost {
                 SeatId::ALL.into_iter().find(|&seat| {
                     self.runtime.input.key_catchers(seat) & key_catchers::UI != 0
                         && self
-                            .input_recipient(seat, key_catchers::UI, false)
+                            .input_recipient(seat, key_catchers::UI, false, None)
                             .is_some()
                 })
             });

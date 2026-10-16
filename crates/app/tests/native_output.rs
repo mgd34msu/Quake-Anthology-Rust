@@ -1335,6 +1335,7 @@ fn qw_sound_builtin_uses_sv_phs_before_foreign_sound_encoding_and_ring_retiremen
         runtime,
         TickRate::FrameDriven,
         vec![ModuleRequest {
+            q3_image: None,
             context: CallContext {
                 native_rules: rules,
                 trace_rules: rules,

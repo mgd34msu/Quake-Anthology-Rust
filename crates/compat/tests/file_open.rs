@@ -315,3 +315,87 @@ fn executed_qvm_observes_boolean_existence_and_preserves_guest_data() {
     assert_eq!(vm.memory.read(0, 256).unwrap(), &original[..256]);
     assert_eq!(vm.memory.read(268, 244).unwrap(), &original[268..]);
 }
+
+#[test]
+fn resetting_one_instance_closes_its_files_and_restarts_only_its_service_cursors() {
+    use qa_compat::services::ENGINE_CALLS;
+    use qa_core::primitives::{NativeDelivery, NativeTarget, Vec3};
+    let mut fixture = Fixture::new("instance-reset");
+    let first = ModuleId(1);
+    let peer = ModuleId(2);
+    fixture.storage = ServiceStorage::load_modules(
+        &[
+            (first, 0, RuleSetId::Quake3, 1),
+            (peer, 0, RuleSetId::Quake3, 1),
+        ],
+        &fixture.cvars,
+    )
+    .unwrap();
+    for module in [first, peer] {
+        fixture
+            .storage
+            .bind_entity_text(
+                module,
+                std::sync::Arc::from(b"alpha beta".as_slice()),
+                qa_formats::entities::EntitySyntax::Quake3,
+            )
+            .unwrap();
+    }
+    let mut engine = fixture.engine();
+    let first_handle = engine.file_open(first, b"data.dat").unwrap().0;
+    let peer_handle = engine.file_open(peer, b"data.dat").unwrap().0;
+    assert_eq!(first_handle, peer_handle);
+    let mut byte = [0];
+    for module in [first, peer] {
+        assert_eq!(engine.file_read(module, 1, &mut byte), Ok(1));
+        assert_eq!(byte, *b"a");
+        assert_eq!(
+            (ENGINE_CALLS.entity_token)(&mut engine, module).unwrap(),
+            Some(b"alpha".as_slice())
+        );
+        (ENGINE_CALLS.message_bits)(&mut engine, module, 0xff, 8).unwrap();
+    }
+    engine.storage.reset_instance(first).unwrap();
+    assert_eq!(
+        engine.file_read(first, first_handle, &mut byte),
+        Err(CallError::File)
+    );
+    assert_eq!(engine.file_read(peer, peer_handle, &mut byte), Ok(1));
+    assert_eq!(byte, *b"b");
+    assert_eq!(
+        (ENGINE_CALLS.entity_token)(&mut engine, first).unwrap(),
+        Some(b"alpha".as_slice())
+    );
+    assert_eq!(
+        (ENGINE_CALLS.entity_token)(&mut engine, peer).unwrap(),
+        Some(b"beta".as_slice())
+    );
+    let delivery = |module| NativeDelivery {
+        module,
+        source: RuleSetId::Quake3,
+        target: NativeTarget::All,
+        origin: Vec3::default(),
+        reliable: true,
+        dupe_key: 0,
+        component: 0,
+        emission: None,
+        check_portals: false,
+    };
+    assert_eq!(
+        (ENGINE_CALLS.native_message)(&mut engine, delivery(first), Default::default()),
+        Ok(None)
+    );
+    assert!(
+        (ENGINE_CALLS.native_message)(&mut engine, delivery(peer), Default::default())
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        engine.file_open(first, b"data.dat").unwrap().0,
+        first_handle
+    );
+    assert_eq!(engine.file_read(first, first_handle, &mut byte), Ok(1));
+    assert_eq!(byte, *b"a");
+    assert_eq!(engine.file_read(peer, peer_handle, &mut byte), Ok(1));
+    assert_eq!(byte, *b"c");
+}

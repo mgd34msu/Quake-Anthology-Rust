@@ -219,6 +219,7 @@ fn fixture(rules: RuleSetId) -> Fixture {
         entity
     });
     let request = ModuleRequest {
+        q3_image: None,
         context: CallContext {
             native_rules: rules,
             trace_rules: RuleSetId::Quake3,
@@ -469,5 +470,122 @@ fn qc_rejected_host_publication_consumes_continuation_before_cancel_and_recovers
             Some(crate::modules::State::Running)
         );
         assert_eq!(host.runtime.server.area.bounds(ids[2]), Some(bounds));
+    }
+}
+
+#[path = "../support/service_program.rs"]
+#[allow(dead_code)]
+mod service_program;
+
+#[test]
+fn console_fallback_propagates_only_the_internal_owner_scope() {
+    use qa_formats::program::qvm::Opcode::*;
+    use qa_session::dispatch::CallError;
+    // This unit isolates the generic executor's private scope gate. UI has
+    // EXEC_NOW; its generation is set directly only to exercise that gate.
+    // Loaded cgame uses its unchanged append-only command import.
+    let mut code = vec![
+        (Enter, 64),
+        (Local, 72),
+        (Load4, 0),
+        (Const, 8),
+        (Eq, 0),
+        (Const, 0),
+        (Arg, 8),
+        (Const, 16),
+        (Arg, 12),
+        (Const, -13),
+        (Call, 0),
+        (Pop, 0),
+        (Const, 128),
+        (Load4, 0),
+        (Leave, 64),
+    ];
+    code[4].1 = code.len() as i32;
+    code.extend([
+        (Const, 128),
+        (Const, 128),
+        (Load4, 0),
+        (Const, 1),
+        (Add, 0),
+        (Store4, 0),
+        (Const, 1),
+        (Leave, 64),
+    ]);
+    let mut data = [0; 256];
+    let text = b"nested_lifecycle_command\n\0";
+    data[16..16 + text.len()].copy_from_slice(text);
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let anchor = runtime
+        .server
+        .entities
+        .allocate(ThinkTime::Milliseconds(0), MODULE, AllocationPolicy::q3(0))
+        .unwrap()
+        .id;
+    let request = ModuleRequest {
+        q3_image: None,
+        context: CallContext {
+            module: MODULE,
+            native_rules: RuleSetId::Quake3,
+            trace_rules: RuleSetId::Quake3,
+            sound_policy: qa_gameplay::rules::sound_policy(RuleSetId::Quake3),
+            server_frame: 0,
+            clock: ThinkTime::Milliseconds(0),
+            console: Context::default(),
+            allocation: AllocationPolicy::q3(0),
+            link_order: qa_gameplay::rules::link_order(RuleSetId::Quake3),
+        },
+        timing_rules: RuleSetId::Quake3,
+        phase: crate::modules::Phase::Client,
+        rate: TickRate::FrameDriven,
+        anchor,
+        program: Program::Qvm {
+            vm: Box::new(service_program::program(&code, &data)),
+            imports: &qa_compat::abi::Q3_UI,
+        },
+        entries: vec![0, 8],
+        frame: Export::words(CallbackId(0), &[]),
+        prepare: vec![],
+        initialize: vec![],
+        api: None,
+        shutdown: vec![],
+        instruction_budget: 10000,
+        configstrings: 0,
+        files: 0,
+        entity_source: None,
+    };
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![request],
+    )
+    .unwrap();
+    for (generation, expected) in [
+        (crate::modules::CgameGeneration::Uninitialized, 1),
+        (crate::modules::CgameGeneration::Current(Some(17)), 2),
+    ] {
+        let row = host.module_row_mut(MODULE).unwrap();
+        row.state = crate::modules::State::Pending;
+        row.cgame_generation = Some(generation);
+        let export = Export::words(CallbackId(0), &[]);
+        assert!(matches!(
+            host.call_module_export(MODULE, export, ThinkTime::Milliseconds(0)),
+            Err(CallError::Rejected)
+        ));
+        host.call_module_command_scoped(
+            MODULE,
+            export,
+            ThinkTime::Milliseconds(0),
+            CommandArgs::default(),
+            &mut Driver::cache_only(),
+            EntryScope::Lifecycle,
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(MODULE).unwrap().last_result,
+            Some(ModuleResult::Qvm(expected)),
+        );
+        assert!(!host.module_generation_ready(MODULE));
     }
 }

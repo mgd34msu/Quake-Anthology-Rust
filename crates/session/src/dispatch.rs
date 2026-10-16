@@ -338,16 +338,15 @@ impl<C: ThinkWorld, R: CallOutcome<C>> FunctionTable<C, R> {
     /// Revalidate a previously resolved callback after an intervening call may
     /// have changed its entity lifetime or owner. The current table remains the
     /// authority for both its internal path and native entry.
-    pub fn dispatch_resolved(
+    pub fn revalidate(
         &self,
-        world: &mut C,
+        entities: &EntityTable,
         resolved: ResolvedCall,
-        call: CallbackCall<'_>,
-    ) -> Result<R, CallError> {
-        if call.entity() != resolved.entity {
+        entity: EntityId,
+    ) -> Result<ResolvedCall, CallError> {
+        if entity != resolved.entity {
             return Err(CallError::StaleEntity);
         }
-        let entities = world.entities();
         let slot = entities
             .resolve(resolved.entity)
             .ok_or(CallError::StaleEntity)?;
@@ -362,13 +361,29 @@ impl<C: ThinkWorld, R: CallOutcome<C>> FunctionTable<C, R> {
         if resolved.path < binding.first || resolved.path > binding.missing {
             return Err(CallError::MissingFunction);
         }
-        let function = self
-            .functions
+        self.functions
             .get(resolved.path as usize)
             .filter(|function| {
                 function.module == resolved.module && function.function.entry == resolved.entry
             })
             .ok_or(CallError::MissingFunction)?;
+        Ok(resolved)
+    }
+
+    /// The missing path retains its registered rejection adapter, not entry zero.
+    pub fn is_missing(&self, resolved: ResolvedCall) -> bool {
+        self.binding(resolved.module)
+            .is_some_and(|binding| resolved.path == binding.missing)
+    }
+
+    pub fn dispatch_resolved(
+        &self,
+        world: &mut C,
+        resolved: ResolvedCall,
+        call: CallbackCall<'_>,
+    ) -> Result<R, CallError> {
+        let resolved = self.revalidate(world.entities(), resolved, call.entity())?;
+        let function = &self.functions[resolved.path as usize];
         Ok((function.function.call)(
             world,
             resolved.module,

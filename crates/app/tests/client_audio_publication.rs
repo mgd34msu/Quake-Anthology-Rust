@@ -111,6 +111,7 @@ fn fixture(count: usize) -> (Box<FrameHost>, Vec<ClientId>) {
             .unwrap()
             .id;
         requests.push(ModuleRequest {
+            q3_image: None,
             context: CallContext {
                 module,
                 clock: ThinkTime::Milliseconds(0),

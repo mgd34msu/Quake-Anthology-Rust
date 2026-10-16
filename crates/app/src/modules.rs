@@ -23,7 +23,9 @@ use qa_session::{
 use std::sync::Arc;
 
 mod load;
-pub use load::{Q2Clients, Q2Spec, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, load_quakec};
+pub use load::{
+    Q2Clients, Q2Spec, Q3Image, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, load_quakec,
+};
 mod clients;
 mod contacts;
 use clients::ClientLifecycle;
@@ -78,6 +80,41 @@ impl Program {
             map,
         })
     }
+    fn is_active(&self) -> bool {
+        match self {
+            Self::Qvm { vm, .. } => vm.is_active(),
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            Self::Native { vm, .. } => vm.is_active(),
+            Self::QuakeC(_) => false,
+        }
+    }
+    fn bind_runtime(
+        &mut self,
+        runtime: &Runtime,
+        cvars: &qa_console::cvars::Cvars,
+        rules: RuleSetId,
+    ) -> Result<(), String> {
+        let values = runtime.catalog.hud.values.native(rules);
+        match self {
+            Self::Qvm { vm, .. } => vm
+                .bind_player_values(values.bindings(), &runtime.catalog.registry)
+                .map_err(|error| format!("module player values: {error:?}")),
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            Self::Native { vm, .. } => {
+                vm.rebind_configstrings();
+                vm.bind_player_values(values.bindings(), &runtime.catalog.registry)
+                    .map_err(|error| format!("module player values: {error:?}"))
+            }
+            Self::QuakeC(qc) => {
+                qc.vm
+                    .bind_player_values(&values.stats, values.items)
+                    .map_err(|error| format!("module player values: {error:?}"))?;
+                qc.vm
+                    .bind_client_settings(cvars, &runtime.catalog.registry)
+                    .map_err(|error| format!("module client settings: {error:?}"))
+            }
+        }
+    }
     fn imports(&self) -> Option<&'static CallTable> {
         match self {
             Self::Qvm { imports, .. } => Some(imports),
@@ -115,6 +152,7 @@ pub struct ModuleRequest {
     pub rate: TickRate,
     pub anchor: EntityId,
     pub program: Program,
+    pub q3_image: Option<Q3Image>,
     pub entries: Vec<u32>,
     pub frame: Export,
     /// Load-selected callbacks, before version checks and game initialization.
@@ -265,6 +303,12 @@ impl ModuleResult {
         }
     }
 }
+#[derive(Clone, Copy)]
+enum CgameGeneration {
+    Uninitialized,
+    Current(Option<u64>),
+    Retired,
+}
 struct Module {
     request: ModuleRequest,
     geometry: Option<qa_core::primitives::GeometryId>,
@@ -273,6 +317,7 @@ struct Module {
     counts: Counts,
     state: State,
     failure_cleanup: bool,
+    cgame_generation: Option<CgameGeneration>,
     client_lifecycle: Option<ClientLifecycle>,
     client_batch: Option<ClientId>,
     client_contacts: qa_core::stamps::StampSet,
@@ -300,14 +345,7 @@ struct Module {
 impl Module {
     fn ready_for_callback(&self, active: bool) -> bool {
         self.state == State::Running
-            || (active
-                && self.state == State::Pending
-                && match &self.request.program {
-                    Program::Qvm { vm, .. } => vm.is_active(),
-                    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-                    Program::Native { vm, .. } => vm.is_active(),
-                    Program::QuakeC(_) => false,
-                })
+            || (active && self.state == State::Pending && self.request.program.is_active())
     }
     fn retain_active_batch(batch: &mut Option<ClientId>, server: &qa_session::clients::Server) {
         *batch = batch.filter(|id| {
@@ -765,31 +803,11 @@ impl FrameHost {
                     .bind_entity_text(request.context.module, source.bytes.clone(), syntax)
                     .map_err(|e| format!("module entity source: {e:?}"))?;
             }
-            let values = host
-                .runtime
-                .catalog
-                .hud
-                .values
-                .native(request.context.native_rules);
-            match &mut request.program {
-                Program::Qvm { vm, .. } => vm
-                    .bind_player_values(values.bindings(), &host.runtime.catalog.registry)
-                    .map_err(|e| format!("module player values: {e:?}"))?,
-                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-                Program::Native { vm, .. } => {
-                    vm.rebind_configstrings();
-                    vm.bind_player_values(values.bindings(), &host.runtime.catalog.registry)
-                        .map_err(|e| format!("module player values: {e:?}"))?;
-                }
-                Program::QuakeC(qc) => {
-                    qc.vm
-                        .bind_player_values(&values.stats, values.items)
-                        .map_err(|e| format!("module player values: {e:?}"))?;
-                    qc.vm
-                        .bind_client_settings(&host.console.cvars, &host.runtime.catalog.registry)
-                        .map_err(|e| format!("module client settings: {e:?}"))?;
-                }
-            }
+            request.program.bind_runtime(
+                &host.runtime,
+                &host.console.cvars,
+                request.context.native_rules,
+            )?;
             let state = if !request.prepare.is_empty()
                 || !request.initialize.is_empty()
                 || request.api.is_some()
@@ -841,7 +859,7 @@ impl FrameHost {
             let consumes_server_commands = request.program.consumes_server_commands();
             let produces_client_audio = request.program.produces_client_audio();
             let produces_client_view = request.program.produces_client_view();
-            let command = execution::CommandBinding::load(&request)?;
+            let command = execution::CommandBinding::load(&request.program, &request.entries)?;
             let input = request
                 .program
                 .imports()
@@ -908,6 +926,21 @@ impl FrameHost {
             } else {
                 None
             };
+            let cgame_generation = request
+                .q3_image
+                .as_ref()
+                .map(|_| CgameGeneration::Uninitialized);
+            if cgame_generation.is_some()
+                && (request.phase != Phase::Client
+                    || request
+                        .program
+                        .imports()
+                        .and_then(CallTable::command_export)
+                        .is_none_or(|entry| entry.role != qa_compat::abi::CommandRole::Cgame)
+                    || client_connection.is_none())
+            {
+                return Err("Q3 image recreation requires a bound cgame".into());
+            }
             rows[index] = Some(Module {
                 request,
                 geometry: host.runtime.collision.as_ref().map(|world| world.geometry),
@@ -916,6 +949,7 @@ impl FrameHost {
                 counts: Counts::default(),
                 state,
                 failure_cleanup: false,
+                cgame_generation,
                 client_lifecycle,
                 client_batch: None,
                 client_contacts: qa_core::stamps::StampSet::new(
@@ -1204,6 +1238,37 @@ impl FrameHost {
             .q3_startup()
     }
 
+    fn cgame_reset_token(&self, connection: Option<(ClientId, EntityId)>) -> Option<Option<u64>> {
+        let (client, lifetime) = connection?;
+        let row = self.runtime.server.clients.get(client.0 as usize)?;
+        if row.connection.is_none()
+            || row.entity != lifetime
+            || self.runtime.server.entities.resolve(lifetime).is_none()
+        {
+            return None;
+        }
+        let resources = self
+            .runtime
+            .client_resources
+            .get(client.0 as usize)?
+            .as_ref()?;
+        resources.state.completed_presentation_reset()
+    }
+
+    fn module_generation_ready(&self, module: ModuleId) -> bool {
+        let Some(row) = self.module_row(module) else {
+            return false;
+        };
+        match row.cgame_generation {
+            None => true,
+            Some(CgameGeneration::Current(reset)) => {
+                self.cgame_reset_token(row.client_connection) == Some(reset)
+                    && self.client_startup(row.client_connection).is_some()
+            }
+            Some(CgameGeneration::Uninitialized | CgameGeneration::Retired) => false,
+        }
+    }
+
     pub fn call_module_export(
         &mut self,
         module: ModuleId,
@@ -1235,6 +1300,24 @@ impl FrameHost {
         command: qa_core::primitives::CommandArgs<'_>,
         driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), CallError> {
+        self.call_module_command_scoped(
+            module,
+            export,
+            time,
+            command,
+            driver,
+            execution::EntryScope::Ordinary,
+        )
+    }
+    fn call_module_command_scoped(
+        &mut self,
+        module: ModuleId,
+        export: Export,
+        time: ThinkTime,
+        command: qa_core::primitives::CommandArgs<'_>,
+        driver: &mut Driver<'_>,
+        scope: execution::EntryScope,
+    ) -> Result<(), CallError> {
         let row = self.module_row(module).ok_or(CallError::MissingModule)?;
         let entity = row.request.anchor;
         let slot = self
@@ -1264,7 +1347,7 @@ impl FrameHost {
                 Argument::ClientNativeNumber => u64::from(startup()?.client_num),
             };
         }
-        self.call_module_with_driver(
+        self.call_module_scoped(
             export.callback,
             CallbackCall::Export {
                 entity,
@@ -1274,8 +1357,120 @@ impl FrameHost {
                 command,
             },
             driver,
+            scope,
         )
     }
+    /// Accepted gamestate resets stop the old cgame before cold CLIENT admission.
+    pub(crate) fn restart_client_modules(&mut self, driver: &mut Driver<'_>) {
+        let count = self
+            .modules
+            .as_ref()
+            .map_or(0, |modules| modules.rows.len());
+        for index in 0..count {
+            let module = ModuleId(index as u16);
+            let Some(row) = self.module_row(module) else {
+                continue;
+            };
+            let Some(CgameGeneration::Current(reset)) = row.cgame_generation else {
+                continue;
+            };
+            if row.state != State::Running
+                || row.request.program.is_active()
+                || self.cgame_reset_token(row.client_connection) == Some(reset)
+            {
+                continue;
+            }
+            let connection = row.client_connection;
+            let time = row.time(self.time);
+            let result = self
+                .module_sequence(module, LifecycleSequence::Shutdown, time, driver)
+                .and_then(|()| {
+                    self.modules
+                        .as_mut()
+                        .ok_or(CallError::MissingModule)?
+                        .storage
+                        .reset_instance(module)
+                        .map_err(|_| CallError::Rejected)
+                });
+            if result.is_err() {
+                self.fail_cgame_restart(module, driver);
+                continue;
+            }
+            self.retire_module_input(module);
+            if let Some(row) = self.module_row_mut(module) {
+                row.state = State::Pending;
+                row.cgame_generation = Some(CgameGeneration::Retired);
+                row.scene_role.reset_instance();
+                row.collision_role.reset();
+            }
+            if let Some((client, lifetime)) = connection {
+                if let Some(binding) = self
+                    .runtime
+                    .snapshots
+                    .get_mut(client.0 as usize)
+                    .and_then(Option::as_mut)
+                {
+                    binding.reset_module_audio(module, lifetime);
+                }
+                if let Some(resources) = self
+                    .runtime
+                    .client_resources
+                    .get_mut(client.0 as usize)
+                    .and_then(Option::as_mut)
+                {
+                    resources.state.request_presentation_reset(lifetime);
+                }
+                let _ = self.runtime.ensure_client_presentation_reset(client);
+                host_clear_feedback(&mut self.runtime, client);
+            }
+        }
+    }
+
+    fn fail_cgame_restart(&mut self, module: ModuleId, driver: &mut Driver<'_>) {
+        if let Some(row) = self.module_row_mut(module) {
+            row.counts.rejected += 1;
+            row.state = State::Failed;
+        }
+        self.cleanup_failed_module(module, driver);
+    }
+
+    fn recreate_cgame(&mut self, module: ModuleId) -> Result<(), String> {
+        let row = self.module_row(module).ok_or("missing cgame")?;
+        let mut candidate = row
+            .request
+            .q3_image
+            .as_ref()
+            .ok_or("missing cgame image")?
+            .instantiate()?;
+        if candidate.entries != row.request.entries
+            || !candidate
+                .program
+                .imports()
+                .zip(row.request.program.imports())
+                .is_some_and(|(new, old)| std::ptr::eq(new, old))
+        {
+            return Err("cgame callback table changed".into());
+        }
+        candidate.program.bind_runtime(
+            &self.runtime,
+            &self.console.cvars,
+            row.request.context.native_rules,
+        )?;
+        let command = execution::CommandBinding::load(&candidate.program, &candidate.entries)?;
+        let input = candidate
+            .program
+            .imports()
+            .and_then(|table| table.input_exports());
+        let row = self.module_row_mut(module).ok_or("missing cgame")?;
+        row.request.program = candidate.program;
+        row.request.prepare = candidate.prepare;
+        row.request.shutdown = candidate.shutdown;
+        row.command = command;
+        row.input = input;
+        row.cgame_generation = Some(CgameGeneration::Uninitialized);
+        Ok(())
+    }
+
     /// Load-time startup or the frame's command phase uses the same entries.
     pub fn initialize_modules(&mut self, phase: Phase) {
         self.initialize_modules_with_driver(phase, &mut crate::modules::Driver::cache_only())
@@ -1357,8 +1552,9 @@ impl FrameHost {
                 continue;
             }
             if !shutdown
-                && row.requires_startup
-                && self.client_startup(row.client_connection).is_none()
+                && ((row.requires_startup && self.client_startup(row.client_connection).is_none())
+                    || row.cgame_generation.is_some()
+                        && self.cgame_reset_token(row.client_connection).is_none())
             {
                 // Await the receiving channel's completed gamestate, without
                 // trapping or claiming resources from SERVER state.
@@ -1391,11 +1587,27 @@ impl FrameHost {
     ) {
         if shutdown {
             self.disconnect_module_recipients(module, driver);
+        } else if self
+            .module_row(module)
+            .is_some_and(|row| matches!(row.cgame_generation, Some(CgameGeneration::Retired)))
+        {
+            if let Err(error) = self.recreate_cgame(module) {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("cgame {} recreation: {error}\n", module.0));
+                self.fail_cgame_restart(module, driver);
+                return;
+            }
         }
         let Some(row) = self.module_row(module) else {
             return;
         };
         let api = (!shutdown).then_some(row.request.api).flatten();
+        let reset = row
+            .cgame_generation
+            .and_then(|_| self.cgame_reset_token(row.client_connection));
         let time = row.time(self.time);
         let sequence = if shutdown {
             LifecycleSequence::Shutdown
@@ -1427,6 +1639,11 @@ impl FrameHost {
             } else {
                 State::Failed
             };
+            if !shutdown && result.is_ok() && row.cgame_generation.is_some() {
+                if let Some(reset) = reset {
+                    row.cgame_generation = Some(CgameGeneration::Current(reset));
+                }
+            }
             if let Program::QuakeC(qc) = &mut row.request.program {
                 qc.vm.active = row.state == State::Running;
             }
@@ -1444,7 +1661,14 @@ impl FrameHost {
         time: ThinkTime,
         driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), CallError> {
-        self.call_module_export_with_driver(module, api.export(), time, driver)?;
+        self.call_module_command_scoped(
+            module,
+            api.export(),
+            time,
+            Default::default(),
+            driver,
+            execution::EntryScope::Lifecycle,
+        )?;
         let row = self
             .module_row_mut(module)
             .ok_or(CallError::MissingModule)?;
@@ -1487,7 +1711,14 @@ impl FrameHost {
                 .and_then(|row| row.request.sequence(sequence).get(index))
                 .copied()
                 .ok_or(CallError::MissingModule)?;
-            self.call_module_export_with_driver(module, export, time, driver)?;
+            self.call_module_command_scoped(
+                module,
+                export,
+                time,
+                Default::default(),
+                driver,
+                execution::EntryScope::Lifecycle,
+            )?;
         }
         Ok(())
     }
@@ -1626,6 +1857,15 @@ impl FrameHost {
         call: CallbackCall,
         driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), CallError> {
+        self.call_module_scoped(callback, call, driver, execution::EntryScope::Ordinary)
+    }
+    fn call_module_scoped(
+        &mut self,
+        callback: CallbackId,
+        call: CallbackCall<'_>,
+        driver: &mut Driver<'_>,
+        scope: execution::EntryScope,
+    ) -> Result<(), CallError> {
         let functions = Arc::clone(
             &self
                 .modules
@@ -1639,14 +1879,20 @@ impl FrameHost {
             .entities
             .resolve(call.entity())
             .map(|slot| self.runtime.server.entities.columns.owner[slot]);
-        let result = functions
-            .dispatch(self, callback, call)
-            .and_then(|outcome| {
-                driver
-                    .complete(self, outcome, call)
-                    .then_some(())
-                    .ok_or(CallError::Rejected)
-            });
+        let dispatched = match scope {
+            execution::EntryScope::Ordinary => functions.dispatch(self, callback, call),
+            execution::EntryScope::Lifecycle => functions
+                .resolve(&self.runtime.server.entities, callback, call.entity())
+                .map(|resolved| {
+                    execution::start_scoped(self, resolved.module(), resolved.entry(), call, scope)
+                }),
+        };
+        let result = dispatched.and_then(|outcome| {
+            driver
+                .complete(self, outcome, call)
+                .then_some(())
+                .ok_or(CallError::Rejected)
+        });
         if let Some(module) = module {
             self.cleanup_failed_module(module, driver);
         }
@@ -1737,7 +1983,7 @@ fn invoke_frame(
     let Some(row) = host.module_row(module) else {
         return false;
     };
-    if row.state != State::Running {
+    if row.state != State::Running || !host.module_generation_ready(module) {
         return false;
     }
     let export = row.request.frame;

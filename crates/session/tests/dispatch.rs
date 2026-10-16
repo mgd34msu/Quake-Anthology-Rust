@@ -227,7 +227,18 @@ fn callback_resolver_rereads_owner_and_rejects_reused_entity_generation() {
             .entry(),
         11
     );
+    let captured = table
+        .resolve_callback(&world.entities, ModuleId(1), CallbackId(0), old)
+        .unwrap();
+    assert_eq!(
+        table.revalidate(&world.entities, captured, old),
+        Ok(captured)
+    );
     world.entities.columns.owner[old.slot as usize] = ModuleId(2);
+    assert_eq!(
+        table.revalidate(&world.entities, captured, old),
+        Err(CallError::MissingModule)
+    );
     assert_eq!(
         table.resolve_callback(&world.entities, ModuleId(1), CallbackId(0), old),
         Err(CallError::MissingModule)
@@ -239,10 +250,21 @@ fn callback_resolver_rereads_owner_and_rejects_reused_entity_generation() {
             .entry(),
         82_009
     );
+    let owner_changed = table
+        .resolve_callback(&world.entities, ModuleId(2), CallbackId(0), old)
+        .unwrap();
     assert!(world.entities.release(old, ThinkTime::Seconds(0.0)));
     let replacement = entity(&mut world, 2);
     assert_eq!(replacement.slot, old.slot);
     assert_ne!(replacement.generation, old.generation);
+    assert_eq!(
+        table.revalidate(&world.entities, owner_changed, old),
+        Err(CallError::StaleEntity)
+    );
+    assert_eq!(
+        table.revalidate(&world.entities, owner_changed, replacement),
+        Err(CallError::StaleEntity)
+    );
     assert_eq!(
         table.resolve_callback(&world.entities, ModuleId(2), CallbackId(0), old),
         Err(CallError::StaleEntity)
@@ -253,6 +275,38 @@ fn callback_resolver_rereads_owner_and_rejects_reused_entity_generation() {
     assert_eq!(resolved.entity(), replacement);
     assert_eq!(resolved.entry(), 82_009);
     assert!(world.calls.is_empty());
+}
+
+#[test]
+fn resolved_missing_binding_preserves_its_rejection_adapter() {
+    let mut world = world(2);
+    let id = entity(&mut world, 1);
+    let table = table(RuleSetId::Quake3);
+    let missing = table
+        .resolve_binding(
+            &world.entities,
+            table.module_binding(ModuleId(1)).think(None),
+            id,
+        )
+        .unwrap();
+    assert!(table.is_missing(missing));
+    assert_eq!(table.revalidate(&world.entities, missing, id), Ok(missing));
+    assert!(
+        !table
+            .dispatch_resolved(
+                &mut world,
+                missing,
+                CallbackCall::Think {
+                    entity: id,
+                    time: ThinkTime::Milliseconds(100),
+                    prepared_native: None,
+                }
+            )
+            .unwrap()
+    );
+    assert!(world.calls.is_empty());
+    let real = table.resolve(&world.entities, CallbackId(0), id).unwrap();
+    assert!(!table.is_missing(real));
 }
 
 #[test]

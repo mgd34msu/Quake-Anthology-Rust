@@ -841,6 +841,7 @@ impl FrameHost {
             return result;
         }
         self.flush_client_connect_requests(source);
+        self.restart_client_modules(&mut source.driver());
         self.client_configurations(&mut source.driver());
         self.register_client_model_assets(source.asset_preparer());
         self.flush_nq_signon_replies();

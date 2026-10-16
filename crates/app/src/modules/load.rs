@@ -166,6 +166,119 @@ fn call_context(
     }
 }
 
+/// Pristine Q3 module bytes and load-selected ABI choices. Each instantiation
+/// owns fresh VM memory or a fresh native child and its lifecycle callbacks.
+pub struct Q3Image {
+    bytes: Box<[u8]>,
+    imports: &'static qa_compat::abi::CallTable,
+    player_stats: Option<qa_core::primitives::Q3StatLayout>,
+    role_shutdown: Export,
+}
+
+pub(super) struct Q3Instance {
+    pub(super) program: Program,
+    pub(super) entries: Vec<u32>,
+    pub(super) prepare: Vec<Export>,
+    pub(super) shutdown: Vec<Export>,
+}
+
+impl Q3Image {
+    pub(super) fn new(
+        bytes: Vec<u8>,
+        imports: &'static qa_compat::abi::CallTable,
+        player_stats: Option<qa_core::primitives::Q3StatLayout>,
+        role_shutdown: Export,
+    ) -> Self {
+        Self {
+            bytes: bytes.into_boxed_slice(),
+            imports,
+            player_stats,
+            role_shutdown,
+        }
+    }
+
+    pub(super) fn instantiate(&self) -> Result<Q3Instance, String> {
+        let (program, entries, prepare, mut finalize) = if self.bytes.starts_with(b"MZ")
+            || self.bytes.starts_with(b"\x7fELF")
+        {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                use qa_compat::native::{NamedExport, Vm};
+                use qa_formats::program::native::Encoding;
+                let image = parse_native(&self.bytes)?;
+                if image.target.encoding == Encoding::Elf && image.tls.is_some() {
+                    return Err("native TLS provider is not bound".into());
+                }
+                let mut named: Vec<_> = (0..=10)
+                    .map(|command| NamedExport {
+                        parameters: &[qa_platform::native::NativeScalar::Word; 13],
+                        result: qa_platform::native::NativeScalar::Word,
+                        name: b"vmMain",
+                        command: Some(command),
+                    })
+                    .collect();
+                named.push(NamedExport {
+                    parameters: &[qa_platform::native::NativeScalar::Word; 1],
+                    result: qa_platform::native::NativeScalar::Void,
+                    name: b"dllEntry",
+                    command: None,
+                });
+                let mut vm = Vm::map_image(image, &named, &[], std::time::Duration::from_secs(3))
+                    .map_err(|e| format!("native mapping: {e:?}"))?;
+                let mut arguments = [Argument::Word(0); 9];
+                arguments[0] = Argument::Word(vm.import_callback());
+                let mut prepare: Vec<_> = vm.initializers().iter().map(native_export).collect();
+                prepare.push(Export {
+                    client: None,
+                    callback: CallbackId(11),
+                    arguments,
+                });
+                let finalize: Vec<_> = vm.finalizers().iter().map(native_export).collect();
+                if let Some(player_stats) = self.player_stats {
+                    vm.configure_q3_game(player_stats);
+                }
+                let count = vm.export_count();
+                (
+                    Program::Native {
+                        vm: Box::new(vm),
+                        imports: self.imports,
+                    },
+                    (0..count as u32).collect(),
+                    prepare,
+                    finalize,
+                )
+            }
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            {
+                return Err("native child backend unsupported on this host".into());
+            }
+        } else {
+            let image = qa_formats::program::qvm::Image::parse(&self.bytes)
+                .map_err(|e| format!("QVM module: {e:?}"))?;
+            let mut vm = qvm::Vm::load(image).map_err(|e| format!("QVM memory: {e:?}"))?;
+            if let Some(player_stats) = self.player_stats {
+                vm.configure_q3_game(player_stats);
+            }
+            (
+                Program::Qvm {
+                    vm: Box::new(vm),
+                    imports: self.imports,
+                },
+                (0..=10).collect(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+        finalize.insert(0, self.role_shutdown);
+        Ok(Q3Instance {
+            program,
+            entries,
+            prepare,
+            shutdown: finalize,
+        })
+    }
+}
+
 pub fn load_q3(
     runtime: &mut Runtime,
     specs: &[Q3Spec],
@@ -249,85 +362,23 @@ pub fn load_q3(
                 }),
             ),
         };
-        let (program, entries, prepare, mut finalize) = if bytes.starts_with(b"MZ")
-            || bytes.starts_with(b"\x7fELF")
-        {
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            {
-                use qa_compat::native::{NamedExport, Vm};
-                use qa_formats::program::native::Encoding;
-                let image = parse_native(&bytes)?;
-                if image.target.encoding == Encoding::Elf && image.tls.is_some() {
-                    return Err("native TLS provider is not bound".into());
-                }
-                let mut named: Vec<_> = (0..=10)
-                    .map(|command| NamedExport {
-                        parameters: &[qa_platform::native::NativeScalar::Word; 13],
-                        result: qa_platform::native::NativeScalar::Word,
-                        name: b"vmMain",
-                        command: Some(command),
-                    })
-                    .collect();
-                named.push(NamedExport {
-                    parameters: &[qa_platform::native::NativeScalar::Word; 1],
-                    result: qa_platform::native::NativeScalar::Void,
-                    name: b"dllEntry",
-                    command: None,
-                });
-                let mut vm = Vm::map_image(image, &named, &[], std::time::Duration::from_secs(3))
-                    .map_err(|e| format!("native mapping: {e:?}"))?;
-                let mut arguments = [Argument::Word(0); 9];
-                arguments[0] = Argument::Word(vm.import_callback());
-                let mut prepare: Vec<_> = vm.initializers().iter().map(native_export).collect();
-                prepare.push(Export {
-                    client: None,
-                    callback: CallbackId(11),
-                    arguments,
-                });
-                let finalize: Vec<_> = vm.finalizers().iter().map(native_export).collect();
-                if matches!(spec.role, Q3Role::Game) {
-                    vm.configure_q3_game(spec.player_stats);
-                }
-                let count = vm.export_count();
-                (
-                    Program::Native {
-                        vm: Box::new(vm),
-                        imports,
-                    },
-                    (0..count as u32).collect(),
-                    prepare,
-                    finalize,
-                )
-            }
-            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-            {
-                return Err("native child backend unsupported on this host".into());
-            }
-        } else {
-            let image = qa_formats::program::qvm::Image::parse(&bytes)
-                .map_err(|e| format!("QVM module: {e:?}"))?;
-            let mut vm = qvm::Vm::load(image).map_err(|e| format!("QVM memory: {e:?}"))?;
-            if matches!(spec.role, Q3Role::Game) {
-                vm.configure_q3_game(spec.player_stats);
-            }
-            (
-                Program::Qvm {
-                    vm: Box::new(vm),
-                    imports,
-                },
-                (0..=10).collect(),
-                Vec::new(),
-                Vec::new(),
-            )
-        };
-        finalize.insert(
-            0,
+        let image = Q3Image::new(
+            bytes,
+            imports,
+            matches!(spec.role, Q3Role::Game).then_some(spec.player_stats),
             Export {
                 client: client_binding,
                 callback: CallbackId(shutdown),
                 arguments: [Argument::Word(0); 9],
             },
         );
+        let Q3Instance {
+            program,
+            entries,
+            prepare,
+            shutdown,
+        } = image.instantiate()?;
+        let q3_image = matches!(spec.role, Q3Role::Cgame(_)).then_some(image);
         let mut context = call_context(
             module,
             clock,
@@ -358,6 +409,7 @@ pub fn load_q3(
             },
             anchor,
             program,
+            q3_image,
             entries,
             frame: Export {
                 client: client_binding,
@@ -369,7 +421,7 @@ pub fn load_q3(
                 callback: CallbackId(init),
                 arguments: initialize,
             }],
-            shutdown: finalize,
+            shutdown,
             api,
             instruction_budget: 10_000_000,
             configstrings: 1024,
@@ -449,6 +501,7 @@ pub fn load_quakec(
             phase: Phase::Server,
             rate: TickRate::FrameDriven,
             anchor,
+            q3_image: None,
             program: Program::quakec(
                 vm,
                 map.map(|(path, source, _)| super::QuakeCMap {

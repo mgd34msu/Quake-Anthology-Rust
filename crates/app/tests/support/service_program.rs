@@ -43,6 +43,10 @@ pub fn qvm() -> Vm {
 }
 
 pub fn program(operations: &[(Opcode, i32)], data: &[u8]) -> Vm {
+    Vm::load(Image::parse(&bytes(operations, data)).unwrap()).unwrap()
+}
+
+pub fn bytes(operations: &[(Opcode, i32)], data: &[u8]) -> Vec<u8> {
     let mut code = Vec::new();
     for &(op, arg) in operations {
         code.push(op as u8);
@@ -68,5 +72,5 @@ pub fn program(operations: &[(Opcode, i32)], data: &[u8]) -> Vm {
     }
     bytes.extend(code);
     bytes.extend(data);
-    Vm::load(Image::parse(&bytes).unwrap()).unwrap()
+    bytes
 }

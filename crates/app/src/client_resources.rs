@@ -869,6 +869,13 @@ impl ResourceState {
         }
     }
 
+    pub(crate) fn completed_presentation_reset(&self) -> Option<Option<u64>> {
+        match self.presentation_reset {
+            PresentationReset::Complete(sequence) => Some(sequence),
+            PresentationReset::Required(_) | PresentationReset::Published { .. } => None,
+        }
+    }
+
     pub(crate) fn presentation_reset_pending(&self) -> bool {
         !matches!(self.presentation_reset, PresentationReset::Complete(_))
     }

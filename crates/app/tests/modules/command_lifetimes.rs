@@ -91,6 +91,7 @@ fn request(
             .id
     });
     ModuleRequest {
+        q3_image: None,
         context: CallContext {
             module,
             clock: ThinkTime::Milliseconds(0),
