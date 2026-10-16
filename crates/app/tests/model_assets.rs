@@ -2554,7 +2554,7 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
 }
 
 #[test]
-fn unresolved_model_materials_keep_native_bounds_without_a_render_handle() {
+fn missing_optional_model_shaders_keep_native_bounds_and_mesh_with_default_indices() {
     let bytes = support::md3();
     let parsed = qa_formats::model::Model::parse(&bytes).unwrap();
     let bounds = parsed.bounds;
@@ -2572,14 +2572,14 @@ fn unresolved_model_materials_keep_native_bounds_without_a_render_handle() {
         owner.precache(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
         Ok(bounds)
     );
-    assert_eq!(
-        owner.register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
-        Ok(0)
-    );
+    let handle = owner
+        .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
+        .unwrap();
+    assert!(handle > 0);
     fixture.remove("models/test.md3");
     assert_eq!(
         owner.register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
-        Ok(0)
+        Ok(handle)
     );
     let catalog = owner.catalog();
     assert_eq!(
@@ -2591,15 +2591,34 @@ fn unresolved_model_materials_keep_native_bounds_without_a_render_handle() {
     );
     assert_eq!(
         catalog.model_handle(b"models/test.md3", RuleSetId::Quake3),
-        None
+        Some(handle)
     );
-    let rejected = catalog.diagnostics[0].name.0 as i32;
-    assert!(rejected > 0);
     assert_eq!(
-        catalog.name(qa_core::primitives::NameId(rejected as u32)),
+        catalog.name(qa_core::primitives::NameId(handle as u32)),
         Some("models/test.md3")
     );
-    assert_eq!(catalog.model_bounds(rejected), None);
+    assert_eq!(catalog.model_bounds(handle), Some(first_frame));
+    let profile = shader_profile(RuleSetId::Quake3);
+    let registration = catalog.renderer_registration(handle, profile).unwrap();
+    assert!(
+        catalog
+            .bindings(registration, 0, Default::default())
+            .unwrap()
+            .all(|binding| binding.shader == qa_render::ShaderBindingId(0))
+    );
+    let native = catalog
+        .renderer_registrations(
+            qa_compat::services::RendererRegistration::Model,
+            handle,
+            profile,
+        )
+        .unwrap();
+    assert_eq!(native.len(), 1);
+    assert_eq!(
+        native[0].defaulted,
+        Some(qa_render::NativeDefaultKind::MissingImage)
+    );
+    assert_ne!(native[0].shader, qa_render::ShaderBindingId(0));
 }
 
 #[test]
@@ -2960,6 +2979,7 @@ fn borrowed_renderer_request_keeps_long_ordinary_model_names() {
 fn cold_shader_source_failure_does_not_hide_another_source_or_repeat_the_attempt() {
     use qa_compat::services::CallError;
     let fixture = support::Fixture::new(&[
+        ("ui.other/missing.tga", b"invalid image".to_vec()),
         (
             "ui.part/first.tga",
             support::tga(1, 1, &[[211, 17, 29, 255]]),
@@ -3500,6 +3520,7 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
     use qa_compat::services::RendererRegistration;
     use qa_render::cpu::{CpuBackend, CpuLimits};
     let fixture = support::Fixture::new(&[
+        ("ui.other/missing.tga", b"invalid image".to_vec()),
         (
             "ui.part/first.tga",
             support::tga(1, 1, &[[211, 17, 29, 255]]),
@@ -3785,7 +3806,7 @@ fn native_shader_first_dot_folded_key_keeps_separator_identities_and_named_misse
             true,
             qa_compat::services::ShaderLighting::TwoDimensional
         ),
-        Err(qa_compat::services::CallError::File)
+        Ok(0)
     );
     assert_eq!(
         owner.register_shader(
@@ -3802,6 +3823,18 @@ fn native_shader_first_dot_folded_key_keeps_separator_identities_and_named_misse
         catalog.shader_handle(b"ui/missing", RuleSetId::Quake3),
         Some(0)
     );
+    let missing = catalog
+        .shader_outcome(
+            b"ui/missing",
+            profile,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
+        .unwrap();
+    assert_eq!(
+        missing.defaulted,
+        Some(qa_render::NativeDefaultKind::MissingImage)
+    );
+    assert_ne!(missing.shader, qa_render::ShaderBindingId(0));
     assert_eq!(
         catalog.shader_handle(b"ui/unknown", RuleSetId::Quake3),
         None

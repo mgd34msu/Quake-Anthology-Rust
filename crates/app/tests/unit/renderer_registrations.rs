@@ -39,6 +39,7 @@ fn publish(mut owner: ModelAssets) -> (ModelAssets, CpuBackend) {
 
 fn shader_fixture() -> support::Fixture {
     support::Fixture::new(&[
+        ("textures/missing.tga", b"invalid image".to_vec()),
         (
             "textures/first.tga",
             support::tga(4, 4, &[[211, 17, 29, 255]; 16]),
@@ -767,12 +768,30 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         name: b"textures/absent".as_slice(),
         ..vertex
     };
-    assert!(
+    let (public, _) = owner
+        .prepare_registration(&fixture.vfs, &missing, profile, |assets| {
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(public, 0);
+    let outcome = *owner
+        .catalog()
+        .shader_outcome(
+            missing.name,
+            profile,
+            ShaderLighting::World(presentations[2]),
+        )
+        .unwrap();
+    assert_eq!(
+        outcome.defaulted,
+        Some(qa_render::NativeDefaultKind::MissingImage)
+    );
+    assert_ne!(outcome.shader, qa_render::ShaderBindingId(0));
+    assert_eq!(
         owner
-            .prepare_registration(&fixture.vfs, &missing, profile, |_| {
-                panic!("missing world shader reached backend")
-            })
-            .is_err()
+            .catalog()
+            .shader_outcome(missing.name, profile, ShaderLighting::TwoDimensional),
+        Some(&outcome)
     );
     assert_eq!(
         owner
@@ -784,7 +803,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         owner
             .catalog()
             .shader_handle(missing.name, profile.source_rules),
-        None
+        Some(0)
     );
     fixture.vfs.take_lookup_count();
     assert_eq!(
@@ -797,6 +816,30 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         0
     );
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    let ordinary_missing = RendererRequest {
+        kind: RendererRegistration::Shader {
+            mipmaps: false,
+            lighting: ShaderLighting::TwoDimensional,
+        },
+        world: None,
+        ..missing
+    };
+    assert_eq!(
+        owner
+            .prepare_registration(&fixture.vfs, &ordinary_missing, profile, |_| {
+                panic!("wildcard default reached backend")
+            })
+            .unwrap()
+            .0,
+        0
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    assert_eq!(
+        owner
+            .catalog()
+            .shader_outcome(missing.name, profile, ShaderLighting::TwoDimensional),
+        Some(&outcome)
+    );
     assert_eq!(
         owner.catalog().shader_binding(handle, profile),
         Some(original)

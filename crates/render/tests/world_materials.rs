@@ -1059,7 +1059,7 @@ fn palette_translation_preserves_cutout_and_cloud_mask_indices() -> Result<(), S
 }
 
 #[test]
-fn ordered_native_requests_include_fog_hidden_and_inline_surfaces_with_default_zero()
+fn ordered_native_requests_keep_named_defaults_and_omit_unsupported_hidden_recipes()
 -> Result<(), String> {
     use qa_formats::bsp::Fog;
     use qa_render::{ShaderBindingId, world::geometry::LightSource};
@@ -1146,7 +1146,6 @@ fn ordered_native_requests_include_fog_hidden_and_inline_surfaces_with_default_z
             "textures/missing",
             "textures/modern",
             "textures/hidden",
-            "textures/stageless"
         ]
     );
     assert_eq!(registrations[2].shader, presentation.bindings()[0].shader);
@@ -1172,8 +1171,23 @@ fn ordered_native_requests_include_fog_hidden_and_inline_surfaces_with_default_z
             .fog
             .is_some()
     );
-    for index in [1, 3, 6] {
-        assert_eq!(registrations[index].shader, ShaderBindingId(0));
+    for index in [1, 3] {
+        assert_ne!(registrations[index].shader, ShaderBindingId(0));
+        assert_eq!(
+            registrations[index].defaulted,
+            Some(qa_render::NativeDefaultKind::MissingImage)
+        );
+        let material = assets
+            .material(
+                assets
+                    .shader_binding(registrations[index].shader)
+                    .unwrap()
+                    .material,
+            )
+            .unwrap();
+        assert!(material.stages.is_empty());
+        assert_eq!(material.settings.sort, 7.0);
+        assert!(material.settings.fog.is_none());
     }
     assert_ne!(registrations[5].shader, ShaderBindingId(0));
     for surface in [1, 3, 4] {
@@ -1184,9 +1198,9 @@ fn ordered_native_requests_include_fog_hidden_and_inline_surfaces_with_default_z
         loaded
             .diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.starts_with("native default shader:"))
+            .filter(|diagnostic| diagnostic.starts_with("native shader registration omitted:"))
             .count(),
-        3
+        1
     );
     std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
     Ok(())
@@ -1326,6 +1340,218 @@ fn native_hidden_out_of_range_lightmap_registers_vertex_lighting_before_draw_ski
     assert_eq!(material.stages.len(), 1);
     assert_eq!(material.stages[0].rgb_gen, RgbGen::ExactVertex);
     assert_ne!(material.stages[0].texture, StageTexture::Lightmap);
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn named_outcomes_keep_requested_finished_modes_and_only_implicit_missing_defaults()
+-> Result<(), String> {
+    use qa_render::{
+        NativeDefaultKind,
+        material::world_load::{NamedShaderLighting, WorldMaterialError, compile_named_shader},
+        shader::{ShaderSource, parse_sources},
+        world::geometry::LightSource,
+    };
+    let root = resources("named-outcomes")?;
+    let vfs = mount(&root)?;
+    let catalog = parse_sources(&[ShaderSource {
+        name: "typed.shader",
+        bytes: br#"
+            textures/plain { { map $whiteimage } }
+            textures/lit { { map $lightmap } { map $whiteimage blendFunc filter } }
+            textures/authored_missing { { map textures/not_present.tga } }
+            textures/invalid { surfaceparm nodraw }
+            textures/unsupported { deformVertexes autosprite { map $whiteimage } }
+        "#,
+    }]);
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let lightmap = assets
+        .register_image(1, 1, &[127; 4])
+        .map_err(str::to_owned)?;
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake3,
+        RuleSetId::Quake3,
+        ImageSettings::native(RuleSetId::Quake3),
+        None,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let mut registrations = Vec::new();
+    for source in [
+        LightSource::Page(0),
+        LightSource::Vertex,
+        LightSource::Page(0),
+    ] {
+        registrations.push(
+            compile_named_shader(
+                &catalog,
+                b"Textures/Plain.tga",
+                true,
+                NamedShaderLighting { source, lightmap },
+                &mut images,
+            )
+            .map_err(|error| format!("{error:?}"))?,
+        );
+    }
+    assert_eq!(
+        registrations
+            .iter()
+            .map(|row| row.requested)
+            .collect::<Vec<_>>(),
+        [
+            LightSource::Page(0),
+            LightSource::Vertex,
+            LightSource::Page(0)
+        ]
+    );
+    assert_eq!(
+        registrations
+            .iter()
+            .map(|row| row.finished)
+            .collect::<Vec<_>>(),
+        [LightSource::None, LightSource::Vertex, LightSource::None]
+    );
+    assert_eq!(
+        registrations.len(),
+        3,
+        "ordered occurrences survive structural dedup"
+    );
+    assert_eq!(registrations[0].shader, registrations[2].shader);
+    assert!(registrations.iter().all(|row| row.defaulted.is_none()));
+    let lit = compile_named_shader(
+        &catalog,
+        b"textures/lit",
+        true,
+        NamedShaderLighting {
+            source: LightSource::Page(0),
+            lightmap,
+        },
+        &mut images,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    assert_eq!(lit.finished, LightSource::Page(0));
+    for source in [
+        LightSource::Page(0),
+        LightSource::Vertex,
+        LightSource::TwoDimensional,
+    ] {
+        let default = compile_named_shader(
+            &catalog,
+            b"textures/implicit_missing",
+            true,
+            NamedShaderLighting { source, lightmap },
+            &mut images,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        assert_eq!(default.defaulted, Some(NativeDefaultKind::MissingImage));
+        assert_eq!(default.requested, source);
+        assert_eq!(
+            default.finished,
+            if source == LightSource::Page(0) {
+                LightSource::None
+            } else {
+                source
+            }
+        );
+        assert_ne!(default.shader, qa_render::ShaderBindingId(0));
+        let material = images
+            .assets
+            .material(
+                images
+                    .assets
+                    .shader_binding(default.shader)
+                    .unwrap()
+                    .material,
+            )
+            .unwrap();
+        assert!(material.stages.is_empty());
+        assert_eq!(material.settings.sort, 7.0);
+        assert!(material.settings.fog.is_none() && material.settings.sky.is_none());
+        let settings = material.settings;
+        assert!(
+            images
+                .assets
+                .register_material("textures/implicit_missing", &[], settings)
+                .is_err(),
+            "the public material boundary still rejects accidental empty bodies"
+        );
+    }
+    for raw in [
+        b"textures/authored_missing".as_slice(),
+        b"textures/invalid",
+        b"textures/unsupported",
+    ] {
+        let counts = images.assets.counts();
+        let result = compile_named_shader(
+            &catalog,
+            raw,
+            true,
+            NamedShaderLighting {
+                source: LightSource::None,
+                lightmap,
+            },
+            &mut images,
+        );
+        assert!(matches!(
+            result,
+            Err(WorldMaterialError::Resource(_)) | Err(WorldMaterialError::Shader(_))
+        ));
+        assert_eq!(images.assets.counts(), counts);
+    }
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn implicit_missing_world_shader_keeps_named_body_and_draws_global_fallback() -> Result<(), String>
+{
+    use qa_render::NativeDefaultKind;
+    let root = resources("missing-visible-world")?;
+    let vfs = mount(&root)?;
+    let bytes = map_bytes(3);
+    let mut map = modern_map(&bytes)?;
+    map.shaders[0].name = b"textures/missing_visible";
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let loaded = load_native_world(
+        &vfs,
+        &map,
+        &mut assets,
+        RuleSetId::Quake3,
+        WorldLoadOptions::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let presentation = assets
+        .world_presentation(loaded.presentations[0].id)
+        .unwrap();
+    let registration = presentation.shader_registrations()[0];
+    assert_eq!(
+        registration.defaulted,
+        Some(NativeDefaultKind::MissingImage)
+    );
+    assert_ne!(registration.shader, presentation.bindings()[0].shader);
+    assert_eq!(
+        presentation.bindings()[0].shader,
+        qa_render::ShaderBindingId(0)
+    );
+    assert_ne!(registration.shader, qa_render::ShaderBindingId(0));
+    assert_eq!(
+        assets
+            .world(loaded.world)
+            .unwrap()
+            .geometry()
+            .surfaces
+            .len(),
+        1
+    );
+    let pixels = draw_registered_profiles(&assets, loaded.world, &loaded.presentations)?;
+    assert!(
+        pixels
+            .iter()
+            .any(|&pixel| pixel != u32::from_le_bytes([0, 0, 0, 255])),
+        "the source world draws the existing global fallback rather than its named zero-pass body"
+    );
     std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
     Ok(())
 }

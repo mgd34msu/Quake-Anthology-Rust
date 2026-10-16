@@ -298,12 +298,16 @@ fn native_registration_keys_and_styled_requests_share_atomic_canonical_rows() {
     };
     let registrations = [
         ShaderRegistration {
-            key: slash.key,
-            shader: PreparedShader::Surface(0),
+            requested: LightSource::Samples,
+            finished: LightSource::None,
+            ..slash.map_shader(|_| PreparedShader::Surface(0))
         },
         ShaderRegistration {
-            key: backslash.key,
-            shader: PreparedShader::Binding(ShaderBinding::material(material, LightSource::Vertex)),
+            requested: LightSource::Vertex,
+            finished: LightSource::Vertex,
+            ..backslash.map_shader(|_| {
+                PreparedShader::Binding(ShaderBinding::material(material, LightSource::Vertex))
+            })
         },
     ];
     let (geometry, visibility) = world_surfaces::inputs(1);
@@ -343,10 +347,7 @@ fn native_registration_keys_and_styled_requests_share_atomic_canonical_rows() {
     let presentation = assets.world_presentation(id).unwrap();
     assert_eq!(
         presentation.shader_registrations(),
-        &[ShaderRegistration {
-            key: slash.key,
-            shader: presentation.bindings()[0].shader
-        }]
+        &[registrations[0].map_shader(|_| presentation.bindings()[0].shader)]
     );
     let styled = presentation.bindings()[0].shader;
     assert_eq!(styled.0 as usize, prefix.shader_bindings);
@@ -360,4 +361,171 @@ fn native_registration_keys_and_styled_requests_share_atomic_canonical_rows() {
         Some((id, 0))
     );
     assert_eq!(presentation.native_page0(), Some(lightmap));
+}
+
+#[test]
+fn named_zero_pass_body_is_safe_as_a_generic_world_draw_without_cpu_rejection() {
+    use qa_content::vfs::Vfs;
+    use qa_core::primitives::RuleSetId;
+    use qa_render::{
+        NativeDefaultKind,
+        material::{
+            resources::{ImageSettings, Images},
+            world_load::{NamedShaderLighting, compile_named_shader},
+        },
+        shader::parse_sources,
+        world::{VisibleSurface, WorldPresentationInput},
+    };
+    let vfs = Vfs::default();
+    let mut assets = Assets::load().unwrap();
+    let registration = {
+        let mut images = Images::new(
+            &vfs,
+            &mut assets,
+            RuleSetId::Quake3,
+            RuleSetId::Quake3,
+            ImageSettings::native(RuleSetId::Quake3),
+            None,
+        )
+        .unwrap();
+        compile_named_shader(
+            &parse_sources(&[]),
+            b"named/no_image",
+            true,
+            NamedShaderLighting {
+                source: LightSource::None,
+                lightmap: qa_render::ImageId(0),
+            },
+            &mut images,
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        registration.defaulted,
+        Some(NativeDefaultKind::MissingImage)
+    );
+    let candidate = SurfaceMaterial {
+        shader: *assets.shader_binding(registration.shader).unwrap(),
+        texture_scale: [1.0; 2],
+    };
+    let (geometry, visibility) = world_surfaces::inputs(1);
+    let world = assets
+        .register_world(
+            geometry,
+            visibility,
+            &[WorldPresentationInput::new(&[candidate])],
+        )
+        .unwrap();
+    let presentation = assets.world(world).unwrap().presentations()[0];
+    assert_eq!(
+        assets.surface_binding(presentation, 0).unwrap().shader,
+        registration.shader
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([31, 43, 59, 255]).unwrap();
+    assert!(frame.add_world(world, presentation, &[VisibleSurface::default()]));
+    assert!(frame.render_scene(
+        Refdef {
+            viewport: Viewport {
+                width: 8,
+                height: 8,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        &[],
+        &assets
+    ));
+    let packet = frame.finish();
+    let qa_render::Command::View(view) = packet.commands()[1] else {
+        panic!("world view")
+    };
+    assert_eq!(packet.draws(view.scene.draws).len(), 1);
+    let stats = cpu.render(&packet, &assets);
+    assert_eq!(stats.rejected, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([31, 43, 59, 255]))
+    );
+}
+
+#[test]
+fn world_registration_rejects_native_metadata_that_disagrees_with_its_actual_body() {
+    use qa_render::{
+        NativeDefaultKind,
+        world::{PreparedShader, WorldPresentationInput},
+    };
+    let mut assets = Assets::load().unwrap();
+    let material = assets
+        .register_material(
+            "metadata/body",
+            &[stage(qa_render::ImageId(0))],
+            Default::default(),
+        )
+        .unwrap();
+    let body = ShaderBinding::material(material, LightSource::None);
+    let shader = assets.register_shader_binding(body).unwrap();
+    let registration = assets
+        .shader_registration(b"metadata/raw.tga", shader)
+        .unwrap();
+    let surface = SurfaceMaterial {
+        shader: body,
+        texture_scale: [1.0; 2],
+    };
+    let counts = assets.counts();
+    for payload in [PreparedShader::Surface(0), PreparedShader::Binding(body)] {
+        let valid = registration.map_shader(|_| payload);
+        for invalid in [
+            qa_render::ShaderRegistration {
+                requested: LightSource::Page(7),
+                ..valid
+            },
+            qa_render::ShaderRegistration {
+                finished: LightSource::Vertex,
+                ..valid
+            },
+            qa_render::ShaderRegistration {
+                defaulted: Some(NativeDefaultKind::MissingImage),
+                ..valid
+            },
+        ] {
+            let (geometry, visibility) = world_surfaces::inputs(1);
+            assert!(
+                assets
+                    .register_world(
+                        geometry,
+                        visibility,
+                        &[WorldPresentationInput {
+                            surfaces: &[surface],
+                            registrations: &[invalid],
+                            native_page0: None,
+                        }]
+                    )
+                    .is_err()
+            );
+            assert_eq!(assets.counts(), counts);
+        }
+    }
+    let (geometry, visibility) = world_surfaces::inputs(1);
+    let world = assets
+        .register_world(
+            geometry,
+            visibility,
+            &[WorldPresentationInput {
+                surfaces: &[surface],
+                registrations: &[registration.map_shader(|_| PreparedShader::Surface(0))],
+                native_page0: None,
+            }],
+        )
+        .unwrap();
+    let presentation = assets.world(world).unwrap().presentations()[0];
+    assert_eq!(
+        assets
+            .world_presentation(presentation)
+            .unwrap()
+            .shader_registrations(),
+        &[registration]
+    );
 }

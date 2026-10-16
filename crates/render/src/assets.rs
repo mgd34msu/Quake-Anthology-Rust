@@ -26,7 +26,25 @@ pub struct MaterialId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShaderRegistration<S = ShaderBindingId> {
     pub key: NameId,
+    pub requested: LightSource,
+    pub finished: LightSource,
     pub shader: S,
+    pub defaulted: Option<NativeDefaultKind>,
+}
+impl<S> ShaderRegistration<S> {
+    pub fn map_shader<T>(self, map: impl FnOnce(S) -> T) -> ShaderRegistration<T> {
+        ShaderRegistration {
+            key: self.key,
+            requested: self.requested,
+            finished: self.finished,
+            shader: map(self.shader),
+            defaulted: self.defaulted,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeDefaultKind {
+    MissingImage,
 }
 /// A shader variant binds compiled stages to its selected lighting resource.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -781,20 +799,47 @@ impl Assets {
         stages: &[Stage],
         settings: MaterialSettings,
     ) -> Result<MaterialId, &'static str> {
+        self.intern_material(name, stages, settings, None)
+    }
+    pub(crate) fn register_native_default_material(
+        &mut self,
+        name: &str,
+        kind: NativeDefaultKind,
+    ) -> Result<MaterialId, &'static str> {
+        self.intern_material(
+            name,
+            &[],
+            MaterialSettings {
+                sort: 7.0,
+                ..MaterialSettings::default()
+            },
+            Some(kind),
+        )
+    }
+    fn intern_material(
+        &mut self,
+        name: &str,
+        stages: &[Stage],
+        settings: MaterialSettings,
+        native_default: Option<NativeDefaultKind>,
+    ) -> Result<MaterialId, &'static str> {
         let name = self.intern_name(name)?;
+        if (stages.is_empty()
+            && settings.sky.is_none()
+            && settings.fog.is_none()
+            && native_default.is_none())
+            || stages.len() > 8
+            || !settings_valid(settings, self)
+            || stages.iter().any(|s| !stage_valid(*s, self))
+        {
+            return Err("invalid material stages");
+        }
         if let Some(index) = self
             .materials
             .iter()
             .position(|m| m.name == name && m.stages.as_ref() == stages && m.settings == settings)
         {
             return Ok(MaterialId(index as u32));
-        }
-        if (stages.is_empty() && settings.sky.is_none() && settings.fog.is_none())
-            || stages.len() > 8
-            || !settings_valid(settings, self)
-            || stages.iter().any(|s| !stage_valid(*s, self))
-        {
-            return Err("invalid material stages");
         }
         let id =
             MaterialId(u32::try_from(self.materials.len()).map_err(|_| "material table full")?);
@@ -811,15 +856,63 @@ impl Assets {
         raw: &[u8],
         shader: ShaderBindingId,
     ) -> Result<ShaderRegistration, &'static str> {
-        self.shader_binding(shader)
+        let binding = *self
+            .shader_binding(shader)
             .ok_or("invalid registration shader")?;
+        self.shader_registration_value(raw, binding, None)
+            .map(|registration| registration.map_shader(|_| shader))
+    }
+    pub(crate) fn shader_registration_value(
+        &mut self,
+        raw: &[u8],
+        shader: ShaderBinding,
+        defaulted: Option<NativeDefaultKind>,
+    ) -> Result<ShaderRegistration<ShaderBinding>, &'static str> {
+        let (requested, finished) = self.shader_metadata(shader, defaulted)?;
         self.intern_resource_name(raw)?;
         let exact = self.intern_resource_name(crate::shader::registration_key(raw))?;
         let key = self
             .names
             .folded(exact)
             .ok_or("missing shader registration key")?;
-        Ok(ShaderRegistration { key, shader })
+        Ok(ShaderRegistration {
+            key,
+            requested,
+            finished,
+            shader,
+            defaulted,
+        })
+    }
+    fn shader_metadata(
+        &self,
+        shader: ShaderBinding,
+        defaulted: Option<NativeDefaultKind>,
+    ) -> Result<(LightSource, LightSource), &'static str> {
+        let material = self
+            .material(shader.material)
+            .ok_or("invalid registration material")?;
+        if matches!(defaulted, Some(NativeDefaultKind::MissingImage))
+            && (!material.stages.is_empty()
+                || material.settings.sort != 7.0
+                || material.settings.sky.is_some()
+                || material.settings.fog.is_some())
+        {
+            return Err("invalid native default body");
+        }
+        let requested = shader.light_source;
+        let finished = if matches!(
+            requested,
+            LightSource::Page(_) | LightSource::ExternalPage(_) | LightSource::Samples
+        ) && !material
+            .stages
+            .iter()
+            .any(|stage| stage.texture == StageTexture::Lightmap)
+        {
+            LightSource::None
+        } else {
+            requested
+        };
+        Ok((requested, finished))
     }
     pub fn shader_binding_capacity(&self) -> usize {
         self.shader_capacity
@@ -1037,13 +1130,21 @@ impl Assets {
             return Err("invalid native lightmap page");
         }
         for registration in input.registrations {
-            if self.names.folded(registration.key) != Some(registration.key)
-                || match registration.shader {
-                    PreparedShader::Surface(index) => index as usize >= input.surfaces.len(),
-                    PreparedShader::Binding(binding) => {
-                        !self.shader_binding_valid(binding) || !self.styled_shader_valid(binding)
-                    }
+            let binding = match registration.shader {
+                PreparedShader::Surface(index) => {
+                    input
+                        .surfaces
+                        .get(index as usize)
+                        .ok_or("invalid native shader surface")?
+                        .shader
                 }
+                PreparedShader::Binding(binding) => binding,
+            };
+            if self.names.folded(registration.key) != Some(registration.key)
+                || !self.shader_binding_valid(binding)
+                || !self.styled_shader_valid(binding)
+                || self.shader_metadata(binding, registration.defaulted)?
+                    != (registration.requested, registration.finished)
             {
                 return Err("invalid native shader registration");
             }
@@ -1068,10 +1169,7 @@ impl Assets {
                     PreparedShader::Surface(index) => shaders[index as usize],
                     PreparedShader::Binding(binding) => self.intern_shader_binding(binding)?,
                 };
-                Ok(ShaderRegistration {
-                    key: registration.key,
-                    shader,
-                })
+                Ok(registration.map_shader(|_| shader))
             })
             .collect::<Result<Box<[_]>, &'static str>>()?;
         Ok((shaders, registrations))

@@ -1546,6 +1546,9 @@ impl SurfacePrepare {
                 }
                 continue;
             }
+            if material.stages.is_empty() && material.settings.fog.is_none() {
+                continue;
+            }
             if material.stages.is_empty()
                 || material.settings.fog.is_some()
                 || material.settings.polygon_offset

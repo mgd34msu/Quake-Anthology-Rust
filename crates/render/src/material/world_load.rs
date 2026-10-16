@@ -9,9 +9,9 @@ use crate::{
     Assets, BlendPhase, CpuPresentation, LightStyle, PaletteOperation, PaletteTransform,
     PerspectiveStep, Refdef,
     assets::{
-        CubeSkyParams, DepthFunc, Filter, Flow, ImageId, MaterialId, MaterialSettings, Sampler,
-        ShaderBinding, ShaderBindingId, ShaderRegistration, Sky, SkyDistance, SoftwareTiled, Stage,
-        StageTexture, TcMod, TextureIntensity, UvWarp, Wrap, upload,
+        CubeSkyParams, DepthFunc, Filter, Flow, ImageId, MaterialId, MaterialSettings,
+        NativeDefaultKind, Sampler, ShaderBinding, ShaderRegistration, Sky, SkyDistance,
+        SoftwareTiled, Stage, StageTexture, TcMod, TextureIntensity, UvWarp, Wrap, upload,
     },
     lightmap::{
         Atlas, AtlasBuilder, AtlasRegion, LightmapConversion, LightmapError, Q1GlScale,
@@ -189,6 +189,7 @@ pub enum WorldMaterialError {
     Geometry(GeometryError),
     Lightmap(LightmapError),
     Boundary(&'static str),
+    Shader(&'static str),
     Catalog(super::CatalogLoadError),
 }
 impl From<ResourceError> for WorldMaterialError {
@@ -859,7 +860,7 @@ fn compile_presentation(
     let mut bindings = Vec::with_capacity(source.surfaces.len());
     let mut registrations = Vec::with_capacity(source.fogs.len() + source.surfaces.len());
     for raw in &fog_names {
-        let binding = optional_named_binding(
+        let registration = optional_named_binding(
             catalog,
             raw,
             NamedShaderLighting {
@@ -869,15 +870,9 @@ fn compile_presentation(
             &mut images,
             diagnostics,
         )?;
-        let key = images
-            .assets
-            .shader_registration(raw, ShaderBindingId(0))
-            .map_err(WorldMaterialError::Boundary)?
-            .key;
-        registrations.push(ShaderRegistration {
-            key,
-            shader: PreparedShader::Binding(binding),
-        });
+        if let Some(registration) = registration {
+            registrations.push(registration.map_shader(PreparedShader::Binding));
+        }
     }
     let mut sun = None;
     for (surface, &kind) in source.surfaces.iter().zip(&source.legacy_kinds) {
@@ -897,7 +892,7 @@ fn compile_presentation(
                     continue;
                 }
             };
-            let binding = optional_named_binding(
+            let registration = optional_named_binding(
                 catalog,
                 raw,
                 NamedShaderLighting {
@@ -915,15 +910,9 @@ fn compile_presentation(
                 &mut images,
                 diagnostics,
             )?;
-            let key = images
-                .assets
-                .shader_registration(raw, ShaderBindingId(0))
-                .map_err(WorldMaterialError::Boundary)?
-                .key;
-            registrations.push(ShaderRegistration {
-                key,
-                shader: PreparedShader::Binding(binding),
-            });
+            if let Some(registration) = registration {
+                registrations.push(registration.map_shader(PreparedShader::Binding));
+            }
             bindings.push(SurfaceMaterial::default());
             continue;
         }
@@ -1029,6 +1018,7 @@ fn compile_presentation(
         let legacy_shader_name = (!matches!(geometry_source, RuleSetId::Quake3))
             .then(|| canonical_path(&format!("textures/{name}")));
         let definition = catalog.find_canonical(legacy_shader_name.as_deref().unwrap_or(&name));
+        let mut named_registration = None;
         let material = if let Some(definition) = definition.filter(|d| d.valid) {
             if let Some(parameters) = definition.sun {
                 sun = Some(parameters.direction());
@@ -1039,8 +1029,32 @@ fn compile_presentation(
                 diagnostics.push(format!("native shader fallback: {name}"));
             }
             if matches!(geometry_source, RuleSetId::Quake3) {
-                let image = images.raster(&name, ImageUse::default(), images.raster_target())?;
-                default_material(&name, image, surface.light_source, &mut images)?
+                if definition.is_none() {
+                    let raw = source_surface_name(
+                        source,
+                        surface,
+                        &texture_names,
+                        &info_names,
+                        &shader_names,
+                    )?;
+                    let registration = compile_named_binding(
+                        catalog,
+                        raw,
+                        true,
+                        NamedShaderLighting {
+                            source: surface.light_source,
+                            lightmap: lightmaps[surface.source_id as usize].unwrap_or(ImageId(0)),
+                        },
+                        &mut images,
+                    )?;
+                    let material = registration.shader.material;
+                    named_registration = Some(registration);
+                    material
+                } else {
+                    let image =
+                        images.raster(&name, ImageUse::default(), images.raster_target())?;
+                    default_material(&name, image, surface.light_source, &mut images)?
+                }
             } else {
                 legacy_material(
                     &name,
@@ -1071,19 +1085,27 @@ fn compile_presentation(
             styled_surface: None,
         };
         let raw = source_surface_name(source, surface, &texture_names, &info_names, &shader_names)?;
-        let key = images
-            .assets
-            .shader_registration(raw, ShaderBindingId(0))
-            .map_err(WorldMaterialError::Boundary)?
-            .key;
-        registrations.push(ShaderRegistration {
-            key,
-            shader: PreparedShader::Surface(surface.source_id),
-        });
-        bindings.push(SurfaceMaterial {
-            shader: binding,
-            texture_scale: scale,
-        });
+        let registration = match named_registration {
+            Some(registration) => registration.map_shader(|_| binding),
+            None => images
+                .assets
+                .shader_registration_value(raw, binding, None)
+                .map_err(WorldMaterialError::Boundary)?,
+        };
+        if registration.defaulted.is_some() {
+            registrations.push(registration.map_shader(PreparedShader::Binding));
+            bindings.push(SurfaceMaterial {
+                texture_scale: scale,
+                ..SurfaceMaterial::default()
+            });
+        } else {
+            registrations
+                .push(registration.map_shader(|_| PreparedShader::Surface(surface.source_id)));
+            bindings.push(SurfaceMaterial {
+                shader: binding,
+                texture_scale: scale,
+            });
+        }
     }
     for conflict in images.conflicts() {
         diagnostics.push(format!(
@@ -1126,21 +1148,24 @@ fn optional_named_binding(
     lighting: NamedShaderLighting,
     images: &mut Images<'_>,
     diagnostics: &mut Vec<String>,
-) -> Result<ShaderBinding, WorldMaterialError> {
+) -> Result<Option<ShaderRegistration<ShaderBinding>>, WorldMaterialError> {
     match images
         .try_registration(|images| compile_named_binding(catalog, raw, true, lighting, images))
     {
-        Ok(binding) => Ok(binding),
-        Err(error) => {
+        Ok(registration) => Ok(Some(registration)),
+        Err(
+            error @ (WorldMaterialError::Shader(_)
+            | WorldMaterialError::Resource(ResourceError::Missing(_))),
+        ) => {
+            // Explicit invalid/unsupported recipes remain optional here, but
+            // have no native outcome until parser-prefix admission is supported.
             diagnostics.push(format!(
-                "native default shader: {} ({error:?})",
+                "native shader registration omitted: {} ({error:?})",
                 String::from_utf8_lossy(raw)
             ));
-            Ok(ShaderBinding::material(
-                MaterialId(0),
-                LightSource::TwoDimensional,
-            ))
+            Ok(None)
         }
+        Err(error) => Err(error),
     }
 }
 
@@ -1490,15 +1515,12 @@ pub fn compile_named_shader(
     lighting: NamedShaderLighting,
     images: &mut Images<'_>,
 ) -> Result<ShaderRegistration, WorldMaterialError> {
-    let binding = compile_named_binding(catalog, raw, mipmaps, lighting, images)?;
+    let registration = compile_named_binding(catalog, raw, mipmaps, lighting, images)?;
     let shader = images
         .assets
-        .register_shader_binding(binding)
+        .register_shader_binding(registration.shader)
         .map_err(WorldMaterialError::Boundary)?;
-    images
-        .assets
-        .shader_registration(raw, shader)
-        .map_err(WorldMaterialError::Boundary)
+    Ok(registration.map_shader(|_| shader))
 }
 
 fn compile_named_binding(
@@ -1507,15 +1529,16 @@ fn compile_named_binding(
     mipmaps: bool,
     lighting: NamedShaderLighting,
     images: &mut Images<'_>,
-) -> Result<ShaderBinding, WorldMaterialError> {
+) -> Result<ShaderRegistration<ShaderBinding>, WorldMaterialError> {
     let image = std::str::from_utf8(raw)
         .map_err(|_| WorldMaterialError::Boundary("invalid shader name"))?;
     let display = std::str::from_utf8(crate::shader::registration_key(raw))
         .map_err(|_| WorldMaterialError::Boundary("invalid shader name"))?;
     let definition = catalog.find_canonical(&canonical_path(display));
     if definition.is_some_and(|definition| !definition.valid) {
-        return Err(WorldMaterialError::Boundary("invalid shader definition"));
+        return Err(WorldMaterialError::Shader("invalid shader definition"));
     }
+    let mut defaulted = None;
     let material = if let Some(definition) = definition {
         let mut definition = definition.clone();
         if !matches!(
@@ -1550,12 +1573,26 @@ fn compile_named_binding(
                 ..ImageUse::default()
             },
             images.raster_target(),
-        )?;
-        default_material(display, image, lighting.source, images)?
+        );
+        match image {
+            Ok(image) => default_material(display, image, lighting.source, images)?,
+            Err(ResourceError::Missing(_)) => {
+                let kind = NativeDefaultKind::MissingImage;
+                defaulted = Some(kind);
+                images
+                    .assets
+                    .register_native_default_material(display, kind)
+                    .map_err(WorldMaterialError::Boundary)?
+            }
+            Err(error) => return Err(error.into()),
+        }
     };
     let mut binding = ShaderBinding::material(material, lighting.source);
     binding.lightmap = lighting.lightmap;
-    Ok(binding)
+    images
+        .assets
+        .shader_registration_value(raw, binding, defaulted)
+        .map_err(WorldMaterialError::Boundary)
 }
 
 pub fn compile_definition(
@@ -1563,7 +1600,7 @@ pub fn compile_definition(
     images: &mut Images<'_>,
 ) -> Result<MaterialId, WorldMaterialError> {
     if definition.has_unsupported_runtime() {
-        return Err(WorldMaterialError::Boundary(
+        return Err(WorldMaterialError::Shader(
             "unsupported runtime shader declaration",
         ));
     }
@@ -1575,7 +1612,7 @@ pub fn compile_definition(
             Deform::AutoSprite | Deform::AutoSprite2 | Deform::ProjectionShadow | Deform::Text(_)
         )
     }) {
-        return Err(WorldMaterialError::Boundary(
+        return Err(WorldMaterialError::Shader(
             "shader topology deformation pending",
         ));
     }
@@ -1612,7 +1649,7 @@ pub fn compile_definition(
         let texture = match parsed
             .map
             .as_ref()
-            .ok_or(WorldMaterialError::Boundary("shader stage has no map"))?
+            .ok_or(WorldMaterialError::Shader("shader stage has no map"))?
         {
             TextureMap::Image { name, clamp } => {
                 sampler.wrap = if *clamp { Wrap::Clamp } else { Wrap::Repeat };
@@ -1661,7 +1698,7 @@ pub fn compile_definition(
                 }
             }
             TextureMap::Video(_) => {
-                return Err(WorldMaterialError::Boundary(
+                return Err(WorldMaterialError::Shader(
                     "video shader image decoder pending",
                 ));
             }

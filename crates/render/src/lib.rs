@@ -19,8 +19,8 @@ pub mod stage;
 pub mod surface_cache;
 pub mod world;
 pub use assets::{
-    Assets, ImageId, MaterialId, ModelId, PaletteId, ShaderBinding, ShaderBindingId,
-    ShaderRegistration, Vertex,
+    Assets, ImageId, MaterialId, ModelId, NativeDefaultKind, PaletteId, ShaderBinding,
+    ShaderBindingId, ShaderRegistration, Vertex,
 };
 pub use scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame, FrontEnd,

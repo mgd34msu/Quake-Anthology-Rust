@@ -328,6 +328,7 @@ struct RegisteredSkin {
 fn source_handle<'a, T: 'a>(
     states: impl Iterator<Item = &'a RegistrationState<T>>,
     handle: i32,
+    public: impl Fn(&T) -> bool,
 ) -> Option<i32> {
     let mut ready = false;
     let mut configured = false;
@@ -335,7 +336,7 @@ fn source_handle<'a, T: 'a>(
         configured = true;
         match state {
             RegistrationState::Unattempted => return None,
-            RegistrationState::Ready { .. } => ready = true,
+            RegistrationState::Ready { value, .. } => ready |= public(value),
             RegistrationState::Failed(_) => {}
         }
     }
@@ -349,6 +350,7 @@ impl RegisteredSkin {
                 .filter(|entry| entry.profile.source_rules == source)
                 .map(|entry| &entry.state),
             handle,
+            |_| true,
         )
     }
 }
@@ -1408,12 +1410,21 @@ impl ModelAssets {
         if cached.iter().all(Option::is_some) {
             return Ok((handles, self.assets.counts()));
         }
-        if cached.contains(&Some(0)) {
+        if requests.iter().zip(cached).any(|(request, cached)| {
+            cached == Some(0)
+                && match request.kind {
+                    RendererRegistration::Shader { lighting, .. } => self
+                        .catalog
+                        .shader_outcome(request.name.as_ref(), profile, lighting)
+                        .is_none(),
+                    _ => true,
+                }
+        }) {
             return Err("renderer registration unavailable for invoking profile".to_owned());
         }
         let checkpoint = RegistrationCheckpoint::capture(self, requests)?;
         let mut rollback = RegistrationRollback::Source;
-        let result = (|| {
+        let result: Result<([i32; N], AssetCounts), String> = (|| {
             for (index, request) in requests.into_iter().enumerate() {
                 if cached[index].is_some() {
                     continue;
@@ -1432,13 +1443,24 @@ impl ModelAssets {
                     }
                 }
                 .map_err(|error| format!("renderer registration: {error:?}"))?;
-                if !self
-                    .catalog
-                    .renderer_candidate(request.kind, handle, profile)
-                {
-                    return Err("renderer registration unavailable for invoking profile".to_owned());
-                }
-                handles[index] = handle;
+                let candidate = match request.kind {
+                    RendererRegistration::Shader { lighting, .. } => self
+                        .catalog
+                        .shader_outcome_candidate(raw, profile, lighting)
+                        .map(|(registration, _)| {
+                            if registration.defaulted.is_some() {
+                                0
+                            } else {
+                                handle
+                            }
+                        }),
+                    _ => self
+                        .catalog
+                        .renderer_candidate(request.kind, handle, profile)
+                        .then_some(handle),
+                };
+                handles[index] =
+                    candidate.ok_or("renderer registration unavailable for invoking profile")?;
             }
             let counts = self.assets.counts();
             rollback = RegistrationRollback::Retry;
@@ -2291,17 +2313,10 @@ impl ModelAssets {
         let cached = find_shader_index(&self.catalog.names, &self.catalog.shader_indices, raw)
             .and_then(|(_, index)| index);
         if let Some(index) = cached {
-            let rows = &self.catalog.shaders[index as usize].profiles;
-            if let Some(handle) = source_handle(
-                rows.iter()
-                    .copied()
-                    .map(|index| &self.catalog.shader_bindings[index])
-                    .filter(|binding| {
-                        matches_profile(binding.profile) && binding.lighting == lighting
-                    })
-                    .map(|binding| &binding.state),
-                index as i32 + 1,
-            ) {
+            if let Some(handle) =
+                self.catalog
+                    .shader_source_handle(index as i32 + 1, lighting, matches_profile)
+            {
                 return Ok(handle);
             }
         }
@@ -2425,11 +2440,32 @@ impl ModelAssets {
             .map_err(Clone::clone);
         let mut ready = false;
         for &row in &self.catalog.shaders[index].profiles {
+            let profile = self.catalog.shader_bindings[row].profile;
+            let existing_default = self.catalog.shaders[index]
+                .profiles
+                .iter()
+                .map(|&row| &self.catalog.shader_bindings[row])
+                .filter(|entry| entry.profile == profile)
+                .find_map(|entry| {
+                    entry
+                        .state
+                        .ready()
+                        .filter(|(registration, _)| registration.defaulted.is_some())
+                })
+                .map(|(registration, required)| (*registration, required));
             let binding = &mut self.catalog.shader_bindings[row];
             if !matches_profile(binding.profile)
                 || binding.lighting != lighting
                 || !matches!(binding.state, RegistrationState::Unattempted)
             {
+                continue;
+            }
+            if let Some((registration, required_assets)) = existing_default {
+                ready = true;
+                binding.state = RegistrationState::Ready {
+                    value: registration,
+                    required_assets,
+                };
                 continue;
             }
             let images = self
@@ -2464,7 +2500,9 @@ impl ModelAssets {
             };
         }
         if ready {
-            Ok(index as i32 + 1)
+            self.catalog
+                .shader_source_handle(index as i32 + 1, lighting, matches_profile)
+                .ok_or(CallError::Aborted)
         } else {
             if first_request {
                 self.catalog.shaders[index].requests[source as usize] = None;
@@ -2715,18 +2753,10 @@ fn shader_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Optio
     }
     let (_, index) = find_shader_index(&catalog.names, &catalog.shader_indices, raw)?;
     let index = index?;
-    let entry = catalog.shaders.get(index as usize)?;
-    source_handle(
-        entry
-            .profiles
-            .iter()
-            .map(|&index| &catalog.shader_bindings[index])
-            .filter(|entry| {
-                entry.profile.source_rules == source
-                    && entry.lighting == ShaderLighting::TwoDimensional
-            })
-            .map(|entry| &entry.state),
+    catalog.shader_source_handle(
         index as i32 + 1,
+        ShaderLighting::TwoDimensional,
+        |profile| profile.source_rules == source,
     )
 }
 
@@ -3003,9 +3033,14 @@ impl ModelCatalog {
             RendererRegistration::Shader { lighting, .. } => {
                 let (_, index) = find_shader_index(&self.names, &self.shader_indices, name)?;
                 let handle = i32::try_from(index?.checked_add(1)?).ok()?;
-                self.shader_profile_lighting(handle, profile, lighting)?
+                let entry = self.shader_profile_lighting(handle, profile, lighting)?;
+                let public = entry
                     .state
-                    .cached(handle, self.admitted_assets)
+                    .ready()
+                    .is_none_or(|(registration, _)| registration.defaulted.is_none());
+                entry
+                    .state
+                    .cached(if public { handle } else { 0 }, self.admitted_assets)
             }
             RendererRegistration::Skin => {
                 let name = self.names.find_path_bytes(name)?;
@@ -3034,6 +3069,7 @@ impl ModelCatalog {
                 .filter(|entry| entry.profile.source_rules == source)
                 .map(|entry| &entry.state),
             handle,
+            |_| true,
         )
     }
 
@@ -3071,10 +3107,54 @@ impl ModelCatalog {
     pub fn colors(&self, binding: ModelColorId) -> Option<&PaletteColors> {
         self.profiles.get(binding.0 as usize)?.colors.as_ref()
     }
+    fn shader_source_handle(
+        &self,
+        handle: i32,
+        lighting: ShaderLighting,
+        matches_profile: impl Fn(ModelProfile) -> bool,
+    ) -> Option<i32> {
+        let missing = RegistrationState::Unattempted;
+        source_handle(
+            self.profiles
+                .iter()
+                .filter(|entry| matches_profile(entry.profile))
+                .map(|entry| {
+                    self.shader_profile_lighting(handle, entry.profile, lighting)
+                        .map_or(&missing, |entry| &entry.state)
+                }),
+            handle,
+            |registration| registration.defaulted.is_none(),
+        )
+    }
+
+    fn shader_outcome_candidate(
+        &self,
+        name: &[u8],
+        profile: ModelProfile,
+        lighting: ShaderLighting,
+    ) -> Option<(&ShaderRegistration, Option<AssetCounts>)> {
+        let (_, index) = find_shader_index(&self.names, &self.shader_indices, name)?;
+        let handle = i32::try_from(index?.checked_add(1)?).ok()?;
+        self.shader_profile_lighting(handle, profile, lighting)?
+            .state
+            .ready()
+    }
+
+    /// Published native outcome, including a named default whose public handle is zero.
+    pub fn shader_outcome(
+        &self,
+        name: &[u8],
+        profile: ModelProfile,
+        lighting: ShaderLighting,
+    ) -> Option<&ShaderRegistration> {
+        let (registration, required) = self.shader_outcome_candidate(name, profile, lighting)?;
+        self.admitted(required).then_some(registration)
+    }
+
     pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<ShaderBindingId> {
         let entry = self.shader_profile(handle, profile)?;
         let (registration, required_assets) = entry.state.ready()?;
-        self.admitted(required_assets)
+        (self.admitted(required_assets) && registration.defaulted.is_none())
             .then_some(registration.shader)
     }
 
@@ -3088,13 +3168,21 @@ impl ModelCatalog {
         lighting: ShaderLighting,
     ) -> Option<&ShaderProfileBinding> {
         let index = usize::try_from(handle.checked_sub(1)?).ok()?;
-        self.shaders
-            .get(index)?
-            .profiles
-            .iter()
-            .copied()
-            .map(|i| &self.shader_bindings[i])
-            .find(|entry| entry.profile == profile && entry.lighting == lighting)
+        let rows = &self.shaders.get(index)?.profiles;
+        rows.iter()
+            .map(|&i| &self.shader_bindings[i])
+            .find(|entry| {
+                entry.profile == profile
+                    && entry
+                        .state
+                        .ready()
+                        .is_some_and(|(registration, _)| registration.defaulted.is_some())
+            })
+            .or_else(|| {
+                rows.iter()
+                    .map(|&i| &self.shader_bindings[i])
+                    .find(|entry| entry.profile == profile && entry.lighting == lighting)
+            })
     }
 
     pub fn renderer_registrations(
@@ -3475,7 +3563,11 @@ fn register(
                     )
                     .map_err(|error| format!("model shader: {error:?}"))?;
                     registrations.push(registration);
-                    Ok([registration.shader; 4])
+                    Ok([if registration.defaulted.is_some() {
+                        ShaderBindingId(0)
+                    } else {
+                        registration.shader
+                    }; 4])
                 })
                 .collect::<Result<Vec<_>, String>>()?
         };
