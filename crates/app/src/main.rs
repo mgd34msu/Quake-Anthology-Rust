@@ -845,7 +845,7 @@ fn run() -> Result<(), String> {
             Duration::from_secs(10),
         )?;
     }
-    host.register_client_model_assets();
+    host.register_client_model_assets(None);
     let models = host
         .runtime
         .model_assets

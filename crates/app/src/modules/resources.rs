@@ -37,8 +37,12 @@ impl FrameHost {
         }
     }
 
-    pub fn register_client_model_assets(&mut self) {
+    pub fn register_client_model_assets(
+        &mut self,
+        mut preparer: Option<&mut dyn crate::renderer::AssetPreparer>,
+    ) {
         let runtime = &mut self.runtime;
+        let mut published = false;
         for (index, resources) in runtime.client_resources.iter_mut().enumerate() {
             let Some(resources) = resources else { continue };
             let source = self
@@ -69,6 +73,13 @@ impl FrameHost {
                         &runtime.vfs,
                         source,
                     )
+                } else if let Some(preparer) = preparer.as_deref_mut() {
+                    let (rejected, changed) =
+                        resources
+                            .state
+                            .prepare_models(owner, &runtime.vfs, preparer);
+                    published |= changed;
+                    rejected
                 } else {
                     resources
                         .state
@@ -79,6 +90,9 @@ impl FrameHost {
                 0
             };
             resources.state.rejected += u64::from(rejected);
+        }
+        if published {
+            self.refresh_model_consumers();
         }
     }
     /// Module renderer provenance is independent of the SERVER publisher's

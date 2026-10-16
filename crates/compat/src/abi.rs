@@ -138,6 +138,16 @@ fn register_renderer(
         return Ok(CallValue::Word(0));
     }
     let name = c.memory.cstring(c.required_pointer(0)?)?;
+    if c.services.model_loader.is_none()
+        && name.len() < 64
+        && let Some(handle) = c
+            .services
+            .scene
+            .as_deref()
+            .and_then(|scene| scene.registration_cached(kind, name, c.context.native_rules))
+    {
+        return Ok(CallValue::Word(handle as u32 as u64));
+    }
     let available = c.services.model_loader.is_none()
         && c.services
             .scene
@@ -146,16 +156,6 @@ fn register_renderer(
     if !available || name.is_empty() || name.len() >= 64 {
         return (ENGINE_CALLS.register_renderer)(c.services, name, c.context.native_rules, kind)
             .map(|handle| CallValue::Word(handle as u32 as u64));
-    }
-    if let Some(handle) = c
-        .services
-        .renderer_handle(name, c.context.native_rules, kind)
-        && c.services
-            .scene
-            .as_deref()
-            .is_some_and(|scene| scene.registration_ready(kind, handle))
-    {
-        return Ok(CallValue::Word(handle as u32 as u64));
     }
     let mut copied = qa_core::text::FixedText::default();
     copied.set_bytes(name).map_err(|_| CallError::Text)?;

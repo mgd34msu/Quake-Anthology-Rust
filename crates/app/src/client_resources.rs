@@ -46,6 +46,7 @@ pub struct ResourceState {
     static_sounds: u32,
     static_entities: Box<[crate::client_scene::StaticEntity]>,
     static_entity_count: usize,
+    static_dirty: bool,
 }
 impl ClientResources {
     pub fn load(
@@ -80,6 +81,7 @@ impl ClientResources {
                 ]
                 .into_boxed_slice(),
                 static_entity_count: 0,
+                static_dirty: false,
             },
         }))
     }
@@ -117,6 +119,7 @@ impl ClientResources {
             );
         });
         self.state.rejected += rejected + u64::from(result.is_err());
+        self.state.models.configs_replaced();
         if let Some(catalog) = catalog {
             self.state.rejected +=
                 u64::from(self.state.models.refresh_all(&self.state.configs, catalog));
@@ -482,7 +485,9 @@ impl ResourceState {
         *slot = self
             .models
             .capture_static(record, &self.configs, lookup, world);
+        self.rejected += u64::from(slot.rejected);
         self.static_entity_count += 1;
+        self.static_dirty = true;
         true
     }
     pub fn static_entities(&self) -> &[crate::client_scene::StaticEntity] {
@@ -492,6 +497,29 @@ impl ResourceState {
         for entity in &mut self.static_entities[..self.static_entity_count] {
             self.models.complete_static(entity, catalog);
         }
+    }
+
+    pub(crate) fn prepare_models(
+        &mut self,
+        owner: &mut crate::model_assets::ModelAssets,
+        vfs: &qa_content::vfs::Vfs,
+        preparer: &mut dyn crate::renderer::AssetPreparer,
+    ) -> (u32, bool) {
+        let (rejected, published) =
+            self.models
+                .prepare_pending(&self.configs, owner, vfs, preparer);
+        if self.static_dirty
+            && let Some((static_rejected, static_published)) = self.models.prepare_static(
+                &mut self.static_entities[..self.static_entity_count],
+                owner,
+                vfs,
+                preparer,
+            )
+        {
+            self.static_dirty = false;
+            return (rejected + static_rejected, published || static_published);
+        }
+        (rejected, published)
     }
 
     pub fn static_entity_capacity(&self) -> usize {

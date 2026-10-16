@@ -716,7 +716,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
             .state
             .receive_static_entity(source_edict, None, None)
     );
-    let retained = resources.state.static_entities()[0];
+    let retained = resources.state.static_entities()[0].clone();
     assert_eq!(retained.appearance.models[0], Some(reference(client)));
     assert_eq!(retained.appearance.native.colormap, 3);
     assert_eq!(retained.appearance.native.effects, 0);
@@ -2276,6 +2276,22 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
             vec![],
         )
         .unwrap();
+        if !bound_at_receipt && !pending_at_receipt {
+            // Another CLIENT's prepared prefix can publish before this seat
+            // selects a profile. That must retain its numeric static identity.
+            let backend = qa_render::cpu::CpuBackend::load_with_limits(
+                8,
+                8,
+                host.runtime.model_assets.as_ref().unwrap().assets(),
+                qa_render::cpu::CpuLimits {
+                    cache_bytes: 4096,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            host.publish_model_admission(backend.admitted_assets().unwrap())
+                .unwrap();
+        }
         host.bind_client_model_assets([(client, profile, None)]);
         if let Some(backend) = backend.as_mut() {
             let owner = host.runtime.model_assets.as_ref().unwrap();
@@ -2341,6 +2357,37 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
             submitted,
             Some(first_model.into()),
             "bound={bound_at_receipt} pending={pending_at_receipt}"
+        );
+    }
+}
+
+#[test]
+fn native_inline_config_names_use_common_prefix_parser_and_integer_limits() {
+    let mut assets = Assets::load().unwrap();
+    let world = support::world(&mut assets, 0.0);
+    let profile = ModelRequest::native("", RuleSetId::Quake2, None).profile();
+    let owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let mut rows = configs();
+    let mut bindings = ClientModelBindings::load(ClientId(0), ConfigLayout::QUAKE2);
+    bindings.bind_all(
+        &rows,
+        owner.catalog(),
+        profile,
+        Some((world, qa_render::WorldPresentationId(0))),
+    );
+    let index = ConfigLayout::QUAKE2.resources[0].get(50).unwrap();
+    for text in [b"*1suffix".as_slice(), b"*+1rest", b"*", b"*nonnumeric"] {
+        rows.set(index, text).unwrap();
+        assert!(
+            bindings.config_changed(index, &rows, owner.catalog()),
+            "{text:?}"
+        );
+    }
+    for text in [b"*2".as_slice(), b"*4294967297", b"*-4294967295"] {
+        rows.set(index, text).unwrap();
+        assert!(
+            !bindings.config_changed(index, &rows, owner.catalog()),
+            "{text:?}"
         );
     }
 }

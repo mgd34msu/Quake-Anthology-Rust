@@ -1,3 +1,5 @@
+#[path = "support/client_asset_frames.rs"]
+mod asset_frames;
 #[path = "model_assets/support.rs"]
 mod support;
 
@@ -26,12 +28,32 @@ fn loading(
     player: &[u8],
     partial_base: bool,
 ) -> (support::Fixture, FrameHost, ModelProfile) {
+    loading_with_connection(rules, player, partial_base, false)
+}
+fn loading_with_connection(
+    rules: RuleSetId,
+    player: &[u8],
+    partial_base: bool,
+    connected: bool,
+) -> (support::Fixture, FrameHost, ModelProfile) {
+    let long = format!("models/{}.md2", "x".repeat(84));
     let mut files = vec![
         ("players/male/tris.md2", support::md2()),
         ("models/test/skin0.pcx", support::pcx(11)),
         ("models/test/skin1.pcx", support::pcx(22)),
         ("models/items/shell/tris.md2", support::md2()),
         ("models/ordinary.md2", support::md2()),
+        ("models/invalid.md2", b"invalid MD2".to_vec()),
+        ("models/late.md2", support::md2()),
+        ("models/retry.md2", support::md2()),
+        (long.as_str(), support::md2()),
+        ("players/late/tris.md2", support::md2()),
+        ("players/late/weapon.md2", support::md2()),
+        ("players/late/w1.md2", support::md2()),
+        ("players/late/blue.pcx", support::pcx(77)),
+        ("players/late/blue_i.pcx", support::pcx(78)),
+        ("players/late/red.pcx", support::pcx(88)),
+        ("players/late/red_i.pcx", support::pcx(89)),
     ];
     if !partial_base {
         files.extend([
@@ -60,9 +82,31 @@ fn loading(
     let mut runtime = Runtime::load(1, []).unwrap();
     runtime.vfs = std::mem::take(&mut fixture.vfs);
     runtime.model_assets = Some(builder);
-    let mut resources = ClientResources::load(ClientId(0), protocol, rules)
-        .unwrap()
-        .unwrap();
+    let client = connected.then(|| {
+        runtime
+            .connect_local(
+                qa_core::sys_events::SeatId::FIRST,
+                qa_app::map::SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                qa_app::client_policy::ClientPolicy {
+                    input: rules,
+                    client: rules,
+                    movement: RuleSetId::Quake3,
+                    trace: RuleSetId::QuakeWorld,
+                },
+                protocol,
+                0,
+            )
+            .unwrap()
+    });
+    if client.is_none() {
+        runtime.client_resources[0] = ClientResources::load(ClientId(0), protocol, rules).unwrap();
+    }
+    let resources = runtime.client_resources[0].as_mut().unwrap();
     let layout = ConfigLayout::for_rules(rules);
     assert!(resources.apply(
         layout.resources[0].get(1).unwrap(),
@@ -82,7 +126,6 @@ fn loading(
             None
         ));
     }
-    runtime.client_resources[0] = Some(resources);
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
         runtime,
@@ -90,6 +133,7 @@ fn loading(
         vec![],
     )
     .unwrap();
+    host.local_clients[0] = client;
     let context = Context {
         source: rules,
         ..Default::default()
@@ -98,7 +142,7 @@ fn loading(
         let view = host.console.cvars.bind(name, context).unwrap();
         host.console.cvars.force_write(view, value).unwrap();
     }
-    host.register_client_model_assets();
+    host.register_client_model_assets(None);
     (fixture, host, profile)
 }
 fn bind(host: &mut FrameHost, profile: ModelProfile) {
@@ -326,7 +370,7 @@ fn source_player_fallbacks_and_cached_skin_weapon_cvars_remain_independent() {
         };
         let view = host.console.cvars.bind("cl_vwep", context).unwrap();
         host.console.cvars.force_write(view, "0").unwrap();
-        host.register_client_model_assets();
+        host.register_client_model_assets(None);
         let (_, no_vwep) = draw(&host, rules, record, None);
         assert_eq!(
             no_vwep[1].model,
@@ -334,7 +378,7 @@ fn source_player_fallbacks_and_cached_skin_weapon_cvars_remain_independent() {
         );
         let view = host.console.cvars.bind("cl_noskins", context).unwrap();
         host.console.cvars.force_write(view, "2").unwrap();
-        host.register_client_model_assets();
+        host.register_client_model_assets(None);
         let (_, restricted) = draw(&host, rules, record, None);
         let expected = if rules == RuleSetId::Quake2 {
             b"players/male/tris.md2".as_slice()
@@ -464,4 +508,278 @@ fn rerelease_named_shell_features_are_cached_per_cell_and_frozen_for_statics() {
     assert_eq!(frozen[1].alpha, Some(alpha * 0.32));
     assert_eq!(frozen[1].model, before[1].model);
     assert_eq!(frozen[1].material, before[1].material);
+}
+
+#[test]
+fn queued_player_and_weapon_changes_prepare_once_and_bad_models_do_not_starve_healthy_rows() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let (_fixture, mut host, profile) =
+            loading_with_connection(rules, b"Initial\\male/grunt", false, true);
+        let protocol = if rules == RuleSetId::Quake2 {
+            Protocol::Quake2_34
+        } else {
+            Protocol::Quake2Repro1038
+        };
+        let client = host.local_clients[0].unwrap();
+        bind(&mut host, profile);
+        let mut source =
+            asset_frames::Source::load(host.runtime.model_assets.as_ref().unwrap().assets());
+        host.publish_model_admission(source.cpu.admitted_assets().unwrap())
+            .unwrap();
+        source.step(&mut host);
+        source.enabled = false;
+        let layout = ConfigLayout::for_rules(rules);
+        let mut updates = vec![
+            asset_frames::config(
+                protocol,
+                layout.resources[0].get(1).unwrap(),
+                b"players/male/tris.md2",
+            ),
+            asset_frames::config(protocol, layout.resources[0].get(2).unwrap(), b"#w1.md2"),
+            asset_frames::config(
+                protocol,
+                layout.resources[0].get(3).unwrap(),
+                b"models/invalid.md2",
+            ),
+            asset_frames::config(
+                protocol,
+                layout.resources[0].get(4).unwrap(),
+                b"models/late.md2",
+            ),
+            asset_frames::config(protocol, layout.players.get(0).unwrap(), b"Late\\late/blue"),
+        ];
+        let long = format!("models/{}.md2", "x".repeat(84));
+        if rules == RuleSetId::Quake2Rerelease {
+            assert_eq!(long.len(), 95);
+            updates.push(asset_frames::config(
+                protocol,
+                layout.resources[0].get(5).unwrap(),
+                long.as_bytes(),
+            ));
+        }
+        asset_frames::queue(&mut host, updates);
+        host.runtime.vfs.take_lookup_count();
+        let attempts = source.attempts;
+        source.step(&mut host);
+        assert_eq!(
+            host.runtime.client_resources[0]
+                .as_ref()
+                .unwrap()
+                .state
+                .configs
+                .config(layout.players.get(0).unwrap())
+                .unwrap()
+                .text,
+            b"Late\\late/blue"
+        );
+        assert_eq!(source.attempts, attempts);
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+        source.enabled = true;
+        source.step(&mut host);
+        let owner = host.runtime.model_assets.as_ref().unwrap();
+        let catalog = owner.catalog();
+        let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+        let resolve = |ordinal| {
+            state
+                .models
+                .resolve(
+                    ModelRef::native(ResourceNamespace::Client(client), ordinal).unwrap(),
+                    0,
+                    catalog,
+                    Default::default(),
+                )
+                .and_then(|mut bindings| bindings.next())
+        };
+        assert!(resolve(3).is_none());
+        assert!(resolve(4).is_some());
+        if rules == RuleSetId::Quake2Rerelease {
+            assert!(resolve(5).is_some());
+        }
+        assert_eq!(source.cpu.admitted_assets(), Some(owner.assets().counts()));
+        let body = catalog
+            .bindings(
+                catalog
+                    .registration("players/late/tris.md2", profile)
+                    .unwrap(),
+                0,
+                Default::default(),
+            )
+            .unwrap()
+            .next()
+            .unwrap()
+            .model;
+        let weapon = catalog
+            .bindings(
+                catalog
+                    .registration("players/late/w1.md2", profile)
+                    .unwrap(),
+                0,
+                Default::default(),
+            )
+            .unwrap()
+            .next()
+            .unwrap()
+            .model;
+        let (counts, entities) = draw(&host, rules, player_record(rules, 1 << 8), None);
+        assert_eq!(counts.models, 2);
+        assert_eq!(entities[0].model, body.into());
+        assert_eq!(entities[1].model, weapon.into());
+        let qa_render::assets::StageTexture::Image(image) = owner
+            .assets()
+            .material(entities[0].material.unwrap())
+            .unwrap()
+            .stages[0]
+            .texture
+        else {
+            panic!("player image")
+        };
+        assert_eq!(
+            owner
+                .assets()
+                .image(image)
+                .unwrap()
+                .indexed
+                .as_ref()
+                .unwrap()
+                .mip(0)
+                .unwrap()
+                .indices()[0],
+            77
+        );
+        assert!(host.runtime.vfs.take_lookup_count() > 0);
+        let attempts = source.attempts;
+        source.step(&mut host);
+        assert_eq!(source.attempts, attempts);
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+
+        asset_frames::queue(
+            &mut host,
+            [
+                asset_frames::config(protocol, layout.players.get(0).unwrap(), b"Late\\late/red"),
+                asset_frames::config(
+                    protocol,
+                    layout.resources[0].get(3).unwrap(),
+                    b"models/retry.md2",
+                ),
+            ],
+        );
+        source.step(&mut host);
+        let owner = host.runtime.model_assets.as_ref().unwrap();
+        let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+        assert_eq!(
+            state
+                .configs
+                .config(layout.resources[0].get(3).unwrap())
+                .unwrap()
+                .text,
+            b"models/retry.md2"
+        );
+        assert!(
+            state
+                .models
+                .resolve(
+                    ModelRef::native(ResourceNamespace::Client(client), 3).unwrap(),
+                    0,
+                    owner.catalog(),
+                    Default::default()
+                )
+                .is_some()
+        );
+        let (_, entities) = draw(&host, rules, player_record(rules, 1 << 8), None);
+        let qa_render::assets::StageTexture::Image(image) = owner
+            .assets()
+            .material(entities[0].material.unwrap())
+            .unwrap()
+            .stages[0]
+            .texture
+        else {
+            panic!("player image")
+        };
+        assert_eq!(
+            owner
+                .assets()
+                .image(image)
+                .unwrap()
+                .indexed
+                .as_ref()
+                .unwrap()
+                .mip(0)
+                .unwrap()
+                .indices()[0],
+            88
+        );
+        assert!(host.runtime.vfs.take_lookup_count() > 0);
+        let attempts = source.attempts;
+        source.step(&mut host);
+        assert_eq!(source.attempts, attempts);
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    }
+}
+
+#[test]
+fn registered_static_player_capture_waits_for_its_profile_across_peer_publication() {
+    use qa_compat::services::{RendererRegistration, RendererRequest};
+    let (_fixture, mut host, profile) =
+        loading(RuleSetId::Quake2, b"Before binding\\female/red", false);
+    let record = player_record(RuleSetId::Quake2, 0);
+    assert!(
+        host.runtime.client_resources[0]
+            .as_mut()
+            .unwrap()
+            .state
+            .receive_static_entity(record, None, None)
+    );
+    let mut source =
+        asset_frames::Source::load(host.runtime.model_assets.as_ref().unwrap().assets());
+    let initial = source.cpu.admitted_assets().unwrap();
+    host.publish_model_admission(initial).unwrap();
+    host.runtime
+        .model_assets
+        .as_mut()
+        .unwrap()
+        .end_initial_registration();
+    let counts = {
+        let runtime = &mut host.runtime;
+        let request = RendererRequest {
+            name: b"models/ordinary.md2".as_slice(),
+            source: profile.source_rules,
+            kind: RendererRegistration::Model,
+            world: None,
+        };
+        let (_, counts) = runtime
+            .model_assets
+            .as_mut()
+            .unwrap()
+            .prepare_registration(&runtime.vfs, &request, profile, |assets| {
+                source.cpu.prepare_assets(assets).map_err(str::to_owned)
+            })
+            .unwrap();
+        counts
+    };
+    assert!(counts.models > initial.models);
+    host.publish_model_admission(counts).unwrap();
+    bind(&mut host, profile);
+    let statics = host.runtime.client_resources[0]
+        .as_ref()
+        .unwrap()
+        .state
+        .static_entities();
+    let (counts, entities) = draw(&host, RuleSetId::Quake2, record, Some(statics));
+    assert_eq!(counts.models, 2);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let body = owner
+        .catalog()
+        .bindings(
+            owner
+                .catalog()
+                .registration("players/female/tris.md2", profile)
+                .unwrap(),
+            0,
+            Default::default(),
+        )
+        .unwrap()
+        .next()
+        .unwrap()
+        .model;
+    assert_eq!(entities[0].model, body.into());
 }

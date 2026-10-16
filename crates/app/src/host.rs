@@ -790,7 +790,8 @@ impl FrameHost {
             self.dispatch_output(source, &mut result);
             return result;
         }
-        self.register_client_model_assets();
+        self.client_configurations(&mut crate::modules::Driver::new(source.asset_preparer()));
+        self.register_client_model_assets(source.asset_preparer());
         let client = Stopwatch::start();
         let command_times = std::array::from_fn(|seat| {
             self.local_clients[seat]
@@ -816,7 +817,13 @@ impl FrameHost {
             scene.begin_frame();
             scene.native_owners(native_owners);
         }
-        self.client_modules_with_driver(&mut crate::modules::Driver::new(source.asset_preparer()));
+        self.initialize_modules_with_driver(
+            crate::modules::Phase::Client,
+            &mut crate::modules::Driver::new(source.asset_preparer()),
+        );
+        self.client_module_frames_with_driver(&mut crate::modules::Driver::new(
+            source.asset_preparer(),
+        ));
         self.publish_client_feedback();
         self.publish_client_loops();
         result.client_ns = client.elapsed().as_nanos() as u64;

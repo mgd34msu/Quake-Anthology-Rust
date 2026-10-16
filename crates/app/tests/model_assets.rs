@@ -111,7 +111,10 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
     assert_eq!(attempted, 1);
     assert_eq!(owner.assets().counts(), initial);
     assert_eq!(cpu.admitted_assets(), Some(initial));
-    assert_eq!(owner.catalog().shader_handle(b"ui/bad"), None);
+    assert_eq!(
+        owner.catalog().shader_handle(b"ui/bad", RuleSetId::Quake2),
+        None
+    );
     let capacity = owner.catalog().capacity();
     assert_eq!(
         qa_app::model_assets::ModelCapacity {
@@ -300,6 +303,35 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
         owner.catalog().shader_binding(shader, shader_profile),
         Some(shader_material)
     );
+    assert_eq!(
+        owner
+            .catalog()
+            .registration_cached(request.kind, b"progs/test", failed_profile, None),
+        Some(0)
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .registration_cached(request.kind, b"progs/test", profile, None),
+        None
+    );
+    assert!(!owner.catalog().model_has_tags(old_name));
+    fixture.vfs.take_lookup_count();
+    let failed_capacity = owner.catalog().capacity();
+    let failed_diagnostics = owner.catalog().diagnostics.len();
+    for _ in 0..3 {
+        assert_eq!(
+            owner
+                .prepare_registration(&fixture.vfs, &request, failed_profile, |_| {
+                    panic!("cached failed model profile reached backend")
+                })
+                .unwrap(),
+            (0, initial)
+        );
+        assert_eq!(fixture.vfs.take_lookup_count(), 0);
+        assert_eq!(owner.catalog().capacity(), failed_capacity);
+        assert_eq!(owner.catalog().diagnostics.len(), failed_diagnostics);
+    }
     assert!(
         owner
             .prepare_registration(&fixture.vfs, &request, profile, |_| Err(
@@ -417,7 +449,12 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
         }
         match kind {
             RendererRegistration::Shader { .. } => {
-                assert_eq!(owner.catalog().shader_handle(b"shared"), None)
+                assert_eq!(
+                    owner
+                        .catalog()
+                        .shader_handle(b"shared", profile.source_rules),
+                    None
+                )
             }
             RendererRegistration::Skin => {
                 let different = renderer_request(
@@ -597,7 +634,12 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
             .skin_handle(b"players/later/skin.pcx", profile.source_rules),
         Some(skin)
     );
-    assert_eq!(owner.catalog().shader_handle(b"ui/later.tga"), Some(shader));
+    assert_eq!(
+        owner
+            .catalog()
+            .shader_handle(b"ui/later.tga", profile.source_rules),
+        Some(shader)
+    );
     // File metadata remains readable and does not grant rendering authority.
     assert_eq!(owner.catalog().model_bounds(later), Some(original_bounds));
     assert!(!owner.catalog().model_has_tags(later));
@@ -1875,12 +1917,12 @@ fn unresolved_model_materials_keep_native_bounds_without_a_render_handle() {
     );
     assert_eq!(
         owner.register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
-        Err(qa_compat::services::CallError::File)
+        Ok(0)
     );
     fixture.remove("models/test.md3");
     assert_eq!(
         owner.register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
-        Err(qa_compat::services::CallError::File)
+        Ok(0)
     );
     let catalog = owner.catalog();
     assert_eq!(
@@ -1929,7 +1971,7 @@ fn cached_native_model_admission_keeps_failed_source_profiles_separate() {
     assert!(handle > 0);
     assert_eq!(
         owner.register_model(&fixture.vfs, b"models/test.md2", RuleSetId::Quake2),
-        Err(qa_compat::services::CallError::File)
+        Ok(0)
     );
     let bounds = owner.catalog().model_bounds(handle).unwrap();
     fixture.remove("models/test.md2");
@@ -1971,7 +2013,10 @@ fn native_shader_first_registration_keeps_mips_display_and_exact_profiles() {
             Ok(handle)
         );
         let ModelView { assets, catalog } = owner.view();
-        assert_eq!(catalog.shader_handle(b"uI/pIC"), Some(handle));
+        assert_eq!(
+            catalog.shader_handle(b"uI/pIC", RuleSetId::Quake3),
+            Some(handle)
+        );
         assert_eq!(catalog.shader_name(handle), Some(b"UI/Pic".as_slice()));
         assert_eq!(catalog.shader_binding(0, q3), None);
         assert_eq!(
@@ -2098,7 +2143,10 @@ fn native_shader_sources_keep_their_first_filename_and_mipmap_choice() {
             );
             assert_eq!(owner.assets().counts(), counts);
         }
-        assert_eq!(owner.catalog().shader_handle(b"Ui"), handle);
+        assert_eq!(
+            owner.catalog().shader_handle(b"Ui", RuleSetId::Quake3),
+            handle
+        );
         assert_eq!(
             owner.catalog().shader_name(handle.unwrap()),
             Some(b"ui".as_slice())
@@ -2269,7 +2317,10 @@ fn cold_shader_source_failure_does_not_hide_another_source_or_repeat_the_attempt
     );
     assert_eq!(owner.assets().counts(), counts);
     assert_eq!(owner.catalog().diagnostics.len(), diagnostics);
-    assert_eq!(owner.catalog().shader_handle(b"ui"), Some(handle));
+    assert_eq!(
+        owner.catalog().shader_handle(b"ui", first.source_rules),
+        Some(handle)
+    );
     assert_eq!(
         owner.catalog().shader_binding(handle, first),
         Some(retained)
@@ -2281,6 +2332,7 @@ fn cold_shader_source_failure_does_not_hide_another_source_or_repeat_the_attempt
 fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots() {
     use qa_compat::services::RendererRegistration;
     use qa_render::cpu::{CpuBackend, CpuLimits};
+    use std::cell::Cell;
     let fixture = support::Fixture::new(&[
         (
             "ui.part/first.tga",
@@ -2330,35 +2382,30 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
         second.source_rules,
         None,
     );
+    let prepares = Cell::new(0);
+    fixture.vfs.take_lookup_count();
     assert!(
         owner
             .prepare_registration(&fixture.vfs, &request, second, |_| {
+                prepares.set(prepares.get() + 1);
                 Err("rejected backend".to_owned())
             })
             .is_err()
     );
+    assert!(fixture.vfs.take_lookup_count() > 0);
+    assert_eq!(prepares.get(), 1);
+    assert_eq!(
+        owner
+            .catalog()
+            .registration_cached(request.kind, request.name.as_bytes(), second, None),
+        None
+    );
     assert_eq!(owner.assets().counts(), before);
     assert_eq!(cpu.admitted_assets(), Some(before));
-    assert_eq!(owner.catalog().shader_handle(b"ui"), Some(handle));
     assert_eq!(
-        owner.catalog().shader_binding(handle, first),
-        Some(retained)
+        owner.catalog().shader_handle(b"ui", first.source_rules),
+        Some(handle)
     );
-    assert_eq!(owner.catalog().shader_binding(handle, second), None);
-    let missing = renderer_request(
-        "ui.other/missing.tga",
-        RendererRegistration::Shader { mipmaps: false },
-        second.source_rules,
-        None,
-    );
-    assert!(
-        owner
-            .prepare_registration(&fixture.vfs, &missing, second, |_| {
-                panic!("failed source must not reach the backend")
-            })
-            .is_err()
-    );
-    assert_eq!(owner.assets().counts(), before);
     assert_eq!(
         owner.catalog().shader_binding(handle, first),
         Some(retained)
@@ -2372,10 +2419,13 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
     );
     let (retried, counts) = owner
         .prepare_registration(&fixture.vfs, &retry, second, |assets| {
+            prepares.set(prepares.get() + 1);
             cpu.prepare_assets(assets).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(retried, handle);
+    assert_eq!(prepares.get(), 2);
+    assert!(fixture.vfs.take_lookup_count() > 0);
     assert_eq!(cpu.admitted_assets(), Some(counts));
     assert_eq!(
         owner.catalog().shader_binding(handle, first),
@@ -2458,7 +2508,32 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
             .is_err()
     );
     assert_eq!(owner.assets().counts(), before);
-    assert_eq!(owner.catalog().shader_handle(b"ui"), Some(handle));
+    assert_eq!(
+        owner
+            .catalog()
+            .registration_cached(request.kind, request.name.as_bytes(), failed, None),
+        Some(0)
+    );
+    let negative_capacity = owner.catalog().capacity();
+    let negative_diagnostics = owner.catalog().diagnostics.len();
+    fixture.vfs.take_lookup_count();
+    for _ in 0..3 {
+        assert_eq!(
+            owner
+                .prepare_registration(&fixture.vfs, &request, failed, |_| {
+                    panic!("cached failed exact profile must not prepare assets")
+                })
+                .unwrap(),
+            (0, before)
+        );
+        assert_eq!(fixture.vfs.take_lookup_count(), 0);
+        assert_eq!(owner.catalog().capacity(), negative_capacity);
+        assert_eq!(owner.catalog().diagnostics.len(), negative_diagnostics);
+    }
+    assert_eq!(
+        owner.catalog().shader_handle(b"ui", first.source_rules),
+        Some(handle)
+    );
     assert_eq!(
         owner.catalog().shader_binding(handle, first),
         Some(retained)
@@ -2505,17 +2580,340 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
     );
     assert_eq!(owner.assets().counts(), cached);
     assert_eq!(owner.catalog().diagnostics.len(), diagnostics);
-    assert!(
+    assert_eq!(
         owner
             .prepare_registration(&fixture.vfs, &request, failed, |_| {
                 panic!("cached failed profile must not reach the backend")
             })
-            .is_err()
+            .unwrap(),
+        (0, cached)
     );
     assert_eq!(owner.assets().counts(), cached);
     for profile in [first, second, foreign] {
         assert!(owner.catalog().shader_binding(handle, profile).is_some());
     }
+}
+
+#[test]
+fn late_model_and_skin_failures_keep_negative_metadata_without_repeating_io() {
+    use qa_compat::services::RendererRegistration;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    use std::cell::Cell;
+    let fixture = support::Fixture::new(&[
+        ("models/invalid.md2", b"not a model".to_vec()),
+        ("models/empty.skin", b"tag_weapon,\n".to_vec()),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let q2 = ModelRequest::native("", RuleSetId::Quake2, Some(palette)).profile();
+    let q3 = shader_profile(RuleSetId::Quake3);
+    let mut owner = ModelAssets::new(assets, [q2, q3], [], Default::default()).unwrap();
+    let cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    owner.end_initial_registration();
+    let before = owner.assets().counts();
+    let prepares = Cell::new(0);
+    for (name, kind, profile) in [
+        ("models/missing.md2", RendererRegistration::Model, q2),
+        ("models/invalid.md2", RendererRegistration::Model, q2),
+        ("models/missing.skin", RendererRegistration::Skin, q3),
+        ("models/empty.skin", RendererRegistration::Skin, q3),
+        ("players/missing/skin.pcx", RendererRegistration::Skin, q2),
+    ] {
+        let request = renderer_request(name, kind, profile.source_rules, None);
+        fixture.vfs.take_lookup_count();
+        assert!(
+            owner
+                .prepare_registration(&fixture.vfs, &request, profile, |_| {
+                    prepares.set(prepares.get() + 1);
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(fixture.vfs.take_lookup_count() > 0);
+        assert_eq!(owner.assets().counts(), before);
+        if matches!(kind, RendererRegistration::Model) {
+            assert_eq!(owner.catalog().capacity().registrations, 0);
+        }
+        assert_eq!(cpu.admitted_assets(), Some(before));
+        assert_eq!(
+            owner
+                .catalog()
+                .registration_cached(kind, name.as_bytes(), profile, None),
+            Some(0)
+        );
+        let capacity = owner.catalog().capacity();
+        let diagnostics = owner.catalog().diagnostics.len();
+        for _ in 0..3 {
+            assert_eq!(
+                owner
+                    .prepare_registration(&fixture.vfs, &request, profile, |_| {
+                        prepares.set(prepares.get() + 1);
+                        Ok(())
+                    })
+                    .unwrap(),
+                (0, before)
+            );
+            let cold = match kind {
+                RendererRegistration::Model => {
+                    owner.register_model(&fixture.vfs, name.as_bytes(), profile.source_rules)
+                }
+                RendererRegistration::Skin => {
+                    owner.register_skin(&fixture.vfs, name.as_bytes(), profile.source_rules)
+                }
+                RendererRegistration::Shader { .. } => unreachable!(),
+            };
+            assert_eq!(cold, Ok(0));
+            assert_eq!(fixture.vfs.take_lookup_count(), 0);
+            assert_eq!(owner.catalog().capacity(), capacity);
+            assert_eq!(owner.catalog().diagnostics.len(), diagnostics);
+        }
+    }
+    assert_eq!(prepares.get(), 0);
+}
+
+#[test]
+fn late_skin_profile_failure_does_not_poison_other_presentations() {
+    use qa_compat::services::RendererRegistration;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    let fixture = support::Fixture::models();
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let healthy = native_profile(RuleSetId::Quake2, palette);
+    let mut failed = healthy;
+    failed.image_settings.max_dimension = 0;
+    let mut owner = ModelAssets::new(assets, [failed, healthy], [], Default::default()).unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    owner.end_initial_registration();
+    let before = owner.assets().counts();
+    let request = renderer_request(
+        "models/test/skin1.pcx",
+        RendererRegistration::Skin,
+        healthy.source_rules,
+        None,
+    );
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &request, failed, |_| {
+                panic!("failed skin profile must not prepare assets")
+            })
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(
+        owner
+            .catalog()
+            .registration_cached(request.kind, request.name.as_bytes(), failed, None),
+        Some(0)
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .registration_cached(request.kind, request.name.as_bytes(), healthy, None),
+        None
+    );
+    let capacity = owner.catalog().capacity();
+    let diagnostics = owner.catalog().diagnostics.len();
+    fixture.vfs.take_lookup_count();
+    for _ in 0..3 {
+        assert_eq!(
+            owner
+                .prepare_registration(&fixture.vfs, &request, failed, |_| {
+                    panic!("cached failed skin profile must not prepare assets")
+                })
+                .unwrap(),
+            (0, before)
+        );
+        assert_eq!(fixture.vfs.take_lookup_count(), 0);
+        assert_eq!(owner.catalog().capacity(), capacity);
+        assert_eq!(owner.catalog().diagnostics.len(), diagnostics);
+    }
+    let (handle, counts) = owner
+        .prepare_registration(&fixture.vfs, &request, healthy, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert!(handle > 0);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert!(owner.catalog().renderer_skin(handle, healthy));
+    assert!(!owner.catalog().renderer_skin(handle, failed));
+    assert_eq!(owner.catalog().capacity().names, capacity.names);
+    fixture.vfs.take_lookup_count();
+    assert_eq!(
+        owner
+            .prepare_registration(&fixture.vfs, &request, failed, |_| {
+                panic!("healthy skin admission must preserve failed profile")
+            })
+            .unwrap(),
+        (0, counts)
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+}
+
+#[test]
+fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
+    use qa_compat::services::RendererRegistration;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    let fixture = support::Fixture::new(&[
+        (
+            "ui.part/first.tga",
+            support::tga(1, 1, &[[211, 17, 29, 255]]),
+        ),
+        (
+            "ui.part/third.tga",
+            support::tga(1, 1, &[[53, 67, 229, 255]]),
+        ),
+    ]);
+    let [first, second, third] = [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3]
+        .map(|source| ModelRequest::native("", source, None).profile());
+    let mut owner = ModelAssets::new(
+        Assets::load().unwrap(),
+        [first, second, third],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let handle = owner
+        .register_shader(
+            &fixture.vfs,
+            b"ui.part/first.tga",
+            first.source_rules,
+            false,
+        )
+        .unwrap();
+    let retained = owner.catalog().shader_binding(handle, first).unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    owner.end_initial_registration();
+    let before = owner.assets().counts();
+    let missing = renderer_request(
+        "ui.other/missing.tga",
+        RendererRegistration::Shader { mipmaps: false },
+        second.source_rules,
+        None,
+    );
+    fixture.vfs.take_lookup_count();
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &missing, second, |_| {
+                panic!("failed source must not prepare assets")
+            })
+            .is_err()
+    );
+    assert!(fixture.vfs.take_lookup_count() > 0);
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(
+        owner.catalog().shader_handle(b"ui", first.source_rules),
+        Some(handle)
+    );
+    assert_eq!(
+        owner.catalog().shader_handle(b"ui", second.source_rules),
+        Some(0)
+    );
+    assert_eq!(
+        owner.catalog().shader_handle(b"ui", third.source_rules),
+        None
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .registration_cached(missing.kind, b"ui", second, None),
+        Some(0)
+    );
+    let capacity = owner.catalog().capacity();
+    let diagnostics = owner.catalog().diagnostics.len();
+    for _ in 0..3 {
+        assert_eq!(
+            owner
+                .prepare_registration(&fixture.vfs, &missing, second, |_| {
+                    panic!("cached failure must not prepare assets")
+                })
+                .unwrap(),
+            (0, before)
+        );
+        assert_eq!(
+            owner.register_shader(
+                &fixture.vfs,
+                b"ui.part/third.tga",
+                second.source_rules,
+                true
+            ),
+            Ok(0)
+        );
+        assert_eq!(fixture.vfs.take_lookup_count(), 0);
+        assert_eq!(owner.catalog().diagnostics.len(), diagnostics);
+        assert_eq!(owner.catalog().capacity(), capacity);
+        assert_eq!(
+            owner.catalog().shader_binding(handle, first),
+            Some(retained)
+        );
+    }
+    let request = renderer_request(
+        "ui.part/third.tga",
+        RendererRegistration::Shader { mipmaps: true },
+        third.source_rules,
+        None,
+    );
+    let (same, counts) = owner
+        .prepare_registration(&fixture.vfs, &request, third, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(same, handle);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(
+        owner.catalog().shader_binding(handle, first),
+        Some(retained)
+    );
+    assert!(owner.catalog().shader_binding(handle, third).is_some());
+    assert_eq!(
+        owner.catalog().shader_handle(b"ui", second.source_rules),
+        Some(0)
+    );
+    fixture.vfs.take_lookup_count();
+    assert_eq!(
+        owner
+            .prepare_registration(&fixture.vfs, &missing, second, |_| {
+                panic!("other source admission must not clear a failure")
+            })
+            .unwrap(),
+        (0, counts)
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
 }
 
 #[test]
@@ -2611,8 +3009,14 @@ fn native_shader_first_dot_folded_key_keeps_separator_identities_and_named_misse
         Ok(0)
     );
     let catalog = owner.catalog();
-    assert_eq!(catalog.shader_handle(b"ui/missing"), Some(0));
-    assert_eq!(catalog.shader_handle(b"ui/unknown"), None);
+    assert_eq!(
+        catalog.shader_handle(b"ui/missing", RuleSetId::Quake3),
+        Some(0)
+    );
+    assert_eq!(
+        catalog.shader_handle(b"ui/unknown", RuleSetId::Quake3),
+        None
+    );
     assert_eq!(
         catalog.shader_binding(forward, profile),
         catalog.shader_binding(backward, profile)
@@ -3384,7 +3788,7 @@ fn surface_name_capacity_failure_keeps_registration_transactional() {
     );
     assert_eq!(
         owner.register_model(&fixture.vfs, failed_path.as_bytes(), RuleSetId::Quake3),
-        Err(CallError::Capacity)
+        Ok(0)
     );
     for profile in profiles {
         let optional = ModelRequest {

@@ -1,6 +1,6 @@
 use super::*;
 use crate::model_assets::ModelAssets;
-use qa_compat::services::{ModelLoader, ModelLookup};
+use qa_compat::services::{ModelLoader, ModelLookup, RendererRegistration, RendererRequest};
 use qa_core::names::compare_folded;
 use qa_gameplay::rules::appearance::PlayerModelRules;
 use std::fmt::Write;
@@ -26,6 +26,7 @@ pub(super) struct PlayerBindings {
     rules: PlayerModelRules,
     options: PlayerModelOptions,
     pub(super) dirty: bool,
+    pub(super) cold_dirty: bool,
     bodies: Box<[Option<CapturedModel>]>,
     weapons: Box<[Option<CapturedModel>]>,
     weapon_rows: Box<[Option<u32>]>,
@@ -42,6 +43,7 @@ impl PlayerBindings {
             rules,
             options: Default::default(),
             dirty: true,
+            cold_dirty: true,
             bodies: vec![None; count].into_boxed_slice(),
             weapons: vec![None; count.checked_mul(rules.weapon_limit)?].into_boxed_slice(),
             weapon_rows: vec![None; rules.weapon_limit].into_boxed_slice(),
@@ -58,6 +60,7 @@ impl PlayerBindings {
         self.bodies.fill(None);
         self.weapons.fill(None);
         self.dirty = true;
+        self.cold_dirty = true;
     }
     fn weapon(&self, player: usize, weapon: usize) -> Option<CapturedModel> {
         *self.weapons.get(
@@ -80,7 +83,11 @@ impl PlayerBindings {
             .or_else(|| self.weapon(player, 0))
             .or_else(|| self.weapon(base, 0))
     }
-    fn refresh(&mut self, configs: &ConfigStrings, assets: &mut PlayerAssets<'_>) -> u32 {
+    pub(super) fn refresh(
+        &mut self,
+        configs: &ConfigStrings,
+        assets: &mut ClientAssets<'_>,
+    ) -> u32 {
         self.bodies.fill(None);
         self.weapons.fill(None);
         self.weapon_rows.fill(None);
@@ -131,7 +138,7 @@ impl PlayerBindings {
         player: usize,
         text: &[u8],
         configs: &ConfigStrings,
-        assets: &mut PlayerAssets<'_>,
+        assets: &mut ClientAssets<'_>,
     ) {
         let Some((mut model, mut skin, default_weapon_only)) =
             parse_player(text, self.options, self.rules)
@@ -211,7 +218,7 @@ impl PlayerBindings {
     }
 }
 
-enum PlayerAssets<'a> {
+pub(super) enum ClientAssets<'a> {
     Loading {
         loader: &'a mut ModelAssets,
         vfs: &'a qa_content::vfs::Vfs,
@@ -221,9 +228,53 @@ enum PlayerAssets<'a> {
         catalog: &'a ModelCatalog,
         profile: Option<ModelProfile>,
     },
+    Prepared {
+        owner: &'a mut ModelAssets,
+        vfs: &'a qa_content::vfs::Vfs,
+        profile: ModelProfile,
+        preparer: &'a mut dyn crate::renderer::AssetPreparer,
+        published: &'a mut bool,
+    },
 }
-impl PlayerAssets<'_> {
-    fn model(&mut self, path: &[u8]) -> Option<CapturedModel> {
+impl ClientAssets<'_> {
+    pub(super) fn catalog(&self) -> &ModelCatalog {
+        match self {
+            Self::Loading { loader, .. } => loader.catalog(),
+            Self::Frozen { catalog, .. } => catalog,
+            Self::Prepared { owner, .. } => owner.catalog(),
+        }
+    }
+
+    fn prepare(&mut self, path: &[u8], kind: RendererRegistration) -> Option<i32> {
+        let Self::Prepared {
+            owner,
+            vfs,
+            profile,
+            preparer,
+            published,
+        } = self
+        else {
+            return None;
+        };
+        let request = RendererRequest {
+            name: path,
+            source: profile.source_rules,
+            kind,
+            world: None,
+        };
+        let (handle, _) = owner
+            .prepare_registration(vfs, &request, *profile, |assets| {
+                preparer.prepare_assets(assets)
+            })
+            .ok()?;
+        if handle <= 0 {
+            return None;
+        }
+        **published = true;
+        Some(handle)
+    }
+
+    pub(super) fn model(&mut self, path: &[u8]) -> Option<CapturedModel> {
         let model = match self {
             Self::Loading {
                 loader,
@@ -242,6 +293,15 @@ impl PlayerAssets<'_> {
             Self::Frozen { catalog, profile } => ModelCapture::Bound(ClientModel::Mesh(
                 catalog.renderer_registration(catalog.file_handle(path)?, (*profile)?)?,
             )),
+            Self::Prepared { .. } => {
+                let handle = self.prepare(path, RendererRegistration::Model)?;
+                let Self::Prepared { owner, profile, .. } = self else {
+                    return None;
+                };
+                ModelCapture::Bound(ClientModel::Mesh(
+                    owner.catalog().renderer_registration(handle, *profile)?,
+                ))
+            }
         };
         Some(CapturedModel {
             model,
@@ -265,6 +325,7 @@ impl PlayerAssets<'_> {
                     .filter(|&handle| handle > 0)?;
                 catalog.renderer_skin(handle, (*profile)?).then_some(handle)
             }
+            Self::Prepared { .. } => self.prepare(path, RendererRegistration::Skin),
         }
     }
 }
@@ -345,10 +406,14 @@ fn parse_player(
 
 impl ClientModelBindings {
     pub(crate) fn config_received(&mut self, index: usize) {
+        if self.range.contains(index) {
+            self.cold.insert(index - self.range.first as usize);
+        }
         if let Some(players) = &mut self.players
             && (players.rows.contains(index) || players.models.contains(index))
         {
             players.dirty = true;
+            players.cold_dirty = true;
         }
     }
     pub(crate) fn player_options(&mut self, options: PlayerModelOptions) {
@@ -357,6 +422,7 @@ impl ClientModelBindings {
         {
             players.options = options;
             players.dirty = true;
+            players.cold_dirty = true;
         }
     }
     pub(crate) fn register_player_models(
@@ -369,12 +435,13 @@ impl ClientModelBindings {
         let Some(players) = &mut self.players else {
             return 0;
         };
-        if !players.dirty {
+        if !players.cold_dirty {
             return 0;
         }
+        players.cold_dirty = false;
         players.refresh(
             configs,
-            &mut PlayerAssets::Loading {
+            &mut ClientAssets::Loading {
                 loader,
                 vfs,
                 source,
@@ -394,7 +461,7 @@ impl ClientModelBindings {
         }
         players.refresh(
             configs,
-            &mut PlayerAssets::Frozen {
+            &mut ClientAssets::Frozen {
                 catalog,
                 profile: self.profile,
             },

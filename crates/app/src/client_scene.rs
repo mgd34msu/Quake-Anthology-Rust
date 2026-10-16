@@ -25,13 +25,6 @@ use qa_render::{
     world::{WorldId, WorldPresentationId},
 };
 
-fn inline_model_ordinal(name: &[u8]) -> Option<u32> {
-    std::str::from_utf8(name.strip_prefix(b"*")?)
-        .ok()?
-        .parse()
-        .ok()
-}
-
 #[derive(Clone, Copy)]
 enum ClientModel {
     Mesh(ModelRegistrationId),
@@ -56,10 +49,22 @@ struct CapturedModel {
     custom_skin: i32,
     features: ModelFeatures,
 }
-#[derive(Clone, Copy, Default)]
+#[derive(Clone)]
+enum StaticModel {
+    Captured(CapturedModel),
+    Pending {
+        name: qa_core::text::FixedText<64>,
+        profile: Option<ModelProfile>,
+        world: Option<(WorldId, WorldPresentationId)>,
+        features: ModelFeatures,
+        cold_dirty: bool,
+    },
+}
+#[derive(Clone, Default)]
 pub struct StaticEntity {
     pub record: EntityRecord,
-    models: [Option<CapturedModel>; 4],
+    models: [Option<StaticModel>; 4],
+    pub(crate) rejected: u8,
 }
 impl std::ops::Deref for StaticEntity {
     type Target = EntityRecord;
@@ -98,6 +103,7 @@ impl Iterator for SceneBindings<'_> {
 }
 
 mod player_models;
+use player_models::ClientAssets;
 pub(crate) use player_models::PlayerModelOptions;
 
 /// Only derived numeric asset bindings live here. Accepted entity values and
@@ -110,6 +116,7 @@ pub struct ClientModelBindings {
     revision: u64,
     registrations: Box<[Option<ClientModel>]>,
     pending: qa_core::bits::BitSet,
+    cold: qa_core::bits::BitSet,
     features: Box<[ModelFeatures]>,
     players: Option<player_models::PlayerBindings>,
     colors: Option<crate::model_assets::ModelColorId>,
@@ -125,6 +132,7 @@ impl ClientModelBindings {
             revision: 0,
             registrations: vec![None; range.count as usize].into_boxed_slice(),
             pending: qa_core::bits::BitSet::empty(range.count as usize),
+            cold: qa_core::bits::BitSet::empty(range.count as usize),
             features: vec![ModelFeatures::default(); range.count as usize].into_boxed_slice(),
             players: player_models::PlayerBindings::load(layout),
             colors: None,
@@ -138,6 +146,7 @@ impl ClientModelBindings {
         self.world = None;
         self.registrations.fill(None);
         self.pending.clear();
+        self.cold.clear();
         self.features.fill(ModelFeatures::default());
         if let Some(players) = &mut self.players {
             players.clear();
@@ -176,13 +185,29 @@ impl ClientModelBindings {
         configs: &ConfigStrings,
         models: &ModelCatalog,
     ) -> bool {
+        self.config_changed_with(
+            index,
+            configs,
+            &mut ClientAssets::Frozen {
+                catalog: models,
+                profile: self.profile,
+            },
+        )
+    }
+
+    fn config_changed_with(
+        &mut self,
+        index: usize,
+        configs: &ConfigStrings,
+        assets: &mut ClientAssets<'_>,
+    ) -> bool {
         if !self.range.contains(index) {
             return if self
                 .players
                 .as_ref()
                 .is_some_and(|players| players.contains(index))
             {
-                self.refresh_player_models(configs, models) == 0
+                self.refresh_player_models(configs, assets.catalog()) == 0
             } else {
                 true
             };
@@ -214,8 +239,8 @@ impl ClientModelBindings {
             let Some((world, presentation)) = self.world else {
                 return false;
             };
-            let Some(binding) = inline_model_ordinal(row.text)
-                .and_then(|index| models.resolve_inline(world.render, index))
+            let Some(binding) = qa_core::text::inline_model_index(row.text)
+                .and_then(|index| assets.catalog().resolve_inline(world.render, index))
             else {
                 return false;
             };
@@ -226,7 +251,7 @@ impl ClientModelBindings {
             });
             return true;
         }
-        if let Some((binding, collision)) = models.loaded_collision_model(row.text) {
+        if let Some((binding, collision)) = assets.catalog().loaded_collision_model(row.text) {
             let presentation = self
                 .world
                 .filter(|(world, _)| world.render == binding.world)
@@ -239,13 +264,13 @@ impl ClientModelBindings {
             return true;
         }
         self.pending.insert(ordinal);
-        let Some(registration) = self
-            .profile
-            .and_then(|profile| models.registration(path, profile))
-        else {
+        let Some(capture) = assets.model(row.text) else {
             return false;
         };
-        self.registrations[ordinal] = Some(ClientModel::Mesh(registration));
+        let ModelCapture::Bound(model) = capture.model else {
+            return true;
+        };
+        self.registrations[ordinal] = Some(model);
         self.pending.remove(ordinal);
         true
     }
@@ -269,7 +294,55 @@ impl ClientModelBindings {
                 presentation,
             )
         });
+        self.configs_replaced();
         self.refresh_all(configs, models)
+    }
+
+    pub(crate) fn configs_replaced(&mut self) {
+        self.cold.clear();
+        for ordinal in 1..self.range.count as usize {
+            self.cold.insert(ordinal);
+        }
+        if let Some(players) = &mut self.players {
+            players.dirty = true;
+            players.cold_dirty = true;
+        }
+    }
+
+    pub(crate) fn prepare_pending(
+        &mut self,
+        configs: &ConfigStrings,
+        owner: &mut crate::model_assets::ModelAssets,
+        vfs: &qa_content::vfs::Vfs,
+        preparer: &mut dyn crate::renderer::AssetPreparer,
+    ) -> (u32, bool) {
+        let Some(profile) = self.profile else {
+            return (0, false);
+        };
+        let mut published = false;
+        let mut assets = ClientAssets::Prepared {
+            owner,
+            vfs,
+            profile,
+            preparer,
+            published: &mut published,
+        };
+        let mut rejected = 0;
+        let mut next = self.cold.next_set(0);
+        while let Some(ordinal) = next {
+            next = self.cold.next_set(ordinal + 1);
+            self.cold.remove(ordinal);
+            if let Some(index) = self.range.get(ordinal) {
+                rejected += u32::from(!self.config_changed_with(index, configs, &mut assets));
+            }
+        }
+        if let Some(players) = &mut self.players
+            && players.cold_dirty
+        {
+            players.cold_dirty = false;
+            rejected += players.refresh(configs, &mut assets);
+        }
+        (rejected, published)
     }
 
     /// A new accepted gamestate replaces rows without changing the loaded
@@ -401,6 +474,7 @@ impl ClientModelBindings {
         lookup: Option<&dyn qa_compat::services::ModelLookup>,
         world: Option<(WorldId, WorldPresentationId)>,
     ) -> StaticEntity {
+        let mut rejected = 0;
         let models = std::array::from_fn(|slot| {
             let reference = record.appearance.models[slot]?;
             if reference.namespace != ResourceNamespace::Client(self.client) {
@@ -417,10 +491,14 @@ impl ClientModelBindings {
                 .model
             {
                 ModelInput::Resource(ordinal) | ModelInput::LinkedTranslucent(ordinal) => ordinal,
-                ModelInput::Player => return self.player_model(record.appearance.skin, slot),
+                ModelInput::Player => {
+                    return self
+                        .player_model(record.appearance.skin, slot)
+                        .map(StaticModel::Captured);
+                }
             };
             if let Some(binding) = self.registrations.get(ordinal as usize).copied().flatten() {
-                return Some(CapturedModel {
+                return Some(StaticModel::Captured(CapturedModel {
                     model: ModelCapture::Bound(binding),
                     custom_skin: 0,
                     features: self
@@ -428,33 +506,56 @@ impl ClientModelBindings {
                         .get(ordinal as usize)
                         .copied()
                         .unwrap_or_default(),
-                });
+                }));
             }
-            let lookup = lookup?;
             let row = configs.config(self.range.get(ordinal as usize)?)?;
             if row.text.is_empty() {
                 return None;
             }
-            let (handle, presentation) = if row.text.starts_with(b"*") {
-                let index = inline_model_ordinal(row.text)?;
-                let (world, presentation) = self
-                    .world
-                    .map(|(world, presentation)| (world.render, presentation))
-                    .or(world)?;
-                (lookup.inline_handle(world, index)?, Some(presentation))
-            } else {
-                (lookup.file_handle(row.text)?, None)
-            };
-            Some(CapturedModel {
-                model: ModelCapture::Registered {
-                    handle,
-                    presentation,
-                },
-                custom_skin: 0,
-                features: policy.model_features(row.text),
+            let world = self
+                .world
+                .map(|(world, presentation)| (world.render, presentation))
+                .or(world);
+            let registered = lookup.filter(|_| row.text.len() >= 64).and_then(|lookup| {
+                if row.text.starts_with(b"*") {
+                    let index = qa_core::text::inline_model_index(row.text)?;
+                    let (world, presentation) = world?;
+                    Some((lookup.inline_handle(world, index)?, Some(presentation)))
+                } else {
+                    Some((lookup.file_handle(row.text)?, None))
+                }
+            });
+            let features = policy.model_features(row.text);
+            if let Some((handle, presentation)) = registered {
+                return Some(StaticModel::Captured(CapturedModel {
+                    model: ModelCapture::Registered {
+                        handle,
+                        presentation,
+                    },
+                    custom_skin: 0,
+                    features,
+                }));
+            }
+            // Native QW statics name a 63-byte modellist resource. Longer
+            // common config paths need another transport; never truncate them.
+            let mut name = qa_core::text::FixedText::default();
+            if row.text.len() >= 64 || name.set_bytes(row.text).is_err() {
+                rejected += 1;
+                return None;
+            }
+            Some(StaticModel::Pending {
+                name,
+                profile: self.profile,
+                world,
+                features,
+                cold_dirty: true,
             })
         });
-        StaticEntity { record, models }
+        StaticEntity {
+            record,
+            models,
+            rejected,
+        }
     }
     fn complete_capture(
         &self,
@@ -477,8 +578,38 @@ impl ClientModelBindings {
         })
     }
     pub(crate) fn complete_static(&self, entity: &mut StaticEntity, models: &ModelCatalog) {
+        if self.profile.is_none() {
+            return;
+        }
         for slot in &mut entity.models {
-            *slot = slot.and_then(|capture| {
+            if let Some(StaticModel::Pending {
+                name,
+                profile,
+                world,
+                features,
+                ..
+            }) = slot
+            {
+                *profile = profile.or(self.profile);
+                if let Some(capture) = Self::pending_static_capture(
+                    name.as_bytes(),
+                    *profile,
+                    *world,
+                    *features,
+                    &mut ClientAssets::Frozen {
+                        catalog: models,
+                        profile: *profile,
+                    },
+                ) {
+                    *slot = Some(StaticModel::Captured(capture));
+                }
+                continue;
+            }
+            let Some(StaticModel::Captured(capture)) = slot else {
+                continue;
+            };
+            let capture = *capture;
+            *slot = (|| {
                 self.complete_capture(capture, models).or_else(|| {
                     let profile = self.profile?;
                     let decoded_model = match capture.model {
@@ -499,8 +630,100 @@ impl ClientModelBindings {
                     // await backend publication, even if its alias is rewritten.
                     (decoded_model && decoded_skin).then_some(capture)
                 })
-            });
+            })()
+            .map(StaticModel::Captured);
         }
+    }
+
+    fn pending_static_capture(
+        name: &[u8],
+        profile: Option<ModelProfile>,
+        world: Option<(WorldId, WorldPresentationId)>,
+        features: ModelFeatures,
+        assets: &mut ClientAssets<'_>,
+    ) -> Option<CapturedModel> {
+        let model = if name.starts_with(b"*") {
+            let index = qa_core::text::inline_model_index(name)?;
+            let (world, presentation) = world?;
+            ClientModel::Inline {
+                binding: assets.catalog().resolve_inline(world, index)?,
+                presentation: Some(presentation),
+                collision: assets.catalog().collision_world(world),
+            }
+        } else if let Some((binding, collision)) = assets.catalog().loaded_collision_model(name) {
+            ClientModel::Inline {
+                binding,
+                presentation: world
+                    .filter(|(world, _)| *world == binding.world)
+                    .map(|(_, presentation)| presentation),
+                collision,
+            }
+        } else {
+            profile?;
+            let capture = assets.model(name)?;
+            let ModelCapture::Bound(model) = capture.model else {
+                return None;
+            };
+            model
+        };
+        Some(CapturedModel {
+            model: ModelCapture::Bound(model),
+            custom_skin: 0,
+            features,
+        })
+    }
+
+    pub(crate) fn prepare_static(
+        &self,
+        entities: &mut [StaticEntity],
+        owner: &mut crate::model_assets::ModelAssets,
+        vfs: &qa_content::vfs::Vfs,
+        preparer: &mut dyn crate::renderer::AssetPreparer,
+    ) -> Option<(u32, bool)> {
+        self.profile?;
+        let mut rejected = 0;
+        let mut published = false;
+        for entity in entities {
+            for slot in &mut entity.models {
+                let Some(StaticModel::Pending {
+                    name,
+                    profile,
+                    world,
+                    features,
+                    cold_dirty,
+                }) = slot
+                else {
+                    continue;
+                };
+                let Some(selected) = profile.or(self.profile) else {
+                    continue;
+                };
+                *profile = Some(selected);
+                if !*cold_dirty {
+                    continue;
+                }
+                *cold_dirty = false;
+                let mut assets = ClientAssets::Prepared {
+                    owner,
+                    vfs,
+                    profile: selected,
+                    preparer,
+                    published: &mut published,
+                };
+                if let Some(capture) = Self::pending_static_capture(
+                    name.as_bytes(),
+                    Some(selected),
+                    *world,
+                    *features,
+                    &mut assets,
+                ) {
+                    *slot = Some(StaticModel::Captured(capture));
+                } else {
+                    rejected += 1;
+                }
+            }
+        }
+        Some((rejected, published))
     }
     fn resolve_static<'a>(
         &self,
@@ -938,7 +1161,7 @@ impl ClientSceneInput<'_> {
     fn append_presented(
         &self,
         pose: PresentedEntity,
-        captured: Option<&[Option<CapturedModel>; 4]>,
+        captured: Option<&[Option<StaticModel>; 4]>,
         number: Option<u32>,
         fraction: f32,
         frame: &mut Frame,
@@ -1012,8 +1235,11 @@ impl ClientSceneInput<'_> {
                 continue;
             };
             let features = captured
-                .and_then(|models| models[slot])
-                .map(|model| model.features)
+                .and_then(|models| models[slot].as_ref())
+                .map(|model| match model {
+                    StaticModel::Captured(model) => model.features,
+                    StaticModel::Pending { features, .. } => *features,
+                })
                 .unwrap_or_else(|| {
                     self.bindings
                         .binding_features(reference, record.appearance.source, slot)
@@ -1038,9 +1264,12 @@ impl ClientSceneInput<'_> {
                 frame: u32::try_from(record.appearance.frame).unwrap_or(0),
             };
             let resolved = if let Some(captured) = captured {
-                captured[slot].and_then(|binding| {
-                    self.bindings
-                        .resolve_static(binding, cell.skin, self.models, policy)
+                captured[slot].as_ref().and_then(|binding| match binding {
+                    StaticModel::Captured(binding) => {
+                        self.bindings
+                            .resolve_static(*binding, cell.skin, self.models, policy)
+                    }
+                    StaticModel::Pending { .. } => None,
                 })
             } else {
                 if cell.model == ModelInput::Player {

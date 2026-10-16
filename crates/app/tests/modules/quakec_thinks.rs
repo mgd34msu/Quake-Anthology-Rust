@@ -1093,7 +1093,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
             .unwrap()
             .state;
         assert_eq!(resources.static_entities().len(), 1);
-        let retained = resources.static_entities()[0];
+        let retained = resources.static_entities()[0].record;
         assert_eq!(retained.position, Vec3([33.125, -4.25, 88.125]));
         assert_eq!(
             retained.appearance.models[0],
@@ -1128,7 +1128,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
             .state
             .static_entities();
         assert_eq!(after.len(), 1);
-        assert_eq!(after[0].record, retained.record);
+        assert_eq!(after[0].record, retained);
         assert_eq!(host.module_counts(module).unwrap().traps, 0);
     }
 }

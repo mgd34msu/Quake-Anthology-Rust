@@ -3,7 +3,7 @@ use crate::services::{CallError, RendererRegistration};
 use qa_core::presentation::{
     RENDERER_EXTENSIONS_BYTES, RENDERER_TEXT_BYTES, RendererConfiguration,
 };
-use qa_core::primitives::Vec3;
+use qa_core::primitives::{RuleSetId, Vec3};
 use qa_render::{
     Vertex,
     scene::{EntityVisibility, Light, Refdef, SceneEntity},
@@ -16,9 +16,14 @@ pub trait SceneService {
     fn registration_available(&self) -> bool {
         false
     }
-    fn registration_ready(&self, kind: RendererRegistration, handle: i32) -> bool {
-        let _ = (kind, handle);
-        false
+    fn registration_cached(
+        &self,
+        kind: RendererRegistration,
+        name: &[u8],
+        source: RuleSetId,
+    ) -> Option<i32> {
+        let _ = (kind, name, source);
+        None
     }
     fn active(&self) -> bool;
     fn viewport(&self) -> Option<qa_render::Viewport>;

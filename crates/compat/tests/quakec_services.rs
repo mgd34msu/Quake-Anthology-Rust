@@ -980,7 +980,7 @@ impl ModelLookup for Models {
     fn model_bounds(&self, _: i32) -> Option<Bounds> {
         None
     }
-    fn shader_handle(&self, _: &[u8]) -> Option<i32> {
+    fn shader_handle(&self, _: &[u8], _: RuleSetId) -> Option<i32> {
         None
     }
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds> {

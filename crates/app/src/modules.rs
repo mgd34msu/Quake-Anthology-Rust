@@ -1457,6 +1457,12 @@ impl FrameHost {
     pub fn client_modules_with_driver(&mut self, driver: &mut crate::modules::Driver<'_>) {
         self.initialize_modules_with_driver(Phase::Client, driver);
         self.client_configurations(driver);
+        self.client_module_frames_with_driver(driver);
+    }
+    pub(crate) fn client_module_frames_with_driver(
+        &mut self,
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
         // Init registers into these owners. Draw exports may use only the
         // published catalog and scene consumer, after registration completes.
         if self
@@ -1515,7 +1521,7 @@ impl FrameHost {
             }
         }
     }
-    fn client_configurations(&mut self, driver: &mut crate::modules::Driver<'_>) {
+    pub(crate) fn client_configurations(&mut self, driver: &mut crate::modules::Driver<'_>) {
         let team_chats_only = self
             .console
             .cvars

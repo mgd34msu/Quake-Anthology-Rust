@@ -175,33 +175,30 @@ impl SceneService for SceneBorrow<'_> {
     fn registration_available(&self) -> bool {
         self.registration_available && self.role.target.is_some() && self.composer.is_some()
     }
-    fn registration_ready(&self, kind: RendererRegistration, handle: i32) -> bool {
-        if handle <= 0 {
-            return false;
+    fn registration_cached(
+        &self,
+        kind: RendererRegistration,
+        name: &[u8],
+        source: qa_core::primitives::RuleSetId,
+    ) -> Option<i32> {
+        let target = self.role.target.as_ref()?;
+        let models = self.models?;
+        if target.profile.source_rules != source {
+            return None;
         }
-        let (Some(target), Some(models), Some(composer)) = (
-            self.role.target.as_ref(),
-            self.models,
-            self.composer.as_deref(),
-        ) else {
-            return false;
-        };
-        match kind {
-            RendererRegistration::Model => {
-                if let Some(binding) = models.renderer_inline(handle) {
-                    self.role
-                        .registration_world_available(Some(composer), binding.world)
-                } else {
-                    models
-                        .renderer_registration(handle, target.profile)
-                        .is_some()
-                }
-            }
-            RendererRegistration::Skin => models.renderer_skin(handle, target.profile),
-            RendererRegistration::Shader { .. } => {
-                models.shader_binding(handle, target.profile).is_some()
+        let world = self.selected_world();
+        if matches!(kind, RendererRegistration::Model) && name.starts_with(b"*") {
+            let Some(world) = world else {
+                return Some(0);
+            };
+            if !self
+                .role
+                .registration_world_available(self.composer.as_deref(), world)
+            {
+                return Some(0);
             }
         }
+        models.registration_cached(kind, name, target.profile, world)
     }
     fn active(&self) -> bool {
         self.composer

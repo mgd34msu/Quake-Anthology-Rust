@@ -131,7 +131,7 @@ pub trait ModelLookup {
     }
     fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding>;
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
-    fn shader_handle(&self, name: &[u8]) -> Option<i32>;
+    fn shader_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
     fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
         let _ = (name, source);
         None
@@ -2041,7 +2041,7 @@ impl EngineServices<'_> {
             match kind {
                 RendererRegistration::Model => lookup.model_handle(name, source),
                 RendererRegistration::Skin => lookup.skin_handle(name, source),
-                RendererRegistration::Shader { .. } => lookup.shader_handle(name),
+                RendererRegistration::Shader { .. } => lookup.shader_handle(name, source),
             }
         }
     }
@@ -2082,6 +2082,8 @@ impl EngineServices<'_> {
                     loader.register_shader(self.vfs, name, source, mipmaps)
                 }
             }
+        } else if let Some(scene) = self.scene.as_deref() {
+            Ok(scene.registration_cached(kind, name, source).unwrap_or(0))
         } else {
             self.renderer_handle(name, source, kind)
                 .ok_or(CallError::File)
