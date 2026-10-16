@@ -417,6 +417,20 @@ pub fn world_mutated(
     variants: &[&[SurfaceMaterial]],
     mutate: impl FnOnce(&mut WorldGeometry),
 ) -> WorldId {
+    let (geometry, visibility) = world_inputs(origin, mutate);
+    let inputs: Vec<_> = variants
+        .iter()
+        .map(|&surfaces| qa_render::world::WorldPresentationInput::new(surfaces))
+        .collect();
+    assets
+        .register_world(geometry, visibility, &inputs)
+        .unwrap()
+}
+
+pub fn world_inputs(
+    origin: f32,
+    mutate: impl FnOnce(&mut WorldGeometry),
+) -> (WorldGeometry, VisibilityWorld) {
     let bounds = Bounds {
         mins: Vec3([origin; 3]),
         maxs: Vec3([origin + 1.0; 3]),
@@ -465,7 +479,5 @@ pub fn world_mutated(
         PvsRows::all_visible(0),
     )
     .unwrap();
-    assets
-        .register_world(geometry, visibility, variants)
-        .unwrap()
+    (geometry, visibility)
 }

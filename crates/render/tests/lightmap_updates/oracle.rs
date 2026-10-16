@@ -132,7 +132,14 @@ fn fixture_variants(
         .map(|variant| &variant[..])
         .collect::<Vec<_>>();
     assets
-        .register_world(geometry, visibility, &bindings)
+        .register_world(
+            geometry,
+            visibility,
+            &(&bindings)
+                .iter()
+                .map(|surfaces| qa_render::world::WorldPresentationInput::new(surfaces))
+                .collect::<Vec<_>>(),
+        )
         .unwrap()
 }
 

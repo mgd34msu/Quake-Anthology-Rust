@@ -10,8 +10,8 @@ use crate::{
     PerspectiveStep, Refdef,
     assets::{
         CubeSkyParams, DepthFunc, Filter, Flow, ImageId, MaterialId, MaterialSettings, Sampler,
-        Sky, SkyDistance, SoftwareTiled, Stage, StageTexture, TcMod, TextureIntensity, UvWarp,
-        Wrap, upload,
+        ShaderBinding, ShaderBindingId, ShaderRegistration, Sky, SkyDistance, SoftwareTiled, Stage,
+        StageTexture, TcMod, TextureIntensity, UvWarp, Wrap, upload,
     },
     lightmap::{
         Atlas, AtlasBuilder, AtlasRegion, LightmapConversion, LightmapError, Q1GlScale,
@@ -24,7 +24,7 @@ use crate::{
     sky::{CloudSphere, LayeredSphere, split_layered_sky},
     surface_cache::{IndexedLighting, IndexedTexture},
     world::{
-        SurfaceMaterial, WorldId, WorldPresentationId,
+        PreparedShader, SurfaceMaterial, WorldId, WorldPresentationId, WorldPresentationInput,
         geometry::{
             GeometryError, GeometryOptions, LightSource, WorldGeometry,
             grid::{GridFan, GridOptions, subdivide_surface},
@@ -250,6 +250,7 @@ pub(crate) struct WorldMaterialSource {
     textures: Vec<Option<MaterialMip>>,
     texture_info: Vec<qa_core::primitives::NameId>,
     shaders: Vec<MaterialShader>,
+    fogs: Vec<qa_core::primitives::NameId>,
     surfaces: Vec<MaterialSurface>,
     legacy_kinds: Vec<(bool, bool)>,
     layout: LightmapLayout,
@@ -302,6 +303,11 @@ impl WorldMaterialSource {
                 })
             })
             .collect::<Result<_, WorldMaterialError>>()?;
+        let fogs = map
+            .fogs
+            .iter()
+            .map(|fog| name(fog.name))
+            .collect::<Result<_, _>>()?;
         let surfaces = geometry
             .surfaces
             .iter()
@@ -322,11 +328,27 @@ impl WorldMaterialSource {
             textures,
             texture_info,
             shaders,
+            fogs,
             surfaces,
             legacy_kinds,
             layout,
             catalog: load_catalog(vfs).map_err(WorldMaterialError::Catalog)?,
         })
+    }
+}
+
+struct CompiledPresentation {
+    surfaces: Vec<SurfaceMaterial>,
+    registrations: Vec<ShaderRegistration<PreparedShader>>,
+    native_page0: Option<ImageId>,
+}
+impl CompiledPresentation {
+    fn input(&self) -> WorldPresentationInput<'_> {
+        WorldPresentationInput {
+            surfaces: &self.surfaces,
+            registrations: &self.registrations,
+            native_page0: self.native_page0,
+        }
     }
 }
 
@@ -370,7 +392,7 @@ fn compile_profile(
     diagnostics: &mut Vec<String>,
 ) -> Result<
     (
-        Vec<SurfaceMaterial>,
+        CompiledPresentation,
         Option<qa_core::primitives::Vec3>,
         PresentationDefaults,
     ),
@@ -383,11 +405,19 @@ fn compile_profile(
         assets,
         profile,
         &source.layout.regions,
-        &lightmaps,
+        &lightmaps.surfaces,
         prepared.conversion,
         diagnostics,
     )?;
-    Ok((bindings, sun, prepared.defaults))
+    Ok((
+        CompiledPresentation {
+            surfaces: bindings.0,
+            registrations: bindings.1,
+            native_page0: lightmaps.native_page0,
+        },
+        sun,
+        prepared.defaults,
+    ))
 }
 
 fn validate_profiles(
@@ -443,7 +473,7 @@ pub fn load_world(
     let mut geometry = load_geometry(map, options.geometry)?;
     let visibility =
         load_visibility(map).map_err(|_| WorldMaterialError::Boundary("world visibility"))?;
-    let layout = prepare_lightmap_layout(&geometry)?;
+    let layout = prepare_lightmap_layout(&geometry, geometry_source == RuleSetId::Quake3)?;
     for surface in &geometry.surfaces {
         if !matches!(geometry_source, RuleSetId::Quake3)
             && let Some(region) = layout.regions[surface.source_id as usize]
@@ -542,7 +572,7 @@ pub fn load_world(
         sun = registered_sun.or(sun);
         defaults.push(presentation);
     }
-    let variant_slices: Vec<_> = variants.iter().map(Vec::as_slice).collect();
+    let variant_slices: Vec<_> = variants.iter().map(CompiledPresentation::input).collect();
     let world = assets
         .register_world(geometry, visibility, &variant_slices)
         .map_err(WorldMaterialError::Boundary)?;
@@ -651,7 +681,7 @@ pub fn append_world_presentation(
         let (bindings, _, defaults) =
             compile_profile(vfs, assets, source, profile, prepared, &mut diagnostics)?;
         let id = assets
-            .append_world_presentation(world, &bindings)
+            .append_world_presentation(world, bindings.input())
             .map_err(WorldMaterialError::Boundary)?;
         assets
             .register_world_presentation_metadata(
@@ -737,7 +767,16 @@ fn compile_presentation(
     lightmaps: &[Option<ImageId>],
     lightmap_conversion: LightmapConversion,
     diagnostics: &mut Vec<String>,
-) -> Result<(Vec<SurfaceMaterial>, Option<qa_core::primitives::Vec3>), WorldMaterialError> {
+) -> Result<
+    (
+        (
+            Vec<SurfaceMaterial>,
+            Vec<ShaderRegistration<PreparedShader>>,
+        ),
+        Option<qa_core::primitives::Vec3>,
+    ),
+    WorldMaterialError,
+> {
     let geometry_source = source.rules;
     let palette = source.palette;
     let options = &source.options;
@@ -763,6 +802,11 @@ fn compile_presentation(
         .shaders
         .iter()
         .map(|shader| name(shader.name))
+        .collect::<Result<Vec<_>, _>>()?;
+    let fog_names = source
+        .fogs
+        .iter()
+        .map(|&id| name(id))
         .collect::<Result<Vec<_>, _>>()?;
     let mips = source
         .textures
@@ -813,10 +857,73 @@ fn compile_presentation(
         }
     }
     let mut bindings = Vec::with_capacity(source.surfaces.len());
+    let mut registrations = Vec::with_capacity(source.fogs.len() + source.surfaces.len());
+    for raw in &fog_names {
+        let binding = optional_named_binding(
+            catalog,
+            raw,
+            NamedShaderLighting {
+                source: LightSource::None,
+                lightmap: ImageId(0),
+            },
+            &mut images,
+            diagnostics,
+        )?;
+        let key = images
+            .assets
+            .shader_registration(raw, ShaderBindingId(0))
+            .map_err(WorldMaterialError::Boundary)?
+            .key;
+        registrations.push(ShaderRegistration {
+            key,
+            shader: PreparedShader::Binding(binding),
+        });
+    }
     let mut sun = None;
     for (surface, &kind) in source.surfaces.iter().zip(&source.legacy_kinds) {
         let (warp, sky) = kind;
         if surface.no_draw {
+            let raw = match source_surface_name(
+                source,
+                surface,
+                &texture_names,
+                &info_names,
+                &shader_names,
+            ) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    diagnostics.push(format!("native unnamed default shader: {error:?}"));
+                    bindings.push(SurfaceMaterial::default());
+                    continue;
+                }
+            };
+            let binding = optional_named_binding(
+                catalog,
+                raw,
+                NamedShaderLighting {
+                    // Native Q3 normalizes a missing page before the hidden
+                    // surface draw skip; visible external resources keep their boundary.
+                    source: if geometry_source == RuleSetId::Quake3
+                        && matches!(surface.light_source, LightSource::ExternalPage(_))
+                    {
+                        LightSource::Vertex
+                    } else {
+                        surface.light_source
+                    },
+                    lightmap: lightmaps[surface.source_id as usize].unwrap_or(ImageId(0)),
+                },
+                &mut images,
+                diagnostics,
+            )?;
+            let key = images
+                .assets
+                .shader_registration(raw, ShaderBindingId(0))
+                .map_err(WorldMaterialError::Boundary)?
+                .key;
+            registrations.push(ShaderRegistration {
+                key,
+                shader: PreparedShader::Binding(binding),
+            });
             bindings.push(SurfaceMaterial::default());
             continue;
         }
@@ -963,6 +1070,16 @@ fn compile_presentation(
             .then_some(lightmap_conversion),
             styled_surface: None,
         };
+        let raw = source_surface_name(source, surface, &texture_names, &info_names, &shader_names)?;
+        let key = images
+            .assets
+            .shader_registration(raw, ShaderBindingId(0))
+            .map_err(WorldMaterialError::Boundary)?
+            .key;
+        registrations.push(ShaderRegistration {
+            key,
+            shader: PreparedShader::Surface(surface.source_id),
+        });
         bindings.push(SurfaceMaterial {
             shader: binding,
             texture_scale: scale,
@@ -979,15 +1096,69 @@ fn compile_presentation(
             conflict.requested
         ));
     }
-    Ok((bindings, sun))
+    Ok(((bindings, registrations), sun))
+}
+
+fn source_surface_name<'a>(
+    source: &WorldMaterialSource,
+    surface: &MaterialSurface,
+    textures: &'a [Option<Vec<u8>>],
+    infos: &'a [Vec<u8>],
+    shaders: &'a [Vec<u8>],
+) -> Result<&'a [u8], WorldMaterialError> {
+    let raw = match source.rules {
+        RuleSetId::Quake => surface
+            .source_texture
+            .and_then(|i| textures.get(i as usize))
+            .and_then(Option::as_ref),
+        RuleSetId::Quake2 => surface
+            .source_texture_info
+            .and_then(|i| infos.get(i as usize)),
+        _ => surface.source_shader.and_then(|i| shaders.get(i as usize)),
+    };
+    raw.map(Vec::as_slice)
+        .ok_or(WorldMaterialError::Boundary("missing shader source name"))
+}
+
+fn optional_named_binding(
+    catalog: &ShaderCatalog,
+    raw: &[u8],
+    lighting: NamedShaderLighting,
+    images: &mut Images<'_>,
+    diagnostics: &mut Vec<String>,
+) -> Result<ShaderBinding, WorldMaterialError> {
+    match images
+        .try_registration(|images| compile_named_binding(catalog, raw, true, lighting, images))
+    {
+        Ok(binding) => Ok(binding),
+        Err(error) => {
+            diagnostics.push(format!(
+                "native default shader: {} ({error:?})",
+                String::from_utf8_lossy(raw)
+            ));
+            Ok(ShaderBinding::material(
+                MaterialId(0),
+                LightSource::TwoDimensional,
+            ))
+        }
+    }
 }
 
 struct LightmapLayout {
     atlas: Atlas,
     regions: Vec<Option<AtlasRegion>>,
+    native_page0: Option<AtlasRegion>,
+    native_pages: bool,
+}
+struct RegisteredLightmaps {
+    surfaces: Vec<Option<ImageId>>,
+    native_page0: Option<ImageId>,
 }
 
-fn prepare_lightmap_layout(geometry: &WorldGeometry) -> Result<LightmapLayout, WorldMaterialError> {
+fn prepare_lightmap_layout(
+    geometry: &WorldGeometry,
+    native_pages: bool,
+) -> Result<LightmapLayout, WorldMaterialError> {
     let decoupled = geometry
         .surfaces
         .iter()
@@ -1045,9 +1216,57 @@ fn prepare_lightmap_layout(geometry: &WorldGeometry) -> Result<LightmapLayout, W
         };
         regions[surface.source_id as usize] = Some(region);
     }
+    // Preserve visible atlas order. Native registers page zero even when no
+    // drawable face refers to it, then hidden surfaces can reuse real pages.
+    let native_page0 = if native_pages
+        && geometry.light_samples.len()
+            >= (crate::lightmap::PAGE_SIZE * crate::lightmap::PAGE_SIZE) as usize
+    {
+        if let Some((_, region)) = page_regions.iter().find(|(page, _)| *page == 0) {
+            Some(*region)
+        } else {
+            let blank = vec![0; crate::lightmap::rgb_bytes(page_size, page_size)?];
+            let region = atlas.insert_page(&blank)?;
+            page_regions.push((0, region));
+            Some(region)
+        }
+    } else {
+        None
+    };
+    if native_pages {
+        for surface in geometry.surfaces.iter().filter(|surface| surface.no_draw) {
+            if let LightSource::Page(page) = surface.light_source {
+                let region =
+                    if let Some((_, region)) = page_regions.iter().find(|(id, _)| *id == page) {
+                        *region
+                    } else {
+                        let blank = vec![0; crate::lightmap::rgb_bytes(page_size, page_size)?];
+                        let region = atlas.insert_page(&blank)?;
+                        page_regions.push((page, region));
+                        region
+                    };
+                regions[surface.source_id as usize] = Some(region);
+            }
+        }
+    }
+    let atlas = atlas.finish();
+    let native_page0 = if native_pages {
+        native_page0
+    } else {
+        (!atlas.pages().is_empty()).then_some(AtlasRegion {
+            page: 0,
+            page_size,
+            x: 0,
+            y: 0,
+            width: page_size,
+            height: page_size,
+        })
+    };
     Ok(LightmapLayout {
-        atlas: atlas.finish(),
+        atlas,
         regions,
+        native_page0,
+        native_pages,
     })
 }
 
@@ -1100,6 +1319,25 @@ fn prepare_lightmap_pages(
         };
         write_lightmap_region(&mut pages[region.page as usize], region, &converted)?;
     }
+    if let Some(region) = layout.native_page0
+        && !authored.contains(&region.page)
+        && geometry.light_samples.len()
+            >= (crate::lightmap::PAGE_SIZE * crate::lightmap::PAGE_SIZE) as usize
+        && layout.native_pages
+    {
+        let samples: Vec<_> = geometry.light_samples
+            [..(crate::lightmap::PAGE_SIZE * crate::lightmap::PAGE_SIZE) as usize]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        let converted = shift_quake3_rgb(
+            &samples,
+            options.map_overbright,
+            options.renderer_overbright,
+        )?;
+        write_lightmap_region(&mut pages[region.page as usize], region, &converted)?;
+    }
     Ok(pages)
 }
 
@@ -1107,7 +1345,7 @@ fn register_lightmap_pages(
     assets: &mut Assets,
     layout: &LightmapLayout,
     pages: Vec<Vec<u8>>,
-) -> Result<Vec<Option<ImageId>>, WorldMaterialError> {
+) -> Result<RegisteredLightmaps, WorldMaterialError> {
     let mut ids = Vec::with_capacity(pages.len());
     for rgb in pages {
         let rgba: Vec<_> = rgb
@@ -1125,11 +1363,14 @@ fn register_lightmap_pages(
             .map_err(WorldMaterialError::Boundary)?;
         ids.push(id);
     }
-    Ok(layout
-        .regions
-        .iter()
-        .map(|region| region.map(|r| ids[r.page as usize]))
-        .collect())
+    Ok(RegisteredLightmaps {
+        surfaces: layout
+            .regions
+            .iter()
+            .map(|region| region.map(|r| ids[r.page as usize]))
+            .collect(),
+        native_page0: layout.native_page0.map(|region| ids[region.page as usize]),
+    })
 }
 
 fn write_lightmap_region(
@@ -1185,6 +1426,14 @@ fn default_material(
                 ..base
             },
         ],
+        LightSource::TwoDimensional => vec![Stage {
+            blend: Some(StageBlend::ALPHA),
+            rgb_gen: RgbGen::Vertex,
+            alpha_gen: AlphaGen::Vertex,
+            depth_func: DepthFunc::Always,
+            depth_write: false,
+            ..base
+        }],
         LightSource::Vertex => vec![Stage {
             rgb_gen: RgbGen::ExactVertex,
             alpha_gen: AlphaGen::Skip,
@@ -1211,8 +1460,102 @@ fn default_material(
     };
     images
         .assets
-        .register_material(name, &stages, MaterialSettings::default())
+        .register_material(
+            name,
+            &stages,
+            MaterialSettings {
+                sort: if light == LightSource::TwoDimensional {
+                    9.0
+                } else {
+                    3.0
+                },
+                ..MaterialSettings::default()
+            },
+        )
         .map_err(WorldMaterialError::Boundary)
+}
+
+/// Resolved lighting resources, independent of the request's scene context.
+#[derive(Clone, Copy)]
+pub struct NamedShaderLighting {
+    pub source: LightSource,
+    pub lightmap: ImageId,
+}
+
+/// One named shader compiler for native models, skins, UI and world requests.
+pub fn compile_named_shader(
+    catalog: &ShaderCatalog,
+    raw: &[u8],
+    mipmaps: bool,
+    lighting: NamedShaderLighting,
+    images: &mut Images<'_>,
+) -> Result<ShaderRegistration, WorldMaterialError> {
+    let binding = compile_named_binding(catalog, raw, mipmaps, lighting, images)?;
+    let shader = images
+        .assets
+        .register_shader_binding(binding)
+        .map_err(WorldMaterialError::Boundary)?;
+    images
+        .assets
+        .shader_registration(raw, shader)
+        .map_err(WorldMaterialError::Boundary)
+}
+
+fn compile_named_binding(
+    catalog: &ShaderCatalog,
+    raw: &[u8],
+    mipmaps: bool,
+    lighting: NamedShaderLighting,
+    images: &mut Images<'_>,
+) -> Result<ShaderBinding, WorldMaterialError> {
+    let image = std::str::from_utf8(raw)
+        .map_err(|_| WorldMaterialError::Boundary("invalid shader name"))?;
+    let display = std::str::from_utf8(crate::shader::registration_key(raw))
+        .map_err(|_| WorldMaterialError::Boundary("invalid shader name"))?;
+    let definition = catalog.find_canonical(&canonical_path(display));
+    if definition.is_some_and(|definition| !definition.valid) {
+        return Err(WorldMaterialError::Boundary("invalid shader definition"));
+    }
+    let material = if let Some(definition) = definition {
+        let mut definition = definition.clone();
+        if !matches!(
+            lighting.source,
+            LightSource::Page(_) | LightSource::ExternalPage(_) | LightSource::Samples
+        ) {
+            for stage in &mut definition.stages {
+                if stage.map == Some(TextureMap::Lightmap) {
+                    stage.map = Some(TextureMap::White);
+                }
+            }
+        }
+        compile_definition(&definition, images)?
+    } else {
+        let image = images.raster(
+            image,
+            ImageUse {
+                sampler: Sampler {
+                    wrap: if !mipmaps
+                        && matches!(
+                            lighting.source,
+                            LightSource::None | LightSource::TwoDimensional
+                        ) {
+                        Wrap::Clamp
+                    } else {
+                        Wrap::Repeat
+                    },
+                    mipmaps,
+                    ..Sampler::default()
+                },
+                allow_picmip: mipmaps,
+                ..ImageUse::default()
+            },
+            images.raster_target(),
+        )?;
+        default_material(display, image, lighting.source, images)?
+    };
+    let mut binding = ShaderBinding::material(material, lighting.source);
+    binding.lightmap = lighting.lightmap;
+    Ok(binding)
 }
 
 pub fn compile_definition(

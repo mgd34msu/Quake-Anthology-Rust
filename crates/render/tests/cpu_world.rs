@@ -686,7 +686,11 @@ fn world_bound(
     )
     .unwrap();
     assets
-        .register_world(geometry, visibility, &[&[binding]])
+        .register_world(
+            geometry,
+            visibility,
+            &[qa_render::world::WorldPresentationInput::new(&[binding])],
+        )
         .unwrap()
 }
 

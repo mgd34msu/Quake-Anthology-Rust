@@ -913,18 +913,8 @@ fn one_geometry_presents_explicit_palette_variants_in_both_seat_orders() -> Resu
     Ok(())
 }
 
-#[test]
-fn foreign_presentation_keeps_q3_geometry_coordinates_and_source_overbright() -> Result<(), String>
-{
-    let root = resources("q3-source")?;
-    std::fs::write(
-        root.join("scripts/test.shader"),
-        "textures/modern {\n q3map_sun 1 1 1 200 0 0\n { map textures/modern }\n }",
-    )
-    .unwrap();
-    let vfs = mount(&root)?;
-    let bytes = map_bytes(3);
-    let mut map = legacy_map(&bytes, 3)?;
+fn modern_map(bytes: &[u8]) -> Result<Map<'_>, String> {
+    let mut map = legacy_map(bytes, 3)?;
     map.faces.clear();
     map.leaf_faces = vec![0];
     map.leaves[0].faces.count = 1;
@@ -955,6 +945,21 @@ fn foreign_presentation_keeps_q3_geometry_coordinates_and_source_overbright() ->
         patch: [0; 2],
         triangle_fan: false,
     });
+    Ok(map)
+}
+
+#[test]
+fn foreign_presentation_keeps_q3_geometry_coordinates_and_source_overbright() -> Result<(), String>
+{
+    let root = resources("q3-source")?;
+    std::fs::write(
+        root.join("scripts/test.shader"),
+        "textures/modern {\n q3map_sun 1 1 1 200 0 0\n { map textures/modern }\n }",
+    )
+    .unwrap();
+    let vfs = mount(&root)?;
+    let bytes = map_bytes(3);
+    let map = modern_map(&bytes)?;
     let mut assets = Assets::load().map_err(|e| format!("assets: {e:?}"))?;
     for rules in [RuleSetId::Quake3, RuleSetId::Quake, RuleSetId::Quake2] {
         let loaded = load_native_world(&vfs, &map, &mut assets, rules, WorldLoadOptions::default())
@@ -1050,5 +1055,277 @@ fn palette_translation_preserves_cutout_and_cloud_mask_indices() -> Result<(), S
         }
     }
     std::fs::remove_dir_all(root).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn ordered_native_requests_include_fog_hidden_and_inline_surfaces_with_default_zero()
+-> Result<(), String> {
+    use qa_formats::bsp::Fog;
+    use qa_render::{ShaderBindingId, world::geometry::LightSource};
+    let root = resources("native-requests")?;
+    std::fs::write(
+        root.join("scripts/test.shader"),
+        r#"
+        textures/fog { surfaceparm fog fogParms ( .1 .2 .3 ) 128 }
+        textures/modern { { map $whiteimage } }
+        textures/hidden { surfaceparm nodraw { map $whiteimage } }
+        textures/stageless { surfaceparm nodraw }
+    "#,
+    )
+    .map_err(|error| error.to_string())?;
+    let vfs = mount(&root)?;
+    let bytes = map_bytes(3);
+    let mut map = modern_map(&bytes)?;
+    map.fogs = vec![
+        Fog {
+            name: b"Textures/Fog",
+            brush: -1,
+            visible_side: -1,
+        },
+        Fog {
+            name: b"textures/missing_fog",
+            brush: -1,
+            visible_side: -1,
+        },
+    ];
+    map.shaders.extend([
+        Shader {
+            name: b"textures/missing",
+            surface_flags: 0x80,
+            content_flags: 0,
+        },
+        Shader {
+            name: b"textures/hidden",
+            surface_flags: 0x80,
+            content_flags: 0,
+        },
+        Shader {
+            name: b"textures/stageless",
+            surface_flags: 0x80,
+            content_flags: 0,
+        },
+    ]);
+    let face = map.surfaces[0];
+    for shader in [1, 0, 2, 3] {
+        map.surfaces.push(Surface {
+            shader: Some(shader),
+            ..face
+        });
+    }
+    map.leaf_faces = (0..5).collect();
+    map.leaves[0].faces.count = 5;
+    map.models[0].faces.count = 1;
+    map.models.push(Model {
+        faces: IndexSpan { first: 1, count: 4 },
+        ..map.models[0]
+    });
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let loaded = load_native_world(
+        &vfs,
+        &map,
+        &mut assets,
+        RuleSetId::Quake3,
+        WorldLoadOptions::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let presentation = assets
+        .world_presentation(loaded.presentations[0].id)
+        .ok_or("presentation")?;
+    let registrations = presentation.shader_registrations();
+    let names: Vec<_> = registrations
+        .iter()
+        .map(|registration| assets.name(registration.key).unwrap().to_ascii_lowercase())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "textures/fog",
+            "textures/missing_fog",
+            "textures/modern",
+            "textures/missing",
+            "textures/modern",
+            "textures/hidden",
+            "textures/stageless"
+        ]
+    );
+    assert_eq!(registrations[2].shader, presentation.bindings()[0].shader);
+    assert_eq!(registrations[4].shader, presentation.bindings()[2].shader);
+    assert_eq!(registrations[2], registrations[4]);
+    assert_eq!(
+        assets
+            .shader_binding(registrations[0].shader)
+            .unwrap()
+            .light_source,
+        LightSource::None
+    );
+    assert!(
+        assets
+            .material(
+                assets
+                    .shader_binding(registrations[0].shader)
+                    .unwrap()
+                    .material
+            )
+            .unwrap()
+            .settings
+            .fog
+            .is_some()
+    );
+    for index in [1, 3, 6] {
+        assert_eq!(registrations[index].shader, ShaderBindingId(0));
+    }
+    assert_ne!(registrations[5].shader, ShaderBindingId(0));
+    for surface in [1, 3, 4] {
+        assert_eq!(presentation.bindings()[surface].shader, ShaderBindingId(0));
+        assert!(assets.world(loaded.world).unwrap().geometry().surfaces[surface].no_draw);
+    }
+    assert_eq!(
+        loaded
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.starts_with("native default shader:"))
+            .count(),
+        3
+    );
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn unreferenced_native_page_zero_is_real_converted_resource_and_late_metadata_rolls_back()
+-> Result<(), String> {
+    use qa_render::material::world_load::append_world_presentation;
+    let root = resources("unreferenced-page-zero")?;
+    let vfs = mount(&root)?;
+    let mut bytes = map_bytes(3);
+    let header = 8 + 17 * 8;
+    bytes[8 + 14 * 8 + 4..8 + 14 * 8 + 8].copy_from_slice(&(2u32 * 128 * 128 * 3).to_le_bytes());
+    bytes.truncate(header);
+    bytes.extend(std::iter::repeat_n([1, 2, 3], 128 * 128).flatten());
+    bytes.extend(std::iter::repeat_n([7, 11, 13], 128 * 128).flatten());
+    let mut map = modern_map(&bytes)?;
+    map.surfaces[0].lightmap = 1;
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let loaded = load_native_world(
+        &vfs,
+        &map,
+        &mut assets,
+        RuleSetId::Quake3,
+        WorldLoadOptions::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let presentation = assets
+        .world_presentation(loaded.presentations[0].id)
+        .ok_or("presentation")?;
+    let page_zero = presentation.native_page0().ok_or("page zero")?;
+    let source = assets
+        .shader_binding(presentation.bindings()[0].shader)
+        .ok_or("source binding")?;
+    assert_ne!(page_zero, source.lightmap);
+    assert!(
+        source.lightmap.0 < page_zero.0,
+        "visible atlas order is retained"
+    );
+    assert_eq!(
+        &assets.image(source.lightmap).unwrap().rgba[..4],
+        &[28, 44, 52, 255]
+    );
+    assert_eq!(
+        &assets.image(page_zero).unwrap().rgba[..4],
+        &[4, 8, 12, 255]
+    );
+    let prefix = assets.counts();
+    let old_registration = presentation.shader_registrations()[0];
+    let old_mesh = assets.world(loaded.world).unwrap().mesh();
+    let mut profile = loaded.presentations[0].profile;
+    profile.image_settings.picmip = 0;
+    let candidate = append_world_presentation(&vfs, &mut assets, loaded.world, profile)
+        .map_err(|error| format!("{error:?}"))?;
+    let candidate_id = candidate.presentations[0].id;
+    assert_eq!(assets.world(loaded.world).unwrap().mesh(), old_mesh);
+    assert_eq!(
+        assets
+            .world_presentation(candidate_id)
+            .unwrap()
+            .shader_registrations()
+            .len(),
+        1
+    );
+    assets
+        .discard_registration_suffix(prefix)
+        .map_err(str::to_owned)?;
+    assert_eq!(assets.counts(), prefix);
+    assert_eq!(
+        assets.world(loaded.world).unwrap().presentations(),
+        &[loaded.presentations[0].id]
+    );
+    assert_eq!(
+        assets
+            .world_presentation(loaded.presentations[0].id)
+            .unwrap()
+            .shader_registrations(),
+        &[old_registration]
+    );
+    assert_eq!(
+        &assets.image(page_zero).unwrap().rgba[..4],
+        &[4, 8, 12, 255]
+    );
+    let retry = append_world_presentation(&vfs, &mut assets, loaded.world, profile)
+        .map_err(|error| format!("{error:?}"))?;
+    assert_eq!(retry.presentations[0].id, candidate_id);
+    let admitted = assets.world_presentation(candidate_id).unwrap();
+    assert!(
+        assets
+            .image(admitted.native_page0().ok_or("retry page zero")?)
+            .is_some()
+    );
+    assert_eq!(
+        admitted.shader_registrations()[0].shader,
+        admitted.bindings()[0].shader
+    );
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn native_hidden_out_of_range_lightmap_registers_vertex_lighting_before_draw_skip()
+-> Result<(), String> {
+    use qa_render::world::geometry::LightSource;
+    let root = resources("hidden-unavailable-lightmap")?;
+    let vfs = mount(&root)?;
+    let mut bytes = map_bytes(3);
+    bytes[8 + 14 * 8 + 4..8 + 14 * 8 + 8].copy_from_slice(&0u32.to_le_bytes());
+    bytes.truncate(8 + 17 * 8);
+    let mut map = modern_map(&bytes)?;
+    map.shaders[0].surface_flags = 0x80;
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let loaded = load_native_world(
+        &vfs,
+        &map,
+        &mut assets,
+        RuleSetId::Quake3,
+        WorldLoadOptions::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let presentation = assets
+        .world_presentation(loaded.presentations[0].id)
+        .ok_or("presentation")?;
+    assert_eq!(presentation.native_page0(), None);
+    assert_eq!(
+        presentation.bindings()[0].shader,
+        qa_render::ShaderBindingId(0)
+    );
+    let registration = presentation.shader_registrations()[0];
+    assert_ne!(registration.shader, qa_render::ShaderBindingId(0));
+    let shader = assets
+        .shader_binding(registration.shader)
+        .ok_or("registration")?;
+    assert_eq!(shader.light_source, LightSource::Vertex);
+    let material = assets.material(shader.material).ok_or("material")?;
+    assert_eq!(material.stages.len(), 1);
+    assert_eq!(material.stages[0].rgb_gen, RgbGen::ExactVertex);
+    assert_ne!(material.stages[0].texture, StageTexture::Lightmap);
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
     Ok(())
 }

@@ -214,7 +214,13 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
     ]
     .map(|(path, mips)| {
         owner
-            .register_shader(&fixture.vfs, path, first.source_rules, mips)
+            .register_shader(
+                &fixture.vfs,
+                path,
+                first.source_rules,
+                mips,
+                qa_compat::services::ShaderLighting::TwoDimensional,
+            )
             .unwrap()
     });
     let materials = shaders.map(|id| owner.catalog().shader_binding(id, first).unwrap());
@@ -316,6 +322,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
             source: second.source_rules,
             kind: RendererRegistration::Shader {
                 mipmaps: index == 0,
+                lighting: qa_compat::services::ShaderLighting::TwoDimensional,
             },
             world: None,
         };
@@ -398,6 +405,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
             b"ui.part/first.tga",
             first.source_rules,
             false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
         )
         .unwrap();
     let original = owner.catalog().shader_binding(shader, first).unwrap();
@@ -435,7 +443,10 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
     let request = RendererRequest {
         name: b"ui.part/second.tga".as_slice(),
         source: second.source_rules,
-        kind: RendererRegistration::Shader { mipmaps: true },
+        kind: RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
         world: None,
     };
     owner
@@ -479,7 +490,10 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
     let request = RendererRequest {
         name: b"ui.part/second.tga".as_slice(),
         source: third.source_rules,
-        kind: RendererRegistration::Shader { mipmaps: true },
+        kind: RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
         world: None,
     };
     assert!(

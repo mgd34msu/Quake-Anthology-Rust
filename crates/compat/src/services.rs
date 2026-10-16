@@ -185,6 +185,7 @@ pub trait ModelLoader {
         name: &[u8],
         source: RuleSetId,
         mipmaps: bool,
+        lighting: crate::services::ShaderLighting,
     ) -> Result<i32, CallError>;
     fn register_model(
         &mut self,
@@ -199,11 +200,20 @@ pub trait ModelLoader {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShaderLighting {
+    TwoDimensional,
+    World(qa_render::world::WorldPresentationId),
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum RendererRegistration {
     Model,
     Skin,
-    Shader { mipmaps: bool },
+    Shader {
+        mipmaps: bool,
+        lighting: ShaderLighting,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -2119,7 +2129,14 @@ impl EngineServices<'_> {
             match kind {
                 RendererRegistration::Model => lookup.model_handle(name, source),
                 RendererRegistration::Skin => lookup.skin_handle(name, source),
-                RendererRegistration::Shader { .. } => lookup.shader_handle(name, source),
+                RendererRegistration::Shader {
+                    lighting: ShaderLighting::TwoDimensional,
+                    ..
+                } => lookup.shader_handle(name, source),
+                RendererRegistration::Shader {
+                    lighting: ShaderLighting::World(_),
+                    ..
+                } => None,
             }
         }
     }
@@ -2156,8 +2173,8 @@ impl EngineServices<'_> {
             match kind {
                 RendererRegistration::Model => loader.register_model(self.vfs, name, source),
                 RendererRegistration::Skin => loader.register_skin(self.vfs, name, source),
-                RendererRegistration::Shader { mipmaps } => {
-                    loader.register_shader(self.vfs, name, source, mipmaps)
+                RendererRegistration::Shader { mipmaps, lighting } => {
+                    loader.register_shader(self.vfs, name, source, mipmaps, lighting)
                 }
             }
         } else if let Some(scene) = self.scene.as_deref() {

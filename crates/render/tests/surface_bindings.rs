@@ -38,7 +38,11 @@ fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
     });
     let (geometry, visibility) = inputs(2);
     let id = assets
-        .register_world(geometry, visibility, &[&materials])
+        .register_world(
+            geometry,
+            visibility,
+            &[qa_render::world::WorldPresentationInput::new(&materials)],
+        )
         .unwrap();
     let world = assets.world(id).unwrap();
     for (binding, region, expected) in [
@@ -111,14 +115,16 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
                 .register_world(
                     geometry,
                     visibility,
-                    &[&[SurfaceMaterial {
-                        shader: qa_render::ShaderBinding {
-                            lightmap: image,
-                            lightmap_region: Some(region),
-                            ..(SurfaceMaterial::default()).shader
-                        },
-                        ..SurfaceMaterial::default()
-                    }]]
+                    &[qa_render::world::WorldPresentationInput::new(&[
+                        SurfaceMaterial {
+                            shader: qa_render::ShaderBinding {
+                                lightmap: image,
+                                lightmap_region: Some(region),
+                                ..(SurfaceMaterial::default()).shader
+                            },
+                            ..SurfaceMaterial::default()
+                        }
+                    ])]
                 )
                 .is_err()
         );
@@ -130,14 +136,16 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
         .register_world(
             geometry,
             visibility,
-            &[&[SurfaceMaterial {
-                shader: qa_render::ShaderBinding {
-                    lightmap: image,
-                    lightmap_region: Some(valid),
-                    ..(SurfaceMaterial::default()).shader
+            &[qa_render::world::WorldPresentationInput::new(&[
+                SurfaceMaterial {
+                    shader: qa_render::ShaderBinding {
+                        lightmap: image,
+                        lightmap_region: Some(valid),
+                        ..(SurfaceMaterial::default()).shader
+                    },
+                    ..SurfaceMaterial::default()
                 },
-                ..SurfaceMaterial::default()
-            }]],
+            ])],
         )
         .unwrap();
     assert_eq!(
@@ -170,13 +178,15 @@ fn authored_full_page_keeps_uvs_and_default_region_none() {
         .register_world(
             geometry,
             visibility,
-            &[&[SurfaceMaterial {
-                shader: qa_render::ShaderBinding {
-                    lightmap: image,
-                    ..(SurfaceMaterial::default()).shader
+            &[qa_render::world::WorldPresentationInput::new(&[
+                SurfaceMaterial {
+                    shader: qa_render::ShaderBinding {
+                        lightmap: image,
+                        ..(SurfaceMaterial::default()).shader
+                    },
+                    ..SurfaceMaterial::default()
                 },
-                ..SurfaceMaterial::default()
-            }]],
+            ])],
         )
         .unwrap();
     let world = assets.world(id).unwrap();
@@ -222,7 +232,14 @@ fn invalid_later_presentation_does_not_publish_a_world_mesh_or_partial_variant()
     let (geometry, visibility) = inputs(1);
     assert!(
         assets
-            .register_world(geometry, visibility, &[&valid, &invalid])
+            .register_world(
+                geometry,
+                visibility,
+                &[
+                    qa_render::world::WorldPresentationInput::new(&valid),
+                    qa_render::world::WorldPresentationInput::new(&invalid)
+                ]
+            )
             .is_err()
     );
     assert_eq!(

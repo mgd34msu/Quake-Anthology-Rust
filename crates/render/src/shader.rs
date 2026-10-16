@@ -6,6 +6,15 @@ pub use crate::assets::DepthFunc;
 pub use parse::parse_sources;
 pub use qa_core::names::canonical_path;
 
+/// Native shader lookup strips at the first dot, before folded name lookup.
+/// Separators remain exact bytes; path normalization belongs to image lookup.
+pub fn registration_key(raw: &[u8]) -> &[u8] {
+    &raw[..raw
+        .iter()
+        .position(|&byte| byte == b'.')
+        .unwrap_or(raw.len())]
+}
+
 pub const MAX_STAGES: usize = 8;
 pub const MAX_TEXMODS: usize = 4;
 pub const MAX_ANIMATIONS: usize = 8;

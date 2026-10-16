@@ -550,6 +550,22 @@ impl<'a> Images<'a> {
     pub fn into_state(self) -> ImagesState {
         self.state
     }
+    /// Optional native registrations discard only their uncommitted resource suffix.
+    pub(crate) fn try_registration<T, E: From<ResourceError>>(
+        &mut self,
+        register: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let retained = self.assets.counts();
+        let mark = self.state.registration_mark();
+        let result = register(self);
+        if result.is_err() {
+            self.assets
+                .discard_registration_suffix(retained)
+                .map_err(|error| E::from(ResourceError::Asset(error)))?;
+            self.state.rollback_registration(mark, retained.images);
+        }
+        result
+    }
     pub fn conflicts(&self) -> &[ImageConflict] {
         &self.state.conflicts
     }

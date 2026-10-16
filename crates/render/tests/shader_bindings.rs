@@ -184,7 +184,13 @@ fn capacity_and_partial_world_failure_restore_binding_heads_and_styled_provenanc
     let (geometry, visibility) = world_surfaces::inputs(2);
     assert!(
         assets
-            .register_world(geometry, visibility, &[&[candidate; 2]])
+            .register_world(
+                geometry,
+                visibility,
+                &[qa_render::world::WorldPresentationInput::new(
+                    &[candidate; 2]
+                )]
+            )
             .is_err()
     );
     assert_eq!(assets.counts(), prefix);
@@ -220,7 +226,11 @@ fn capacity_and_partial_world_failure_restore_binding_heads_and_styled_provenanc
     geometry.surfaces[0].light_samples = qa_core::primitives::IndexSpan { first: 0, count: 1 };
     geometry.light_samples = vec![[128; 3]];
     let world = assets
-        .register_world(geometry, visibility, &[&[candidate]])
+        .register_world(
+            geometry,
+            visibility,
+            &[qa_render::world::WorldPresentationInput::new(&[candidate])],
+        )
         .unwrap();
     let presentation = assets.world(world).unwrap().presentations()[0];
     let shader = assets.surface_binding(presentation, 0).unwrap().shader;
@@ -233,4 +243,121 @@ fn capacity_and_partial_world_failure_restore_binding_heads_and_styled_provenanc
     let mut cpu = CpuBackend::load_with_assets(4, 4, &assets).unwrap();
     assert_eq!(cpu.admitted_assets(), Some(assets.counts()));
     cpu.prepare_assets(&assets, None).unwrap();
+}
+
+#[test]
+fn native_registration_keys_and_styled_requests_share_atomic_canonical_rows() {
+    use qa_render::{
+        ShaderRegistration,
+        world::{PreparedShader, WorldPresentationInput},
+    };
+    let mut assets = Assets::load_with_shader_capacity(3).unwrap();
+    let material = assets
+        .register_material(
+            "compiled/path",
+            &[stage(qa_render::ImageId(0))],
+            Default::default(),
+        )
+        .unwrap();
+    let base = assets
+        .register_shader_binding(ShaderBinding::material(material, LightSource::None))
+        .unwrap();
+    let slash = assets
+        .shader_registration(b"Textures/Stone.diffuse.tga", base)
+        .unwrap();
+    let folded = assets
+        .shader_registration(b"textures/stone.alternative", base)
+        .unwrap();
+    let backslash = assets
+        .shader_registration(b"Textures\\Stone.diffuse.tga", base)
+        .unwrap();
+    assert_eq!(slash, folded);
+    assert_ne!(slash.key, backslash.key);
+    assert_eq!(
+        assets.name(slash.key).unwrap().to_ascii_lowercase(),
+        "textures/stone"
+    );
+    assert_eq!(qa_render::shader::registration_key(b"a.b/c.tga"), b"a");
+    let lightmap = assets.register_image(1, 1, &[128; 4]).unwrap();
+    let prefix = assets.counts();
+    let candidate = SurfaceMaterial {
+        shader: ShaderBinding {
+            lightmap,
+            lightmap_region: Some(AtlasRegion {
+                page: 0,
+                page_size: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }),
+            lightmap_conversion: Some(LightmapConversion::Rgb { modulate: 1. }),
+            ..ShaderBinding::material(material, LightSource::Samples)
+        },
+        texture_scale: [1.; 2],
+    };
+    let registrations = [
+        ShaderRegistration {
+            key: slash.key,
+            shader: PreparedShader::Surface(0),
+        },
+        ShaderRegistration {
+            key: backslash.key,
+            shader: PreparedShader::Binding(ShaderBinding::material(material, LightSource::Vertex)),
+        },
+    ];
+    let (geometry, visibility) = world_surfaces::inputs(1);
+    assert!(
+        assets
+            .register_world(
+                geometry,
+                visibility,
+                &[WorldPresentationInput {
+                    surfaces: &[candidate],
+                    registrations: &registrations,
+                    native_page0: Some(lightmap),
+                }]
+            )
+            .is_err()
+    );
+    assert_eq!(assets.counts(), prefix);
+    assert_eq!(
+        assets
+            .register_shader_binding(ShaderBinding::material(material, LightSource::None))
+            .unwrap(),
+        base
+    );
+    let (geometry, visibility) = world_surfaces::inputs(1);
+    let world = assets
+        .register_world(
+            geometry,
+            visibility,
+            &[WorldPresentationInput {
+                surfaces: &[candidate],
+                registrations: &registrations[..1],
+                native_page0: Some(lightmap),
+            }],
+        )
+        .unwrap();
+    let id = assets.world(world).unwrap().presentations()[0];
+    let presentation = assets.world_presentation(id).unwrap();
+    assert_eq!(
+        presentation.shader_registrations(),
+        &[ShaderRegistration {
+            key: slash.key,
+            shader: presentation.bindings()[0].shader
+        }]
+    );
+    let styled = presentation.bindings()[0].shader;
+    assert_eq!(styled.0 as usize, prefix.shader_bindings);
+    assert_eq!(
+        assets.counts().shader_bindings,
+        prefix.shader_bindings + 1,
+        "no unstyled intermediate binding is admitted"
+    );
+    assert_eq!(
+        assets.shader_binding(styled).unwrap().styled_surface,
+        Some((id, 0))
+    );
+    assert_eq!(presentation.native_page0(), Some(lightmap));
 }

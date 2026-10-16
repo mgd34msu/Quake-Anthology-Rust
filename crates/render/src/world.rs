@@ -1,6 +1,6 @@
 //! BSP boundary conversion. Drawing uses only the normalized world primitives.
 use crate::{
-    assets::{MaterialId, ModelId, ShaderBinding, ShaderBindingId},
+    assets::{ImageId, MaterialId, ModelId, ShaderBinding, ShaderBindingId, ShaderRegistration},
     scene::{Refdef, Span},
 };
 use qa_core::primitives::{Plane, RuleSetId};
@@ -21,6 +21,8 @@ pub struct WorldPresentationId(pub u32);
 pub struct WorldPresentation {
     pub world: WorldId,
     pub(crate) bindings: Box<[SurfaceBinding]>,
+    registrations: Box<[ShaderRegistration]>,
+    native_page0: Option<ImageId>,
     pub(crate) profile: Option<(
         crate::material::world_load::WorldPresentationProfile,
         crate::material::world_load::PresentationDefaults,
@@ -32,6 +34,8 @@ impl WorldPresentation {
         materials: &[SurfaceMaterial],
         mesh_ranges: impl Iterator<Item = Span>,
         shaders: impl Iterator<Item = ShaderBindingId>,
+        registrations: Box<[ShaderRegistration]>,
+        native_page0: Option<ImageId>,
     ) -> Self {
         Self {
             world,
@@ -46,7 +50,15 @@ impl WorldPresentation {
                 })
                 .collect(),
             profile: None,
+            registrations,
+            native_page0,
         }
+    }
+    pub fn shader_registrations(&self) -> &[ShaderRegistration] {
+        &self.registrations
+    }
+    pub fn native_page0(&self) -> Option<ImageId> {
+        self.native_page0
     }
     pub fn world(&self) -> WorldId {
         self.world
@@ -74,6 +86,29 @@ impl Default for SurfaceMaterial {
         Self {
             shader: ShaderBinding::material(MaterialId(0), geometry::LightSource::TwoDimensional),
             texture_scale: [1.0; 2],
+        }
+    }
+}
+
+/// A source surface resolves after its styled canonical binding is interned.
+#[derive(Clone, Copy, Debug)]
+pub enum PreparedShader {
+    Surface(u32),
+    Binding(ShaderBinding),
+}
+/// One cold presentation input; native requests retain their authored order.
+#[derive(Clone, Copy)]
+pub struct WorldPresentationInput<'a> {
+    pub surfaces: &'a [SurfaceMaterial],
+    pub registrations: &'a [ShaderRegistration<PreparedShader>],
+    pub native_page0: Option<ImageId>,
+}
+impl<'a> WorldPresentationInput<'a> {
+    pub fn new(surfaces: &'a [SurfaceMaterial]) -> Self {
+        Self {
+            surfaces,
+            registrations: &[],
+            native_page0: None,
         }
     }
 }

@@ -67,7 +67,7 @@ fn empty_world(assets: &mut Assets) -> LoadedWorld {
                 patch_stats: PatchStats::default(),
             },
             visibility,
-            &[&[]],
+            &[qa_render::world::WorldPresentationInput::new(&[])],
         )
         .unwrap();
     LoadedWorld {

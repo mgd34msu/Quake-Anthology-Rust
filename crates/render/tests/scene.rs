@@ -299,7 +299,14 @@ fn world_variants(assets: &mut Assets, variants: &[&[SurfaceMaterial]]) -> World
     )
     .unwrap();
     assets
-        .register_world(geometry, visibility, variants)
+        .register_world(
+            geometry,
+            visibility,
+            &(variants)
+                .iter()
+                .map(|surfaces| qa_render::world::WorldPresentationInput::new(surfaces))
+                .collect::<Vec<_>>(),
+        )
         .unwrap()
 }
 

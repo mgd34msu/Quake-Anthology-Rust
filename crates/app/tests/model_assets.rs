@@ -1,5 +1,7 @@
 #[path = "model_assets/profiles.rs"]
 mod profiles;
+#[path = "model_assets/registrations.rs"]
+mod registrations;
 #[path = "model_assets/support.rs"]
 mod support;
 
@@ -455,7 +457,13 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
         )
         .unwrap();
     let shader = owner
-        .register_shader(&fixture.vfs, b"maps/large.bsp", RuleSetId::Quake2, true)
+        .register_shader(
+            &fixture.vfs,
+            b"maps/large.bsp",
+            RuleSetId::Quake2,
+            true,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     let retained_skin = owner
         .register_skin(&fixture.vfs, b"maps/large.bsp", RuleSetId::Quake2)
@@ -674,7 +682,10 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
     let original_capacity = owner.catalog().capacity();
     let bad = renderer_request(
         "ui/bad",
-        RendererRegistration::Shader { mipmaps: true },
+        RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
         profile.source_rules,
         None,
     );
@@ -857,7 +868,13 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
         )
         .unwrap();
     let shader = owner
-        .register_shader(&fixture.vfs, b"progs/test.tga", RuleSetId::Quake3, false)
+        .register_shader(
+            &fixture.vfs,
+            b"progs/test.tga",
+            RuleSetId::Quake3,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     let shader_material = owner
         .catalog()
@@ -1032,7 +1049,10 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
     let mut retained_skin = None;
     for kind in [
         RendererRegistration::Skin,
-        RendererRegistration::Shader { mipmaps: true },
+        RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
     ] {
         let request = renderer_request("shared", kind, profile.source_rules, None);
         let before = owner.assets().counts();
@@ -1219,7 +1239,13 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
         )
         .unwrap();
     let shader = owner
-        .register_shader(&fixture.vfs, b"ui/later.tga", profile.source_rules, true)
+        .register_shader(
+            &fixture.vfs,
+            b"ui/later.tga",
+            profile.source_rules,
+            true,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     assert!(later > 0 && skin > 0 && shader > 0);
     assert_eq!(
@@ -1246,7 +1272,13 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
     for (kind, handle) in [
         (RendererRegistration::Model, later),
         (RendererRegistration::Skin, skin),
-        (RendererRegistration::Shader { mipmaps: true }, shader),
+        (
+            RendererRegistration::Shader {
+                mipmaps: true,
+                lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+            },
+            shader,
+        ),
     ] {
         assert!(owner.catalog().renderer_candidate(kind, handle, profile));
         assert!(
@@ -1294,7 +1326,13 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
         Ok(skin)
     );
     assert_eq!(
-        owner.register_shader(&fixture.vfs, b"UI/LATER.TGA", profile.source_rules, false),
+        owner.register_shader(
+            &fixture.vfs,
+            b"UI/LATER.TGA",
+            profile.source_rules,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional
+        ),
         Ok(shader)
     );
     pending(&owner);
@@ -2623,12 +2661,24 @@ fn native_shader_first_registration_keeps_mips_display_and_exact_profiles() {
         )
         .unwrap();
         let handle = owner
-            .register_shader(&fixture.vfs, b"UI/Pic.tga", RuleSetId::Quake3, mipmaps)
+            .register_shader(
+                &fixture.vfs,
+                b"UI/Pic.tga",
+                RuleSetId::Quake3,
+                mipmaps,
+                qa_compat::services::ShaderLighting::TwoDimensional,
+            )
             .unwrap();
         assert!(handle > 0);
         fixture.remove("ui/pic.tga");
         assert_eq!(
-            owner.register_shader(&fixture.vfs, b"ui/pic.jpg", RuleSetId::Quake3, !mipmaps),
+            owner.register_shader(
+                &fixture.vfs,
+                b"ui/pic.jpg",
+                RuleSetId::Quake3,
+                !mipmaps,
+                qa_compat::services::ShaderLighting::TwoDimensional
+            ),
             Ok(handle)
         );
         let ModelView { assets, catalog } = owner.view();
@@ -2736,6 +2786,7 @@ fn native_shader_sources_keep_their_first_filename_and_mipmap_choice() {
                     paths[index].as_bytes(),
                     profile.source_rules,
                     first_mips[index],
+                    qa_compat::services::ShaderLighting::TwoDimensional,
                 )
                 .unwrap();
             assert!(admitted > 0);
@@ -2771,6 +2822,7 @@ fn native_shader_sources_keep_their_first_filename_and_mipmap_choice() {
                     b"UI.other/missing.tga",
                     profile.source_rules,
                     !first_mips[index],
+                    qa_compat::services::ShaderLighting::TwoDimensional
                 ),
                 Ok(admitted)
             );
@@ -2814,12 +2866,19 @@ fn native_shader_profile_rows_preserve_the_configured_name_budget() {
                 path.as_bytes(),
                 profiles[0].source_rules,
                 false,
+                qa_compat::services::ShaderLighting::TwoDimensional,
             )
             .unwrap();
         assert!(handle > 0);
         for profile in profiles {
             assert_eq!(
-                owner.register_shader(&fixture.vfs, path.as_bytes(), profile.source_rules, false,),
+                owner.register_shader(
+                    &fixture.vfs,
+                    path.as_bytes(),
+                    profile.source_rules,
+                    false,
+                    qa_compat::services::ShaderLighting::TwoDimensional
+                ),
                 Ok(handle)
             );
             assert!(owner.catalog().shader_binding(handle, profile).is_some());
@@ -2925,6 +2984,7 @@ fn cold_shader_source_failure_does_not_hide_another_source_or_repeat_the_attempt
             b"ui.part/first.tga",
             first.source_rules,
             false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
         )
         .unwrap();
     let retained = owner.catalog().shader_binding(handle, first).unwrap();
@@ -2933,7 +2993,8 @@ fn cold_shader_source_failure_does_not_hide_another_source_or_repeat_the_attempt
             &fixture.vfs,
             b"ui.other/missing.tga",
             second.source_rules,
-            true
+            true,
+            qa_compat::services::ShaderLighting::TwoDimensional
         ),
         Err(CallError::File)
     );
@@ -2944,7 +3005,8 @@ fn cold_shader_source_failure_does_not_hide_another_source_or_repeat_the_attempt
             &fixture.vfs,
             b"ui.part/second.tga",
             second.source_rules,
-            false
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional
         ),
         Ok(0)
     );
@@ -2991,6 +3053,7 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
             b"ui.part/first.tga",
             first.source_rules,
             false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
         )
         .unwrap();
     let retained = owner.catalog().shader_binding(handle, first).unwrap();
@@ -3011,7 +3074,10 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
     let before = owner.assets().counts();
     let request = renderer_request(
         "ui.part/second.tga",
-        RendererRegistration::Shader { mipmaps: false },
+        RendererRegistration::Shader {
+            mipmaps: false,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
         second.source_rules,
         None,
     );
@@ -3046,7 +3112,10 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
     assert_eq!(owner.catalog().shader_binding(handle, second), None);
     let retry = renderer_request(
         "ui.part/second.tga",
-        RendererRegistration::Shader { mipmaps: true },
+        RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
         second.source_rules,
         None,
     );
@@ -3117,6 +3186,7 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
             b"ui.part/first.tga",
             first.source_rules,
             false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
         )
         .unwrap();
     let retained = owner.catalog().shader_binding(handle, first).unwrap();
@@ -3137,7 +3207,10 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
     let before = owner.assets().counts();
     let request = renderer_request(
         "ui.part/second.tga",
-        RendererRegistration::Shader { mipmaps: true },
+        RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
         second.source_rules,
         None,
     );
@@ -3184,7 +3257,10 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
     }
     let retry = renderer_request(
         "ui.part/second.tga",
-        RendererRegistration::Shader { mipmaps: false },
+        RendererRegistration::Shader {
+            mipmaps: false,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
         second.source_rules,
         None,
     );
@@ -3220,6 +3296,7 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
             b"UI.other/missing.tga",
             second.source_rules,
             true,
+            qa_compat::services::ShaderLighting::TwoDimensional
         ),
         Ok(handle)
     );
@@ -3447,6 +3524,7 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
             b"ui.part/first.tga",
             first.source_rules,
             false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
         )
         .unwrap();
     let retained = owner.catalog().shader_binding(handle, first).unwrap();
@@ -3467,7 +3545,10 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
     let before = owner.assets().counts();
     let missing = renderer_request(
         "ui.other/missing.tga",
-        RendererRegistration::Shader { mipmaps: false },
+        RendererRegistration::Shader {
+            mipmaps: false,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
         second.source_rules,
         None,
     );
@@ -3515,7 +3596,8 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
                 &fixture.vfs,
                 b"ui.part/third.tga",
                 second.source_rules,
-                true
+                true,
+                qa_compat::services::ShaderLighting::TwoDimensional
             ),
             Ok(0)
         );
@@ -3529,7 +3611,10 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
     }
     let request = renderer_request(
         "ui.part/third.tga",
-        RendererRegistration::Shader { mipmaps: true },
+        RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
         third.source_rules,
         None,
     );
@@ -3577,11 +3662,23 @@ fn native_shader_explicit_stages_use_the_shared_cached_catalog_and_compiler() {
     )
     .unwrap();
     let first = owner
-        .register_shader(&fixture.vfs, b"ui/first", RuleSetId::Quake3, false)
+        .register_shader(
+            &fixture.vfs,
+            b"ui/first",
+            RuleSetId::Quake3,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     fixture.remove("scripts/ui.shader");
     let second = owner
-        .register_shader(&fixture.vfs, b"ui/second", RuleSetId::Quake3, true)
+        .register_shader(
+            &fixture.vfs,
+            b"ui/second",
+            RuleSetId::Quake3,
+            true,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     let ModelView { assets, catalog } = owner.view();
     let material = assets
@@ -3633,34 +3730,71 @@ fn native_shader_first_dot_folded_key_keeps_separator_identities_and_named_misse
     )
     .unwrap();
     assert_eq!(
-        owner.register_shader(&fixture.vfs, b"", RuleSetId::Quake3, false),
+        owner.register_shader(
+            &fixture.vfs,
+            b"",
+            RuleSetId::Quake3,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional
+        ),
         Ok(0)
     );
     let dot = owner
-        .register_shader(&fixture.vfs, b"dir.part/pic.tga", RuleSetId::Quake3, false)
+        .register_shader(
+            &fixture.vfs,
+            b"dir.part/pic.tga",
+            RuleSetId::Quake3,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     assert_eq!(
         owner.register_shader(
             &fixture.vfs,
             b"DIR.other/missing.tga",
             RuleSetId::Quake3,
-            true
+            true,
+            qa_compat::services::ShaderLighting::TwoDimensional
         ),
         Ok(dot)
     );
     let forward = owner
-        .register_shader(&fixture.vfs, b"ui/pic.tga", RuleSetId::Quake3, false)
+        .register_shader(
+            &fixture.vfs,
+            b"ui/pic.tga",
+            RuleSetId::Quake3,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     let backward = owner
-        .register_shader(&fixture.vfs, b"ui\\pic.tga", RuleSetId::Quake3, false)
+        .register_shader(
+            &fixture.vfs,
+            b"ui\\pic.tga",
+            RuleSetId::Quake3,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     assert_ne!(forward, backward);
     assert_eq!(
-        owner.register_shader(&fixture.vfs, b"ui/missing.tga", RuleSetId::Quake3, true),
+        owner.register_shader(
+            &fixture.vfs,
+            b"ui/missing.tga",
+            RuleSetId::Quake3,
+            true,
+            qa_compat::services::ShaderLighting::TwoDimensional
+        ),
         Err(qa_compat::services::CallError::File)
     );
     assert_eq!(
-        owner.register_shader(&fixture.vfs, b"UI/Missing.jpg", RuleSetId::Quake3, false),
+        owner.register_shader(
+            &fixture.vfs,
+            b"UI/Missing.jpg",
+            RuleSetId::Quake3,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional
+        ),
         Ok(0)
     );
     let catalog = owner.catalog();
@@ -3690,7 +3824,13 @@ fn shader_admitted_names_do_not_block_later_model_admission() {
     let model = native_profile(RuleSetId::Quake, palette);
     let mut owner = ModelAssets::new(assets, [shader, model], [], ModelLimits::default()).unwrap();
     let handle = owner
-        .register_shader(&fixture.vfs, b"progs/test.tga", RuleSetId::Quake3, false)
+        .register_shader(
+            &fixture.vfs,
+            b"progs/test.tga",
+            RuleSetId::Quake3,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     owner
         .register_request(

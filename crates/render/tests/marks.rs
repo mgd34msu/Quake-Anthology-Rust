@@ -131,7 +131,14 @@ fn selected_compiled_flags_and_world_membership_filter_shared_leaf_references() 
         ..Default::default()
     }; 2];
     let world = assets
-        .register_world(geometry, visibility(2, vec![1, 0, 0, 1]), &[&open, &hidden])
+        .register_world(
+            geometry,
+            visibility(2, vec![1, 0, 0, 1]),
+            &[
+                qa_render::world::WorldPresentationInput::new(&open),
+                qa_render::world::WorldPresentationInput::new(&hidden),
+            ],
+        )
         .unwrap();
     let marks = query(&assets, world, 0, &projection(2.), 64, 8);
     assert_eq!(
@@ -185,7 +192,10 @@ fn point_budget_skips_whole_fragment_but_candidate_cap_keeps_ordered_prefix() {
         .register_world(
             geometry,
             visibility(65, (0..65).collect()),
-            &[&open, &skip_first],
+            &[
+                qa_render::world::WorldPresentationInput::new(&open),
+                qa_render::world::WorldPresentationInput::new(&skip_first),
+            ],
         )
         .unwrap();
     assert!(query(&assets, world, 0, &projection(0.75), 3, 8).is_empty());
@@ -224,7 +234,9 @@ fn retained_patch_triangles_are_projected_in_full_grid_order_and_soups_are_ignor
         .register_world(
             geometry,
             visibility(2, vec![0, 1]),
-            &[&[SurfaceMaterial::default(); 2]],
+            &[qa_render::world::WorldPresentationInput::new(
+                &[SurfaceMaterial::default(); 2],
+            )],
         )
         .unwrap();
     let marks = query(&assets, world, 0, &projection(2.), 64, 8);
@@ -260,7 +272,9 @@ fn native_clip_emits_current_first_and_drops_all_on_the_epsilon_band() {
         .register_world(
             geometry,
             visibility(1, vec![0]),
-            &[&[SurfaceMaterial::default()]],
+            &[qa_render::world::WorldPresentationInput::new(&[
+                SurfaceMaterial::default(),
+            ])],
         )
         .unwrap();
     assert_eq!(
@@ -285,7 +299,9 @@ fn native_clip_emits_current_first_and_drops_all_on_the_epsilon_band() {
         .register_world(
             geometry,
             visibility(1, vec![0]),
-            &[&[SurfaceMaterial::default()]],
+            &[qa_render::world::WorldPresentationInput::new(&[
+                SurfaceMaterial::default(),
+            ])],
         )
         .unwrap();
     assert!(query(&assets, world, 0, &projection, 64, 8).is_empty());

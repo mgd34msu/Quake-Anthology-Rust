@@ -62,7 +62,10 @@ fn pair_publishes_once_then_uses_both_cached_handles_without_io() {
         ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
     let (mut owner, mut cpu) = publish(owner);
     let before = owner.assets().counts();
-    let kind = RendererRegistration::Shader { mipmaps: false };
+    let kind = RendererRegistration::Shader {
+        mipmaps: false,
+        lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+    };
     let first = request(b"textures/first.tga", profile.source_rules, kind);
     let second = request(b"textures/second.tga", profile.source_rules, kind);
     let prepares = Cell::new(0);
@@ -119,13 +122,22 @@ fn pair_backend_rejection_restores_both_existing_shaders_and_admitted_peer() {
     let names: [&[u8]; 2] = [b"textures/first.tga", b"textures/second.tga"];
     let handles = names.map(|name| {
         owner
-            .register_shader(&fixture.vfs, name, peer.source_rules, false)
+            .register_shader(
+                &fixture.vfs,
+                name,
+                peer.source_rules,
+                false,
+                qa_compat::services::ShaderLighting::TwoDimensional,
+            )
             .unwrap()
     });
     let retained = handles.map(|handle| owner.catalog().shader_binding(handle, peer).unwrap());
     let (mut owner, mut cpu) = publish(owner);
     let before = owner.assets().counts();
-    let kind = RendererRegistration::Shader { mipmaps: false };
+    let kind = RendererRegistration::Shader {
+        mipmaps: false,
+        lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+    };
     let requests = names.map(|name| request(name, target.source_rules, kind));
     assert!(
         owner
@@ -148,7 +160,10 @@ fn pair_backend_rejection_restores_both_existing_shaders_and_admitted_peer() {
             None
         );
     }
-    let retry_kind = RendererRegistration::Shader { mipmaps: true };
+    let retry_kind = RendererRegistration::Shader {
+        mipmaps: true,
+        lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+    };
     let retries = names.map(|name| request(name, target.source_rules, retry_kind));
     let (retried, counts) = owner
         .prepare_registrations(&fixture.vfs, retries.each_ref(), target, |assets| {
@@ -208,12 +223,16 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
             b"textures/first.tga",
             peer.source_rules,
             false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
         )
         .unwrap();
     let retained_material = owner.catalog().shader_binding(retained, peer).unwrap();
     let (mut owner, mut cpu) = publish(owner);
     let before = owner.assets().counts();
-    let kind = RendererRegistration::Shader { mipmaps: false };
+    let kind = RendererRegistration::Shader {
+        mipmaps: false,
+        lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+    };
     let first = request(b"textures/first.tga", profile.source_rules, kind);
     let missing = request(b"textures/missing.tga", profile.source_rules, kind);
     assert!(
@@ -241,7 +260,11 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
             .registration_cached(kind, missing.name, profile, None),
         Some(0)
     );
-    let first_name = owner.catalog.names.find(shader_key(first.name)).unwrap();
+    let first_name = owner
+        .catalog
+        .names
+        .find(qa_render::shader::registration_key(first.name))
+        .unwrap();
     let capacity = owner.catalog().capacity();
     let diagnostics = owner.catalog.diagnostics.len();
     fixture.vfs.take_lookup_count();
@@ -268,7 +291,10 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
     let retry = request(
         first.name,
         profile.source_rules,
-        RendererRegistration::Shader { mipmaps: true },
+        RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
     );
     let (handle, counts) = owner
         .prepare_registration(&fixture.vfs, &retry, profile, |assets| {
@@ -277,7 +303,10 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
         .unwrap();
     assert_eq!(handle, retained);
     assert_eq!(
-        owner.catalog.names.find(shader_key(first.name)),
+        owner
+            .catalog
+            .names
+            .find(qa_render::shader::registration_key(first.name)),
         Some(first_name)
     );
     let material = owner.catalog().shader_binding(handle, profile).unwrap();
@@ -321,6 +350,7 @@ fn duplicate_folded_shader_requests_preserve_first_flags_after_atomic_retry() {
             b"textures/first.tga",
             peer.source_rules,
             false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
         )
         .unwrap();
     let retained = owner.catalog().shader_binding(handle, peer).unwrap();
@@ -329,12 +359,18 @@ fn duplicate_folded_shader_requests_preserve_first_flags_after_atomic_retry() {
     let first = request(
         b"textures/first.tga",
         target.source_rules,
-        RendererRegistration::Shader { mipmaps: false },
+        RendererRegistration::Shader {
+            mipmaps: false,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
     );
     let duplicate = request(
         b"TEXTURES/FIRST.jpg",
         target.source_rules,
-        RendererRegistration::Shader { mipmaps: true },
+        RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+        },
     );
     assert!(
         owner
@@ -371,7 +407,13 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
     let mut owner =
         ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
     let retained = owner
-        .register_shader(&fixture.vfs, b"textures/body", profile.source_rules, false)
+        .register_shader(
+            &fixture.vfs,
+            b"textures/body",
+            profile.source_rules,
+            false,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     let retained_material = owner.catalog().shader_binding(retained, profile).unwrap();
     let (mut owner, mut cpu) = publish(owner);
@@ -477,4 +519,286 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
         (handles, counts)
     );
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
+}
+
+#[test]
+fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_handles() {
+    use qa_render::{
+        material::world_load::{LoadedWorldPresentation, WorldPresentationProfile},
+        world::WorldPresentationInput,
+    };
+    let fixture = support::Fixture::new(&[
+        (
+            "textures/base.tga",
+            support::tga(2, 2, &[[31, 43, 59, 255]; 4]),
+        ),
+        (
+            "textures/implicit.tga",
+            support::tga(2, 2, &[[61, 73, 89, 255]; 4]),
+        ),
+        (
+            "scripts/light.shader",
+            b"textures/lit { { map $lightmap } { map textures/base.tga blendFunc filter } }"
+                .to_vec(),
+        ),
+    ]);
+    let profile = profile(RuleSetId::Quake3);
+    let mut assets = Assets::load().unwrap();
+    let pages = [
+        assets.register_image(1, 1, &[17, 19, 23, 255]).unwrap(),
+        assets.register_image(1, 1, &[29, 31, 37, 255]).unwrap(),
+    ];
+    let (geometry, visibility) = support::world_inputs(0.0, |_| {});
+    let world = assets
+        .register_world(
+            geometry,
+            visibility,
+            &[
+                WorldPresentationInput {
+                    native_page0: Some(pages[0]),
+                    ..WorldPresentationInput::new(&[])
+                },
+                WorldPresentationInput {
+                    native_page0: Some(pages[1]),
+                    ..WorldPresentationInput::new(&[])
+                },
+                WorldPresentationInput::new(&[]),
+            ],
+        )
+        .unwrap();
+    let presentations: [WorldPresentationId; 3] = assets
+        .world(world)
+        .unwrap()
+        .presentations()
+        .try_into()
+        .unwrap();
+    let entries = presentations.map(|id| LoadedWorldPresentation {
+        id,
+        profile: WorldPresentationProfile::native(profile.rules, profile.palette),
+        defaults: Default::default(),
+    });
+    assets
+        .register_world_presentation_metadata(world, &entries)
+        .unwrap();
+    let owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let (mut owner, mut cpu) = publish(owner);
+    let ordinary = request(
+        b"textures/lit",
+        profile.source_rules,
+        RendererRegistration::Shader {
+            mipmaps: false,
+            lighting: ShaderLighting::TwoDimensional,
+        },
+    );
+    let (handle, _) = owner
+        .prepare_registration(&fixture.vfs, &ordinary, profile, |assets| {
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
+        })
+        .unwrap();
+    let original = owner.catalog().shader_binding(handle, profile).unwrap();
+    let original_material = owner.assets().shader_binding(original).unwrap().material;
+    assert_eq!(
+        owner.assets().material(original_material).unwrap().stages[0].texture,
+        StageTexture::Image(ImageId(0))
+    );
+    let before = owner.assets().counts();
+    let shader_index = handle as usize - 1;
+    let profile_rows = owner.catalog.shaders[shader_index].profiles.len();
+    let all_rows = owner.catalog.shader_bindings.len();
+    let requests = [presentations[0], presentations[1]].map(|presentation| RendererRequest {
+        name: b"textures/lit".as_slice(),
+        source: profile.source_rules,
+        kind: RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: ShaderLighting::World(presentation),
+        },
+        world: Some(world),
+    });
+    assert!(
+        owner
+            .prepare_registrations(&fixture.vfs, requests.each_ref(), profile, |_| {
+                Err("reject both lightmap variants".to_owned())
+            })
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(cpu.admitted_assets(), Some(before));
+    assert_eq!(
+        owner.catalog().shader_binding(handle, profile),
+        Some(original)
+    );
+    assert_eq!(
+        owner.catalog.shaders[shader_index].profiles.len(),
+        profile_rows
+    );
+    assert_eq!(owner.catalog.shader_bindings.len(), all_rows);
+    let ordinary_request = owner.catalog.shaders[shader_index].requests
+        [profile.source_rules as usize]
+        .as_ref()
+        .unwrap();
+    assert_eq!(ordinary_request.name.as_bytes(), ordinary.name);
+    assert!(!ordinary_request.mipmaps);
+    for request in &requests {
+        assert_eq!(
+            owner
+                .catalog()
+                .registration_cached(request.kind, request.name, profile, Some(world)),
+            None
+        );
+        assert!(
+            owner
+                .catalog()
+                .renderer_registrations(request.kind, handle, profile)
+                .is_none()
+        );
+    }
+    let (handles, counts) = owner
+        .prepare_registrations(&fixture.vfs, requests.each_ref(), profile, |assets| {
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(handles, [handle; 2]);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    let mut registrations = Vec::new();
+    for (index, request) in requests.iter().enumerate() {
+        let registration = owner
+            .view()
+            .renderer_registrations(request.kind, handle, profile, Some(presentations[index]))
+            .unwrap()[0];
+        let binding = owner.assets().shader_binding(registration.shader).unwrap();
+        assert_eq!(binding.light_source, LightSource::Page(0));
+        assert_eq!(binding.lightmap, pages[index]);
+        assert_eq!(
+            owner.assets().material(binding.material).unwrap().stages[0].texture,
+            StageTexture::Lightmap
+        );
+        registrations.push(registration);
+    }
+    assert_eq!(registrations[0].key, registrations[1].key);
+    assert_ne!(registrations[0].shader, registrations[1].shader);
+    assert_eq!(
+        owner.catalog().shader_binding(handle, profile),
+        Some(original)
+    );
+    assert_eq!(
+        owner.catalog.shaders[shader_index].profiles.len(),
+        profile_rows + 2
+    );
+    let ordinary_request = owner.catalog.shaders[shader_index].requests
+        [profile.source_rules as usize]
+        .as_ref()
+        .unwrap();
+    assert_eq!(ordinary_request.name.as_bytes(), ordinary.name);
+    assert!(!ordinary_request.mipmaps);
+    fixture.vfs.take_lookup_count();
+    assert_eq!(
+        owner
+            .prepare_registrations(&fixture.vfs, requests.each_ref(), profile, |_| {
+                panic!("cached lighting variants reached backend")
+            })
+            .unwrap(),
+        (handles, counts)
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    let mut wrong_world = requests[0].clone();
+    wrong_world.world = None;
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &wrong_world, profile, |_| {
+                panic!("missing selected world reached backend")
+            })
+            .is_err()
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+
+    let vertex = RendererRequest {
+        name: b"textures/implicit.tga".as_slice(),
+        source: profile.source_rules,
+        kind: RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: ShaderLighting::World(presentations[2]),
+        },
+        world: Some(world),
+    };
+    let (vertex_handle, _) = owner
+        .prepare_registration(&fixture.vfs, &vertex, profile, |assets| {
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
+        })
+        .unwrap();
+    let registration = owner
+        .catalog()
+        .renderer_registrations(vertex.kind, vertex_handle, profile)
+        .unwrap()[0];
+    let binding = owner.assets().shader_binding(registration.shader).unwrap();
+    assert_eq!(binding.light_source, LightSource::Vertex);
+    assert_eq!(binding.lightmap, ImageId(0));
+    assert_eq!(
+        owner.assets().material(binding.material).unwrap().stages[0].rgb_gen,
+        RgbGen::ExactVertex
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .shader_handle(vertex.name, profile.source_rules),
+        None
+    );
+    assert_eq!(
+        owner
+            .view()
+            .world_registrations(world, profile, Some(presentations[0]))
+            .unwrap(),
+        &[]
+    );
+    let inline = owner.register_inline(world, 1).unwrap();
+    assert_eq!(
+        owner
+            .view()
+            .renderer_registrations(
+                RendererRegistration::Model,
+                inline,
+                profile,
+                Some(presentations[0])
+            )
+            .unwrap(),
+        &[]
+    );
+
+    let missing = RendererRequest {
+        name: b"textures/absent".as_slice(),
+        ..vertex
+    };
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &missing, profile, |_| {
+                panic!("missing world shader reached backend")
+            })
+            .is_err()
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .registration_cached(missing.kind, missing.name, profile, Some(world)),
+        Some(0)
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .shader_handle(missing.name, profile.source_rules),
+        None
+    );
+    fixture.vfs.take_lookup_count();
+    assert_eq!(
+        owner
+            .prepare_registration(&fixture.vfs, &missing, profile, |_| {
+                panic!("cached missing world shader reached backend")
+            })
+            .unwrap()
+            .0,
+        0
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    assert_eq!(
+        owner.catalog().shader_binding(handle, profile),
+        Some(original)
+    );
 }

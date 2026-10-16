@@ -183,7 +183,10 @@ fn register_shader<const MIPMAPS: bool>(
 ) -> Result<CallValue, CallError> {
     register_renderer(
         c,
-        crate::services::RendererRegistration::Shader { mipmaps: MIPMAPS },
+        crate::services::RendererRegistration::Shader {
+            mipmaps: MIPMAPS,
+            lighting: crate::services::ShaderLighting::TwoDimensional,
+        },
         false,
     )
 }

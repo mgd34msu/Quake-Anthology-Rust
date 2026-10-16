@@ -58,6 +58,7 @@ impl qa_compat::services::ModelLoader for ShaderLoader {
         name: &[u8],
         source: RuleSetId,
         mipmaps: bool,
+        _lighting: qa_compat::services::ShaderLighting,
     ) -> Result<i32, CallError> {
         self.calls.push((name.to_vec(), source, mipmaps));
         if name == b"ui/pic" {

@@ -143,7 +143,14 @@ fn fixture_world_variants(
     .unwrap();
     let variants: Vec<_> = bindings.iter().map(std::slice::from_ref).collect();
     assets
-        .register_world(geometry, visibility, &variants)
+        .register_world(
+            geometry,
+            visibility,
+            &(&variants)
+                .iter()
+                .map(|surfaces| crate::world::WorldPresentationInput::new(surfaces))
+                .collect::<Vec<_>>(),
+        )
         .unwrap()
 }
 

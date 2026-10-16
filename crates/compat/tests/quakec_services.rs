@@ -1006,6 +1006,7 @@ impl ModelLoader for Models {
         _: &[u8],
         _: RuleSetId,
         _: bool,
+        _lighting: qa_compat::services::ShaderLighting,
     ) -> Result<i32, CallError> {
         Err(CallError::Unsupported)
     }

@@ -735,7 +735,13 @@ pub(super) fn entities(native: bool, ui: bool) {
         .model_assets
         .as_mut()
         .unwrap()
-        .register_shader(&host.runtime.vfs, b"textures/glow", RuleSetId::Quake3, true)
+        .register_shader(
+            &host.runtime.vfs,
+            b"textures/glow",
+            RuleSetId::Quake3,
+            true,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
         .unwrap();
     assert_eq!(shader, 1);
     let skin = probe(&mut host, 0, 16, 0);
@@ -1134,7 +1140,13 @@ fn mark_fragments(native: bool) {
     });
     let mut assets = qa_render::Assets::load().unwrap();
     let world = assets
-        .register_world(geometry, visibility, &[&[SurfaceMaterial::default()]])
+        .register_world(
+            geometry,
+            visibility,
+            &[qa_render::world::WorldPresentationInput::new(&[
+                SurfaceMaterial::default(),
+            ])],
+        )
         .unwrap();
     let presentation = assets.world(world).unwrap().presentations()[0];
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();

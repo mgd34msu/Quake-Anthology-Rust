@@ -280,16 +280,29 @@ fn renderer_requests_keep_kind_inline_world_and_native_name_width() {
             (
                 &Q3_CLIENT,
                 39,
-                RendererRegistration::Shader { mipmaps: true },
+                RendererRegistration::Shader {
+                    mipmaps: true,
+                    lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+                },
             ),
             (
                 &Q3_CLIENT,
                 57,
-                RendererRegistration::Shader { mipmaps: false },
+                RendererRegistration::Shader {
+                    mipmaps: false,
+                    lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+                },
             ),
             (&Q3_UI, 18, RendererRegistration::Model),
             (&Q3_UI, 19, RendererRegistration::Skin),
-            (&Q3_UI, 20, RendererRegistration::Shader { mipmaps: false }),
+            (
+                &Q3_UI,
+                20,
+                RendererRegistration::Shader {
+                    mipmaps: false,
+                    lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+                },
+            ),
         ] {
             let ImportStep::Host {
                 request: HostRequest::RegisterRenderer(request),
@@ -310,8 +323,14 @@ fn renderer_requests_keep_kind_inline_world_and_native_name_width() {
                 (RendererRegistration::Model, RendererRegistration::Model)
                 | (RendererRegistration::Skin, RendererRegistration::Skin) => {}
                 (
-                    RendererRegistration::Shader { mipmaps: a },
-                    RendererRegistration::Shader { mipmaps: b },
+                    RendererRegistration::Shader {
+                        mipmaps: a,
+                        lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+                    },
+                    RendererRegistration::Shader {
+                        mipmaps: b,
+                        lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+                    },
                 ) => assert_eq!(a, b),
                 _ => panic!("different registration kind"),
             }
@@ -407,7 +426,10 @@ fn unavailable_registration_stays_cache_only_and_cold_loader_does_not_defer() {
             for kind in [
                 RendererRegistration::Model,
                 RendererRegistration::Skin,
-                RendererRegistration::Shader { mipmaps: true },
+                RendererRegistration::Shader {
+                    mipmaps: true,
+                    lighting: qa_compat::services::ShaderLighting::TwoDimensional,
+                },
             ] {
                 assert_eq!(
                     engine.register_renderer(b"known", RuleSetId::Quake3, kind),
@@ -560,7 +582,10 @@ fn failed_renderer_cache_returns_zero_before_host_or_headless_aggregate_lookup()
                 .register_renderer(
                     b"failed",
                     RuleSetId::Quake2,
-                    RendererRegistration::Shader { mipmaps: false }
+                    RendererRegistration::Shader {
+                        mipmaps: false,
+                        lighting: qa_compat::services::ShaderLighting::TwoDimensional
+                    }
                 )
                 .unwrap(),
             93

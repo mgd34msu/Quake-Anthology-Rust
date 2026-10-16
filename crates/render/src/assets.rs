@@ -9,7 +9,8 @@ pub use crate::shader::{AlphaFunc as AlphaTest, Cull, TexCoordGen as TcGen};
 use crate::shader::{AlphaGen, Deform, FogParms, RgbGen, StageBlend, TexMod};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
 use crate::world::{
-    SurfaceBinding, SurfaceMaterial, World, WorldId, WorldPresentation, WorldPresentationId,
+    PreparedShader, SurfaceBinding, SurfaceMaterial, World, WorldId, WorldPresentation,
+    WorldPresentationId, WorldPresentationInput,
     geometry::{LightSource, WorldGeometry},
 };
 use qa_core::names::{NameTable, NamesError};
@@ -21,6 +22,12 @@ use qa_world::visibility::VisibilityWorld;
 pub struct ImageId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MaterialId(pub u32);
+/// Native lookup identity in this Assets name arena, paired with its variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShaderRegistration<S = ShaderBindingId> {
+    pub key: NameId,
+    pub shader: S,
+}
 /// A shader variant binds compiled stages to its selected lighting resource.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShaderBindingId(pub u32);
@@ -799,6 +806,21 @@ impl Assets {
         });
         Ok(id)
     }
+    pub fn shader_registration(
+        &mut self,
+        raw: &[u8],
+        shader: ShaderBindingId,
+    ) -> Result<ShaderRegistration, &'static str> {
+        self.shader_binding(shader)
+            .ok_or("invalid registration shader")?;
+        self.intern_resource_name(raw)?;
+        let exact = self.intern_resource_name(crate::shader::registration_key(raw))?;
+        let key = self
+            .names
+            .folded(exact)
+            .ok_or("missing shader registration key")?;
+        Ok(ShaderRegistration { key, shader })
+    }
     pub fn shader_binding_capacity(&self) -> usize {
         self.shader_capacity
     }
@@ -1006,9 +1028,28 @@ impl Assets {
     fn register_world_shaders(
         &mut self,
         presentation: WorldPresentationId,
-        materials: &[SurfaceMaterial],
-    ) -> Result<Vec<ShaderBindingId>, &'static str> {
-        materials
+        input: WorldPresentationInput<'_>,
+    ) -> Result<(Vec<ShaderBindingId>, Box<[ShaderRegistration]>), &'static str> {
+        if input
+            .native_page0
+            .is_some_and(|id| self.image(id).is_none())
+        {
+            return Err("invalid native lightmap page");
+        }
+        for registration in input.registrations {
+            if self.names.folded(registration.key) != Some(registration.key)
+                || match registration.shader {
+                    PreparedShader::Surface(index) => index as usize >= input.surfaces.len(),
+                    PreparedShader::Binding(binding) => {
+                        !self.shader_binding_valid(binding) || !self.styled_shader_valid(binding)
+                    }
+                }
+            {
+                return Err("invalid native shader registration");
+            }
+        }
+        let shaders = input
+            .surfaces
             .iter()
             .enumerate()
             .map(|(surface, material)| {
@@ -1018,17 +1059,32 @@ impl Assets {
                 }
                 self.intern_shader_binding(binding)
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        let registrations = input
+            .registrations
+            .iter()
+            .map(|registration| {
+                let shader = match registration.shader {
+                    PreparedShader::Surface(index) => shaders[index as usize],
+                    PreparedShader::Binding(binding) => self.intern_shader_binding(binding)?,
+                };
+                Ok(ShaderRegistration {
+                    key: registration.key,
+                    shader,
+                })
+            })
+            .collect::<Result<Box<[_]>, &'static str>>()?;
+        Ok((shaders, registrations))
     }
     pub(crate) fn append_world_presentation(
         &mut self,
         world: WorldId,
-        materials: &[SurfaceMaterial],
+        input: WorldPresentationInput<'_>,
     ) -> Result<WorldPresentationId, &'static str> {
         let retained = self.counts();
         let result = (|| {
             let existing = self.world(world).ok_or("missing presentation world")?;
-            if !self.world_materials_valid(materials, existing.geometry.surfaces.len()) {
+            if !self.world_materials_valid(input.surfaces, existing.geometry.surfaces.len()) {
                 return Err("invalid world surface bindings");
             }
             let id = WorldPresentationId(
@@ -1048,12 +1104,14 @@ impl Assets {
                 .iter()
                 .map(|binding| binding.mesh_indices)
                 .collect();
-            let shaders = self.register_world_shaders(id, materials)?;
+            let (shaders, registrations) = self.register_world_shaders(id, input)?;
             let presentation = WorldPresentation::bind(
                 world,
-                materials,
+                input.surfaces,
                 mesh_ranges.into_iter(),
                 shaders.into_iter(),
+                registrations,
+                input.native_page0,
             );
             self.presentations.push(presentation);
             self.worlds[world.0 as usize].presentations.push(id);
@@ -1069,14 +1127,14 @@ impl Assets {
         &mut self,
         geometry: WorldGeometry,
         visibility: VisibilityWorld,
-        variants: &[&[SurfaceMaterial]],
+        variants: &[WorldPresentationInput<'_>],
     ) -> Result<WorldId, &'static str> {
         let retained = self.counts();
         let result = (|| {
             if geometry.surfaces.len() != visibility.surface_count()
                 || variants.is_empty()
-                || variants.iter().any(|materials| {
-                    !self.world_materials_valid(materials, geometry.surfaces.len())
+                || variants.iter().any(|input| {
+                    !self.world_materials_valid(input.surfaces, geometry.surfaces.len())
                 })
             {
                 return Err("invalid world surface bindings");
@@ -1107,14 +1165,16 @@ impl Assets {
                 });
             }
             let mut registrations = Vec::with_capacity(variants.len());
-            for (index, materials) in variants.iter().enumerate() {
-                let shaders = self
-                    .register_world_shaders(WorldPresentationId(first + index as u32), materials)?;
+            for (index, &input) in variants.iter().enumerate() {
+                let (shaders, native_registrations) =
+                    self.register_world_shaders(WorldPresentationId(first + index as u32), input)?;
                 registrations.push(WorldPresentation::bind(
                     id,
-                    materials,
+                    input.surfaces,
                     mesh_ranges.iter().copied(),
                     shaders.into_iter(),
+                    native_registrations,
+                    input.native_page0,
                 ));
             }
             let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();

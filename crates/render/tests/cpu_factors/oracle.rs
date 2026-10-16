@@ -117,7 +117,13 @@ fn fixture_world(
         PvsRows::all_visible(0),
     )
     .unwrap();
-    assets.register_world(geometry, vis, &[&[binding]]).unwrap()
+    assets
+        .register_world(
+            geometry,
+            vis,
+            &[crate::world::WorldPresentationInput::new(&[binding])],
+        )
+        .unwrap()
 }
 
 fn material(

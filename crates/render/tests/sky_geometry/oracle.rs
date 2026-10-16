@@ -317,7 +317,14 @@ fn two_face_world(
     .unwrap();
     (
         assets
-            .register_world(geometry, visibility, materials)
+            .register_world(
+                geometry,
+                visibility,
+                &(materials)
+                    .iter()
+                    .map(|surfaces| crate::world::WorldPresentationInput::new(surfaces))
+                    .collect::<Vec<_>>(),
+            )
             .unwrap(),
         points,
     )
