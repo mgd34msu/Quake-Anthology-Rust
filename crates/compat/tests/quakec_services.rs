@@ -955,6 +955,8 @@ fn with_brush_services(
 #[derive(Default)]
 struct Models {
     loaded: Vec<(Vec<u8>, RuleSetId)>,
+    order: qa_render::material::resources::ImageSearchOrder,
+    loaded_orders: Vec<qa_render::material::resources::ImageSearchOrder>,
     fail: bool,
 }
 impl ModelLookup for Models {
@@ -999,6 +1001,9 @@ impl ModelLoader for Models {
     fn lookup(&self) -> &dyn ModelLookup {
         self
     }
+    fn set_image_search_order(&mut self, order: qa_render::material::resources::ImageSearchOrder) {
+        self.order = order;
+    }
 
     fn register_shader(
         &mut self,
@@ -1017,6 +1022,7 @@ impl ModelLoader for Models {
         source: RuleSetId,
     ) -> Result<Bounds, CallError> {
         self.loaded.push((path.to_vec(), source));
+        self.loaded_orders.push(self.order);
         if self.fail {
             Err(CallError::File)
         } else {
@@ -1162,6 +1168,43 @@ fn precaches_preserve_words_exact_names_and_native_loading_rules() {
         );
         assert!(models.loaded.iter().all(|(_, source)| *source == rules));
     }
+}
+
+#[test]
+fn synchronous_quakec_precache_samples_formats_after_cvar_set_in_the_same_service_borrow() {
+    use qa_render::material::resources::ImageSearchOrder;
+    let mut models = Models::default();
+    with_model_services(RuleSetId::Quake, Some(&mut models), |calls| {
+        let mut vm = vm(1);
+        let name = vm.insert_string(b"r_texture_formats").unwrap() as u32;
+        for (formats, path) in [
+            (b"tga".as_slice(), b"progs/test.mdl".as_slice()),
+            (b"jpeg", b"progs/next.mdl"),
+        ] {
+            let value = vm.insert_string(formats).unwrap() as u32;
+            parameters(&mut vm, &[&[name], &[value]]);
+            calls.call(&mut vm, 72, 2).unwrap();
+            let model = vm.insert_string(path).unwrap() as u32;
+            parameters(&mut vm, &[&[model]]);
+            calls.call(&mut vm, 20, 1).unwrap();
+            assert_eq!(vm.image.globals[1], model);
+        }
+        let malformed = vm.insert_string(b"tga \"bad").unwrap() as u32;
+        parameters(&mut vm, &[&[name], &[malformed]]);
+        calls.call(&mut vm, 72, 2).unwrap();
+        let model = vm.insert_string(b"progs/fail.mdl").unwrap() as u32;
+        parameters(&mut vm, &[&[model]]);
+        assert_eq!(calls.call(&mut vm, 20, 1), Err(Trap::Builtin));
+    });
+    assert_eq!(models.loaded.len(), 2);
+    assert_eq!(
+        models.loaded_orders,
+        [
+            ImageSearchOrder::parse(b"tga").unwrap(),
+            ImageSearchOrder::parse(b"jpeg").unwrap()
+        ]
+    );
+    assert_eq!(models.order, ImageSearchOrder::parse(b"jpeg").unwrap());
 }
 
 #[test]

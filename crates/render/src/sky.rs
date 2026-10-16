@@ -577,6 +577,29 @@ pub struct LayeredImages {
     pub masked_rgba: Box<[u8]>,
     pub average_rgb: [u8; 3],
 }
+fn split_layers<T: Copy>(
+    width: u32,
+    height: u32,
+    pixels: &[T],
+) -> Result<[Box<[T]>; 2], &'static str> {
+    if height == 0
+        || height.checked_mul(2) != Some(width)
+        || (width as usize).checked_mul(height as usize) != Some(pixels.len())
+    {
+        return Err("layered sky requires a 2:1 image");
+    }
+    let size = height as usize;
+    let count = size
+        .checked_mul(size)
+        .ok_or("layered sky dimensions overflow")?;
+    let mut layers: [Vec<T>; 2] = std::array::from_fn(|_| Vec::with_capacity(count));
+    for row in pixels.chunks_exact(width as usize) {
+        layers[0].extend_from_slice(&row[size..]);
+        layers[1].extend_from_slice(&row[..size]);
+    }
+    Ok(layers.map(Vec::into_boxed_slice))
+}
+
 pub fn split_layered_sky(
     indices: &[u8],
     palette: &[[u8; 4]; 256],
@@ -584,44 +607,62 @@ pub fn split_layered_sky(
     if indices.len() != LAYER_SIZE * LAYER_SIZE * 2 {
         return Err("native layered sky requires 256x128 indices");
     }
+    let [opaque_indices, masked_indices] = split_layers(256, 128, indices)?;
     let count = LAYER_SIZE * LAYER_SIZE;
-    let mut opaque_indices = vec![0; count].into_boxed_slice();
-    let mut masked_indices = vec![0; count].into_boxed_slice();
-    let mut opaque_rgba = vec![0; count * 4].into_boxed_slice();
-    let mut masked_rgba = vec![0; count * 4].into_boxed_slice();
+    let mut opaque_rgba = Vec::with_capacity(count * 4);
+    let mut masked_rgba = Vec::with_capacity(count * 4);
     let mut sum = [0_u32; 3];
-    for y in 0..LAYER_SIZE {
-        for x in 0..LAYER_SIZE {
-            let out = y * LAYER_SIZE + x;
-            let index = indices[y * LAYER_SIZE * 2 + x + LAYER_SIZE];
-            opaque_indices[out] = index;
-            let color = palette[index as usize];
-            opaque_rgba[out * 4..out * 4 + 4].copy_from_slice(&[color[0], color[1], color[2], 255]);
-            for channel in 0..3 {
-                sum[channel] += u32::from(color[channel]);
-            }
+    for &index in opaque_indices.iter() {
+        let color = palette[index as usize];
+        opaque_rgba.extend_from_slice(&[color[0], color[1], color[2], 255]);
+        for channel in 0..3 {
+            sum[channel] += u32::from(color[channel]);
         }
     }
     let average_rgb = sum.map(|value| (value / count as u32) as u8);
-    for y in 0..LAYER_SIZE {
-        for x in 0..LAYER_SIZE {
-            let out = y * LAYER_SIZE + x;
-            let index = indices[y * LAYER_SIZE * 2 + x];
-            masked_indices[out] = index;
-            let color = if index == 0 {
-                [average_rgb[0], average_rgb[1], average_rgb[2], 0]
-            } else {
-                palette[index as usize]
-            };
-            masked_rgba[out * 4..out * 4 + 4].copy_from_slice(&color);
-        }
+    for &index in masked_indices.iter() {
+        let color = if index == 0 {
+            [average_rgb[0], average_rgb[1], average_rgb[2], 0]
+        } else {
+            palette[index as usize]
+        };
+        masked_rgba.extend_from_slice(&color);
     }
     Ok(LayeredImages {
         opaque_indices,
         masked_indices,
-        opaque_rgba,
-        masked_rgba,
+        opaque_rgba: opaque_rgba.into_boxed_slice(),
+        masked_rgba: masked_rgba.into_boxed_slice(),
         average_rgb,
+    })
+}
+
+/// A replacement retains its authored foreground alpha, including opaque black.
+/// The right background is opaque, as FTE R_InitSky's IF_NOALPHA upload.
+pub struct LayeredRgba {
+    pub size: u32,
+    pub opaque: Box<[[u8; 4]]>,
+    pub masked: Box<[[u8; 4]]>,
+}
+pub fn split_layered_rgba(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<LayeredRgba, &'static str> {
+    crate::assets::upload::validate_dimensions(width, height)
+        .map_err(|_| "invalid layered sky dimensions")?;
+    let (pixels, tail) = rgba.as_chunks::<4>();
+    if !tail.is_empty() {
+        return Err("incomplete layered sky RGBA pixel");
+    }
+    let [mut opaque, masked] = split_layers(width, height, pixels)?;
+    for pixel in opaque.iter_mut() {
+        pixel[3] = 255;
+    }
+    Ok(LayeredRgba {
+        size: height,
+        opaque,
+        masked,
     })
 }
 

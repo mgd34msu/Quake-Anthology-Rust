@@ -2,7 +2,7 @@
 use qa_console::{
     command_buffer::CommandBuffer,
     cvars::{Cvars, View, WriteError},
-    views::Context,
+    views::{Context, Role},
 };
 use qa_content::vfs::{FileRef, Vfs};
 use qa_core::names::NameTable;
@@ -159,6 +159,7 @@ pub trait ModelLookup {
 }
 pub trait ModelLoader {
     fn lookup(&self) -> &dyn ModelLookup;
+    fn set_image_search_order(&mut self, order: qa_render::material::resources::ImageSearchOrder);
 
     fn register_inline(
         &mut self,
@@ -386,6 +387,7 @@ pub struct ServiceStorage {
     movement: qa_console::movement::MovementHandles,
     collision: qa_console::collision::CollisionHandles,
     qw_phs: CvarHandle,
+    image_search: View,
 }
 
 impl ServiceStorage {
@@ -545,6 +547,16 @@ impl ServiceStorage {
             collision: qa_console::collision::CollisionHandles::bind(cvars)
                 .map_err(|_| CallError::Cvar)?,
             qw_phs: cvars.find("sv_phs").ok_or(CallError::Cvar)?,
+            image_search: cvars
+                .bind(
+                    "r_texture_formats",
+                    Context {
+                        source: RuleSetId::Quake2Rerelease,
+                        role: Role::Engine,
+                        ..Context::default()
+                    },
+                )
+                .ok_or(CallError::Cvar)?,
         })
     }
     fn range(&self, module: ModuleId) -> Option<&ConfigRange> {
@@ -1756,10 +1768,16 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .map(|(ordinal, _)| ordinal))
     },
     model_precache: |s, path, rules| {
-        s.model_loader
-            .as_mut()
-            .ok_or(CallError::File)?
-            .precache(s.vfs, path, rules)
+        let text = s
+            .cvars
+            .read(s.storage.image_search)
+            .map_err(|_| CallError::File)?;
+        let order =
+            qa_render::material::resources::ImageSearchOrder::parse(text.as_str().as_bytes())
+                .map_err(|_| CallError::File)?;
+        let loader = s.model_loader.as_mut().ok_or(CallError::File)?;
+        loader.set_image_search_order(order);
+        loader.precache(s.vfs, path, rules)
     },
     model_bounds: |s, path, rules| {
         s.model_loader

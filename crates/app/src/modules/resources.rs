@@ -41,6 +41,13 @@ impl FrameHost {
         &mut self,
         mut preparer: Option<&mut dyn crate::renderer::AssetPreparer>,
     ) {
+        if let Err(error) = self.refresh_image_search() {
+            let _ = self
+                .runtime
+                .server
+                .events
+                .console_formatted(format_args!("Image search setting rejected: {error}\n"));
+        }
         let mut published = false;
         for index in 0..self.runtime.client_resources.len() {
             published |= self.prepare_received_hud(ClientId(index as u32), &mut preparer);

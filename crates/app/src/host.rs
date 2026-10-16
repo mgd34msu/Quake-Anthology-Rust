@@ -388,6 +388,8 @@ pub struct FrameHost {
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
     model_lod: [qa_console::cvars::View; 2],
+    pub(crate) image_search: qa_console::cvars::View,
+    image_search_generation: Option<u64>,
     userinfo: Box<[ClientUserinfo]>,
     nq_identity: [(qa_console::cvars::View, qa_console::cvars::View); SeatId::COUNT],
     lighting_scales: [CvarHandle; 2],
@@ -791,6 +793,7 @@ impl FrameHost {
             {
                 return Err("CPU band setting changed during restart".into());
             }
+            self.refresh_image_search()?;
             // The sole asset owner is moved only across this cold, callback-free
             // transaction. Restore it before any CLIENT can execute again.
             let mut owner = self
@@ -1109,6 +1112,22 @@ impl FrameHost {
         Ok(())
     }
 
+    /// The current global search list is parsed once per cvar change. Retained
+    /// image bodies keep their first resolution until an explicit reload.
+    pub(crate) fn refresh_image_search(&mut self) -> Result<(), &'static str> {
+        let Some(owner) = self.runtime.model_assets.as_mut() else {
+            return Ok(());
+        };
+        let generation = self.console.cvars.view_generation(self.image_search);
+        if self.image_search_generation == Some(generation) {
+            return Ok(());
+        }
+        self.image_search_generation = Some(generation);
+        let order = crate::render_settings::image_search(&self.console.cvars, self.image_search)?;
+        owner.set_image_search_order(order);
+        Ok(())
+    }
+
     pub fn load(
         mut console: Console<Runtime>,
         mut runtime: Runtime,
@@ -1245,6 +1264,7 @@ impl FrameHost {
             .ok_or("missing software water warp cvar")?;
         let curve_error = crate::render_settings::curve_error_view(&console.cvars)?;
         let model_lod = crate::render_settings::model_lod_views(&console.cvars)?;
+        let image_search = crate::render_settings::image_search_view(&console.cvars)?;
         let lighting_scales =
             ["r_ambientScale", "r_directedScale"].map(|name| console.cvars.find(name));
         let [Some(ambient), Some(directed)] = lighting_scales else {
@@ -1353,6 +1373,8 @@ impl FrameHost {
             software_waterwarp,
             curve_error,
             model_lod,
+            image_search,
+            image_search_generation: None,
             userinfo: (0..SeatId::COUNT)
                 .map(|_| ClientUserinfo::default())
                 .collect(),

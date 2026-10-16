@@ -43,6 +43,7 @@ impl qa_compat::services::ModelLoader for ShaderLoader {
     fn lookup(&self) -> &dyn qa_compat::services::ModelLookup {
         self
     }
+    fn set_image_search_order(&mut self, _: qa_render::material::resources::ImageSearchOrder) {}
 
     fn precache(
         &mut self,

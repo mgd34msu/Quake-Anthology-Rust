@@ -23,6 +23,10 @@ pub enum ResourceError {
     Asset(&'static str),
     Upload(upload::UploadError),
 }
+
+#[cfg(test)]
+#[path = "../../tests/resources/layered_sky.rs"]
+mod layered_sky_tests;
 impl From<VfsError> for ResourceError {
     fn from(error: VfsError) -> Self {
         Self::Vfs(error)
@@ -1322,15 +1326,6 @@ impl<'a> Images<'a> {
         if let [Some(opaque), Some(masked)] = cached {
             return Ok([opaque, masked]);
         }
-        let colors = self
-            .assets
-            .palette(palette)
-            .ok_or(ResourceError::Asset("missing sky palette"))?;
-        let layers = crate::sky::split_layered_sky(mip.levels[0], &colors.rgba_table())
-            .map_err(ResourceError::Asset)?;
-        let corrected =
-            crate::sky::split_layered_sky(mip.levels[0], &self.corrected_palette(palette)?)
-                .map_err(ResourceError::Asset)?;
         let usage = ImageUse {
             role: ImageRole::LayeredSky,
             sampler: Sampler {
@@ -1339,18 +1334,51 @@ impl<'a> Images<'a> {
             },
             allow_picmip: false,
         };
+        let replacement = if let Ok(name) = std::str::from_utf8(mip.name) {
+            self.select_file(&format!("textures/{name}"), usage, None, true)?
+        } else {
+            None
+        };
+        let replacement = replacement
+            .as_ref()
+            .map(|selected| {
+                let rgba = self.rgba_file(selected, Some(palette))?;
+                crate::sky::split_layered_rgba(rgba.width, rgba.height, &rgba.pixels)
+                    .map_err(ResourceError::Asset)
+            })
+            .transpose()?;
+        let colors = self
+            .assets
+            .palette(palette)
+            .ok_or(ResourceError::Asset("missing sky palette"))?;
+        let layers = crate::sky::split_layered_sky(mip.levels[0], &colors.rgba_table())
+            .map_err(ResourceError::Asset)?;
+        let corrected = if replacement.is_none() {
+            Some(
+                crate::sky::split_layered_sky(mip.levels[0], &self.corrected_palette(palette)?)
+                    .map_err(ResourceError::Asset)?,
+            )
+        } else {
+            // The replacement owns its RGBA. Native palette correction applies
+            // only to the authored indexed layers.
+            None
+        };
         let params = self.upload_params(usage)?;
         let mut ids = [ImageId(0); 2];
         for (index, (raw, corrected, indices, transparent)) in [
             (
                 &layers.opaque_rgba,
-                &corrected.opaque_rgba,
+                corrected
+                    .as_ref()
+                    .map_or(&layers.opaque_rgba, |layers| &layers.opaque_rgba),
                 &layers.opaque_indices,
                 None,
             ),
             (
                 &layers.masked_rgba,
-                &corrected.masked_rgba,
+                corrected
+                    .as_ref()
+                    .map_or(&layers.masked_rgba, |layers| &layers.masked_rgba),
                 &layers.masked_indices,
                 Some(0),
             ),
@@ -1361,9 +1389,19 @@ impl<'a> Images<'a> {
             ids[index] = if let Some(id) = cached[index] {
                 id
             } else {
+                let (size, raw, corrected) = if let Some(replacement) = &replacement {
+                    let pixels = if index == 0 {
+                        replacement.opaque.as_flattened()
+                    } else {
+                        replacement.masked.as_flattened()
+                    };
+                    (replacement.size, pixels, pixels)
+                } else {
+                    (128, raw.as_ref(), corrected.as_ref())
+                };
                 let texture = IndexedTexture::load_base(128, 128, indices, transparent)
                     .map_err(ResourceError::Asset)?;
-                let id = self.register_indexed_rgba(128, 128, raw, texture, palette)?;
+                let id = self.register_indexed_rgba(size, size, raw, texture, palette)?;
                 self.assets
                     .prepare_image_with_rgba(id, corrected, params)
                     .map_err(ResourceError::Asset)?;

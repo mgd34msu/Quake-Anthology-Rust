@@ -1525,6 +1525,12 @@ fn register_renderer(
     } else {
         crate::model_assets::RegistrationVariant::Guard(scope.ui_fullscreen)
     };
+    let image_search = match variant {
+        crate::model_assets::RegistrationVariant::Retained => None,
+        crate::model_assets::RegistrationVariant::Guard(_) => Some(
+            crate::render_settings::image_search(&host.console.cvars, host.image_search)?,
+        ),
+    };
     let result = (|| {
         let contexts = &mut host.renderer_contexts;
         let owner = host
@@ -1532,6 +1538,9 @@ fn register_renderer(
             .model_assets
             .as_mut()
             .ok_or("missing model assets")?;
+        if let Some(order) = image_search {
+            owner.set_image_search_order(order);
+        }
         let scene = &mut host.runtime.scene;
         let (handle, staged, _) = owner.prepare_registration(
             &host.runtime.vfs,

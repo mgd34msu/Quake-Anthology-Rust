@@ -1,6 +1,9 @@
+#[path = "live_formats.rs"]
+mod live_formats;
 #[path = "../../../render/tests/support/world_surfaces.rs"]
 mod mark_world;
 use super::*;
+pub(super) use live_formats::live_formats;
 use qa_app::model_assets::{ModelAssets, ModelRequest};
 use qa_compat::services::ModelLookup;
 use qa_render::material::world_load::{
@@ -164,14 +167,30 @@ fn qvm_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 96)];
     let mut branches = vec![];
-    for command in 0..30 {
+    for command in 0..31 {
         operations.extend([(Local, 104), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, 0), (Leave, 96)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if command == 29 {
+        if command == 30 {
+            operations.extend([
+                (Const, 208),
+                (Arg, 8),
+                (Local, 108),
+                (Load4, 0),
+                (Arg, 12),
+                (Const, -i32::from(ordinal(ui, 5)) - 1),
+                (Call, 0),
+                (Pop, 0),
+                (Local, 112),
+                (Load4, 0),
+                (Arg, 8),
+                (Const, -i32::from(ordinal(ui, 39)) - 1),
+                (Call, 0),
+            ]);
+        } else if command == 29 {
             for (number, words) in [
                 (5, &[CURVE_NAME, CURVE_FIRST][..]),
                 (5, &[LOD_SCALE_NAME, CURVE_FIRST][..]),
@@ -327,7 +346,7 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..30)
+        &(0..31)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -342,12 +361,26 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     let callback = vm.import_callback();
     let source = base + 0x2400;
     let mut code = vec![];
-    for command in 0..30usize {
+    for command in 0..31usize {
         code.extend([0x83, 0xf9, command as u8, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
         code.extend([0x48, 0x83, 0xec, 0x58]);
-        if command == 29 {
+        if command == 30 {
+            // Preserve the shader offset across Cvar_Set, then register it
+            // without leaving this owned-child callback.
+            code.extend([0x4c, 0x89, 0x44, 0x24, 0x40, 0x49, 0x89, 0xd0, 0x48, 0xb8]);
+            code.extend(source.to_le_bytes());
+            code.extend([0x49, 0x01, 0xc0, 0x48, 0xba]);
+            code.extend((source + 208).to_le_bytes());
+            code.extend([0xb9, ordinal(ui, 5), 0, 0, 0, 0x48, 0xb8]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0, 0x48, 0x8b, 0x54, 0x24, 0x40, 0x48, 0xb8]);
+            code.extend(source.to_le_bytes());
+            code.extend([0x48, 0x01, 0xc2, 0xb9, ordinal(ui, 39), 0, 0, 0, 0x48, 0xb8]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0]);
+        } else if command == 29 {
             for (number, words) in [
                 (5, &[CURVE_NAME, CURVE_FIRST][..]),
                 (5, &[LOD_SCALE_NAME, CURVE_FIRST][..]),

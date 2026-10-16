@@ -14,8 +14,8 @@ use qa_render::assets::{
     AssetCounts, ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture,
 };
 use qa_render::material::resources::{
-    ImageRegistrationMark, ImageRole, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget,
-    ResourceError,
+    ImageRegistrationMark, ImageRole, ImageSearchOrder, ImageSettings, ImageUse, Images,
+    ImagesState, IndexedTarget, ResourceError,
 };
 use qa_render::material::world_load::{
     NamedShaderLighting, WorldPresentationRequest, compile_named_shader, native_default_shader,
@@ -1503,6 +1503,10 @@ impl RegistrationCheckpoint {
 }
 
 impl ModelAssets {
+    pub fn set_image_search_order(&mut self, order: ImageSearchOrder) {
+        self.assets.set_image_search_order(order);
+    }
+
     /// The startup cache moves into the same owner as its palette resources.
     pub fn adopt_palettes(
         &mut self,
@@ -4400,6 +4404,9 @@ fn lerp_tag(
 impl ModelLoader for ModelAssets {
     fn lookup(&self) -> &dyn ModelLookup {
         &self.catalog
+    }
+    fn set_image_search_order(&mut self, order: ImageSearchOrder) {
+        ModelAssets::set_image_search_order(self, order);
     }
     fn precache(
         &mut self,
