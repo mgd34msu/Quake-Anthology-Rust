@@ -2,7 +2,7 @@
 use crate::Runtime;
 use qa_console::commands::Console;
 use qa_core::{
-    primitives::{ClientId, CvarHandle, EffectEvent, ModuleId, SoundEvent, UserCmd},
+    primitives::{ClientId, CvarHandle, EffectEvent, ModuleId, RuleSetId, SoundEvent, UserCmd},
     sys_events::{EventKind, EventTime, SeatId, SysEventQueue},
 };
 use qa_input::Target;
@@ -362,6 +362,7 @@ pub struct FrameHost {
     pub close_without_transport: u64,
     pub developer: CvarHandle,
     pub(crate) renderer_smp: Option<CvarHandle>,
+    renderer_ui_fullscreen: Option<CvarHandle>,
     cpu_band_view: qa_console::cvars::View,
     cpu_band_override: Option<qa_render::cpu::RasterBands>,
     pub(crate) video_command: qa_core::primitives::NameId,
@@ -469,6 +470,26 @@ impl EngineGraphicsAppend<'_> {
     }
 }
 impl FrameHost {
+    pub fn renderer_fullscreen_ui(&self) -> bool {
+        self.renderer_ui_fullscreen
+            .and_then(|handle| self.console.cvars.native_integer(handle, RuleSetId::Quake3))
+            .is_some_and(|value| value != 0)
+    }
+
+    pub fn set_renderer_fullscreen_ui(&mut self, fullscreen: bool) {
+        if let Some(handle) = self.renderer_ui_fullscreen
+            && let Err(error) = self
+                .console
+                .cvars
+                .set_text(handle, if fullscreen { "1" } else { "0" })
+        {
+            let _ = self
+                .runtime
+                .server
+                .events
+                .console_formatted(format_args!("Renderer UI state: {error:?}\n"));
+        }
+    }
     fn graphics_owners(
         &self,
     ) -> [Option<qa_render::shader::registration::ShaderOwner>; SeatId::COUNT] {
@@ -632,6 +653,7 @@ impl FrameHost {
                 profile.rules == selected.profile.rules
                     && profile.palette == selected.profile.indexed_palette
                     && profile.image_settings == selected.profile.image_settings
+                    && profile.finish == selected.profile.finish
             }) {
                 if !profiles.contains(&profile) {
                     profiles.push(profile);
@@ -664,7 +686,7 @@ impl FrameHost {
             let serial = self.video_serial.checked_add(1).ok_or("video generation")?;
             let limits = limits.ok_or("video restart has no scene")?;
             let (profiles, presentations) = self.video_resource_selections()?;
-            let image_plan = crate::render_settings::ImageSettingsPlan::prepare(
+            let resource_plan = crate::render_settings::ResourceSettingsPlan::prepare(
                 &self.console.cvars,
                 profiles.iter().map(|profile| profile.rules),
             )?;
@@ -724,7 +746,7 @@ impl FrameHost {
                 kind,
                 band_settings,
                 window_plan,
-                image_plan,
+                resource_plan,
                 world_plan,
                 profiles,
                 presentations,
@@ -736,7 +758,7 @@ impl FrameHost {
             kind,
             band_settings,
             window_plan,
-            image_plan,
+            resource_plan,
             world_plan,
             profiles,
             presentations,
@@ -756,7 +778,7 @@ impl FrameHost {
         let stopped = self
             .restart_client_modules(crate::modules::RendererRestart::Video, &mut source.driver());
         let published = stopped.and_then(|()| {
-            image_plan.validate(&self.console.cvars)?;
+            resource_plan.validate(&self.console.cvars)?;
             world_plan.validate(&self.console.cvars)?;
             window_plan.validate(&self.console.cvars)?;
             if band_settings
@@ -772,6 +794,7 @@ impl FrameHost {
                 .model_assets
                 .take()
                 .ok_or("missing model assets")?;
+            let ui_fullscreen = self.renderer_fullscreen_ui();
             let result = owner.image_transaction(Some(world_plan.settings()), |owner, changed| {
                 let limits = self
                     .runtime
@@ -791,7 +814,9 @@ impl FrameHost {
                     &self.runtime.vfs,
                     &profiles,
                     &presentations,
-                    image_plan.selections(),
+                    resource_plan.selections(),
+                    resource_plan.finish(),
+                    ui_fullscreen,
                     |assets| {
                         candidate
                             .as_mut()
@@ -809,8 +834,14 @@ impl FrameHost {
                     .scene
                     .as_mut()
                     .ok_or("missing scene composer")?;
-                let graphics =
-                    scene.load_video_graphics(&self.runtime.vfs, owner, &refresh, width, height)?;
+                let graphics = scene.load_video_graphics(
+                    &self.runtime.vfs,
+                    owner,
+                    &refresh,
+                    ui_fullscreen,
+                    width,
+                    height,
+                )?;
                 // Graphics use the same registration owner, so admit their final
                 // suffix before staging numeric CLIENT and shader-bank selectors.
                 let counts = owner.assets().counts();
@@ -864,7 +895,7 @@ impl FrameHost {
                 let appends = self
                     .renderer_contexts
                     .stage_graphics(staged.graphic_registrations())?;
-                image_plan.validate(&self.console.cvars)?;
+                resource_plan.validate(&self.console.cvars)?;
                 world_plan.validate(&self.console.cvars)?;
                 window_plan.validate(&self.console.cvars)?;
                 let configuration = source.publish_video(
@@ -929,11 +960,10 @@ impl FrameHost {
                     source.video_window_request(),
                     &mut self.runtime.server.events,
                 );
-                if let Err(error) = image_plan.apply(&mut self.console.cvars) {
-                    let _ =
-                        self.runtime.server.events.console_formatted(format_args!(
-                            "Image latch publication: {error:?}\n"
-                        ));
+                if let Err(error) = resource_plan.apply(&mut self.console.cvars) {
+                    let _ = self.runtime.server.events.console_formatted(format_args!(
+                        "Render resource latch publication: {error:?}\n"
+                    ));
                 }
                 if let Err(error) = world_plan.apply(&mut self.console.cvars) {
                     let _ = self.runtime.server.events.console_formatted(format_args!(
@@ -1142,6 +1172,13 @@ impl FrameHost {
         let mouse_enabled = console.cvars.find("in_mouse").ok_or("missing in_mouse")?;
         let developer = console.cvars.find("developer").ok_or("missing developer")?;
         let renderer_smp = console.cvars.find("r_smp");
+        let renderer_ui_fullscreen = console.cvars.find("r_uifullscreen");
+        if let Some(handle) = renderer_ui_fullscreen {
+            console
+                .cvars
+                .set_text(handle, "1")
+                .map_err(|error| format!("renderer UI startup: {error:?}"))?;
+        }
         let cpu_band_view = console
             .cvars
             .bind("r_cpuBands", qa_console::views::Context::default())
@@ -1289,6 +1326,7 @@ impl FrameHost {
             close_without_transport: 0,
             developer,
             renderer_smp,
+            renderer_ui_fullscreen,
             cpu_band_view,
             cpu_band_override: None,
             video_command,
@@ -2428,6 +2466,11 @@ impl FrameHost {
         // The network may be temporarily moved into receive_packet. Retire
         // presentation here; transport completion is observed after restoration.
         self.runtime.close_client_presentation(id);
+        if self.local_clients.contains(&Some(id))
+            && (0..SeatId::COUNT).all(|seat| self.local_seat(seat).is_none())
+        {
+            self.set_renderer_fullscreen_ui(true);
+        }
     }
 
     fn retire_closing_clients(&mut self) {

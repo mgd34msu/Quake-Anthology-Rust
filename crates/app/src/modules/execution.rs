@@ -186,6 +186,7 @@ struct RendererScope {
     world: Option<WorldId>,
     presentation: Option<WorldPresentationId>,
     synchronize: bool,
+    ui_fullscreen: bool,
 }
 struct RegisteredRenderer {
     handle: i32,
@@ -1436,9 +1437,11 @@ fn renderer_scope(
     world: Option<WorldId>,
 ) -> Result<RendererScope, String> {
     let context = host.module_renderer_context(module)?;
+    let ui_fullscreen = host.renderer_fullscreen_ui();
     let row = host.module_row(module).ok_or("missing renderer module")?;
     Ok(RendererScope {
         context,
+        ui_fullscreen,
         profile: row
             .scene_role
             .profile()
@@ -1483,6 +1486,45 @@ fn register_renderer(
     request: &RendererRequest<impl AsRef<[u8]>>,
     driver: &mut Driver<'_>,
 ) -> Result<RegisteredRenderer, String> {
+    let owner = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .ok_or("missing model assets")?;
+    if let RendererRegistration::Shader { lighting, .. } = request.kind
+        && let Some(key) = owner.assets().find_shader_name(request.name.as_ref())
+        && let Some((node, registration)) = host.renderer_contexts.find_shader(
+            scope.context,
+            key,
+            owner
+                .shader_lighting(lighting)
+                .map_err(|error| format!("shader lighting: {error:?}"))?
+                .source,
+        )
+    {
+        return Ok(RegisteredRenderer {
+            handle: if registration.defaulted.is_some() {
+                0
+            } else {
+                i32::try_from(node.0)
+                    .ok()
+                    .and_then(|node| node.checked_add(1))
+                    .ok_or("shader handle capacity")?
+            },
+            shader: Some((key, node)),
+        });
+    }
+    let variant = if owner
+        .native_resource(request.kind, request.name.as_ref())
+        .is_some_and(|resource| {
+            host.renderer_contexts
+                .resource_nodes(scope.context, resource)
+                .is_some()
+        }) {
+        crate::model_assets::RegistrationVariant::Retained
+    } else {
+        crate::model_assets::RegistrationVariant::Guard(scope.ui_fullscreen)
+    };
     let result = (|| {
         let contexts = &mut host.renderer_contexts;
         let owner = host
@@ -1495,6 +1537,7 @@ fn register_renderer(
             &host.runtime.vfs,
             request,
             scope.profile,
+            variant,
             |candidate| stage_renderer(contexts, scene, scope, candidate),
             |assets, _| {
                 driver
@@ -1519,11 +1562,9 @@ fn register_renderer(
     })();
     if result.is_err()
         && matches!(request.kind, RendererRegistration::Skin)
-        && let Some(admission) = host
-            .runtime
-            .model_assets
-            .as_ref()
-            .and_then(|owner| owner.failed_skin_admission(request.name.as_ref(), scope.profile))
+        && let Some(admission) = host.runtime.model_assets.as_ref().and_then(|owner| {
+            owner.failed_skin_admission(request.name.as_ref(), scope.profile, variant)
+        })
     {
         stage_renderer(
             &mut host.renderer_contexts,

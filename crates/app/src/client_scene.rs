@@ -616,6 +616,7 @@ impl ClientModelBindings {
         owner: &mut crate::model_assets::ModelAssets,
         vfs: &qa_content::vfs::Vfs,
         preparer: &mut dyn crate::renderer::AssetPreparer,
+        ui_fullscreen: bool,
     ) -> (u32, bool) {
         let Some(profile) = self.profile else {
             return (0, false);
@@ -626,6 +627,7 @@ impl ClientModelBindings {
             vfs,
             profile,
             preparer,
+            ui_fullscreen,
             published: &mut published,
         };
         let mut rejected = 0;
@@ -1026,6 +1028,7 @@ impl ClientModelBindings {
         owner: &mut crate::model_assets::ModelAssets,
         vfs: &qa_content::vfs::Vfs,
         preparer: &mut dyn crate::renderer::AssetPreparer,
+        ui_fullscreen: bool,
     ) -> Option<(u32, bool)> {
         self.profile?;
         let mut rejected = 0;
@@ -1062,6 +1065,7 @@ impl ClientModelBindings {
                     vfs,
                     profile: selected,
                     preparer,
+                    ui_fullscreen,
                     published: &mut published,
                 };
                 if let Some(capture) = Self::pending_static_capture(

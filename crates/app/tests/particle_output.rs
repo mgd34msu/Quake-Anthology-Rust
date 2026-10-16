@@ -477,6 +477,7 @@ impl RendererSource {
             &mut owner,
             RuleSetId::Quake3,
             qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+            qa_render::material::ShaderCompilePolicy::default(),
             160,
             120,
         )
@@ -654,6 +655,7 @@ fn queued_particles_use_only_the_late_backend_admitted_palette_in_the_real_rende
         RuleSetId::Quake,
         RuleSetId::Quake3,
         qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+        qa_render::material::MaterialFinishPolicy::default(),
         |assets| {
             assert!(assets.counts().palettes > retained.palettes);
             source.renderer.prepare_assets(
@@ -688,6 +690,7 @@ fn queued_particles_use_only_the_late_backend_admitted_palette_in_the_real_rende
             RuleSetId::Quake,
             RuleSetId::Quake3,
             qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| source.renderer.prepare_assets(assets, None),
         )
         .unwrap();

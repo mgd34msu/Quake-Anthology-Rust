@@ -10,6 +10,7 @@ use qa_render::{
     Assets,
     assets::{PaletteId, upload},
     material::{
+        MaterialFinishPolicy,
         resources::{ImageSettings, PaletteSource, ResourceError, load_palette},
         world_load::WorldPresentationProfile,
     },
@@ -87,6 +88,7 @@ pub fn world_profile(
     let mut profile =
         WorldPresentationProfile::native(rules, palette(vfs, assets, rules, registered)?);
     profile.image_settings = image_settings(vars, rules)?;
+    profile.finish = material_finish(vars)?;
     Ok(profile)
 }
 
@@ -180,11 +182,12 @@ const IMAGE_CVARS: [&str; 7] = [
 
 /// A cold preview keeps native source defaults and pending alias conversions in
 /// the one cvar table until the replacement resources are ready to publish.
-pub(crate) struct ImageSettingsPlan {
+pub(crate) struct ResourceSettingsPlan {
     settings: [Option<ImageSettings>; 5],
+    finish: MaterialFinishPolicy,
     pending: PendingSettings,
 }
-impl ImageSettingsPlan {
+impl ResourceSettingsPlan {
     pub(crate) fn prepare(
         vars: &Cvars,
         sources: impl IntoIterator<Item = RuleSetId>,
@@ -201,23 +204,49 @@ impl ImageSettingsPlan {
                 views.push(view);
             }
         }
+        for name in MATERIAL_CVARS {
+            views.push(setting_view(vars, RuleSetId::Quake3, name)?);
+        }
         Ok(Self {
             settings,
+            finish: read_material_finish(vars, true)?,
             pending: PendingSettings::capture(vars, views),
         })
     }
     pub(crate) fn selections(&self) -> [Option<ImageSettings>; 5] {
         self.settings
     }
+    pub(crate) fn finish(&self) -> MaterialFinishPolicy {
+        self.finish
+    }
     pub(crate) fn validate(&self, vars: &Cvars) -> Result<(), &'static str> {
         if !self.pending.unchanged(vars) {
-            return Err("image settings changed during restart");
+            return Err("render resource settings changed during restart");
         }
         Ok(())
     }
     pub(crate) fn apply(&self, vars: &mut Cvars) -> Result<(), qa_console::cvars::WriteError> {
         self.pending.apply(vars)
     }
+}
+
+const MATERIAL_CVARS: [&str; 3] = ["r_detailtextures", "r_vertexLight", "r_fullbright"];
+
+pub fn material_finish(vars: &Cvars) -> Result<MaterialFinishPolicy, &'static str> {
+    read_material_finish(vars, false)
+}
+
+fn read_material_finish(vars: &Cvars, pending: bool) -> Result<MaterialFinishPolicy, &'static str> {
+    let defaults = MaterialFinishPolicy::default();
+    let enabled = |name, fallback| -> Result<bool, &'static str> {
+        Ok(setting_numbers(vars, RuleSetId::Quake3, name, pending)?
+            .map_or(fallback, |value| value.1 != 0))
+    };
+    Ok(MaterialFinishPolicy {
+        detail_textures: enabled(MATERIAL_CVARS[0], defaults.detail_textures)?,
+        vertex_light: enabled(MATERIAL_CVARS[1], defaults.vertex_light)?,
+        fullbright: enabled(MATERIAL_CVARS[2], defaults.fullbright)?,
+    })
 }
 fn setting_view(vars: &Cvars, source: RuleSetId, name: &str) -> Result<View, &'static str> {
     vars.bind(

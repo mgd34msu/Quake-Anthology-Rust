@@ -1012,6 +1012,7 @@ pub(super) fn ownership() {
         &mut owner,
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
+        qa_render::material::ShaderCompilePolicy::default(),
         320,
         200,
     )
@@ -1946,6 +1947,7 @@ pub(super) fn remaps(native: bool) {
         &mut owner,
         RuleSetId::Quake3,
         profile.image_settings,
+        qa_render::material::ShaderCompilePolicy::default(),
     )
     .unwrap();
     assert!(font.native);

@@ -40,6 +40,7 @@ fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {
         &mut owner,
         RuleSetId::Quake2Rerelease,
         ImageSettings::native(RuleSetId::Quake2Rerelease),
+        qa_render::material::ShaderCompilePolicy::default(),
     )
     .unwrap();
     assert!(font.native);
@@ -209,6 +210,7 @@ fn native_fonts_and_backgrounds_become_shared_2d_packets_and_cpu_pixels() {
             &mut owner,
             rules,
             ImageSettings::native(rules),
+            qa_render::material::ShaderCompilePolicy::default(),
             160,
             120,
         )
@@ -294,9 +296,24 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
         ]);
         let settings = ImageSettings::native(rules);
         let mut owner = registered_assets(assets, palettes);
-        let console = ConsoleAssets::load(&vfs, &mut owner, rules, settings, 160, 120).unwrap();
-        let hud =
-            qa_app::renderer::console::FontAssets::load(&vfs, &mut owner, rules, settings).unwrap();
+        let console = ConsoleAssets::load(
+            &vfs,
+            &mut owner,
+            rules,
+            settings,
+            qa_render::material::ShaderCompilePolicy::default(),
+            160,
+            120,
+        )
+        .unwrap();
+        let hud = qa_app::renderer::console::FontAssets::load(
+            &vfs,
+            &mut owner,
+            rules,
+            settings,
+            qa_render::material::ShaderCompilePolicy::default(),
+        )
+        .unwrap();
         let console_font = console.font_assets().registration.unwrap().shader;
         let hud_font = hud.registration.unwrap().shader;
         let assets = owner.assets();
@@ -371,6 +388,7 @@ fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
         &mut owner,
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
+        qa_render::material::ShaderCompilePolicy::default(),
         160,
         120,
     )
@@ -413,6 +431,7 @@ fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
         &mut owner,
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
+        qa_render::material::ShaderCompilePolicy::default(),
     )
     .unwrap();
     assert!(!cached.native);
@@ -510,6 +529,7 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
             &mut owner,
             rules,
             ImageSettings::native(rules),
+            qa_render::material::ShaderCompilePolicy::default(),
             160,
             120,
         )
@@ -679,6 +699,7 @@ fn shared_native_bitmap_name_keeps_console_opaque_and_hud_index255_transparent()
         &mut owner,
         RuleSetId::Quake2,
         ImageSettings::native(RuleSetId::Quake2),
+        qa_render::material::ShaderCompilePolicy::default(),
         160,
         120,
     )

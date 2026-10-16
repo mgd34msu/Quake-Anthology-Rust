@@ -1042,16 +1042,18 @@ impl ResourceState {
         owner: &mut crate::model_assets::ModelAssets,
         vfs: &qa_content::vfs::Vfs,
         preparer: &mut dyn crate::renderer::AssetPreparer,
+        ui_fullscreen: bool,
     ) -> (u32, bool) {
         let (rejected, published) =
             self.models
-                .prepare_pending(&self.configs, owner, vfs, preparer);
+                .prepare_pending(&self.configs, owner, vfs, preparer, ui_fullscreen);
         if self.static_dirty
             && let Some((static_rejected, static_published)) = self.models.prepare_static(
                 &mut self.static_entities[..self.static_entity_count],
                 owner,
                 vfs,
                 preparer,
+                ui_fullscreen,
             )
         {
             self.static_dirty = false;

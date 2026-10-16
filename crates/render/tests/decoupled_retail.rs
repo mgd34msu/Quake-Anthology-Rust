@@ -54,7 +54,7 @@ fn retail_base1_decoupled_samples_reach_the_indexed_surface_cache() {
         Some(palette),
         &[WorldPresentationProfile::native(RuleSetId::Quake2Rerelease, Some(palette)).into()],
         WorldLoadOptions::default(),
-        qa_render::material::ShaderCompilePolicy::default(),
+        false,
     )
     .unwrap();
     let geometry = assets.world(loaded.world).unwrap().geometry();

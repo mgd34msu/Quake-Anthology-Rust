@@ -49,6 +49,7 @@ impl ConsoleAssets {
         owner: &mut ModelAssets,
         rules: RuleSetId,
         settings: ImageSettings,
+        compile_policy: qa_render::material::ShaderCompilePolicy,
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
@@ -76,7 +77,7 @@ impl ConsoleAssets {
             },
         )
         .map_err(str::to_owned)?;
-        let font = FontAssets::load(vfs, owner, rules, settings)?;
+        let font = FontAssets::load(vfs, owner, rules, settings, compile_policy)?;
         let palette = font.palette;
         let mut console = Self {
             rules,
@@ -98,12 +99,12 @@ impl ConsoleAssets {
             install(
                 &mut console.white,
                 "white",
-                owner.graphic_shader(vfs, font.profile, "white"),
+                owner.graphic_shader(vfs, font.profile, "white", compile_policy.ui_fullscreen),
             );
             install(
                 &mut console.background,
                 "console",
-                owner.graphic_shader(vfs, font.profile, "console"),
+                owner.graphic_shader(vfs, font.profile, "console", compile_policy.ui_fullscreen),
             );
         } else if let Some(palette) = palette {
             let result = owner.graphic_images(vfs, font.profile, |images| {
@@ -321,6 +322,7 @@ fn install(
 }
 /// One retained font registration is shared by console and HUD owners.
 pub struct FontAssets {
+    pub(crate) compile_policy: qa_render::material::ShaderCompilePolicy,
     pub profile: ModelProfile,
     pub registration: Option<ShaderRegistration>,
     pub palette: Option<PaletteId>,
@@ -348,13 +350,15 @@ impl FontAssets {
         owner: &mut ModelAssets,
         rules: RuleSetId,
         settings: ImageSettings,
+        compile_policy: qa_render::material::ShaderCompilePolicy,
     ) -> Result<Arc<Self>, String> {
-        let profile = owner.graphics_profile(vfs, rules, settings)?;
+        let profile = owner.graphics_profile(vfs, rules, settings, compile_policy.finish)?;
         let result = if let Some(request) = Self::registration_request(rules) {
             owner.graphic_shader(
                 vfs,
                 profile,
                 std::str::from_utf8(request.name).map_err(|_| "font registration name")?,
+                compile_policy.ui_fullscreen,
             )
         } else {
             owner.graphic_images(vfs, profile, |images| {
@@ -364,6 +368,7 @@ impl FontAssets {
         let mut registration = None;
         install(&mut registration, "native bitmap font", result);
         Ok(Arc::new(Self {
+            compile_policy,
             profile,
             registration,
             palette: profile.palette,

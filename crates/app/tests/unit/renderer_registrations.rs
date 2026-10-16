@@ -75,6 +75,7 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
             Some(palette),
             &[WorldPresentationProfile::native(profile.rules, profile.palette).into()],
             Default::default(),
+            false,
         )
         .unwrap();
     let world = loaded.render.world;
@@ -93,6 +94,8 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
             &[profile],
             &[(world, previous.id)],
             [None; 5],
+            qa_render::material::MaterialFinishPolicy::default(),
+            false,
             |assets| {
                 assert!(assets.counts().presentations > retained.presentations);
                 Err("candidate backend rejected".to_owned())
@@ -125,6 +128,8 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
                 &[profile],
                 &[(world, previous.id)],
                 [None; 5],
+                qa_render::material::MaterialFinishPolicy::default(),
+                false,
                 |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
             )
         })
@@ -171,6 +176,7 @@ fn pair_publishes_once_then_uses_both_cached_handles_without_io() {
             &fixture.vfs,
             [&first, &second],
             profile,
+            crate::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| {
                 prepares.set(prepares.get() + 1);
@@ -204,6 +210,7 @@ fn pair_publishes_once_then_uses_both_cached_handles_without_io() {
                 &fixture.vfs,
                 [&first, &second],
                 profile,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("cached pair reached backend") }
             )
@@ -252,6 +259,7 @@ fn pair_backend_rejection_restores_both_existing_shaders_and_admitted_peer() {
                 &fixture.vfs,
                 requests.each_ref(),
                 target,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { Err("backend rejected both candidates".to_owned()) }
             )
@@ -281,6 +289,7 @@ fn pair_backend_rejection_restores_both_existing_shaders_and_admitted_peer() {
             &fixture.vfs,
             retries.each_ref(),
             target,
+            crate::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -356,6 +365,7 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
                 &fixture.vfs,
                 [&first, &missing],
                 profile,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("failed second resource reached backend") }
             )
@@ -394,6 +404,7 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
                     &fixture.vfs,
                     [&first, &missing],
                     profile,
+                    crate::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| { panic!("cached failed member reached backend") }
                 )
@@ -405,6 +416,7 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
                     &fixture.vfs,
                     &missing,
                     profile,
+                    crate::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| { panic!("cached negative single reached backend") }
                 )
@@ -428,6 +440,7 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
             &fixture.vfs,
             &retry,
             profile,
+            crate::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -509,6 +522,7 @@ fn duplicate_folded_shader_requests_preserve_first_flags_after_atomic_retry() {
                 &fixture.vfs,
                 [&first, &duplicate],
                 target,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { Err("reject shared candidate".to_owned()) }
             )
@@ -521,6 +535,7 @@ fn duplicate_folded_shader_requests_preserve_first_flags_after_atomic_retry() {
             &fixture.vfs,
             [&first, &duplicate],
             target,
+            crate::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -576,6 +591,7 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
                     &fixture.vfs,
                     [&model, &skin],
                     profile,
+                    crate::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| { Err("reject appended model and skin".to_owned()) }
                 )
@@ -613,6 +629,7 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
             &fixture.vfs,
             [&model, &skin],
             profile,
+            crate::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -663,6 +680,7 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
                 &fixture.vfs,
                 [&model, &skin],
                 profile,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("cached model/skin pair reached backend") }
             )
@@ -748,6 +766,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
             &fixture.vfs,
             &ordinary,
             profile,
+            crate::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -777,6 +796,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
                 &fixture.vfs,
                 requests.each_ref(),
                 profile,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { Err("reject both lightmap variants".to_owned()) }
             )
@@ -818,6 +838,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
             &fixture.vfs,
             requests.each_ref(),
             profile,
+            crate::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -862,6 +883,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
                 &fixture.vfs,
                 requests.each_ref(),
                 profile,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("cached lighting variants reached backend") }
             )
@@ -877,6 +899,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
                 &fixture.vfs,
                 &wrong_world,
                 profile,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("missing selected world reached backend") }
             )
@@ -898,6 +921,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
             &fixture.vfs,
             &vertex,
             profile,
+            crate::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -949,6 +973,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
             &fixture.vfs,
             &missing,
             profile,
+            crate::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -992,6 +1017,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
                 &fixture.vfs,
                 &missing,
                 profile,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("cached missing world shader reached backend") }
             )
@@ -1014,6 +1040,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
                 &fixture.vfs,
                 &ordinary_missing,
                 profile,
+                crate::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("wildcard default reached backend") }
             )

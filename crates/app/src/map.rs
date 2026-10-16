@@ -269,6 +269,7 @@ impl MapInput {
         source_palette: Option<PaletteId>,
         presentations: &[WorldPresentationRequest],
         mut options: WorldLoadOptions,
+        ui_fullscreen: bool,
     ) -> Result<LoadedMap, String> {
         let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;
         let collision_bounds = map.models.first().ok_or("missing world model")?.bounds;
@@ -283,7 +284,7 @@ impl MapInput {
             source_palette,
             presentations,
             options,
-            qa_render::material::ShaderCompilePolicy::default(),
+            ui_fullscreen,
         ) {
             Ok(render) => render,
             Err(error) => {

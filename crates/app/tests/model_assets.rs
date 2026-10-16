@@ -51,11 +51,13 @@ fn world_registration(profile: ModelProfile) -> WorldRegistration {
         profile.palette,
     );
     presentation.image_settings = profile.image_settings;
+    presentation.finish = profile.finish;
     WorldRegistration {
         profile,
         presentation,
         options: Default::default(),
         trace_rules: qa_world::collision::TraceRules::ARENA,
+        ui_fullscreen: false,
     }
 }
 
@@ -82,6 +84,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
             Some(palette),
             &[world_registration(profile).presentation.into()],
             Default::default(),
+            false,
         )
         .unwrap();
     assert!(first.spawns.is_empty());
@@ -419,6 +422,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             Some(palette),
             &[world_registration(profile).presentation.into()],
             Default::default(),
+            false,
         )
         .unwrap();
     let old_world = old.render.world;
@@ -695,6 +699,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
             &fixture.vfs,
             &bad,
             profile,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| {
                 attempted += 1;
@@ -737,6 +742,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
             &fixture.vfs,
             &good,
             profile,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -776,6 +782,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
                 &fixture.vfs,
                 &bad,
                 profile,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |assets, _| {
                     attempted += 1;
@@ -799,6 +806,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
             &fixture.vfs,
             &alias,
             profile,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -838,6 +846,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
             &fixture.vfs,
             &good,
             profile,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -937,6 +946,7 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
             &fixture.vfs,
             &request,
             failed_profile,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |_, _| panic!("failed exact profile reached backend"),
         )
@@ -971,6 +981,7 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
                     &fixture.vfs,
                     &request,
                     failed_profile,
+                    qa_app::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| { panic!("cached failed model profile reached backend") }
                 )
@@ -987,6 +998,7 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
                 &fixture.vfs,
                 &request,
                 profile,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| Err("rejected backend".to_owned())
             )
@@ -1000,6 +1012,7 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
             &fixture.vfs,
             &request,
             profile,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -1119,6 +1132,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
                     &fixture.vfs,
                     &request,
                     profile,
+                    qa_app::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| Err("rejected backend".to_owned())
                 )
@@ -1149,6 +1163,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
                         &fixture.vfs,
                         &different,
                         profile,
+                        qa_app::model_assets::RegistrationVariant::Guard(false),
                         |_| Ok(()),
                         |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
                     )
@@ -1172,6 +1187,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
                 &fixture.vfs,
                 &request,
                 profile,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
             )
@@ -1199,6 +1215,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
                 &fixture.vfs,
                 &inline,
                 profile,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| Err("rejected backend".to_owned())
             )
@@ -1212,6 +1229,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
             &fixture.vfs,
             &inline,
             profile,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -1697,6 +1715,7 @@ fn shader_profile(presentation: RuleSetId) -> ModelProfile {
         source_palette: None,
         palette: None,
         image_settings: qa_render::material::resources::ImageSettings::native(presentation),
+        finish: Default::default(),
     }
 }
 
@@ -3052,6 +3071,7 @@ fn borrowed_renderer_request_keeps_long_ordinary_model_names() {
             &fixture.vfs,
             &request,
             profile,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -3206,6 +3226,7 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
                 &fixture.vfs,
                 &request,
                 second,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| {
                     prepares.set(prepares.get() + 1);
@@ -3247,6 +3268,7 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
             &fixture.vfs,
             &retry,
             second,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| {
                 prepares.set(prepares.get() + 1);
@@ -3349,6 +3371,7 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
                 &fixture.vfs,
                 &request,
                 failed,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("failed invoking profile must not reach the backend") }
             )
@@ -3371,6 +3394,7 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
                     &fixture.vfs,
                     &request,
                     failed,
+                    qa_app::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| { panic!("cached failed exact profile must not prepare assets") }
                 )
@@ -3406,6 +3430,7 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
             &fixture.vfs,
             &retry,
             second,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -3449,6 +3474,7 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
                 &fixture.vfs,
                 &request,
                 failed,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("cached failed profile must not reach the backend") }
             )
@@ -3506,6 +3532,7 @@ fn late_model_and_skin_failures_keep_negative_metadata_without_repeating_io() {
                     &fixture.vfs,
                     &request,
                     profile,
+                    qa_app::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| {
                         prepares.set(prepares.get() + 1);
@@ -3535,6 +3562,7 @@ fn late_model_and_skin_failures_keep_negative_metadata_without_repeating_io() {
                         &fixture.vfs,
                         &request,
                         profile,
+                        qa_app::model_assets::RegistrationVariant::Guard(false),
                         |_| Ok(()),
                         |_, _| {
                             prepares.set(prepares.get() + 1);
@@ -3600,6 +3628,7 @@ fn late_skin_profile_failure_does_not_poison_other_presentations() {
                 &fixture.vfs,
                 &request,
                 failed,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("failed skin profile must not prepare assets") }
             )
@@ -3628,6 +3657,7 @@ fn late_skin_profile_failure_does_not_poison_other_presentations() {
                     &fixture.vfs,
                     &request,
                     failed,
+                    qa_app::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| { panic!("cached failed skin profile must not prepare assets") }
                 )
@@ -3643,6 +3673,7 @@ fn late_skin_profile_failure_does_not_poison_other_presentations() {
             &fixture.vfs,
             &request,
             healthy,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -3659,6 +3690,7 @@ fn late_skin_profile_failure_does_not_poison_other_presentations() {
                 &fixture.vfs,
                 &request,
                 failed,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("healthy skin admission must preserve failed profile") }
             )
@@ -3733,6 +3765,7 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
                 &fixture.vfs,
                 &missing,
                 second,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("failed source must not prepare assets") }
             )
@@ -3767,6 +3800,7 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
                     &fixture.vfs,
                     &missing,
                     second,
+                    qa_app::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| { panic!("cached failure must not prepare assets") }
                 )
@@ -3805,6 +3839,7 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
             &fixture.vfs,
             &request,
             third,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -3827,6 +3862,7 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
                 &fixture.vfs,
                 &missing,
                 second,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| { panic!("other source admission must not clear a failure") }
             )

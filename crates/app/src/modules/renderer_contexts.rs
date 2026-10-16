@@ -313,6 +313,16 @@ impl Contexts {
     pub(super) fn latest(&self, handle: Handle, key: NameId) -> Option<ShaderNodeId> {
         self.get(handle)?.shaders.latest(key)
     }
+    pub(super) fn find_shader(
+        &self,
+        handle: Handle,
+        key: NameId,
+        requested: qa_render::world::geometry::LightSource,
+    ) -> Option<(ShaderNodeId, &qa_render::ShaderRegistration)> {
+        let context = self.get(handle)?;
+        let node = context.shaders.find(key, requested)?;
+        Some((node, context.shaders.node(node)?))
+    }
     pub(super) fn remap(
         &mut self,
         handle: Handle,

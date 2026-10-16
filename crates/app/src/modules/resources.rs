@@ -47,6 +47,7 @@ impl FrameHost {
             if !self.prepare_received_world(ClientId(index as u32), &mut preparer) {
                 continue;
             }
+            let ui_fullscreen = self.renderer_fullscreen_ui();
             let runtime = &mut self.runtime;
             let Some(resources) = runtime.client_resources[index].as_mut() else {
                 continue;
@@ -78,12 +79,15 @@ impl FrameHost {
                         owner,
                         &runtime.vfs,
                         source,
+                        ui_fullscreen,
                     )
                 } else if let Some(preparer) = preparer.as_deref_mut() {
-                    let (rejected, changed) =
-                        resources
-                            .state
-                            .prepare_models(owner, &runtime.vfs, preparer);
+                    let (rejected, changed) = resources.state.prepare_models(
+                        owner,
+                        &runtime.vfs,
+                        preparer,
+                        ui_fullscreen,
+                    );
                     published |= changed;
                     rejected
                 } else {
@@ -140,6 +144,7 @@ impl FrameHost {
         {
             return false;
         }
+        let ui_fullscreen = self.renderer_fullscreen_ui();
         let Some(scene) = self.runtime.scene.as_mut() else {
             return false;
         };
@@ -193,6 +198,8 @@ impl FrameHost {
                 &self.runtime.vfs,
                 rules,
                 settings,
+                crate::render_settings::material_finish(&self.console.cvars)?
+                    .compile(ui_fullscreen),
                 width,
                 reuse_font,
                 |view, candidate| {
@@ -350,13 +357,17 @@ impl FrameHost {
             if !self.runtime.scene.as_ref()?.has_world(world.render) {
                 return None;
             }
-            let presentation =
-                owner
-                    .view()
-                    .world_presentation(world.render, Some(profile), None)?;
+            let presentation = owner
+                .view()
+                .world_presentation(world.render, Some(profile), None)
+                .filter(|entry| {
+                    entry.compile_policy.collapse_vertex()
+                        == profile.finish.compile(false).collapse_vertex()
+                })?;
             Some((profile, world, presentation))
         })();
         if let Some((profile, world, presentation)) = cached {
+            self.set_renderer_fullscreen_ui(false);
             self.activate_received_world(
                 client,
                 seat,
@@ -406,6 +417,8 @@ impl FrameHost {
                 )
                 .0
             });
+        let previous_ui_fullscreen = self.renderer_fullscreen_ui();
+        self.set_renderer_fullscreen_ui(false);
         let before = self
             .runtime
             .model_assets
@@ -447,6 +460,7 @@ impl FrameHost {
                 source_rules,
                 presentation_rules,
                 image_settings,
+                crate::render_settings::material_finish(&self.console.cvars)?,
                 |assets| preparer.prepare_assets(assets, None),
             )?;
             let current = || {
@@ -480,6 +494,7 @@ impl FrameHost {
                     profile.palette,
                 );
             presentation.image_settings = profile.image_settings;
+            presentation.finish = profile.finish;
             if let Some(world) = owner.catalog().loaded_world(path.as_bytes()) {
                 if world.collision.is_none() {
                     return Err("CLIENT world has no collision model".to_owned());
@@ -487,7 +502,11 @@ impl FrameHost {
                 if let Some(presentation) = owner
                     .view()
                     .world_presentation(world.render, Some(profile), None)
-                    .filter(|_| scene.has_world(world.render))
+                    .filter(|entry| {
+                        scene.has_world(world.render)
+                            && entry.compile_policy.collapse_vertex()
+                                == profile.finish.compile(false).collapse_vertex()
+                    })
                 {
                     return Ok((profile, world, presentation));
                 }
@@ -496,6 +515,7 @@ impl FrameHost {
                     world.render,
                     profile,
                     presentation,
+                    false,
                     |view, loaded| scene.stage_world(view.assets, loaded),
                     |assets, append| {
                         if !current() {
@@ -521,6 +541,7 @@ impl FrameHost {
                         runtime.renderer_configuration.as_deref(),
                     )?,
                     trace_rules,
+                    ui_fullscreen: false,
                 },
                 |view, store, loaded| {
                     let append = scene.stage_world(view.assets, &loaded.render)?;
@@ -578,6 +599,7 @@ impl FrameHost {
                 true
             }
             Err(error) => {
+                self.set_renderer_fullscreen_ui(previous_ui_fullscreen);
                 if protocol == qa_network::commands::packet::Protocol::NetQuake15 {
                     self.reject_nq_signon(client, format_args!("{error}"));
                 } else {

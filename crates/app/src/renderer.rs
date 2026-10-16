@@ -720,6 +720,7 @@ impl SceneComposer {
         vfs: &qa_content::vfs::Vfs,
         owner: &mut crate::model_assets::ModelAssets,
         refresh: &crate::model_assets::ImageRefresh,
+        ui_fullscreen: bool,
         width: u32,
         height: u32,
     ) -> Result<VideoGraphics, String> {
@@ -736,6 +737,7 @@ impl SceneComposer {
                     owner,
                     profile.rules,
                     profile.image_settings,
+                    profile.finish.compile(ui_fullscreen),
                     width,
                     height,
                 )?;
@@ -754,7 +756,15 @@ impl SceneComposer {
                 .and_then(|console| console.font_for(profile.rules))
                 .filter(|font| font.profile == profile)
                 .map_or_else(
-                    || console::FontAssets::load(vfs, owner, profile.rules, profile.image_settings),
+                    || {
+                        console::FontAssets::load(
+                            vfs,
+                            owner,
+                            profile.rules,
+                            profile.image_settings,
+                            profile.finish.compile(ui_fullscreen),
+                        )
+                    },
                     Ok,
                 )?;
             if font.profile != profile {

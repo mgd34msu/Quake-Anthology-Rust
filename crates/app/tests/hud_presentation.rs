@@ -42,6 +42,7 @@ fn assets(rules: RuleSetId, width: u32) -> (ModelAssets, HudAssets) {
         &mut owner,
         RuleSetId::Quake2,
         qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2),
+        qa_render::material::ShaderCompilePolicy::default(),
     )
     .unwrap();
     assert!(font.native);
@@ -483,7 +484,14 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
         )
         .unwrap();
     let settings = qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2);
-    let font = FontAssets::load(&fixture.vfs, &mut owner, RuleSetId::Quake2, settings).unwrap();
+    let font = FontAssets::load(
+        &fixture.vfs,
+        &mut owner,
+        RuleSetId::Quake2,
+        settings,
+        qa_render::material::ShaderCompilePolicy::default(),
+    )
+    .unwrap();
     let mut assets =
         HudAssets::load(&fixture.vfs, &mut owner, RuleSetId::Quake2, font, 320).unwrap();
     let render = owner.assets();

@@ -1,6 +1,6 @@
 //! File-boundary conversion into the one runtime world/material table.
 use super::{
-    ShaderCompilePolicy,
+    MaterialFinishPolicy, ShaderCompilePolicy,
     finish::{BundleImage, ShaderSlot, finish_material},
     load_catalog,
     resources::{
@@ -152,6 +152,7 @@ pub struct WorldPresentationProfile {
     pub image_settings: ImageSettings,
     pub q1_gl_scale: Q1GlScale,
     pub q2_modulate: f32,
+    pub finish: MaterialFinishPolicy,
 }
 impl PartialEq for WorldPresentationProfile {
     fn eq(&self, other: &Self) -> bool {
@@ -160,6 +161,7 @@ impl PartialEq for WorldPresentationProfile {
             && self.image_settings == other.image_settings
             && self.q1_gl_scale == other.q1_gl_scale
             && self.q2_modulate.to_bits() == other.q2_modulate.to_bits()
+            && self.finish == other.finish
     }
 }
 impl WorldPresentationProfile {
@@ -170,6 +172,7 @@ impl WorldPresentationProfile {
             image_settings: ImageSettings::native(rules),
             q1_gl_scale: Q1GlScale::OriginalOverbright,
             q2_modulate: 1.0,
+            finish: MaterialFinishPolicy::default(),
         }
     }
 }
@@ -438,9 +441,10 @@ fn compile_profile(
     source: &WorldMaterialSource,
     request: WorldPresentationRequest,
     prepared: PreparedPresentation,
-    policy: ShaderCompilePolicy,
+    ui_fullscreen: bool,
     diagnostics: &mut Vec<String>,
 ) -> Result<(CompiledPresentation, PresentationDefaults), WorldMaterialError> {
+    let policy = request.profile.finish.compile(ui_fullscreen);
     let lightmaps = register_lightmap_pages(assets, &source.layout, prepared.pages)?;
     let bindings = compile_presentation(
         vfs,
@@ -499,7 +503,7 @@ pub fn load_world(
     source_palette: Option<crate::PaletteId>,
     profiles: &[WorldPresentationRequest],
     mut options: WorldLoadOptions,
-    policy: ShaderCompilePolicy,
+    ui_fullscreen: bool,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let geometry_source = map.bsp.format.rule_set();
     validate_profiles(assets, geometry_source, source_palette, profiles)?;
@@ -620,7 +624,7 @@ pub fn load_world(
             &source,
             request,
             prepared,
-            policy,
+            ui_fullscreen,
             &mut diagnostics,
         )?;
         variants.push(bindings);
@@ -660,7 +664,7 @@ pub fn load_world(
                     profile: request.profile,
                     defaults,
                     lighting,
-                    compile_policy: policy,
+                    compile_policy: request.profile.finish.compile(ui_fullscreen),
                 }],
             )
             .map_err(WorldMaterialError::Boundary)?;
@@ -675,7 +679,7 @@ pub fn load_world(
             profile: distinct[index].profile,
             defaults: defaults[index],
             lighting,
-            compile_policy: policy,
+            compile_policy: distinct[index].profile.finish.compile(ui_fullscreen),
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
@@ -694,9 +698,10 @@ pub fn append_world_presentation(
     assets: &mut Assets,
     world: WorldId,
     request: WorldPresentationRequest,
-    policy: ShaderCompilePolicy,
+    ui_fullscreen: bool,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let profile = request.profile;
+    let policy = profile.finish.compile(ui_fullscreen);
     let row = assets
         .world(world)
         .ok_or(WorldMaterialError::Boundary("missing presentation world"))?;
@@ -705,7 +710,7 @@ pub fn append_world_presentation(
         assets.world_presentation_registration(id).filter(|entry| {
             entry.profile == profile
                 && current_lighting.is_none_or(|lighting| entry.lighting == lighting)
-                && entry.compile_policy == policy
+                && entry.compile_policy.collapse_vertex() == policy.collapse_vertex()
         })
     });
     if let Some(existing) = existing {
@@ -733,7 +738,7 @@ pub fn append_world_presentation(
             source,
             request,
             prepared,
-            policy,
+            ui_fullscreen,
             &mut diagnostics,
         )?;
         let id = assets
@@ -981,6 +986,25 @@ fn compile_presentation(
         .zip(definitions)
     {
         let (warp, sky) = kind;
+        // Native missing-page normalization precedes the selected world's
+        // Vertex/White policy. Authored geometry remains unchanged for reloads.
+        let source_light = if surface.no_draw
+            && geometry_source == RuleSetId::Quake3
+            && matches!(surface.light_source, LightSource::ExternalPage(_))
+        {
+            LightSource::Vertex
+        } else {
+            surface.light_source
+        };
+        let requested = policy.world_request(source_light);
+        let lightmap = if matches!(
+            requested,
+            LightSource::Page(_) | LightSource::ExternalPage(_) | LightSource::Samples
+        ) {
+            lightmaps[surface.source_id as usize].unwrap_or(ImageId(0))
+        } else {
+            ImageId(0)
+        };
         if surface.no_draw {
             let raw = match source_surface_name(
                 source,
@@ -1000,16 +1024,8 @@ fn compile_presentation(
                 catalog,
                 raw,
                 NamedShaderLighting {
-                    // Native Q3 normalizes a missing page before the hidden
-                    // surface draw skip; visible external resources keep their boundary.
-                    source: if geometry_source == RuleSetId::Quake3
-                        && matches!(surface.light_source, LightSource::ExternalPage(_))
-                    {
-                        LightSource::Vertex
-                    } else {
-                        surface.light_source
-                    },
-                    lightmap: lightmaps[surface.source_id as usize].unwrap_or(ImageId(0)),
+                    source: requested,
+                    lightmap,
                 },
                 policy,
                 &mut images,
@@ -1124,7 +1140,6 @@ fn compile_presentation(
             scale = [1.0 / 64.0; 2];
         }
         let raw = source_surface_name(source, surface, &texture_names, &info_names, &shader_names)?;
-        let lightmap = lightmaps[surface.source_id as usize].unwrap_or(ImageId(0));
         let mut named_registration = None;
         let converted = geometry_source != RuleSetId::Quake3 && definition.is_none();
         let material = if let Some(definition) = definition {
@@ -1132,7 +1147,7 @@ fn compile_presentation(
                 definition,
                 &mut images,
                 NamedShaderLighting {
-                    source: surface.light_source,
+                    source: requested,
                     lightmap,
                 },
                 policy,
@@ -1143,7 +1158,7 @@ fn compile_presentation(
                     raw,
                     ShaderBinding {
                         lightmap,
-                        ..ShaderBinding::material(compiled.material, surface.light_source)
+                        ..ShaderBinding::material(compiled.material, requested)
                     },
                     compiled.defaulted,
                 )
@@ -1158,7 +1173,7 @@ fn compile_presentation(
                     raw,
                     true,
                     NamedShaderLighting {
-                        source: surface.light_source,
+                        source: requested,
                         lightmap,
                     },
                     policy,
@@ -1174,7 +1189,7 @@ fn compile_presentation(
                     flags,
                     geometry_source,
                     kind,
-                    surface.light_source,
+                    requested,
                     legacy_sky,
                     &mut images,
                 )?
@@ -1182,16 +1197,16 @@ fn compile_presentation(
         };
         let binding = crate::ShaderBinding {
             material,
-            light_source: surface.light_source,
-            lightmap: lightmaps[surface.source_id as usize].unwrap_or(ImageId(0)),
+            light_source: requested,
+            lightmap,
             // Legacy grids retain face bounds after their UVs were rewritten
             // into the atlas. Authored Page UVs sample the full original page.
-            lightmap_region: if surface.light_source == LightSource::Samples {
+            lightmap_region: if requested == LightSource::Samples {
                 regions[surface.source_id as usize]
             } else {
                 None
             },
-            lightmap_conversion: (surface.light_source == LightSource::Samples
+            lightmap_conversion: (requested == LightSource::Samples
                 && regions[surface.source_id as usize].is_some())
             .then_some(lightmap_conversion),
             styled_surface: None,

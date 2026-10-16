@@ -96,6 +96,7 @@ fn loading_with_connection(
                 .into(),
             ],
             Default::default(),
+            false,
         )
         .unwrap();
     let mut builder =
@@ -837,6 +838,7 @@ fn registered_static_player_capture_waits_for_its_profile_across_peer_publicatio
                 &runtime.vfs,
                 &request,
                 profile,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |assets, _| {
                     source

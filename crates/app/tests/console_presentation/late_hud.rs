@@ -134,6 +134,7 @@ fn late_hud_backend_rejection_restores_palette_and_frontend_before_retry() {
         &vfs,
         RuleSetId::Quake,
         ImageSettings::native(RuleSetId::Quake),
+        qa_render::material::ShaderCompilePolicy::default(),
         160,
         None,
         |_, candidate| scene.stage_hud(candidate),
@@ -158,6 +159,7 @@ fn late_hud_backend_rejection_restores_palette_and_frontend_before_retry() {
             &vfs,
             RuleSetId::Quake,
             ImageSettings::native(RuleSetId::Quake),
+            qa_render::material::ShaderCompilePolicy::default(),
             160,
             None,
             |_, candidate| scene.stage_hud(candidate),
@@ -218,6 +220,7 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
         &mut owner,
         RuleSetId::Quake,
         ImageSettings::native(RuleSetId::Quake),
+        qa_render::material::ShaderCompilePolicy::default(),
         160,
         120,
     )
@@ -267,6 +270,7 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
             &vfs,
             RuleSetId::Quake,
             ImageSettings::native(RuleSetId::Quake),
+            qa_render::material::ShaderCompilePolicy::default(),
             160,
             Some(reuse),
             |_, candidate| scene.stage_hud(candidate),
@@ -282,6 +286,7 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
             &vfs,
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
+            qa_render::material::ShaderCompilePolicy::default(),
             160,
             None,
             |_, candidate| scene.stage_hud(candidate),
@@ -334,6 +339,7 @@ fn optional_missing_font_commits_once_and_busy_lists_prevent_cold_work() {
             &vfs,
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
+            qa_render::material::ShaderCompilePolicy::default(),
             160,
             None,
             |_, candidate| {
@@ -405,6 +411,7 @@ fn optional_missing_font_commits_once_and_busy_lists_prevent_cold_work() {
         &mut owner,
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
+        qa_render::material::ShaderCompilePolicy::default(),
     )
     .unwrap();
     assert_eq!(cached.profile, profile);

@@ -50,6 +50,7 @@ fn late_profile_palette_admission_rolls_back_and_installs_fallback_only_after_ba
         RuleSetId::Quake2,
         RuleSetId::Quake,
         settings,
+        qa_render::material::MaterialFinishPolicy::default(),
         |assets| {
             assert_eq!(assets.counts().palettes, before.palettes + 2);
             let target = PaletteId((before.palettes + 1) as u32);
@@ -70,6 +71,7 @@ fn late_profile_palette_admission_rolls_back_and_installs_fallback_only_after_ba
             RuleSetId::Quake2,
             RuleSetId::Quake,
             settings,
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| {
                 assert!(
                     assets
@@ -117,6 +119,7 @@ fn late_profile_palette_admission_rolls_back_and_installs_fallback_only_after_ba
                 RuleSetId::Quake2,
                 RuleSetId::Quake,
                 settings,
+                qa_render::material::MaterialFinishPolicy::default(),
                 |_| { panic!("unchanged exact profile must not prepare again") }
             )
             .unwrap(),
@@ -237,6 +240,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
             first.source_rules,
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -265,6 +269,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
                     &fixture.vfs,
                     &request,
                     second,
+                    qa_app::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
                 )
@@ -294,6 +299,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
                 &fixture.vfs,
                 &request,
                 second,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
             )
@@ -340,6 +346,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
                     &fixture.vfs,
                     &request,
                     second,
+                    qa_app::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
                 )
@@ -378,6 +385,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
                 &fixture.vfs,
                 &request,
                 second,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
             )
@@ -437,6 +445,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
                 first.source_rules,
                 first.rules,
                 settings,
+                qa_render::material::MaterialFinishPolicy::default(),
                 |_| Err("profile reject".to_owned())
             )
             .is_err()
@@ -453,6 +462,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
             first.source_rules,
             first.rules,
             settings,
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -470,6 +480,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
             &fixture.vfs,
             &request,
             second,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -504,6 +515,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
             RuleSetId::Quake,
             RuleSetId::Quake3,
             settings,
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -522,6 +534,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
                 &fixture.vfs,
                 &request,
                 third,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| Err("new Source backend reject".to_owned())
             )
@@ -542,6 +555,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
                 &fixture.vfs,
                 &request,
                 third,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
             )
@@ -624,6 +638,7 @@ fn metadata_only_model_gets_its_first_stable_row_when_a_profile_is_admitted() {
             RuleSetId::Quake,
             RuleSetId::Quake,
             ImageSettings::native(RuleSetId::Quake),
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -640,6 +655,7 @@ fn metadata_only_model_gets_its_first_stable_row_when_a_profile_is_admitted() {
                 &fixture.vfs,
                 &request,
                 profile,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned)
             )
@@ -673,6 +689,7 @@ fn world_source_palette_is_resolved_inside_its_own_transaction_independently_of_
             RuleSetId::Quake2,
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -766,6 +783,7 @@ fn eager_native_default_profile_rolls_back_backend_failure_and_keeps_published_p
                 second.source_rules,
                 second.rules,
                 second.image_settings,
+                qa_render::material::MaterialFinishPolicy::default(),
                 |assets| {
                     assert_eq!(assets.counts().images, before.images + 1);
                     assert_eq!(assets.counts().shader_bindings, before.shader_bindings + 1);
@@ -784,6 +802,7 @@ fn eager_native_default_profile_rolls_back_backend_failure_and_keeps_published_p
             second.source_rules,
             second.rules,
             second.image_settings,
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -813,9 +832,351 @@ fn eager_native_default_profile_rolls_back_backend_failure_and_keeps_published_p
                 second.source_rules,
                 second.rules,
                 second.image_settings,
+                qa_render::material::MaterialFinishPolicy::default(),
                 |_| panic!("cached profile must not reprepare")
             )
             .unwrap(),
         (second, counts)
     );
+}
+
+#[test]
+fn finish_profiles_share_image_storage_and_guard_variants_publish_atomically() {
+    use qa_app::model_assets::RegistrationVariant;
+    use qa_compat::services::ShaderLighting;
+    use qa_render::{ShaderBindingId, material::MaterialFinishPolicy};
+    let fixture = support::Fixture::new(&[
+        (
+            "textures/shared.tga",
+            support::tga(4, 4, &[[71, 137, 193, 255]; 16]),
+        ),
+        (
+            "scripts/finish.shader",
+            br#"
+            textures/first {
+                { map textures/shared tcGen texture }
+                { map textures/shared tcGen texture blendFunc filter }
+            }
+            textures/later {
+                { map textures/shared tcGen texture }
+                { map textures/shared tcGen texture blendFunc filter }
+            }
+        "#
+            .to_vec(),
+        ),
+    ]);
+    let first = shader_profile(RuleSetId::Quake3);
+    let mut owner =
+        ModelAssets::new(Assets::load().unwrap(), [first], [], Default::default()).unwrap();
+    let mut cpu = cpu(&mut owner);
+    let request = renderer_request(
+        "textures/first",
+        RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: ShaderLighting::TwoDimensional,
+        },
+        first.source_rules,
+        None,
+    );
+    let (handle, plain, _) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &request,
+            first,
+            RegistrationVariant::Guard(false),
+            |candidate| Ok(candidate.registrations[0]),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    let image = |assets: &Assets, shader: ShaderBindingId| {
+        let material = assets
+            .material(assets.shader_binding(shader).unwrap().material)
+            .unwrap();
+        let StageTexture::Image(image) = material.stages[0].texture else {
+            panic!("authored image")
+        };
+        image
+    };
+    let shared_image = image(owner.assets(), plain.shader);
+    assert_eq!(
+        owner
+            .assets()
+            .material(
+                owner
+                    .assets()
+                    .shader_binding(plain.shader)
+                    .unwrap()
+                    .material
+            )
+            .unwrap()
+            .stages
+            .len(),
+        2
+    );
+    let image_prefix = owner.assets().counts().images;
+    let source_pixels = owner.assets().image(shared_image).unwrap().rgba.to_vec();
+    fixture.vfs.take_lookup_count();
+    let plain_counts = owner.assets().counts();
+    owner
+        .prepare_registration(
+            &fixture.vfs,
+            &request,
+            first,
+            RegistrationVariant::Guard(true),
+            |candidate| {
+                assert_eq!(candidate.registrations[0], plain);
+                Ok(())
+            },
+            |_, _| panic!("irrelevant fullscreen guard must not prepare"),
+        )
+        .unwrap();
+    assert_eq!(owner.assets().counts(), plain_counts);
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    let finish = MaterialFinishPolicy {
+        vertex_light: true,
+        ..Default::default()
+    };
+    let (vertex, _) = owner
+        .prepare_profile(
+            &fixture.vfs,
+            first.source_rules,
+            first.rules,
+            first.image_settings,
+            finish,
+            |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    assert_ne!(vertex, first);
+    assert_eq!(vertex.image_settings, first.image_settings);
+    assert_eq!(owner.assets().counts().images, image_prefix);
+    let (vertex_handle, collapsed, _) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &request,
+            vertex,
+            RegistrationVariant::Guard(false),
+            |candidate| Ok(candidate.registrations[0]),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    assert_eq!(
+        vertex_handle, handle,
+        "native name handles survive exact profile changes"
+    );
+    assert_ne!(collapsed.shader, plain.shader);
+    assert_eq!(image(owner.assets(), collapsed.shader), shared_image);
+    assert_eq!(owner.assets().counts().images, image_prefix);
+    assert_eq!(
+        owner
+            .assets()
+            .material(
+                owner
+                    .assets()
+                    .shader_binding(collapsed.shader)
+                    .unwrap()
+                    .material
+            )
+            .unwrap()
+            .stages
+            .len(),
+        1
+    );
+    let before = owner.assets().counts();
+    fixture.vfs.take_lookup_count();
+    assert!(
+        owner
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                vertex,
+                RegistrationVariant::Guard(true),
+                |candidate| Ok(candidate.registrations[0]),
+                |assets, candidate| {
+                    assert_ne!(candidate.shader, collapsed.shader);
+                    assert_eq!(
+                        assets
+                            .material(assets.shader_binding(candidate.shader).unwrap().material)
+                            .unwrap()
+                            .stages
+                            .len(),
+                        2
+                    );
+                    Err("backend rejected fullscreen variant".to_owned())
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(cpu.admitted_assets(), Some(before));
+    assert_eq!(
+        owner.catalog().shader_binding(handle, vertex),
+        Some(collapsed.shader)
+    );
+    assert_eq!(
+        owner.catalog().shader_binding(handle, first),
+        Some(plain.shader)
+    );
+    let (retried, fullscreen, counts) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &request,
+            vertex,
+            RegistrationVariant::Guard(true),
+            |candidate| Ok(candidate.registrations[0]),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    assert_eq!(retried, handle);
+    assert_eq!(image(owner.assets(), fullscreen.shader), shared_image);
+    assert_ne!(fullscreen.shader, collapsed.shader);
+    assert_eq!(owner.assets().counts().images, image_prefix);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(
+        owner.assets().image(shared_image).unwrap().rgba.as_ref(),
+        source_pixels
+    );
+    fixture.vfs.take_lookup_count();
+    let (retained_handle, retained, retained_counts) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &request,
+            vertex,
+            RegistrationVariant::Retained,
+            |candidate| Ok(candidate.registrations[0]),
+            |_, _| panic!("logical hit must not prepare a backend"),
+        )
+        .unwrap();
+    assert_eq!(retained_handle, handle);
+    assert_eq!(
+        retained.shader, collapsed.shader,
+        "a logical hit retains its first body after a guard flip"
+    );
+    assert_eq!(retained_counts, counts);
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    let later = renderer_request("textures/later", request.kind, vertex.source_rules, None);
+    fixture.vfs.take_lookup_count();
+    assert!(
+        owner
+            .prepare_registration(
+                &fixture.vfs,
+                &later,
+                vertex,
+                RegistrationVariant::Retained,
+                |_| Ok(()),
+                |_, _| panic!("logical miss cannot compile through Retained")
+            )
+            .is_err()
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    let (_, later_row, _) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &later,
+            vertex,
+            RegistrationVariant::Guard(true),
+            |candidate| Ok(candidate.registrations[0]),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    assert_eq!(
+        owner
+            .assets()
+            .material(
+                owner
+                    .assets()
+                    .shader_binding(later_row.shader)
+                    .unwrap()
+                    .material
+            )
+            .unwrap()
+            .stages
+            .len(),
+        2
+    );
+    assert_eq!(image(owner.assets(), later_row.shader), shared_image);
+    fixture.vfs.take_lookup_count();
+    owner
+        .prepare_registration(
+            &fixture.vfs,
+            &later,
+            vertex,
+            RegistrationVariant::Retained,
+            |candidate| {
+                assert_eq!(candidate.registrations[0], later_row);
+                Ok(())
+            },
+            |_, _| panic!("admitted logical hit must not prepare"),
+        )
+        .unwrap();
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+}
+
+#[test]
+fn first_fullscreen_shader_and_skin_remain_visible_to_frozen_source_lookup() {
+    use qa_app::model_assets::RegistrationVariant;
+    use qa_compat::services::ShaderLighting;
+    let fixture = support::Fixture::surfaces();
+    let mut profile = shader_profile(RuleSetId::Quake3);
+    profile.finish.vertex_light = true;
+    let mut owner =
+        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut cpu = cpu(&mut owner);
+    let shader_request = renderer_request(
+        "textures/glow",
+        RendererRegistration::Shader {
+            mipmaps: true,
+            lighting: ShaderLighting::TwoDimensional,
+        },
+        profile.source_rules,
+        None,
+    );
+    let (shader, _, _) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &shader_request,
+            profile,
+            RegistrationVariant::Guard(true),
+            |candidate| {
+                assert_eq!(candidate.registrations.len(), 1);
+                Ok(())
+            },
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    assert!(shader > 0);
+    let skin_request = renderer_request(
+        "models/test.skin",
+        RendererRegistration::Skin,
+        profile.source_rules,
+        None,
+    );
+    let (skin, _, counts) = owner
+        .prepare_registration(
+            &fixture.vfs,
+            &skin_request,
+            profile,
+            RegistrationVariant::Guard(true),
+            |candidate| {
+                assert_eq!(candidate.registrations.len(), 3);
+                Ok(())
+            },
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    assert!(skin > 0);
+    assert!(owner.catalog().shader_binding(shader, profile).is_some());
+    assert!(owner.catalog().renderer_skin(skin, profile));
+    fixture.vfs.take_lookup_count();
+    let frozen: &dyn ModelLookup = owner.catalog();
+    assert_eq!(
+        frozen.shader_handle(b"textures/glow", profile.source_rules),
+        Some(shader)
+    );
+    assert_eq!(
+        frozen.skin_handle(b"models/test.skin", profile.source_rules),
+        Some(skin)
+    );
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    assert_eq!(owner.assets().counts(), counts);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
 }

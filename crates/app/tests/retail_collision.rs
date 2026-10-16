@@ -30,6 +30,7 @@ fn load_input(
             source,
             &[WorldPresentationProfile::native(rules, target).into()],
             WorldLoadOptions::default(),
+            false,
         )
         .expect("production map/collision admission")
 }

@@ -9,12 +9,22 @@ use crate::{
 pub struct MaterialFinishPolicy {
     pub detail_textures: bool,
     pub vertex_light: bool,
+    pub fullbright: bool,
+}
+impl MaterialFinishPolicy {
+    pub fn compile(self, ui_fullscreen: bool) -> ShaderCompilePolicy {
+        ShaderCompilePolicy {
+            finish: self,
+            ui_fullscreen,
+        }
+    }
 }
 impl Default for MaterialFinishPolicy {
     fn default() -> Self {
         Self {
             detail_textures: true,
             vertex_light: false,
+            fullbright: false,
         }
     }
 }
@@ -23,6 +33,30 @@ impl Default for MaterialFinishPolicy {
 pub struct ShaderCompilePolicy {
     pub finish: MaterialFinishPolicy,
     pub ui_fullscreen: bool,
+}
+impl ShaderCompilePolicy {
+    pub fn collapse_vertex(self) -> bool {
+        self.finish.vertex_light && !self.ui_fullscreen
+    }
+
+    /// Surface registration normalizes its request before native lookup.
+    /// Generic named, fog and remap requests retain their own lighting mode.
+    pub fn world_request(
+        self,
+        source: crate::world::geometry::LightSource,
+    ) -> crate::world::geometry::LightSource {
+        use crate::world::geometry::LightSource;
+        let requested = if self.finish.vertex_light {
+            LightSource::Vertex
+        } else {
+            source
+        };
+        if self.finish.fullbright {
+            LightSource::White
+        } else {
+            requested
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -315,7 +349,7 @@ pub(super) fn finish_material(
     if settings.sort == 0.0 {
         settings.sort = 3.0;
     }
-    if scan > 1 && policy.finish.vertex_light && !policy.ui_fullscreen {
+    if scan > 1 && policy.collapse_vertex() {
         vertex_lighting_collapse(&mut slots, settings.sort, lighting);
         scan = 1;
         has_lightmap = false;

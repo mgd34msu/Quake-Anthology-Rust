@@ -1,4 +1,4 @@
-use qa_app::render_settings::{image_settings, world_load_options};
+use qa_app::render_settings::{image_settings, material_finish, world_load_options};
 use qa_console::{
     cvars::Cvars,
     views::{Context, RuleSetId},
@@ -350,4 +350,32 @@ fn lighting_requests_stay_current_until_only_the_selected_latches_are_applied() 
     );
     assert_eq!(vars.integer_view(output).unwrap(), 2);
     assert!(vars.latched(game).unwrap().is_some());
+}
+
+#[test]
+fn material_flags_read_one_shared_renderer_policy_in_every_console_context() {
+    let default = qa_render::material::MaterialFinishPolicy::default();
+    for source in RuleSetId::ALL {
+        let mut vars = vars(source);
+        assert_eq!(material_finish(&vars).unwrap(), default);
+        for (name, text) in [
+            ("r_detailtextures", "0"),
+            ("r_vertexLight", "1"),
+            ("r_fullbright", "1"),
+        ] {
+            let view = vars
+                .bind(
+                    name,
+                    Context {
+                        source: RuleSetId::Quake3,
+                        ..Context::default()
+                    },
+                )
+                .unwrap();
+            vars.force_write(view, text).unwrap();
+        }
+        let finish = material_finish(&vars).unwrap();
+        assert!(!finish.detail_textures);
+        assert!(finish.vertex_light && finish.fullbright);
+    }
 }

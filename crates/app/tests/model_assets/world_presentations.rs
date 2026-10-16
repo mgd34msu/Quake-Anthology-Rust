@@ -64,6 +64,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             Some(palette),
             &[world_registration(profile).presentation.into()],
             Default::default(),
+            false,
         )
         .unwrap();
     let second = map::read(&fixture.vfs, "second")
@@ -75,6 +76,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             Some(palette),
             &[world_registration(profile).presentation.into()],
             Default::default(),
+            false,
         )
         .unwrap();
     let world = first.render.world;
@@ -210,6 +212,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
                 RuleSetId::Quake,
                 target,
                 ImageSettings::native(target),
+                qa_render::material::MaterialFinishPolicy::default(),
                 |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
             )
             .unwrap();
@@ -221,6 +224,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
                 world,
                 selected,
                 presentation,
+                false,
                 |view, loaded| {
                     assert_eq!(
                         view.assets
@@ -323,6 +327,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
                 world,
                 selected,
                 presentation,
+                false,
                 |view, loaded| scene.stage_world(view.assets, loaded),
                 |assets, append| {
                     cpu.prepare_assets(assets, Some(append.limits()))
@@ -360,6 +365,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
             Some(palette),
             &[world_registration(original_profile).presentation.into()],
             Default::default(),
+            false,
         )
         .unwrap();
     let world = loaded.render.world;
@@ -401,6 +407,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
             RuleSetId::Quake,
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -415,6 +422,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
                 world,
                 profile,
                 invalid,
+                false,
                 |_, _| -> Result<(), String> { panic!("invalid presentation reached stage") },
                 |_, _| panic!("invalid presentation reached CPU")
             )
@@ -429,6 +437,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
                 world,
                 profile,
                 presentation,
+                false,
                 |view, loaded| scene.stage_world(view.assets, loaded),
                 |_, _| panic!("active scene reached CPU")
             )
@@ -446,6 +455,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
             world,
             profile,
             presentation,
+            false,
             |view, loaded| scene.stage_world(view.assets, loaded),
             |assets, append| {
                 let mut incompatible = append.limits();
@@ -475,6 +485,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
             world,
             profile,
             presentation,
+            false,
             |view, loaded| scene.stage_world(view.assets, loaded),
             |assets, append| {
                 cpu.prepare_assets(assets, Some(append.limits()))

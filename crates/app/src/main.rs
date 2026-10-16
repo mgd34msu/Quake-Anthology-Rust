@@ -532,6 +532,7 @@ fn run() -> Result<(), String> {
             source_palette,
             &presentations,
             world_options,
+            false,
         )?;
         world_rate = qa_app::client_policy::tick_rate(policy.client, &mut console.cvars)?;
         let tick_ms = match world_rate {
@@ -641,6 +642,9 @@ fn run() -> Result<(), String> {
         .map(|request| request.context.native_rules)
         .collect();
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
+    if render_world.is_some() {
+        host.set_renderer_fullscreen_ui(false);
+    }
     host.local_clients = local_clients;
     host.local_presentation_rules = std::array::from_fn(|seat| {
         seat_presentations[seat].or(presentation_rules).or_else(|| {
@@ -729,6 +733,7 @@ fn run() -> Result<(), String> {
                 source_palette,
                 palette: presentation.indexed_palette,
                 image_settings: presentation.image_settings,
+                finish: presentation.finish,
             };
             if let Some(seat) = seat {
                 seat_model_profiles[seat][source_rules as usize] = Some(profile);
@@ -850,6 +855,7 @@ fn run() -> Result<(), String> {
                     source_palette: profile.source_palette,
                     palette: profile.palette,
                     image_settings: profile.image_settings,
+                    finish: profile.finish,
                     required: false,
                 },
             )?;
@@ -938,6 +944,8 @@ fn run() -> Result<(), String> {
         )
     };
     let console_rules = host.console.cvars.context().source;
+    let compile_policy = qa_app::render_settings::material_finish(&host.console.cvars)?
+        .compile(host.renderer_fullscreen_ui());
     let owner = host
         .runtime
         .model_assets
@@ -948,6 +956,7 @@ fn run() -> Result<(), String> {
         owner,
         console_rules,
         qa_app::render_settings::image_settings(&host.console.cvars, console_rules)?,
+        compile_policy,
         width as u32,
         height as u32,
     )?;
@@ -970,6 +979,7 @@ fn run() -> Result<(), String> {
                 owner,
                 rules,
                 qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
+                compile_policy,
             )?
         };
         hud_assets[rules as usize] = Some(qa_app::renderer::hud::HudAssets::load(

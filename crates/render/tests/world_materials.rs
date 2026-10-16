@@ -47,7 +47,7 @@ fn load_native_world(
         source_palette,
         &[WorldPresentationProfile::native(rules, target_palette).into()],
         options,
-        qa_render::material::ShaderCompilePolicy::default(),
+        false,
     )
 }
 
@@ -746,7 +746,7 @@ fn one_world_registers_exact_profiles_once_without_mutating_previous_assets() ->
         Some(palette),
         &[first.into(), second.into(), third.into(), first.into()],
         WorldLoadOptions::default(),
-        qa_render::material::ShaderCompilePolicy::default(),
+        false,
     )
     .map_err(|e| format!("material variants: {e:?}"))?;
     assert_eq!(assets.worlds().len(), 1);
@@ -894,7 +894,7 @@ fn one_geometry_presents_explicit_palette_variants_in_both_seat_orders() -> Resu
             Some(source),
             &profiles.map(Into::into),
             WorldLoadOptions::default(),
-            qa_render::material::ShaderCompilePolicy::default(),
+            false,
         )
         .map_err(|e| format!("palette variants: {e:?}"))?;
         assert_eq!(assets.worlds().len(), 1);
@@ -1104,15 +1104,10 @@ fn world_lighting_rebuild_restores_authored_bytes_and_keeps_old_presentations_im
         .sample(Vec3::default(), 1., 1.);
     assert_eq!(light.ambient, [200., 100., 50.]);
     assert_eq!(light.directed, [20., 30., 40.]);
-    let changed = append_world_presentation(
-        &vfs,
-        &mut assets,
-        world,
-        original.profile.into(),
-        qa_render::material::ShaderCompilePolicy::default(),
-    )
-    .map_err(|error| format!("lighting presentation: {error:?}"))?
-    .presentations[0];
+    let changed =
+        append_world_presentation(&vfs, &mut assets, world, original.profile.into(), false)
+            .map_err(|error| format!("lighting presentation: {error:?}"))?
+            .presentations[0];
     assert_ne!(changed.id, original.id);
     assert_eq!(changed.profile, original.profile);
     assert_eq!(changed.lighting, settings.lighting);
@@ -1170,41 +1165,25 @@ fn world_lighting_rebuild_restores_authored_bytes_and_keeps_old_presentations_im
     );
 
     let rebuild = assets.rebuild_worlds(&[world], settings).unwrap();
-    let retry = append_world_presentation(
-        &vfs,
-        &mut assets,
-        world,
-        original.profile.into(),
-        qa_render::material::ShaderCompilePolicy::default(),
-    )
-    .map_err(|error| format!("retry presentation: {error:?}"))?
-    .presentations[0];
+    let retry = append_world_presentation(&vfs, &mut assets, world, original.profile.into(), false)
+        .map_err(|error| format!("retry presentation: {error:?}"))?
+        .presentations[0];
     assert_eq!(retry, changed);
     cpu.prepare_assets(&assets, None).unwrap();
     rebuild.commit();
     let retained = assets.counts();
-    let cached = append_world_presentation(
-        &vfs,
-        &mut assets,
-        world,
-        original.profile.into(),
-        qa_render::material::ShaderCompilePolicy::default(),
-    )
-    .map_err(|error| format!("cached presentation: {error:?}"))?;
+    let cached =
+        append_world_presentation(&vfs, &mut assets, world, original.profile.into(), false)
+            .map_err(|error| format!("cached presentation: {error:?}"))?;
     assert_eq!(cached.presentations[0], retry);
     assert_eq!(assets.counts(), retained);
     assert_eq!(assets.world(world).unwrap().mesh(), source_mesh);
     let rebuild = assets
         .rebuild_worlds(&[world], WorldRenderSettings::default())
         .unwrap();
-    let restored = append_world_presentation(
-        &vfs,
-        &mut assets,
-        world,
-        original.profile.into(),
-        qa_render::material::ShaderCompilePolicy::default(),
-    )
-    .map_err(|error| format!("restored presentation: {error:?}"))?;
+    let restored =
+        append_world_presentation(&vfs, &mut assets, world, original.profile.into(), false)
+            .map_err(|error| format!("restored presentation: {error:?}"))?;
     assert_eq!(restored.presentations[0], original);
     assert_eq!(assets.counts(), retained);
     assert_eq!(
@@ -1505,14 +1484,9 @@ fn unreferenced_native_page_zero_is_real_converted_resource_and_late_metadata_ro
     let old_mesh = assets.world(loaded.world).unwrap().mesh();
     let mut profile = loaded.presentations[0].profile;
     profile.image_settings.picmip = 0;
-    let candidate = append_world_presentation(
-        &vfs,
-        &mut assets,
-        loaded.world,
-        profile.into(),
-        qa_render::material::ShaderCompilePolicy::default(),
-    )
-    .map_err(|error| format!("{error:?}"))?;
+    let candidate =
+        append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), false)
+            .map_err(|error| format!("{error:?}"))?;
     let candidate_id = candidate.presentations[0].id;
     assert_eq!(assets.world(loaded.world).unwrap().mesh(), old_mesh);
     assert_eq!(
@@ -1542,14 +1516,8 @@ fn unreferenced_native_page_zero_is_real_converted_resource_and_late_metadata_ro
         &assets.image(page_zero).unwrap().rgba[..4],
         &[4, 8, 12, 255]
     );
-    let retry = append_world_presentation(
-        &vfs,
-        &mut assets,
-        loaded.world,
-        profile.into(),
-        qa_render::material::ShaderCompilePolicy::default(),
-    )
-    .map_err(|error| format!("{error:?}"))?;
+    let retry = append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), false)
+        .map_err(|error| format!("{error:?}"))?;
     assert_eq!(retry.presentations[0].id, candidate_id);
     let admitted = assets.world_presentation(candidate_id).unwrap();
     assert!(
@@ -1893,7 +1861,7 @@ fn q3_default_world_uses_independent_indexed_presentation_without_dropping_nativ
         None,
         &[profile.into()],
         WorldLoadOptions::default(),
-        qa_render::material::ShaderCompilePolicy::default(),
+        false,
     )
     .map_err(|error| format!("{error:?}"))?;
     let presentation = assets
@@ -2196,4 +2164,161 @@ fn generated_same_texture_legacy_variants_keep_their_cold_body_and_history_ordin
             .any(|modifier| matches!(modifier, Some(TcMod::Flow(_))))
     );
     std::fs::remove_dir_all(root).map_err(|error| error.to_string())
+}
+
+#[test]
+fn world_profiles_normalize_lighting_before_the_fullscreen_finish_guard() -> Result<(), String> {
+    use qa_render::{
+        material::{
+            MaterialFinishPolicy,
+            world_load::{NamedShaderLighting, append_world_presentation, compile_named_shader},
+        },
+        shader::{ShaderSource, parse_sources},
+        world::geometry::LightSource,
+    };
+    let root = resources("world-finish-profiles")?;
+    let script = br#"textures/modern {
+        { map $lightmap tcGen lightmap }
+        { map textures/modern tcGen texture blendFunc filter }
+    }"#;
+    std::fs::write(root.join("scripts/finish.shader"), script)
+        .map_err(|error| error.to_string())?;
+    let vfs = mount(&root)?;
+    let bytes = map_bytes(3);
+    let map = modern_map(&bytes)?;
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let profiles = [(false, false), (true, false), (false, true), (true, true)].map(
+        |(vertex_light, fullbright)| {
+            let mut profile = WorldPresentationProfile::native(RuleSetId::Quake3, None);
+            profile.finish = MaterialFinishPolicy {
+                vertex_light,
+                fullbright,
+                ..Default::default()
+            };
+            profile
+        },
+    );
+    let loaded = load_world(
+        &vfs,
+        &map,
+        &mut assets,
+        None,
+        &profiles.map(Into::into),
+        Default::default(),
+        false,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let expected = [
+        LightSource::Page(0),
+        LightSource::Vertex,
+        LightSource::White,
+        LightSource::White,
+    ];
+    let mesh = assets.world(loaded.world).unwrap().mesh();
+    for (index, profile) in profiles.into_iter().enumerate() {
+        let original = loaded.presentations[index];
+        assert_eq!(original.profile, profile);
+        assert_eq!(original.compile_policy, profile.finish.compile(false));
+        let row = assets
+            .world_presentation(original.id)
+            .unwrap()
+            .shader_registrations()[0];
+        assert_eq!(row.requested, expected[index]);
+        let before_guard = assets.counts();
+        vfs.take_lookup_count();
+        let fullscreen =
+            append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), true)
+                .map_err(|error| format!("{error:?}"))?
+                .presentations[0];
+        if profile.finish.vertex_light {
+            assert_ne!(fullscreen.id, original.id);
+            assert_eq!(fullscreen.compile_policy, profile.finish.compile(true));
+        } else {
+            assert_eq!(
+                fullscreen, original,
+                "an irrelevant guard does not create a presentation"
+            );
+            assert_eq!(assets.counts(), before_guard);
+            assert_eq!(vfs.take_lookup_count(), 0);
+        }
+        let fullscreen_row = assets
+            .world_presentation(fullscreen.id)
+            .unwrap()
+            .shader_registrations()[0];
+        assert_eq!(
+            fullscreen_row.requested, expected[index],
+            "world request policy precedes the fullscreen guard"
+        );
+        if profile.finish.vertex_light {
+            assert_ne!(fullscreen_row.shader, row.shader);
+            let collapsed = assets
+                .material(assets.shader_binding(row.shader).unwrap().material)
+                .unwrap();
+            let retained = assets
+                .material(
+                    assets
+                        .shader_binding(fullscreen_row.shader)
+                        .unwrap()
+                        .material,
+                )
+                .unwrap();
+            assert_eq!(collapsed.stages.len(), 1);
+            assert_eq!(retained.stages.len(), 2);
+        }
+        assert_eq!(assets.world(loaded.world).unwrap().mesh(), mesh);
+        let counts = assets.counts();
+        vfs.take_lookup_count();
+        let cached =
+            append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), true)
+                .map_err(|error| format!("{error:?}"))?
+                .presentations[0];
+        assert_eq!(cached, fullscreen);
+        assert_eq!(assets.counts(), counts);
+        assert_eq!(vfs.take_lookup_count(), 0);
+        assert_eq!(
+            assets.world_presentation_registration(original.id),
+            Some(original)
+        );
+    }
+    let catalog = parse_sources(&[ShaderSource {
+        name: "generic.shader",
+        bytes: script,
+    }]);
+    let lightmap = assets
+        .world_presentation(loaded.presentations[0].id)
+        .unwrap()
+        .native_page0()
+        .unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake3,
+        RuleSetId::Quake3,
+        profiles[0].image_settings,
+        None,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    for profile in profiles {
+        let generic = compile_named_shader(
+            &catalog,
+            b"textures/modern",
+            true,
+            NamedShaderLighting {
+                source: LightSource::Page(0),
+                lightmap,
+            },
+            profile.finish.compile(true),
+            &mut images,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        assert_eq!(
+            generic.requested,
+            LightSource::Page(0),
+            "named/remap requests do not use world normalization"
+        );
+        assert_eq!(generic.finished, LightSource::Page(0));
+    }
+    drop(images);
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
 }

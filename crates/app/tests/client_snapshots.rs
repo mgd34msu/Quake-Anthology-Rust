@@ -2206,6 +2206,7 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
         source_palette: None,
         palette: None,
         image_settings: qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+        finish: Default::default(),
     };
     host.runtime.model_assets = Some(
         ModelAssets::new(

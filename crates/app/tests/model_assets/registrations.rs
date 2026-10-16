@@ -163,6 +163,7 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
                 &fixture.vfs,
                 &request,
                 profile,
+                qa_app::model_assets::RegistrationVariant::Guard(false),
                 |_| Ok(()),
                 |_, _| {
                     attempts.set(attempts.get() + 1);
@@ -192,6 +193,7 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
             &fixture.vfs,
             &request,
             profile,
+            qa_app::model_assets::RegistrationVariant::Guard(false),
             |_| Ok(()),
             |assets, _| {
                 attempts.set(attempts.get() + 1);
@@ -251,6 +253,7 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
                     &fixture.vfs,
                     &cached,
                     profile,
+                    qa_app::model_assets::RegistrationVariant::Guard(false),
                     |_| Ok(()),
                     |_, _| { panic!("published native default reached backend") }
                 )
@@ -414,6 +417,7 @@ fn admitted_positive_profile_survives_new_default_sibling_and_keeps_source_handl
             profile.source_rules,
             profile.rules,
             settings,
+            qa_render::material::MaterialFinishPolicy::default(),
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();

@@ -1,6 +1,6 @@
 use super::*;
 use crate::model_assets::ModelAssets;
-use qa_compat::services::{ModelLoader, ModelLookup, RendererRegistration, RendererRequest};
+use qa_compat::services::{ModelLookup, RendererRegistration, RendererRequest};
 use qa_core::names::compare_folded;
 use qa_gameplay::rules::appearance::PlayerModelRules;
 use std::fmt::Write;
@@ -251,6 +251,7 @@ pub(super) enum ClientAssets<'a> {
         loader: &'a mut ModelAssets,
         vfs: &'a qa_content::vfs::Vfs,
         source: RuleSetId,
+        ui_fullscreen: bool,
     },
     Frozen {
         catalog: &'a ModelCatalog,
@@ -261,6 +262,7 @@ pub(super) enum ClientAssets<'a> {
         vfs: &'a qa_content::vfs::Vfs,
         profile: ModelProfile,
         preparer: &'a mut dyn crate::renderer::AssetPreparer,
+        ui_fullscreen: bool,
         published: &'a mut bool,
     },
 }
@@ -279,6 +281,7 @@ impl ClientAssets<'_> {
             vfs,
             profile,
             preparer,
+            ui_fullscreen,
             published,
         } = self
         else {
@@ -295,6 +298,7 @@ impl ClientAssets<'_> {
                 vfs,
                 &request,
                 *profile,
+                crate::model_assets::RegistrationVariant::Guard(*ui_fullscreen),
                 |_| Ok(()),
                 |assets, _| preparer.prepare_assets(assets, None),
             )
@@ -312,9 +316,10 @@ impl ClientAssets<'_> {
                 loader,
                 vfs,
                 source,
+                ui_fullscreen,
             } => {
                 let handle = loader
-                    .register_model(vfs, path, *source)
+                    .preload_model(vfs, path, *source, *ui_fullscreen)
                     .ok()
                     .filter(|&handle| handle > 0)?;
                 ModelCapture::Registered {
@@ -347,8 +352,9 @@ impl ClientAssets<'_> {
                 loader,
                 vfs,
                 source,
+                ui_fullscreen,
             } => loader
-                .register_skin(vfs, path, *source)
+                .preload_skin(vfs, path, *source, *ui_fullscreen)
                 .ok()
                 .filter(|&handle| handle > 0),
             Self::Frozen { catalog, profile } => {
@@ -463,6 +469,7 @@ impl ClientModelBindings {
         loader: &mut ModelAssets,
         vfs: &qa_content::vfs::Vfs,
         source: RuleSetId,
+        ui_fullscreen: bool,
     ) -> u32 {
         let Some(players) = &mut self.players else {
             return 0;
@@ -477,6 +484,7 @@ impl ClientModelBindings {
                 loader,
                 vfs,
                 source,
+                ui_fullscreen,
             },
         )
     }

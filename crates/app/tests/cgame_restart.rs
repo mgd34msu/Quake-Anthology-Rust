@@ -1124,6 +1124,7 @@ fn setup_renderers_with_images(
             &mut owner,
             RuleSetId::Quake3,
             qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+            qa_render::material::ShaderCompilePolicy::default(),
             64,
             48,
         )
@@ -2579,9 +2580,11 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     };
     let (_fixture, mut host, mut source, ids, anchors) =
         setup_renderers_with_images(module, Some(ui), true, true);
+    assert!(host.renderer_fullscreen_ui());
     queue_gamestate(&mut host, ids[0], "a", 11, false);
     queue_gamestate(&mut host, ids[1], "a", 22, false);
     until_running(&mut host, &mut source);
+    assert!(!host.renderer_fullscreen_ui());
     queue_snapshot(&mut host, ids[0], 11, 1000);
     queue_snapshot(&mut host, ids[1], 22, 1000);
     source.step(&mut host);
@@ -2687,6 +2690,21 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "4");
     assert!(host.console.cvars.latched(subdivisions).unwrap().is_none());
     let subdivision_generation = host.console.cvars.view_generation(subdivisions);
+    let finishing = [
+        (
+            host.console
+                .cvars
+                .bind("r_detailtextures", context)
+                .unwrap(),
+            "1",
+            "0",
+        ),
+        (
+            host.console.cvars.bind("r_vertexLight", context).unwrap(),
+            "0",
+            "1",
+        ),
+    ];
     let lighting = [
         (
             host.console
@@ -2706,7 +2724,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
         ),
     ];
     let assert_pending_lighting = |host: &FrameHost| {
-        for (view, current, pending) in lighting {
+        for (view, current, pending) in lighting.into_iter().chain(finishing) {
             assert_eq!(host.console.cvars.read(view).unwrap().as_str(), current);
             assert_eq!(
                 host.console.cvars.latched(view).unwrap().unwrap().as_str(),
@@ -2731,7 +2749,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     source.video_reject = true;
     host.console
         .append(
-            &format!("r_customwidth 96\nr_customheight 80\nr_customaspect {explicit_aspect}\nr_picmip 2\nr_subdivisions 8\nr_mapOverBrightBits 0\nr_overBrightBits 2\nvid_restart cpu\n"),
+            &format!("r_customwidth 96\nr_customheight 80\nr_customaspect {explicit_aspect}\nr_picmip 2\nr_detailtextures 0\nr_vertexLight 1\nr_subdivisions 8\nr_mapOverBrightBits 0\nr_overBrightBits 2\nvid_restart cpu\n"),
             context,
         )
         .unwrap();
@@ -2980,7 +2998,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     until_running(&mut host, &mut source);
     assert_eq!((source.video_prepares, source.video_publishes), (3, 1));
     assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "8");
-    for (view, _, requested) in lighting {
+    for (view, _, requested) in lighting.into_iter().chain(finishing) {
         assert_eq!(host.console.cvars.read(view).unwrap().as_str(), requested);
         assert!(host.console.cvars.latched(view).unwrap().is_none());
     }
@@ -3047,6 +3065,12 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     let mut settings = old_profile.image_settings;
     settings.picmip = 2;
     assert_eq!(profile.image_settings, settings);
+    let finish = qa_render::material::MaterialFinishPolicy {
+        detail_textures: false,
+        vertex_light: true,
+        fullbright: false,
+    };
+    assert_eq!(profile.finish, finish);
     assert_eq!(
         (
             profile.source_rules,
@@ -3099,6 +3123,9 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
             .world_presentation_registration(world.1)
             .unwrap();
         assert_eq!(registered.profile.image_settings, settings);
+        assert_eq!(registered.profile.finish, finish);
+        assert_eq!(registered.compile_policy.finish, finish);
+        assert!(!registered.compile_policy.ui_fullscreen);
         assert_eq!(registered.lighting.map_overbright(), 0);
         assert_eq!(registered.lighting.renderer_overbright(), 0);
         assert_eq!(host.local_presentations[seat].identity_light, 1.0);

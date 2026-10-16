@@ -36,6 +36,7 @@ fn run() -> Result<(), String> {
         source_palette,
         &[WorldPresentationProfile::native(presentation, target_palette).into()],
         WorldLoadOptions::default(),
+        false,
     )?;
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     let world = assets
