@@ -436,9 +436,48 @@ struct AliasBlend {
     scale: [Vec3; 2],
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SpriteGeometry {
+pub struct SpriteFrame {
     /// Authored left, right, top and bottom offsets from the entity origin.
     pub extents: [f32; 4],
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpriteOrientation {
+    ViewParallelUpright,
+    FacingUpright,
+    #[default]
+    ViewParallel,
+    Oriented,
+    ViewParallelOriented,
+}
+impl TryFrom<u32> for SpriteOrientation {
+    type Error = &'static str;
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::ViewParallelUpright),
+            1 => Ok(Self::FacingUpright),
+            2 => Ok(Self::ViewParallel),
+            3 => Ok(Self::Oriented),
+            4 => Ok(Self::ViewParallelOriented),
+            _ => Err("invalid sprite orientation"),
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpriteGeometry {
+    pub frames: Box<[SpriteFrame]>,
+    pub orientation: SpriteOrientation,
+    pub beam_length: f32,
+    pub wrap_frames: bool,
+}
+impl SpriteGeometry {
+    pub fn single(extents: [f32; 4]) -> Self {
+        Self {
+            frames: Box::new([SpriteFrame { extents }]),
+            orientation: SpriteOrientation::ViewParallel,
+            beam_length: 0.0,
+            wrap_frames: false,
+        }
+    }
 }
 
 /// A resolved frame pair. Both backends validate the entity once, before
@@ -473,6 +512,10 @@ impl Model {
 
     pub fn animation(&self) -> Option<&ModelAnimation> {
         self.animation.as_deref()
+    }
+
+    pub fn sprite_frame(&self, physical: u32) -> Option<&SpriteFrame> {
+        self.sprite.as_ref()?.frames.get(physical as usize)
     }
 
     pub fn frames(&self, frame: u32, old_frame: u32, back_lerp: f32) -> Option<ModelFrames<'_>> {
@@ -1157,9 +1200,14 @@ impl Assets {
         geometry: SpriteGeometry,
         shader: ShaderBindingId,
     ) -> Result<ModelId, &'static str> {
-        if !geometry.extents.iter().all(|x| x.is_finite())
-            || geometry.extents[0] >= geometry.extents[1]
-            || geometry.extents[3] >= geometry.extents[2]
+        if geometry.frames.is_empty()
+            || geometry.frames.len() > u32::MAX as usize
+            || !geometry.beam_length.is_finite()
+            || geometry.frames.iter().any(|frame| {
+                !frame.extents.iter().all(|x| x.is_finite())
+                    || frame.extents[0] >= frame.extents[1]
+                    || frame.extents[3] >= frame.extents[2]
+            })
             || self.shader_binding(shader).is_none()
         {
             return Err("invalid sprite geometry");
@@ -1170,7 +1218,7 @@ impl Assets {
             indices: Box::new([]),
             shader,
             vertices_per_frame: 0,
-            frame_count: 1,
+            frame_count: geometry.frames.len() as u32,
             sprite: Some(geometry),
             alias: None,
             animation: None,
@@ -1188,7 +1236,7 @@ impl Assets {
             .models
             .get_mut(id.0 as usize)
             .ok_or("unknown animated model")?;
-        if model.sprite.is_some() || animation.physical_frames() != model.frame_count {
+        if animation.physical_frames() != model.frame_count {
             return Err("model animation frame count mismatch");
         }
         if let Some(existing) = &model.animation {
@@ -1242,13 +1290,25 @@ impl Assets {
     pub fn models(&self) -> &[Model] {
         &self.models
     }
-    /// Cold packet demand per entity: native LOD levels or authored skin members.
+    /// Cold packet demand per entity: LOD levels, skin members or sprite frames.
     pub fn max_model_choices(&self) -> usize {
         self.models
             .iter()
-            .filter_map(Model::animation)
-            .flat_map(|animation| animation.skin_groups())
-            .map(|group| group.members.count as usize)
+            .map(|model| {
+                model
+                    .animation()
+                    .into_iter()
+                    .flat_map(ModelAnimation::skin_groups)
+                    .map(|group| group.members.count as usize)
+                    .max()
+                    .unwrap_or(0)
+                    .max(
+                        model
+                            .sprite
+                            .as_ref()
+                            .map_or(0, |sprite| sprite.frames.len()),
+                    )
+            })
             .max()
             .unwrap_or(0)
             .max(3)

@@ -395,7 +395,7 @@ impl AppearancePolicy {
 }
 
 /// Alias basis and light conversion, selected once for model presentation.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AliasPose {
     pitch_reversed: bool,
     gl_roll_reversed: bool,

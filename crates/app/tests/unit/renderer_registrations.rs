@@ -1544,7 +1544,7 @@ fn embedded_mdl_skin_choices_preserve_distinct_images_in_a_native_view() {
             .choices()
             .next()
             .unwrap();
-        let ModelSkinChoice::Single(shader @ ShaderChoice::Direct(_)) = choice.shader else {
+        let ModelShaderChoice::Single(shader @ ShaderChoice::Direct(_)) = choice.shader else {
             panic!("single authored skin");
         };
         let selected = view
@@ -1755,14 +1755,14 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
             assert!(parts.next().is_none());
             assert_eq!(part.model, binding.model);
             if (1..=3).contains(&parent) {
-                let ModelSkinChoice::Timed { group, members } = part.shader else {
+                let ModelShaderChoice::SkinGroup { group, members } = part.shader else {
                     panic!("grouped native skin parent")
                 };
                 assert_eq!(group, parent);
                 assert_eq!(members.len(), [1, 2, 3, 6][parent as usize]);
                 assert!(part.physical_binding().is_none());
             } else {
-                assert!(matches!(part.shader, ModelSkinChoice::Single(_)));
+                assert!(matches!(part.shader, ModelShaderChoice::Single(_)));
                 assert!(part.physical_binding().is_some());
             }
             part.shaders()
@@ -2019,4 +2019,207 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
     );
     assert_eq!(cpu.admitted_assets(), Some(owner.assets().counts()));
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
+}
+
+#[test]
+fn grouped_spr_keeps_one_mesh_and_authored_frames_through_source_unlink_and_refresh_retry() {
+    let mut fixture = support::Fixture::new(&[("progs/mixed.spr", support::spr())]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = ModelRequest::native("", RuleSetId::Quake, Some(palette)).profile();
+    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    owner.set_image_search_order(ImageSearchOrder::parse(b"").unwrap());
+    owner
+        .adopt_palettes(
+            crate::render_settings::PaletteRegistrations::from_registered([
+                Some(palette),
+                Some(palette),
+                None,
+                None,
+                None,
+            ]),
+        )
+        .unwrap();
+    let models_before = owner.assets().counts().models;
+    let handle = owner
+        .register_model(&fixture.vfs, b"progs/mixed.spr", profile.source_rules)
+        .unwrap();
+    let registration = owner
+        .catalog()
+        .renderer_registration(handle, profile)
+        .unwrap();
+    let choice = owner
+        .catalog()
+        .bindings(registration, 0, Default::default())
+        .unwrap()
+        .choices()
+        .next()
+        .unwrap();
+    let ModelShaderChoice::Frames { members } = choice.shader else {
+        panic!("deferred SPR physical frames")
+    };
+    assert_eq!(members.len(), 4);
+    assert!(choice.physical_binding().is_none());
+    let model_id = choice.model;
+    let model = owner.assets().model(model_id).unwrap();
+    assert_eq!((model.frame_count(), model.native_frame_count()), (4, 3));
+    let geometry = model.sprite.as_ref().unwrap();
+    assert_eq!(
+        geometry.orientation,
+        qa_render::assets::SpriteOrientation::ViewParallel
+    );
+    assert_eq!(geometry.beam_length, 1.5);
+    let extents = [
+        [-2., 2., 2., -2.],
+        [-3., 1., 1., -1.],
+        [-1., 3., 3., -1.],
+        [-4., 1., 1., -2.],
+    ];
+    for (index, expected) in extents.into_iter().enumerate() {
+        assert_eq!(model.sprite_frame(index as u32).unwrap().extents, expected);
+    }
+    let animation = model.animation().unwrap();
+    assert_eq!(animation.sync(), 1);
+    assert_eq!(animation.endpoints(), [0.125, 0.5]);
+    assert_eq!(
+        animation
+            .frame_groups()
+            .iter()
+            .map(|group| group.members)
+            .collect::<Vec<_>>(),
+        [
+            IndexSpan { first: 0, count: 1 },
+            IndexSpan { first: 1, count: 2 },
+            IndexSpan { first: 3, count: 1 }
+        ]
+    );
+    let animation_address = animation as *const qa_render::assets::ModelAnimation;
+    let original_shaders = choice
+        .shaders()
+        .map(|shader| {
+            choice
+                .resolve_shader(
+                    shader,
+                    qa_render::shader::reference::ShaderView::direct(),
+                    None,
+                )
+                .unwrap()
+                .source(&())
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for (shader, index) in original_shaders.iter().zip([11, 22, 33, 44]) {
+        let material = owner
+            .assets()
+            .material(owner.assets().shader_binding(*shader).unwrap().material)
+            .unwrap();
+        let StageTexture::Image(image) = material.stages[0].texture else {
+            panic!("indexed sprite frame")
+        };
+        assert!(
+            owner
+                .assets()
+                .image(image)
+                .unwrap()
+                .indexed
+                .as_ref()
+                .unwrap()
+                .mip(0)
+                .unwrap()
+                .indices()
+                .iter()
+                .all(|value| *value == index)
+        );
+    }
+    let (mut owner, mut cpu) = publish(owner);
+    fixture.remove("progs/mixed.spr");
+    let (mount, path) = {
+        let mount = fixture.vfs.mounts().next().unwrap();
+        (mount.id, mount.path.clone())
+    };
+    assert!(fixture.vfs.unmount(mount));
+    fixture.vfs.mount_directory(&path, 0).unwrap();
+    assert!(fixture.vfs.open(b"progs/mixed.spr").is_none());
+    fixture.vfs.take_lookup_count();
+    let prefix = owner.assets().counts();
+    let finish = MaterialFinishPolicy {
+        vertex_light: true,
+        ..profile.finish
+    };
+    let mut changed = profile;
+    for reject in [true, false] {
+        let result = owner.image_transaction(
+            &fixture.vfs,
+            None,
+            ImageRefreshMode::Reconfigure,
+            |owner, _| {
+                let refresh = owner.refresh_images(
+                    &fixture.vfs,
+                    &[profile],
+                    &[],
+                    [None; 5],
+                    finish,
+                    false,
+                    |_| Ok(()),
+                )?;
+                let candidate =
+                    CpuBackend::load_with_assets(8, 8, owner.assets()).map_err(str::to_owned)?;
+                if reject {
+                    return Err("reject refreshed SPR backend".to_owned());
+                }
+                cpu = candidate;
+                changed = refresh.profile(profile);
+                Ok(())
+            },
+        );
+        if reject {
+            assert!(result.is_err());
+            assert_eq!(owner.assets().counts(), prefix);
+            assert_eq!(
+                owner.catalog().renderer_registration(handle, profile),
+                Some(registration)
+            );
+            assert_eq!(cpu.admitted_assets(), Some(prefix));
+        } else {
+            result.unwrap();
+        }
+    }
+    assert_ne!(changed, profile);
+    let current = owner
+        .catalog()
+        .renderer_registration(handle, changed)
+        .unwrap();
+    owner
+        .image_transaction(&fixture.vfs, None, ImageRefreshMode::Reload, |owner, _| {
+            let refresh = owner.refresh_images(
+                &fixture.vfs,
+                &[changed],
+                &[],
+                [None; 5],
+                finish,
+                false,
+                |_| Ok(()),
+            )?;
+            assert_eq!(refresh.registration(current, owner.catalog())?, current);
+            cpu = CpuBackend::load_with_assets(8, 8, owner.assets()).map_err(str::to_owned)?;
+            Ok(())
+        })
+        .unwrap();
+    let reloaded = owner
+        .catalog()
+        .bindings(current, 0, Default::default())
+        .unwrap()
+        .choices()
+        .next()
+        .unwrap();
+    assert_eq!(reloaded.model, model_id);
+    assert_eq!(reloaded.shaders().count(), 4);
+    assert_eq!(owner.assets().counts().models, models_before + 1);
+    let model = owner.assets().model(model_id).unwrap();
+    assert!(std::ptr::eq(model.animation().unwrap(), animation_address));
+    for (index, expected) in extents.into_iter().enumerate() {
+        assert_eq!(model.sprite_frame(index as u32).unwrap().extents, expected);
+    }
+    assert_eq!(fixture.vfs.take_lookup_count(), 0);
+    assert_eq!(cpu.admitted_assets(), Some(owner.assets().counts()));
 }

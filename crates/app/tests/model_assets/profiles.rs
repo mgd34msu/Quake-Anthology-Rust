@@ -524,25 +524,22 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
     let sprite = owner
         .register_model(&fixture.vfs, b"sprites/test.sp2", first.source_rules)
         .unwrap();
-    let sprite_models = [0, 1].map(|frame| {
-        owner
-            .catalog()
-            .bindings(
-                owner
-                    .catalog()
-                    .renderer_registration(sprite, first)
-                    .unwrap(),
-                0,
-                ModelMaterialPolicy {
-                    frame,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .model
-    });
+    let sprite_model = owner
+        .catalog()
+        .bindings(
+            owner
+                .catalog()
+                .renderer_registration(sprite, first)
+                .unwrap(),
+            0,
+            Default::default(),
+        )
+        .unwrap()
+        .choices()
+        .next()
+        .unwrap()
+        .model;
+    assert_eq!(owner.assets().model(sprite_model).unwrap().frame_count(), 2);
     let registrations = models.map(|id| owner.catalog().renderer_registration(id, first).unwrap());
     let original = binding(owner.catalog(), "models/a.md2", first, 0).unwrap();
     let colors = owner.catalog().color_binding(first);
@@ -642,26 +639,22 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
             .0,
         sprite
     );
-    assert_eq!(
-        [0, 1].map(|frame| owner
-            .catalog()
-            .bindings(
-                owner
-                    .catalog()
-                    .renderer_registration(sprite, second)
-                    .unwrap(),
-                0,
-                ModelMaterialPolicy {
-                    frame,
-                    ..Default::default()
-                }
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .model),
-        sprite_models
-    );
+    let sprite_choice = owner
+        .catalog()
+        .bindings(
+            owner
+                .catalog()
+                .renderer_registration(sprite, second)
+                .unwrap(),
+            0,
+            Default::default(),
+        )
+        .unwrap()
+        .choices()
+        .next()
+        .unwrap();
+    assert_eq!(sprite_choice.model, sprite_model);
+    assert_eq!(sprite_choice.shaders().count(), 2);
     for (index, path) in ["ui_a.part/unavailable.tga", "ui_b.part/unavailable.tga"]
         .into_iter()
         .enumerate()

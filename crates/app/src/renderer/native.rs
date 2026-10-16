@@ -346,6 +346,7 @@ impl SceneService for SceneBorrow<'_> {
             return frame.reject_submission();
         };
         let mut pose = submitted.pose;
+        pose.sprite_roll = submitted.rotation;
         if !pose.origin.is_finite() {
             return frame.reject_submission();
         }
@@ -394,7 +395,6 @@ impl SceneService for SceneBorrow<'_> {
                 u32::try_from(submitted.skin).unwrap_or(0),
                 crate::model_assets::ModelMaterialPolicy {
                     custom_skin: submitted.custom_skin,
-                    frame: u32::try_from(submitted.frame).unwrap_or(0),
                     ..Default::default()
                 },
             ) else {
@@ -435,30 +435,33 @@ impl SceneService for SceneBorrow<'_> {
             if count == 0 {
                 return frame.reject_submission();
             }
-            let current = if submitted.wrap_frames {
-                submitted.frame % count as i32
+            if first.sprite.is_some() {
+                pose.frame = u32::try_from(submitted.frame).unwrap_or(0);
+                pose.old_frame = u32::try_from(submitted.old_frame).unwrap_or(0);
             } else {
-                submitted.frame
-            };
-            let old = if submitted.wrap_frames {
-                submitted.old_frame % count as i32
-            } else {
-                submitted.old_frame
-            };
-            if current < 0 || old < 0 || current as u32 >= count || old as u32 >= count {
-                pose.frame = 0;
-                pose.old_frame = 0;
-            } else {
-                pose.frame = current as u32;
-                pose.old_frame = old as u32;
+                let current = if submitted.wrap_frames {
+                    submitted.frame % count as i32
+                } else {
+                    submitted.frame
+                };
+                let old = if submitted.wrap_frames {
+                    submitted.old_frame % count as i32
+                } else {
+                    submitted.old_frame
+                };
+                if current < 0 || old < 0 || current as u32 >= count || old as u32 >= count {
+                    pose.frame = 0;
+                    pose.old_frame = 0;
+                } else {
+                    pose.frame = current as u32;
+                    pose.old_frame = old as u32;
+                }
             }
-            if let crate::model_assets::ModelSkinChoice::Timed { group, members } =
-                first_choice.shader
-            {
-                return frame.add_timed_model(
+            if let Some((selector, members)) = first_choice.shader.deferred() {
+                return frame.add_model_choices(
                     pose,
                     first_choice.model,
-                    group,
+                    selector,
                     members.filter_map(|source| {
                         shader.or_else(|| first_choice.resolve_shader(source, shaders, nodes))
                     }),
@@ -470,7 +473,7 @@ impl SceneService for SceneBorrow<'_> {
                 choices.map(|row| {
                     row.into_iter().take(info.native_count()).map(|choice| {
                         let choice = choice?;
-                        let crate::model_assets::ModelSkinChoice::Single(source) = choice.shader
+                        let crate::model_assets::ModelShaderChoice::Single(source) = choice.shader
                         else {
                             return None;
                         };
@@ -603,8 +606,11 @@ impl SceneService for SceneBorrow<'_> {
         view.refdef.viewport.x += target.viewport.x;
         view.refdef.viewport.y += target.viewport.y;
         super::apply_presentation(&mut view.refdef, &target.presentation, composer.kind);
-        (view.refdef.frame_timing, view.refdef.skin_timing) =
-            super::model_timing(composer.kind, target.profile.rules);
+        (
+            view.refdef.frame_timing,
+            view.refdef.skin_timing,
+            view.refdef.sprite_placement,
+        ) = super::model_presentation(composer.kind, target.profile.rules);
         view.refdef.software_waterwarp &=
             cvars.numeric(target.software_waterwarp).unwrap_or(0.0) != 0.0;
         view.refdef.curve_error = crate::render_settings::curve_error(cvars, target.curve_error);

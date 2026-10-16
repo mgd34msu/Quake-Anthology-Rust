@@ -1509,11 +1509,25 @@ fn entity_host(
     ui: bool,
     fixture: &mut model_support::Fixture,
 ) -> (FrameHost, qa_app::model_assets::ModelProfile) {
-    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
-    let program = || named_scene_program(native, ui, b"textures/glow");
+    entity_host_program(
+        ui,
+        fixture,
+        named_scene_program(native, ui, b"textures/glow"),
+        qa_render::Assets::load().unwrap(),
+        ModelRequest::native("", RuleSetId::Quake3, None).profile(),
+    )
+}
+
+fn entity_host_program(
+    ui: bool,
+    fixture: &mut model_support::Fixture,
+    program: Program,
+    assets: qa_render::Assets,
+    profile: qa_app::model_assets::ModelProfile,
+) -> (FrameHost, qa_app::model_assets::ModelProfile) {
     let (mut runtime, ids) = runtime(1);
     runtime.vfs = std::mem::take(&mut fixture.vfs);
-    let mut request = request(&mut runtime, ModuleId(1), ids[0], program());
+    let mut request = request(&mut runtime, ModuleId(1), ids[0], program);
     request.entries = (0..20).collect();
     if ui {
         request.frame.client = None;
@@ -1533,15 +1547,8 @@ fn entity_host(
         200,
     )
     .unwrap();
-    host.runtime.model_assets = Some(
-        ModelAssets::new(
-            qa_render::Assets::load().unwrap(),
-            [profile],
-            [],
-            Default::default(),
-        )
-        .unwrap(),
-    );
+    host.runtime.model_assets =
+        Some(ModelAssets::new(assets, [profile], [], Default::default()).unwrap());
     (host, profile)
 }
 
@@ -1692,6 +1699,100 @@ pub(super) fn entities(native: bool, ui: bool) {
         assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
     }
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+}
+
+pub(super) fn sprite_entities(native: bool, ui: bool) {
+    let mut fixture = model_support::Fixture::new(&[("models/test.spr", model_support::spr())]);
+    let mut initial = data();
+    initial[880..896].copy_from_slice(b"models/test.spr\0");
+    initial[780..784].copy_from_slice(&99i32.to_le_bytes());
+    let program = if native {
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        {
+            native_scene_data(ui, &initial)
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
+        {
+            qvm_scene_data(ui, &initial)
+        }
+    } else {
+        qvm_scene_data(ui, &initial)
+    };
+    let mut assets = qa_render::Assets::load().unwrap();
+    let palette = model_support::palette(&mut assets);
+    let profile = ModelRequest::native("", RuleSetId::Quake3, Some(palette)).profile();
+    let models_before = assets.counts().models;
+    let (mut host, profile) = entity_host_program(ui, &mut fixture, program, assets, profile);
+    let handle = probe(&mut host, 0, 12, 0);
+    assert!(handle > 0);
+    assert_eq!(probe(&mut host, 0, 14, handle as u64), 0);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let registration = owner
+        .catalog()
+        .renderer_registration(handle as i32, profile)
+        .unwrap();
+    let choice = owner
+        .catalog()
+        .bindings(registration, 0, Default::default())
+        .unwrap()
+        .choices()
+        .next()
+        .unwrap();
+    let model = choice.model;
+    assert_eq!(
+        (
+            owner.assets().model(model).unwrap().frame_count(),
+            owner.assets().model(model).unwrap().native_frame_count()
+        ),
+        (4, 3)
+    );
+    let expected = choice
+        .resolve_shader(
+            choice.shaders().next().unwrap(),
+            qa_render::shader::reference::ShaderView::direct(),
+            None,
+        )
+        .unwrap()
+        .source(&())
+        .unwrap();
+    assert_eq!(owner.assets().counts().models, models_before + 1);
+    host.bind_client_model_assets([]);
+    host.runtime.scene = Some(
+        qa_app::renderer::SceneComposer::load(
+            qa_render::Limits::default(),
+            host.runtime.model_assets.as_mut().unwrap().assets_mut(),
+            vec![],
+        )
+        .unwrap()
+        .0,
+    );
+    let _backend = admit_assets(&mut host);
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(probe(&mut host, 0, 13, 0), 0);
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    let packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
+    let Command::View(view) = packet.commands()[1] else {
+        panic!("native SPR view")
+    };
+    assert_eq!((view.scene.entities.count, view.scene.polys.count), (1, 2));
+    assert!(matches!(
+        packet.entity(0).model,
+        qa_render::SceneModel::Timed {
+            selector: qa_render::scene::ModelChoiceSelector::Frame,
+            ..
+        }
+    ));
+    for draw in packet.draws(view.scene.draws) {
+        assert_eq!(draw.mesh, Some(model));
+        assert_eq!(draw.frames, Some([0, 0]));
+        assert_eq!(
+            draw.shader.unwrap().source(host.native_shaders()),
+            Some(expected)
+        );
+    }
+    assert_eq!(packet.rejected, 0);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
 }
 
 pub(super) fn lod_entities(native: bool, ui: bool) {

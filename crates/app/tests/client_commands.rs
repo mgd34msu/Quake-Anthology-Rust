@@ -1359,6 +1359,8 @@ fn main() {
     scene::entities(false, true);
     scene::lod_entities(false, false);
     scene::lod_entities(false, true);
+    scene::sprite_entities(false, false);
+    scene::sprite_entities(false, true);
     scene::live_formats(false, false);
     scene::live_formats(false, true);
     collision::selection(false);
@@ -1382,6 +1384,8 @@ fn main() {
         scene::entities(true, true);
         scene::lod_entities(true, false);
         scene::lod_entities(true, true);
+        scene::sprite_entities(true, false);
+        scene::sprite_entities(true, true);
         scene::live_formats(true, false);
         scene::live_formats(true, true);
         collision::selection(true);

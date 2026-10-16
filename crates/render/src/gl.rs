@@ -314,6 +314,7 @@ void main() {
     if (u_alpha_test == 1 && value.a <= 0.0) discard;
     if (u_alpha_test == 2 && value.a < 0.5) discard;
     if (u_alpha_test == 3 && value.a >= 0.5) discard;
+    if (u_alpha_test == 4 && value.a <= 0.666) discard;
     fragment = value;
 }
 "#;
@@ -2202,6 +2203,7 @@ impl GlBackend {
                 match stage.alpha_test {
                     AlphaTest::None => 0,
                     AlphaTest::GreaterZero => 1,
+                    AlphaTest::GreaterThan0666 => 4,
                     AlphaTest::AtLeastHalf => 2,
                     AlphaTest::LessThanHalf => 3,
                 },

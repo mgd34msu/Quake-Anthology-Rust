@@ -1,7 +1,7 @@
 //! CLIENT-owned snapshot values become copied entries in the shared scene list.
 use crate::model_assets::{
     InlineBinding, ModelBinding, ModelBindings, ModelCatalog, ModelLodBindings, ModelLodInfo,
-    ModelMaterialPolicy, ModelProfile, ModelRegistrationId, ModelSkinChoice, SelectedModelChoice,
+    ModelMaterialPolicy, ModelProfile, ModelRegistrationId, SelectedModelChoice,
 };
 use crate::snapshots::{GunAnimation, Interpolation};
 use qa_core::{
@@ -1650,7 +1650,6 @@ impl ClientSceneInput<'_> {
                 translucent: capabilities.alpha != 1.0,
                 fullbright: capabilities.fullbright,
                 custom_skin: 0,
-                frame: u32::try_from(record.appearance.frame).unwrap_or(0),
             };
             let resolved = if let Some(captured) = captured {
                 captured[slot].as_ref().and_then(|binding| match binding {
@@ -1681,6 +1680,7 @@ impl ClientSceneInput<'_> {
             };
             for binding in bindings {
                 let mut entity = SceneEntity {
+                    sprite_roll: pose.angles.0[2],
                     sync_base: self.synchronization.map_or(0.0, |sync| {
                         number.map_or(0.0, |number| sync.base(number, slot))
                     }),
@@ -1728,14 +1728,14 @@ impl ClientSceneInput<'_> {
                             counts.missing_models += 1;
                             continue;
                         }
-                        let current_frame = native_frame(record.appearance.frame, frames);
+                        let current_frame = native_frame(record.appearance.frame, frames, model);
                         let old_frame = if capabilities.state_old_frame {
-                            native_frame(record.appearance.native.old_frame, frames)
+                            native_frame(record.appearance.native.old_frame, frames, model)
                         } else {
                             previous
                                 .filter(|old| old.appearance.models[slot] == Some(reference))
                                 .map_or(current_frame, |old| {
-                                    native_frame(old.appearance.frame, frames)
+                                    native_frame(old.appearance.frame, frames, model)
                                 })
                         };
                         let angles = binding.pose.angles(pose.angles, software);
@@ -1852,10 +1852,10 @@ impl ClientSceneInput<'_> {
                 counts.missing_models += 1;
                 continue;
             }
-            let angles = binding
-                .pose
-                .angles(self.weapon_view_angles + angles, software);
-            let current_frame = native_frame(weapon.frame, frames);
+            let angles = self.weapon_view_angles + angles;
+            let sprite_roll = angles.0[2];
+            let angles = binding.pose.angles(angles, software);
+            let current_frame = native_frame(weapon.frame, frames, model);
             let (old_frame, back_lerp) =
                 if animation_policy == WeaponInterpolation::Rate && previous.is_some() {
                     let back = self.gun_animation.map_or(0.0, |animation| {
@@ -1875,7 +1875,7 @@ impl ClientSceneInput<'_> {
                         counts.unsupported += 1;
                     }
                     (
-                        old.map_or(current_frame, |old| native_frame(old.frame, frames)),
+                        old.map_or(current_frame, |old| native_frame(old.frame, frames, model)),
                         back,
                     )
                 } else if animation_policy == WeaponInterpolation::Snapshot {
@@ -1883,7 +1883,7 @@ impl ClientSceneInput<'_> {
                         previous
                             .filter(|_| weapon.frame != 0)
                             .filter(|old| old.model == weapon.model)
-                            .map_or(current_frame, |old| native_frame(old.frame, frames)),
+                            .map_or(current_frame, |old| native_frame(old.frame, frames, model)),
                         1.0 - fraction,
                     )
                 } else {
@@ -1892,6 +1892,7 @@ impl ClientSceneInput<'_> {
             let entity = SceneEntity {
                 model: binding.model.into(),
                 shader: None,
+                sprite_roll,
                 origin: refdef.origin + offset + (weapon.offset - offset) * fraction,
                 axes: angle_vectors(angles).axes(),
                 frame: current_frame,
@@ -1929,7 +1930,7 @@ fn append_model_choices(
     count: usize,
 ) -> bool {
     if let Some(choice) = choices.iter().flatten().next().copied()
-        && let ModelSkinChoice::Timed { group, members } = choice.shader
+        && let Some((selector, members)) = choice.shader.deferred()
     {
         let view = qa_render::shader::reference::ShaderView::direct();
         if !members
@@ -1938,10 +1939,10 @@ fn append_model_choices(
         {
             return frame.reject_submission();
         }
-        return frame.add_timed_model(
+        return frame.add_model_choices(
             entity,
             choice.model,
-            group,
+            selector,
             members.filter_map(|shader| choice.resolve_shader(shader, view, None)),
         );
     }
@@ -1979,11 +1980,11 @@ pub(crate) fn player_event_interpolation(
         && !appearance.is_interpolation_event(&entity.appearance)
 }
 
-/// Native alias renderers fall back to frame zero for invalid frame numbers.
-fn native_frame(frame: i32, count: u32) -> u32 {
+/// Sprite frame wrapping and group selection happen at the shared view seal.
+fn native_frame(frame: i32, count: u32, model: &qa_render::assets::Model) -> u32 {
     u32::try_from(frame)
         .ok()
-        .filter(|frame| *frame < count)
+        .filter(|frame| model.sprite.is_some() || *frame < count)
         .unwrap_or(0)
 }
 

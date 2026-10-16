@@ -1,7 +1,8 @@
 //! View-dependent entity geometry shared by both scene consumers.
 use crate::{
     Vertex,
-    scene::{Refdef, SceneEntity, SceneModel},
+    assets::SpriteOrientation,
+    scene::{Refdef, SceneEntity, SceneModel, SpritePlacement},
 };
 use qa_core::{math, primitives::Vec3};
 
@@ -172,22 +173,31 @@ fn vertex(position: Vec3, uv: [f32; 2], color: [u8; 4]) -> Vertex {
     }
 }
 
-fn sprite_quad(
+fn sprite_quad<const UP_FIRST: bool>(
     entity: &SceneEntity,
     view: Refdef,
-    mut left: Vec3,
+    origin: Vec3,
+    normal: Vec3,
+    mut right: Vec3,
     up: Vec3,
     extents: [f32; 4],
 ) -> Prepared {
     if view.reflected_view {
-        left = -left;
+        right = -right;
     }
-    let corner = |l: f32, u: f32, uv| Vertex {
-        position: (entity.origin + left * l) + up * u,
-        normal: -view.axes[0],
-        texcoord: uv,
-        lightmap_coord: uv,
-        color: entity.color,
+    let corner = |l: f32, u: f32, uv| {
+        let offsets = if UP_FIRST {
+            [up * u, right * l]
+        } else {
+            [right * l, up * u]
+        };
+        Vertex {
+            position: (origin + offsets[0]) + offsets[1],
+            normal,
+            texcoord: uv,
+            lightmap_coord: uv,
+            color: entity.color,
+        }
     };
     Prepared::Quad([
         corner(extents[0], extents[2], [0., 0.]),
@@ -199,21 +209,72 @@ fn sprite_quad(
 pub fn prepare(entity: &SceneEntity, view: Refdef, assets: &crate::Assets) -> Option<Prepared> {
     Some(match entity.model {
         SceneModel::Mesh(model) => {
-            let sprite = assets.model(model)?.sprite?;
-            let scale_x = qa_core::math::length(entity.axes[0]);
-            let scale_z = qa_core::math::length(entity.axes[2]);
-            sprite_quad(
-                entity,
-                view,
-                -view.axes[1],
-                view.axes[2],
+            let model = assets.model(model)?;
+            let sprite = model.sprite.as_ref()?;
+            let frame = model.sprite_frame(entity.frame)?;
+            let mut orientation = sprite.orientation;
+            if view.sprite_placement == SpritePlacement::OrientedOnly
+                && orientation != SpriteOrientation::Oriented
+            {
+                orientation = SpriteOrientation::ViewParallel;
+            }
+            let [forward, right, up] = match orientation {
+                SpriteOrientation::ViewParallelUpright | SpriteOrientation::FacingUpright => {
+                    let direction = if orientation == SpriteOrientation::FacingUpright {
+                        math::normalized(-(view.origin - entity.origin))
+                    } else {
+                        view.axes[0]
+                    };
+                    if f64::from(direction.0[2]).abs() > 0.999848 {
+                        return Some(Prepared::Empty);
+                    }
+                    let up = Vec3([0.0, 0.0, 1.0]);
+                    let mut right = math::cross(direction, up);
+                    right.0[2] = 0.0;
+                    math::normalize(&mut right);
+                    let mut forward = math::cross(up, right);
+                    forward.0[2] = 0.0;
+                    [forward, right, up]
+                }
+                SpriteOrientation::ViewParallel => [view.axes[0], -view.axes[1], view.axes[2]],
+                SpriteOrientation::Oriented => [entity.axes[0], -entity.axes[1], entity.axes[2]],
+                SpriteOrientation::ViewParallelOriented => {
+                    let roll = math::angle_vectors(Vec3([0.0, 0.0, entity.sprite_roll]));
+                    let sine = -roll.right.0[2];
+                    let cosine = roll.up.0[2];
+                    let right = -view.axes[1];
+                    [
+                        view.axes[0],
+                        right * cosine + view.axes[2] * sine,
+                        right * -sine + view.axes[2] * cosine,
+                    ]
+                }
+            };
+            let mut origin = entity.origin;
+            if view.sprite_placement == SpritePlacement::Full {
+                let mut relative = view.origin - origin;
+                if sprite.beam_length != 0.0 {
+                    let offset = forward * -sprite.beam_length;
+                    origin = origin + offset;
+                    relative = relative - offset;
+                }
+                if forward.dot(relative) >= 0.0 {
+                    return Some(Prepared::Empty);
+                }
+            }
+            let extents = if orientation == SpriteOrientation::Oriented {
+                frame.extents
+            } else {
+                let scale_x = math::length(entity.axes[0]);
+                let scale_z = math::length(entity.axes[2]);
                 [
-                    sprite.extents[0] * scale_x,
-                    sprite.extents[1] * scale_x,
-                    sprite.extents[2] * scale_z,
-                    sprite.extents[3] * scale_z,
-                ],
-            )
+                    frame.extents[0] * scale_x,
+                    frame.extents[1] * scale_x,
+                    frame.extents[2] * scale_z,
+                    frame.extents[3] * scale_z,
+                ]
+            };
+            sprite_quad::<true>(entity, view, origin, -forward, right, up, extents)
         }
         SceneModel::Sprite { radius, rotation } => {
             let (left, up) = if rotation == 0. {
@@ -227,7 +288,15 @@ pub fn prepare(entity: &SceneEntity, view: Refdef, assets: &crate::Assets) -> Op
                     view.axes[2] * (cosine * radius) + view.axes[1] * (sine * radius),
                 )
             };
-            sprite_quad(entity, view, left, up, [1., -1., 1., -1.])
+            sprite_quad::<false>(
+                entity,
+                view,
+                entity.origin,
+                -view.axes[0],
+                left,
+                up,
+                [1., -1., 1., -1.],
+            )
         }
         SceneModel::Beam {
             end,

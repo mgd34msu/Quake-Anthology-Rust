@@ -11,6 +11,8 @@ use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
 #[path = "scene/mdl_groups.rs"]
 mod mdl_groups;
+#[path = "scene/sprites.rs"]
+mod sprites;
 #[path = "scene/view_policy.rs"]
 mod view_policy;
 
@@ -924,10 +926,10 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
     let mut front = FrontEnd::load(limits).unwrap();
     let mut frame = front.begin_frame([1, 2, 3, 255]).unwrap();
     frame.for_client(Some(client), |frame| {
-        assert!(frame.add_timed_model(
+        assert!(frame.add_model_choices(
             SceneEntity::default(),
             model,
-            1,
+            qa_render::scene::ModelChoiceSelector::SkinGroup(1),
             shaders[1..3].iter().copied().map(Into::into)
         ));
         assert!(frame.add_world(
@@ -979,10 +981,10 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
         }));
         drop(front.stage_capacity_with_frame(required, frame).unwrap());
         assert_eq!(front.limits().model_choices, 2);
-        assert!(!frame.add_timed_model(
+        assert!(!frame.add_model_choices(
             SceneEntity::default(),
             model,
-            3,
+            qa_render::scene::ModelChoiceSelector::SkinGroup(3),
             shaders[6..12].iter().copied().map(Into::into)
         ));
         front
@@ -990,10 +992,10 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
             .unwrap()
             .commit();
         assert_eq!(front.limits().model_choices, 8);
-        assert!(frame.add_timed_model(
+        assert!(frame.add_model_choices(
             SceneEntity::default(),
             model,
-            3,
+            qa_render::scene::ModelChoiceSelector::SkinGroup(3),
             shaders[6..12].iter().copied().map(Into::into)
         ));
         assert!(frame.render_scene(view, &[0xaa], &assets, ShaderView::direct()));

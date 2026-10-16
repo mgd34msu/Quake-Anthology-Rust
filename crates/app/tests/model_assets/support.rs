@@ -341,6 +341,36 @@ pub fn pcx(index: u8) -> Vec<u8> {
     pcx_dimensions(8, 4, index)
 }
 
+pub fn spr() -> Vec<u8> {
+    let mut bytes =
+        include_bytes!("../../../formats/tests/fixtures/models/group.spr")[..36].to_vec();
+    bytes[8..12].copy_from_slice(&2i32.to_le_bytes());
+    bytes[12..16].copy_from_slice(&8f32.to_le_bytes());
+    bytes[16..20].copy_from_slice(&8i32.to_le_bytes());
+    bytes[20..24].copy_from_slice(&8i32.to_le_bytes());
+    bytes[24..28].copy_from_slice(&3i32.to_le_bytes());
+    bytes[28..32].copy_from_slice(&1.5f32.to_le_bytes());
+    bytes[32..36].copy_from_slice(&1i32.to_le_bytes());
+    for (group, frames) in [
+        (false, &[(-2, 2, 4, 4, 11u8)][..]),
+        (true, &[(-3, 1, 4, 2, 22), (-1, 3, 4, 4, 33)][..]),
+        (false, &[(-4, 1, 5, 3, 44)][..]),
+    ] {
+        integer(&mut bytes, i32::from(group));
+        if group {
+            integer(&mut bytes, frames.len() as i32);
+            bytes.extend([0.125f32, 0.5].into_iter().flat_map(f32::to_le_bytes));
+        }
+        for &(x, y, width, height, index) in frames {
+            for value in [x, y, width, height] {
+                integer(&mut bytes, value);
+            }
+            bytes.extend(std::iter::repeat_n(index, (width * height) as usize));
+        }
+    }
+    bytes
+}
+
 pub fn sp2() -> Vec<u8> {
     let mut bytes = b"IDS2".to_vec();
     integer(&mut bytes, 2);

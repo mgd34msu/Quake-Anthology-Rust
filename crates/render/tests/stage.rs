@@ -490,6 +490,12 @@ fn native_general_blend_factors_and_alpha_thresholds() {
     assert!(alpha_pass(AlphaFunc::LessThanHalf, 127.0 / 255.0));
     assert!(!alpha_pass(AlphaFunc::LessThanHalf, 128.0 / 255.0));
     assert!(alpha_pass(AlphaFunc::AtLeastHalf, 128.0 / 255.0));
+    assert!(!alpha_pass(AlphaFunc::GreaterThan0666, 0.6));
+    assert!(!alpha_pass(AlphaFunc::GreaterThan0666, 0.666));
+    assert!(alpha_pass(
+        AlphaFunc::GreaterThan0666,
+        f32::from_bits(0.666f32.to_bits() + 1)
+    ));
     assert_eq!(
         blend_pixel(None, [0.1, 0.2, 0.3, 0.4], [0.5; 4]),
         [0.1, 0.2, 0.3, 0.4]

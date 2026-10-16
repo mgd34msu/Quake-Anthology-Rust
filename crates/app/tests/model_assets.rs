@@ -4,6 +4,8 @@ mod lods;
 mod profiles;
 #[path = "model_assets/registrations.rs"]
 mod registrations;
+#[path = "model_assets/sprite_palettes.rs"]
+mod sprite_palettes;
 #[path = "model_assets/support.rs"]
 mod support;
 
@@ -1564,6 +1566,7 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let request = ModelRequest::native("sprites/test.sp2", RuleSetId::Quake2, Some(palette));
+    let models_before = assets.models().len();
     let owner = load(&fixture, assets, &[request], ModelLimits::default()).unwrap();
     let ModelView { assets, catalog } = owner.view();
     assert!(catalog.diagnostics.is_empty());
@@ -1579,18 +1582,15 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
     let mut cpu = qa_render::cpu::CpuBackend::load(32, 32).unwrap();
     for frame_number in [0, 1, 2] {
         let binding = catalog
-            .bindings(
-                registration,
-                99,
-                ModelMaterialPolicy {
-                    frame: frame_number,
-                    ..Default::default()
-                },
-            )
+            .bindings(registration, 99, Default::default())
             .unwrap()
+            .choices()
             .next()
             .unwrap();
-        let geometry = assets.model(binding.model).unwrap().sprite.unwrap();
+        let model = assets.model(binding.model).unwrap();
+        assert_eq!(model.frame_count(), 2);
+        assert_eq!(assets.models().len(), models_before + 1);
+        let geometry = model.sprite_frame(frame_number % 2).unwrap();
         let expected = if frame_number % 2 == 0 {
             [-2., 6., 3., -1.]
         } else {
@@ -1598,12 +1598,24 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
         };
         assert_eq!(geometry.extents, expected);
         let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
-        assert!(frame.add_entity(SceneEntity {
-            model: binding.model.into(),
-            shader: Some(binding.shader.into()),
-            origin: Vec3([16., 0., 0.]),
-            ..Default::default()
-        }));
+        assert!(frame.add_model_choices(
+            SceneEntity {
+                frame: frame_number,
+                origin: Vec3([16., 0., 0.]),
+                ..Default::default()
+            },
+            binding.model,
+            qa_render::scene::ModelChoiceSelector::Frame,
+            binding.shaders().map(|shader| {
+                binding
+                    .resolve_shader(
+                        shader,
+                        qa_render::shader::reference::ShaderView::direct(),
+                        None,
+                    )
+                    .unwrap()
+            })
+        ));
         let refdef = Refdef {
             clip_plane: Some(qa_core::primitives::Plane::oriented(Vec3([1., 0., 0.]), 4.)),
             viewport: Viewport {
@@ -1676,24 +1688,30 @@ fn retail_rerelease_sp2_uses_the_existing_archive_image_and_model_paths() {
         let registration = catalog
             .registration(request.path, request.profile())
             .unwrap();
+        let binding = catalog
+            .bindings(registration, 0, Default::default())
+            .unwrap()
+            .choices()
+            .next()
+            .unwrap();
+        let model = assets.model(binding.model).unwrap();
+        assert!(model.sprite.is_some());
         let mut frame_materials = vec![];
-        for frame in [0, 1, 2] {
-            let binding = catalog
-                .bindings(
-                    registration,
-                    0,
-                    ModelMaterialPolicy {
-                        frame,
-                        ..Default::default()
-                    },
+        for frame in [0, 1, model.frame_count()] {
+            let shader = binding
+                .resolve_shader(
+                    binding
+                        .shaders()
+                        .nth((frame % model.frame_count()) as usize)
+                        .unwrap(),
+                    qa_render::shader::reference::ShaderView::direct(),
+                    None,
                 )
                 .unwrap()
-                .next()
+                .source(&())
                 .unwrap();
-            let model = assets.model(binding.model).unwrap();
-            assert!(model.sprite.is_some());
             let material = assets
-                .material(assets.shader_binding(binding.shader).unwrap().material)
+                .material(assets.shader_binding(shader).unwrap().material)
                 .unwrap();
             assert_eq!(
                 material.stages[0].alpha_test,
@@ -1703,7 +1721,7 @@ fn retail_rerelease_sp2_uses_the_existing_archive_image_and_model_paths() {
                 panic!("sprite image")
             };
             assert!(assets.image(image).unwrap().width > 0);
-            frame_materials.push(binding.shader);
+            frame_materials.push(shader);
         }
         assert_ne!(frame_materials[0], frame_materials[1]);
         assert_eq!(frame_materials[0], frame_materials[2]);
@@ -4636,7 +4654,6 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
                     translucent,
                     fullbright,
                     custom_skin: 0,
-                    frame: 0,
                 };
                 let binding = catalog
                     .bindings(registration, 0, policy)
@@ -4675,7 +4692,7 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
 }
 
 #[test]
-fn optional_unsupported_assets_report_diagnostics_without_mesh_placeholders() {
+fn optional_missing_assets_report_diagnostics_without_mesh_placeholders() {
     let fixture = support::Fixture::new(&[
         (
             "progs/group.mdl",
@@ -4696,8 +4713,8 @@ fn optional_unsupported_assets_report_diagnostics_without_mesh_placeholders() {
         });
     let owner = load(&fixture, assets, &requests, ModelLimits::default()).unwrap();
     let ModelView { assets, catalog } = owner.view();
-    assert_eq!(catalog.diagnostics.len(), 2);
-    assert_eq!(assets.models().len(), count + 1);
+    assert_eq!(catalog.diagnostics.len(), 1);
+    assert_eq!(assets.models().len(), count + 2);
     assert!(
         catalog
             .registration("progs/group.mdl", requests[0].profile())
@@ -4712,9 +4729,12 @@ fn optional_unsupported_assets_report_diagnostics_without_mesh_placeholders() {
     }
     assert!(
         catalog
-            .diagnostics
-            .iter()
-            .any(|d| catalog.name(d.name) == Some("progs/group.spr"))
+            .registration("progs/group.spr", requests[1].profile())
+            .is_some()
+    );
+    assert_eq!(
+        catalog.name(catalog.diagnostics[0].name),
+        Some("progs/missing.mdl")
     );
     let mut required_assets = Assets::load().unwrap();
     let required_palette = support::palette(&mut required_assets);
@@ -4962,7 +4982,7 @@ fn synchronous_precaches_share_one_file_mesh_and_profile_image_cache_across_call
 }
 
 #[test]
-fn native_metadata_survives_unsupported_render_formats_and_initial_registration_end() {
+fn native_metadata_survives_sprite_registration_and_initial_registration_end() {
     let mut sprite = include_bytes!("../../formats/tests/fixtures/models/group.spr").to_vec();
     sprite[16..20].copy_from_slice(&5i32.to_le_bytes());
     sprite[20..24].copy_from_slice(&3i32.to_le_bytes());
@@ -4993,8 +5013,8 @@ fn native_metadata_survives_unsupported_render_formats_and_initial_registration_
     owner.end_initial_registration();
     assert!(!owner.initial_registration());
     let ModelView { assets, catalog } = owner.view();
-    assert_eq!(assets.models().len(), initial_meshes + 1);
-    assert_eq!(catalog.diagnostics.len(), 1);
+    assert_eq!(assets.models().len(), initial_meshes + 2);
+    assert!(catalog.diagnostics.is_empty());
     for (path, bounds, format) in [
         (
             "progs/group.mdl",
@@ -5014,10 +5034,7 @@ fn native_metadata_survives_unsupported_render_formats_and_initial_registration_
         let metadata = catalog.metadata(path.as_bytes()).unwrap();
         assert_eq!(metadata.bounds, bounds);
         assert_eq!(metadata.format, format);
-        assert_eq!(
-            catalog.registration(path, profile).is_some(),
-            format == qa_formats::model::ModelFormat::Mdl
-        );
+        assert!(catalog.registration(path, profile).is_some());
     }
     assert_eq!(catalog.bounds(b"progs/absent.mdl", RuleSetId::Quake), None);
 }

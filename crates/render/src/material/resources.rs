@@ -224,12 +224,6 @@ struct ImageKey {
     recipe: ImageRecipe,
 }
 
-struct IndexedRemap {
-    source: PaletteId,
-    target: PaletteId,
-    maps: Vec<(Option<u8>, [u8; 256])>,
-}
-
 fn palette_index(colors: &PaletteLighting, rgba: [u8; 4], transparent: Option<u8>) -> u8 {
     if rgba[3] == 0
         && let Some(index) = transparent
@@ -534,7 +528,8 @@ pub struct ImagesState {
     reader: ArchiveReader,
     recipes: ImageRecipes,
     source_rules: RuleSetId,
-    indexed_remap: Option<IndexedRemap>,
+    indexed_remap: Option<(PaletteId, PaletteId)>,
+    indexed_maps: Vec<((PaletteId, PaletteId, Option<u8>), [u8; 256])>,
     raster_target: Option<IndexedTarget>,
     resolved: Vec<ImageRecord>,
     conflicts: Vec<ImageConflict>,
@@ -578,6 +573,7 @@ impl ImagesState {
         self.resolved
             .retain(|entry| (entry.image.id.0 as usize) < images);
         self.conflicts.truncate(mark.conflicts);
+        self.indexed_maps.clear();
     }
 
     pub(crate) fn clear_conflicts(&mut self) {
@@ -594,13 +590,8 @@ impl ImagesState {
             reader: ArchiveReader::default(),
             recipes: ImageRecipes::new(presentation_rules, settings)?,
             source_rules,
-            indexed_remap: indexed_palettes
-                .filter(|(source, target)| source != target)
-                .map(|(source, target)| IndexedRemap {
-                    source,
-                    target,
-                    maps: Vec::new(),
-                }),
+            indexed_remap: indexed_palettes.filter(|(source, target)| source != target),
+            indexed_maps: Vec::new(),
             raster_target: None,
             resolved: Vec::new(),
             conflicts: Vec::new(),
@@ -746,8 +737,8 @@ impl ImagesState {
             let target = self
                 .indexed_remap
                 .as_ref()
-                .filter(|remap| remap.source == palette)
-                .map_or(palette, |remap| remap.target);
+                .filter(|(source, _)| *source == palette)
+                .map_or(palette, |(_, target)| *target);
             (
                 Some(palette),
                 Some(IndexedTarget {
@@ -790,8 +781,8 @@ impl ImagesState {
     fn source_palette(&self, target: PaletteId) -> PaletteId {
         self.indexed_remap
             .as_ref()
-            .filter(|remap| remap.target == target)
-            .map_or(target, |remap| remap.source)
+            .filter(|(_, destination)| *destination == target)
+            .map_or(target, |(source, _)| *source)
     }
     fn remember(
         &mut self,
@@ -1116,7 +1107,7 @@ impl<'a> Images<'a> {
             self.state
                 .indexed_remap
                 .as_ref()
-                .map_or(palette, |remap| remap.target)
+                .map_or(palette, |(_, target)| *target)
         };
         let id = if let Some(rgba) = rgba {
             let texture = if let Some(texture) = texture {
@@ -1144,7 +1135,8 @@ impl<'a> Images<'a> {
             } else {
                 None
             };
-            let id = self.register_indexed(texture, palette)?;
+            let target = self.indexed_target(palette);
+            let id = self.register_indexed(texture, palette, target)?;
             self.prepare(
                 id,
                 usage,
@@ -1258,35 +1250,45 @@ impl<'a> Images<'a> {
         self.remember(key, key.name, id, usage);
         Ok(id)
     }
+    fn indexed_target(&self, palette: PaletteId) -> Option<PaletteId> {
+        self.state
+            .indexed_remap
+            .filter(|(source, _)| *source == palette)
+            .map(|(_, target)| target)
+    }
     fn remap_texture(
         &mut self,
         texture: IndexedTexture,
-        palette: PaletteId,
+        source: PaletteId,
+        target: Option<PaletteId>,
     ) -> Result<IndexedTexture, ResourceError> {
-        let Some(remap) = &mut self.state.indexed_remap else {
+        let Some(target) = target.filter(|&target| target != source) else {
             return Ok(texture);
         };
-        if palette != remap.source {
-            return Ok(texture);
-        }
         let transparent = texture.transparent_index();
-        let index = match remap.maps.iter().position(|(mask, _)| *mask == transparent) {
+        let key = (source, target, transparent);
+        let index = match self
+            .state
+            .indexed_maps
+            .iter()
+            .position(|(old, _)| *old == key)
+        {
             Some(index) => index,
             None => {
                 let source = self
                     .assets
-                    .palette(remap.source)
+                    .palette(source)
                     .ok_or(ResourceError::Asset("missing source image palette"))?;
                 let target = self
                     .assets
-                    .palette(remap.target)
+                    .palette(target)
                     .ok_or(ResourceError::Asset("missing presentation image palette"))?;
                 let indices = source.translation_to(target, transparent);
-                remap.maps.push((transparent, indices));
-                remap.maps.len() - 1
+                self.state.indexed_maps.push((key, indices));
+                self.state.indexed_maps.len() - 1
             }
         };
-        let translation = &remap.maps[index].1;
+        let translation = &self.state.indexed_maps[index].1;
         let mips: [Option<Vec<u8>>; 4] = std::array::from_fn(|mip| {
             texture.mip(mip as u8).map(|level| {
                 level
@@ -1313,17 +1315,16 @@ impl<'a> Images<'a> {
         }
         .map_err(ResourceError::Asset)
     }
+    /// Retain source RGB while converting only software indices to an explicit
+    /// target. A resource may provide its source palette independently of the
+    /// default source/presentation pair captured by this image owner.
     pub fn register_indexed(
         &mut self,
         texture: IndexedTexture,
         palette: PaletteId,
+        target: Option<PaletteId>,
     ) -> Result<ImageId, ResourceError> {
-        if self
-            .state
-            .indexed_remap
-            .as_ref()
-            .is_none_or(|remap| remap.source != palette)
-        {
+        if target.is_none_or(|target| target == palette) {
             return self
                 .assets
                 .register_indexed_image(texture, palette)
@@ -1349,7 +1350,14 @@ impl<'a> Images<'a> {
                 ..PaletteOptions::default()
             },
         )?;
-        self.register_indexed_rgba(rgba.width, rgba.height, &rgba.pixels, texture, palette)
+        self.register_indexed_rgba_to(
+            rgba.width,
+            rgba.height,
+            &rgba.pixels,
+            texture,
+            palette,
+            target,
+        )
     }
     /// Source RGBA and selected software indices are independently retained.
     pub fn register_indexed_rgba(
@@ -1360,7 +1368,19 @@ impl<'a> Images<'a> {
         texture: IndexedTexture,
         palette: PaletteId,
     ) -> Result<ImageId, ResourceError> {
-        let texture = self.remap_texture(texture, palette)?;
+        let target = self.indexed_target(palette);
+        self.register_indexed_rgba_to(width, height, rgba, texture, palette, target)
+    }
+    fn register_indexed_rgba_to(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        texture: IndexedTexture,
+        palette: PaletteId,
+        target: Option<PaletteId>,
+    ) -> Result<ImageId, ResourceError> {
+        let texture = self.remap_texture(texture, palette, target)?;
         self.assets
             .register_rgba_with_indexed(width, height, rgba, texture)
             .map_err(ResourceError::Asset)

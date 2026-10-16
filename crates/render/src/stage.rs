@@ -1098,6 +1098,7 @@ pub fn alpha_pass(function: AlphaFunc, alpha: f32) -> bool {
     match function {
         AlphaFunc::None => true,
         AlphaFunc::GreaterZero => alpha > 0.0,
+        AlphaFunc::GreaterThan0666 => alpha > 0.666,
         AlphaFunc::LessThanHalf => alpha < 0.5,
         AlphaFunc::AtLeastHalf => alpha >= 0.5,
     }

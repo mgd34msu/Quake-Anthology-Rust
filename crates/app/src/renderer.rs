@@ -382,7 +382,8 @@ pub(crate) fn light_view_entities(
 pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef {
     let basis = angle_vectors(client.angles);
     let fov = qa_render::scene::fov_from_x(client.fov_x, viewport.width, viewport.height);
-    let (frame_timing, skin_timing) = model_timing(kind, client.presentation_rules);
+    let (frame_timing, skin_timing, sprite_placement) =
+        model_presentation(kind, client.presentation_rules);
     let mut refdef = Refdef {
         viewport,
         origin: client.origin,
@@ -393,6 +394,7 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
         model_time: client.model_time,
         frame_timing,
         skin_timing,
+        sprite_placement,
         policy: client.policy,
         near: client.near,
         blend: client.screen_blend,
@@ -405,10 +407,14 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
     refdef
 }
 
-fn model_timing(
+fn model_presentation(
     kind: Kind,
     rules: qa_core::primitives::RuleSetId,
-) -> (qa_render::scene::FrameTiming, qa_render::scene::SkinTiming) {
+) -> (
+    qa_render::scene::FrameTiming,
+    qa_render::scene::SkinTiming,
+    qa_render::scene::SpritePlacement,
+) {
     if matches!(kind, Kind::Gl)
         && matches!(
             rules,
@@ -418,11 +424,13 @@ fn model_timing(
         (
             qa_render::scene::FrameTiming::UniformFirst,
             qa_render::scene::SkinTiming::LegacyFour,
+            qa_render::scene::SpritePlacement::OrientedOnly,
         )
     } else {
         (
             qa_render::scene::FrameTiming::Cumulative,
             qa_render::scene::SkinTiming::Cumulative,
+            qa_render::scene::SpritePlacement::Full,
         )
     }
 }

@@ -240,6 +240,7 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let request = ModelRequest::native("sprites/test.sp2", RuleSetId::Quake2, Some(palette));
+    let models_before = assets.models().len();
     let owner =
         ModelAssets::load(&fixture.vfs, assets, [request], [], ModelLimits::default()).unwrap();
     let ModelView {
@@ -332,17 +333,28 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
         ));
         let packet = frame.finish();
         let entity = packet.entity(0);
-        materials.push(
-            entity
-                .shader
-                .map(|shader| shader.source(&()).unwrap())
-                .unwrap(),
-        );
-        let qa_render::SceneModel::Mesh(model) = entity.model else {
-            panic!("sprite model")
+        let qa_render::SceneModel::Timed {
+            model,
+            selector: qa_render::scene::ModelChoiceSelector::Frame,
+            ..
+        } = entity.model
+        else {
+            panic!("deferred sprite model")
         };
+        let qa_render::Command::View(view) = packet.commands()[1] else {
+            panic!("sprite view")
+        };
+        let first = packet.draws(view.scene.draws)[0];
+        assert_eq!(first.frames, Some([native_frame as u32 % 2; 2]));
+        materials.push(first.shader.unwrap().source(&()).unwrap());
+        assert_eq!(assets.models().len(), models_before + 1);
         assert_eq!(
-            assets.model(model).unwrap().sprite.unwrap().extents[0],
+            assets
+                .model(model)
+                .unwrap()
+                .sprite_frame(native_frame as u32 % 2)
+                .unwrap()
+                .extents[0],
             if native_frame == 1 { 4. } else { -2. }
         );
         assert_eq!(packet.rejected, 0);
@@ -2445,5 +2457,167 @@ fn native_inline_config_names_use_common_prefix_parser_and_integer_limits() {
             !bindings.config_changed(index, &rows, owner.catalog()),
             "{text:?}"
         );
+    }
+}
+
+#[test]
+fn netquake_oriented_spr_preserves_pitch_and_native_parent_fallback_in_shared_views() {
+    let mut sprite = support::spr();
+    sprite[8..12].copy_from_slice(&3i32.to_le_bytes());
+    let fixture = support::Fixture::new(&[("progs/oriented.spr", sprite)]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let request = ModelRequest::native("progs/oriented.spr", RuleSetId::Quake, Some(palette));
+    let owner = ModelAssets::load(&fixture.vfs, assets, [request], [], Default::default()).unwrap();
+    let client = ClientId(0);
+    let layout = ConfigLayout::for_rules(RuleSetId::Quake);
+    let mut configs =
+        ConfigStrings::load((0..layout.count).map(|row| layout.capacity(row).unwrap())).unwrap();
+    configs
+        .set(
+            layout.resources[0].get(50).unwrap(),
+            request.path.as_bytes(),
+        )
+        .unwrap();
+    let mut bindings = ClientModelBindings::load(client, layout);
+    assert_eq!(
+        bindings.bind_all(&configs, owner.catalog(), request.profile(), None),
+        0
+    );
+    let projection = EntityProjection::load(Protocol::NetQuake15);
+    let player_projection = PlayerProjection::load(Protocol::NetQuake15, &[]);
+    let player = PlayerState::default();
+    let angles = Vec3([30., 45., 10.]);
+    let registration = owner
+        .catalog()
+        .registration(request.path, request.profile())
+        .unwrap();
+    let choice = owner
+        .catalog()
+        .bindings(registration, 0, Default::default())
+        .unwrap()
+        .choices()
+        .next()
+        .unwrap();
+    for (native_frame, physical) in [(1, 2), (99, 0), (255, 0)] {
+        let record = EntityRecord {
+            position: Vec3([32., 0., 0.]),
+            angles,
+            appearance: EntityAppearance {
+                source: RuleSetId::Quake,
+                frame: native_frame,
+                models: [Some(reference(client)), None, None, None],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut words = [0; states::NQ_ENTITY_WORDS];
+        assert!(projection.reduce(
+            &record,
+            &Default::default(),
+            &mut words,
+            |reference, _| Some(reference.ordinal),
+            |_| None,
+            |_| None
+        ));
+        let mut wire = [0; 128];
+        let mut writer =
+            qa_network::message::Writer::new(&mut wire, qa_network::message::Encoding::Bytes);
+        assert!(
+            states::write_nq_entity(
+                &mut writer,
+                12,
+                &[0; states::NQ_ENTITY_WORDS],
+                &words,
+                false
+            )
+            .unwrap()
+        );
+        let mut reader =
+            qa_network::message::Reader::new(writer.bytes(), qa_network::message::Encoding::Bytes);
+        let update = states::read_nq_entity(&mut reader, &[0; states::NQ_ENTITY_WORDS]).unwrap();
+        let words = update.words.unwrap();
+        let mut accepted = EntityRecord::default();
+        assert!(projection.apply(&words, &mut accepted, ResourceNamespace::Client(client)));
+        let expected_angles = accepted.angles;
+        let rows = [Entity {
+            number: u32::from(update.number),
+            words,
+        }];
+        let input = ClientSceneInput {
+            synchronization: None,
+            client,
+            current: Some(ReceivedFrame::NetQuake(Frame {
+                sequence: 1,
+                time: ThinkTime::Seconds(0.125),
+                command: 0,
+                flags: 0,
+                qw_peers: 0,
+                qw_dead: 0,
+                areas: &[],
+                player: &[0; states::NQ_PLAYER_WORDS],
+                entities: &rows,
+            })),
+            previous: None,
+            projection: &projection,
+            appearance: qa_gameplay::rules::appearance::policy(RuleSetId::Quake),
+            player_projection: &player_projection,
+            bindings: &bindings,
+            models: owner.catalog(),
+            static_entities: &[],
+            player: &player,
+            weapon_view_angles: Vec3::default(),
+            alias_roll: Default::default(),
+            interpolation: Default::default(),
+            gun_animation: None,
+            gun_previous: None,
+            view_entity: None,
+        };
+        for software in [true, false] {
+            let mut frontend = FrontEnd::load(Default::default()).unwrap();
+            let mut frame = frontend.begin_frame([0; 4]).unwrap();
+            let view = Refdef {
+                model_time: Some(ThinkTime::Seconds(0.125)),
+                frame_timing: qa_render::scene::FrameTiming::UniformFirst,
+                ..Default::default()
+            };
+            let counts = input.append(&mut frame, owner.assets(), &view, software, None);
+            assert_eq!(
+                (counts.models, counts.rejected, counts.missing_models),
+                (1, 0, 0),
+                "frame={native_frame} software={software}"
+            );
+            assert!(frame.render_scene(
+                view,
+                &[],
+                owner.assets(),
+                qa_render::shader::reference::ShaderView::direct()
+            ));
+            let packet = frame.finish();
+            let captured = packet.entity(0);
+            assert_eq!(
+                captured.axes,
+                qa_core::math::angle_vectors(expected_angles).axes()
+            );
+            assert_eq!(captured.sprite_roll, expected_angles.0[2]);
+            let qa_render::Command::View(view) = packet.commands()[1] else {
+                panic!("oriented SPR view")
+            };
+            assert_eq!(view.scene.polys.count, 2);
+            let expected = choice
+                .resolve_shader(
+                    choice.shaders().nth(physical).unwrap(),
+                    qa_render::shader::reference::ShaderView::direct(),
+                    None,
+                )
+                .unwrap()
+                .source(&())
+                .unwrap();
+            for draw in packet.draws(view.scene.draws) {
+                assert_eq!(draw.frames, Some([physical as u32; 2]));
+                assert_eq!(draw.shader.unwrap().source(&()), Some(expected));
+            }
+            assert_eq!(packet.rejected, 0);
+        }
     }
 }

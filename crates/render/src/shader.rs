@@ -261,6 +261,8 @@ pub enum AlphaFunc {
     #[default]
     None,
     GreaterZero,
+    /// GLQuake's authored sprite cutoff is exactly 0.666, not 2/3.
+    GreaterThan0666,
     LessThanHalf,
     AtLeastHalf,
 }

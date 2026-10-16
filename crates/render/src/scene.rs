@@ -16,6 +16,13 @@ pub(crate) use model_lod::projection_scales;
 pub use patch::{PatchSelection, PatchTriangles};
 pub const DEFAULT_CURVE_ERROR: f32 = 250.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpritePlacement {
+    #[default]
+    Full,
+    /// Original GL placement honors oriented sprites and otherwise faces the camera.
+    OrientedOnly,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
     pub x: u32,
     pub y: u32,
@@ -128,6 +135,7 @@ pub struct Refdef {
     pub model_time: Option<ThinkTime>,
     pub frame_timing: FrameTiming,
     pub skin_timing: SkinTiming,
+    pub sprite_placement: SpritePlacement,
     pub hyperspace: bool,
     pub portal: bool,
     pub reflected_view: bool,
@@ -251,6 +259,7 @@ impl Default for Refdef {
             model_time: None,
             frame_timing: FrameTiming::default(),
             skin_timing: SkinTiming::default(),
+            sprite_placement: SpritePlacement::default(),
             hyperspace: false,
             portal: false,
             reflected_view: false,
@@ -363,7 +372,7 @@ pub enum SceneModel {
     },
     Timed {
         model: ModelId,
-        skin_group: u32,
+        selector: ModelChoiceSelector,
         choices: Span,
     },
     World {
@@ -398,6 +407,11 @@ pub enum SceneModel {
         rotation: i32,
     },
     PolyMarker,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelChoiceSelector {
+    SkinGroup(u32),
+    Frame,
 }
 impl From<ModelId> for SceneModel {
     fn from(model: ModelId) -> Self {
@@ -470,6 +484,8 @@ pub struct SceneEntity {
     pub shader_time: f32,
     /// Native model synchronization, independent of shader animation time.
     pub sync_base: f32,
+    /// Authored roll for view-parallel oriented sprite placement.
+    pub sprite_roll: f32,
     pub shader_texcoord: [f32; 2],
     pub lighting: Option<crate::stage::EntityLighting>,
     pub lighting_origin: Option<Vec3>,
@@ -525,6 +541,7 @@ impl Default for SceneEntity {
             depth_hack: false,
             shader_time: 0.0,
             sync_base: 0.0,
+            sprite_roll: 0.0,
             shader_texcoord: [0.0; 2],
             lighting: None,
             lighting_origin: None,
@@ -1694,13 +1711,13 @@ impl Frame {
         }
         true
     }
-    /// Capture a cold-validated native skin group's authored members. The
-    /// parent/member mapping comes from ModelAnimation; selection waits for view time.
-    pub fn add_timed_model(
+    /// Capture a cold-validated skin group or sprite's physical-frame shaders.
+    /// Selection waits for the copied view's time and native frame policy.
+    pub fn add_model_choices(
         &mut self,
         mut pose: SceneEntity,
         model: ModelId,
-        skin_group: u32,
+        selector: ModelChoiceSelector,
         member_shaders: impl IntoIterator<Item = ShaderRef>,
     ) -> bool {
         let mut members = member_shaders.into_iter();
@@ -1724,7 +1741,7 @@ impl Frame {
         };
         pose.model = SceneModel::Timed {
             model,
-            skin_group,
+            selector,
             choices,
         };
         if !self.add_entity_part(pose) {
@@ -2158,39 +2175,35 @@ fn model_draw(
             draw.mesh = Some(part.model);
             draw.shader = entity.shader.or(Some(part.shader));
         }
-        SceneModel::Timed {
-            model,
-            skin_group,
-            choices,
-        } => {
-            let animation = assets
-                .model(model)
-                .and_then(|model| model.animation())
-                .ok_or(())?;
-            let group = animation.skin_groups().get(skin_group as usize).ok_or(())?;
-            if group.members.count != choices.count {
-                return Err(());
-            }
-            let member = animation
-                .skin_member(
-                    skin_group,
-                    view.model_time(),
-                    entity.sync_base,
-                    view.skin_timing,
-                )
-                .ok_or(())?;
-            let part = list.model_choices[choices.range()][member as usize].ok_or(())?;
-            if part.model != model {
-                return Err(());
-            }
-            draw.mesh = Some(model);
-            draw.shader = entity.shader.or(Some(part.shader));
-        }
+        SceneModel::Timed { model, .. } => draw.mesh = Some(model),
         _ => {}
     }
     if let Some(mesh) = draw.mesh {
         let model = assets.model(mesh).ok_or(())?;
-        if let Some(animation) = model.animation() {
+        if let Some(sprite) = &model.sprite {
+            let current = if let Some(animation) = model.animation() {
+                let parent = if entity.frame < model.native_frame_count() {
+                    entity.frame
+                } else {
+                    0
+                };
+                animation
+                    .frame_pose(
+                        parent,
+                        view.model_time(),
+                        entity.sync_base,
+                        FrameTiming::Cumulative,
+                    )
+                    .ok_or(())?
+            } else if sprite.wrap_frames {
+                entity.frame % model.frame_count()
+            } else if entity.frame < model.frame_count() {
+                entity.frame
+            } else {
+                0
+            };
+            draw.frames = Some([current, current]);
+        } else if let Some(animation) = model.animation() {
             let time = view.model_time();
             draw.frames = Some([
                 animation
@@ -2201,13 +2214,45 @@ fn model_draw(
                     .ok_or(())?,
             ]);
         }
+        if let SceneModel::Timed {
+            selector, choices, ..
+        } = entity.model
+        {
+            let member = match selector {
+                ModelChoiceSelector::SkinGroup(skin) => {
+                    let animation = model.animation().ok_or(())?;
+                    let group = animation.skin_groups().get(skin as usize).ok_or(())?;
+                    if group.members.count != choices.count {
+                        return Err(());
+                    }
+                    animation
+                        .skin_member(skin, view.model_time(), entity.sync_base, view.skin_timing)
+                        .ok_or(())?
+                }
+                ModelChoiceSelector::Frame => {
+                    if model.sprite.is_none() || choices.count != model.frame_count() {
+                        return Err(());
+                    }
+                    draw.frames.ok_or(())?[0]
+                }
+            };
+            let part = list.model_choices[choices.range()][member as usize].ok_or(())?;
+            if part.model != mesh {
+                return Err(());
+            }
+            draw.shader = entity.shader.or(Some(part.shader));
+        }
         if matches!(
             entity.model,
             SceneModel::Lods { .. } | SceneModel::Timed { .. }
         ) || model.animation().is_some()
         {
             let selected = draw_entity(list, draw).ok_or(())?;
-            model.posed_frames(&selected).ok_or(())?;
+            if model.sprite.is_some() {
+                model.sprite_frame(selected.frame).ok_or(())?;
+            } else {
+                model.posed_frames(&selected).ok_or(())?;
+            }
         }
     }
     Ok(Some(draw))

@@ -236,7 +236,6 @@ pub struct ModelMaterialPolicy {
     pub translucent: bool,
     pub fullbright: bool,
     pub custom_skin: i32,
-    pub frame: u32,
 }
 impl ModelMaterialPolicy {
     const ALL: [Self; 4] = [
@@ -244,25 +243,21 @@ impl ModelMaterialPolicy {
             translucent: false,
             fullbright: false,
             custom_skin: 0,
-            frame: 0,
         },
         Self {
             translucent: false,
             fullbright: true,
             custom_skin: 0,
-            frame: 0,
         },
         Self {
             translucent: true,
             fullbright: false,
             custom_skin: 0,
-            frame: 0,
         },
         Self {
             translucent: true,
             fullbright: true,
             custom_skin: 0,
-            frame: 0,
         },
     ];
     fn index(self) -> usize {
@@ -280,11 +275,11 @@ struct ModelChoice {
     pose: AliasPose,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SkinMembers<'a> {
+pub struct ModelShaderMembers<'a> {
     materials: &'a [ModelMaterials],
     policy: usize,
 }
-impl Iterator for SkinMembers<'_> {
+impl Iterator for ModelShaderMembers<'_> {
     type Item = ShaderChoice;
     fn next(&mut self) -> Option<Self::Item> {
         let (member, remaining) = self.materials.split_first()?;
@@ -295,21 +290,41 @@ impl Iterator for SkinMembers<'_> {
         (self.materials.len(), Some(self.materials.len()))
     }
 }
-impl ExactSizeIterator for SkinMembers<'_> {}
+impl ExactSizeIterator for ModelShaderMembers<'_> {}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ModelSkinChoice<'a> {
+pub enum ModelShaderChoice<'a> {
     Single(ShaderChoice),
-    Timed {
+    SkinGroup {
         group: u32,
-        members: SkinMembers<'a>,
+        members: ModelShaderMembers<'a>,
     },
+    Frames {
+        members: ModelShaderMembers<'a>,
+    },
+}
+impl<'a> ModelShaderChoice<'a> {
+    pub fn deferred(
+        self,
+    ) -> Option<(
+        qa_render::scene::ModelChoiceSelector,
+        ModelShaderMembers<'a>,
+    )> {
+        use qa_render::scene::ModelChoiceSelector;
+        match self {
+            Self::Single(_) => None,
+            Self::SkinGroup { group, members } => {
+                Some((ModelChoiceSelector::SkinGroup(group), members))
+            }
+            Self::Frames { members } => Some((ModelChoiceSelector::Frame, members)),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 pub struct SelectedModelChoice<'a> {
     pub model: ModelId,
-    pub shader: ModelSkinChoice<'a>,
+    pub shader: ModelShaderChoice<'a>,
     pub pose: AliasPose,
     pub resource: ShaderResource,
     pub registrations: &'a [ShaderRegistration],
@@ -318,8 +333,9 @@ pub struct SelectedModelChoice<'a> {
 impl SelectedModelChoice<'_> {
     pub fn shaders(&self) -> impl Iterator<Item = ShaderChoice> + Clone {
         let (single, members) = match self.shader {
-            ModelSkinChoice::Single(shader) => (Some(shader), None),
-            ModelSkinChoice::Timed { members, .. } => (None, Some(members)),
+            ModelShaderChoice::Single(shader) => (Some(shader), None),
+            ModelShaderChoice::SkinGroup { members, .. }
+            | ModelShaderChoice::Frames { members } => (None, Some(members)),
         };
         single.into_iter().chain(members.into_iter().flatten())
     }
@@ -332,7 +348,7 @@ impl SelectedModelChoice<'_> {
         view.choice(shader, self.registrations, nodes, self.default)
     }
     pub fn physical_binding(&self) -> Option<ModelBinding> {
-        let ModelSkinChoice::Single(shader) = self.shader else {
+        let ModelShaderChoice::Single(shader) = self.shader else {
             return None;
         };
         let shader = self
@@ -363,7 +379,7 @@ struct SurfaceMaterials {
     name: NameId,
     skins: IndexSpan,
     wrap_skins: bool,
-    frame_skins: bool,
+    sprite_frames: bool,
 }
 
 /// Numeric, allocation-free iteration over every surface of one registration.
@@ -392,23 +408,24 @@ impl<'a> ModelBindings<'a> {
     fn next_choice(&mut self) -> Option<SelectedModelChoice<'a>> {
         let (surface, remaining) = self.surfaces.split_first()?;
         self.surfaces = remaining;
-        let selected = if surface.frame_skins {
-            self.policy.frame
-        } else {
-            self.skin
-        };
-        let timed = self.animation.map(|animation| {
-            let groups = animation.skin_groups();
-            let group = if (selected as usize) < groups.len() {
-                selected
-            } else {
-                0
-            };
-            (group, groups[group as usize].members)
-        });
-        let skin = if let Some((_, members)) = timed {
+        let selected = self.skin;
+        let timed = self
+            .animation
+            .filter(|_| !surface.sprite_frames)
+            .map(|animation| {
+                let groups = animation.skin_groups();
+                let group = if (selected as usize) < groups.len() {
+                    selected
+                } else {
+                    0
+                };
+                (group, groups[group as usize].members)
+            });
+        let skin = if surface.sprite_frames {
+            0
+        } else if let Some((_, members)) = timed {
             members.first
-        } else if surface.wrap_skins || surface.frame_skins {
+        } else if surface.wrap_skins {
             selected % surface.skins.count
         } else if selected < surface.skins.count {
             selected
@@ -420,20 +437,29 @@ impl<'a> ModelBindings<'a> {
         let mut registrations = self.registrations;
         let mut resource = self.resource;
         let mut default = ShaderDefault::Global(Some(self.default_shader));
-        let mut shader = match timed {
-            Some((group, members)) if members.count > 1 => {
-                let first = (surface.skins.first + members.first) as usize;
-                ModelSkinChoice::Timed {
-                    group,
-                    members: SkinMembers {
-                        materials: &self.materials[first..first + members.count as usize],
-                        policy: self.policy.index(),
-                    },
-                }
+        let mut shader = if surface.sprite_frames {
+            ModelShaderChoice::Frames {
+                members: ModelShaderMembers {
+                    materials: &self.materials[surface.skins.range()],
+                    policy: self.policy.index(),
+                },
             }
-            _ => ModelSkinChoice::Single(binding.shader),
+        } else {
+            match timed {
+                Some((group, members)) if members.count > 1 => {
+                    let first = (surface.skins.first + members.first) as usize;
+                    ModelShaderChoice::SkinGroup {
+                        group,
+                        members: ModelShaderMembers {
+                            materials: &self.materials[first..first + members.count as usize],
+                            policy: self.policy.index(),
+                        },
+                    }
+                }
+                _ => ModelShaderChoice::Single(binding.shader),
+            }
         };
-        if let Some((handle, custom)) = self.custom.filter(|_| !surface.frame_skins) {
+        if let Some((handle, custom)) = self.custom.filter(|_| !surface.sprite_frames) {
             binding.shader = ShaderChoice::Direct(self.default_shader);
             if let Some(custom) = custom {
                 let mapping = custom
@@ -448,7 +474,7 @@ impl<'a> ModelBindings<'a> {
                 resource = ShaderResource::Skin(handle);
                 default = ShaderDefault::Named;
             }
-            shader = ModelSkinChoice::Single(binding.shader);
+            shader = ModelShaderChoice::Single(binding.shader);
         }
         Some(SelectedModelChoice {
             model: binding.model,
@@ -571,6 +597,7 @@ pub struct ModelCapacity {
 struct Registration {
     path: String,
     profile: ModelProfile,
+    indexed_palette: Option<PaletteId>,
     required: bool,
 }
 struct RegisteredProfile {
@@ -2465,6 +2492,7 @@ impl ModelAssets {
             pending.push(Registration {
                 path: canonical_path(request.path),
                 profile: request.profile(),
+                indexed_palette: request.source_palette,
                 required: request.required,
             });
         }
@@ -3432,8 +3460,8 @@ impl ModelAssets {
         let tags = self.admit_tags(&model).map_err(FileError::tag)?;
         let meshes = vec![
             None;
-            if model.format == ModelFormat::Sp2 {
-                model.sprites.len()
+            if matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2) {
+                1
             } else {
                 model.meshes.len()
             }
@@ -3714,60 +3742,83 @@ impl ModelAssets {
             {
                 continue;
             }
-            let result = with_image_owner(&mut self.catalog.profiles, profile_index, |images| {
-                let registration = Registration {
-                    path: path.to_owned(),
-                    profile: images.profile,
-                    required: false,
-                };
-                let model_policy = images.model_policy;
-                let native_default = images
-                    .native_default
-                    .map_or(ShaderBindingId(0), |entry| entry.0);
-                let compile_policy = images.profile.finish.compile(ui_fullscreen);
-                images.with_images(vfs, &mut self.assets, |temporary| {
-                    let mut compiled = Vec::new();
-                    let mut registrations = Vec::new();
-                    for (slot, _, bytes, _, meshes, animation) in &mut inputs {
-                        let model =
-                            Model::parse(bytes).map_err(|error| format!("decode: {error:?}"))?;
-                        validate_model(&model)?;
-                        let mut model = register(
-                            &model,
-                            temporary,
-                            &registration,
-                            model_policy,
-                            native_default,
-                            meshes,
-                            animation.as_ref(),
-                            self.catalog.shader_catalog.as_ref(),
-                            &mut self.catalog.capacity,
-                            self.catalog.limits,
-                            compile_policy,
-                        )?;
-                        let offset = u32::try_from(registrations.len())
-                            .map_err(|_| "model shader occurrence capacity")?;
-                        for materials in model.surfaces.iter_mut().flatten() {
-                            for choice in &mut materials.variants {
-                                choice.shader = match choice.shader {
-                                    ShaderChoice::Occurrence(ShaderOccurrence(index)) => {
-                                        ShaderChoice::Occurrence(ShaderOccurrence(index + offset))
-                                    }
-                                    ShaderChoice::Converted {
-                                        binding,
-                                        occurrence: ShaderOccurrence(index),
-                                    } => ShaderChoice::Converted {
-                                        binding,
-                                        occurrence: ShaderOccurrence(index + offset),
-                                    },
-                                    direct => direct,
-                                };
+            let indexed_palette = if entry.profile.source_palette.is_none()
+                && inputs.iter().any(|(_, source, ..)| {
+                    self.catalog.sources[source.0 as usize]
+                        .metadata()
+                        .is_some_and(|metadata| {
+                            matches!(metadata.format, ModelFormat::Mdl | ModelFormat::Spr)
+                        })
+                }) {
+                crate::render_settings::palette_resource(
+                    vfs,
+                    &mut self.assets,
+                    RuleSetId::Quake,
+                    &mut self.palettes,
+                )
+                .map_err(|error| format!("indexed model palette: {error:?}"))
+            } else {
+                Ok(entry.profile.source_palette)
+            };
+            let result = indexed_palette.and_then(|indexed_palette| {
+                with_image_owner(&mut self.catalog.profiles, profile_index, |images| {
+                    let registration = Registration {
+                        path: path.to_owned(),
+                        profile: images.profile,
+                        indexed_palette,
+                        required: false,
+                    };
+                    let model_policy = images.model_policy;
+                    let native_default = images
+                        .native_default
+                        .map_or(ShaderBindingId(0), |entry| entry.0);
+                    let compile_policy = images.profile.finish.compile(ui_fullscreen);
+                    images.with_images(vfs, &mut self.assets, |temporary| {
+                        let mut compiled = Vec::new();
+                        let mut registrations = Vec::new();
+                        for (slot, _, bytes, _, meshes, animation) in &mut inputs {
+                            let model = Model::parse(bytes)
+                                .map_err(|error| format!("decode: {error:?}"))?;
+                            validate_model(&model)?;
+                            let mut model = register(
+                                &model,
+                                temporary,
+                                &registration,
+                                model_policy,
+                                native_default,
+                                meshes,
+                                animation.as_ref(),
+                                self.catalog.shader_catalog.as_ref(),
+                                &mut self.catalog.capacity,
+                                self.catalog.limits,
+                                compile_policy,
+                            )?;
+                            let offset = u32::try_from(registrations.len())
+                                .map_err(|_| "model shader occurrence capacity")?;
+                            for materials in model.surfaces.iter_mut().flatten() {
+                                for choice in &mut materials.variants {
+                                    choice.shader = match choice.shader {
+                                        ShaderChoice::Occurrence(ShaderOccurrence(index)) => {
+                                            ShaderChoice::Occurrence(ShaderOccurrence(
+                                                index + offset,
+                                            ))
+                                        }
+                                        ShaderChoice::Converted {
+                                            binding,
+                                            occurrence: ShaderOccurrence(index),
+                                        } => ShaderChoice::Converted {
+                                            binding,
+                                            occurrence: ShaderOccurrence(index + offset),
+                                        },
+                                        direct => direct,
+                                    };
+                                }
                             }
+                            registrations.extend(model.registrations);
+                            compiled.push((*slot, model.surfaces));
                         }
-                        registrations.extend(model.registrations);
-                        compiled.push((*slot, model.surfaces));
-                    }
-                    Ok((compiled, registrations))
+                        Ok((compiled, registrations))
+                    })
                 })
             });
             let images = &self.catalog.profiles[profile_index];
@@ -3790,11 +3841,14 @@ impl ModelAssets {
                                     count: skins.len() as u32,
                                 },
                                 wrap_skins: lods.md3,
-                                frame_skins: !lods.md3
+                                sprite_frames: !lods.md3
                                     && self.catalog.sources[inputs[0].1.0 as usize]
                                         .metadata()
                                         .is_some_and(|metadata| {
-                                            metadata.format == ModelFormat::Sp2
+                                            matches!(
+                                                metadata.format,
+                                                ModelFormat::Spr | ModelFormat::Sp2
+                                            )
                                         }),
                             });
                             self.catalog.bindings.extend(skins);
@@ -3886,7 +3940,7 @@ impl ModelAssets {
     }
 
     fn admit_surface_names(&mut self, model: &Model<'_>) -> Result<Vec<NameId>, FileError> {
-        let raw: Vec<_> = if model.format == ModelFormat::Sp2 {
+        let raw: Vec<_> = if matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2) {
             vec![b"sprite".as_slice()]
         } else {
             model
@@ -4591,6 +4645,7 @@ impl ModelAssets {
                             let registration = Registration {
                                 path: path.clone(),
                                 profile: images.profile,
+                                indexed_palette: images.profile.source_palette,
                                 required: false,
                             };
                             let model_policy = images.model_policy;
@@ -5647,7 +5702,7 @@ fn append_inline_bindings(
 }
 
 fn model_animation(model: &Model<'_>) -> Result<Option<Arc<ModelAnimation>>, String> {
-    if model.format != ModelFormat::Mdl {
+    if !matches!(model.format, ModelFormat::Mdl | ModelFormat::Spr) {
         return Ok(None);
     }
     let span = |range: &std::ops::Range<usize>| -> Result<IndexSpan, String> {
@@ -5673,7 +5728,12 @@ fn model_animation(model: &Model<'_>) -> Result<Option<Arc<ModelAnimation>>, Str
         groups(&model.skin_groups)?,
         model.intervals.clone().into_boxed_slice(),
         model.sync,
-        u32::try_from(model.frames.len()).map_err(|_| "model animation frames")?,
+        u32::try_from(if model.format == ModelFormat::Spr {
+            model.sprites.len()
+        } else {
+            model.frames.len()
+        })
+        .map_err(|_| "model animation frames")?,
         u32::try_from(model.skins.len()).map_err(|_| "model animation skins")?,
     )?;
     Ok(Some(Arc::new(animation)))
@@ -5682,7 +5742,11 @@ fn model_animation(model: &Model<'_>) -> Result<Option<Arc<ModelAnimation>>, Str
 fn validate_model(model: &Model<'_>) -> Result<(), String> {
     if !matches!(
         model.format,
-        ModelFormat::Mdl | ModelFormat::Md2 | ModelFormat::Md3 | ModelFormat::Sp2
+        ModelFormat::Mdl
+            | ModelFormat::Md2
+            | ModelFormat::Md3
+            | ModelFormat::Spr
+            | ModelFormat::Sp2
     ) {
         return Err(format!(
             "model format not yet registered: {:?}",
@@ -5690,7 +5754,7 @@ fn validate_model(model: &Model<'_>) -> Result<(), String> {
         ));
     }
     if model.format != ModelFormat::Md3
-        && model.format != ModelFormat::Sp2
+        && !matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2)
         && model.skins.is_empty()
     {
         return Err("model requires an explicit external skin".to_owned());
@@ -5716,13 +5780,13 @@ fn register(
     limits: ModelLimits,
     compile_policy: ShaderCompilePolicy,
 ) -> Result<CompiledModel, String> {
-    if model.format == ModelFormat::Sp2 {
+    if matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2) {
         return register_sprites(
             model,
             images,
             registration,
-            model_policy,
             shared_meshes,
+            animation,
             capacity,
             limits,
         );
@@ -5869,11 +5933,12 @@ fn register_sprites(
     model: &Model<'_>,
     images: &mut Images<'_>,
     registration: &Registration,
-    policy: ModelPolicy,
     shared_meshes: &mut [Option<ModelId>],
+    animation: Option<&Arc<ModelAnimation>>,
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
 ) -> Result<CompiledModel, String> {
+    use qa_render::assets::{SpriteFrame, SpriteGeometry, SpriteOrientation};
     let next_surfaces = capacity
         .surfaces
         .checked_add(1)
@@ -5885,15 +5950,15 @@ fn register_sprites(
         .filter(|&n| n <= limits.skins && n <= u32::MAX as usize)
         .ok_or("model skin capacity")?;
     let mut frames = Vec::with_capacity(model.sprites.len());
+    let mut geometry = Vec::with_capacity(model.sprites.len());
     let mut registrations = Vec::with_capacity(model.sprites.len());
-    for (index, (sprite, shared_mesh)) in model.sprites.iter().zip(shared_meshes).enumerate() {
-        if !matches!(sprite.image, Image::External(_)) {
-            return Err("SP2 frame requires an external image".to_owned());
-        }
+    let mut first_shader = None;
+    for (index, sprite) in model.sprites.iter().enumerate() {
         let image = model_image(
             sprite.image,
             images,
             registration.profile,
+            registration.indexed_palette,
             ImageRole::Sprite,
             true,
             Some(255),
@@ -5913,6 +5978,15 @@ fn register_sprites(
                     alpha_gen: AlphaGen::Entity,
                     alpha_test: if material_policy.translucent {
                         AlphaFunc::None
+                    } else if model.format == ModelFormat::Spr {
+                        if matches!(
+                            registration.profile.rules,
+                            RuleSetId::Quake | RuleSetId::QuakeWorld
+                        ) {
+                            AlphaFunc::GreaterThan0666
+                        } else {
+                            AlphaFunc::GreaterZero
+                        }
                     } else {
                         AlphaFunc::AtLeastHalf
                     },
@@ -5934,37 +6008,76 @@ fn register_sprites(
                 .assets
                 .register_shader_binding(ShaderBinding::material(material, LightSource::None))?;
         }
-        if let Image::External(raw) = sprite.image {
+        first_shader.get_or_insert(variants[0]);
+        let shader = if let Image::External(raw) = sprite.image {
+            let occurrence = ShaderOccurrence(registrations.len() as u32);
             registrations.push(images.assets.shader_registration(raw, variants[0])?);
-        }
-        let geometry = qa_render::assets::SpriteGeometry {
-            extents: [
-                -(sprite.origin[0] as f32),
-                (i64::from(sprite.width) - i64::from(sprite.origin[0])) as f32,
-                (i64::from(sprite.height) - i64::from(sprite.origin[1])) as f32,
-                -(sprite.origin[1] as f32),
-            ],
+            ShaderChoice::Occurrence(occurrence)
+        } else {
+            ShaderChoice::Direct(variants[0])
         };
-        let model = match *shared_mesh {
-            Some(model) => model,
-            None => {
-                let model = images.assets.register_sprite(geometry, variants[0])?;
-                *shared_mesh = Some(model);
-                model
+        frames.push(std::array::from_fn(|index| {
+            if index == 0 {
+                shader
+            } else {
+                ShaderChoice::Direct(variants[index])
             }
-        };
-        frames.push(ModelMaterials {
-            variants: std::array::from_fn(|index| ModelChoice {
-                model,
-                shader: if index == 0 {
-                    ShaderChoice::Occurrence(ShaderOccurrence((registrations.len() - 1) as u32))
-                } else {
-                    ShaderChoice::Direct(variants[index])
-                },
-                pose: policy.presentation.pose,
-            }),
+        }));
+        let x = i64::from(sprite.origin[0]);
+        let y = i64::from(sprite.origin[1]);
+        let width = i64::from(sprite.width);
+        let height = i64::from(sprite.height);
+        geometry.push(SpriteFrame {
+            extents: if model.format == ModelFormat::Spr {
+                [x as f32, (x + width) as f32, y as f32, (y - height) as f32]
+            } else {
+                [
+                    (-x) as f32,
+                    (width - x) as f32,
+                    (height - y) as f32,
+                    (-y) as f32,
+                ]
+            },
         });
     }
+    let shared_mesh = shared_meshes
+        .first_mut()
+        .ok_or("missing sprite mesh slot")?;
+    let model_id = match *shared_mesh {
+        Some(model) => model,
+        None => {
+            let geometry = SpriteGeometry {
+                frames: geometry.into_boxed_slice(),
+                orientation: if model.format == ModelFormat::Spr {
+                    SpriteOrientation::try_from(model.orientation)?
+                } else {
+                    SpriteOrientation::default()
+                },
+                beam_length: model.beam_length,
+                wrap_frames: model.format == ModelFormat::Sp2,
+            };
+            let model = images
+                .assets
+                .register_sprite(geometry, first_shader.ok_or("missing sprite frame")?)?;
+            if let Some(animation) = animation {
+                images
+                    .assets
+                    .set_model_animation(model, Arc::clone(animation))?;
+            }
+            *shared_mesh = Some(model);
+            model
+        }
+    };
+    let frames = frames
+        .into_iter()
+        .map(|shaders: [ShaderChoice; 4]| ModelMaterials {
+            variants: shaders.map(|shader| ModelChoice {
+                model: model_id,
+                shader,
+                pose: AliasPose::default(),
+            }),
+        })
+        .collect();
     capacity.surfaces = next_surfaces;
     capacity.skins = next_skins;
     Ok(CompiledModel {
@@ -5977,6 +6090,7 @@ fn model_image(
     image: Image<'_>,
     images: &mut Images<'_>,
     options: ModelProfile,
+    indexed_palette: Option<PaletteId>,
     role: ImageRole,
     indexed_external_pcx: bool,
     transparent: Option<u8>,
@@ -5991,12 +6105,12 @@ fn model_image(
             height,
             pixels,
         } => {
-            let palette = options.source_palette.ok_or(ResourceError::Asset(
+            let palette = indexed_palette.ok_or(ResourceError::Asset(
                 "indexed model requires a source palette",
             ))?;
             let texture = IndexedTexture::load_base(width, height, pixels, transparent)
                 .map_err(ResourceError::Asset)?;
-            let image = images.register_indexed(texture, palette)?;
+            let image = images.register_indexed(texture, palette, options.palette)?;
             let params = images.upload_params(usage)?;
             images
                 .assets
@@ -6055,6 +6169,7 @@ fn alias_materials(
             *skin,
             images,
             options,
+            registration.indexed_palette,
             ImageRole::Skin,
             model_policy.source.indexed_external_pcx,
             None,
