@@ -1968,7 +1968,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
     )
     .unwrap();
     let sound = bank.find("sound/test.wav").unwrap();
-    let mut mixer = qa_audio::Mixer::load(std::sync::Arc::new(bank), 1, 1);
+    let mut mixer = qa_audio::Mixer::load(bank.rate, 1, 1);
     mixer.listen(
         &[Some(qa_audio::Listener {
             negate_dot: false,
@@ -1979,22 +1979,25 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
         })],
         1.0,
     );
-    assert!(mixer.sound(qa_core::primitives::SoundEvent {
-        sound,
-        spatial: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
-        entity: Some(qa_core::primitives::SoundEmitter::Native {
-            namespace: ResourceNamespace::Client(client),
-            slot: 12,
-        }),
-        position: old.position,
-        volume: 1.0,
-        attenuation: 1.0,
-        client: Some(client),
-        ..Default::default()
-    }));
+    assert!(mixer.sound(
+        &bank,
+        qa_core::primitives::SoundEvent {
+            sound,
+            spatial: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
+            entity: Some(qa_core::primitives::SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(client),
+                slot: 12,
+            }),
+            position: old.position,
+            volume: 1.0,
+            attenuation: 1.0,
+            client: Some(client),
+            ..Default::default()
+        }
+    ));
     qa_app::audio::respatialize(&mut mixer, &[Some(entities), None, None, None]);
     let mut pcm = [0; 2];
-    assert!(mixer.paint(&mut pcm));
+    assert!(mixer.paint(&bank, &mut pcm));
     assert_eq!(pcm, [0, 1020]);
     let later = ClientEntities {
         interpolation: Interpolation {
@@ -2005,7 +2008,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
     };
     assert_eq!(later.get(12).unwrap().origin, Vec3([-50.0, 0.0, 0.0]));
     qa_app::audio::respatialize(&mut mixer, &[Some(later), None, None, None]);
-    assert!(mixer.paint(&mut pcm));
+    assert!(mixer.paint(&bank, &mut pcm));
     assert_eq!(pcm, [1020, 0]);
     assert_eq!(mixer.counts.started, 1);
     // A different client with the same ordinal cannot supply this voice's pose.
@@ -2014,7 +2017,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
         ..later
     };
     qa_app::audio::respatialize(&mut mixer, &[Some(foreign), None, None, None]);
-    assert!(mixer.paint(&mut pcm));
+    assert!(mixer.paint(&bank, &mut pcm));
     assert_eq!(pcm, [1020, 0]);
     assert_eq!(mixer.counts.missing_origins, 1);
 }

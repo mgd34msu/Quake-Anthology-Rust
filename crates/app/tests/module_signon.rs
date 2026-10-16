@@ -22,7 +22,7 @@ use qa_network::{
 };
 use qa_session::{clients::Connection, timing::TickRate};
 use qa_world::{area::LinkOrder, entities::AllocationPolicy};
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use std::{num::NonZeroU32, time::Duration};
 
 fn module(runtime: &mut Runtime, id: ModuleId, x: f32, rate: u32) -> ModuleRequest {
     let operations = [
@@ -113,7 +113,7 @@ fn module(runtime: &mut Runtime, id: ModuleId, x: f32, rate: u32) -> ModuleReque
     }
 }
 
-fn host(clients: usize) -> (FrameHost, Arc<qa_audio::Bank>) {
+fn host(clients: usize) -> FrameHost {
     let mut runtime = Runtime::load(clients, []).unwrap();
     let requests = vec![
         module(&mut runtime, ModuleId(2), 8.0, 20),
@@ -132,27 +132,25 @@ fn host(clients: usize) -> (FrameHost, Arc<qa_audio::Bank>) {
         assert_eq!(host.module_counts(module).unwrap().traps, 0);
     }
     let rate = NonZeroU32::new(44100).unwrap();
-    let bank = Arc::new(
-        qa_audio::Bank::load(
-            rate,
-            vec![(
-                "sound/loop.wav".into(),
-                Pcm {
-                    rate,
-                    channels: PcmChannels::Mono,
-                    samples: vec![1000, -1000],
-                    loop_start: Some(0),
-                    loop_end: None,
-                    loop_invalid: false,
-                },
-            )],
-        )
-        .unwrap(),
-    );
-    host.runtime.sound_bank = Some(Arc::clone(&bank));
-    host.bind_sounds(&bank).unwrap();
+    let bank = qa_audio::Bank::load(
+        rate,
+        vec![(
+            "sound/loop.wav".into(),
+            Pcm {
+                rate,
+                channels: PcmChannels::Mono,
+                samples: vec![1000, -1000],
+                loop_start: Some(0),
+                loop_end: None,
+                loop_invalid: false,
+            },
+        )],
+    )
+    .unwrap();
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.bind_sounds().unwrap();
     assert!(host.runtime.server.events.is_empty());
-    (host, bank)
+    host
 }
 
 fn connect(host: &mut FrameHost, seat: SeatId, native_client: u32) -> ClientId {
@@ -214,11 +212,14 @@ impl FrameSource for Source {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, sound: SoundEvent) -> bool {
+    fn sound(&mut self, bank: Option<&qa_audio::Bank>, sound: SoundEvent) -> bool {
         if sound.action == SoundAction::RetireClient {
             self.retired
                 .push((sound.client.unwrap(), sound.client_lifetime.unwrap()));
-            return self.mixer.as_mut().is_none_or(|mixer| mixer.sound(sound));
+            return self
+                .mixer
+                .as_mut()
+                .is_none_or(|mixer| mixer.sound(bank.unwrap(), sound));
         }
         assert_eq!(sound.action, SoundAction::StartLoop);
         assert!(sound.client_lifetime.is_some());
@@ -231,7 +232,9 @@ impl FrameSource for Source {
         ));
         self.positions
             .push((sound.client.unwrap(), sound.position.0[0]));
-        self.mixer.as_mut().is_none_or(|mixer| mixer.sound(sound))
+        self.mixer
+            .as_mut()
+            .is_none_or(|mixer| mixer.sound(bank.unwrap(), sound))
     }
     fn send_packet(&mut self, _: u16, _: std::net::SocketAddr, _: &[u8]) -> bool {
         self.blocked_packets += 1;
@@ -255,14 +258,19 @@ fn positions(source: &Source, client: ClientId) -> Vec<f32> {
 }
 
 fn late_connections_and_reused_client_slots_receive_each_module_signon_once() {
-    let (mut host, bank) = host(2);
+    let mut host = host(2);
     let first = connect(&mut host, SeatId::FIRST, 0);
-    host.bind_sounds(&bank).unwrap();
+    host.bind_sounds().unwrap();
     let first_output = host.runtime.server.clients[first.0 as usize]
         .output
         .unwrap();
     let old_entity = host.runtime.server.clients[first.0 as usize].entity;
-    let sound = bank.find("sound/loop.wav").unwrap();
+    let sound = host
+        .runtime
+        .sound_bank()
+        .unwrap()
+        .find("sound/loop.wav")
+        .unwrap();
     // Signon loops precede their configstring admission. A resource wait must
     // let those later configstrings through, without advancing later services.
     assert_eq!(
@@ -303,7 +311,7 @@ fn late_connections_and_reused_client_slots_receive_each_module_signon_once() {
     assert_eq!(positions(&source, first), [8.0, 16.0]);
 
     let second = connect(&mut host, SeatId::new(1).unwrap(), 1);
-    host.bind_sounds(&bank).unwrap();
+    host.bind_sounds().unwrap();
     frames(&mut host, &mut source, 24, 16);
     assert_eq!(positions(&source, first), [8.0, 16.0]);
     assert_eq!(positions(&source, second), [8.0, 9.0, 16.0]);
@@ -328,7 +336,7 @@ fn late_connections_and_reused_client_slots_receive_each_module_signon_once() {
         host.runtime.server.clients[first.0 as usize].entity,
         old_entity
     );
-    host.bind_sounds(&bank).unwrap();
+    host.bind_sounds().unwrap();
     frames(&mut host, &mut source, 44, 16);
     assert_eq!(positions(&source, first), [8.0, 16.0, 8.0, 9.0, 16.0]);
     assert_eq!(positions(&source, second), [8.0, 9.0, 16.0]);
@@ -341,7 +349,7 @@ fn late_connections_and_reused_client_slots_receive_each_module_signon_once() {
 }
 
 fn blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ticks_continue() {
-    let (mut host, bank) = host(2);
+    let mut host = host(2);
     let stalled = host
         .runtime
         .server
@@ -384,7 +392,7 @@ fn blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ti
         .unwrap();
     peer.submitted(EventTime(0)).unwrap();
     let healthy = connect(&mut host, SeatId::FIRST, 1);
-    host.bind_sounds(&bank).unwrap();
+    host.bind_sounds().unwrap();
     let mut source = Source::default();
     frames(&mut host, &mut source, 0, 64);
     assert!(source.blocked_packets > 0);
@@ -412,11 +420,11 @@ fn blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ti
 }
 
 fn decoded_static_loops_stop_at_disconnect_while_other_clients_and_ticks_continue() {
-    let (mut host, bank) = host(2);
+    let mut host = host(2);
     let first = connect(&mut host, SeatId::FIRST, 0);
     let healthy = connect(&mut host, SeatId::new(1).unwrap(), 1);
     let old = host.runtime.server.clients[first.0 as usize].entity;
-    let mut mixer = qa_audio::Mixer::load(Arc::clone(&bank), 16, 1);
+    let mut mixer = qa_audio::Mixer::load(host.runtime.sound_bank().unwrap().rate, 16, 1);
     let listen = |client| {
         Some(qa_audio::Listener {
             negate_dot: false,
@@ -433,7 +441,13 @@ fn decoded_static_loops_stop_at_disconnect_while_other_clients_and_ticks_continu
     };
     frames(&mut host, &mut source, 0, 16);
     let mut pcm = [0; 8];
-    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .as_mut()
+            .unwrap()
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     assert!(pcm.iter().any(|sample| *sample != 0));
     let before = host.module_counts(ModuleId(2)).unwrap().calls;
     host.runtime
@@ -455,14 +469,26 @@ fn decoded_static_loops_stop_at_disconnect_while_other_clients_and_ticks_continu
             .audio_retirement
             .is_none()
     );
-    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .as_mut()
+            .unwrap()
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     assert_eq!(pcm, [0; 8]);
     source
         .mixer
         .as_mut()
         .unwrap()
         .listen(&[listen(healthy)], 1.0);
-    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .as_mut()
+            .unwrap()
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     assert!(pcm.iter().any(|sample| *sample != 0));
     assert_eq!(
         host.runtime.server.clients[healthy.0 as usize].connection,
@@ -472,14 +498,14 @@ fn decoded_static_loops_stop_at_disconnect_while_other_clients_and_ticks_continu
 }
 
 fn stopping_secondary_module_retires_primary_recipient_without_stopping_other_provider() {
-    let (mut host, bank) = host(1);
+    let mut host = host(1);
     let client = connect(&mut host, SeatId::FIRST, 0);
     assert_eq!(
         host.runtime.server.clients[client.0 as usize].module,
         ModuleId(2)
     );
     let lifetime = host.runtime.server.clients[client.0 as usize].entity;
-    let mut mixer = qa_audio::Mixer::load(bank, 8, 1);
+    let mut mixer = qa_audio::Mixer::load(host.runtime.sound_bank().unwrap().rate, 8, 1);
     mixer.listen(
         &[Some(qa_audio::Listener {
             negate_dot: false,
@@ -514,7 +540,13 @@ fn stopping_secondary_module_retires_primary_recipient_without_stopping_other_pr
     frames(&mut host, &mut source, 16, 8);
     assert_eq!(source.retired, [(client, lifetime)]);
     let mut pcm = [1; 8];
-    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .as_mut()
+            .unwrap()
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     assert_eq!(pcm, [0; 8]);
     assert!(host.module_counts(ModuleId(2)).unwrap().calls > before);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
@@ -527,7 +559,13 @@ fn stopping_secondary_module_retires_primary_recipient_without_stopping_other_pr
     );
     frames(&mut host, &mut source, 24, 16);
     assert_eq!(positions(&source, client), [8.0, 16.0, 8.0]);
-    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .as_mut()
+            .unwrap()
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     assert!(pcm.iter().any(|sample| *sample != 0));
 }
 

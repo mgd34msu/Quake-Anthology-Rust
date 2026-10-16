@@ -133,7 +133,7 @@ fn attach(services: &mut EngineServices<'_>, context: CallContext, bank: &Arc<qa
     let sounds = services.storage.resources(context.module).unwrap()[1];
     services
         .storage
-        .bind_sound_bank(context.module, sounds, Arc::clone(bank))
+        .bind_sound_bank(context.module, sounds, bank.as_ref())
         .unwrap();
 }
 fn descriptor(source_ordinal: u32) -> AmbientSound {
@@ -188,7 +188,8 @@ fn cold_registration_waits_for_real_loop_binding_and_keeps_independent_source_ro
                 services.server,
                 context,
                 ClientId(0),
-                &mut initial[context.module.0 as usize - 1]
+                &mut initial[context.module.0 as usize - 1],
+                None
             ),
             Ok(0)
         );
@@ -202,7 +203,8 @@ fn cold_registration_waits_for_real_loop_binding_and_keeps_independent_source_ro
                 services.server,
                 context,
                 ClientId(0),
-                &mut initial[context.module.0 as usize - 1]
+                &mut initial[context.module.0 as usize - 1],
+                Some(bank.as_ref())
             ),
             Ok(1)
         );
@@ -211,7 +213,8 @@ fn cold_registration_waits_for_real_loop_binding_and_keeps_independent_source_ro
                 services.server,
                 context,
                 ClientId(0),
-                &mut initial[context.module.0 as usize - 1]
+                &mut initial[context.module.0 as usize - 1],
+                Some(bank.as_ref())
             ),
             Ok(0)
         );
@@ -265,7 +268,8 @@ fn post_attachment_registrations_are_only_for_explicit_late_client_signon() {
                 services.server,
                 context,
                 ClientId(0),
-                &mut initial[context.module.0 as usize - 1]
+                &mut initial[context.module.0 as usize - 1],
+                Some(bank.as_ref())
             ),
             Ok(1)
         );
@@ -282,7 +286,8 @@ fn post_attachment_registrations_are_only_for_explicit_late_client_signon() {
                 services.server,
                 context,
                 ClientId(0),
-                &mut initial[context.module.0 as usize - 1]
+                &mut initial[context.module.0 as usize - 1],
+                Some(bank.as_ref())
             ),
             Ok(0)
         );
@@ -290,15 +295,23 @@ fn post_attachment_registrations_are_only_for_explicit_late_client_signon() {
         let second = recipient(services, ClientId(1));
         let mut cursor = SignonCursor::default();
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, ClientId(1), &mut cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                ClientId(1),
+                &mut cursor,
+                Some(bank.as_ref())
+            ),
             Ok(2)
         );
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, ClientId(1), &mut cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                ClientId(1),
+                &mut cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
         assert!(drain(services, first).is_empty());
@@ -314,18 +327,26 @@ fn post_attachment_registrations_are_only_for_explicit_late_client_signon() {
                 .all(|r| r.delivery.unwrap().target == NativeTarget::Client(ClientId(1)))
         );
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, ClientId(0), &mut cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                ClientId(0),
+                &mut cursor,
+                Some(bank.as_ref())
+            ),
             Err(CallError::Entity)
         );
         assert!(services.server.disconnect(ClientId(0)));
         let first = recipient(services, ClientId(0));
         let mut other = SignonCursor::default();
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, ClientId(0), &mut other),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                ClientId(0),
+                &mut other,
+                Some(bank.as_ref())
+            ),
             Ok(2)
         );
         assert_eq!(drain(services, first).len(), 2);
@@ -356,7 +377,8 @@ fn unresolved_or_nonloop_samples_never_gain_fake_handles_and_module_slots_do_not
                     services.server,
                     context,
                     ClientId(0),
-                    &mut initial[context.module.0 as usize - 1]
+                    &mut initial[context.module.0 as usize - 1],
+                    Some(bank.as_ref())
                 ),
                 Ok(1)
             );
@@ -365,7 +387,8 @@ fn unresolved_or_nonloop_samples_never_gain_fake_handles_and_module_slots_do_not
                     services.server,
                     context,
                     ClientId(0),
-                    &mut initial[context.module.0 as usize - 1]
+                    &mut initial[context.module.0 as usize - 1],
+                    Some(bank.as_ref())
                 ),
                 Ok(0)
             );
@@ -397,7 +420,13 @@ fn resource_changes_do_not_republish_and_rebind_discards_old_map() {
         let mut cursor = SignonCursor::default();
         services
             .storage
-            .publish_signon(services.server, context, ClientId(0), &mut cursor)
+            .publish_signon(
+                services.server,
+                context,
+                ClientId(0),
+                &mut cursor,
+                Some(bank.as_ref()),
+            )
             .unwrap();
         let started = sound(drain(services, consumer)[0]);
         let sounds = services.storage.resources(context.module).unwrap()[1];
@@ -409,9 +438,13 @@ fn resource_changes_do_not_republish_and_rebind_discards_old_map() {
         )
         .unwrap();
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, ClientId(0), &mut cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                ClientId(0),
+                &mut cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
         assert!(drain(services, consumer).is_empty());
@@ -434,7 +467,8 @@ fn resource_changes_do_not_republish_and_rebind_discards_old_map() {
                 services.server,
                 context,
                 ClientId(0),
-                &mut initial[context.module.0 as usize - 1]
+                &mut initial[context.module.0 as usize - 1],
+                Some(bank.as_ref())
             ),
             Err(CallError::Entity)
         );
@@ -450,9 +484,13 @@ fn resource_changes_do_not_republish_and_rebind_discards_old_map() {
             .bind_lifetime(context.module, replacement)
             .unwrap();
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, ClientId(0), &mut cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                ClientId(0),
+                &mut cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
         assert_eq!(
@@ -460,7 +498,8 @@ fn resource_changes_do_not_republish_and_rebind_discards_old_map() {
                 services.server,
                 context,
                 ClientId(0),
-                &mut SignonCursor::default()
+                &mut SignonCursor::default(),
+                Some(bank.as_ref())
             ),
             Ok(0)
         );
@@ -531,13 +570,15 @@ fn mixed_static_and_sound_signon_keeps_one_order_and_independent_late_cursors() 
         );
         assert_eq!(services.server.entities.len(), lives);
         assert!(drain(services, consumer).is_empty());
-        attach(services, context, &bank());
+        let bank = bank();
+        attach(services, context, &bank);
         assert_eq!(
             services.storage.publish_signon(
                 services.server,
                 context,
                 ClientId(0),
-                &mut initial[context.module.0 as usize - 1]
+                &mut initial[context.module.0 as usize - 1],
+                Some(bank.as_ref())
             ),
             Ok(2)
         );
@@ -555,7 +596,8 @@ fn mixed_static_and_sound_signon_keeps_one_order_and_independent_late_cursors() 
                 services.server,
                 context,
                 ClientId(0),
-                &mut initial[context.module.0 as usize - 1]
+                &mut initial[context.module.0 as usize - 1],
+                Some(bank.as_ref())
             ),
             Ok(0)
         );
@@ -564,9 +606,13 @@ fn mixed_static_and_sound_signon_keeps_one_order_and_independent_late_cursors() 
         let consumer = recipient(services, ClientId(0));
         let mut cursor = SignonCursor::default();
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, ClientId(0), &mut cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                ClientId(0),
+                &mut cursor,
+                Some(bank.as_ref())
+            ),
             Ok(3)
         );
         let late = drain(services, consumer);
@@ -575,9 +621,13 @@ fn mixed_static_and_sound_signon_keeps_one_order_and_independent_late_cursors() 
             matches!(late[2].event, FrameEvent::StaticEntity(value) if value == EntityRecord::default())
         );
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, ClientId(0), &mut cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                ClientId(0),
+                &mut cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
         assert!(cursor.has_publication_for(

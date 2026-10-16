@@ -165,9 +165,13 @@ fn static_only_signon_has_no_audio_dependency_and_fixes_each_recipient_extent() 
         let mut first_cursor = SignonCursor::default();
         register_static(services, context, 8.0);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, first, &mut first_cursor,),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                first,
+                &mut first_cursor,
+                None
+            ),
             Ok(1)
         );
         let records = drain(services.server, first);
@@ -175,9 +179,13 @@ fn static_only_signon_has_no_audio_dependency_and_fixes_each_recipient_extent() 
             if value.position == Vec3([8.0, 0.0, 0.0])));
         register_static(services, context, 16.0);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, first, &mut first_cursor,),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                first,
+                &mut first_cursor,
+                None
+            ),
             Ok(0)
         );
         let second = connect(services.server);
@@ -187,6 +195,7 @@ fn static_only_signon_has_no_audio_dependency_and_fixes_each_recipient_extent() 
                 context,
                 second,
                 &mut SignonCursor::default(),
+                None
             ),
             Ok(2)
         );
@@ -205,7 +214,7 @@ fn bank_free_static_prefix_preserves_pending_ambient_order_until_bank_attachment
         assert_eq!(
             services
                 .storage
-                .publish_signon(services.server, context, client, &mut cursor),
+                .publish_signon(services.server, context, client, &mut cursor, None),
             Ok(1)
         );
         assert!(matches!(
@@ -215,24 +224,29 @@ fn bank_free_static_prefix_preserves_pending_ambient_order_until_bank_attachment
         assert_eq!(
             services
                 .storage
-                .publish_signon(services.server, context, client, &mut cursor),
+                .publish_signon(services.server, context, client, &mut cursor, None),
             Ok(0)
         );
         // The static prefix already fixed this recipient's extent; later rows
         // cannot leak into it when the pending ambient becomes bank-backed.
         register_static(services, context, 24.0);
+        let bank = bank();
         services
             .storage
             .bind_sound_bank(
                 context.module,
                 ConfigLayout::for_rules(context.native_rules).resources[1],
-                bank(),
+                bank.as_ref(),
             )
             .unwrap();
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, client, &mut cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                client,
+                &mut cursor,
+                Some(bank.as_ref())
+            ),
             Ok(1)
         );
         let sound = match drain(services.server, client)[0].event {
@@ -242,9 +256,13 @@ fn bank_free_static_prefix_preserves_pending_ambient_order_until_bank_attachment
         assert_eq!(sound.position, Vec3([2.0, 0.0, 0.0]));
         assert_eq!(sound.action, SoundAction::StartLoop);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, client, &mut cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                client,
+                &mut cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
     });
@@ -258,9 +276,13 @@ fn bank_backed_extent_is_fixed_and_new_connection_and_module_lifetimes_restart_i
         let mut first_cursor = SignonCursor::default();
         register(services, context, ordinal, 8);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, first, &mut first_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                first,
+                &mut first_cursor,
+                None
+            ),
             Ok(0)
         );
         register(services, context, ordinal, 16);
@@ -270,13 +292,17 @@ fn bank_backed_extent_is_fixed_and_new_connection_and_module_lifetimes_restart_i
             .bind_sound_bank(
                 context.module,
                 ConfigLayout::for_rules(context.native_rules).resources[1],
-                bank,
+                bank.as_ref(),
             )
             .unwrap();
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, first, &mut first_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                first,
+                &mut first_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(2)
         );
         let records = drain(services.server, first);
@@ -290,25 +316,37 @@ fn bank_backed_extent_is_fixed_and_new_connection_and_module_lifetimes_restart_i
         assert!(services.server.events.is_empty());
         register(services, context, ordinal, 24);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, first, &mut first_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                first,
+                &mut first_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
         let second = connect(services.server);
         let mut second_cursor = SignonCursor::default();
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, second, &mut second_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                second,
+                &mut second_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(3)
         );
         assert_eq!(drain(services.server, second).len(), 3);
         assert!(drain(services.server, first).is_empty());
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, second, &mut first_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                second,
+                &mut first_cursor,
+                Some(bank.as_ref())
+            ),
             Err(CallError::Entity)
         );
         assert!(services.server.disconnect(first));
@@ -319,16 +357,24 @@ fn bank_backed_extent_is_fixed_and_new_connection_and_module_lifetimes_restart_i
             old_connection
         );
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, reused, &mut first_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                reused,
+                &mut first_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(3)
         );
         assert_eq!(drain(services.server, reused).len(), 3);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, second, &mut second_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                second,
+                &mut second_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
         let old_records = services.server.events.sequence_range();
@@ -344,9 +390,13 @@ fn bank_backed_extent_is_fixed_and_new_connection_and_module_lifetimes_restart_i
             .unwrap();
         register(services, context, ordinal, 32);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, reused, &mut first_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                reused,
+                &mut first_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(1)
         );
         let record = drain(services.server, reused).pop().unwrap();
@@ -356,9 +406,13 @@ fn bank_backed_extent_is_fixed_and_new_connection_and_module_lifetimes_restart_i
         );
         assert!(record.sequence >= old_records.end);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, second, &mut second_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                second,
+                &mut second_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(1)
         );
         assert_eq!(drain(services.server, second).len(), 1);
@@ -383,49 +437,70 @@ fn one_resync_recipient_does_not_consume_its_extent_or_block_another_recipient()
         }
         assert!(services.server.events.needs_resync(output));
         register(services, context, ordinal, 8);
+        let bank = bank();
         services
             .storage
             .bind_sound_bank(
                 context.module,
                 ConfigLayout::for_rules(context.native_rules).resources[1],
-                bank(),
+                bank.as_ref(),
             )
             .unwrap();
         let mut stalled_cursor = SignonCursor::default();
         let mut healthy_cursor = SignonCursor::default();
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, stalled, &mut stalled_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                stalled,
+                &mut stalled_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, healthy, &mut healthy_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                healthy,
+                &mut healthy_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(1)
         );
         assert_eq!(drain(services.server, healthy).len(), 1);
         register(services, context, ordinal, 16);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, healthy, &mut healthy_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                healthy,
+                &mut healthy_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
         let resumed = services.server.events.resume(output).unwrap();
         services.server.clients[stalled.0 as usize].output = Some(resumed);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, stalled, &mut stalled_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                stalled,
+                &mut stalled_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(2)
         );
         assert_eq!(drain(services.server, stalled).len(), 2);
         assert_eq!(
-            services
-                .storage
-                .publish_signon(services.server, context, stalled, &mut stalled_cursor),
+            services.storage.publish_signon(
+                services.server,
+                context,
+                stalled,
+                &mut stalled_cursor,
+                Some(bank.as_ref())
+            ),
             Ok(0)
         );
     });

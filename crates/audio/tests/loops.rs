@@ -1,7 +1,7 @@
 use qa_audio::{Bank, Listener, Mixer};
 use qa_core::primitives::*;
 use qa_gameplay::rules::{loop_rules, loop_spatial_policy};
-use std::{num::NonZeroU32, sync::Arc};
+use std::num::NonZeroU32;
 
 const CLIENT: ClientId = ClientId(7);
 const LIFE: EntityId = EntityId {
@@ -9,7 +9,7 @@ const LIFE: EntityId = EntityId {
     generation: 9,
 };
 
-fn mixer(samples: &[i16], loop_start: Option<usize>, voices: usize) -> Mixer {
+fn mixer(samples: &[i16], loop_start: Option<usize>, voices: usize) -> (Bank, Mixer) {
     let rate = NonZeroU32::new(44_100).unwrap();
     let bank = Bank::load(
         rate,
@@ -26,9 +26,9 @@ fn mixer(samples: &[i16], loop_start: Option<usize>, voices: usize) -> Mixer {
         )],
     )
     .unwrap();
-    let mut mixer = Mixer::load(Arc::new(bank), voices, 2);
+    let mut mixer = Mixer::load(bank.rate, voices, 2);
     listen(&mut mixer, 1.0);
-    mixer
+    (bank, mixer)
 }
 fn listen(mixer: &mut Mixer, volume: f32) {
     mixer.listen(
@@ -51,11 +51,11 @@ fn appearance() -> EntityAppearance {
         ..EntityAppearance::default()
     }
 }
-fn native_loop(mixer: &Mixer, source: RuleSetId, slot: i32) -> SoundEvent {
-    loop_with(mixer, source, slot, &appearance(), source)
+fn native_loop(bank: &Bank, source: RuleSetId, slot: i32) -> SoundEvent {
+    loop_with(bank, source, slot, &appearance(), source)
 }
 fn loop_with(
-    mixer: &Mixer,
+    bank: &Bank,
     source: RuleSetId,
     slot: i32,
     appearance: &EntityAppearance,
@@ -66,7 +66,7 @@ fn loop_with(
         .admit(appearance, loop_spatial_policy(presentation))
         .unwrap();
     SoundEvent {
-        sound: mixer.bank.find("sound/loop.wav").unwrap(),
+        sound: bank.find("sound/loop.wav").unwrap(),
         source_ordinal: Some(23),
         looping: Some(playback),
         spatial,
@@ -95,11 +95,11 @@ fn original_integer_loop_formulas_keep_both_shifts_and_source_volume_scale() {
     let samples = [1001, -1001, 32_767, -32_768, 13];
     for (source, gain, scale) in [(RuleSetId::Quake2, 127, 256), (RuleSetId::Quake3, 63, 255)] {
         for volume in [1.0, 0.8, 0.5, 0.001] {
-            let mut mixer = mixer(&samples, None, 2);
+            let (bank, mut mixer) = mixer(&samples, None, 2);
             listen(&mut mixer, volume);
-            assert!(mixer.sound(native_loop(&mixer, source, 1)));
+            assert!(mixer.sound(&bank, native_loop(&bank, source, 1)));
             let mut output = [0; 10];
-            assert!(mixer.paint(&mut output));
+            assert!(mixer.paint(&bank, &mut output));
             for (frame, sample) in output.chunks_exact(2).zip(samples) {
                 assert_eq!(
                     frame,
@@ -119,12 +119,12 @@ fn native_loops_use_painted_time_and_full_sample_wrap_ignoring_wav_cues() {
         RuleSetId::Quake3,
     ] {
         let samples = [101, 203, 307, 409, 503];
-        let mut mixer = mixer(&samples, Some(2), 1);
-        assert!(mixer.paint(&mut [0; 4]));
-        let event = native_loop(&mixer, source, 4);
-        assert!(mixer.sound(event));
+        let (bank, mut mixer) = mixer(&samples, Some(2), 1);
+        assert!(mixer.paint(&bank, &mut [0; 4]));
+        let event = native_loop(&bank, source, 4);
+        assert!(mixer.sound(&bank, event));
         let mut output = [0; 8];
-        assert!(mixer.paint(&mut output));
+        assert!(mixer.paint(&bank, &mut output));
         let expected = |sample| match source {
             RuleSetId::Quake2 => integer_sample(sample, 127, 1.0, 256),
             RuleSetId::Quake3 => integer_sample(sample, 63, 1.0, 255),
@@ -143,8 +143,8 @@ fn native_loops_use_painted_time_and_full_sample_wrap_ignoring_wav_cues() {
                 expected(101)
             ]
         );
-        assert!(mixer.sound(event));
-        assert!(mixer.paint(&mut output[..2]));
+        assert!(mixer.sound(&bank, event));
+        assert!(mixer.paint(&bank, &mut output[..2]));
         assert_eq!(output[..2], [expected(203); 2]);
         assert_eq!(mixer.counts.started, 1);
     }
@@ -153,32 +153,30 @@ fn native_loops_use_painted_time_and_full_sample_wrap_ignoring_wav_cues() {
 #[test]
 fn shared_waveform_retains_independent_cue_and_full_painted_loop_periods() {
     let rate = NonZeroU32::new(44_100).unwrap();
-    let bank = Arc::new(
-        Bank::load(
-            rate,
-            vec![(
-                "sound/loop.wav".into(),
-                Pcm {
-                    rate,
-                    channels: PcmChannels::Mono,
-                    samples: vec![101, 203, 307, 409],
-                    loop_start: Some(1),
-                    loop_end: Some(3),
-                    loop_invalid: false,
-                },
-            )],
-        )
-        .unwrap(),
-    );
+    let bank = Bank::load(
+        rate,
+        vec![(
+            "sound/loop.wav".into(),
+            Pcm {
+                rate,
+                channels: PcmChannels::Mono,
+                samples: vec![101, 203, 307, 409],
+                loop_start: Some(1),
+                loop_end: Some(3),
+                loop_invalid: false,
+            },
+        )],
+    )
+    .unwrap();
     for (source, sequence, gain, scale) in [
         (RuleSetId::Quake2, [101, 203, 307, 101, 203, 307], 127, 256),
         (RuleSetId::Quake3, [101, 203, 307, 409, 101, 203], 63, 255),
     ] {
-        let mut mixer = Mixer::load(Arc::clone(&bank), 1, 1);
+        let mut mixer = Mixer::load(bank.rate, 1, 1);
         listen(&mut mixer, 1.0);
-        assert!(mixer.sound(native_loop(&mixer, source, 4)));
+        assert!(mixer.sound(&bank, native_loop(&bank, source, 4)));
         let mut output = [0; 12];
-        assert!(mixer.paint(&mut output));
+        assert!(mixer.paint(&bank, &mut output));
         let expected: Vec<_> = sequence
             .into_iter()
             .flat_map(|sample| [integer_sample(sample, gain, 1.0, scale); 2])
@@ -191,15 +189,15 @@ fn shared_waveform_retains_independent_cue_and_full_painted_loop_periods() {
             .samples,
         [101, 203, 307, 409]
     );
-    let mut mixed = Mixer::load(bank, 2, 1);
+    let mut mixed = Mixer::load(bank.rate, 2, 1);
     listen(&mut mixed, 1.0);
-    let full = native_loop(&mixed, RuleSetId::Quake3, 4);
-    let mut cue = native_loop(&mixed, RuleSetId::Quake3, 5);
+    let full = native_loop(&bank, RuleSetId::Quake3, 4);
+    let mut cue = native_loop(&bank, RuleSetId::Quake3, 5);
     cue.looping.as_mut().unwrap().cue_extent = true;
-    assert!(mixed.sound(full));
-    assert!(mixed.sound(cue));
+    assert!(mixed.sound(&bank, full));
+    assert!(mixed.sound(&bank, cue));
     let mut output = [0; 12];
-    assert!(mixed.paint(&mut output));
+    assert!(mixed.paint(&bank, &mut output));
     let first_shift = |sample: i16| (i64::from(sample) * (63 * 255)) >> 8;
     for (frame, (full, cue)) in output.chunks_exact(2).zip(
         [101, 203, 307, 409, 101, 203]
@@ -216,15 +214,15 @@ fn shared_waveform_retains_independent_cue_and_full_painted_loop_periods() {
 #[test]
 fn cursor_loop_updates_keep_the_cursor_but_wrap_the_full_pcm() {
     let samples = [101, 203, 307, 409];
-    let mut mixer = mixer(&samples, Some(2), 1);
-    assert!(mixer.paint(&mut [0; 4]));
-    let mut event = native_loop(&mixer, RuleSetId::Quake2, 4);
+    let (bank, mut mixer) = mixer(&samples, Some(2), 1);
+    assert!(mixer.paint(&bank, &mut [0; 4]));
+    let mut event = native_loop(&bank, RuleSetId::Quake2, 4);
     event.looping.as_mut().unwrap().phase = LoopPhase::Cursor;
-    assert!(mixer.sound(event));
+    assert!(mixer.sound(&bank, event));
     let mut output = [0; 2];
     for sample in samples.into_iter().chain([101, 203]) {
-        assert!(mixer.sound(event));
-        assert!(mixer.paint(&mut output));
+        assert!(mixer.sound(&bank, event));
+        assert!(mixer.paint(&bank, &mut output));
         assert_eq!(output, [integer_sample(sample, 127, 1.0, 256); 2]);
     }
     assert_eq!(mixer.counts.started, 1);
@@ -238,23 +236,23 @@ fn same_pcm_integer_groups_cap_after_emitter_gains_and_merge_q3_lifetimes() {
         (RuleSetId::Quake3, 3, 189, 255),
         (RuleSetId::Quake3, 5, 255, 255),
     ] {
-        let mut mixer = mixer(&[1001], None, 8);
+        let (bank, mut mixer) = mixer(&[1001], None, 8);
         for slot in (1..=count).rev() {
-            assert!(mixer.sound(native_loop(&mixer, source, slot)));
+            assert!(mixer.sound(&bank, native_loop(&bank, source, slot)));
         }
         let mut output = [0; 2];
-        assert!(mixer.paint(&mut output));
+        assert!(mixer.paint(&bank, &mut output));
         assert_eq!(output, [integer_sample(1001, gain, 1.0, scale); 2]);
     }
-    let mut mixer = mixer(&[1001], None, 2);
+    let (bank, mut mixer) = mixer(&[1001], None, 2);
     let mut speaker = appearance();
     speaker.native.entity_type = 7;
-    let speaker = loop_with(&mixer, RuleSetId::Quake3, 8, &speaker, RuleSetId::Quake3);
+    let speaker = loop_with(&bank, RuleSetId::Quake3, 8, &speaker, RuleSetId::Quake3);
     assert_eq!(speaker.looping.unwrap().lifetime, LoopLifetime::Persistent);
-    assert!(mixer.sound(speaker));
-    assert!(mixer.sound(native_loop(&mixer, RuleSetId::Quake3, 1)));
+    assert!(mixer.sound(&bank, speaker));
+    assert!(mixer.sound(&bank, native_loop(&bank, RuleSetId::Quake3, 1)));
     let mut output = [0; 2];
-    assert!(mixer.paint(&mut output));
+    assert!(mixer.paint(&bank, &mut output));
     assert_eq!(output, [integer_sample(1001, 45 + 63, 1.0, 255); 2]);
 }
 
@@ -262,14 +260,14 @@ fn same_pcm_integer_groups_cap_after_emitter_gains_and_merge_q3_lifetimes() {
 fn rerelease_float_groups_cap_before_global_volume_and_truncate_at_transfer() {
     for count in [1, 2, 3] {
         for volume in [1.0, 0.37] {
-            let mut mixer = mixer(&[1001, -1001], None, 3);
+            let (bank, mut mixer) = mixer(&[1001, -1001], None, 3);
             listen(&mut mixer, volume);
             for slot in (1..=count).rev() {
-                assert!(mixer.sound(native_loop(&mixer, RuleSetId::Quake2Rerelease, slot)));
+                assert!(mixer.sound(&bank, native_loop(&bank, RuleSetId::Quake2Rerelease, slot)));
             }
             let gain = (0.5f32 * count as f32).min(1.0) * volume;
             let mut output = [0; 4];
-            assert!(mixer.paint(&mut output));
+            assert!(mixer.paint(&bank, &mut output));
             let positive = (1001.0 * gain) as i16;
             let negative = (-1001.0 * gain) as i16;
             assert_eq!(output, [positive, positive, negative, negative]);
@@ -284,12 +282,12 @@ fn loop_geometry_does_not_apply_the_one_shot_self_volume_shortcut() {
         (RuleSetId::Quake2Rerelease, 40),
         (RuleSetId::Quake3, 366),
     ] {
-        let mut mixer = mixer(&[1001], None, 1);
-        let mut event = native_loop(&mixer, source, 1);
+        let (bank, mut mixer) = mixer(&[1001], None, 1);
+        let mut event = native_loop(&bank, source, 1);
         event.position = Vec3([400.0, 0.0, 0.0]);
-        assert!(mixer.sound(event));
+        assert!(mixer.sound(&bank, event));
         let mut output = [0; 2];
-        assert!(mixer.paint(&mut output));
+        assert!(mixer.paint(&bank, &mut output));
         assert_eq!(output, [0, right], "{source:?}");
     }
 }
@@ -329,29 +327,29 @@ fn independent_presentation_and_rerelease_overrides_are_cached_capability_data()
 #[test]
 fn no_stereo_still_attenuates_and_attenuation_none_does_not_pan() {
     for (attenuation, flags, expected) in [(0.0, 4, 40), (-1.0, 0, 1001)] {
-        let mut mixer = mixer(&[1001], None, 1);
+        let (bank, mut mixer) = mixer(&[1001], None, 1);
         let mut appearance = appearance();
         appearance.native.render_flags = flags;
         appearance.native.loop_attenuation = attenuation;
         let mut event = loop_with(
-            &mixer,
+            &bank,
             RuleSetId::Quake2Rerelease,
             2,
             &appearance,
             RuleSetId::Quake2Rerelease,
         );
         event.position = Vec3([400.0, 0.0, 0.0]);
-        assert!(mixer.sound(event));
+        assert!(mixer.sound(&bank, event));
         let mut output = [0; 2];
-        assert!(mixer.paint(&mut output));
+        assert!(mixer.paint(&bank, &mut output));
         assert_eq!(output, [expected; 2]);
     }
 }
 
 #[test]
 fn loop_only_stop_reset_and_replacement_preserve_channel_zero_and_static_cues() {
-    let mut mixer = mixer(&[1001], Some(0), 5);
-    let loop_event = native_loop(&mixer, RuleSetId::Quake2, 1);
+    let (bank, mut mixer) = mixer(&[1001], Some(0), 5);
+    let loop_event = native_loop(&bank, RuleSetId::Quake2, 1);
     let mut one_shot = loop_event;
     one_shot.looping = None;
     one_shot.action = SoundAction::Play;
@@ -363,31 +361,31 @@ fn loop_only_stop_reset_and_replacement_preserve_channel_zero_and_static_cues() 
         slot: 4,
     });
     static_cue.action = SoundAction::StartLoop;
-    assert!(mixer.sound(loop_event));
-    assert!(mixer.sound(one_shot));
-    assert!(mixer.sound(static_cue));
+    assert!(mixer.sound(&bank, loop_event));
+    assert!(mixer.sound(&bank, one_shot));
+    assert!(mixer.sound(&bank, static_cue));
     let mut stop = loop_event;
     stop.looping = None;
     stop.action = SoundAction::StopLoop;
-    assert!(mixer.sound(stop));
+    assert!(mixer.sound(&bank, stop));
     assert_eq!(mixer.counts.stopped, 1);
     let mut output = [0; 2];
-    assert!(mixer.paint(&mut output));
+    assert!(mixer.paint(&bank, &mut output));
     assert_eq!(output, [1994; 2]);
-    assert!(mixer.sound(loop_event));
+    assert!(mixer.sound(&bank, loop_event));
     let mut next = loop_event;
     next.client_lifetime = Some(EntityId {
         generation: LIFE.generation + 1,
         ..LIFE
     });
-    assert!(mixer.sound(next));
-    assert!(mixer.sound(SoundEvent::reset_client_loops(CLIENT, LIFE)));
+    assert!(mixer.sound(&bank, next));
+    assert!(mixer.sound(&bank, SoundEvent::reset_client_loops(CLIENT, LIFE)));
     assert_eq!(mixer.counts.stopped, 2);
-    assert!(mixer.paint(&mut output));
+    assert!(mixer.paint(&bank, &mut output));
     assert_eq!(output, [1994 + integer_sample(1001, 127, 1.0, 256); 2]);
-    assert!(mixer.sound(SoundEvent::retire_client(CLIENT, LIFE)));
+    assert!(mixer.sound(&bank, SoundEvent::retire_client(CLIENT, LIFE)));
     assert_eq!(mixer.counts.stopped, 4);
-    assert!(mixer.paint(&mut output));
+    assert!(mixer.paint(&bank, &mut output));
     assert_eq!(output, [integer_sample(1001, 127, 1.0, 256); 2]);
 }
 
@@ -413,79 +411,79 @@ fn changing_a_native_loop_pcm_reuses_only_its_emitter_voice() {
             .to_vec(),
     )
     .unwrap();
-    let mut mixer = Mixer::load(Arc::new(bank), 2, 1);
+    let mut mixer = Mixer::load(bank.rate, 2, 1);
     listen(&mut mixer, 1.0);
-    let event = native_loop(&mixer, RuleSetId::Quake2, 1);
+    let event = native_loop(&bank, RuleSetId::Quake2, 1);
     let mut one_shot = event;
     one_shot.looping = None;
     one_shot.action = SoundAction::Play;
     one_shot.attenuation = 0.0;
-    assert!(mixer.sound(one_shot));
-    assert!(mixer.sound(event));
+    assert!(mixer.sound(&bank, one_shot));
+    assert!(mixer.sound(&bank, event));
     let mut changed = event;
-    changed.sound = mixer.bank.find("sound/other.wav").unwrap();
-    assert!(mixer.sound(changed));
+    changed.sound = bank.find("sound/other.wav").unwrap();
+    assert!(mixer.sound(&bank, changed));
     assert_eq!(mixer.counts.replaced, 1);
     let mut output = [0; 2];
-    assert!(mixer.paint(&mut output));
+    assert!(mixer.paint(&bank, &mut output));
     assert_eq!(output, [997 + integer_sample(-2003, 127, 1.0, 256); 2]);
 }
 
 #[test]
 fn an_inaudible_float_loop_preserves_ordinary_negative_transfer_rounding() {
-    let mut mixer = mixer(&[-1001], None, 2);
-    let mut native = native_loop(&mixer, RuleSetId::Quake2Rerelease, 1);
+    let (bank, mut mixer) = mixer(&[-1001], None, 2);
+    let mut native = native_loop(&bank, RuleSetId::Quake2Rerelease, 1);
     native.position = Vec3([10_000.0, 0.0, 0.0]);
-    assert!(mixer.sound(native));
+    assert!(mixer.sound(&bank, native));
     let mut one_shot = native;
     one_shot.looping = None;
     one_shot.action = SoundAction::Play;
     one_shot.attenuation = 0.0;
-    assert!(mixer.sound(one_shot));
+    assert!(mixer.sound(&bank, one_shot));
     let mut output = [0; 2];
-    assert!(mixer.paint(&mut output));
+    assert!(mixer.paint(&bank, &mut output));
     assert_eq!(output, [-998; 2]);
 }
 
 #[test]
 fn invalid_loop_gain_or_scope_does_not_replace_a_retained_voice() {
-    let mut mixer = mixer(&[1001], None, 1);
-    let event = native_loop(&mixer, RuleSetId::Quake2Rerelease, 1);
-    assert!(mixer.sound(event));
+    let (bank, mut mixer) = mixer(&[1001], None, 1);
+    let event = native_loop(&bank, RuleSetId::Quake2Rerelease, 1);
+    assert!(mixer.sound(&bank, event));
     for master in [f32::NAN, f32::INFINITY, -1.0, 1.1] {
         let mut invalid = event;
         invalid.looping.as_mut().unwrap().master = LoopGain::Float(master);
-        assert!(!mixer.sound(invalid));
+        assert!(!mixer.sound(&bank, invalid));
     }
     let mut invalid = event;
     invalid.client_lifetime = None;
-    assert!(!mixer.sound(invalid));
+    assert!(!mixer.sound(&bank, invalid));
     invalid = event;
     invalid.entity = Some(SoundEmitter::Native {
         namespace: ResourceNamespace::Module(ModuleId(7)),
         slot: 1,
     });
-    assert!(!mixer.sound(invalid));
+    assert!(!mixer.sound(&bank, invalid));
     invalid = event;
     invalid.time_offset = 0.5;
-    assert!(!mixer.sound(invalid));
+    assert!(!mixer.sound(&bank, invalid));
     assert_eq!(mixer.counts.invalid, 7);
     let mut output = [0; 2];
-    assert!(mixer.paint(&mut output));
+    assert!(mixer.paint(&bank, &mut output));
     assert_eq!(output, [500; 2]);
     assert_eq!(mixer.counts.started, 1);
 }
 
 #[test]
 fn moving_loops_select_the_native_pose_capability_separately_from_channels() {
-    let mut mixer = mixer(&[1001], None, 3);
+    let (bank, mut mixer) = mixer(&[1001], None, 3);
     for (source, slot) in [(RuleSetId::Quake2, 1), (RuleSetId::Quake2Rerelease, 2)] {
-        assert!(mixer.sound(native_loop(&mixer, source, slot)));
+        assert!(mixer.sound(&bank, native_loop(&bank, source, slot)));
     }
-    let mut ordinary = native_loop(&mixer, RuleSetId::Quake3, 3);
+    let mut ordinary = native_loop(&bank, RuleSetId::Quake3, 3);
     ordinary.looping = None;
     ordinary.action = SoundAction::Play;
-    assert!(mixer.sound(ordinary));
+    assert!(mixer.sound(&bank, ordinary));
     let mut calls = [false; 3];
     mixer.respatialize(|client, slot, origin| {
         assert_eq!(client, CLIENT);

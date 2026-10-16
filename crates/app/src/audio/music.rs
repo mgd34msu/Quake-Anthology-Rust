@@ -536,7 +536,7 @@ impl Music {
             }
             let format = self.tracks[source.track].format();
             let wanted = (mixer.raw_remaining() as u64 * u64::from(format.rate.get())
-                / u64::from(mixer.bank.rate.get())) as usize;
+                / u64::from(mixer.rate().get())) as usize;
             let frames = wanted.min(self.bytes.len() / format.frame_bytes());
             if frames == 0 {
                 return;

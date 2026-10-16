@@ -43,7 +43,7 @@ impl FrameSource for Source {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         self.resets += usize::from(event.action == SoundAction::ResetClientLoops);
         if event.action == SoundAction::Play {
             self.plays += 1;

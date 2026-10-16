@@ -60,7 +60,7 @@ pub trait FrameSource {
         true
     }
     /// False reports an unloaded backend, not successful audio/particle proof.
-    fn sound(&mut self, _event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, _event: SoundEvent) -> bool {
         false
     }
     fn music(
@@ -89,6 +89,7 @@ pub trait FrameSource {
     }
     fn mix_audio(
         &mut self,
+        _bank: Option<&qa_audio::Bank>,
         _entities: &[Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT],
     ) {
     }
@@ -140,10 +141,10 @@ impl FrameSource for LiveFrame<'_> {
             renderer.set_effect_clients(*clients, time, gravity);
         }
     }
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         self.audio.as_deref_mut().is_some_and(|audio| {
             audio.music.sound_control(&mut audio.mixer, event);
-            audio.mixer.sound(event)
+            bank.is_some_and(|bank| audio.mixer.sound(bank, event))
         })
     }
     fn music(
@@ -184,10 +185,13 @@ impl FrameSource for LiveFrame<'_> {
     }
     fn mix_audio(
         &mut self,
+        bank: Option<&qa_audio::Bank>,
         entities: &[Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT],
     ) {
         if let Some(audio) = self.audio.as_deref_mut() {
-            audio.submit(entities);
+            if let Some(bank) = bank {
+                audio.submit(bank, entities);
+            }
         }
     }
     fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
@@ -1484,7 +1488,7 @@ impl FrameHost {
             &self.runtime.vfs,
             self.console.cvars.value(self.music_volume),
         );
-        source.mix_audio(&self.client_entities_inputs());
+        source.mix_audio(self.runtime.sound_bank(), &self.client_entities_inputs());
     }
 
     fn client_listeners(&self) -> [Option<qa_audio::Listener>; SeatId::COUNT] {
@@ -1778,8 +1782,11 @@ impl FrameHost {
                                         config.index as usize,
                                         config.text,
                                         self.runtime.model_assets.as_ref().filter(|owner| !owner.initial_registration()).map(crate::model_assets::ModelAssets::catalog),
-                                        self.runtime.sound_bank.as_deref(),
+                                        self.runtime.sound_assets.as_deref().map(crate::audio::SoundAssets::bank),
                                     ) && music;
+                                    if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
+                                        resources.state.prepare_sounds(assets, &self.runtime.vfs);
+                                    }
                                 }
                                 if music_changed {
                                     crate::audio::config_music(&mut self.runtime, id, config.text);
@@ -1794,8 +1801,11 @@ impl FrameHost {
                                     resources.apply_gamestate(
                                         &gamestate,
                                         self.runtime.model_assets.as_ref().filter(|owner| !owner.initial_registration()).map(crate::model_assets::ModelAssets::catalog),
-                                        self.runtime.sound_bank.as_deref(),
+                                        self.runtime.sound_assets.as_deref().map(crate::audio::SoundAssets::bank),
                                     );
+                                    if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
+                                        resources.state.prepare_sounds(assets, &self.runtime.vfs);
+                                    }
                                 }
                                 if let Some(binding) =
                                     self.runtime.snapshots[id.0 as usize].as_mut()

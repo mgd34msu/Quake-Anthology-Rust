@@ -3,7 +3,7 @@ use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor, modules::ApiCheck};
 use qa_compat::native::q2::Game;
 use qa_core::{events::NativeReceipt, loopback::Endpoint, primitives::*, sys_events::SeatId};
 use qa_network::commands::packet::Protocol;
-use std::{num::NonZeroU32, sync::Arc};
+use std::num::NonZeroU32;
 
 struct RemotePeer {
     client: ClientId,
@@ -433,9 +433,12 @@ impl FrameSource for AudioSource {
         }
         true
     }
-    fn sound(&mut self, sound: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, sound: SoundEvent) -> bool {
         if sound.action == SoundAction::RetireClient {
-            return self.mixer.as_mut().is_none_or(|mixer| mixer.sound(sound));
+            return self
+                .mixer
+                .as_mut()
+                .is_none_or(|mixer| mixer.sound(_bank.unwrap(), sound));
         }
         let client = sound.client.expect("only queued CLIENT playback");
         assert!(sound.positioned);
@@ -448,7 +451,9 @@ impl FrameSource for AudioSource {
         }
         self.played.push((client, sound.sound, sound.entity));
         self.sounds[client.0 as usize] += 1;
-        self.mixer.as_mut().is_none_or(|mixer| mixer.sound(sound))
+        self.mixer
+            .as_mut()
+            .is_none_or(|mixer| mixer.sound(_bank.unwrap(), sound))
     }
 }
 
@@ -528,29 +533,27 @@ pub(super) fn remote_native_emitters_keep_the_module_entity_channel() {
         host.initialize_modules(Phase::Server);
         assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
         let rate = NonZeroU32::new(44100).unwrap();
-        let bank = Arc::new(
-            qa_audio::Bank::load(
-                rate,
-                ["sound/a.wav", "sound/b.wav"]
-                    .map(|name| {
-                        (
-                            name.to_string(),
-                            Pcm {
-                                rate,
-                                channels: PcmChannels::Mono,
-                                samples: vec![1024; 2],
-                                loop_start: None,
-                                loop_end: None,
-                                loop_invalid: false,
-                            },
-                        )
-                    })
-                    .into(),
-            )
-            .unwrap(),
-        );
-        host.runtime.sound_bank = Some(Arc::clone(&bank));
-        host.bind_sounds(&bank).unwrap();
+        let bank = qa_audio::Bank::load(
+            rate,
+            ["sound/a.wav", "sound/b.wav"]
+                .map(|name| {
+                    (
+                        name.to_string(),
+                        Pcm {
+                            rate,
+                            channels: PcmChannels::Mono,
+                            samples: vec![1024; 2],
+                            loop_start: None,
+                            loop_end: None,
+                            loop_invalid: false,
+                        },
+                    )
+                })
+                .into(),
+        )
+        .unwrap();
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.bind_sounds().unwrap();
         host.call_module_export(
             ModuleId(1),
             Export::words(command, &[]),
@@ -644,29 +647,27 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
             "{protocol:?} native API bound"
         );
         let rate = NonZeroU32::new(44100).unwrap();
-        let bank = Arc::new(
-            qa_audio::Bank::load(
-                rate,
-                ["sound/a.wav", "sound/b.wav"]
-                    .map(|name| {
-                        (
-                            name.to_string(),
-                            Pcm {
-                                rate,
-                                channels: PcmChannels::Mono,
-                                samples: vec![1000; 2],
-                                loop_start: None,
-                                loop_end: None,
-                                loop_invalid: false,
-                            },
-                        )
-                    })
-                    .into(),
-            )
-            .unwrap(),
-        );
-        host.runtime.sound_bank = Some(Arc::clone(&bank));
-        host.bind_sounds(&bank).unwrap();
+        let bank = qa_audio::Bank::load(
+            rate,
+            ["sound/a.wav", "sound/b.wav"]
+                .map(|name| {
+                    (
+                        name.to_string(),
+                        Pcm {
+                            rate,
+                            channels: PcmChannels::Mono,
+                            samples: vec![1000; 2],
+                            loop_start: None,
+                            loop_end: None,
+                            loop_invalid: false,
+                        },
+                    )
+                })
+                .into(),
+        )
+        .unwrap();
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.bind_sounds().unwrap();
         host.runtime
             .server
             .events
@@ -783,7 +784,7 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
                 .unwrap()
                 .state
                 .sound(2),
-            bank.find("sound/b.wav")
+            host.runtime.sound_bank().unwrap().find("sound/b.wav")
         );
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
         let stale_receipt = NativeReceipt(u64::MAX);
@@ -847,29 +848,27 @@ pub(super) fn unsupported_resource_names_drop_only_the_unrepresentable_client_de
     host.initialize_modules(Phase::Server);
     let rate = NonZeroU32::new(44100).unwrap();
     let path = format!("sound/{}", std::str::from_utf8(&name).unwrap());
-    let bank = Arc::new(
-        qa_audio::Bank::load(
-            rate,
-            ["sound/a.wav".to_string(), path]
-                .map(|name| {
-                    (
-                        name,
-                        Pcm {
-                            rate,
-                            channels: PcmChannels::Mono,
-                            samples: vec![1; 2],
-                            loop_start: None,
-                            loop_end: None,
-                            loop_invalid: false,
-                        },
-                    )
-                })
-                .into(),
-        )
-        .unwrap(),
-    );
-    host.runtime.sound_bank = Some(Arc::clone(&bank));
-    host.bind_sounds(&bank).unwrap();
+    let bank = qa_audio::Bank::load(
+        rate,
+        ["sound/a.wav".to_string(), path]
+            .map(|name| {
+                (
+                    name,
+                    Pcm {
+                        rate,
+                        channels: PcmChannels::Mono,
+                        samples: vec![1; 2],
+                        loop_start: None,
+                        loop_end: None,
+                        loop_invalid: false,
+                    },
+                )
+            })
+            .into(),
+    )
+    .unwrap();
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.bind_sounds().unwrap();
     host.call_module_export(
         ModuleId(1),
         Export::words(command, &[]),
@@ -939,29 +938,27 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
         host.initialize_modules(Phase::Server);
         assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
         let rate = NonZeroU32::new(44100).unwrap();
-        let bank = Arc::new(
-            qa_audio::Bank::load(
-                rate,
-                [("sound/a.wav", 1024), ("sound/b.wav", -1024)]
-                    .map(|(name, sample)| {
-                        (
-                            name.to_string(),
-                            Pcm {
-                                rate,
-                                channels: PcmChannels::Mono,
-                                samples: vec![sample; 2],
-                                loop_start: None,
-                                loop_end: None,
-                                loop_invalid: false,
-                            },
-                        )
-                    })
-                    .into(),
-            )
-            .unwrap(),
-        );
-        host.runtime.sound_bank = Some(Arc::clone(&bank));
-        host.bind_sounds(&bank).unwrap();
+        let bank = qa_audio::Bank::load(
+            rate,
+            [("sound/a.wav", 1024), ("sound/b.wav", -1024)]
+                .map(|(name, sample)| {
+                    (
+                        name.to_string(),
+                        Pcm {
+                            rate,
+                            channels: PcmChannels::Mono,
+                            samples: vec![sample; 2],
+                            loop_start: None,
+                            loop_end: None,
+                            loop_invalid: false,
+                        },
+                    )
+                })
+                .into(),
+        )
+        .unwrap();
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.bind_sounds().unwrap();
         // The staged message publishes A first, then gi.positioned_sound
         // publishes B on the same world-edict/nonzero-channel key.
         for command in [commands.raw, commands.emit] {
@@ -976,7 +973,7 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
             namespace: ResourceNamespace::Client(client),
             slot: 0,
         };
-        let mut mixer = qa_audio::Mixer::load(Arc::clone(&bank), 2, 1);
+        let mut mixer = qa_audio::Mixer::load(rate, 2, 1);
         mixer.listen(
             &[Some(qa_audio::Listener {
                 negate_dot: false,
@@ -1000,8 +997,16 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
         assert_eq!(
             source.played.iter().map(|row| row.1).collect::<Vec<_>>(),
             [
-                bank.find("sound/a.wav").unwrap(),
-                bank.find("sound/b.wav").unwrap()
+                host.runtime
+                    .sound_bank()
+                    .unwrap()
+                    .find("sound/a.wav")
+                    .unwrap(),
+                host.runtime
+                    .sound_bank()
+                    .unwrap()
+                    .find("sound/b.wav")
+                    .unwrap()
             ]
         );
         let mixer = source.mixer.as_mut().unwrap();
@@ -1012,7 +1017,7 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
         // panning; at the listener, distance loss is zero and each side gets
         // 0.5: trunc(255 * 0.5) is 127, so (1024 * 127) >> 8 = 508.
         let mut pcm = [0; 4];
-        assert!(mixer.paint(&mut pcm));
+        assert!(mixer.paint(host.runtime.sound_bank().unwrap(), &mut pcm));
         assert_eq!(pcm, [508; 4], "{rules:?}");
         assert_eq!((mixer.counts.started, mixer.counts.replaced), (2, 1));
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
@@ -1103,31 +1108,39 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
         host.local_clients[0] = Some(local);
         host.initialize_modules(Phase::Server);
         let rate = NonZeroU32::new(44100).unwrap();
-        let bank = Arc::new(
-            qa_audio::Bank::load(
-                rate,
-                ["sound/a.wav", "sound/b.wav", "sound/c.wav"]
-                    .map(|path| {
-                        (
-                            path.into(),
-                            Pcm {
-                                rate,
-                                channels: PcmChannels::Mono,
-                                samples: vec![1024; 2],
-                                loop_start: None,
-                                loop_end: None,
-                                loop_invalid: false,
-                            },
-                        )
-                    })
-                    .into(),
-            )
-            .unwrap(),
-        );
-        host.runtime.sound_bank = Some(Arc::clone(&bank));
-        host.bind_sounds(&bank).unwrap();
-        let a = bank.find("sound/a.wav").unwrap();
-        let b = bank.find("sound/b.wav").unwrap();
+        let bank = qa_audio::Bank::load(
+            rate,
+            ["sound/a.wav", "sound/b.wav", "sound/c.wav"]
+                .map(|path| {
+                    (
+                        path.into(),
+                        Pcm {
+                            rate,
+                            channels: PcmChannels::Mono,
+                            samples: vec![1024; 2],
+                            loop_start: None,
+                            loop_end: None,
+                            loop_invalid: false,
+                        },
+                    )
+                })
+                .into(),
+        )
+        .unwrap();
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.bind_sounds().unwrap();
+        let a = host
+            .runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/a.wav")
+            .unwrap();
+        let b = host
+            .runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/b.wav")
+            .unwrap();
         let mut source = AudioSource {
             remote: Some(peer),
             ..Default::default()
@@ -1401,31 +1414,39 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
         host.local_clients[0] = Some(client);
         host.initialize_modules(Phase::Server);
         let rate = NonZeroU32::new(44100).unwrap();
-        let bank = Arc::new(
-            qa_audio::Bank::load(
-                rate,
-                ["sound/a.wav", "sound/b.wav"]
-                    .map(|path| {
-                        (
-                            path.into(),
-                            Pcm {
-                                rate,
-                                channels: PcmChannels::Mono,
-                                samples: vec![1024; 2],
-                                loop_start: None,
-                                loop_end: None,
-                                loop_invalid: false,
-                            },
-                        )
-                    })
-                    .into(),
-            )
-            .unwrap(),
-        );
-        host.runtime.sound_bank = Some(Arc::clone(&bank));
-        host.bind_sounds(&bank).unwrap();
-        let a = bank.find("sound/a.wav").unwrap();
-        let b = bank.find("sound/b.wav").unwrap();
+        let bank = qa_audio::Bank::load(
+            rate,
+            ["sound/a.wav", "sound/b.wav"]
+                .map(|path| {
+                    (
+                        path.into(),
+                        Pcm {
+                            rate,
+                            channels: PcmChannels::Mono,
+                            samples: vec![1024; 2],
+                            loop_start: None,
+                            loop_end: None,
+                            loop_invalid: false,
+                        },
+                    )
+                })
+                .into(),
+        )
+        .unwrap();
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.bind_sounds().unwrap();
+        let a = host
+            .runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/a.wav")
+            .unwrap();
+        let b = host
+            .runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/b.wav")
+            .unwrap();
         let mut source = AudioSource {
             remote: Some(peer),
             ..Default::default()
@@ -1638,25 +1659,23 @@ pub(super) fn split_seat_native_dupes_wait_for_ack_and_play_once() {
     host.initialize_modules(Phase::Server);
     assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
     let rate = NonZeroU32::new(44100).unwrap();
-    let bank = Arc::new(
-        qa_audio::Bank::load(
-            rate,
-            vec![(
-                "sound/a.wav".into(),
-                Pcm {
-                    rate,
-                    channels: PcmChannels::Mono,
-                    samples: vec![1000; 2],
-                    loop_start: None,
-                    loop_end: None,
-                    loop_invalid: false,
-                },
-            )],
-        )
-        .unwrap(),
-    );
-    host.runtime.sound_bank = Some(Arc::clone(&bank));
-    host.bind_sounds(&bank).unwrap();
+    let bank = qa_audio::Bank::load(
+        rate,
+        vec![(
+            "sound/a.wav".into(),
+            Pcm {
+                rate,
+                channels: PcmChannels::Mono,
+                samples: vec![1000; 2],
+                loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
+            },
+        )],
+    )
+    .unwrap();
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.bind_sounds().unwrap();
     let mut source = AudioSource::default();
     // Actual resource publication and native packet ACKs, with no readiness override.
     for tick in 0..=12 {
@@ -1670,7 +1689,7 @@ pub(super) fn split_seat_native_dupes_wait_for_ack_and_play_once() {
                 .unwrap()
                 .state
                 .sound(1),
-            bank.find("sound/a.wav")
+            host.runtime.sound_bank().unwrap().find("sound/a.wav")
         );
     }
     host.call_module_export(
@@ -1688,7 +1707,14 @@ pub(super) fn split_seat_native_dupes_wait_for_ack_and_play_once() {
         1,
         "reliable gi.local_sound duplicate waits for native ACK then suppresses sibling"
     );
-    assert_eq!(source.played[0].1, bank.find("sound/a.wav").unwrap());
+    assert_eq!(
+        source.played[0].1,
+        host.runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/a.wav")
+            .unwrap()
+    );
     host.call_module_export(
         ModuleId(1),
         Export::words(actions.raw, &[0]),

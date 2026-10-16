@@ -28,9 +28,8 @@ use qa_network::ingress::Connections;
 use qa_session::clients::{Connection, Server};
 
 pub struct Runtime {
-    /// Load-owned PCM registration becomes the same immutable bank before frames.
-    pub sound_loader: Option<Box<audio::SoundLoader>>,
-    pub sound_bank: Option<std::sync::Arc<qa_audio::Bank>>,
+    /// One PCM and registration owner retained through play.
+    pub sound_assets: Option<Box<audio::SoundAssets>>,
     pub catalog: catalog::GameplayCatalog,
     pub vfs: Vfs,
     pub localization: qa_content::localization::Catalog,
@@ -108,6 +107,9 @@ impl WorldCollision {
 }
 
 impl Runtime {
+    pub fn sound_bank(&self) -> Option<&qa_audio::Bank> {
+        self.sound_assets.as_deref().map(audio::SoundAssets::bank)
+    }
     pub(crate) fn prepare_traces(
         &mut self,
         module_rules: impl Iterator<Item = qa_core::primitives::RuleSetId>,
@@ -171,7 +173,11 @@ impl Runtime {
         &mut self,
         client: ClientId,
         lifetime: qa_core::primitives::EntityId,
-    ) -> Option<(client_resources::ClientConnectionView<'_>, &mut Server)> {
+    ) -> Option<(
+        client_resources::ClientConnectionView<'_>,
+        &mut Server,
+        Option<&qa_audio::Bank>,
+    )> {
         let view = client_resources::connection_view(
             client,
             lifetime,
@@ -181,9 +187,12 @@ impl Runtime {
                 .as_ref()
                 .filter(|owner| !owner.initial_registration())
                 .map(model_assets::ModelAssets::catalog),
-            self.sound_bank.as_deref(),
         )?;
-        Some((view, &mut self.server))
+        Some((
+            view,
+            &mut self.server,
+            self.sound_assets.as_deref().map(audio::SoundAssets::bank),
+        ))
     }
     pub(crate) fn engine_service_parts<'a>(
         &'a mut self,
@@ -212,7 +221,6 @@ impl Runtime {
                 &mut self.network,
                 &mut self.client_resources,
                 model_view.map(|view| view.catalog),
-                self.sound_bank.as_deref(),
             )
         });
         let client_audio = client.and_then(|(client, _)| {
@@ -256,10 +264,10 @@ impl Runtime {
             model_loader,
             model_lookup,
             sound_loader: self
-                .sound_loader
+                .sound_assets
                 .as_deref_mut()
                 .map(|loader| loader as &mut dyn qa_compat::services::SoundRegistrar),
-            sound_bank: self.sound_bank.as_deref(),
+            sound_bank: None,
             storage,
             geometry: &self.geometry,
             world: identity,
@@ -308,8 +316,7 @@ impl Runtime {
         .map_err(|e| format!("loopback: {e:?}"))?;
         let value_slots = catalog.hud.values.capacity();
         Ok(Self {
-            sound_loader: None,
-            sound_bank: None,
+            sound_assets: None,
             model_assets: None,
             renderer_configuration: None,
             scene: None,
@@ -642,11 +649,15 @@ impl Runtime {
         {
             binding.load_visibility(visibility);
         }
-        let resources = if seat.is_some() {
+        let mut resources = if seat.is_some() {
             client_resources::ClientResources::load(id, protocol, client.client_rules)?
         } else {
             None
         };
+        if let (Some(resources), Some(assets)) = (resources.as_mut(), self.sound_assets.as_deref())
+        {
+            resources.state.bind_sounds(assets.bank());
+        }
         let collision_view = seat
             .map(|_| client_collision::ClientCollision::load(id, protocol, &self.geometry))
             .transpose()

@@ -456,11 +456,6 @@ impl FrameHost {
             );
         }
     }
-    pub(crate) fn bind_output_sounds(&mut self, bank: &qa_audio::Bank) {
-        for publication in &mut self.runtime.config_publications {
-            publication.bind_sounds(bank);
-        }
-    }
     pub(crate) fn publish_module_configs(&mut self) {
         let modules = self.modules.as_ref();
         let runtime = &mut self.runtime;
@@ -630,26 +625,29 @@ impl FrameHost {
                     // Preserve exact text only when both native filename
                     // codecs agree, including Quake's literal prefix bytes.
                     let converted;
-                    let text =
-                        if is_sound
-                            && !text.is_empty()
-                            && !qa_audio::same_sound_codec(source.rules, target.rules)
-                        {
-                            let Some(name) = runtime.sound_bank.as_deref().zip(sample).and_then(
-                                |(bank, sample)| {
-                                    qa_audio::native_sound_name(target.rules, bank, sample)
-                                },
-                            ) else {
-                                publication.unsupported += 1;
-                                publication.published(destination, None);
-                                publication.seen(native_index, revision);
-                                continue;
-                            };
-                            converted = name;
-                            converted.as_bytes()
-                        } else {
-                            text
+                    let text = if is_sound
+                        && !text.is_empty()
+                        && !qa_audio::same_sound_codec(source.rules, target.rules)
+                    {
+                        let Some(name) = runtime
+                            .sound_assets
+                            .as_deref()
+                            .map(crate::audio::SoundAssets::bank)
+                            .zip(sample)
+                            .and_then(|(bank, sample)| {
+                                qa_audio::native_sound_name(target.rules, bank, sample)
+                            })
+                        else {
+                            publication.unsupported += 1;
+                            publication.published(destination, None);
+                            publication.seen(native_index, revision);
+                            continue;
                         };
+                        converted = name;
+                        converted.as_bytes()
+                    } else {
+                        text
+                    };
                     if protocol
                         .config_capacity(destination)
                         .is_none_or(|limit| text.len() > limit)
@@ -732,7 +730,11 @@ impl FrameHost {
                     }
                 }
             }
-            if let Some(bank) = runtime.sound_bank.as_deref() {
+            if let Some(bank) = runtime
+                .sound_assets
+                .as_deref()
+                .map(crate::audio::SoundAssets::bank)
+            {
                 // Running secondary module resources get first claim on free
                 // slots; resolving a PCM handle never rebuilds or hashes a path.
                 for row in modules.rows.iter().flatten().filter(|row| {
@@ -830,6 +832,9 @@ fn publish_sound(
     bank: &qa_audio::Bank,
     sound: qa_core::primitives::SoundId,
 ) -> bool {
+    if bank.sample(sound).is_none() {
+        return true;
+    }
     let Some(ordinal) = publication.reserve_sound(sound) else {
         return true;
     };

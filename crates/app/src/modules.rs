@@ -333,6 +333,31 @@ pub struct Modules {
     input: [input::Recipients; qa_core::sys_events::SeatId::COUNT],
 }
 impl Modules {
+    pub(crate) fn for_each_native_sound(
+        &self,
+        mut visit: impl FnMut(&[u8], RuleSetId) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let modules = self;
+        for row in modules.rows.iter().flatten() {
+            if let Some(sounds) = modules
+                .storage
+                .resources(row.request.context.module)
+                .map(|ranges| ranges[1])
+            {
+                for ordinal in sounds.range().skip(1) {
+                    let (name, _) = modules
+                        .storage
+                        .configstring(row.request.context.module, ordinal)
+                        .map_err(|e| format!("native sound precache: {e:?}"))?;
+                    if !name.is_empty() {
+                        visit(name, row.request.context.native_rules)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn has_module(&self, module: ModuleId) -> bool {
         self.row(module).is_some()
     }
@@ -1030,34 +1055,33 @@ impl FrameHost {
     pub fn module_state(&self, module: ModuleId) -> Option<State> {
         Some(self.module_row(module)?.state)
     }
-    /// Resource ordinals are populated by native Init/SpawnEntities at load.
+    /// Inspect native resource ordinals without borrowing the PCM owner.
     pub fn for_each_native_sound(
         &self,
-        mut visit: impl FnMut(&[u8], RuleSetId) -> Result<(), String>,
+        visit: impl FnMut(&[u8], RuleSetId) -> Result<(), String>,
     ) -> Result<(), String> {
-        if let Some(modules) = &self.modules {
-            for row in modules.rows.iter().flatten() {
-                if let Some(sounds) = modules
-                    .storage
-                    .resources(row.request.context.module)
-                    .map(|ranges| ranges[1])
-                {
-                    for ordinal in sounds.range().skip(1) {
-                        let (name, _) = modules
-                            .storage
-                            .configstring(row.request.context.module, ordinal)
-                            .map_err(|e| format!("native sound precache: {e:?}"))?;
-                        if !name.is_empty() {
-                            visit(name, row.request.context.native_rules)?;
-                        }
-                    }
-                }
-            }
+        match &self.modules {
+            Some(modules) => modules.for_each_native_sound(visit),
+            None => Ok(()),
         }
-        Ok(())
     }
     /// Resolve native ordinals and client cue resources after PCM loading.
-    pub fn bind_sounds(&mut self, bank: &Arc<qa_audio::Bank>) -> Result<(), String> {
+    pub fn bind_sounds(&mut self) -> Result<(), String> {
+        if let Some(modules) = &mut self.modules {
+            for row in modules.rows.iter_mut().flatten() {
+                let module = row.request.context.module;
+                self.runtime
+                    .engine_services(&mut self.console, &mut modules.storage, &mut row.scratch)
+                    .prepare_sound_bindings(module)
+                    .map_err(|e| format!("native sound preparation: {e:?}"))?;
+            }
+        }
+        let bank = self
+            .runtime
+            .sound_assets
+            .as_deref()
+            .ok_or("sound assets unavailable")?
+            .bank();
         self.muzzle_sounds
             .bind(bank)
             .map_err(|e| format!("muzzle sound binding: {e:?}"))?;
@@ -1075,12 +1099,19 @@ impl FrameHost {
                 {
                     modules
                         .storage
-                        .bind_sound_bank(row.request.context.module, sounds, Arc::clone(bank))
+                        .bind_sound_bank(row.request.context.module, sounds, bank)
                         .map_err(|e| format!("native sound binding: {e:?}"))?;
                 }
             }
         }
-        self.bind_output_sounds(bank);
+        for publication in &mut self.runtime.config_publications {
+            publication.bind_sounds(bank);
+        }
+        if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
+            for resources in self.runtime.client_resources.iter_mut().flatten() {
+                resources.state.prepare_sounds(assets, &self.runtime.vfs);
+            }
+        }
         self.publish_module_signon();
         Ok(())
     }
@@ -1113,7 +1144,16 @@ impl FrameHost {
                 }
                 if modules
                     .storage
-                    .publish_signon(&mut self.runtime.server, context, id, cursor)
+                    .publish_signon(
+                        &mut self.runtime.server,
+                        context,
+                        id,
+                        cursor,
+                        self.runtime
+                            .sound_assets
+                            .as_deref()
+                            .map(crate::audio::SoundAssets::bank),
+                    )
                     .is_err()
                 {
                     row.counts.rejected += 1;
@@ -1470,7 +1510,11 @@ impl FrameHost {
             .model_assets
             .as_ref()
             .is_some_and(|owner| owner.initial_registration())
-            || self.runtime.sound_loader.is_some()
+            || self
+                .runtime
+                .sound_assets
+                .as_deref()
+                .is_some_and(crate::audio::SoundAssets::initial_registration)
         {
             return;
         }
@@ -1550,14 +1594,20 @@ impl FrameHost {
             {
                 continue;
             }
-            let disconnected = if let Some((mut view, server)) =
+            let disconnected = if let Some((mut view, server, bank)) =
                 self.runtime.client_connection_parts(id, lifetime)
             {
-                let _ = view.consume_configuration(server, team_chats_only);
+                let _ = view.consume_configuration(server, team_chats_only, bank);
                 view.termination
             } else {
                 None
             };
+            if let (Some(resources), Some(assets)) = (
+                self.runtime.client_resources[index].as_mut(),
+                self.runtime.sound_assets.as_deref_mut(),
+            ) {
+                resources.state.prepare_sounds(assets, &self.runtime.vfs);
+            }
             if let Some(termination) = disconnected {
                 self.finish_client_termination(id, termination, driver);
             }

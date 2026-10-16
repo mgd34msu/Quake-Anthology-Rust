@@ -1427,11 +1427,12 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
         fn present(&mut self) {}
         fn mix_audio(
             &mut self,
+            _bank: Option<&qa_audio::Bank>,
             entities: &[Option<qa_app::client_scene::ClientEntities<'_>>; SeatId::COUNT],
         ) {
             self.mixes += 1;
             qa_app::audio::respatialize(&mut self.mixer, entities);
-            assert!(self.mixer.paint(&mut self.pcm));
+            assert!(self.mixer.paint(_bank.unwrap(), &mut self.pcm));
         }
     }
     let (mut host, client) = host(Protocol::Quake2_34, 1)?;
@@ -1462,9 +1463,10 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
         )],
     )?;
     let sound = bank.find("sound/test.wav").unwrap();
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
     let mut source = AudioClock {
         clock: Clock::default(),
-        mixer: qa_audio::Mixer::load(std::sync::Arc::new(bank), 1, 1),
+        mixer: qa_audio::Mixer::load(rate, 1, 1),
         mixes: 0,
         pcm: [0; 2],
     };
@@ -1500,19 +1502,22 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
         binding.interpolation().unwrap().time,
         ThinkTime::Milliseconds(900)
     );
-    assert!(source.mixer.sound(qa_core::primitives::SoundEvent {
-        sound,
-        spatial: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
-        client: Some(client),
-        entity: Some(qa_core::primitives::SoundEmitter::Native {
-            namespace: ResourceNamespace::Client(client),
-            slot: 42,
-        }),
-        position: Vec3([100.0, 0.0, 0.0]),
-        volume: 1.0,
-        attenuation: 1.0,
-        ..Default::default()
-    }));
+    assert!(source.mixer.sound(
+        host.runtime.sound_bank().unwrap(),
+        qa_core::primitives::SoundEvent {
+            sound,
+            spatial: qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
+            client: Some(client),
+            entity: Some(qa_core::primitives::SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(client),
+                slot: 42,
+            }),
+            position: Vec3([100.0, 0.0, 0.0]),
+            volume: 1.0,
+            attenuation: 1.0,
+            ..Default::default()
+        }
+    ));
     host.runtime.server.entities.columns.position[entity.slot as usize] = Vec3([-100.0, 0.0, 0.0]);
     transmit(
         &mut host,

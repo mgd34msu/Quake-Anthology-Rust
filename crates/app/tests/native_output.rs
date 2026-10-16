@@ -1247,7 +1247,7 @@ fn qw_sound_builtin_uses_sv_phs_before_foreign_sound_encoding_and_ring_retiremen
     use qa_core::{configstrings::ConfigLayout, events::FrameEvent};
     use qa_formats::program::quakec::{Image, Opcode::*};
     use qa_world::entities::AllocationPolicy;
-    use std::{num::NonZeroU32, sync::Arc};
+    use std::num::NonZeroU32;
 
     let module = ModuleId(7);
     let rules = RuleSetId::QuakeWorld;
@@ -1364,26 +1364,24 @@ fn qw_sound_builtin_uses_sv_phs_before_foreign_sound_encoding_and_ring_retiremen
     host.initialize_modules(Phase::Server);
     assert_eq!(host.module_counts(module).unwrap().traps, 0);
     let rate = NonZeroU32::new(44100).unwrap();
-    let bank = Arc::new(
-        qa_audio::Bank::load(
-            rate,
-            vec![(
-                "sound/hearing.wav".into(),
-                Pcm {
-                    rate,
-                    channels: PcmChannels::Mono,
-                    samples: vec![100; 4],
-                    loop_start: None,
-                    loop_end: None,
-                    loop_invalid: false,
-                },
-            )],
-        )
-        .unwrap(),
-    );
+    let bank = qa_audio::Bank::load(
+        rate,
+        vec![(
+            "sound/hearing.wav".into(),
+            Pcm {
+                rate,
+                channels: PcmChannels::Mono,
+                samples: vec![100; 4],
+                loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
+            },
+        )],
+    )
+    .unwrap();
     let sound = bank.find("sound/hearing.wav").unwrap();
-    host.runtime.sound_bank = Some(Arc::clone(&bank));
-    host.bind_sounds(&bank).unwrap();
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.bind_sounds().unwrap();
     let mut peers: [Channel; 2] = std::array::from_fn(|index| {
         let mut peer =
             Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();

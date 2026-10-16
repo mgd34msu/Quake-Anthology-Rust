@@ -89,7 +89,7 @@ fn numeric_bindings_share_registration_and_choose_the_lowest_nonzero_ordinal() {
     assert_eq!(bindings.sound(0), None);
     assert_eq!(bindings.set(5, Some(a)), Err(SoundBindingError::Ordinal));
     assert_eq!(
-        bindings.set(1, Some(SoundId(bank.len() as u32))),
+        bindings.set(1, Some(SoundId(bank.capacity() as u32))),
         Err(SoundBindingError::Sound)
     );
     assert_eq!(bindings.sound(1), Some(b));

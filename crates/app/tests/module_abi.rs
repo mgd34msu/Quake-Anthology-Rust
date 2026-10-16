@@ -2383,30 +2383,28 @@ fn server_and_client_console_imports_keep_their_different_arguments() {
 fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
     use qa_compat::services::ENGINE_CALLS;
     use qa_core::primitives::{Pcm, PcmChannels};
-    use std::{num::NonZeroU32, sync::Arc};
+    use std::num::NonZeroU32;
     let rate = NonZeroU32::new(44100).unwrap();
-    let bank = Arc::new(
-        qa_audio::Bank::load(
-            rate,
-            ["sound/world/amb.wav", "sound/world/new.wav"]
-                .into_iter()
-                .map(|name| {
-                    (
-                        name.into(),
-                        Pcm {
-                            rate,
-                            channels: PcmChannels::Mono,
-                            samples: vec![1024],
-                            loop_start: None,
-                            loop_end: None,
-                            loop_invalid: false,
-                        },
-                    )
-                })
-                .collect(),
-        )
-        .unwrap(),
-    );
+    let bank = qa_audio::Bank::load(
+        rate,
+        ["sound/world/amb.wav", "sound/world/new.wav"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.into(),
+                    Pcm {
+                        rate,
+                        channels: PcmChannels::Mono,
+                        samples: vec![1024],
+                        loop_start: None,
+                        loop_end: None,
+                        loop_invalid: false,
+                    },
+                )
+            })
+            .collect(),
+    )
+    .unwrap();
     let ambient = bank.find("sound/world/amb.wav").unwrap();
     let new = bank.find("sound/world/new.wav").unwrap();
     let mut runtime = Runtime::load(1, []).unwrap();
@@ -2416,6 +2414,7 @@ fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
     let mut storage = ServiceStorage::load(&[(module, 8), (other, 8)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    services.sound_bank = Some(&bank);
     let range = IndexSpan { first: 2, count: 4 };
     assert!(!range.contains(1));
     assert!(range.contains(2));
@@ -2441,21 +2440,19 @@ fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
         },
     ] {
         assert!(matches!(
-            services
-                .storage
-                .bind_sound_bank(module, bad, Arc::clone(&bank)),
+            services.storage.bind_sound_bank(module, bad, &bank),
             Err(qa_compat::services::CallError::ConfigString)
         ));
     }
     services.configstring(module, 3, b"world/amb.wav").unwrap();
     services
         .storage
-        .bind_sound_bank(module, range, Arc::clone(&bank))
+        .bind_sound_bank(module, range, &bank)
         .unwrap();
     services.configstring(other, 3, b"world/amb.wav").unwrap();
     services
         .storage
-        .bind_sound_bank(other, range, Arc::clone(&bank))
+        .bind_sound_bank(other, range, &bank)
         .unwrap();
     let read = |services: &mut qa_compat::services::EngineServices<'_>, index| {
         (ENGINE_CALLS.sound_id)(services, module, range, index)

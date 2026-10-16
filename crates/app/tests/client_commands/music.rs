@@ -4,6 +4,7 @@ use super::*;
 mod fixture;
 
 struct Source {
+    bank: qa_audio::Bank,
     mixer: qa_audio::Mixer,
     music: qa_app::audio::music::Music,
     owner: Option<MusicOwner>,
@@ -31,9 +32,9 @@ impl qa_app::host::FrameSource for Source {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         self.music.sound_control(&mut self.mixer, event);
-        self.mixer.sound(event)
+        self.mixer.sound(bank.unwrap_or(&self.bank), event)
     }
     fn music(
         &mut self,
@@ -60,8 +61,12 @@ impl qa_app::host::FrameSource for Source {
     ) -> Option<TextLease> {
         texts.insert_formatted(format_args!("{}", self.music.report(vfs, query)))
     }
-    fn mix_audio(&mut self, _: &[Option<qa_app::client_scene::ClientEntities<'_>>; SeatId::COUNT]) {
-        assert!(self.mixer.paint(&mut self.pcm));
+    fn mix_audio(
+        &mut self,
+        bank: Option<&qa_audio::Bank>,
+        _: &[Option<qa_app::client_scene::ClientEntities<'_>>; SeatId::COUNT],
+    ) {
+        assert!(self.mixer.paint(bank.unwrap_or(&self.bank), &mut self.pcm));
     }
 }
 
@@ -88,6 +93,7 @@ pub(super) fn console_cd_reaches_music_and_ordered_console_responses() {
         .unwrap();
     host.console.cvars.force_write(volume, "1").unwrap();
     let mut source = Source {
+        bank: fixture::bank(),
         mixer: fixture::mixer(),
         music: qa_app::audio::music::Music::load(&host.runtime.vfs),
         owner: None,
@@ -198,6 +204,7 @@ pub(super) fn wire_music_reaches_shared_paint() {
             .unwrap();
         host.console.cvars.force_write(volume, "1").unwrap();
         let mut source = Source {
+            bank: fixture::bank(),
             mixer: fixture::mixer(),
             music: qa_app::audio::music::Music::load(&host.runtime.vfs),
             owner: None,
@@ -312,6 +319,7 @@ pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program, c
         .unwrap();
     host.console.cvars.force_write(volume, "1").unwrap();
     let mut source = Source {
+        bank: fixture::bank(),
         mixer: fixture::mixer(),
         music: qa_app::audio::music::Music::load(&host.runtime.vfs),
         owner: None,
@@ -349,7 +357,7 @@ pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program, c
             .collect();
         reference.queue_raw(format, &bytes, 0.625, false).unwrap();
         let mut expected = [0; 8];
-        reference.paint(&mut expected);
+        reference.paint(&source.bank, &mut expected);
         assert_eq!(source.pcm, expected);
     } else {
         assert_eq!(

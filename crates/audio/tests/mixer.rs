@@ -1,8 +1,8 @@
 use qa_audio::{Bank, Listener, Mixer};
 use qa_core::primitives::*;
-use std::{num::NonZeroU32, sync::Arc};
+use std::num::NonZeroU32;
 
-fn mixer(pcm: Vec<i16>, loop_start: Option<usize>, voices: usize) -> Mixer {
+fn mixer(pcm: Vec<i16>, loop_start: Option<usize>, voices: usize) -> (Bank, Mixer) {
     let rate = NonZeroU32::new(44100).unwrap();
     let bank = Bank::load(
         rate,
@@ -19,7 +19,8 @@ fn mixer(pcm: Vec<i16>, loop_start: Option<usize>, voices: usize) -> Mixer {
         )],
     )
     .unwrap();
-    Mixer::load(Arc::new(bank), voices, 4)
+    let mixer = Mixer::load(bank.rate, voices, 4);
+    (bank, mixer)
 }
 fn listener(client: u32, origin: Vec3) -> Option<Listener> {
     Some(Listener {
@@ -33,9 +34,9 @@ fn listener(client: u32, origin: Vec3) -> Option<Listener> {
         negate_dot: false,
     })
 }
-fn event(m: &Mixer) -> SoundEvent {
+fn event(bank: &Bank) -> SoundEvent {
     SoundEvent {
-        sound: m.bank.find("SOUND\\TEST.WAV").unwrap(),
+        sound: bank.find("SOUND\\TEST.WAV").unwrap(),
         spatial: qa_gameplay::rules::sound_policy(RuleSetId::Quake),
         entity: None,
         channel: 0,
@@ -49,14 +50,14 @@ fn event(m: &Mixer) -> SoundEvent {
 
 #[test]
 fn finite_samples_finish_once_and_keep_native_fixed_gain() {
-    let mut m = mixer(vec![1000, -1000], None, 2);
+    let (bank, mut m) = mixer(vec![1000, -1000], None, 2);
     m.listen(&[listener(0, Vec3::default())], 1.0);
-    assert!(m.sound(event(&m)));
+    assert!(m.sound(&bank, event(&bank)));
     let mut pcm = [0; 6];
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [996, 996, -997, -997, 0, 0]);
     assert_eq!(m.counts.started, 1);
-    assert!(!m.paint(&mut [0; 3]));
+    assert!(!m.paint(&bank, &mut [0; 3]));
 }
 
 #[test]
@@ -68,23 +69,23 @@ fn shared_native_spatial_policies_preserve_channel_side_and_full_volume_self() {
         (RuleSetId::Quake2Rerelease, 856),
         (RuleSetId::Quake3, 740),
     ] {
-        let mut m = mixer(vec![1024], None, 2);
+        let (bank, mut m) = mixer(vec![1024], None, 2);
         m.listen(&[listener(0, Vec3::default())], 1.0);
-        let mut e = event(&m);
+        let mut e = event(&bank);
         e.spatial = qa_gameplay::rules::sound_policy(rules);
         e.position = Vec3([400.0, 0.0, 0.0]);
         e.attenuation = 1.0;
-        assert!(m.sound(e));
+        assert!(m.sound(&bank, e));
         let mut pcm = [0; 2];
-        m.paint(&mut pcm);
+        m.paint(&bank, &mut pcm);
         assert_eq!(pcm[0], 0);
         assert_eq!(pcm[1], right, "{rules:?}");
         e.entity = Some(SoundEmitter::Entity(EntityId {
             slot: 0,
             generation: 1,
         }));
-        assert!(m.sound(e));
-        m.paint(&mut pcm);
+        assert!(m.sound(&bank, e));
+        m.paint(&bank, &mut pcm);
         assert_eq!(pcm, [1020; 2]);
     }
 }
@@ -93,15 +94,15 @@ fn shared_native_spatial_policies_preserve_channel_side_and_full_volume_self() {
 fn q2_one_shots_use_native_channel_coefficients_for_every_wire_attenuation() {
     for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
         for byte in 0..=u8::MAX {
-            let mut m = mixer(vec![1024], None, 1);
+            let (bank, mut m) = mixer(vec![1024], None, 1);
             m.listen(&[listener(0, Vec3::default())], 1.0);
-            let mut e = event(&m);
+            let mut e = event(&bank);
             e.spatial = qa_gameplay::rules::sound_policy(rules);
             e.position = Vec3([400.0, 0.0, 0.0]);
             e.attenuation = f32::from(byte) / 64.0;
-            assert!(m.sound(e));
+            assert!(m.sound(&bank, e));
             let mut pcm = [0; 2];
-            assert!(m.paint(&mut pcm));
+            assert!(m.paint(&bank, &mut pcm));
             // qsrc S_IssuePlaysound then S_SpatializeOrigin, with a right-side
             // source: native rscale=1, lscale=0, and distance=400-80.
             let coefficient = match (rules, byte == 192) {
@@ -119,17 +120,17 @@ fn q2_one_shots_use_native_channel_coefficients_for_every_wire_attenuation() {
 
 #[test]
 fn one_precached_pcm_supports_independent_spatial_policies_on_simultaneous_voices() {
-    let mut m = mixer(vec![1024; 2], None, 2);
+    let (bank, mut m) = mixer(vec![1024; 2], None, 2);
     m.listen(&[listener(0, Vec3::default())], 1.0);
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.position = Vec3([400.0, 0.0, 0.0]);
     e.attenuation = 1.0;
     for rules in [RuleSetId::Quake, RuleSetId::Quake2] {
         e.spatial = qa_gameplay::rules::sound_policy(rules);
-        assert!(m.sound(e));
+        assert!(m.sound(&bank, e));
     }
     let mut pcm = [0; 2];
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [0, 1224 + 856]);
     assert_eq!(m.counts.started, 2);
     assert_eq!(m.counts.invalid, 0);
@@ -137,9 +138,9 @@ fn one_precached_pcm_supports_independent_spatial_policies_on_simultaneous_voice
 
 #[test]
 fn updating_loop_spatial_policy_preserves_its_pcm_cursor() {
-    let mut m = mixer(vec![1024, 2048, 3072], None, 1);
+    let (bank, mut m) = mixer(vec![1024, 2048, 3072], None, 1);
     m.listen(&[listener(0, Vec3::default())], 1.0);
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 9,
         generation: 1,
@@ -149,12 +150,12 @@ fn updating_loop_spatial_policy_preserves_its_pcm_cursor() {
     e.attenuation = 1.0;
     e.action = SoundAction::StartLoop;
     let mut pcm = [0; 2];
-    assert!(m.sound(e));
-    assert!(m.paint(&mut pcm));
+    assert!(m.sound(&bank, e));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [0, 1224]);
     e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
-    assert!(m.sound(e));
-    assert!(m.paint(&mut pcm));
+    assert!(m.sound(&bank, e));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [0, 2 * 856]);
     assert_eq!(m.counts.started, 1);
     assert_eq!(m.counts.replaced, 0);
@@ -162,9 +163,9 @@ fn updating_loop_spatial_policy_preserves_its_pcm_cursor() {
 
 #[test]
 fn spatialization_uses_capability_data_without_a_game_selector() {
-    let mut m = mixer(vec![1024], None, 1);
+    let (bank, mut m) = mixer(vec![1024], None, 1);
     m.listen(&[listener(0, Vec3::default())], 1.0);
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.spatial = SpatialPolicy {
         distance_offset: 80.0,
         attenuation: DistanceAttenuation::Linear(0.001),
@@ -173,133 +174,133 @@ fn spatialization_uses_capability_data_without_a_game_selector() {
     };
     e.position = Vec3([400.0, 0.0, 0.0]);
     e.attenuation = 1.0;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     let mut pcm = [0; 2];
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [0, 344]);
 }
 
 #[test]
 fn listeners_are_independent_and_duplicate_views_do_not_increase_gain() {
-    let mut m = mixer(vec![1024], None, 2);
-    let e = event(&m);
+    let (bank, mut m) = mixer(vec![1024], None, 2);
+    let e = event(&bank);
     m.listen(
         &[listener(0, Vec3::default()), listener(0, Vec3::default())],
         1.0,
     );
-    m.sound(e);
+    m.sound(&bank, e);
     let mut a = [0; 2];
-    m.paint(&mut a);
+    m.paint(&bank, &mut a);
     m.listen(
         &[listener(0, Vec3::default()), listener(1, Vec3::default())],
         1.0,
     );
-    m.sound(e);
+    m.sound(&bank, e);
     let mut b = [0; 2];
-    m.paint(&mut b);
+    m.paint(&bank, &mut b);
     assert_eq!(a, b);
     m.listen(&[], 1.0);
-    m.sound(e);
-    m.paint(&mut b);
+    m.sound(&bank, e);
+    m.paint(&bank, &mut b);
     assert_eq!(b, [0; 2]);
 }
 
 #[test]
 fn looping_replacement_stop_generation_and_full_voice_table() {
-    let mut m = mixer(vec![256, 512, 768], Some(1), 1);
+    let (bank, mut m) = mixer(vec![256, 512, 768], Some(1), 1);
     m.listen(&[listener(0, Vec3::default())], 1.0);
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 9,
         generation: 1,
     }));
     e.channel = 2;
-    assert!(m.sound(e));
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
+    assert!(m.sound(&bank, e));
     assert_eq!(m.counts.replaced, 1);
     let mut pcm = [0; 10];
-    m.paint(&mut pcm);
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [255, 255, 510, 510, 765, 765, 510, 510, 765, 765]);
     let mut other = e;
     other.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 9,
         generation: 2,
     }));
-    assert!(!m.sound(other));
+    assert!(!m.sound(&bank, other));
     assert_eq!(m.counts.full, 1);
     other.action = SoundAction::Stop;
-    m.sound(other);
-    m.paint(&mut pcm);
+    m.sound(&bank, other);
+    m.paint(&bank, &mut pcm);
     assert!(pcm.iter().any(|v| *v != 0));
     e.action = SoundAction::Stop;
-    m.sound(e);
-    m.paint(&mut pcm);
+    m.sound(&bank, e);
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0; 10]);
     assert_eq!(m.counts.stopped, 1);
 }
 
 #[test]
 fn repeated_loop_updates_keep_the_sample_clock() {
-    let mut m = mixer(vec![256, 512, 768], None, 1);
+    let (bank, mut m) = mixer(vec![256, 512, 768], None, 1);
     m.listen(&[listener(0, Vec3::default())], 1.0);
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.action = SoundAction::StartLoop;
     let mut pcm = [0; 2];
-    assert!(m.sound(e));
-    m.paint(&mut pcm);
+    assert!(m.sound(&bank, e));
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [255; 2]);
-    assert!(m.sound(e));
-    m.paint(&mut pcm);
+    assert!(m.sound(&bank, e));
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [510; 2]);
     assert_eq!(m.counts.started, 1);
 }
 
 #[test]
 fn invalid_event_does_not_replace_live_voice_or_grow_storage() {
-    let mut m = mixer(vec![1024], None, 1);
+    let (bank, mut m) = mixer(vec![1024], None, 1);
     m.listen(&[listener(0, Vec3::default())], 1.0);
-    let e = event(&m);
-    assert!(m.sound(e));
+    let e = event(&bank);
+    assert!(m.sound(&bank, e));
     for volume in [-1.0, 2.0, f32::NAN] {
         let mut bad = e;
         bad.volume = volume;
-        assert!(!m.sound(bad));
+        assert!(!m.sound(&bank, bad));
     }
     let mut pcm = [0; 2];
-    m.paint(&mut pcm);
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [1020; 2]);
     assert_eq!(m.counts.invalid, 3);
 }
 
 #[test]
 fn native_delay_and_private_client_gain_use_the_event() {
-    let mut m = mixer(vec![1024], None, 2);
+    let (bank, mut m) = mixer(vec![1024], None, 2);
     m.listen(
         &[listener(0, Vec3::default()), listener(1, Vec3::default())],
         1.0,
     );
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.client = Some(ClientId(1));
     e.time_offset = 2.0 / 44100.0;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     let mut pcm = [0; 6];
-    m.paint(&mut pcm);
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0, 0, 0, 0, 1020, 1020]);
     e.client = Some(ClientId(9));
     e.time_offset = 0.0;
-    assert!(m.sound(e));
-    m.paint(&mut pcm);
+    assert!(m.sound(&bank, e));
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0; 6]);
 }
 
 #[test]
 fn private_channels_do_not_replace_another_clients_voice() {
-    let mut m = mixer(vec![1024], None, 2);
+    let (bank, mut m) = mixer(vec![1024], None, 2);
     m.listen(
         &[listener(0, Vec3::default()), listener(1, Vec3::default())],
         1.0,
     );
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 3,
         generation: 1,
@@ -307,34 +308,34 @@ fn private_channels_do_not_replace_another_clients_voice() {
     e.channel = 1;
     for client in [0, 1] {
         e.client = Some(ClientId(client));
-        assert!(m.sound(e));
+        assert!(m.sound(&bank, e));
     }
     assert_eq!(m.counts.replaced, 0);
     let mut pcm = [0; 2];
-    m.paint(&mut pcm);
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [2040; 2]);
 }
 
 #[test]
 fn delayed_weapon_bursts_replace_at_their_sample_time() {
-    let mut m = mixer(vec![256, 512, 768, 1024, 1280], None, 4);
+    let (bank, mut m) = mixer(vec![256, 512, 768, 1024, 1280], None, 4);
     m.listen(&[listener(0, Vec3::default())], 1.0);
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 0,
         generation: 1,
     }));
     e.channel = 1;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     e.time_offset = 2.0 / 44100.0;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     e.time_offset = 4.0 / 44100.0;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     assert_eq!(m.counts.replaced, 0);
     let mut first = [0; 6];
     let mut second = [0; 8];
-    m.paint(&mut first);
-    m.paint(&mut second);
+    m.paint(&bank, &mut first);
+    m.paint(&bank, &mut second);
     assert_eq!(first, [255, 255, 510, 510, 255, 255]);
     assert_eq!(second, [510, 510, 255, 255, 510, 510, 765, 765]);
     assert_eq!(m.counts.replaced, 2);
@@ -342,28 +343,28 @@ fn delayed_weapon_bursts_replace_at_their_sample_time() {
 
 #[test]
 fn equal_time_pending_starts_keep_publication_order_and_stop_cancels_them() {
-    let mut m = mixer(vec![1024; 8], None, 4);
+    let (bank, mut m) = mixer(vec![1024; 8], None, 4);
     m.listen(&[listener(0, Vec3::default())], 1.0);
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 0,
         generation: 1,
     }));
     e.channel = 1;
     e.time_offset = 2.0 / 44100.0;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     e.volume = 0.5;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     let mut pcm = [0; 6];
-    m.paint(&mut pcm);
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0, 0, 0, 0, 508, 508]);
     assert_eq!(m.counts.replaced, 1);
     e.time_offset = 4.0 / 44100.0;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     e.action = SoundAction::Stop;
-    m.sound(e);
-    m.paint(&mut [0; 16]);
-    m.paint(&mut pcm);
+    m.sound(&bank, e);
+    m.paint(&bank, &mut [0; 16]);
+    m.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0; 6]);
     assert_eq!(m.counts.stopped, 2);
 }
@@ -374,7 +375,7 @@ fn native_emitter(namespace: ResourceNamespace, slot: i32) -> SoundEmitter {
 
 #[test]
 fn native_channels_keep_client_namespaces_slots_and_private_recipients_distinct() {
-    let mut m = mixer(vec![1024; 2], Some(0), 6);
+    let (bank, mut m) = mixer(vec![1024; 2], Some(0), 6);
     m.listen(&[listener(0, Vec3::default())], 1.0);
     let emitters = [
         native_emitter(ResourceNamespace::Client(ClientId(0)), 1),
@@ -382,39 +383,39 @@ fn native_channels_keep_client_namespaces_slots_and_private_recipients_distinct(
         native_emitter(ResourceNamespace::Module(ModuleId(0)), 1),
         native_emitter(ResourceNamespace::Client(ClientId(0)), 2),
     ];
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.action = SoundAction::StartLoop;
     e.channel = 1;
     for emitter in emitters {
         e.entity = Some(emitter);
-        assert!(m.sound(e));
+        assert!(m.sound(&bank, e));
     }
     e.entity = Some(emitters[0]);
     for client in [0, 1] {
         e.client = Some(ClientId(client));
-        assert!(m.sound(e));
+        assert!(m.sound(&bank, e));
     }
     assert_eq!(m.counts.started, 6);
     assert_eq!(m.counts.replaced, 0);
-    assert!(m.sound(e)); // The same native voice updates without restarting.
+    assert!(m.sound(&bank, e)); // The same native voice updates without restarting.
     assert_eq!(m.counts.started, 6);
     e.action = SoundAction::Stop;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     assert_eq!(m.counts.stopped, 1);
     e.client = Some(ClientId(2));
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     assert_eq!(m.counts.stopped, 1);
     e.client = None;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     assert_eq!(m.counts.stopped, 2);
     e.entity = Some(emitters[1]);
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     assert_eq!(m.counts.stopped, 3);
 }
 
 #[test]
 fn native_self_relative_gain_uses_the_client_voice_namespace() {
-    let mut m = mixer(vec![1024], None, 1);
+    let (bank, mut m) = mixer(vec![1024], None, 1);
     let own = native_emitter(ResourceNamespace::Client(ClientId(3)), 0);
     m.listen(
         &[Some(Listener {
@@ -426,14 +427,14 @@ fn native_self_relative_gain_uses_the_client_voice_namespace() {
         })],
         1.0,
     );
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.entity = Some(own);
     e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
     e.position = Vec3([400.0, 0.0, 0.0]);
     e.attenuation = 1.0;
     let mut pcm = [0; 2];
-    assert!(m.sound(e));
-    assert!(m.paint(&mut pcm));
+    assert!(m.sound(&bank, e));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [1020; 2]);
     for emitter in [
         native_emitter(ResourceNamespace::Client(ClientId(4)), 0),
@@ -441,17 +442,17 @@ fn native_self_relative_gain_uses_the_client_voice_namespace() {
         native_emitter(ResourceNamespace::Client(ClientId(3)), 1),
     ] {
         e.entity = Some(emitter);
-        assert!(m.sound(e));
-        assert!(m.paint(&mut pcm));
+        assert!(m.sound(&bank, e));
+        assert!(m.paint(&bank, &mut pcm));
         assert_eq!(pcm, [0, 856]);
     }
 }
 
 #[test]
 fn native_client_voice_tracks_without_restarting_and_retains_missing_pose() {
-    let mut m = mixer(vec![1024; 4], None, 1);
+    let (bank, mut m) = mixer(vec![1024; 4], None, 1);
     m.listen(&[listener(7, Vec3::default())], 1.0);
-    let mut e = event(&m);
+    let mut e = event(&bank);
     e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
     e.entity = Some(SoundEmitter::Native {
         namespace: ResourceNamespace::Client(ClientId(7)),
@@ -460,25 +461,25 @@ fn native_client_voice_tracks_without_restarting_and_retains_missing_pose() {
     e.client = Some(ClientId(7));
     e.position = Vec3([400.0, 0.0, 0.0]);
     e.attenuation = 1.0;
-    assert!(m.sound(e));
+    assert!(m.sound(&bank, e));
     let mut pcm = [0; 2];
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [0, 856]);
     m.respatialize(|client, number, origin| {
         assert_eq!(origin, None);
         assert_eq!((client, number), (ClientId(7), 19));
         Some(Vec3([-400.0, 0.0, 0.0]))
     });
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [856, 0]);
     assert_eq!(m.counts.started, 1);
     assert_eq!(m.counts.respatialized, 1);
     m.respatialize(|_, _, _| None);
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [856, 0]);
     assert_eq!(m.counts.missing_origins, 1);
     m.respatialize(|_, _, _| Some(Vec3([f32::NAN, 0.0, 0.0])));
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [856, 0]);
     assert_eq!(m.counts.missing_origins, 2);
 }
@@ -509,18 +510,18 @@ fn fixed_and_non_client_emitters_never_resolve_client_poses() {
         ),
         (false, None),
     ] {
-        let mut m = mixer(vec![1024; 2], None, 1);
+        let (bank, mut m) = mixer(vec![1024; 2], None, 1);
         m.listen(&[listener(7, Vec3::default())], 1.0);
-        let mut e = event(&m);
+        let mut e = event(&bank);
         e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
         e.entity = entity;
         e.position = Vec3([400.0, 0.0, 0.0]);
         e.positioned = positioned;
         e.attenuation = 1.0;
-        assert!(m.sound(e));
+        assert!(m.sound(&bank, e));
         m.respatialize(|_, _, _| panic!("fixed/non-client origin queried"));
         let mut pcm = [0; 2];
-        assert!(m.paint(&mut pcm));
+        assert!(m.paint(&bank, &mut pcm));
         assert_eq!(pcm, [0, 856]);
         assert_eq!(m.counts.respatialized, 0);
         assert_eq!(m.counts.missing_origins, 0);
@@ -529,13 +530,13 @@ fn fixed_and_non_client_emitters_never_resolve_client_poses() {
 
 #[test]
 fn moving_voices_keep_native_connection_namespace() {
-    let mut m = mixer(vec![1024], None, 2);
+    let (bank, mut m) = mixer(vec![1024], None, 2);
     m.listen(
         &[listener(7, Vec3::default()), listener(9, Vec3::default())],
         1.0,
     );
     for client in [ClientId(7), ClientId(9)] {
-        let mut e = event(&m);
+        let mut e = event(&bank);
         e.spatial = qa_gameplay::rules::sound_policy(RuleSetId::Quake2);
         e.entity = Some(SoundEmitter::Native {
             namespace: ResourceNamespace::Client(client),
@@ -543,7 +544,7 @@ fn moving_voices_keep_native_connection_namespace() {
         });
         e.client = Some(client);
         e.attenuation = 1.0;
-        assert!(m.sound(e));
+        assert!(m.sound(&bank, e));
     }
     let mut queried = [false; 2];
     m.respatialize(|client, number, origin| {
@@ -559,14 +560,14 @@ fn moving_voices_keep_native_connection_namespace() {
     });
     assert_eq!(queried, [true; 2]);
     let mut pcm = [0; 2];
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [856, 856]);
     assert_eq!(m.counts.respatialized, 2);
 }
 
 #[test]
 fn retirement_removes_only_the_old_client_lifetime_including_delayed_voices() {
-    let mut m = mixer(vec![1000; 4], Some(0), 8);
+    let (bank, mut m) = mixer(vec![1000; 4], Some(0), 8);
     let old = EntityId {
         slot: 1,
         generation: 4,
@@ -579,50 +580,50 @@ fn retirement_removes_only_the_old_client_lifetime_including_delayed_voices() {
         &[listener(0, Vec3::default()), listener(1, Vec3::default())],
         1.0,
     );
-    let mut old_event = event(&m);
+    let mut old_event = event(&bank);
     old_event.client = Some(ClientId(0));
     old_event.client_lifetime = Some(old);
     old_event.action = SoundAction::StartLoop;
-    assert!(m.sound(old_event));
+    assert!(m.sound(&bank, old_event));
     old_event.channel += 1;
     old_event.time_offset = 1.0;
-    assert!(m.sound(old_event));
-    let mut fresh = event(&m);
+    assert!(m.sound(&bank, old_event));
+    let mut fresh = event(&bank);
     fresh.client = Some(ClientId(0));
     fresh.client_lifetime = Some(replacement);
     fresh.action = SoundAction::StartLoop;
-    assert!(m.sound(fresh));
+    assert!(m.sound(&bank, fresh));
     let mut other = fresh;
     other.client = Some(ClientId(1));
-    assert!(m.sound(other));
+    assert!(m.sound(&bank, other));
     let mut global = fresh;
     global.client = None;
     global.client_lifetime = None;
-    assert!(m.sound(global));
-    assert!(m.sound(SoundEvent::retire_client(ClientId(0), old)));
+    assert!(m.sound(&bank, global));
+    assert!(m.sound(&bank, SoundEvent::retire_client(ClientId(0), old)));
     assert_eq!(m.counts.stopped, 2);
     let mut pcm = [0; 4];
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert!(pcm.iter().all(|sample| *sample > 0));
-    assert!(m.sound(SoundEvent::retire_client(ClientId(0), old)));
+    assert!(m.sound(&bank, SoundEvent::retire_client(ClientId(0), old)));
     assert_eq!(m.counts.stopped, 2);
-    assert!(m.sound(SoundEvent::retire_client(ClientId(0), replacement)));
-    assert!(m.sound(SoundEvent::retire_client(ClientId(1), replacement)));
+    assert!(m.sound(&bank, SoundEvent::retire_client(ClientId(0), replacement)));
+    assert!(m.sound(&bank, SoundEvent::retire_client(ClientId(1), replacement)));
     assert_eq!(m.counts.stopped, 4);
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert!(
         pcm.iter().all(|sample| *sample > 0),
         "global console play survives"
     );
     global.action = SoundAction::Stop;
-    assert!(m.sound(global));
-    assert!(m.paint(&mut pcm));
+    assert!(m.sound(&bank, global));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [0; 4]);
 }
 
 #[test]
 fn reused_native_channel_does_not_replace_a_different_client_lifetime() {
-    let mut m = mixer(vec![1000; 4], Some(0), 4);
+    let (bank, mut m) = mixer(vec![1000; 4], Some(0), 4);
     m.listen(&[listener(0, Vec3::default())], 1.0);
     let old = EntityId {
         slot: 8,
@@ -632,7 +633,7 @@ fn reused_native_channel_does_not_replace_a_different_client_lifetime() {
         generation: 2,
         ..old
     };
-    let mut sound = event(&m);
+    let mut sound = event(&bank);
     sound.client = Some(ClientId(0));
     sound.client_lifetime = Some(old);
     sound.entity = Some(SoundEmitter::Native {
@@ -641,16 +642,69 @@ fn reused_native_channel_does_not_replace_a_different_client_lifetime() {
     });
     sound.channel = 2;
     sound.action = SoundAction::StartLoop;
-    assert!(m.sound(sound));
+    assert!(m.sound(&bank, sound));
     sound.client_lifetime = Some(fresh);
-    assert!(m.sound(sound));
+    assert!(m.sound(&bank, sound));
     assert_eq!((m.counts.started, m.counts.replaced), (2, 0));
-    assert!(m.sound(SoundEvent::retire_client(ClientId(0), old)));
+    assert!(m.sound(&bank, SoundEvent::retire_client(ClientId(0), old)));
     assert_eq!(m.counts.stopped, 1);
     let mut pcm = [0; 4];
-    assert!(m.paint(&mut pcm));
+    assert!(m.paint(&bank, &mut pcm));
     assert!(pcm.iter().all(|sample| *sample > 0));
-    assert!(m.sound(SoundEvent::retire_client(ClientId(0), fresh)));
-    assert!(m.paint(&mut pcm));
+    assert!(m.sound(&bank, SoundEvent::retire_client(ClientId(0), fresh)));
+    assert!(m.paint(&bank, &mut pcm));
     assert_eq!(pcm, [0; 4]);
+}
+
+#[test]
+fn appending_pcm_keeps_active_voice_cursor_and_existing_binding_inverse() {
+    let rate = NonZeroU32::new(44_100).unwrap();
+    let mut bank = Bank::with_capacity(rate, 4, 256).unwrap();
+    let first = bank.attempt(b"sound/first.wav").unwrap();
+    let pcm = |samples: &[i16]| Pcm {
+        rate,
+        channels: PcmChannels::Mono,
+        samples: samples.to_vec(),
+        loop_start: None,
+        loop_end: None,
+        loop_invalid: false,
+    };
+    bank.admit(first, pcm(&[256, 512, 768, 1024, 1280]))
+        .unwrap();
+    let initial_len = bank.len();
+    let mut bindings = qa_audio::SoundBindings::load(5);
+    bindings.attach(&bank);
+    bindings.set(3, Some(first)).unwrap();
+    let mut mixer = Mixer::load(rate, 2, 1);
+    assert_eq!(mixer.rate(), rate);
+    let event = |sound| SoundEvent {
+        sound,
+        bus: SoundBus::Local,
+        volume: 1.0,
+        ..SoundEvent::default()
+    };
+    assert!(mixer.sound(&bank, event(first)));
+    let mut before = [0; 4];
+    assert!(mixer.paint(&bank, &mut before));
+    assert_eq!(before, [255, 255, 510, 510]);
+
+    bank.attempt(b"sound/missing.wav").unwrap();
+    let later = bank.attempt(b"sound/later.wav").unwrap();
+    assert!(later.0 as usize > initial_len);
+    bank.admit(later, pcm(&[128, 256])).unwrap();
+    bindings.set(4, Some(later)).unwrap();
+    bindings.set(1, Some(later)).unwrap();
+    assert_eq!(bindings.sound(3), Some(first));
+    assert_eq!(bindings.ordinal(first), Some(3));
+    assert_eq!(bindings.ordinal(later), Some(1));
+    assert!(mixer.sound(&bank, event(later)));
+    let mut after = [0; 6];
+    assert!(mixer.paint(&bank, &mut after));
+    assert_eq!(after, [892, 892, 1275, 1275, 1275, 1275]);
+    assert_eq!(mixer.counts.started, 2);
+    assert_eq!(mixer.counts.replaced, 0);
+    assert_eq!(mixer.counts.frames, 5);
+    let mut finished = [1; 2];
+    assert!(mixer.paint(&bank, &mut finished));
+    assert_eq!(finished, [0; 2]);
 }

@@ -94,6 +94,7 @@ impl Fixture {
 
 #[test]
 fn named_track_extension_order_is_source_data_with_fallback_to_valid_prepared_audio() {
+    let bank = bank();
     let mut fixture = Fixture::new();
     fixture.numbered();
     let mono = qa_formats::sound::vorbis(MONO).unwrap();
@@ -122,7 +123,7 @@ fn named_track_extension_order_is_source_data_with_fallback_to_valid_prepared_au
             assert!(music.control(&fixture.vfs, &mut mix, control, Some(name), None));
             music.update(&fixture.vfs, &mut mix, 1.);
             let mut actual = [0; 8];
-            mix.paint(&mut actual);
+            mix.paint(&bank, &mut actual);
             let wave = rules == RuleSetId::Quake3 && name == b"music/choice";
             if wave {
                 assert_eq!(actual, [625, -625, 1250, -1250, 0, 0, 0, 0]);
@@ -142,7 +143,7 @@ fn named_track_extension_order_is_source_data_with_fallback_to_valid_prepared_au
                     )
                     .unwrap();
                 let mut expected = [0; 8];
-                reference.paint(&mut expected);
+                reference.paint(&bank, &mut expected);
                 assert_eq!(actual, expected, "{rules:?}, {name:?}");
             }
             assert_eq!(music.counts.invalid, 0);
@@ -154,12 +155,11 @@ impl Drop for Fixture {
         qa_platform::files::remove_dir_all(&self.root).unwrap();
     }
 }
+pub fn bank() -> Bank {
+    Bank::load(NonZeroU32::new(22050).unwrap(), vec![]).unwrap()
+}
 pub fn mixer() -> Mixer {
-    Mixer::load(
-        Arc::new(Bank::load(NonZeroU32::new(22050).unwrap(), vec![]).unwrap()),
-        4,
-        1,
-    )
+    Mixer::load(NonZeroU32::new(22050).unwrap(), 4, 1)
 }
 fn owner(generation: u32) -> MusicOwner {
     MusicOwner {
@@ -193,6 +193,7 @@ fn start(owner: MusicOwner, preserve: bool, smooth: bool) -> MusicControl {
 
 #[test]
 fn numbered_tracks_use_prepared_vfs_priority_and_do_not_restart_on_repeated_requests() {
+    let bank = bank();
     let mut fixture = Fixture::new();
     fixture.numbered();
     let expected = qa_formats::sound::vorbis(MONO).unwrap();
@@ -207,7 +208,7 @@ fn numbered_tracks_use_prepared_vfs_priority_and_do_not_restart_on_repeated_requ
     assert!(music.control(&fixture.vfs, &mut mix, control(2, true), None, None));
     music.update(&fixture.vfs, &mut mix, 1.);
     let mut pcm = [0; 16];
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, std::array::from_fn(|i| expected.samples[i / 2]));
     let queued = mix.raw_remaining();
     assert!(music.control(&fixture.vfs, &mut mix, control(2, true), None, None));
@@ -215,26 +216,27 @@ fn numbered_tracks_use_prepared_vfs_priority_and_do_not_restart_on_repeated_requ
     assert_eq!(music.counts.started, 1);
     assert!(music.control(&fixture.vfs, &mut mix, control(0, true), None, None));
     assert!(!music.playing());
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0; 16]);
     // A malformed first candidate is skipped in favor of the valid next file.
     assert!(music.control(&fixture.vfs, &mut mix, control(4, false), None, None));
     music.update(&fixture.vfs, &mut mix, 1.);
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, std::array::from_fn(|i| expected.samples[i / 2]));
     assert!(music.control(&fixture.vfs, &mut mix, control(3, false), None, None));
     music.update(&fixture.vfs, &mut mix, 1.);
     let mut wave = [0; 8];
-    mix.paint(&mut wave);
+    mix.paint(&bank, &mut wave);
     assert_eq!(wave, [1000, -1000, 2000, -2000, 0, 0, 0, 0]);
     assert!(!music.playing());
 }
 
 #[test]
 fn dynamic_tracks_bypass_effect_registration_and_switch_intro_to_loop() {
+    let bank = bank();
     let fixture = Fixture::new();
     let mut mix = mixer();
-    assert_eq!(mix.bank.find("music/intro.wav"), None);
+    assert_eq!(bank.find("music/intro.wav"), None);
     let mut music = Music::load(&fixture.vfs);
     assert!(music.control(
         &fixture.vfs,
@@ -245,7 +247,7 @@ fn dynamic_tracks_bypass_effect_registration_and_switch_intro_to_loop() {
     ));
     music.update(&fixture.vfs, &mut mix, 1.);
     let mut out = [0; 12];
-    mix.paint(&mut out);
+    mix.paint(&bank, &mut out);
     assert_eq!(
         out,
         [
@@ -262,12 +264,13 @@ fn dynamic_tracks_bypass_effect_registration_and_switch_intro_to_loop() {
         None,
         None,
     );
-    mix.paint(&mut out);
+    mix.paint(&bank, &mut out);
     assert_eq!(out, [0; 12]);
 }
 
 #[test]
 fn native_volume_updates_once_and_raw_queue_survives_failed_replacement() {
+    let bank = bank();
     let fixture = Fixture::new();
     let mut mix = mixer();
     let mut music = Music::load(&fixture.vfs);
@@ -295,13 +298,14 @@ fn native_volume_updates_once_and_raw_queue_survives_failed_replacement() {
         None,
     );
     let mut out = [0; 6];
-    mix.paint(&mut out);
+    mix.paint(&bank, &mut out);
     assert_eq!(out, [375, -375, 750, -750, 0, 0]);
     assert_eq!(music.counts.invalid, 1);
 }
 
 #[test]
 fn loose_vorbis_streams_exact_authored_samples_and_keeps_pause_position() {
+    let bank = bank();
     let fixture = Fixture::new();
     let expected = qa_formats::sound::vorbis(MONO).unwrap();
     let mut mix = mixer();
@@ -315,7 +319,7 @@ fn loose_vorbis_streams_exact_authored_samples_and_keeps_pause_position() {
     ));
     music.update(&fixture.vfs, &mut mix, 1.);
     let mut pair = [0; 2];
-    mix.paint(&mut pair);
+    mix.paint(&bank, &mut pair);
     assert_eq!(pair, [expected.samples[0]; 2]);
     music.control(
         &fixture.vfs,
@@ -324,7 +328,7 @@ fn loose_vorbis_streams_exact_authored_samples_and_keeps_pause_position() {
         None,
         None,
     );
-    mix.paint(&mut pair);
+    mix.paint(&bank, &mut pair);
     assert_eq!(pair, [0; 2]);
     music.control(
         &fixture.vfs,
@@ -334,7 +338,7 @@ fn loose_vorbis_streams_exact_authored_samples_and_keeps_pause_position() {
         None,
     );
     let mut actual = vec![0; expected.samples.len() * 2];
-    mix.paint(&mut actual);
+    mix.paint(&bank, &mut actual);
     let mut remaining: Vec<_> = expected.samples[1..]
         .iter()
         .flat_map(|&sample| [sample; 2])
@@ -347,6 +351,7 @@ fn loose_vorbis_streams_exact_authored_samples_and_keeps_pause_position() {
 
 #[test]
 fn deflated_vorbis_with_arbitrary_name_uses_the_same_pcm_blocks_as_wave() {
+    let bank = bank();
     let mut fixture = Fixture::new();
     fixture.archive();
     let expected = qa_formats::sound::vorbis(STEREO).unwrap();
@@ -376,8 +381,8 @@ fn deflated_vorbis_with_arbitrary_name_uses_the_same_pcm_blocks_as_wave() {
     }
     let mut actual = [0; 12000];
     let mut reference = [0; 12000];
-    actual_mix.paint(&mut actual);
-    expected_mix.paint(&mut reference);
+    actual_mix.paint(&bank, &mut actual);
+    expected_mix.paint(&bank, &mut reference);
     assert_eq!(actual, reference);
     assert!(!music.playing());
     assert_eq!(music.counts.invalid, 0);
@@ -385,6 +390,7 @@ fn deflated_vorbis_with_arbitrary_name_uses_the_same_pcm_blocks_as_wave() {
 
 #[test]
 fn vorbis_intro_to_wave_loop_preserves_the_boundary_and_voice_bank() {
+    let bank = bank();
     let fixture = Fixture::new();
     let expected = qa_formats::sound::vorbis(MONO).unwrap();
     let mut music = Music::load(&fixture.vfs);
@@ -398,7 +404,7 @@ fn vorbis_intro_to_wave_loop_preserves_the_boundary_and_voice_bank() {
     ));
     music.update(&fixture.vfs, &mut mix, 1.);
     let mut actual = vec![0; expected.samples.len() * 2 + 8];
-    mix.paint(&mut actual);
+    mix.paint(&bank, &mut actual);
     let mut reference: Vec<_> = expected
         .samples
         .iter()
@@ -406,7 +412,7 @@ fn vorbis_intro_to_wave_loop_preserves_the_boundary_and_voice_bank() {
         .collect();
     reference.extend([3000, -3000, 4000, -4000, 3000, -3000, 4000, -4000]);
     assert_eq!(actual, reference);
-    assert_eq!(mix.bank.find("music/mono.ogg"), None);
+    assert_eq!(bank.find("music/mono.ogg"), None);
     assert_eq!(music.counts.invalid, 0);
 }
 
@@ -414,7 +420,8 @@ fn vorbis_intro_to_wave_loop_preserves_the_boundary_and_voice_bank() {
 fn multi_page_vorbis_keeps_partial_packets_across_presentation_refills() {
     let fixture = Fixture::new();
     let expected = qa_formats::sound::vorbis(PAGES).unwrap();
-    let mut mix = Mixer::load(Arc::new(Bank::load(expected.rate, vec![]).unwrap()), 4, 1);
+    let bank = Bank::load(expected.rate, vec![]).unwrap();
+    let mut mix = Mixer::load(expected.rate, 4, 1);
     let mut music = Music::load(&fixture.vfs);
     assert!(music.control(
         &fixture.vfs,
@@ -430,7 +437,7 @@ fn multi_page_vorbis_keeps_partial_packets_across_presentation_refills() {
         music.update(&fixture.vfs, &mut mix, 1.);
         let frames = [127, 512, 2048, 4096, 333][iteration % 5];
         let frames = frames.min(expected.frames() + 20 - position);
-        mix.paint(&mut buffer[..frames * 2]);
+        mix.paint(&bank, &mut buffer[..frames * 2]);
         for frame in 0..frames {
             let sample = expected.samples.get(position + frame).copied().unwrap_or(0);
             assert_eq!(&buffer[frame * 2..frame * 2 + 2], &[sample; 2]);
@@ -445,6 +452,7 @@ fn multi_page_vorbis_keeps_partial_packets_across_presentation_refills() {
 
 #[test]
 fn console_vorbis_path_reaches_the_mixer_through_the_shared_ring() {
+    let bank = bank();
     let mut fixture = Fixture::new();
     let mut runtime = qa_app::Runtime::load(1, []).unwrap();
     runtime.vfs = std::mem::take(&mut fixture.vfs);
@@ -467,7 +475,7 @@ fn console_vorbis_path_reaches_the_mixer_through_the_shared_ring() {
     music.update(&runtime.vfs, &mut mix, 1.);
     let expected = qa_formats::sound::vorbis(MONO).unwrap();
     let mut output = [0; 8];
-    mix.paint(&mut output);
+    mix.paint(&bank, &mut output);
     let mut reference = mixer();
     let bytes: Vec<_> = expected
         .samples
@@ -487,13 +495,14 @@ fn console_vorbis_path_reaches_the_mixer_through_the_shared_ring() {
         )
         .unwrap();
     let mut reference_output = [0; 8];
-    reference.paint(&mut reference_output);
+    reference.paint(&bank, &mut reference_output);
     assert_eq!(output, reference_output);
     assert_eq!(music.counts.invalid, 0);
 }
 
 #[test]
 fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth() {
+    let bank = bank();
     let mut fixture = Fixture::new();
     fixture.archive();
     let mut music = Music::load(&fixture.vfs);
@@ -509,7 +518,7 @@ fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth(
     ));
     for _ in 0..20 {
         music.update(&fixture.vfs, &mut mix, 1.);
-        mix.paint(&mut output);
+        mix.paint(&bank, &mut output);
     }
     music.control(
         &fixture.vfs,
@@ -519,7 +528,7 @@ fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth(
         None,
     );
     music.update(&fixture.vfs, &mut mix, 1.);
-    mix.paint(&mut output);
+    mix.paint(&bank, &mut output);
     music.control(
         &fixture.vfs,
         &mut mix,
@@ -528,7 +537,7 @@ fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth(
         None,
     );
     music.update(&fixture.vfs, &mut mix, 1.);
-    mix.paint(&mut output);
+    mix.paint(&bank, &mut output);
     music.control(
         &fixture.vfs,
         &mut mix,
@@ -544,6 +553,7 @@ fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth(
 
 #[test]
 fn retirement_does_not_stop_a_reused_client_or_a_new_module_owner() {
+    let bank = bank();
     let fixture = Fixture::new();
     let mut mix = mixer();
     let mut music = Music::load(&fixture.vfs);
@@ -581,7 +591,7 @@ fn retirement_does_not_stop_a_reused_client_or_a_new_module_owner() {
         None,
     );
     let mut out = [0; 4];
-    mix.paint(&mut out);
+    mix.paint(&bank, &mut out);
     assert_eq!(out, [0; 4]);
     assert!(!music.playing());
 }
@@ -634,6 +644,7 @@ fn console_control(
 
 #[test]
 fn console_cd_controls_keep_one_player_and_apply_atomic_remaps() {
+    let bank = bank();
     let mut fixture = Fixture::new();
     fixture.numbered();
     let mut runtime = qa_app::Runtime::load(1, []).unwrap();
@@ -673,7 +684,7 @@ fn console_cd_controls_keep_one_player_and_apply_atomic_remaps() {
     ));
     music.update(&runtime.vfs, &mut mix, 1.);
     let mut pcm = [0; 8];
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, [1000, -1000, 2000, -2000, 1000, -1000, 2000, -2000]);
     assert_eq!(
         music
@@ -682,10 +693,10 @@ fn console_cd_controls_keep_one_player_and_apply_atomic_remaps() {
         "Currently looping track 1 (mapped to 3)\nVolume is 1\n"
     );
     run!("cd pause");
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0; 8]);
     run!("cd resume");
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_ne!(pcm, [0; 8]);
     run!("cd off");
     let started = music.counts.started;
@@ -777,6 +788,7 @@ fn full_native_remap_range_is_available_through_every_engine_console_profile() {
 }
 #[test]
 fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
+    let bank = bank();
     let mut fixture = Fixture::new();
     let mut runtime = qa_app::Runtime::load(1, []).unwrap();
     runtime.vfs = std::mem::take(&mut fixture.vfs);
@@ -801,7 +813,7 @@ fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
     ));
     music.update(&runtime.vfs, &mut mix, 1.);
     let mut pcm = [0; 2];
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, [1000, -1000]);
     assert!(matches!(
         console_control(
@@ -815,7 +827,7 @@ fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
         Some(MusicControl::Pause(true))
     ));
     music.update(&runtime.vfs, &mut mix, 1.);
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0; 2]);
     assert!(matches!(
         console_control(
@@ -828,7 +840,7 @@ fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
         ),
         Some(MusicControl::Pause(false))
     ));
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, [2000, -2000]);
     music.control(
         &runtime.vfs,
@@ -852,7 +864,7 @@ fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
         ),
         Some(MusicControl::Stop { only_active: false })
     ));
-    mix.paint(&mut pcm);
+    mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0; 2]);
     assert!(matches!(
         console_control(
@@ -867,13 +879,14 @@ fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
     ));
     music.update(&runtime.vfs, &mut mix, 1.);
     let mut output = [0; 6];
-    mix.paint(&mut output);
+    mix.paint(&bank, &mut output);
     assert_eq!(output, [1000, -1000, 2000, -2000, 0, 0]);
     assert!(!music.playing());
 }
 
 #[test]
 fn console_bare_music_names_reach_the_same_source_selected_resolver() {
+    let bank = bank();
     for rules in [RuleSetId::Quake2, RuleSetId::Quake3] {
         let mut fixture = Fixture::new();
         fixture.numbered();
@@ -906,7 +919,7 @@ fn console_bare_music_names_reach_the_same_source_selected_resolver() {
         );
         music.update(&runtime.vfs, &mut mix, 1.);
         let mut actual = [0; 8];
-        mix.paint(&mut actual);
+        mix.paint(&bank, &mut actual);
         if rules == RuleSetId::Quake3 {
             assert_eq!(actual, [625, -625, 1250, -1250, 625, -625, 1250, -1250]);
         } else {

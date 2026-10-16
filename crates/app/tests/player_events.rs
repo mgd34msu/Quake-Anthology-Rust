@@ -18,7 +18,7 @@ use qa_formats::program::qvm::Opcode as Op;
 use qa_network::commands::packet::Protocol;
 use qa_session::timing::TickRate;
 use qa_world::entities::AllocationPolicy;
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use std::{num::NonZeroU32, time::Duration};
 
 const MODULE: ModuleId = ModuleId(1);
 const ENTITIES: i32 = 4096;
@@ -86,7 +86,7 @@ impl FrameSource for Source {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         self.observations.push((
             event.sound,
             event.channel,
@@ -97,7 +97,7 @@ impl FrameSource for Source {
             event.entity,
             event.source_ordinal,
         ));
-        self.mixer.sound(event)
+        self.mixer.sound(_bank.unwrap(), event)
     }
 }
 
@@ -184,36 +184,34 @@ fn cgame() -> qa_compat::qvm::Vm {
     )
 }
 
-fn fixture() -> (Box<FrameHost>, ClientId, Source, Arc<Bank>) {
+fn fixture() -> (Box<FrameHost>, ClientId, Source) {
     fixture_owned(false)
 }
 
-fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>) {
+fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source) {
     let rate = NonZeroU32::new(8000).unwrap();
-    let bank = Arc::new(
-        Bank::load(
-            rate,
-            ["sound/one.wav", "sound/two.wav"]
-                .into_iter()
-                .map(|path| {
-                    (
-                        path.into(),
-                        Pcm {
-                            rate,
-                            channels: PcmChannels::Mono,
-                            samples: vec![12000; 128],
-                            loop_start: None,
-                            loop_end: None,
-                            loop_invalid: false,
-                        },
-                    )
-                })
-                .collect(),
-        )
-        .unwrap(),
-    );
+    let bank = Bank::load(
+        rate,
+        ["sound/one.wav", "sound/two.wav"]
+            .into_iter()
+            .map(|path| {
+                (
+                    path.into(),
+                    Pcm {
+                        rate,
+                        channels: PcmChannels::Mono,
+                        samples: vec![12000; 128],
+                        loop_start: None,
+                        loop_end: None,
+                        loop_invalid: false,
+                    },
+                )
+            })
+            .collect(),
+    )
+    .unwrap();
     let mut runtime = Runtime::load(2, []).unwrap();
-    runtime.sound_bank = Some(Arc::clone(&bank));
+    runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
     let client = runtime
         .connect_local(
             SeatId::FIRST,
@@ -329,9 +327,9 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>) {
     host.initialize_modules(Phase::Client);
     host.connect_module_client(MODULE, client, b"\\name\\events")
         .unwrap();
-    host.bind_sounds(&bank).unwrap();
+    host.bind_sounds().unwrap();
     let mut source = Source {
-        mixer: Mixer::load(Arc::clone(&bank), 16, SeatId::COUNT),
+        mixer: Mixer::load(host.runtime.sound_bank().unwrap().rate, 16, SeatId::COUNT),
         observations: vec![],
         time: EventTime::from_milliseconds(100),
     };
@@ -344,8 +342,24 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>) {
         .as_mut()
         .unwrap()
         .state;
-    assert_eq!(resources.sound(1), bank.find("sound/one.wav"));
-    assert_eq!(resources.sound(2), bank.find("sound/two.wav"));
+    assert_eq!(
+        resources.sound(1),
+        host.runtime
+            .sound_assets
+            .as_deref()
+            .unwrap()
+            .bank()
+            .find("sound/one.wav")
+    );
+    assert_eq!(
+        resources.sound(2),
+        host.runtime
+            .sound_assets
+            .as_deref()
+            .unwrap()
+            .bank()
+            .find("sound/two.wav")
+    );
     resources.set_sound_policy(
         qa_gameplay::rules::sound_policy(RuleSetId::Quake),
         qa_gameplay::rules::loop_spatial_policy(RuleSetId::Quake),
@@ -356,7 +370,7 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>) {
     host.publish_client_feedback();
     dispatch(&mut host, &mut source);
     source.observations.clear();
-    (host, client, source, bank)
+    (host, client, source)
 }
 
 fn listen(source: &mut Source, client: ClientId) {
@@ -380,30 +394,27 @@ fn listen(source: &mut Source, client: ClientId) {
     );
 }
 
-fn fixed_fixture(
-    owned: bool,
-    missing: &[&str],
-) -> (Box<FrameHost>, ClientId, Source, Arc<Bank>, MediaFiles) {
-    let (mut host, client, mut source, _) = fixture_owned(owned);
+fn fixed_fixture(owned: bool, missing: &[&str]) -> (Box<FrameHost>, ClientId, Source, MediaFiles) {
+    let (mut host, client, mut source) = fixture_owned(owned);
     let files = MediaFiles::new(missing);
     host.runtime.vfs.mount_directory(&files.0, 0).unwrap();
     // Exercise the actual cold registration call site before Bank freezes.
-    host.runtime.sound_bank = None;
+    host.runtime.sound_assets = None;
     qa_app::audio::begin_registration(&mut host, &[], RuleSetId::Quake3).unwrap();
     qa_app::audio::load_registered_sounds(&mut host, &[], RuleSetId::Quake3).unwrap();
     let counts = {
-        let loader = host.runtime.sound_loader.as_ref().unwrap();
+        let loader = host.runtime.sound_assets.as_ref().unwrap();
         (loader.reads, loader.decodes)
     };
     qa_app::audio::load_registered_sounds(&mut host, &[], RuleSetId::Quake3).unwrap();
-    let loader = host.runtime.sound_loader.as_ref().unwrap();
+    let loader = host.runtime.sound_assets.as_ref().unwrap();
     assert_eq!((loader.reads, loader.decodes), counts);
-    let bank = qa_app::audio::finish_registration(&mut host).unwrap();
-    source.mixer = Mixer::load(Arc::clone(&bank), 16, SeatId::COUNT);
+    qa_app::audio::finish_registration(&mut host).unwrap();
+    source.mixer = Mixer::load(host.runtime.sound_bank().unwrap().rate, 16, SeatId::COUNT);
     listen(&mut source, client);
     acknowledge_configs(&mut host, client, &mut source);
     source.observations.clear();
-    (host, client, source, bank, files)
+    (host, client, source, files)
 }
 
 fn acknowledge_configs(host: &mut FrameHost, client: ClientId, source: &mut Source) {
@@ -548,7 +559,7 @@ fn consume(host: &mut FrameHost, source: &mut Source) -> u64 {
 
 #[test]
 fn native_events_cross_queued_snapshots_one_ring_and_real_pcm_with_independent_roles() {
-    let (mut host, client, mut source, bank) = fixture();
+    let (mut host, client, mut source) = fixture();
     write(&mut host, 200, &[(128, 45 | 0x100), (132, 1)]);
     transmit_native(&mut host, client, &mut source, 200, 150);
     // Receipt updates common raw state, but presentation has not reached this frame.
@@ -567,7 +578,14 @@ fn native_events_cross_queued_snapshots_one_ring_and_real_pcm_with_independent_r
     due(&mut host, client, 200);
     assert_eq!(consume(&mut host, &mut source), 1);
     let (sound, channel, bus, spatial, playback, lifetime, emitter, _) = source.observations[0];
-    assert_eq!(sound, bank.find("sound/one.wav").unwrap());
+    assert_eq!(
+        sound,
+        host.runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/one.wav")
+            .unwrap()
+    );
     assert_eq!((channel, bus), (3, SoundBus::Spatial));
     assert_eq!(spatial, qa_gameplay::rules::sound_policy(RuleSetId::Quake));
     assert_eq!(
@@ -586,7 +604,11 @@ fn native_events_cross_queued_snapshots_one_ring_and_real_pcm_with_independent_r
         })
     );
     let mut pcm = [0; 16];
-    assert!(source.mixer.paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     assert!(pcm.iter().any(|&sample| sample != 0));
     assert_eq!(consume(&mut host, &mut source), 0);
     write(&mut host, 300, &[(128, 45 | 0x200), (132, 2)]);
@@ -595,7 +617,11 @@ fn native_events_cross_queued_snapshots_one_ring_and_real_pcm_with_independent_r
     assert_eq!(consume(&mut host, &mut source), 1);
     assert_eq!(
         source.observations[1].0,
-        bank.find("sound/two.wav").unwrap()
+        host.runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/two.wav")
+            .unwrap()
     );
     assert_eq!(
         host.runtime.prediction[0].player.movement_rules,
@@ -609,7 +635,7 @@ fn native_events_cross_queued_snapshots_one_ring_and_real_pcm_with_independent_r
 
 #[test]
 fn predictable_corrections_compare_codes_and_preserve_external_first_order() {
-    let (mut host, client, mut source, _) = fixture();
+    let (mut host, client, mut source) = fixture();
     write(
         &mut host,
         200,
@@ -648,7 +674,7 @@ fn predictable_corrections_compare_codes_and_preserve_external_first_order() {
 
 #[test]
 fn unresolved_and_unsupported_events_drop_once_without_stalling_later_frames() {
-    let (mut host, client, mut source, _) = fixture();
+    let (mut host, client, mut source) = fixture();
     write(
         &mut host,
         200,
@@ -680,7 +706,7 @@ fn unresolved_and_unsupported_events_drop_once_without_stalling_later_frames() {
 
 #[test]
 fn full_presentation_retries_the_retained_transition_in_external_then_predictable_order() {
-    let (mut host, client, mut source, _) = fixture();
+    let (mut host, client, mut source) = fixture();
     write(
         &mut host,
         200,
@@ -727,7 +753,7 @@ fn full_presentation_retries_the_retained_transition_in_external_then_predictabl
 
 #[test]
 fn follow_and_reused_connection_lifetimes_baseline_without_replaying_old_events() {
-    let (mut host, client, mut source, _) = fixture();
+    let (mut host, client, mut source) = fixture();
     write(
         &mut host,
         200,
@@ -776,13 +802,17 @@ fn follow_and_reused_connection_lifetimes_baseline_without_replaying_old_events(
     assert_ne!(host.runtime.server.clients[client.0 as usize].entity, old);
     assert_eq!(consume(&mut host, &mut source), 0);
     let mut pcm = [1; 16];
-    assert!(source.mixer.paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     assert!(pcm.iter().all(|&sample| sample == 0));
 }
 
 #[test]
 fn native_audio_ownership_suppresses_fallback_and_release_never_replays_suppressed_cues() {
-    let (mut host, client, mut source, _) = fixture_owned(true);
+    let (mut host, client, mut source) = fixture_owned(true);
     write(
         &mut host,
         200,
@@ -843,7 +873,7 @@ fn fixed_native_media_cross_the_queued_channel_and_mixer_with_independent_sound_
         (63, "sound/items/regen.wav", 4),
     ];
     for sound_role in [RuleSetId::Quake3, RuleSetId::Quake2] {
-        let (mut host, client, mut source, bank, _files) = fixed_fixture(false, &[]);
+        let (mut host, client, mut source, _files) = fixed_fixture(false, &[]);
         let spatial = qa_gameplay::rules::sound_policy(sound_role);
         host.runtime.client_resources[client.0 as usize]
             .as_mut()
@@ -869,7 +899,10 @@ fn fixed_native_media_cross_the_queued_channel_and_mixer_with_independent_sound_
             due(&mut host, client, milliseconds);
             assert_eq!(consume(&mut host, &mut source), 1);
             let event = source.observations.last().unwrap();
-            assert_eq!(event.0, bank.find(path).unwrap());
+            assert_eq!(
+                event.0,
+                host.runtime.sound_bank().unwrap().find(path).unwrap()
+            );
             assert_eq!((event.1, event.2), (expected_channel, SoundBus::Spatial));
             assert_eq!(event.3, spatial);
             assert_eq!(
@@ -878,7 +911,13 @@ fn fixed_native_media_cross_the_queued_channel_and_mixer_with_independent_sound_
             );
             assert_eq!(
                 event.7,
-                Some(bank.registered_handle(path.as_bytes()).unwrap() as u32),
+                Some(
+                    host.runtime
+                        .sound_bank()
+                        .unwrap()
+                        .registered_handle(path.as_bytes())
+                        .unwrap() as u32
+                ),
             );
             assert_eq!(
                 event.6,
@@ -888,7 +927,11 @@ fn fixed_native_media_cross_the_queued_channel_and_mixer_with_independent_sound_
                 }),
             );
             let mut pcm = [0; 16];
-            assert!(source.mixer.paint(&mut pcm));
+            assert!(
+                source
+                    .mixer
+                    .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+            );
             assert!(pcm.iter().any(|&sample| sample != 0));
             assert_eq!(consume(&mut host, &mut source), 0);
         }
@@ -912,7 +955,7 @@ fn fixed_native_media_cross_the_queued_channel_and_mixer_with_independent_sound_
 
 #[test]
 fn fixed_media_retry_keeps_external_then_predictable_order_without_repeating() {
-    let (mut host, client, mut source, bank, _files) = fixed_fixture(false, &[]);
+    let (mut host, client, mut source, _files) = fixed_fixture(false, &[]);
     write(
         &mut host,
         300,
@@ -947,23 +990,59 @@ fn fixed_media_retry_keeps_external_then_predictable_order_without_repeating() {
             .map(|event| (event.0, event.1))
             .collect::<Vec<_>>(),
         vec![
-            (bank.find("sound/player/land1.wav").unwrap(), 0),
-            (bank.find("sound/player/watr_in.wav").unwrap(), 0),
-            (bank.find("sound/items/damage3.wav").unwrap(), 4),
+            (
+                host.runtime
+                    .sound_bank()
+                    .unwrap()
+                    .find("sound/player/land1.wav")
+                    .unwrap(),
+                0
+            ),
+            (
+                host.runtime
+                    .sound_bank()
+                    .unwrap()
+                    .find("sound/player/watr_in.wav")
+                    .unwrap(),
+                0
+            ),
+            (
+                host.runtime
+                    .sound_bank()
+                    .unwrap()
+                    .find("sound/items/damage3.wav")
+                    .unwrap(),
+                4
+            ),
         ],
     );
     assert_eq!(consume(&mut host, &mut source), 0);
     let mut pcm = [0; 16];
-    assert!(source.mixer.paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     assert!(pcm.iter().any(|&sample| sample != 0));
 }
 
 #[test]
 fn missing_fixed_registration_uses_native_zero_without_reinterpreting_config_zero() {
-    let (mut host, client, mut source, bank, _files) =
-        fixed_fixture(false, &["sound/player/land1.wav"]);
-    assert_eq!(bank.find("sound/player/land1.wav"), None);
-    assert_eq!(bank.registered_handle(b"sound/player/land1.wav"), Some(0));
+    let (mut host, client, mut source, _files) = fixed_fixture(false, &["sound/player/land1.wav"]);
+    assert_eq!(
+        host.runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/player/land1.wav"),
+        None
+    );
+    assert_eq!(
+        host.runtime
+            .sound_bank()
+            .unwrap()
+            .registered_handle(b"sound/player/land1.wav"),
+        Some(0)
+    );
     assert_eq!(
         host.runtime.client_resources[client.0 as usize]
             .as_ref()
@@ -976,16 +1055,27 @@ fn missing_fixed_registration_uses_native_zero_without_reinterpreting_config_zer
     transmit(&mut host, client, &mut source, 300);
     due(&mut host, client, 300);
     assert_eq!(consume(&mut host, &mut source), 1);
-    assert_eq!(source.observations[0].0, bank.registered_sound(0).unwrap());
+    assert_eq!(
+        source.observations[0].0,
+        host.runtime
+            .sound_bank()
+            .unwrap()
+            .registered_sound(0)
+            .unwrap()
+    );
     assert_eq!(source.observations[0].7, Some(0));
     let mut pcm = [0; 16];
-    assert!(source.mixer.paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     assert!(pcm.iter().any(|&sample| sample != 0));
 }
 
 #[test]
 fn missing_fixed_and_default_pcm_drops_once_while_later_fixed_media_continue() {
-    let (mut host, client, mut source, _, _files) =
+    let (mut host, client, mut source, _files) =
         fixed_fixture(false, &["sound/player/land1.wav", "sound/feedback/hit.wav"]);
     write(&mut host, 300, &[(128, 10)]);
     transmit(&mut host, client, &mut source, 300);
@@ -1007,7 +1097,7 @@ fn missing_fixed_and_default_pcm_drops_once_while_later_fixed_media_continue() {
 
 #[test]
 fn native_cgame_owns_fixed_media_and_release_establishes_a_new_event_baseline() {
-    let (mut host, client, mut source, bank, _files) = fixed_fixture(true, &[]);
+    let (mut host, client, mut source, _files) = fixed_fixture(true, &[]);
     write(&mut host, 300, &[(128, 10)]);
     transmit(&mut host, client, &mut source, 300);
     due(&mut host, client, 300);
@@ -1025,6 +1115,10 @@ fn native_cgame_owns_fixed_media_and_release_establishes_a_new_event_baseline() 
     assert_eq!(consume(&mut host, &mut source), 1);
     assert_eq!(
         source.observations[0].0,
-        bank.find("sound/player/watr_in.wav").unwrap(),
+        host.runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/player/watr_in.wav")
+            .unwrap(),
     );
 }

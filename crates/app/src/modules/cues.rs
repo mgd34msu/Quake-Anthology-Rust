@@ -155,7 +155,7 @@ impl FrameHost {
                 static_emitter,
             )
         };
-        if static_sound && !self.runtime.sound_bank.as_ref()?.has_loop_marker(sound) {
+        if static_sound && !self.runtime.sound_bank()?.has_loop_marker(sound) {
             return None;
         }
         let ordinal = if static_sound { None } else { wire.entity() };

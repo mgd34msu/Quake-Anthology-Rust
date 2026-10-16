@@ -8,7 +8,7 @@ use qa_network::{
     ingress::{Connection as NativeConnection, Route},
 };
 use qa_session::clients::Connection;
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use std::{num::NonZeroU32, time::Duration};
 
 struct Source {
     mixer: Mixer,
@@ -26,11 +26,11 @@ impl FrameSource for Source {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         if event.action == SoundAction::RetireClient {
             self.retired.push(event.client_lifetime.unwrap());
         }
-        self.mixer.sound(event)
+        self.mixer.sound(_bank.unwrap(), event)
     }
 }
 fn fixture(capacity: usize) -> (Runtime, Source) {
@@ -42,24 +42,22 @@ fn fixture(capacity: usize) -> (Runtime, Source) {
         .bind(OutputTarget::Presentation)
         .unwrap();
     let rate = NonZeroU32::new(44100).unwrap();
-    let bank = Arc::new(
-        Bank::load(
-            rate,
-            vec![(
-                "sound/loop.wav".into(),
-                Pcm {
-                    rate,
-                    channels: PcmChannels::Mono,
-                    samples: vec![1000; 4],
-                    loop_start: Some(0),
-                    loop_end: None,
-                    loop_invalid: false,
-                },
-            )],
-        )
-        .unwrap(),
-    );
-    let mut mixer = Mixer::load(Arc::clone(&bank), 8, 1);
+    let bank = Bank::load(
+        rate,
+        vec![(
+            "sound/loop.wav".into(),
+            Pcm {
+                rate,
+                channels: PcmChannels::Mono,
+                samples: vec![1000; 4],
+                loop_start: Some(0),
+                loop_end: None,
+                loop_invalid: false,
+            },
+        )],
+    )
+    .unwrap();
+    let mut mixer = Mixer::load(rate, 8, 1);
     mixer.listen(
         &[Some(Listener {
             negate_dot: false,
@@ -70,7 +68,7 @@ fn fixture(capacity: usize) -> (Runtime, Source) {
         })],
         1.0,
     );
-    runtime.sound_bank = Some(bank);
+    runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
     (
         runtime,
         Source {
@@ -98,20 +96,23 @@ fn connect(runtime: &mut Runtime) -> Result<ClientId, String> {
         0,
     )
 }
-fn start(source: &mut Source, id: ClientId, lifetime: EntityId) {
-    assert!(source.mixer.sound(SoundEvent {
-        sound: source.mixer.bank.find("sound/loop.wav").unwrap(),
-        action: SoundAction::StartLoop,
-        client: Some(id),
-        client_lifetime: Some(lifetime),
-        volume: 1.0,
-        attenuation: 0.0,
-        ..SoundEvent::default()
-    }));
+fn start(source: &mut Source, bank: &Bank, id: ClientId, lifetime: EntityId) {
+    assert!(source.mixer.sound(
+        bank,
+        SoundEvent {
+            sound: bank.find("sound/loop.wav").unwrap(),
+            action: SoundAction::StartLoop,
+            client: Some(id),
+            client_lifetime: Some(lifetime),
+            volume: 1.0,
+            attenuation: 0.0,
+            ..SoundEvent::default()
+        }
+    ));
 }
-fn audible(source: &mut Source) -> bool {
+fn audible(source: &mut Source, bank: &Bank) -> bool {
     let mut pcm = [0; 8];
-    assert!(source.mixer.paint(&mut pcm));
+    assert!(source.mixer.paint(bank, &mut pcm));
     pcm.iter().any(|sample| *sample != 0)
 }
 fn dispatch(runtime: &mut Runtime, source: &mut Source) {
@@ -140,7 +141,7 @@ fn canceled_retirement_retries_and_old_controls_cannot_stop_a_replacement() {
     let (mut runtime, mut source) = fixture(2);
     let client = connect(&mut runtime).unwrap();
     let old = runtime.server.clients[0].entity;
-    start(&mut source, client, old);
+    start(&mut source, runtime.sound_bank().unwrap(), client, old);
     assert!(runtime.disconnect_client(client));
     runtime.publish_audio_retirements();
     let token = runtime.server.clients[0]
@@ -163,18 +164,18 @@ fn canceled_retirement_retries_and_old_controls_cannot_stop_a_replacement() {
     assert!(runtime.server.events.needs_resync(token.0));
     assert!(!runtime.server.events.retained_for(token.0, token.1));
     assert!(
-        audible(&mut source),
+        audible(&mut source, runtime.sound_bank().unwrap()),
         "cancellation is not mixer consumption"
     );
     dispatch(&mut runtime, &mut source);
     assert_eq!(source.retired, [old]);
     assert!(runtime.server.clients[0].audio_retirement.is_none());
-    assert!(!audible(&mut source));
+    assert!(!audible(&mut source, runtime.sound_bank().unwrap()));
     let replacement = connect(&mut runtime).unwrap();
     assert_eq!(replacement, client);
     let fresh = runtime.server.clients[0].entity;
     assert_ne!(fresh, old);
-    start(&mut source, client, fresh);
+    start(&mut source, runtime.sound_bank().unwrap(), client, fresh);
     runtime
         .server
         .events
@@ -184,7 +185,7 @@ fn canceled_retirement_retries_and_old_controls_cannot_stop_a_replacement() {
         )
         .unwrap();
     dispatch(&mut runtime, &mut source);
-    assert!(audible(&mut source));
+    assert!(audible(&mut source, runtime.sound_bank().unwrap()));
     assert_eq!(
         runtime.server.clients[0].connection,
         Some(Connection::Local)
@@ -196,7 +197,7 @@ fn full_ring_resync_admits_cleanup_without_waiting_forever_on_a_stalled_owner() 
     let (mut runtime, mut source) = fixture(2);
     let client = connect(&mut runtime).unwrap();
     let old = runtime.server.clients[0].entity;
-    start(&mut source, client, old);
+    start(&mut source, runtime.sound_bank().unwrap(), client, old);
     for _ in 0..2 {
         runtime
             .server
@@ -210,10 +211,10 @@ fn full_ring_resync_admits_cleanup_without_waiting_forever_on_a_stalled_owner() 
     let (consumer, sequence) = pending.publication.unwrap();
     assert!(runtime.server.events.retained_for(consumer, sequence));
     assert!(runtime.server.events.counters(consumer).unwrap().overflow > 0);
-    assert!(audible(&mut source));
+    assert!(audible(&mut source, runtime.sound_bank().unwrap()));
     dispatch(&mut runtime, &mut source);
     assert!(runtime.server.clients[0].audio_retirement.is_none());
-    assert!(!audible(&mut source));
+    assert!(!audible(&mut source, runtime.sound_bank().unwrap()));
     assert_eq!(source.retired, [old]);
 }
 
@@ -222,7 +223,7 @@ fn replacing_client_resources_tears_down_then_reconnects_after_consumption() {
     let (mut runtime, mut source) = fixture(4);
     let client = connect(&mut runtime).unwrap();
     let old = runtime.server.clients[0].entity;
-    start(&mut source, client, old);
+    start(&mut source, runtime.sound_bank().unwrap(), client, old);
     let protocol = Protocol::QuakeWorld28;
     let replacement = NativeConnection {
         route: Route {
@@ -246,7 +247,7 @@ fn replacing_client_resources_tears_down_then_reconnects_after_consumption() {
     assert!(runtime.network.get(client, Endpoint::Server).is_none());
     assert!(connect(&mut runtime).is_err());
     dispatch(&mut runtime, &mut source);
-    assert!(!audible(&mut source));
+    assert!(!audible(&mut source, runtime.sound_bank().unwrap()));
     assert_eq!(connect(&mut runtime).unwrap(), client);
     assert_ne!(runtime.server.clients[0].entity, old);
 }

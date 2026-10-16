@@ -865,7 +865,7 @@ fn disconnect_and_slot_reuse_do_not_lend_a_new_connection() {
             Duration::ZERO
         }
         fn present(&mut self) {}
-        fn sound(&mut self, _: SoundEvent) -> bool {
+        fn sound(&mut self, _bank: Option<&qa_audio::Bank>, _: SoundEvent) -> bool {
             true
         }
     }
@@ -989,7 +989,7 @@ impl qa_app::host::FrameSource for PresentationSink {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, _: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, _: SoundEvent) -> bool {
         true
     }
     fn send_packet(&mut self, _: u16, _: std::net::SocketAddr, _: &[u8]) -> bool {
@@ -1347,6 +1347,9 @@ fn main() {
     input::queued_native_input(false);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     input::queued_native_input(true);
+    input::late_native_sounds(false);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    input::late_native_sounds(true);
     music::wire_music_reaches_shared_paint();
     music::console_cd_reaches_music_and_ordered_console_responses();
     music::native_music_reaches_shared_paint(qvm, false);

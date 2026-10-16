@@ -621,6 +621,12 @@ fn fixture_roles(
 mod clear_states;
 #[path = "input/late_assets.rs"]
 mod late_assets;
+#[path = "input/late_sounds.rs"]
+mod late_sounds;
+
+pub(super) fn late_native_sounds(native: bool) {
+    late_sounds::run(native);
+}
 
 pub(super) fn queued_native_input(native: bool) {
     late_assets::run(native);

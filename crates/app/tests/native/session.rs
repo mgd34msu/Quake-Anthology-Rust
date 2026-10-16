@@ -4858,7 +4858,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         drop(invoke_import);
         console.execute_frame(&mut runtime);
         let rate = std::num::NonZeroU32::new(44100).unwrap();
-        runtime.sound_bank = Some(std::sync::Arc::new(
+        runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
             qa_audio::Bank::load(
                 rate,
                 vec![(
@@ -4874,12 +4874,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 )],
             )
             .unwrap(),
-        ));
+        )));
         storage
             .bind_sound_bank(
                 ModuleId(1),
                 game.vm.resource_ranges().unwrap()[1],
-                std::sync::Arc::clone(runtime.sound_bank.as_ref().unwrap()),
+                runtime.sound_bank().unwrap(),
             )
             .unwrap();
         let source = {

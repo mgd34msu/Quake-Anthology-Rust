@@ -749,7 +749,11 @@ impl qa_app::host::FrameSource for RetirementOutput {
     fn present(&mut self) {
         unreachable!()
     }
-    fn sound(&mut self, event: qa_core::primitives::SoundEvent) -> bool {
+    fn sound(
+        &mut self,
+        _bank: Option<&qa_audio::Bank>,
+        event: qa_core::primitives::SoundEvent,
+    ) -> bool {
         if event.action != qa_core::primitives::SoundAction::RetireClient {
             return false;
         }

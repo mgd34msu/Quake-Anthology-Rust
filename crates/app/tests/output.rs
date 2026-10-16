@@ -37,7 +37,7 @@ impl FrameSource for Source {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         self.sound_ids[self.sounds] = event.sound.0;
         self.sounds += 1;
         true

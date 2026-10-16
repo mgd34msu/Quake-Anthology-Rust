@@ -871,8 +871,13 @@ fn run() -> Result<(), String> {
         );
     }
     host.bind_client_model_assets(client_profiles);
-    let bank = qa_app::audio::finish_registration(&mut host)?;
-    let mut audio = qa_app::audio::Output::open(bank, &host.runtime.vfs)?;
+    qa_app::audio::finish_registration(&mut host)?;
+    let rate = host
+        .runtime
+        .sound_bank()
+        .ok_or("sound assets unavailable")?
+        .rate;
+    let mut audio = qa_app::audio::Output::open(rate, &host.runtime.vfs)?;
     let (band_cvar, cpu_bands) = if matches!(renderer_kind, Kind::Cpu) {
         cpu_band_setting(&host.console.cvars, cpu_bands)?
     } else {

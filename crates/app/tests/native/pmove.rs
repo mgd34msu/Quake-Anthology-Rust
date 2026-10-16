@@ -384,29 +384,28 @@ pub(super) fn commands_move_a_native_client_once() {
         host.console.cvars.force_write(maxclients, "1").unwrap();
         host.initialize_modules(Phase::Server);
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 2);
-        let bank = std::sync::Arc::new(
-            qa_audio::Bank::load(
-                std::num::NonZeroU32::new(44100).unwrap(),
-                std::iter::once("sound/_qa_cue.wav")
-                    .chain(qa_gameplay::rules::q2::sounds::PATHS.iter().copied())
-                    .map(|path| {
-                        (
-                            path.into(),
-                            qa_core::primitives::Pcm {
-                                rate: std::num::NonZeroU32::new(44100).unwrap(),
-                                channels: qa_core::primitives::PcmChannels::Mono,
-                                samples: vec![12000; 22050],
-                                loop_start: None,
-                                loop_end: None,
-                                loop_invalid: false,
-                            },
-                        )
-                    })
-                    .collect(),
-            )
-            .unwrap(),
-        );
-        host.bind_sounds(&bank).unwrap();
+        let bank = qa_audio::Bank::load(
+            std::num::NonZeroU32::new(44100).unwrap(),
+            std::iter::once("sound/_qa_cue.wav")
+                .chain(qa_gameplay::rules::q2::sounds::PATHS.iter().copied())
+                .map(|path| {
+                    (
+                        path.into(),
+                        qa_core::primitives::Pcm {
+                            rate: std::num::NonZeroU32::new(44100).unwrap(),
+                            channels: qa_core::primitives::PcmChannels::Mono,
+                            samples: vec![12000; 22050],
+                            loop_start: None,
+                            loop_end: None,
+                            loop_invalid: false,
+                        },
+                    )
+                })
+                .collect(),
+        )
+        .unwrap();
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.bind_sounds().unwrap();
         let other_seat = SeatId::new(1).unwrap();
         let other_angles = Vec3([10.0, 217.0, -5.0]);
         host.runtime.input.set_view_angles(other_seat, other_angles);
@@ -573,12 +572,8 @@ pub(super) fn commands_move_a_native_client_once() {
                 .position,
             position
         );
-        super::cues::received_sounds_use_precache_and_the_presentation_ring(
-            &mut host,
-            id,
-            std::sync::Arc::clone(&bank),
-        );
-        super::cues::muzzle_packets_publish_product_sounds(&mut host, id, bank);
+        super::cues::received_sounds_use_precache_and_the_presentation_ring(&mut host, id);
+        super::cues::muzzle_packets_publish_product_sounds(&mut host, id);
         host.shutdown_modules();
     }
 }

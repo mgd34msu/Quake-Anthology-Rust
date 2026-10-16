@@ -73,7 +73,7 @@ impl FrameSource for Source {
         self.timer.elapsed()
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         self.sounds += 1;
         (1..=3).contains(&event.sound.0) && event.channel == 1 && event.volume == 1.0
     }

@@ -444,11 +444,7 @@ fn unavailable_registration_stays_cache_only_and_cold_loader_does_not_defer() {
                 91
             );
             assert_eq!(
-                engine.register_renderer(
-                    b"known",
-                    RuleSetId::Quake2,
-                    RendererRegistration::Model
-                ),
+                engine.register_renderer(b"known", RuleSetId::Quake2, RendererRegistration::Model),
                 Ok(0)
             );
             ready.set(None);

@@ -3,7 +3,7 @@ use qa_core::{
     names::NameTable,
     primitives::{NameId, Pcm, PcmChannels, SoundId},
 };
-use std::{num::NonZeroU32, sync::Arc};
+use std::num::NonZeroU32;
 
 fn rate() -> NonZeroU32 {
     NonZeroU32::new(44100).unwrap()
@@ -56,7 +56,6 @@ fn native_zero_default_and_failed_attempts_keep_registration_order() {
     }
     assert_eq!(bank.len(), count);
     assert_eq!(bank.registered_handle(b"sound/unattempted.wav"), None);
-    let bank = Arc::new(bank);
     assert_eq!(bank.registered_sound(0), Some(default));
     assert_eq!(bank.find_bytes(b"SOUND/Z.WAV"), Some(z));
     assert_eq!(bank.name(failed), Some(b"sound/missing.wav".as_slice()));

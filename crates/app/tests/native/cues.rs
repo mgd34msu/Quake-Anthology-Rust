@@ -83,13 +83,8 @@ fn client_position(host: &FrameHost, client: ClientId, slot: u32) -> Vec3 {
     }
 }
 
-fn accept_client_resources_and_pose(
-    host: &mut FrameHost,
-    client: ClientId,
-    bank: &std::sync::Arc<qa_audio::Bank>,
-) -> Vec3 {
+fn accept_client_resources_and_pose(host: &mut FrameHost, client: ClientId) -> Vec3 {
     use qa_core::loopback::Endpoint;
-    host.runtime.sound_bank = Some(std::sync::Arc::clone(bank));
     let binding = host.runtime.snapshots[client.0 as usize].as_ref().unwrap();
     let protocol = binding.protocol;
     let native_slot = binding.native_client() + 1;
@@ -112,7 +107,7 @@ fn accept_client_resources_and_pose(
             .unwrap()
             .state
             .sound(1),
-        bank.find("sound/_qa_cue.wav")
+        host.runtime.sound_bank().unwrap().find("sound/_qa_cue.wav")
     );
     let previous = host
         .runtime
@@ -161,7 +156,7 @@ impl FrameSource for Audio {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         assert_eq!(event.client, Some(self.client));
         assert_eq!(
             event.spatial,
@@ -223,14 +218,13 @@ impl FrameSource for Audio {
             _ => panic!("unexpected sound"),
         }
         self.count += 1;
-        self.mixer.sound(event)
+        self.mixer.sound(_bank.unwrap(), event)
     }
 }
 
 pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
     host: &mut FrameHost,
     client: ClientId,
-    bank: std::sync::Arc<qa_audio::Bank>,
 ) {
     use qa_core::primitives::NativeEntity;
     use qa_network::outputs::{Cue, Sound};
@@ -255,7 +249,7 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         [b"_qa_cue.wav".to_vec()],
         "{protocol:?} native precache"
     );
-    let origin = accept_client_resources_and_pose(host, client, &bank);
+    let origin = accept_client_resources_and_pose(host, client);
     // A later SERVER mutation has not reached CLIENT. Sound coordinates and
     // voice identity must keep using the last accepted native snapshot.
     host.runtime.server.entities.columns.position[entity.slot as usize] =
@@ -294,7 +288,7 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
             qa_gameplay::rules::loop_spatial_policy(RuleSetId::Quake3),
         );
     let mut audio = Audio {
-        mixer: qa_audio::Mixer::load(bank, 8, 1),
+        mixer: qa_audio::Mixer::load(host.runtime.sound_bank().unwrap().rate, 8, 1),
         client,
         entity: emitter(client, 1),
         origin,
@@ -367,7 +361,9 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         );
     }
     let mut pcm = [0; 64];
-    audio.mixer.paint(&mut pcm);
+    audio
+        .mixer
+        .paint(host.runtime.sound_bank().unwrap(), &mut pcm);
     assert!(pcm.iter().any(|&value| value != 0));
     assert_eq!(audio.mixer.counts.started, 4);
     assert_eq!(
@@ -420,7 +416,7 @@ impl FrameSource for MuzzleAudio {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         let expected = &self.expected[self.audio.count];
         assert!(expected.choices.contains(&event.sound));
         assert_eq!(event.client, Some(self.audio.client));
@@ -445,15 +441,11 @@ impl FrameSource for MuzzleAudio {
             )
         );
         self.audio.count += 1;
-        self.audio.mixer.sound(event)
+        self.audio.mixer.sound(_bank.unwrap(), event)
     }
 }
 
-pub(super) fn muzzle_packets_publish_product_sounds(
-    host: &mut FrameHost,
-    client: ClientId,
-    bank: std::sync::Arc<qa_audio::Bank>,
-) {
+pub(super) fn muzzle_packets_publish_product_sounds(host: &mut FrameHost, client: ClientId) {
     use qa_network::{
         commands::packet::Protocol,
         outputs::{Cue, MuzzleFlash, MuzzleFormat},
@@ -469,7 +461,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         .player
         .body
         .position;
-    let origin = accept_client_resources_and_pose(host, client, &bank);
+    let origin = accept_client_resources_and_pose(host, client);
     host.runtime.server.entities.columns.position[entity.slot as usize] =
         server_origin + Vec3([-1024., 512., 256.]);
     host.runtime.server.clients[client.0 as usize]
@@ -512,7 +504,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         );
     let mut audio = MuzzleAudio {
         audio: Audio {
-            mixer: qa_audio::Mixer::load(std::sync::Arc::clone(&bank), 64, 1),
+            mixer: qa_audio::Mixer::load(host.runtime.sound_bank().unwrap().rate, 64, 1),
             client,
             entity: emitter(client, 1),
             origin,
@@ -537,7 +529,13 @@ pub(super) fn muzzle_packets_publish_product_sounds(
             audio.expected.push(Expected {
                 choices: paths
                     .iter()
-                    .map(|path| bank.find(&format!("sound/{path}.wav")).unwrap())
+                    .map(|path| {
+                        host.runtime
+                            .sound_bank()
+                            .unwrap()
+                            .find(&format!("sound/{path}.wav"))
+                            .unwrap()
+                    })
                     .collect(),
                 channel,
                 volume,
@@ -705,7 +703,10 @@ pub(super) fn muzzle_packets_publish_product_sounds(
     check(player, 127, false, 1, &[]);
     check(monster, 101, false, 1, &[]); // Makron BFG has no native sound.
     let mut pcm = [0; 64];
-    audio.audio.mixer.paint(&mut pcm);
+    audio
+        .audio
+        .mixer
+        .paint(host.runtime.sound_bank().unwrap(), &mut pcm);
     assert!(pcm.iter().any(|&sample| sample != 0));
     assert_eq!(
         audio.audio.mixer.counts.started as usize,

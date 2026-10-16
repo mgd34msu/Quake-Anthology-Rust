@@ -1001,7 +1001,7 @@ fn complete_presentation(host: &mut FrameHost) {
             std::time::Duration::ZERO
         }
         fn present(&mut self) {}
-        fn sound(&mut self, _: SoundEvent) -> bool {
+        fn sound(&mut self, _bank: Option<&qa_audio::Bank>, _: SoundEvent) -> bool {
             true
         }
     }
@@ -1675,7 +1675,7 @@ fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
         fn presentation_ready(&self) -> bool {
             self.ready
         }
-        fn sound(&mut self, event: SoundEvent) -> bool {
+        fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
             self.sounds += usize::from(event.sound == SoundId(3));
             true
         }

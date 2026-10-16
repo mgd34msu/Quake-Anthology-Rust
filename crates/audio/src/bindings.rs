@@ -119,7 +119,7 @@ impl SoundBindings {
     }
     pub fn attach(&mut self, bank: &Bank) {
         self.bindings.configure(
-            bank.len(),
+            bank.capacity(),
             if self.bindings.valid_zero() {
                 bank.capacity()
             } else {

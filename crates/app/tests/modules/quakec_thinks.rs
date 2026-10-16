@@ -432,7 +432,7 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
     use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
     use qa_core::{configstrings::ConfigLayout, loopback::Endpoint};
     use qa_network::commands::packet::Protocol;
-    use std::{num::NonZeroU32, sync::Arc};
+    use std::num::NonZeroU32;
 
     struct AmbientSource {
         clock: Source,
@@ -457,7 +457,7 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
             self.clock.elapsed()
         }
         fn present(&mut self) {}
-        fn sound(&mut self, event: SoundEvent) -> bool {
+        fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
             if event.action == SoundAction::RetireClient {
                 return true;
             }
@@ -483,7 +483,7 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
                 })
             );
             self.count += 1;
-            self.mixer.sound(event)
+            self.mixer.sound(_bank.unwrap(), event)
         }
         fn listeners(
             &mut self,
@@ -494,11 +494,12 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
         }
         fn mix_audio(
             &mut self,
+            _bank: Option<&qa_audio::Bank>,
             entities: &[Option<qa_app::client_scene::ClientEntities<'_>>; SeatId::COUNT],
         ) {
             qa_app::audio::respatialize(&mut self.mixer, entities);
             let mut pcm = [0; 16];
-            assert!(self.mixer.paint(&mut pcm));
+            assert!(self.mixer.paint(_bank.unwrap(), &mut pcm));
             self.audible_blocks += usize::from(pcm.iter().any(|&sample| sample != 0));
         }
     }
@@ -587,7 +588,7 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
             Some(qa_app::modules::State::Running)
         );
         assert_eq!(host.module_counts(module).unwrap().traps, 0);
-        assert!(host.runtime.sound_bank.is_none());
+        assert!(host.runtime.sound_assets.is_none());
         let cursor = host
             .runtime
             .network
@@ -609,26 +610,24 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
         );
 
         let rate = NonZeroU32::new(44100).unwrap();
-        let bank = Arc::new(
-            qa_audio::Bank::load(
-                rate,
-                vec![(
-                    "sound/ambient.wav".to_owned(),
-                    Pcm {
-                        rate,
-                        channels: PcmChannels::Mono,
-                        samples: vec![1000, -1000, 1000, -1000],
-                        loop_start: Some(1),
-                        loop_end: None,
-                        loop_invalid: false,
-                    },
-                )],
-            )
-            .unwrap(),
-        );
+        let bank = qa_audio::Bank::load(
+            rate,
+            vec![(
+                "sound/ambient.wav".to_owned(),
+                Pcm {
+                    rate,
+                    channels: PcmChannels::Mono,
+                    samples: vec![1000, -1000, 1000, -1000],
+                    loop_start: Some(1),
+                    loop_end: None,
+                    loop_invalid: false,
+                },
+            )],
+        )
+        .unwrap();
         let sound = bank.find("sound/ambient.wav").unwrap();
-        host.runtime.sound_bank = Some(Arc::clone(&bank));
-        host.bind_sounds(&bank).unwrap();
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.bind_sounds().unwrap();
         let mut initial = host.runtime.server.events.batch(cursor).unwrap();
         let mut starts = 0;
         let mut ambient_end = 0;
@@ -653,7 +652,7 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
                 time: EventTime(0),
                 polls: 0,
             },
-            mixer: qa_audio::Mixer::load(Arc::clone(&bank), 4, 1),
+            mixer: qa_audio::Mixer::load(rate, 4, 1),
             sample: sound,
             client,
             lifetime: host
@@ -698,7 +697,7 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
         );
 
         // Binding and the ordinary publication retry must not replay signon loops.
-        host.bind_sounds(&bank).unwrap();
+        host.bind_sounds().unwrap();
         for tick in 25..=36 {
             source.clock.time = EventTime::from_milliseconds(tick * 25);
             host.frame(&mut source, true);
@@ -715,7 +714,7 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
     use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
     use qa_core::configstrings::ConfigLayout;
     use qa_network::commands::packet::Protocol;
-    use std::{num::NonZeroU32, sync::Arc};
+    use std::num::NonZeroU32;
 
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         for protocol in [
@@ -790,29 +789,27 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
             );
             assert_eq!(host.module_counts(module).unwrap().traps, 0);
             let rate = NonZeroU32::new(44100).unwrap();
-            let bank = Arc::new(
-                qa_audio::Bank::load(
-                    rate,
-                    ["sound/#foo.wav", "sound/*foo.wav"]
-                        .map(|path| {
-                            (
-                                path.to_owned(),
-                                Pcm {
-                                    rate,
-                                    channels: PcmChannels::Mono,
-                                    samples: vec![1; 2],
-                                    loop_start: None,
-                                    loop_end: None,
-                                    loop_invalid: false,
-                                },
-                            )
-                        })
-                        .into(),
-                )
-                .unwrap(),
-            );
-            host.runtime.sound_bank = Some(Arc::clone(&bank));
-            host.bind_sounds(&bank).unwrap();
+            let bank = qa_audio::Bank::load(
+                rate,
+                ["sound/#foo.wav", "sound/*foo.wav"]
+                    .map(|path| {
+                        (
+                            path.to_owned(),
+                            Pcm {
+                                rate,
+                                channels: PcmChannels::Mono,
+                                samples: vec![1; 2],
+                                loop_start: None,
+                                loop_end: None,
+                                loop_invalid: false,
+                            },
+                        )
+                    })
+                    .into(),
+            )
+            .unwrap();
+            host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+            host.bind_sounds().unwrap();
             let first_sound = protocol.config_layout().unwrap().resources[1].first as usize;
             let resources = host.runtime.client_resources[client.0 as usize]
                 .as_ref()
@@ -834,7 +831,15 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
                 .unwrap()
                 .state;
             for (ordinal, path) in [(1, "sound/#foo.wav"), (2, "sound/*foo.wav")] {
-                assert_eq!(resources.sound(ordinal), bank.find(path));
+                assert_eq!(
+                    resources.sound(ordinal),
+                    host.runtime
+                        .sound_assets
+                        .as_deref()
+                        .unwrap()
+                        .bank()
+                        .find(path)
+                );
                 let expected = if protocol == Protocol::Quake3_68 {
                     path.as_bytes().to_vec()
                 } else {
@@ -856,7 +861,17 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
             } else {
                 assert_eq!(protocol, Protocol::Quake3_68);
             }
-            assert_eq!(resources.rejected, 0);
+            assert!(
+                resources
+                    .configs
+                    .config(first_sound + 3)
+                    .unwrap()
+                    .text
+                    .is_empty(),
+                "the absent default PCM must not claim a CLIENT sound ordinal"
+            );
+            assert_eq!(host.runtime.sound_assets.as_ref().unwrap().reads, 0);
+            assert_eq!(resources.rejected, 0, "{rules:?} -> {protocol:?}");
             assert_eq!(host.runtime.network.command_errors, 0);
             assert_eq!(host.module_counts(module).unwrap().traps, 0);
         }
@@ -872,7 +887,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
     };
     use qa_core::configstrings::ConfigLayout;
     use qa_network::commands::packet::Protocol;
-    use std::{num::NonZeroU32, sync::Arc};
+    use std::num::NonZeroU32;
 
     for (rules, receive_while_loading) in [RuleSetId::Quake, RuleSetId::QuakeWorld]
         .into_iter()
@@ -1046,9 +1061,9 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
                 )
                 .unwrap();
         }
-        let bank = Arc::new(qa_audio::Bank::load(NonZeroU32::new(44100).unwrap(), vec![]).unwrap());
-        host.runtime.sound_bank = Some(Arc::clone(&bank));
-        host.bind_sounds(&bank).unwrap();
+        let bank = qa_audio::Bank::load(NonZeroU32::new(44100).unwrap(), vec![]).unwrap();
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.bind_sounds().unwrap();
         let end = host.runtime.server.events.sequence_range().end;
         assert!(
             host.runtime.client_resources[client.0 as usize]
@@ -1118,7 +1133,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
         assert_eq!(counts.models, 1);
         assert_eq!(counts.missing_models, 0);
         assert_eq!(frame.finish().entity(0).origin, retained.position);
-        host.bind_sounds(&bank).unwrap();
+        host.bind_sounds().unwrap();
         for milliseconds in [500, 600, 700] {
             tick(&mut host, milliseconds);
         }
@@ -2645,7 +2660,7 @@ fn quakec_step_falls_before_think_and_suppressed_rows_still_think_then_check_wat
 #[test]
 fn quakec_step_contacts_ground_before_touch_then_relinks_sounds_thinks_and_reuses() {
     use qa_core::configstrings::ConfigLayout;
-    use std::{num::NonZeroU32, sync::Arc};
+    use std::num::NonZeroU32;
 
     let mut code = Code::new();
     let frame = code.function(&[(Return, 0, 0, 0)]);
@@ -2833,26 +2848,24 @@ fn quakec_step_contacts_ground_before_touch_then_relinks_sounds_thinks_and_reuse
     let healthy = native_entity(&host, ModuleId(1), 3);
 
     let rate = NonZeroU32::new(44_100).unwrap();
-    let bank = Arc::new(
-        qa_audio::Bank::load(
-            rate,
-            vec![(
-                "sound/demon/dland2.wav".to_owned(),
-                Pcm {
-                    rate,
-                    channels: PcmChannels::Mono,
-                    samples: vec![1000, -1000],
-                    loop_start: None,
-                    loop_end: None,
-                    loop_invalid: false,
-                },
-            )],
-        )
-        .unwrap(),
-    );
+    let bank = qa_audio::Bank::load(
+        rate,
+        vec![(
+            "sound/demon/dland2.wav".to_owned(),
+            Pcm {
+                rate,
+                channels: PcmChannels::Mono,
+                samples: vec![1000, -1000],
+                loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
+            },
+        )],
+    )
+    .unwrap();
     let landing = bank.find("sound/demon/dland2.wav").unwrap();
-    host.runtime.sound_bank = Some(Arc::clone(&bank));
-    host.bind_sounds(&bank).unwrap();
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.bind_sounds().unwrap();
     let observer = host
         .runtime
         .server
@@ -3447,7 +3460,7 @@ fn quakec_attached_projectile_callback_sees_transport_without_double_motion() {
 #[test]
 fn quakec_water_entry_writes_native_state_and_publishes_one_shared_sound() {
     use qa_core::configstrings::ConfigLayout;
-    use std::{num::NonZeroU32, sync::Arc};
+    use std::num::NonZeroU32;
 
     let mut code = Code::new();
     let precache = code.builtin(19);
@@ -3509,26 +3522,24 @@ fn quakec_water_entry_writes_native_state_and_publishes_one_shared_sound() {
     host.initialize_modules(Phase::Server);
 
     let rate = NonZeroU32::new(44_100).unwrap();
-    let bank = Arc::new(
-        qa_audio::Bank::load(
-            rate,
-            vec![(
-                "sound/misc/h2ohit1.wav".to_owned(),
-                Pcm {
-                    rate,
-                    channels: PcmChannels::Mono,
-                    samples: vec![1000, -1000],
-                    loop_start: None,
-                    loop_end: None,
-                    loop_invalid: false,
-                },
-            )],
-        )
-        .unwrap(),
-    );
+    let bank = qa_audio::Bank::load(
+        rate,
+        vec![(
+            "sound/misc/h2ohit1.wav".to_owned(),
+            Pcm {
+                rate,
+                channels: PcmChannels::Mono,
+                samples: vec![1000, -1000],
+                loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
+            },
+        )],
+    )
+    .unwrap();
     let splash = bank.find("sound/misc/h2ohit1.wav").unwrap();
-    host.runtime.sound_bank = Some(Arc::clone(&bank));
-    host.bind_sounds(&bank).unwrap();
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.bind_sounds().unwrap();
     let observer = host
         .runtime
         .server

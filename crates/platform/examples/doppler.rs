@@ -4,7 +4,6 @@ use qa_core::primitives::*;
 use std::{
     io::{Read, Write},
     num::NonZeroU32,
-    sync::Arc,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             )],
         )?;
-        let mut mixer = Mixer::load(Arc::new(bank), voices, 1);
+        let mut mixer = Mixer::load(bank.rate, voices, 1);
         let client = ClientId(1);
         mixer.listen(
             &[Some(Listener {
@@ -73,33 +72,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .admit(&appearance, spatial)
             .ok_or("loop playback")?;
         for voice in 0..voices {
-            if !mixer.sound(SoundEvent {
-                sound: mixer.bank.find("sound/probe.wav").ok_or("PCM")?,
-                looping: Some(playback),
-                spatial,
-                doppler: ((doppler_mask & (1 << voice)) != 0).then_some(LoopDoppler {
-                    scale,
-                    previous_scale,
-                }),
-                volume: 1.,
-                attenuation: 1.,
-                action: SoundAction::StartLoop,
-                client: Some(client),
-                client_lifetime: Some(EntityId {
-                    slot: 0,
-                    generation: 1,
-                }),
-                entity: Some(SoundEmitter::Native {
-                    namespace: ResourceNamespace::Client(client),
-                    slot: 2 + voice as i32,
-                }),
-                ..Default::default()
-            }) {
+            if !mixer.sound(
+                &bank,
+                SoundEvent {
+                    sound: bank.find("sound/probe.wav").ok_or("PCM")?,
+                    looping: Some(playback),
+                    spatial,
+                    doppler: ((doppler_mask & (1 << voice)) != 0).then_some(LoopDoppler {
+                        scale,
+                        previous_scale,
+                    }),
+                    volume: 1.,
+                    attenuation: 1.,
+                    action: SoundAction::StartLoop,
+                    client: Some(client),
+                    client_lifetime: Some(EntityId {
+                        slot: 0,
+                        generation: 1,
+                    }),
+                    entity: Some(SoundEmitter::Native {
+                        namespace: ResourceNamespace::Client(client),
+                        slot: 2 + voice as i32,
+                    }),
+                    ..Default::default()
+                },
+            ) {
                 return Err("loop rejected".into());
             }
         }
         let mut pcm = vec![0i16; count * 2];
-        if !mixer.paint(&mut pcm) {
+        if !mixer.paint(&bank, &mut pcm) {
             return Err("PCM paint".into());
         }
         for sample in pcm {

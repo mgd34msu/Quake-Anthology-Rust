@@ -9,7 +9,7 @@ use qa_core::{
     },
     stamps::StampSet,
 };
-use std::{num::NonZeroU32, sync::Arc};
+use std::num::NonZeroU32;
 
 pub struct Bank {
     names: NameTable,
@@ -440,7 +440,7 @@ pub struct MixCounts {
     pub suppressed: u64,
 }
 pub struct Mixer {
-    pub bank: Arc<Bank>,
+    rate: NonZeroU32,
     voices: Box<[Option<Voice>]>,
     listeners: Box<[ListenerSlot]>,
     loop_order: Box<[usize]>,
@@ -450,9 +450,9 @@ pub struct Mixer {
     raw: crate::raw::Raw,
 }
 impl Mixer {
-    pub fn load(bank: Arc<Bank>, voices: usize, listeners: usize) -> Self {
+    pub fn load(rate: NonZeroU32, voices: usize, listeners: usize) -> Self {
         Self {
-            bank,
+            rate,
             voices: std::iter::repeat_with(|| None).take(voices).collect(),
             listeners: vec![ListenerSlot::default(); listeners].into_boxed_slice(),
             loop_order: vec![0; voices].into_boxed_slice(),
@@ -461,6 +461,9 @@ impl Mixer {
             next_start: None,
             raw: crate::raw::Raw::load(),
         }
+    }
+    pub fn rate(&self) -> NonZeroU32 {
+        self.rate
     }
     /// A streaming producer retains source bytes and its own decoder cursor.
     /// Only complete blocks that fit the fixed raw paint storage are admitted.
@@ -473,7 +476,7 @@ impl Mixer {
     ) -> Result<usize, crate::RawError> {
         self.raw.queue(
             self.counts.frames,
-            self.bank.rate,
+            self.rate,
             format,
             bytes,
             volume,
@@ -552,7 +555,7 @@ impl Mixer {
         }
     }
 
-    pub fn sound(&mut self, event: SoundEvent) -> bool {
+    pub fn sound(&mut self, bank: &Bank, event: SoundEvent) -> bool {
         if matches!(
             event.action,
             SoundAction::RetireClient | SoundAction::ResetClientLoops
@@ -624,12 +627,11 @@ impl Mixer {
             }
             return true;
         }
-        if self
-            .bank
+        if bank
             .samples
             .get(event.sound.0 as usize)
             .is_none_or(Option::is_none)
-            || self.bank.sample(event.sound).is_some_and(|sample| {
+            || bank.sample(event.sound).is_some_and(|sample| {
                 sample.loop_invalid
                     && event
                         .looping
@@ -697,7 +699,7 @@ impl Mixer {
                 return true;
             }
         }
-        let delay = (event.time_offset * self.bank.rate.get() as f32) as u64;
+        let delay = (event.time_offset * self.rate.get() as f32) as u64;
         let queued = event.action == SoundAction::Play
             && event.spatial.start_order == SoundStartOrder::QueuedNewestFirst;
         let begin = (delay != 0 || queued).then(|| self.counts.frames.saturating_add(delay));
@@ -1009,7 +1011,7 @@ impl Mixer {
         }
     }
     /// Stereo device-rate PCM, accumulated in voice order and saturated once.
-    pub fn paint(&mut self, output: &mut [i16]) -> bool {
+    pub fn paint(&mut self, bank: &Bank, output: &mut [i16]) -> bool {
         if !output.len().is_multiple_of(2) {
             return false;
         }
@@ -1067,7 +1069,7 @@ impl Mixer {
                 if voice.event.looping.is_some() {
                     continue;
                 }
-                let Some(sample) = self.bank.samples[voice.event.sound.0 as usize].as_ref() else {
+                let Some(sample) = bank.samples[voice.event.sound.0 as usize].as_ref() else {
                     continue;
                 };
                 let channels = sample.channels as usize;
@@ -1123,7 +1125,7 @@ impl Mixer {
                 let Some(playback) = event.looping else {
                     continue;
                 };
-                let Some(sample) = self.bank.samples[event.sound.0 as usize].as_ref() else {
+                let Some(sample) = bank.samples[event.sound.0 as usize].as_ref() else {
                     continue;
                 };
                 let frames = if playback.cue_extent {
@@ -1138,7 +1140,7 @@ impl Mixer {
                 let channels = sample.channels as usize;
                 let offset = sample_frame * channels;
                 let doppler = event.doppler.and_then(|rate| {
-                    self.bank.doppler[event.sound.0 as usize]
+                    bank.doppler[event.sound.0 as usize]
                         .as_ref()
                         .map(|prepared| {
                             voice

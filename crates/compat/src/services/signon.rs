@@ -172,14 +172,16 @@ impl ServiceStorage {
         context: CallContext,
         client: ClientId,
         cursor: &mut SignonCursor,
+        bank: Option<&qa_audio::Bank>,
     ) -> Result<usize, CallError> {
-        let bank = self.sound_bank.as_deref();
         let row = self
             .ranges
             .iter_mut()
             .find(|row| row.module == context.module)
             .ok_or(CallError::ConfigString)?;
-        let sounds = bank.zip(row.sound_bindings.as_ref());
+        let sounds = bank
+            .filter(|_| row.sound_attached)
+            .zip(row.sound_bindings.as_ref());
         let lifetime = row.lifetime.ok_or(CallError::Entity)?;
         if server.entities.resolve(lifetime).is_none() {
             return Err(CallError::Entity);

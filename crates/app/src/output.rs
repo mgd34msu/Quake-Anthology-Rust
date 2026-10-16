@@ -231,7 +231,13 @@ pub(crate) fn dispatch_frame(
                         }
                         FrameEvent::Sound(event) => {
                             counts.sounds += 1;
-                            let sent = source.sound(event);
+                            let sent = source.sound(
+                                runtime
+                                    .sound_assets
+                                    .as_deref()
+                                    .map(crate::audio::SoundAssets::bank),
+                                event,
+                            );
                             counts.unhandled_sounds += u64::from(!sent);
                             complete_sound(
                                 server.clients.as_mut(),

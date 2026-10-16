@@ -39,6 +39,8 @@ pub struct ResourceState {
     pub rejected: u64,
     client_capacity: u32,
     sounds: qa_audio::SoundBindings,
+    sound_dirty: qa_core::bits::BitSet,
+    sound_attached: bool,
     player_sounds: [Option<(qa_core::primitives::SoundId, u32)>;
         qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS.len()],
     sound_policy: SpatialPolicy,
@@ -70,6 +72,8 @@ impl ClientResources {
                 rejected: 0,
                 client_capacity: qa_network::snapshots::snapshot_limits(protocol).client_capacity,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
+                sound_dirty: qa_core::bits::BitSet::empty(layout.resources[1].count as usize),
+                sound_attached: false,
                 player_sounds: [None; qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS.len()],
                 sound_policy: qa_gameplay::rules::sound_policy(sound_rules),
                 loop_spatial: qa_gameplay::rules::loop_spatial_policy(sound_rules),
@@ -125,6 +129,9 @@ impl ClientResources {
                 u64::from(self.state.models.refresh_all(&self.state.configs, catalog));
         }
         self.state.sounds.clear();
+        for ordinal in 1..self.state.layout.resources[1].count as usize {
+            self.state.sound_dirty.insert(ordinal);
+        }
         self.state.rejected += u64::from(!self.state.refresh_sounds(bank));
     }
 }
@@ -138,7 +145,6 @@ pub(crate) struct ClientConnectionView<'a> {
     commands: &'a mut qa_network::commands::connection::Commands,
     resources: &'a mut ClientResources,
     catalog: Option<&'a ModelCatalog>,
-    bank: Option<&'a qa_audio::Bank>,
     pub(crate) termination: Option<ClientTermination>,
 }
 pub(crate) fn connection_view<'a>(
@@ -147,14 +153,13 @@ pub(crate) fn connection_view<'a>(
     network: &'a mut qa_network::ingress::Connections,
     resources: &'a mut [Option<ClientResources>],
     catalog: Option<&'a ModelCatalog>,
-    bank: Option<&'a qa_audio::Bank>,
 ) -> Option<ClientConnectionView<'a>> {
     let connection = network.get_mut(client, qa_core::loopback::Endpoint::Client)?;
     let channel = &mut connection.channel;
     let commands = connection.commands.as_mut()?;
     let resources = resources.get_mut(client.0 as usize)?.as_mut()?;
     Some(ClientConnectionView::new(
-        client, lifetime, channel, commands, resources, catalog, bank,
+        client, lifetime, channel, commands, resources, catalog,
     ))
 }
 impl<'a> ClientConnectionView<'a> {
@@ -165,7 +170,6 @@ impl<'a> ClientConnectionView<'a> {
         commands: &'a mut qa_network::commands::connection::Commands,
         resources: &'a mut ClientResources,
         catalog: Option<&'a ModelCatalog>,
-        bank: Option<&'a qa_audio::Bank>,
     ) -> Self {
         Self {
             client,
@@ -174,7 +178,6 @@ impl<'a> ClientConnectionView<'a> {
             commands,
             resources,
             catalog,
-            bank,
             termination: None,
         }
     }
@@ -206,6 +209,7 @@ impl<'a> ClientConnectionView<'a> {
         &mut self,
         server: &mut qa_session::clients::Server,
         team_chats_only: bool,
+        bank: Option<&qa_audio::Bank>,
     ) -> Result<(), qa_compat::services::CallError> {
         use qa_compat::services::{CallError, ClientConnection};
         let received = self
@@ -218,7 +222,7 @@ impl<'a> ClientConnectionView<'a> {
             .last_executed_server_command()
             .map_err(|_| CallError::Text)?;
         for number in executed + 1..=received {
-            if !self.select(number as i32, server)? {
+            if !self.select(number as i32, server, bank)? {
                 continue;
             }
             let arguments = self.resources.selected.arguments();
@@ -355,6 +359,7 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
         &mut self,
         number: i32,
         server: &mut qa_session::clients::Server,
+        bank: Option<&qa_audio::Bank>,
     ) -> Result<bool, qa_compat::services::CallError> {
         use qa_compat::services::CallError;
         use qa_network::outputs::ConfigCommandStep;
@@ -414,7 +419,7 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
                         index,
                         self.resources.joined.as_bytes(),
                         self.catalog,
-                        self.bank,
+                        bank,
                     ) {
                         self.termination = Some(ClientTermination::Rejected);
                         return Err(CallError::ConfigString);
@@ -570,7 +575,10 @@ impl ResourceState {
     }
     /// Cold bank attachment reserves numeric inverse rows before packet intake.
     pub fn bind_sounds(&mut self, bank: &qa_audio::Bank) -> bool {
-        self.sounds.attach(bank);
+        if !self.sound_attached {
+            self.sounds.attach(bank);
+            self.sound_attached = true;
+        }
         for (binding, path) in self
             .player_sounds
             .iter_mut()
@@ -583,9 +591,43 @@ impl ResourceState {
         self.refresh_sounds(Some(bank))
     }
 
+    /// Accepted config changes are prepared before the packet's following cues.
+    /// Failed rows complete once; emission only reads their numeric binding.
+    pub(crate) fn prepare_sounds(
+        &mut self,
+        assets: &mut crate::audio::SoundAssets,
+        vfs: &qa_content::vfs::Vfs,
+    ) {
+        use qa_compat::services::SoundRegistrar;
+        if !self.sound_attached {
+            self.sounds.attach(assets.bank());
+            self.sound_attached = true;
+        }
+        while let Some(ordinal) = self.sound_dirty.next_set(1) {
+            self.sound_dirty.remove(ordinal);
+            let index = self.layout.resources[1].first as usize + ordinal;
+            let Some(config) = self.configs.config(index) else {
+                continue;
+            };
+            let sound = if config.text.is_empty() {
+                Ok(None)
+            } else {
+                assets.precache(vfs, config.text, self.layout.rules)
+            };
+            let admitted = sound.as_ref().ok().copied().flatten();
+            self.rejected += u64::from(sound.is_err());
+            self.rejected += u64::from(self.sounds.set(ordinal as u32, admitted).is_err());
+        }
+    }
+
     fn refresh_sounds(&mut self, bank: Option<&qa_audio::Bank>) -> bool {
         let mut complete = true;
         for (ordinal, index) in self.layout.resources[1].range().enumerate() {
+            if !self.sound_dirty.contains(ordinal) {
+                // Completed registrar decisions include source-rejected media.
+                // A canonical sample usable by another source cannot revive it.
+                continue;
+            }
             let Some(config) = self.configs.config(index) else {
                 complete = false;
                 continue;
@@ -632,6 +674,9 @@ impl ResourceState {
                 }
                 if changed && self.layout.resources[1].contains(index) {
                     let ordinal = index - self.layout.resources[1].first as usize;
+                    if ordinal != 0 {
+                        self.sound_dirty.insert(ordinal);
+                    }
                     self.rejected += u64::from(
                         self.sounds
                             .bind_name(bank, ordinal as u32, text, self.layout.rules)

@@ -1,8 +1,8 @@
 use qa_audio::{Bank, Listener, Mixer};
 use qa_core::primitives::*;
-use std::{num::NonZeroU32, sync::Arc};
+use std::num::NonZeroU32;
 
-fn fixture(samples: Vec<i16>, channels: PcmChannels) -> Mixer {
+fn fixture(samples: Vec<i16>, channels: PcmChannels) -> (Bank, Mixer) {
     let rate = NonZeroU32::new(44100).unwrap();
     let bank = Bank::load(
         rate,
@@ -19,7 +19,7 @@ fn fixture(samples: Vec<i16>, channels: PcmChannels) -> Mixer {
         )],
     )
     .unwrap();
-    let mut mixer = Mixer::load(Arc::new(bank), 4, 1);
+    let mut mixer = Mixer::load(bank.rate, 4, 1);
     mixer.listen(
         &[Some(Listener {
             client: ClientId(1),
@@ -30,9 +30,9 @@ fn fixture(samples: Vec<i16>, channels: PcmChannels) -> Mixer {
         })],
         1.,
     );
-    mixer
+    (bank, mixer)
 }
-fn emission(mixer: &Mixer, slot: i32, rate: Option<f32>) -> SoundEvent {
+fn emission(bank: &Bank, slot: i32, rate: Option<f32>) -> SoundEvent {
     let playback = qa_gameplay::rules::loop_rules(RuleSetId::Quake3)
         .unwrap()
         .admit(
@@ -45,7 +45,7 @@ fn emission(mixer: &Mixer, slot: i32, rate: Option<f32>) -> SoundEvent {
         .unwrap()
         .0;
     SoundEvent {
-        sound: mixer.bank.find("sound/rate.wav").unwrap(),
+        sound: bank.find("sound/rate.wav").unwrap(),
         looping: Some(playback),
         spatial: qa_gameplay::rules::loop_spatial_policy(RuleSetId::Quake3),
         doppler: rate.map(|scale| LoopDoppler {
@@ -74,10 +74,10 @@ fn paint_sample(sample: f32, master: i64) -> i16 {
 
 #[test]
 fn native_rate_two_averages_samples_and_preserves_negative_narrowing() {
-    let mut mixer = fixture(vec![1000, 3000, -1000, -3000], PcmChannels::Mono);
-    assert!(mixer.sound(emission(&mixer, 2, Some(2.))));
+    let (bank, mut mixer) = fixture(vec![1000, 3000, -1000, -3000], PcmChannels::Mono);
+    assert!(mixer.sound(&bank, emission(&bank, 2, Some(2.))));
     let mut pcm = [0; 8];
-    assert!(mixer.paint(&mut pcm));
+    assert!(mixer.paint(&bank, &mut pcm));
     assert_eq!(
         pcm,
         [
@@ -96,15 +96,17 @@ fn native_rate_two_averages_samples_and_preserves_negative_narrowing() {
 #[test]
 fn native_doppler_grouping_observes_leader_and_candidate_order() {
     for doppler_first in [true, false] {
-        let mut mixer = fixture(vec![1000, 3000, 5000, 7000], PcmChannels::Mono);
-        assert!(mixer.sound(emission(
-            &mixer,
-            if doppler_first { 2 } else { 3 },
-            Some(2.)
-        )));
-        assert!(mixer.sound(emission(&mixer, if doppler_first { 3 } else { 2 }, None)));
+        let (bank, mut mixer) = fixture(vec![1000, 3000, 5000, 7000], PcmChannels::Mono);
+        assert!(mixer.sound(
+            &bank,
+            emission(&bank, if doppler_first { 2 } else { 3 }, Some(2.))
+        ));
+        assert!(mixer.sound(
+            &bank,
+            emission(&bank, if doppler_first { 3 } else { 2 }, None)
+        ));
         let mut pcm = [0; 8];
-        assert!(mixer.paint(&mut pcm));
+        assert!(mixer.paint(&bank, &mut pcm));
         let expected = if doppler_first {
             [paint_sample(2000., 126), paint_sample(6000., 126), 0, 0]
         } else {
@@ -124,25 +126,25 @@ fn native_doppler_grouping_observes_leader_and_candidate_order() {
 #[test]
 fn wide_rates_use_the_padded_period_without_a_rate_cap() {
     for scale in [1025., 8192., 1_048_576., f32::MAX] {
-        let mut mixer = fixture(vec![8192; 1024], PcmChannels::Mono);
-        assert!(mixer.sound(emission(&mixer, 2, Some(scale))));
+        let (bank, mut mixer) = fixture(vec![8192; 1024], PcmChannels::Mono);
+        assert!(mixer.sound(&bank, emission(&bank, 2, Some(scale))));
         let mut pcm = [0; 12];
-        assert!(mixer.paint(&mut pcm));
+        assert!(mixer.paint(&bank, &mut pcm));
         assert!(pcm.iter().all(|&value| value == paint_sample(8192., 63)));
     }
-    let mut mixer = fixture(vec![8192; 512], PcmChannels::Mono);
-    assert!(mixer.sound(emission(&mixer, 2, Some(2048.))));
+    let (bank, mut mixer) = fixture(vec![8192; 512], PcmChannels::Mono);
+    assert!(mixer.sound(&bank, emission(&bank, 2, Some(2048.))));
     let mut pcm = [0; 12];
-    assert!(mixer.paint(&mut pcm));
+    assert!(mixer.paint(&bank, &mut pcm));
     assert!(pcm.iter().all(|&value| value == paint_sample(4096., 63)));
 }
 
 #[test]
 fn wide_stereo_rates_average_each_source_channel_independently() {
-    let mut mixer = fixture([8192, -4096].repeat(1024), PcmChannels::Stereo);
-    assert!(mixer.sound(emission(&mixer, 2, Some(2048.))));
+    let (bank, mut mixer) = fixture([8192, -4096].repeat(1024), PcmChannels::Stereo);
+    assert!(mixer.sound(&bank, emission(&bank, 2, Some(2048.))));
     let mut pcm = [0; 8];
-    assert!(mixer.paint(&mut pcm));
+    assert!(mixer.paint(&bank, &mut pcm));
     for frame in pcm.as_chunks::<2>().0 {
         assert_eq!(frame, &[paint_sample(8192., 63), paint_sample(-4096., 63)]);
     }
@@ -150,16 +152,19 @@ fn wide_stereo_rates_average_each_source_channel_independently() {
 
 #[test]
 fn invalid_rates_and_velocity_do_not_replace_a_healthy_voice() {
-    let mut mixer = fixture(vec![8192; 1024], PcmChannels::Mono);
-    assert!(mixer.sound(emission(&mixer, 2, Some(2.))));
+    let (bank, mut mixer) = fixture(vec![8192; 1024], PcmChannels::Mono);
+    assert!(mixer.sound(&bank, emission(&bank, 2, Some(2.))));
     for scale in [f32::NAN, f32::INFINITY, 0., -1., 1.] {
-        assert!(!mixer.sound(emission(&mixer, 2, Some(scale))));
+        assert!(!mixer.sound(&bank, emission(&bank, 2, Some(scale))));
     }
-    assert!(!mixer.sound(SoundEvent {
-        velocity: Vec3([f32::NAN, 0., 0.]),
-        ..emission(&mixer, 2, None)
-    }));
+    assert!(!mixer.sound(
+        &bank,
+        SoundEvent {
+            velocity: Vec3([f32::NAN, 0., 0.]),
+            ..emission(&bank, 2, None)
+        }
+    ));
     let mut pcm = [0; 4];
-    assert!(mixer.paint(&mut pcm));
+    assert!(mixer.paint(&bank, &mut pcm));
     assert!(pcm.iter().all(|&value| value == paint_sample(8192., 63)));
 }

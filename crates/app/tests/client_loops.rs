@@ -15,7 +15,7 @@ use qa_network::{
     states,
 };
 use qa_session::timing::TickRate;
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use std::{num::NonZeroU32, time::Duration};
 
 struct Source {
     mixer: Mixer,
@@ -38,10 +38,10 @@ impl FrameSource for Source {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         self.observations
             .push((event.action, event.sound, event.entity, event.looping));
-        self.mixer.sound(event)
+        self.mixer.sound(_bank.unwrap(), event)
     }
 }
 fn fixture(
@@ -51,36 +51,34 @@ fn fixture(
     voices: usize,
 ) -> (FrameHost, Source, Vec<ClientId>) {
     let rate = NonZeroU32::new(44100).unwrap();
-    let bank = Arc::new(
-        Bank::load(
-            rate,
-            vec![
-                (
-                    "sound/first.wav".into(),
-                    Pcm {
-                        rate,
-                        channels: PcmChannels::Mono,
-                        samples: vec![1000, -500, 2000, 300, -1700],
-                        loop_start: Some(2),
-                        loop_end: None,
-                        loop_invalid: false,
-                    },
-                ),
-                (
-                    "sound/second.wav".into(),
-                    Pcm {
-                        rate,
-                        channels: PcmChannels::Mono,
-                        samples: vec![8000, -4000, 6000, 2400],
-                        loop_start: None,
-                        loop_end: None,
-                        loop_invalid: false,
-                    },
-                ),
-            ],
-        )
-        .unwrap(),
-    );
+    let bank = Bank::load(
+        rate,
+        vec![
+            (
+                "sound/first.wav".into(),
+                Pcm {
+                    rate,
+                    channels: PcmChannels::Mono,
+                    samples: vec![1000, -500, 2000, 300, -1700],
+                    loop_start: Some(2),
+                    loop_end: None,
+                    loop_invalid: false,
+                },
+            ),
+            (
+                "sound/second.wav".into(),
+                Pcm {
+                    rate,
+                    channels: PcmChannels::Mono,
+                    samples: vec![8000, -4000, 6000, 2400],
+                    loop_start: None,
+                    loop_end: None,
+                    loop_invalid: false,
+                },
+            ),
+        ],
+    )
+    .unwrap();
     let mut runtime = Runtime::load(clients, []).unwrap();
     runtime.server.events = EventRing::load(capacity, clients + 1, capacity + 1, 8192).unwrap();
     runtime.server.presentation = runtime
@@ -121,9 +119,9 @@ fn fixture(
     for (seat, &client) in ids.iter().enumerate() {
         host.local_clients[seat] = Some(client);
     }
-    host.runtime.sound_bank = Some(Arc::clone(&bank));
-    host.bind_sounds(&bank).unwrap();
-    let mut mixer = Mixer::load(bank, voices, clients);
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.bind_sounds().unwrap();
+    let mut mixer = Mixer::load(rate, voices, clients);
     mixer.listen(
         &ids.iter()
             .map(|&client| {
@@ -361,7 +359,11 @@ fn dispatch(host: &mut FrameHost, source: &mut Source) {
 fn paint(host: &FrameHost, source: &mut Source) -> [i16; 10] {
     qa_app::audio::respatialize(&mut source.mixer, &host.client_entities_inputs());
     let mut pcm = [0; 10];
-    assert!(source.mixer.paint(&mut pcm));
+    assert!(
+        source
+            .mixer
+            .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+    );
     pcm
 }
 fn starts(source: &Source) -> usize {
@@ -442,7 +444,11 @@ fn accepted_snapshots_and_numeric_rewrites(protocol: Protocol) {
     );
     assert_eq!(
         source.observations.last().unwrap().1,
-        source.mixer.bank.find("sound/second.wav").unwrap()
+        host.runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/second.wav")
+            .unwrap()
     );
     // An ordinary channel-zero voice survives the admitted-loop disappearance.
     host.runtime
@@ -451,7 +457,12 @@ fn accepted_snapshots_and_numeric_rewrites(protocol: Protocol) {
         .push_to(
             OutputTarget::Presentation,
             FrameEvent::Sound(SoundEvent {
-                sound: source.mixer.bank.find("sound/first.wav").unwrap(),
+                sound: host
+                    .runtime
+                    .sound_bank()
+                    .unwrap()
+                    .find("sound/first.wav")
+                    .unwrap(),
                 volume: 1.0,
                 attenuation: 0.0,
                 client: Some(client),
@@ -494,7 +505,12 @@ fn fair_pressure_reset_and_voice_rejection() {
         .push_to(
             OutputTarget::Presentation,
             FrameEvent::Sound(SoundEvent {
-                sound: source.mixer.bank.find("sound/first.wav").unwrap(),
+                sound: host
+                    .runtime
+                    .sound_bank()
+                    .unwrap()
+                    .find("sound/first.wav")
+                    .unwrap(),
                 client: Some(ids[0]),
                 client_lifetime: Some(lifetime),
                 volume: 1.0,
@@ -657,7 +673,7 @@ fn independent_clients_and_reused_lifetime() {
                 .observations
                 .iter()
                 .any(|row| row.0 == SoundAction::StartLoop
-                    && row.1 == source.mixer.bank.find(name).unwrap()
+                    && row.1 == host.runtime.sound_bank().unwrap().find(name).unwrap()
                     && row.2
                         == Some(SoundEmitter::Native {
                             namespace: ResourceNamespace::Client(client),

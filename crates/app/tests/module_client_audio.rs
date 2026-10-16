@@ -22,7 +22,7 @@ use qa_core::{
 use qa_formats::program::qvm::Opcode::*;
 use qa_session::timing::TickRate;
 use qa_world::entities::AllocationPolicy;
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use std::{num::NonZeroU32, time::Duration};
 
 struct Source {
     mixer: Mixer,
@@ -54,19 +54,20 @@ impl FrameSource for Source {
     fn listeners(&mut self, listeners: &[Option<Listener>; SeatId::COUNT], volume: f32) {
         self.mixer.listen(listeners, volume);
     }
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         self.last_sound = Some(event);
         if event.action == SoundAction::StartLoop {
             self.last_loop = Some(event);
         }
-        self.mixer.sound(event)
+        self.mixer.sound(_bank.unwrap(), event)
     }
     fn mix_audio(
         &mut self,
+        _bank: Option<&qa_audio::Bank>,
         entities: &[Option<qa_app::client_scene::ClientEntities<'_>>; SeatId::COUNT],
     ) {
         qa_app::audio::respatialize(&mut self.mixer, entities);
-        assert!(self.mixer.paint(&mut self.pcm));
+        assert!(self.mixer.paint(_bank.unwrap(), &mut self.pcm));
     }
 }
 
@@ -159,26 +160,24 @@ fn fixture(
     protocol: Option<qa_network::commands::packet::Protocol>,
 ) -> (Box<FrameHost>, Source, i32) {
     let rate = NonZeroU32::new(44100).unwrap();
-    let bank = Arc::new(
-        Bank::load(
-            rate,
-            vec![(
-                "sound/steady.wav".into(),
-                Pcm {
-                    rate,
-                    channels: PcmChannels::Mono,
-                    samples: vec![3500; 256],
-                    loop_start: None,
-                    loop_end: None,
-                    loop_invalid: false,
-                },
-            )],
-        )
-        .unwrap(),
-    );
+    let bank = Bank::load(
+        rate,
+        vec![(
+            "sound/steady.wav".into(),
+            Pcm {
+                rate,
+                channels: PcmChannels::Mono,
+                samples: vec![3500; 256],
+                loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
+            },
+        )],
+    )
+    .unwrap();
     let handle = bank.registered_handle(b"sound/steady.wav").unwrap();
     let mut runtime = Runtime::load(1, []).unwrap();
-    runtime.sound_bank = Some(Arc::clone(&bank));
+    runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
     let client = protocol.map(|protocol| {
         runtime
             .connect_local(
@@ -211,7 +210,7 @@ fn fixture(
     (
         Box::new(host),
         Source {
-            mixer: Mixer::load(bank, 16, SeatId::COUNT),
+            mixer: Mixer::load(rate, 16, SeatId::COUNT),
             time: EventTime::from_milliseconds(100),
             last_sound: None,
             last_loop: None,

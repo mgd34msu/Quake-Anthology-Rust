@@ -60,10 +60,16 @@ impl SoundRegistrar for Registrar {
         self.bank
             .attempt(path.as_bytes())
             .map_err(|_| CallError::Capacity)?;
-        self.bank
+        let sound = self
+            .bank
             .find_bytes(path.as_bytes())
-            .map(Some)
-            .ok_or(CallError::File)
+            .ok_or(CallError::File)?;
+        if source != RuleSetId::Quake3
+            && self.bank.sample(sound).is_some_and(|pcm| pcm.loop_invalid)
+        {
+            return Err(CallError::File);
+        }
+        Ok(Some(sound))
     }
     fn bank(&self) -> &qa_audio::Bank {
         &self.bank
@@ -803,7 +809,7 @@ fn cold_native_config_sound_uses_the_existing_numeric_cache_then_rebinds_frozen_
         let bank = Arc::new(fixture.registrar.bank);
         fixture
             .storage
-            .bind_sound_bank(ModuleId(1), sounds, Arc::clone(&bank))
+            .bind_sound_bank(ModuleId(1), sounds, bank.as_ref())
             .unwrap();
         // Frozen native rewrites use the same per-row binder, with no registrar.
         let new_name = if rules == RuleSetId::Quake3 {
@@ -856,7 +862,7 @@ fn cold_native_config_sound_uses_the_existing_numeric_cache_then_rebinds_frozen_
 }
 
 #[test]
-fn cold_staged_native_sound_binds_before_group_publication_without_an_arc_bank() {
+fn accepted_native_sound_binds_before_group_publication_without_an_arc_bank() {
     for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
         let mut fixture = Fixture::native(rules);
         let expected = fixture.registrar.bank.find_bytes(b"sound/a.wav").unwrap();
@@ -867,7 +873,7 @@ fn cold_staged_native_sound_binds_before_group_publication_without_an_arc_bank()
                 (ENGINE_CALLS.resource_index)(&mut services, ModuleId(1), sounds, b"a.wav"),
                 Ok(1)
             );
-            assert_eq!(services.storage.bound_sound(ModuleId(1), 1), None);
+            assert_eq!(services.storage.bound_sound(ModuleId(1), 1), Some(expected));
             // Sound followed by a print retains source order. Index zero does
             // not resolve the valid engine default handle into a config sound.
             for byte in [9, 0, 1, 9, 0, 0, 10, 2, b'p', 0] {
@@ -917,6 +923,189 @@ fn cold_staged_native_sound_binds_before_group_publication_without_an_arc_bank()
         ));
         assert!(fixture.server.events.next(&mut batch).is_none());
     }
+}
+
+#[test]
+fn rejected_native_loop_metadata_stays_unbound_while_q3_uses_the_shared_pcm() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let mut fixture = Fixture::native(rules);
+        let rate = fixture.registrar.bank.rate;
+        let sound = fixture
+            .registrar
+            .bank
+            .attempt(b"sound/bad-loop.wav")
+            .unwrap();
+        let mut malformed = pcm(rate);
+        malformed.loop_invalid = true;
+        fixture.registrar.bank.admit(sound, malformed).unwrap();
+        assert!(fixture.registrar.bank.sample(sound).unwrap().loop_invalid);
+        let sounds = qa_core::configstrings::ConfigLayout::for_rules(rules).resources[1];
+        {
+            let mut services = fixture.engine(true);
+            for _ in 0..3 {
+                assert_eq!(
+                    (ENGINE_CALLS.resource_index)(
+                        &mut services,
+                        ModuleId(1),
+                        sounds,
+                        b"bad-loop.wav"
+                    ),
+                    Ok(1)
+                );
+                assert_eq!(services.sound_id(ModuleId(1), sounds, 1), Ok(None));
+                services.prepare_sound_bindings(ModuleId(1)).unwrap();
+            }
+        }
+        assert_eq!(
+            fixture.registrar.calls,
+            vec![(b"bad-loop.wav".to_vec(), rules)]
+        );
+        assert_eq!(
+            fixture.registrar.bank.registered_handle(b"bad-loop.wav"),
+            None
+        );
+        // Readonly attachment must not revive a completed source rejection from
+        // canonical PCM that remains valid for a different source capability.
+        fixture
+            .storage
+            .bind_sound_bank(ModuleId(1), sounds, &fixture.registrar.bank)
+            .unwrap();
+        assert_eq!(fixture.storage.bound_sound(ModuleId(1), 1), None);
+        let handle;
+        {
+            let mut services = fixture.engine(true);
+            handle = services
+                .register_sound(b"sound/bad-loop.wav", RuleSetId::Quake3)
+                .unwrap();
+            assert!(handle > 0);
+            assert_eq!(
+                (ENGINE_CALLS.registered_sound)(&services, handle),
+                Ok(Some(sound))
+            );
+            assert_eq!(services.sound_id(ModuleId(1), sounds, 1), Ok(None));
+        }
+        assert_eq!(fixture.registrar.calls.len(), 2);
+        assert_eq!(
+            fixture.registrar.bank.find_bytes(b"sound/bad-loop.wav"),
+            Some(sound)
+        );
+    }
+}
+
+#[test]
+fn native_config_bindings_admit_late_sound_ids_without_resetting_existing_ordinals() {
+    let mut fixture = Fixture::native(RuleSetId::Quake2);
+    let sounds = qa_core::configstrings::ConfigLayout::for_rules(RuleSetId::Quake2).resources[1];
+    let first = fixture.registrar.bank.find_bytes(b"sound/a.wav").unwrap();
+    let second = fixture.registrar.bank.find_bytes(b"sound/b.wav").unwrap();
+    {
+        let mut services = fixture.engine(true);
+        assert_eq!(
+            (ENGINE_CALLS.resource_index)(&mut services, ModuleId(1), sounds, b"a.wav"),
+            Ok(1)
+        );
+        assert_eq!(
+            (ENGINE_CALLS.resource_index)(&mut services, ModuleId(1), sounds, b"b.wav"),
+            Ok(2)
+        );
+    }
+    let original_len = fixture.registrar.bank.len();
+    // Append after the native table was attached. This ID is outside the old
+    // length but inside the Bank's unchanged load reservation.
+    let late = fixture.registrar.bank.attempt(b"sound/late.wav").unwrap();
+    assert!(late.0 as usize >= original_len);
+    let rate = fixture.registrar.bank.rate;
+    fixture.registrar.bank.admit(late, pcm(rate)).unwrap();
+    {
+        let mut services = fixture.engine(true);
+        assert_eq!(
+            (ENGINE_CALLS.resource_index)(&mut services, ModuleId(1), sounds, b"late.wav"),
+            Ok(3)
+        );
+        services.prepare_sound_bindings(ModuleId(1)).unwrap();
+        assert_eq!(services.sound_id(ModuleId(1), sounds, 1), Ok(Some(first)));
+        assert_eq!(services.sound_id(ModuleId(1), sounds, 2), Ok(Some(second)));
+        assert_eq!(services.sound_id(ModuleId(1), sounds, 3), Ok(Some(late)));
+        services
+            .configstring(ModuleId(1), sounds.get(1).unwrap(), b"late.wav")
+            .unwrap();
+        assert_eq!(services.sound_id(ModuleId(1), sounds, 1), Ok(Some(late)));
+        assert_eq!(services.sound_id(ModuleId(1), sounds, 2), Ok(Some(second)));
+        assert_eq!(services.sound_id(ModuleId(1), sounds, 3), Ok(Some(late)));
+    }
+    assert_eq!(fixture.registrar.bank.registered_handle(b"late.wav"), None);
+    assert_eq!(
+        fixture.registrar.calls,
+        vec![
+            (b"a.wav".to_vec(), RuleSetId::Quake2),
+            (b"b.wav".to_vec(), RuleSetId::Quake2),
+            (b"late.wav".to_vec(), RuleSetId::Quake2),
+            (b"late.wav".to_vec(), RuleSetId::Quake2),
+        ]
+    );
+}
+
+#[test]
+fn accepted_sound_rows_wait_for_the_registrar_then_prepare_once_even_when_missing() {
+    let mut fixture = Fixture::native(RuleSetId::Quake2);
+    let sounds = qa_core::configstrings::ConfigLayout::for_rules(RuleSetId::Quake2).resources[1];
+    let expected = fixture.registrar.bank.find_bytes(b"sound/a.wav").unwrap();
+    {
+        let mut services = fixture.engine(false);
+        services.sound_bank = None;
+        assert_eq!(
+            (ENGINE_CALLS.resource_index)(&mut services, ModuleId(1), sounds, b"a.wav"),
+            Ok(1)
+        );
+        assert_eq!(
+            (ENGINE_CALLS.resource_index)(&mut services, ModuleId(1), sounds, b"missing.wav"),
+            Ok(2)
+        );
+        services.prepare_sound_bindings(ModuleId(1)).unwrap();
+        assert_eq!(services.sound_id(ModuleId(1), sounds, 1), Ok(None));
+    }
+    assert!(fixture.registrar.calls.is_empty());
+    {
+        let mut services = fixture.engine(true);
+        services.prepare_sound_bindings(ModuleId(1)).unwrap();
+        for _ in 0..3 {
+            services.prepare_sound_bindings(ModuleId(1)).unwrap();
+            services
+                .configstring(ModuleId(1), sounds.get(1).unwrap(), b"a.wav")
+                .unwrap();
+            services
+                .configstring(ModuleId(1), sounds.get(2).unwrap(), b"missing.wav")
+                .unwrap();
+            assert_eq!(
+                services.sound_id(ModuleId(1), sounds, 1),
+                Ok(Some(expected))
+            );
+            assert_eq!(services.sound_id(ModuleId(1), sounds, 2), Ok(None));
+        }
+        assert_eq!(
+            services.configstring(ModuleId(1), sounds.get(1).unwrap(), b"bad\0.wav"),
+            Err(CallError::Text)
+        );
+        assert_eq!(
+            services.sound_id(ModuleId(1), sounds, 1),
+            Ok(Some(expected))
+        );
+        assert_eq!(
+            services.sound_id(ModuleId(1), sounds, -1),
+            Err(CallError::Text)
+        );
+        assert_eq!(
+            services.sound_id(ModuleId(1), sounds, sounds.count as i32),
+            Err(CallError::Text)
+        );
+    }
+    assert_eq!(
+        fixture.registrar.calls,
+        vec![
+            (b"a.wav".to_vec(), RuleSetId::Quake2),
+            (b"missing.wav".to_vec(), RuleSetId::Quake2),
+        ]
+    );
 }
 
 #[test]

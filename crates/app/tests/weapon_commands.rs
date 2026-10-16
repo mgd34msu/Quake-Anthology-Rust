@@ -44,7 +44,7 @@ impl FrameSource for RetirementSource {
     fn present(&mut self) {
         panic!("output-only fixture");
     }
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         assert_eq!(event.action, SoundAction::RetireClient);
         self.retired = Some((event.client.unwrap(), event.client_lifetime.unwrap()));
         true

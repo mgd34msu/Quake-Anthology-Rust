@@ -205,7 +205,7 @@ pub struct RendererRequest<N = qa_core::text::FixedText<64>> {
     pub world: Option<qa_render::world::WorldId>,
 }
 
-/// Sound registration extends the one bank only during cold module loading.
+/// Sound registration extends the one retained bank through scoped service borrows.
 pub trait SoundRegistrar {
     fn register(&mut self, vfs: &Vfs, sample: &[u8], source: RuleSetId) -> Result<i32, CallError>;
     /// Native config resources admit PCM without claiming Q3 engine handles.
@@ -231,7 +231,12 @@ pub trait ClientConnection {
     fn identity(&self, server: &Server) -> Result<(ClientId, EntityId), CallError>;
     fn command_number(&self, server: &Server) -> Result<u64, CallError>;
     fn usercmd(&mut self, number: i32, server: &Server) -> Result<Option<UserCmd>, CallError>;
-    fn select(&mut self, number: i32, server: &mut Server) -> Result<bool, CallError>;
+    fn select(
+        &mut self,
+        number: i32,
+        server: &mut Server,
+        bank: Option<&qa_audio::Bank>,
+    ) -> Result<bool, CallError>;
     fn arguments(&self) -> qa_console::command_text::Arguments<'_>;
     fn disconnected(&self) -> Option<ClientTermination>;
     fn configstrings(&self, server: &Server) -> Result<&ConfigStrings, CallError>;
@@ -311,6 +316,8 @@ struct ConfigRange {
     entity_text: Option<EntityText>,
     sounds: Option<IndexSpan>,
     sound_bindings: Option<qa_audio::SoundBindings>,
+    sound_revisions: Box<[Option<u64>]>,
+    sound_attached: bool,
     music_owner: Option<qa_core::primitives::MusicOwner>,
     signon: signon::SignonRegistry,
 }
@@ -318,30 +325,22 @@ impl ConfigRange {
     fn bound_sound(&self, ordinal: u32) -> Option<qa_core::primitives::SoundId> {
         self.sound_bindings.as_ref()?.sound(ordinal)
     }
-    fn bind_sound_at(
-        &mut self,
-        configs: &ConfigStrings,
-        index: usize,
-        bank: Option<&qa_audio::Bank>,
-    ) -> Result<(), CallError> {
-        let Some(sounds) = self.sounds else {
-            return Ok(());
-        };
-        let ordinal = index
-            .checked_sub(self.span.first as usize)
-            .and_then(|ordinal| ordinal.checked_sub(sounds.first as usize))
+    fn sound_ordinal(&self, index: usize) -> Option<usize> {
+        let sounds = self.sounds?;
+        index
+            .checked_sub(self.span.first as usize)?
+            .checked_sub(sounds.first as usize)
             .filter(|&ordinal| ordinal < sounds.count as usize)
-            .ok_or(CallError::ConfigString)?;
-        self.sound_bindings
-            .as_mut()
-            .ok_or(CallError::ConfigString)?
-            .bind_name(
-                bank,
-                ordinal as u32,
-                configs.config(index).ok_or(CallError::ConfigString)?.text,
-                self.native_rules,
-            )
-            .map_err(|_| CallError::Text)
+    }
+    fn attach_sounds(&mut self, bank: &qa_audio::Bank) -> Result<(), CallError> {
+        if !self.sound_attached {
+            self.sound_bindings
+                .as_mut()
+                .ok_or(CallError::ConfigString)?
+                .attach(bank);
+            self.sound_attached = true;
+        }
+        Ok(())
     }
 }
 struct EntityText {
@@ -357,7 +356,6 @@ pub struct ServiceStorage {
     files: Box<[Option<OpenFile>]>,
     configs: ConfigStrings,
     resource_keys: Box<[Option<NameId>]>,
-    sound_bank: Option<std::sync::Arc<qa_audio::Bank>>,
     ranges: Box<[ConfigRange]>,
     resource_names: NameTable,
     reader: qa_formats::archive::ArchiveReader,
@@ -496,6 +494,9 @@ impl ServiceStorage {
                 sounds: resources.map(|ranges| ranges[1]),
                 sound_bindings: resources
                     .map(|ranges| qa_audio::SoundBindings::load(ranges[1].count as usize)),
+                sound_revisions: vec![None; resources.map_or(0, |ranges| ranges[1].count as usize)]
+                    .into_boxed_slice(),
+                sound_attached: false,
                 signon: signon::SignonRegistry::load(if resources.is_some() {
                     SIGNON_BYTES / 10
                 } else {
@@ -511,7 +512,6 @@ impl ServiceStorage {
             files: std::iter::repeat_with(|| None).take(files).collect(),
             configs: ConfigStrings::load(capacities).map_err(|_| CallError::Capacity)?,
             resource_keys: vec![None; total].into_boxed_slice(),
-            sound_bank: None,
             ranges: ranges.into_boxed_slice(),
             resource_names: NameTable::load_reserved(std::iter::empty(), total + 1, total * 128)
                 .map_err(|_| CallError::Capacity)?,
@@ -840,45 +840,47 @@ impl ServiceStorage {
     ) -> Option<qa_core::primitives::SoundId> {
         self.range(module)?.bound_sound(ordinal)
     }
-    /// Cold attachment binds all registered module ranges to this one PCM bank.
+    /// Attach one native namespace once. Prepared source failures remain bound to None.
     pub fn bind_sound_bank(
         &mut self,
         module: ModuleId,
         sounds: IndexSpan,
-        bank: std::sync::Arc<qa_audio::Bank>,
+        bank: &qa_audio::Bank,
     ) -> Result<(), CallError> {
         if sounds.count == 0 {
             return Err(CallError::ConfigString);
         }
         self.check_range(module, sounds)?;
-        let row = self.range_mut(module).ok_or(CallError::ConfigString)?;
+        let row = self
+            .ranges
+            .iter_mut()
+            .find(|row| row.module == module)
+            .ok_or(CallError::ConfigString)?;
         if row.sounds != Some(sounds) {
+            if row.sound_attached {
+                return Err(CallError::ConfigString);
+            }
             row.sound_bindings = Some(qa_audio::SoundBindings::load(sounds.count as usize));
+            row.sound_revisions = vec![None; sounds.count as usize].into_boxed_slice();
         }
         row.sounds = Some(sounds);
-        self.sound_bank = Some(bank);
-        for row in &mut self.ranges {
-            if let Some(range) = row.sounds {
+        row.attach_sounds(bank)?;
+        for ordinal in 0..sounds.count as usize {
+            let index = row
+                .span
+                .get(sounds.get(ordinal).ok_or(CallError::ConfigString)?)
+                .ok_or(CallError::ConfigString)?;
+            let config = self.configs.config(index).ok_or(CallError::ConfigString)?;
+            if row.sound_revisions[ordinal] != Some(config.revision) {
                 row.sound_bindings
                     .as_mut()
                     .ok_or(CallError::ConfigString)?
-                    .attach(self.sound_bank.as_deref().ok_or(CallError::Text)?);
-                for ordinal in range.range() {
-                    let index = row.span.get(ordinal).ok_or(CallError::ConfigString)?;
-                    row.bind_sound_at(&self.configs, index, self.sound_bank.as_deref())?;
-                }
+                    .bind_name(Some(bank), ordinal as u32, config.text, row.native_rules)
+                    .map_err(|_| CallError::Text)?;
+                row.sound_revisions[ordinal] = Some(config.revision);
             }
         }
         Ok(())
-    }
-    fn set_configstring(
-        &mut self,
-        module: ModuleId,
-        ordinal: usize,
-        text: &[u8],
-    ) -> Result<(), CallError> {
-        let index = self.config(module, ordinal)?;
-        self.set_configstring_at(module, index, text)
     }
     fn set_configstring_at(
         &mut self,
@@ -921,20 +923,17 @@ impl ServiceStorage {
             range.revision = range.revision.wrapping_add(1);
             let ordinal = index - range.span.first as usize;
             if range.sounds.is_some_and(|sounds| sounds.contains(ordinal)) {
-                range.bind_sound_at(&self.configs, index, self.sound_bank.as_deref())?;
+                let sound = range.sound_ordinal(index).ok_or(CallError::ConfigString)?;
+                range.sound_revisions[sound] = None;
+                range
+                    .sound_bindings
+                    .as_mut()
+                    .ok_or(CallError::ConfigString)?
+                    .set(sound as u32, None)
+                    .map_err(|_| CallError::Text)?;
             }
         }
         Ok(())
-    }
-    fn resource_index(
-        &mut self,
-        module: ModuleId,
-        range: IndexSpan,
-        name: &[u8],
-    ) -> Result<u32, CallError> {
-        self.resource_lookup(module, range, name, true)?
-            .map(|(ordinal, _)| ordinal)
-            .ok_or(CallError::Capacity)
     }
     fn resource_lookup(
         &mut self,
@@ -1502,7 +1501,14 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         s.client_connection
             .as_deref_mut()
             .ok_or(CallError::Text)?
-            .select(number, s.server)
+            .select(
+                number,
+                s.server,
+                s.sound_loader
+                    .as_deref()
+                    .map(SoundRegistrar::bank)
+                    .or(s.sound_bank),
+            )
     },
     client_configstrings: |s| {
         s.client_connection
@@ -1702,12 +1708,8 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     command_insert: |s, c, t| s.commands.insert_bytes(t, c).map_err(|_| CallError::Text),
     configstring: |s, m, i, t| s.configstring(m, i, t),
     lightstyle: |s, m, i, t| s.lightstyle(m, i, t),
-    resource_index: |s, m, r, n| s.storage.resource_index(m, r, n),
-    resource_register: |s, m, r, n| {
-        s.storage
-            .resource_lookup(m, r, n, true)?
-            .ok_or(CallError::Capacity)
-    },
+    resource_index: |s, m, r, n| s.resource_register(m, r, n).map(|(ordinal, _)| ordinal),
+    resource_register: |s, m, r, n| s.resource_register(m, r, n),
     resource_find: |s, m, r, n| {
         Ok(s.storage
             .resource_lookup(m, r, n, false)?
@@ -1938,45 +1940,81 @@ impl EngineServices<'_> {
             .map_err(|_| CallError::Capacity)
     }
     pub fn sound_id(
-        &mut self,
+        &self,
         module: ModuleId,
         sounds: IndexSpan,
         ordinal: i32,
     ) -> Result<Option<qa_core::primitives::SoundId>, CallError> {
-        let cached = self.storage.sound_id(module, sounds, ordinal)?;
-        if cached.is_some() || ordinal == 0 {
-            return Ok(cached);
-        }
-        let Some(loader) = self.sound_loader.as_deref_mut() else {
-            return Ok(None);
+        self.storage.sound_id(module, sounds, ordinal)
+    }
+    /// Prepare configurations accepted before the registrar was lent to services.
+    pub fn prepare_sound_bindings(&mut self, module: ModuleId) -> Result<(), CallError> {
+        let Some(sounds) = self
+            .storage
+            .range(module)
+            .ok_or(CallError::ConfigString)?
+            .sounds
+        else {
+            return Ok(());
         };
+        for ordinal in sounds.range() {
+            let index = self.storage.config(module, ordinal)?;
+            self.prepare_sound_at(module, index)?;
+        }
+        Ok(())
+    }
+    fn prepare_sound_at(&mut self, module: ModuleId, index: usize) -> Result<(), CallError> {
         let row = self
             .storage
             .ranges
             .iter_mut()
             .find(|row| row.module == module)
             .ok_or(CallError::ConfigString)?;
-        let index = sounds
-            .get(usize::try_from(ordinal).map_err(|_| CallError::Text)?)
-            .and_then(|index| row.span.get(index))
-            .ok_or(CallError::ConfigString)?;
-        let sample = self
+        let Some(ordinal) = row.sound_ordinal(index) else {
+            return Ok(());
+        };
+        let config = self
             .storage
             .configs
             .config(index)
-            .ok_or(CallError::ConfigString)?
-            .text;
-        if !sample.is_empty() {
-            match loader.precache(self.vfs, sample, row.native_rules) {
-                Ok(_) => {}
-                Err(error @ (CallError::File | CallError::Capacity | CallError::Text)) => {
-                    Self::registration_diagnostic(&mut self.server.events, "sound", error);
-                }
-                Err(error) => return Err(error),
-            }
+            .ok_or(CallError::ConfigString)?;
+        if row.sound_revisions[ordinal] == Some(config.revision) {
+            return Ok(());
         }
-        row.bind_sound_at(&self.storage.configs, index, Some(loader.bank()))?;
-        Ok(row.bound_sound(ordinal as u32))
+        let sound = if let Some(loader) = self.sound_loader.as_deref_mut() {
+            row.attach_sounds(loader.bank())?;
+            if ordinal == 0 || config.text.is_empty() {
+                None
+            } else {
+                match loader.precache(self.vfs, config.text, row.native_rules) {
+                    Ok(sound) => sound,
+                    Err(error @ (CallError::File | CallError::Capacity | CallError::Text)) => {
+                        Self::registration_diagnostic(&mut self.server.events, "sound", error);
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        } else if let Some(bank) = self.sound_bank {
+            row.attach_sounds(bank)?;
+            let bindings = row.sound_bindings.as_mut().ok_or(CallError::ConfigString)?;
+            bindings
+                .bind_name(Some(bank), ordinal as u32, config.text, row.native_rules)
+                .map_err(|_| CallError::Text)?;
+            row.sound_revisions[ordinal] = Some(config.revision);
+            return Ok(());
+        } else if ordinal == 0 || config.text.is_empty() {
+            None
+        } else {
+            return Ok(());
+        };
+        row.sound_bindings
+            .as_mut()
+            .ok_or(CallError::ConfigString)?
+            .set(ordinal as u32, sound)
+            .map_err(|_| CallError::Text)?;
+        row.sound_revisions[ordinal] = Some(config.revision);
+        Ok(())
     }
     fn registration_diagnostic(
         events: &mut qa_core::events::EventRing,
@@ -2297,7 +2335,29 @@ impl EngineServices<'_> {
         ordinal: usize,
         text: &[u8],
     ) -> Result<(), CallError> {
-        self.storage.set_configstring(module, ordinal, text)
+        let index = self.storage.config(module, ordinal)?;
+        self.storage.set_configstring_at(module, index, text)?;
+        self.prepare_sound_at(module, index)
+    }
+    fn resource_register(
+        &mut self,
+        module: ModuleId,
+        range: IndexSpan,
+        name: &[u8],
+    ) -> Result<(u32, bool), CallError> {
+        let result = self
+            .storage
+            .resource_lookup(module, range, name, true)?
+            .ok_or(CallError::Capacity)?;
+        if name.is_empty() {
+            return Ok(result);
+        }
+        let ordinal = range
+            .get(result.0 as usize)
+            .ok_or(CallError::ConfigString)?;
+        let index = self.storage.config(module, ordinal)?;
+        self.prepare_sound_at(module, index)?;
+        Ok(result)
     }
     pub fn lightstyle(
         &mut self,

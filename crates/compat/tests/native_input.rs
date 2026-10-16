@@ -870,6 +870,7 @@ impl qa_compat::services::ClientConnection for CommandWindow {
         &mut self,
         number: i32,
         _: &mut qa_session::clients::Server,
+        _: Option<&qa_audio::Bank>,
     ) -> Result<bool, CallError> {
         if number != 7 {
             return Ok(false);

@@ -14,7 +14,7 @@ use qa_core::{
 };
 use qa_network::{commands::packet::Protocol, outputs};
 use qa_session::timing::TickRate;
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use std::{num::NonZeroU32, time::Duration};
 
 struct Audio {
     mixer: Mixer,
@@ -33,12 +33,12 @@ impl FrameSource for Audio {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
+    fn sound(&mut self, _bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         if event.action == SoundAction::Play {
             self.plays += 1;
             self.last = Some(event);
         }
-        self.mixer.sound(event)
+        self.mixer.sound(_bank.unwrap(), event)
     }
 }
 
@@ -108,23 +108,21 @@ fn dispatch(host: &mut FrameHost, source: &mut Audio) -> qa_app::output::OutputC
 fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() {
     let rate = NonZeroU32::new(44100).unwrap();
     for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
-        let bank = Arc::new(
-            Bank::load(
-                rate,
-                vec![(
-                    "sound/_qa_dynamic.wav".into(),
-                    Pcm {
-                        rate,
-                        channels: PcmChannels::Mono,
-                        samples: [6000, -3000, 9000, -7000].repeat(64),
-                        loop_start: None,
-                        loop_end: None,
-                        loop_invalid: false,
-                    },
-                )],
-            )
-            .unwrap(),
-        );
+        let bank = Bank::load(
+            rate,
+            vec![(
+                "sound/_qa_dynamic.wav".into(),
+                Pcm {
+                    rate,
+                    channels: PcmChannels::Mono,
+                    samples: [6000, -3000, 9000, -7000].repeat(64),
+                    loop_start: None,
+                    loop_end: None,
+                    loop_invalid: false,
+                },
+            )],
+        )
+        .unwrap();
         let mut runtime = Runtime::load(1, []).unwrap();
         let client = runtime
             .connect_local(
@@ -154,8 +152,8 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
         )
         .unwrap();
         host.local_clients[0] = Some(client);
-        host.runtime.sound_bank = Some(Arc::clone(&bank));
-        host.bind_sounds(&bank).unwrap();
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.bind_sounds().unwrap();
         let index = host.runtime.client_resources[client.0 as usize]
             .as_ref()
             .unwrap()
@@ -178,10 +176,23 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
                 host.runtime.client_resources[client.0 as usize]
                     .as_mut()
                     .unwrap()
-                    .apply(index, b"_qa_dynamic.wav", None, Some(&bank))
+                    .apply(
+                        index,
+                        b"_qa_dynamic.wav",
+                        None,
+                        host.runtime
+                            .sound_assets
+                            .as_deref()
+                            .map(qa_app::audio::SoundAssets::bank)
+                    )
             );
         }
-        let sound = bank.find("sound/_qa_dynamic.wav").unwrap();
+        let sound = host
+            .runtime
+            .sound_bank()
+            .unwrap()
+            .find("sound/_qa_dynamic.wav")
+            .unwrap();
         assert_eq!(
             host.runtime.client_resources[client.0 as usize]
                 .as_ref()
@@ -206,7 +217,7 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
             .bind(OutputTarget::Module(ModuleId(29)))
             .unwrap();
         let mut audio = Audio {
-            mixer: Mixer::load(Arc::clone(&bank), 8, 1),
+            mixer: Mixer::load(rate, 8, 1),
             plays: 0,
             last: None,
         };
@@ -275,7 +286,11 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
         );
         assert_eq!(event.spatial, spatial);
         let mut pcm = [0; 64];
-        assert!(audio.mixer.paint(&mut pcm));
+        assert!(
+            audio
+                .mixer
+                .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+        );
         assert!(pcm.iter().any(|&sample| sample != 0));
         assert_eq!(audio.mixer.counts.started, 1);
         assert_eq!(dispatch(&mut host, &mut audio).sounds, 0);
@@ -338,7 +353,11 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
                 };
                 let gain = (255.0 * (1.0 - distance) * 2.0 * ordinary.separation).max(0.0) as i64;
                 let mut pcm = [0; 2];
-                assert!(audio.mixer.paint(&mut pcm));
+                assert!(
+                    audio
+                        .mixer
+                        .paint(host.runtime.sound_bank().unwrap(), &mut pcm)
+                );
                 assert_eq!(
                     pcm,
                     [0, ((6000 * gain) >> 8) as i16],
