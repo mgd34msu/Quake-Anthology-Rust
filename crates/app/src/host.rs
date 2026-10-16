@@ -926,7 +926,13 @@ impl FrameHost {
                 self.runtime
                     .network
                     .get(client, qa_core::loopback::Endpoint::Client)
-                    .map(|connection| snapshot.view_presentation(&connection.channel, player))
+                    .map(|connection| {
+                        snapshot.view_presentation(&connection.channel, player, |number| {
+                            self.client_entities(client, player, self.alias_roll())?
+                                .get(number)
+                                .map(|pose| pose.origin)
+                        })
+                    })
             })
             .unwrap_or(qa_network::projection::PlayerViewSample {
                 origin: player.eye(),
@@ -1069,24 +1075,33 @@ impl FrameHost {
         let alias_roll = self.alias_roll();
         std::array::from_fn(|seat| {
             let (client, _, player) = self.local_seat(seat)?;
-            let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
-            let channel = &self
-                .runtime
-                .network
-                .get(client, qa_core::loopback::Endpoint::Client)?
-                .channel;
-            Some(crate::client_scene::ClientEntities {
-                client,
-                player: Some(player),
-                current: channel.current_snapshot(),
-                previous: channel.previous_snapshot(),
-                projection: snapshot.entity_projection(),
-                appearance: snapshot
-                    .appearance_policy()?
-                    .with_smooth_clients(self.smooth_clients()),
-                alias_roll,
-                interpolation: snapshot.interpolation()?,
-            })
+            self.client_entities(client, player, alias_roll)
+        })
+    }
+
+    fn client_entities<'a>(
+        &'a self,
+        client: ClientId,
+        player: &'a qa_core::primitives::PlayerState,
+        alias_roll: qa_gameplay::rules::appearance::AliasRoll,
+    ) -> Option<crate::client_scene::ClientEntities<'a>> {
+        let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
+        let channel = &self
+            .runtime
+            .network
+            .get(client, qa_core::loopback::Endpoint::Client)?
+            .channel;
+        Some(crate::client_scene::ClientEntities {
+            client,
+            player: Some(player),
+            current: channel.current_snapshot(),
+            previous: channel.previous_snapshot(),
+            projection: snapshot.entity_projection(),
+            appearance: snapshot
+                .appearance_policy()?
+                .with_smooth_clients(self.smooth_clients()),
+            alias_roll,
+            interpolation: snapshot.interpolation()?,
         })
     }
 
@@ -2203,7 +2218,7 @@ impl FrameHost {
                             binding.entity_projection(),
                             &resources.state.models,
                             &self.runtime.geometry,
-                            binding.view_entity(Some(frame)),
+                            binding.player_entity(Some(frame)),
                             resources.state.max_clients(),
                         );
                     }

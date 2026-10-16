@@ -745,6 +745,8 @@ fn queue_nq_view_snapshot(
     client: ClientId,
     seconds: f64,
     origin: Option<Vec3>,
+    camera: (u32, Vec3),
+    view: Option<u16>,
 ) {
     use qa_network::{
         message::{Encoding, Writer},
@@ -754,7 +756,12 @@ fn queue_nq_view_snapshot(
     };
     let projection = EntityProjection::load(Protocol::NetQuake15);
     let mut entities = Vec::new();
-    for (number, position) in [(1, Some(Vec3([-200., -300., -400.]))), (6, origin)] {
+    let player_number = host.runtime.snapshots[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .player_entity(None)
+        .unwrap();
+    for (number, position) in [(camera.0, Some(camera.1)), (player_number, origin)] {
         let Some(position) = position else {
             continue;
         };
@@ -784,6 +791,7 @@ fn queue_nq_view_snapshot(
         ));
         entities.push(Entity { number, words });
     }
+    entities.sort_by_key(|entity| entity.number);
     let mut player = [0; states::NQ_PLAYER_WORDS];
     player[0] = 22.0f32.to_bits();
     player[3] = 32.0f32.to_bits();
@@ -814,6 +822,10 @@ fn queue_nq_view_snapshot(
     channel
         .write_snapshot_candidate(&mut writer, frame, None, 16)
         .unwrap();
+    if let Some(entity) = view {
+        writer.write_bits(5, 8).unwrap();
+        writer.write_bits(u32::from(entity), 16).unwrap();
+    }
     let length = writer.size();
     channel.publish_written_snapshot(frame, None).unwrap();
     let now = EventTime::from_milliseconds(u64::from(sequence) * 100 + 100);
@@ -835,36 +847,37 @@ fn queue_nq_view_snapshot(
     host.time = now;
 }
 
-#[test]
-fn queued_netquake_view_entity_updates_only_client_origin_across_native_frames() {
-    let spawn = Vec3([10., 20., 30.]);
-    let angles = Vec3([13., 27., 39.]);
-    let mut runtime = Runtime::load(1, []).unwrap();
-    let client = runtime
-        .connect_local(
-            SeatId::FIRST,
-            SpawnAnchor {
-                position: spawn,
-                angles,
-                entity: 0,
-                fixture_fallback: false,
-            },
-            ClientPolicy::select(
-                Some(RuleSetId::QuakeWorld),
-                None,
-                Some(RuleSetId::Quake3),
-                Some(RuleSetId::Quake2),
-                None,
-            )
-            .unwrap(),
-            Protocol::NetQuake15,
-            5,
-        )
-        .unwrap();
-    runtime.server.clients[client.0 as usize].module = RESOURCES;
-    let server_entity = runtime.server.clients[client.0 as usize].entity;
-    assert_ne!(server_entity.slot, 6);
-    let server_body = runtime.server.clients[client.0 as usize].player.body;
+fn netquake_camera_host(native_clients: &[u32]) -> (FrameHost, Vec<ClientId>) {
+    let mut runtime = Runtime::load(native_clients.len(), []).unwrap();
+    let clients = native_clients
+        .iter()
+        .enumerate()
+        .map(|(seat, &native_client)| {
+            let client = runtime
+                .connect_local(
+                    SeatId::new(seat as u8).unwrap(),
+                    SpawnAnchor {
+                        position: Vec3([10., 20., 30.]),
+                        angles: Vec3([13., 27., 39.]),
+                        entity: 0,
+                        fixture_fallback: false,
+                    },
+                    ClientPolicy::select(
+                        Some(RuleSetId::QuakeWorld),
+                        None,
+                        Some(RuleSetId::Quake3),
+                        Some(RuleSetId::Quake2),
+                        None,
+                    )
+                    .unwrap(),
+                    Protocol::NetQuake15,
+                    native_client,
+                )
+                .unwrap();
+            runtime.server.clients[client.0 as usize].module = RESOURCES;
+            client
+        })
+        .collect::<Vec<_>>();
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
         runtime,
@@ -872,11 +885,25 @@ fn queued_netquake_view_entity_updates_only_client_origin_across_native_frames()
         vec![],
     )
     .unwrap();
-    host.local_clients[0] = Some(client);
-    host.local_worlds[0] = Some((
-        qa_render::world::WorldId(0),
-        qa_render::world::WorldPresentationId(0),
-    ));
+    for (seat, &client) in clients.iter().enumerate() {
+        host.local_clients[seat] = Some(client);
+        host.local_worlds[seat] = Some((
+            qa_render::world::WorldId(0),
+            qa_render::world::WorldPresentationId(0),
+        ));
+    }
+    (host, clients)
+}
+
+#[test]
+fn queued_netquake_view_entity_updates_only_client_origin_across_native_frames() {
+    let spawn = Vec3([10., 20., 30.]);
+    let angles = Vec3([13., 27., 39.]);
+    let (mut host, clients) = netquake_camera_host(&[5]);
+    let client = clients[0];
+    let server_entity = host.runtime.server.clients[client.0 as usize].entity;
+    assert_ne!(server_entity.slot, 6);
+    let server_body = host.runtime.server.clients[client.0 as usize].player.body;
     let (mins, maxs) = {
         let body = host.runtime.prediction[0].player.body;
         (body.mins, body.maxs)
@@ -891,7 +918,14 @@ fn queued_netquake_view_entity_updates_only_client_origin_across_native_frames()
     .into_iter()
     .enumerate()
     {
-        queue_nq_view_snapshot(&mut host, client, seconds, origin);
+        queue_nq_view_snapshot(
+            &mut host,
+            client,
+            seconds,
+            origin,
+            (1, Vec3([-200., -300., -400.])),
+            None,
+        );
         assert_eq!(host.runtime.prediction[0].player.body.position, accepted);
         host.drain(&mut qa_app::host::FrameResult::default());
         accepted = origin.unwrap_or(accepted);
@@ -949,6 +983,264 @@ fn queued_netquake_view_entity_updates_only_client_origin_across_native_frames()
         assert_eq!(host.runtime.network.malformed, 0);
     }
 }
+fn queue_netquake_control(host: &mut FrameHost, client: ClientId, bytes: &[u8]) {
+    let time = EventTime(host.time.0 + 1);
+    let channel = &mut host
+        .runtime
+        .network
+        .get_mut(client, Endpoint::Server)
+        .unwrap()
+        .channel;
+    channel
+        .prepare_server_message(bytes, time)
+        .unwrap()
+        .unwrap();
+    assert!(
+        channel
+            .submit_with(time, |packet| host
+                .runtime
+                .loopback
+                .send(Endpoint::Server, client, packet)
+                .is_ok())
+            .unwrap()
+            .is_some()
+    );
+    host.time = time;
+}
+
+#[test]
+fn queued_netquake_setview_selects_retained_camera_without_reassigning_the_physical_player() {
+    let (mut host, clients) = netquake_camera_host(&[5, 9]);
+    let first = clients[0];
+    let second = clients[1];
+    let common = host.runtime.server.clients[first.0 as usize].entity;
+    assert_ne!(common.slot, 6);
+    assert_ne!(common.slot, 42);
+    let server_bodies = host
+        .runtime
+        .server
+        .clients
+        .iter()
+        .map(|client| {
+            (
+                client.entity,
+                client.player.body.position,
+                client.player.body.velocity,
+                client.player.view_angles,
+                client.player.movement,
+                client.player.movement_rules,
+                client.player.trace_rules,
+            )
+        })
+        .collect::<Vec<_>>();
+    queue_nq_view_snapshot(
+        &mut host,
+        first,
+        1.0,
+        Some(Vec3([120., 24., 48.])),
+        (42, Vec3([-200., -300., -400.])),
+        Some(42),
+    );
+    queue_nq_view_snapshot(
+        &mut host,
+        second,
+        1.0,
+        Some(Vec3([30., 40., 50.])),
+        (42, Vec3([400., 500., 600.])),
+        None,
+    );
+    host.drain(&mut qa_app::host::FrameResult::default());
+    assert_eq!(
+        host.runtime.prediction[0].player.body.position,
+        Vec3([120., 24., 48.])
+    );
+    assert_eq!(
+        host.client_views()[0].unwrap().origin,
+        Vec3([-200., -300., -378.])
+    );
+    assert_eq!(
+        host.client_views()[1].unwrap().origin,
+        Vec3([30., 40., 72.])
+    );
+    let binding = host.runtime.snapshots[first.0 as usize].as_ref().unwrap();
+    let frame = host
+        .runtime
+        .network
+        .get(first, Endpoint::Client)
+        .unwrap()
+        .channel
+        .current_snapshot()
+        .unwrap();
+    assert_eq!(binding.player_entity(Some(frame)), Some(6));
+    assert_eq!(binding.view_entity(Some(frame)), Some(42));
+    assert_eq!(
+        (binding.native_client(), binding.applied, binding.rejected),
+        (5, 1, 0)
+    );
+    assert_eq!(
+        host.client_entities_inputs()[0]
+            .unwrap()
+            .get(42)
+            .unwrap()
+            .origin,
+        Vec3([-200., -300., -400.])
+    );
+    let sequence = frame.sequence();
+    // At this magnitude physical-eye subtraction would round the offset to32.
+    // The camera must apply native22 directly to the target's retained origin.
+    host.runtime.prediction[0].player.body.position.0[2] = 268_435_456.;
+    let player = &host.runtime.prediction[0].player;
+    let predicted_eye = player.eye();
+    assert_eq!(predicted_eye.0[2], 268_435_488.);
+    let physical = (
+        player.body.position,
+        player.body.velocity,
+        player.body.mins,
+        player.body.maxs,
+        player.view_angles,
+        player.movement,
+        player.movement_rules,
+        player.trace_rules,
+        player.native_clock,
+    );
+    let acknowledged = host.runtime.prediction[0].packet_acknowledged();
+    for (target, camera) in [
+        (6u16, predicted_eye),
+        (42, Vec3([-200., -300., -378.])),
+        (u16::MAX, predicted_eye),
+        (0, predicted_eye),
+        (43, predicted_eye),
+    ] {
+        let [low, high] = target.to_le_bytes();
+        queue_netquake_control(&mut host, first, &[5, low, high]);
+        host.drain(&mut qa_app::host::FrameResult::default());
+        let player = &host.runtime.prediction[0].player;
+        assert_eq!(
+            (
+                player.body.position,
+                player.body.velocity,
+                player.body.mins,
+                player.body.maxs,
+                player.view_angles,
+                player.movement,
+                player.movement_rules,
+                player.trace_rules,
+                player.native_clock
+            ),
+            physical
+        );
+        assert_eq!(
+            host.runtime.prediction[0].packet_acknowledged(),
+            acknowledged
+        );
+        let binding = host.runtime.snapshots[first.0 as usize].as_ref().unwrap();
+        let frame = host
+            .runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap();
+        assert_eq!(
+            (binding.native_client(), binding.applied, binding.rejected),
+            (5, 1, 0)
+        );
+        assert_eq!(frame.sequence(), sequence);
+        assert_eq!(binding.player_entity(Some(frame)), Some(6));
+        assert_eq!(binding.view_entity(Some(frame)), Some(u32::from(target)));
+        assert_eq!(
+            host.client_views()[0].unwrap().origin,
+            camera,
+            "target {target}"
+        );
+        assert_eq!(
+            host.client_views()[1].unwrap().origin,
+            Vec3([30., 40., 72.])
+        );
+        let second_binding = host.runtime.snapshots[second.0 as usize].as_ref().unwrap();
+        assert_eq!(
+            (
+                second_binding.view_entity(None),
+                second_binding.native_client(),
+                second_binding.applied
+            ),
+            (Some(10), 9, 1)
+        );
+    }
+    // An absent target keeps its metadata and resolves when a later accepted row appears.
+    queue_nq_view_snapshot(
+        &mut host,
+        first,
+        2.0,
+        Some(Vec3([121., 25., 49.])),
+        (43, Vec3([50., 60., 70.])),
+        None,
+    );
+    host.drain(&mut qa_app::host::FrameResult::default());
+    assert_eq!(
+        host.client_views()[0].unwrap().origin,
+        Vec3([50., 60., 92.])
+    );
+    assert_eq!(
+        host.runtime.prediction[0].player.body.position,
+        Vec3([121., 25., 49.])
+    );
+    let before = (
+        host.runtime.network.command_errors,
+        host.runtime.network.malformed,
+    );
+    queue_netquake_control(&mut host, first, &[5, 42]);
+    host.drain(&mut qa_app::host::FrameResult::default());
+    let binding = host.runtime.snapshots[first.0 as usize].as_ref().unwrap();
+    assert_eq!(
+        (
+            binding.view_entity(None),
+            binding.player_entity(None),
+            binding.applied
+        ),
+        (Some(43), Some(6), 2)
+    );
+    assert_eq!(
+        host.client_views()[0].unwrap().origin,
+        Vec3([50., 60., 92.])
+    );
+    assert_eq!(
+        (
+            host.runtime.network.command_errors,
+            host.runtime.network.malformed
+        ),
+        (before.0 + 1, before.1)
+    );
+    assert_eq!(
+        host.runtime
+            .server
+            .clients
+            .iter()
+            .map(|client| {
+                (
+                    client.entity,
+                    client.player.body.position,
+                    client.player.body.velocity,
+                    client.player.view_angles,
+                    client.player.movement,
+                    client.player.movement_rules,
+                    client.player.trace_rules,
+                )
+            })
+            .collect::<Vec<_>>(),
+        server_bodies
+    );
+    let body = host
+        .runtime
+        .server
+        .entities
+        .columns
+        .body(common.slot as usize);
+    assert_eq!(body.position, server_bodies[0].1);
+    assert_eq!(body.velocity, server_bodies[0].2);
+}
+
 impl qa_movement::TraceServices for NoPredictionQueries {
     fn trace(
         &mut self,

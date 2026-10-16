@@ -605,6 +605,12 @@ impl Commands {
                         }
                         at += 1 + reader.byte_position();
                     }
+                    (Protocol::NetQuake15, 5) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let entity = reader.read_bits(16)? as u16;
+                        at += 1 + reader.byte_position();
+                        consume(Incoming::SetView { entity });
+                    }
                     (Protocol::NetQuake15, 7) => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);

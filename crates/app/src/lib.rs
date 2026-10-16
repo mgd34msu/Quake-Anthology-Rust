@@ -156,7 +156,7 @@ impl Runtime {
                 binding.entity_projection(),
                 &resources.state.models,
                 &self.geometry,
-                binding.view_entity(Some(frame)),
+                binding.player_entity(Some(frame)),
                 resources.state.max_clients(),
             );
         }

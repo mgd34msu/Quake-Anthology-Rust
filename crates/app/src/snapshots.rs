@@ -85,6 +85,7 @@ pub struct SnapshotBinding {
     presentation_closed: bool,
     pub(crate) close_control_pending: bool,
     native_client: u32,
+    view_entity_override: Option<u16>,
     projection: PlayerProjection,
     player_stats: Q3StatLayout,
     particles: Option<qa_core::effects::NativeParticleBindings>,
@@ -206,12 +207,17 @@ impl SnapshotBinding {
         self.player_stats = layout;
         true
     }
-    pub fn view_entity(&self, frame: Option<ReceivedFrame<'_>>) -> Option<u32> {
+    pub fn player_entity(&self, frame: Option<ReceivedFrame<'_>>) -> Option<u32> {
         let client = frame
             .and_then(ReceivedFrame::player_words)
             .and_then(|words| self.projection.client_number(words))
             .unwrap_or(self.native_client);
         crate::output_namespace::native_client_entity(self.protocol, client)
+    }
+    pub fn view_entity(&self, frame: Option<ReceivedFrame<'_>>) -> Option<u32> {
+        self.view_entity_override
+            .map(u32::from)
+            .or_else(|| self.player_entity(frame))
     }
     pub fn entity_projection(&self) -> &qa_network::projection::EntityProjection {
         self.entities.projection()
@@ -265,11 +271,28 @@ impl SnapshotBinding {
     }
     /// Camera fields borrow the same accepted frames and clock as native kick
     /// angles. Movement and SERVER state remain unchanged.
-    pub fn view_presentation(&self, channel: &Channel, player: &PlayerState) -> PlayerViewSample {
+    pub fn view_presentation(
+        &self,
+        channel: &Channel,
+        player: &PlayerState,
+        entity_origin: impl FnOnce(u32) -> Option<qa_core::primitives::Vec3>,
+    ) -> PlayerViewSample {
         let fallback = PlayerViewSample {
             origin: player.eye(),
             view: player.view,
         };
+        if self.protocol == Protocol::NetQuake15 {
+            let current = channel.current_snapshot();
+            let view = self.view_entity(current);
+            if view != self.player_entity(current)
+                && let Some(origin) = view.and_then(entity_origin)
+            {
+                return PlayerViewSample {
+                    origin: player.view.eye(origin, player.movement.view_height),
+                    view: player.view,
+                };
+            }
+        }
         let Some(client) = self.presentation.as_ref() else {
             return fallback;
         };
@@ -514,6 +537,7 @@ impl SnapshotBinding {
             presentation_closed: false,
             close_control_pending: false,
             native_client,
+            view_entity_override: None,
             projection: PlayerProjection::load_values(
                 protocol,
                 native.bindings(),
@@ -773,6 +797,12 @@ impl SnapshotBinding {
         if self.presentation_closed {
             return false;
         }
+        if let Incoming::SetView { entity } = incoming {
+            if self.protocol == Protocol::NetQuake15 {
+                self.view_entity_override = Some(entity);
+            }
+            return false;
+        }
         let Some(client) = self.presentation.as_mut() else {
             return false;
         };
@@ -840,7 +870,7 @@ impl SnapshotBinding {
                 clock,
             ) {
                 if let Some(frame @ ReceivedFrame::NetQuake(_)) = snapshot
-                    && let Some(number) = self.view_entity(Some(frame))
+                    && let Some(number) = self.player_entity(Some(frame))
                     && let Some((words, _)) =
                         crate::client_scene::ClientEntities::row(frame, number)
                 {

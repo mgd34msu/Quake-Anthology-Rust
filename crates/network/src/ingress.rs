@@ -93,6 +93,9 @@ pub enum Incoming<'a> {
         index: u8,
         value: i32,
     },
+    SetView {
+        entity: u16,
+    },
     SetAngles(qa_core::primitives::Vec3),
     CdTrack(crate::outputs::CdTrack),
     Print(crate::outputs::Print<'a>),

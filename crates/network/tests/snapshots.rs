@@ -2421,6 +2421,199 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
 }
 
 #[test]
+fn nq_setview_is_unsigned_ordered_control_without_snapshot_progress() -> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    for (view, expected) in [
+        ([5, 0, 0], 0),
+        ([5, 1, 0], 1),
+        ([5, 255, 0], 255),
+        ([5, 0, 1], 256),
+        ([5, 0x34, 0x12], 0x1234),
+        ([5, 0, 0x80], 0x8000),
+        ([5, 255, 255], u16::MAX),
+    ] {
+        let bytes = [view[0], view[1], view[2], 8, b'a', 0];
+        let mut order = Vec::new();
+        server_payload(
+            &mut server,
+            &mut connections,
+            &bytes,
+            |id, endpoint, incoming| {
+                assert_eq!(id, ClientId(0));
+                assert_eq!(endpoint, Endpoint::Client);
+                match incoming {
+                    Incoming::SetView { entity } => order.push((5, entity)),
+                    Incoming::Print(print) => {
+                        assert_eq!(print.text, b"a");
+                        order.push((8, 0));
+                    }
+                    _ => {
+                        panic!("standalone setview must not fabricate player or snapshot progress")
+                    }
+                }
+            },
+        )?;
+        assert_eq!(order, [(5, expected), (8, 0)]);
+        assert!(
+            connections
+                .get(ClientId(0), Endpoint::Client)
+                .ok_or(Error::Context)?
+                .channel
+                .current_snapshot()
+                .is_none()
+        );
+    }
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn nq_setview_in_normal_service_stream_commits_the_native_snapshot() -> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_data(b"\x05\x34\x12\x07")?;
+    writer.write_bits(1.25f32.to_bits(), 32)?;
+    let mut player = [0; states::NQ_PLAYER_WORDS];
+    player[0] = 22.0f32.to_bits();
+    player[12] = 37.0f32.to_bits();
+    states::write_nq_player(&mut writer, &player)?;
+    writer.write_data(b"\x08after\0\x05\xff\xff")?;
+    let mut order = Vec::new();
+    server_payload(
+        &mut server,
+        &mut connections,
+        writer.bytes(),
+        |_, _, incoming| match incoming {
+            Incoming::SetView { entity } => order.push((5, u32::from(entity))),
+            Incoming::Print(print) => {
+                assert_eq!(print.text, b"after");
+                order.push((8, 0));
+            }
+            Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) => {
+                assert_eq!(frame.time, ThinkTime::Seconds(1.25));
+                assert_eq!(frame.player[0], 22.0f32.to_bits());
+                assert_eq!(frame.player[12], 37);
+                order.push((7, 0));
+            }
+            _ => panic!("NQ setview/clientdata/print stream"),
+        },
+    )?;
+    assert_eq!(order, [(5, 0x1234), (8, 0), (5, 65535), (7, 0)]);
+    assert_eq!(connections.command_errors, 0);
+    assert_eq!(
+        connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel
+            .current_snapshot()
+            .ok_or(Error::Context)?
+            .time(),
+        ThinkTime::Seconds(1.25)
+    );
+    Ok(())
+}
+
+#[test]
+fn nq_truncated_setview_keeps_prior_controls_and_accepted_frame() -> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut target = None;
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x07\0\0\xa0\x3f\x05\x34\x12",
+        |_, _, incoming| match incoming {
+            Incoming::SetView { entity } => target = Some(entity),
+            Incoming::Snapshot(_) => {}
+            _ => panic!("initial time/setview stream"),
+        },
+    )?;
+    assert_eq!(target, Some(0x1234));
+    let accepted = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?
+        .channel
+        .current_snapshot()
+        .ok_or(Error::Context)?
+        .sequence();
+    for truncated in [b"\x05".as_slice(), b"\x05\xef"] {
+        server_payload(&mut server, &mut connections, truncated, |_, _, _| {
+            panic!("truncated setview delivered an event")
+        })?;
+        assert_eq!(target, Some(0x1234));
+    }
+    // A later malformed operand does not undo a previously complete service.
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x05\x22\x11\x05",
+        |_, _, incoming| match incoming {
+            Incoming::SetView { entity } => target = Some(entity),
+            _ => panic!("malformed tail published more than its valid control prefix"),
+        },
+    )?;
+    assert_eq!(target, Some(0x1122));
+    assert_eq!(connections.command_errors, 3);
+    let frame = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?
+        .channel
+        .current_snapshot()
+        .ok_or(Error::Context)?;
+    assert_eq!(frame.sequence(), accepted);
+    assert_eq!(frame.time(), ThinkTime::Seconds(1.25));
+    Ok(())
+}
+
+#[test]
+fn nq_setview_intake_is_independent_between_connections_and_not_admitted_for_qw()
+-> Result<(), Error> {
+    let (mut first_server, _, mut first) = byte_connection(Protocol::NetQuake15)?;
+    let (mut second_server, _, mut second) = byte_connection(Protocol::NetQuake15)?;
+    let mut targets = [None, None];
+    server_payload(
+        &mut first_server,
+        &mut first,
+        b"\x05\x34\x12",
+        |_, _, incoming| {
+            let Incoming::SetView { entity } = incoming else {
+                panic!("first connection setview")
+            };
+            targets[0] = Some(entity);
+        },
+    )?;
+    assert_eq!(targets, [Some(0x1234), None]);
+    server_payload(
+        &mut second_server,
+        &mut second,
+        b"\x05\0\x80",
+        |_, _, incoming| {
+            let Incoming::SetView { entity } = incoming else {
+                panic!("second connection setview")
+            };
+            targets[1] = Some(entity);
+        },
+    )?;
+    assert_eq!(targets, [Some(0x1234), Some(0x8000)]);
+    assert_eq!((first.command_errors, second.command_errors), (0, 0));
+    let (mut qw_server, mut qw_commands, mut qw) = byte_connection(Protocol::QuakeWorld28)?;
+    qw_move(&mut qw, &mut qw_server, &mut qw_commands, true)?;
+    server_payload(
+        &mut qw_server,
+        &mut qw,
+        b"\x05\x34\x12",
+        |_, _, incoming| {
+            assert!(
+                matches!(incoming, Incoming::CommandProgress(_)),
+                "NQ setview support leaked into QW"
+            );
+        },
+    )?;
+    assert_eq!(qw.command_errors, 1);
+    Ok(())
+}
+
+#[test]
 fn nq_original_literal_time_and_version_services_have_distinct_native_meanings() -> Result<(), Error>
 {
     let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
