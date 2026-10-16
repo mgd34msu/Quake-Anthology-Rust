@@ -397,7 +397,123 @@ pub(crate) fn local_seat<'a>(
     Some((client, row, &runtime.prediction.get(seat)?.player))
 }
 
+pub struct EngineGraphicsAppend<'a> {
+    appends: Vec<crate::modules::renderer_contexts::Append<'a>>,
+}
+impl EngineGraphicsAppend<'_> {
+    pub fn commit(self) {
+        for append in self.appends {
+            append.commit();
+        }
+    }
+}
 impl FrameHost {
+    fn graphics_owners(
+        &self,
+    ) -> [Option<qa_render::shader::registration::ShaderOwner>; SeatId::COUNT] {
+        std::array::from_fn(|seat| {
+            let (client, row, _) = self.local_seat(seat)?;
+            Some(qa_render::shader::registration::ShaderOwner::Client(
+                client, row.entity,
+            ))
+        })
+    }
+    pub fn capture_graphics_owners(&mut self) {
+        let owners = self.graphics_owners();
+        if let Some(scene) = self.runtime.scene.as_mut() {
+            scene.graphics_owners(owners);
+        }
+    }
+    pub fn stage_engine_graphics<'a>(
+        &'a mut self,
+        console: &crate::renderer::console::ConsoleAssets,
+        huds: &[Option<crate::renderer::hud::HudAssets>; 5],
+    ) -> Result<(&'a mut qa_render::Assets, EngineGraphicsAppend<'a>), String> {
+        let owner = self
+            .runtime
+            .model_assets
+            .as_mut()
+            .ok_or("missing graphics assets")?;
+        let registrations = console
+            .registrations()
+            .map(|registration| (console.profile(), registration))
+            .chain(huds.iter().flatten().flat_map(|hud| {
+                hud.registrations()
+                    .map(move |registration| (hud.profile(), registration))
+            }));
+        for (profile, _) in registrations.clone() {
+            self.renderer_contexts.ensure_owner(
+                qa_render::shader::registration::ShaderOwner::Engine,
+                profile,
+                owner.assets(),
+                owner.shader_occurrence_budget(),
+                None,
+            )?;
+        }
+        let appends = self.renderer_contexts.stage_graphics(registrations)?;
+        let (assets, _) = owner.unpublished_assets()?;
+        Ok((assets, EngineGraphicsAppend { appends }))
+    }
+    pub(crate) fn prepare_graphics_contexts(&mut self) -> Result<(), String> {
+        let owners = self.graphics_owners();
+        let Some(scene) = self.runtime.scene.as_ref() else {
+            return Ok(());
+        };
+        let Some(owner) = self.runtime.model_assets.as_ref() else {
+            return Ok(());
+        };
+        for profile in scene.graphic_profiles() {
+            let handle = self.renderer_contexts.ensure_owner(
+                qa_render::shader::registration::ShaderOwner::Engine,
+                profile,
+                owner.assets(),
+                owner.shader_occurrence_budget(),
+                None,
+            )?;
+            scene.replay_graphics(&mut self.renderer_contexts, handle, profile)?;
+            for authority in owners.iter().flatten().copied() {
+                let qa_render::shader::registration::ShaderOwner::Client(client, _) = authority
+                else {
+                    continue;
+                };
+                let selected = self
+                    .runtime
+                    .client_resources
+                    .get(client.0 as usize)
+                    .and_then(Option::as_ref)
+                    .and_then(|resources| resources.state.models.profile());
+                if selected != Some(profile)
+                    && qa_render::shader::reference::NativeShaders::context(
+                        &self.renderer_contexts,
+                        authority,
+                        profile,
+                    )
+                    .is_none()
+                {
+                    continue;
+                }
+                let reset = self
+                    .runtime
+                    .client_resources
+                    .get(client.0 as usize)
+                    .and_then(Option::as_ref)
+                    .map(|resources| resources.state.completed_presentation_reset());
+                if reset == Some(None) {
+                    continue;
+                }
+                let handle = self.renderer_contexts.ensure_owner(
+                    authority,
+                    profile,
+                    owner.assets(),
+                    owner.shader_occurrence_budget(),
+                    reset.flatten().flatten(),
+                )?;
+                scene.replay_graphics(&mut self.renderer_contexts, handle, profile)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn native_shaders(&self) -> &dyn qa_render::shader::reference::NativeShaders {
         &self.renderer_contexts
     }
@@ -931,6 +1047,7 @@ impl FrameHost {
                 }
             }
         }
+        self.capture_graphics_owners();
         let mut composition = self.runtime.scene.take();
         source.render(
             composition.as_mut(),
@@ -1248,6 +1365,7 @@ impl FrameHost {
                 layout: resources.state.layout,
                 values: &self.runtime.catalog.hud.values,
                 localization: &self.runtime.localization,
+                client,
                 client_lifetime: row.entity,
                 style_interpolation: self
                     .console

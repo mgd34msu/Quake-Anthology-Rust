@@ -1,10 +1,10 @@
 //! One bitmap-glyph submission path for console and leased HUD text.
 use qa_console::presentation::Cell;
-use qa_render::{Draw2d, Frame, ShaderBindingId, Viewport};
+use qa_render::{Draw2d, Frame, Viewport, shader::reference::ShaderRef};
 
 #[derive(Clone, Copy, Debug)]
 pub struct BitmapFont {
-    pub shader: ShaderBindingId,
+    pub shader: ShaderRef,
     pub height: u32,
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -98,7 +98,7 @@ impl BitmapFont {
                 t + (bottom - y) / height * 0.0625,
             ],
             color,
-            shader: self.shader.into(),
+            shader: self.shader,
         });
         TextStats {
             glyphs: u32::from(accepted),

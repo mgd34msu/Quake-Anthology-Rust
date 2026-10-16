@@ -1,7 +1,7 @@
+use qa_app::model_assets::ModelAssets;
 use qa_app::renderer::{
     console::FontAssets,
     hud::{HudAssets, HudView},
-    text::BitmapFont,
 };
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
@@ -17,20 +17,36 @@ static LOCALIZATION: std::sync::LazyLock<qa_content::localization::Catalog> =
 #[allow(dead_code)]
 mod image_support;
 
-fn assets(rules: RuleSetId, width: u32) -> HudAssets {
-    HudAssets::from_font(
-        rules,
-        FontAssets {
-            font: Some(BitmapFont {
-                shader: ShaderBindingId(0),
-                height: 8,
-            }),
-            palette: None,
-            native: true,
-        },
-        width,
+fn assets(rules: RuleSetId, width: u32) -> (ModelAssets, HudAssets) {
+    // These layout fixtures share a real eight-pixel font independently of HUD rules.
+    let fixture = image_support::Fixture::new(&[(
+        "pics/conchars.pcx",
+        image_support::pcx_dimensions(128, 128, 1),
+    )]);
+    let mut render = Assets::load().unwrap();
+    let palette = image_support::palette(&mut render);
+    let mut owner = ModelAssets::new(render, [], [], Default::default()).unwrap();
+    owner
+        .adopt_palettes(
+            qa_app::render_settings::PaletteRegistrations::from_registered([
+                None,
+                None,
+                Some(palette),
+                Some(palette),
+                None,
+            ]),
+        )
+        .unwrap();
+    let font = FontAssets::load(
+        &fixture.vfs,
+        &mut owner,
+        RuleSetId::Quake2,
+        qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2),
     )
-    .unwrap()
+    .unwrap();
+    assert!(font.native);
+    let hud = HudAssets::from_font(rules, font, width).unwrap();
+    (owner, hud)
 }
 fn configs(layout: ConfigLayout) -> ConfigStrings {
     ConfigStrings::load((0..layout.count).map(|index| layout.capacity(index).unwrap())).unwrap()
@@ -54,6 +70,7 @@ fn view<'a>(
         time: EventTime::from_milliseconds(1000),
         style_time: ThinkTime::Milliseconds(100),
         server_frame: 0,
+        client: qa_core::primitives::ClientId(0),
         client_lifetime: qa_core::primitives::EntityId {
             slot: 0,
             generation: 0,
@@ -85,7 +102,8 @@ fn display_leases_draw_without_consumption_and_notifications_clip_to_the_seat() 
     let id = hud.notify[1].as_ref().unwrap().text.id();
     let layout = ConfigLayout::QUAKE;
     let configs = configs(layout);
-    let render_assets = Assets::load().unwrap();
+    let (render_owner, mut assets) = assets(RuleSetId::Quake, 128);
+    let render_assets = render_owner.assets();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     let viewport = Viewport {
@@ -94,7 +112,7 @@ fn display_leases_draw_without_consumption_and_notifications_clip_to_the_seat() 
         width: 64,
         height: 100,
     };
-    let stats = assets(RuleSetId::Quake, 128).append(
+    let stats = assets.append(
         &mut frame,
         &render_assets,
         view(&hud, &texts, &configs, &values, RuleSetId::Quake, layout),
@@ -102,6 +120,7 @@ fn display_leases_draw_without_consumption_and_notifications_clip_to_the_seat() 
             viewport,
             ..Refdef::default()
         },
+        qa_render::shader::reference::ShaderView::direct(),
     );
     assert_eq!(stats.glyphs, 10);
     assert_eq!(stats.expired, 1);
@@ -145,10 +164,11 @@ fn native_layout_uses_client_values_configstrings_and_known_operand_alignment() 
         )
         .unwrap();
     configs.set(100, b"value").unwrap();
-    let render_assets = Assets::load().unwrap();
+    let (render_owner, mut assets) = assets(RuleSetId::Quake2, 320);
+    let render_assets = render_owner.assets();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    let stats = assets(RuleSetId::Quake2, 320).append(
+    let stats = assets.append(
         &mut frame,
         &render_assets,
         view(&hud, &texts, &configs, &values, RuleSetId::Quake2, layout),
@@ -160,6 +180,7 @@ fn native_layout_uses_client_values_configstrings_and_known_operand_alignment() 
             },
             ..Refdef::default()
         },
+        qa_render::shader::reference::ShaderView::direct(),
     );
     assert_eq!(stats.glyphs, 12);
     assert_eq!(stats.unsupported, 0);
@@ -243,14 +264,14 @@ fn style_histories_are_client_owned_and_reset_on_lifetime_reuse() {
 fn picture_assets(
     rules: RuleSetId,
 ) -> (
-    Assets,
+    ModelAssets,
     HudAssets,
     [[ShaderBindingId; 11]; 2],
     ShaderBindingId,
 ) {
     use qa_render::assets::{MaterialSettings, Stage, StageTexture};
-    let mut render = Assets::load().unwrap();
-    let mut hud = assets(rules, 320);
+    let (mut owner, mut hud) = assets(rules, 320);
+    let render = owner.assets_mut();
     let image = render
         .register_image(16, 24, &vec![255; 16 * 24 * 4])
         .unwrap();
@@ -278,7 +299,7 @@ fn picture_assets(
                     qa_render::world::geometry::LightSource::TwoDimensional,
                 ))
                 .unwrap();
-            hud.register_picture(&mut render, &name, material).unwrap();
+            hud.register_picture(render, &name, material).unwrap();
             material
         })
     });
@@ -298,15 +319,16 @@ fn picture_assets(
             qa_render::world::geometry::LightSource::TwoDimensional,
         ))
         .unwrap();
-    hud.register_picture(&mut render, "pics/i_health.pcx", icon)
+    hud.register_picture(render, "pics/i_health.pcx", icon)
         .unwrap();
-    (render, hud, numbers, icon)
+    (owner, hud, numbers, icon)
 }
 
 #[test]
 fn native_icons_and_numeric_fields_keep_decimal_truncation_and_seat_clipping() {
     let rules = RuleSetId::Quake2;
-    let (render, mut assets, numbers, icon) = picture_assets(rules);
+    let (render_owner, mut assets, numbers, icon) = picture_assets(rules);
+    let render = render_owner.assets();
     let values = ValueLayout::load(&[]).unwrap();
     let mut hud = HudState::with_capacity(0, 0, 0, values.capacity());
     let native = values.native(rules);
@@ -343,6 +365,7 @@ fn native_icons_and_numeric_fields_keep_decimal_truncation_and_seat_clipping() {
             viewport,
             ..Refdef::default()
         },
+        qa_render::shader::reference::ShaderView::direct(),
     );
     assert_eq!(stats.pictures, 6);
     assert_eq!(stats.rejected, 0);
@@ -384,7 +407,8 @@ fn native_icons_and_numeric_fields_keep_decimal_truncation_and_seat_clipping() {
 #[test]
 fn hud_flash_clock_armor_zero_and_negative_ammo_keep_each_native_rule() {
     for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
-        let (render, mut assets, numbers, _) = picture_assets(rules);
+        let (render_owner, mut assets, numbers, _) = picture_assets(rules);
+        let render = render_owner.assets();
         let values = ValueLayout::load(&[]).unwrap();
         let mut hud = HudState::with_capacity(0, 0, 0, values.capacity());
         let native = values.native(rules);
@@ -414,6 +438,7 @@ fn hud_flash_clock_armor_zero_and_negative_ammo_keep_each_native_rule() {
                 },
                 ..Refdef::default()
             },
+            qa_render::shader::reference::ShaderView::direct(),
         );
         let packet = frame.finish();
         let materials: Vec<_> = packet
@@ -445,19 +470,23 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
     ]);
     let mut render = Assets::load().unwrap();
     let palette = image_support::palette(&mut render);
-    let mut assets = HudAssets::load(
-        &fixture.vfs,
-        &mut render,
-        RuleSetId::Quake2,
-        FontAssets {
-            font: None,
-            palette: Some(palette),
-            native: true,
-        },
-        qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2),
-        320,
-    )
-    .unwrap();
+    let mut owner = ModelAssets::new(render, [], [], Default::default()).unwrap();
+    owner
+        .adopt_palettes(
+            qa_app::render_settings::PaletteRegistrations::from_registered([
+                None,
+                None,
+                Some(palette),
+                Some(palette),
+                None,
+            ]),
+        )
+        .unwrap();
+    let settings = qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2);
+    let font = FontAssets::load(&fixture.vfs, &mut owner, RuleSetId::Quake2, settings).unwrap();
+    let mut assets =
+        HudAssets::load(&fixture.vfs, &mut owner, RuleSetId::Quake2, font, 320).unwrap();
+    let render = owner.assets();
     fixture.remove("pics/first.pcx");
     fixture.remove("pics/second.pcx");
     let values = ValueLayout::load(&[]).unwrap();
@@ -489,6 +518,7 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
                 },
                 ..Refdef::default()
             },
+            qa_render::shader::reference::ShaderView::direct(),
         );
         assert_eq!(stats.pictures, 1);
         assert_eq!(stats.rejected, 0);
@@ -530,8 +560,8 @@ fn localized_layout_text_uses_the_shared_catalog_and_native_alignment() {
     configs.set(100, b"$weapon").unwrap();
     configs.set(layout.statusbar().unwrap(),b"xl 100 yt 0 loc_string 1 \"$pickup\" \"$weapon\" xl 200 yt 16 loc_stat_rstring 2 xl 0 yt 32 loc_cstring2 0 \"$weapon\"").unwrap();
     let texts = TextStore::load(1, 1).unwrap();
-    let render = Assets::load().unwrap();
-    let mut assets = assets(rules, 320);
+    let (render_owner, mut assets) = assets(rules, 320);
+    let render = render_owner.assets();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     let mut input = view(&hud, &texts, &configs, &values, rules, layout);
@@ -548,6 +578,7 @@ fn localized_layout_text_uses_the_shared_catalog_and_native_alignment() {
             },
             ..Refdef::default()
         },
+        qa_render::shader::reference::ShaderView::direct(),
     );
     assert_eq!(stats.glyphs, 26);
     assert_eq!(stats.unsupported, 0);

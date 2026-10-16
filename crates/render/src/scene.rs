@@ -919,11 +919,17 @@ impl CommandList {
                 }
             }
         }
-        // Particle view ranges cannot move independently. Failed references are
-        // left unresolved and rejected by the same backend reference resolver.
+        // Keep each view's particle range stable while retiring failed choices
+        // before either the procedural or material-backed consumer can draw.
         for particle in &mut self.particles[..self.particle_count] {
+            if particle.alpha == 0 {
+                continue;
+            }
             if let Some(shader) = particle.shader.resolve(assets, native) {
                 particle.shader = ShaderRef::Resolved(shader);
+            } else {
+                particle.alpha = 0;
+                self.rejected += 1;
             }
         }
     }
@@ -1719,7 +1725,12 @@ fn source_shader(
                     binding.shader,
                     presentation.shader_registrations(),
                     shaders.context.and_then(|context| {
-                        shaders.native.world_nodes(context, surface.presentation)
+                        shaders.native.resource_nodes(
+                            context,
+                            crate::shader::registration::ShaderResource::World(
+                                surface.presentation.0,
+                            ),
+                        )
                     }),
                     ShaderDefault::Global(presentation.native_default()),
                 )?

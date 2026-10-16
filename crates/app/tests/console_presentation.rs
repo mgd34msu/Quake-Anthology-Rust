@@ -1,3 +1,4 @@
+use qa_app::model_assets::ModelAssets;
 use qa_app::renderer::console::ConsoleAssets;
 use qa_console::{
     editor::Editor,
@@ -32,21 +33,21 @@ fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {
     vfs.mount_product(std::path::Path::new(&root), 0).unwrap();
     assert!(vfs.open(b"pics/conchars.png").is_some());
     assert!(vfs.open(b"pics/conchars.pcx").is_none());
-    let mut assets = Assets::load().unwrap();
-    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
+    let assets = Assets::load().unwrap();
+    let mut owner = registered_assets(assets, Default::default());
     let font = qa_app::renderer::console::FontAssets::load(
         &vfs,
-        &mut assets,
+        &mut owner,
         RuleSetId::Quake2Rerelease,
-        &mut palettes,
         ImageSettings::native(RuleSetId::Quake2Rerelease),
     )
     .unwrap();
     assert!(font.native);
+    let assets = owner.assets();
     let material = assets
         .material(
             assets
-                .shader_binding(font.font.unwrap().shader)
+                .shader_binding(font.registration.unwrap().shader)
                 .unwrap()
                 .material,
         )
@@ -183,6 +184,15 @@ fn palette(assets: &mut Assets) -> qa_render::PaletteId {
         .unwrap()
 }
 
+fn registered_assets(
+    assets: Assets,
+    palettes: qa_app::render_settings::PaletteRegistrations,
+) -> ModelAssets {
+    let mut owner = ModelAssets::new(assets, [], [], Default::default()).unwrap();
+    owner.adopt_palettes(palettes).unwrap();
+    owner
+}
+
 #[test]
 fn native_fonts_and_backgrounds_become_shared_2d_packets_and_cpu_pixels() {
     for rules in RuleSetId::ALL {
@@ -190,19 +200,20 @@ fn native_fonts_and_backgrounds_become_shared_2d_packets_and_cpu_pixels() {
         root.native(rules);
         let mut assets = Assets::load().unwrap();
         let palette = (rules != RuleSetId::Quake3).then(|| palette(&mut assets));
-        let mut palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
+        let palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
             palette, palette, palette, palette, None,
         ]);
+        let mut owner = registered_assets(assets, palettes);
         let mut console = ConsoleAssets::load(
             &root.vfs(),
-            &mut assets,
+            &mut owner,
             rules,
-            &mut palettes,
             ImageSettings::native(rules),
             160,
             120,
         )
         .unwrap();
+        let assets = owner.assets();
         let mut front = FrontEnd::load(Limits::default()).unwrap();
         let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
         let mut editor = Editor::default();
@@ -226,6 +237,7 @@ fn native_fonts_and_backgrounds_become_shared_2d_packets_and_cpu_pixels() {
             160,
             120,
             true,
+            qa_render::shader::reference::ShaderView::direct(),
         );
         assert_eq!(counts.rejected, 0, "{rules:?}");
         assert_eq!(counts.backgrounds, 1);
@@ -273,7 +285,7 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
         let vfs = root.vfs();
         let mut assets = Assets::load().unwrap();
         let palette = palette(&mut assets);
-        let mut palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
+        let palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
             Some(palette),
             Some(palette),
             Some(palette),
@@ -281,22 +293,16 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
             None,
         ]);
         let settings = ImageSettings::native(rules);
-        let console =
-            ConsoleAssets::load(&vfs, &mut assets, rules, &mut palettes, settings, 160, 120)
-                .unwrap();
-        let hud = qa_app::renderer::console::FontAssets::load(
-            &vfs,
-            &mut assets,
-            rules,
-            &mut palettes,
-            settings,
-        )
-        .unwrap();
-        let console_font = console.font_assets().font.unwrap();
-        let hud_font = hud.font.unwrap();
-        let image = |font: qa_app::renderer::text::BitmapFont| {
+        let mut owner = registered_assets(assets, palettes);
+        let console = ConsoleAssets::load(&vfs, &mut owner, rules, settings, 160, 120).unwrap();
+        let hud =
+            qa_app::renderer::console::FontAssets::load(&vfs, &mut owner, rules, settings).unwrap();
+        let console_font = console.font_assets().registration.unwrap().shader;
+        let hud_font = hud.registration.unwrap().shader;
+        let assets = owner.assets();
+        let image = |shader: qa_render::ShaderBindingId| {
             let material = assets
-                .material(assets.shader_binding(font.shader).unwrap().material)
+                .material(assets.shader_binding(shader).unwrap().material)
                 .unwrap();
             assert_eq!(
                 material.stages[0].sampler.wrap,
@@ -358,18 +364,62 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
 
 #[test]
 fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
-    let mut assets = Assets::load().unwrap();
-    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
+    let mut owner = registered_assets(Assets::load().unwrap(), Default::default());
+    let vfs = Vfs::default();
     let mut console = ConsoleAssets::load(
-        &Vfs::default(),
-        &mut assets,
+        &vfs,
+        &mut owner,
         RuleSetId::Quake3,
-        &mut palettes,
         ImageSettings::native(RuleSetId::Quake3),
         160,
         120,
     )
     .unwrap();
+    let profile = console.profile();
+    let mut cpu = CpuBackend::load_with_assets(160, 120, owner.assets()).unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    owner.end_initial_registration();
+    let fallback = owner.catalog().native_default(profile).unwrap();
+    for name in [b"gfx/2d/bigchars".as_slice(), b"white", b"console"] {
+        let receipt = owner
+            .catalog()
+            .shader_outcome(
+                name,
+                profile,
+                qa_compat::services::ShaderLighting::TwoDimensional,
+            )
+            .unwrap();
+        assert_eq!(
+            receipt.defaulted,
+            Some(qa_render::NativeDefaultKind::MissingImage)
+        );
+        assert_ne!(receipt.shader, fallback);
+        let body = owner.assets().shader_binding(receipt.shader).unwrap();
+        assert!(
+            owner
+                .assets()
+                .material(body.material)
+                .unwrap()
+                .stages
+                .is_empty()
+        );
+    }
+    let admitted = owner.assets().counts();
+    vfs.take_lookup_count();
+    let cached = qa_app::renderer::console::FontAssets::load(
+        &vfs,
+        &mut owner,
+        RuleSetId::Quake3,
+        ImageSettings::native(RuleSetId::Quake3),
+    )
+    .unwrap();
+    assert!(!cached.native);
+    assert_eq!(cached.registration, console.font_assets().registration);
+    assert_eq!(owner.assets().counts(), admitted);
+    assert_eq!(vfs.take_lookup_count(), 0);
+    let assets = owner.assets();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     let mut editor = Editor::default();
@@ -388,6 +438,7 @@ fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
         160,
         120,
         true,
+        qa_render::shader::reference::ShaderView::direct(),
     );
     assert_eq!(closed.glyphs, 0);
     assert_eq!(frame.finish().commands().len(), 1);
@@ -406,11 +457,37 @@ fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
         160,
         120,
         true,
+        qa_render::shader::reference::ShaderView::direct(),
     );
     assert_eq!(missing.glyphs, 0);
     assert_eq!(missing.missing_font, 1);
-    assert_eq!(missing.missing_background, 1);
-    assert!(missing.rejected >= 2);
+    assert_eq!(missing.missing_background, 0);
+    assert_eq!(missing.backgrounds, 1);
+    assert_eq!(missing.rejected, 1);
+    let packet = frame.finish();
+    let graphics: Vec<_> = packet
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            Command::Draw2d(draw) => Some(draw),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        graphics.len(),
+        2,
+        "fallback background and red console edge only"
+    );
+    assert!(
+        graphics
+            .iter()
+            .all(|draw| draw.shader.source(&()) == Some(fallback))
+    );
+    assert_eq!(cpu.render(&packet, assets).rejected, 0);
+    assert_eq!(cpu.pixels()[0], u32::from_le_bytes([255; 4]));
+    assert_eq!(cpu.pixels()[30 * 160 + 80], u32::from_le_bytes([4; 4]));
+    assert_eq!(assets.counts(), admitted);
+    assert_eq!(vfs.take_lookup_count(), 0);
 }
 
 #[test]
@@ -420,23 +497,24 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
         root.native(rules);
         let mut assets = Assets::load().unwrap();
         let palette = palette(&mut assets);
-        let mut palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
+        let palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
             Some(palette),
             Some(palette),
             Some(palette),
             Some(palette),
             None,
         ]);
+        let mut owner = registered_assets(assets, palettes);
         let mut console = ConsoleAssets::load(
             &root.vfs(),
-            &mut assets,
+            &mut owner,
             rules,
-            &mut palettes,
             ImageSettings::native(rules),
             160,
             120,
         )
         .unwrap();
+        let assets = owner.assets_mut();
         let mut editor = Editor::default();
         editor.toggle(SeatId::FIRST);
         let texts = TextStore::load(1, 64).unwrap();
@@ -454,7 +532,15 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
             let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
             assert_eq!(
                 console
-                    .append(&mut frame, &assets, view(), 160, 120, software)
+                    .append(
+                        &mut frame,
+                        &assets,
+                        view(),
+                        160,
+                        120,
+                        software,
+                        qa_render::shader::reference::ShaderView::direct()
+                    )
                     .rejected,
                 0
             );
@@ -548,4 +634,227 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
             assert!(front.recycle(packet).is_ok());
         }
     }
+}
+
+#[test]
+fn shared_native_bitmap_name_keeps_console_opaque_and_hud_index255_transparent() {
+    use qa_app::{
+        Runtime,
+        host::FrameHost,
+        renderer::hud::{HudAssets, HudView},
+    };
+    use qa_console::{commands::Console, views::Context};
+    use qa_core::{
+        configstrings::{ConfigLayout, ConfigStrings},
+        primitives::{ClientId, EntityId, HudState, ThinkTime},
+    };
+    use qa_render::{
+        Refdef, Viewport,
+        shader::{
+            reference::{ShaderRef, ShaderView},
+            registration::{ShaderOwner, ShaderResource},
+        },
+    };
+    use qa_session::timing::TickRate;
+    use qa_ui::values::ValueLayout;
+
+    let root = Fixture::new();
+    root.native(RuleSetId::Quake2);
+    root.pcx("pics/conback.pcx", 16, 16, &[255; 16 * 16]);
+    let vfs = root.vfs();
+    let mut assets = Assets::load().unwrap();
+    let palette = palette(&mut assets);
+    let mut owner = registered_assets(
+        assets,
+        qa_app::render_settings::PaletteRegistrations::from_registered([
+            None,
+            None,
+            Some(palette),
+            Some(palette),
+            None,
+        ]),
+    );
+    let mut console = ConsoleAssets::load(
+        &vfs,
+        &mut owner,
+        RuleSetId::Quake2,
+        ImageSettings::native(RuleSetId::Quake2),
+        160,
+        120,
+    )
+    .unwrap();
+    let profile = console.profile();
+    let hud = HudAssets::load(
+        &vfs,
+        &mut owner,
+        RuleSetId::Quake2,
+        console.font_assets(),
+        160,
+    )
+    .unwrap();
+    let mut huds = std::array::from_fn(|_| None);
+    huds[RuleSetId::Quake2 as usize] = Some(hud);
+    let mut runtime = Runtime::load(1, []).unwrap();
+    runtime.vfs = vfs;
+    runtime.model_assets = Some(owner);
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    let (assets, staged) = host.stage_engine_graphics(&console, &huds).unwrap();
+    let mut cpu = CpuBackend::load_with_assets(160, 120, assets).unwrap();
+    staged.commit();
+    host.publish_model_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    host.bind_client_model_assets([]);
+    let context = host
+        .native_shaders()
+        .context(ShaderOwner::Engine, profile)
+        .unwrap();
+    let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+    let key = assets.find_name("pics/conback").unwrap();
+    let nodes = host
+        .native_shaders()
+        .resource_nodes(context, ShaderResource::Graphic(key))
+        .unwrap();
+    assert_eq!(nodes.len(), 1);
+
+    let values = ValueLayout::load(&[]).unwrap();
+    let hud_state = HudState::with_capacity(0, 0, 0, values.capacity());
+    let layout = ConfigLayout::QUAKE2;
+    let mut configs =
+        ConfigStrings::load((0..layout.count).map(|i| layout.capacity(i).unwrap())).unwrap();
+    configs
+        .set(layout.statusbar().unwrap(), b"xl 16 yt 16 picn conback")
+        .unwrap();
+    let localization = qa_content::localization::Catalog::default();
+    let texts = TextStore::load(1, 64).unwrap();
+    let log = Scrollback::default();
+    let mut editor = Editor::default();
+    editor.toggle(SeatId::FIRST);
+    let clear = u32::from_le_bytes([3, 5, 7, 255]);
+    let mut direct = None;
+    let mut physical = None;
+    host.runtime.vfs.take_lookup_count();
+    for native in [false, true] {
+        let shaders = if native {
+            ShaderView {
+                native: host.native_shaders(),
+                context: Some(context),
+            }
+        } else {
+            ShaderView::direct()
+        };
+        let mut front = FrontEnd::load(Limits::default()).unwrap();
+        let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
+        let counts = console.append(
+            &mut frame,
+            assets,
+            ConsoleView {
+                editor: &editor,
+                scrollback: &log,
+                texts: &texts,
+                rules: RuleSetId::Quake2,
+                time: EventTime(0),
+            },
+            160,
+            120,
+            true,
+            shaders,
+        );
+        assert_eq!((counts.backgrounds, counts.rejected), (1, 0));
+        let mut packet = frame.finish();
+        let console_shader = packet
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                Command::Draw2d(draw) if draw.rect[2] == 160.0 => Some(draw.shader),
+                _ => None,
+            })
+            .unwrap();
+        packet.resolve_shaders(assets, host.native_shaders());
+        assert_eq!(cpu.render(&packet, assets).rejected, 0);
+        let console_pixels = cpu.pixels().to_vec();
+        assert_eq!(
+            console_pixels[20 * 160 + 20],
+            u32::from_le_bytes([0, 0, 0, 255])
+        );
+        assert!(front.recycle(packet).is_ok());
+
+        let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
+        let counts = huds[RuleSetId::Quake2 as usize].as_mut().unwrap().append(
+            &mut frame,
+            assets,
+            HudView {
+                hud: &hud_state,
+                texts: &texts,
+                configs: &configs,
+                layout,
+                values: &values,
+                localization: &localization,
+                rules: RuleSetId::Quake2,
+                time: EventTime(0),
+                style_time: ThinkTime::Milliseconds(0),
+                server_frame: 0,
+                client: ClientId(0),
+                client_lifetime: EntityId {
+                    slot: 0,
+                    generation: 1,
+                },
+                style_interpolation: 0,
+                show_text: true,
+            },
+            Refdef {
+                viewport: Viewport {
+                    width: 160,
+                    height: 120,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            shaders,
+        );
+        assert_eq!(
+            (counts.pictures, counts.missing_picture, counts.rejected),
+            (1, 0, 0)
+        );
+        let mut packet = frame.finish();
+        let hud_shader = packet
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                Command::Draw2d(draw) if draw.rect[2] == 16.0 => Some(draw.shader),
+                _ => None,
+            })
+            .unwrap();
+        packet.resolve_shaders(assets, host.native_shaders());
+        assert_eq!(cpu.render(&packet, assets).rejected, 0);
+        assert!(cpu.pixels().iter().all(|&pixel| pixel == clear));
+        let pixels = (console_pixels, cpu.pixels().to_vec());
+        if native {
+            assert_eq!(direct.as_ref(), Some(&pixels));
+        } else {
+            direct = Some(pixels);
+        }
+        let bodies = (
+            console_shader.source(host.native_shaders()).unwrap(),
+            hud_shader.source(host.native_shaders()).unwrap(),
+        );
+        assert_ne!(bodies.0, bodies.1);
+        if native {
+            let reference = |shader| match shader {
+                ShaderRef::Surface { reference, .. } => reference,
+                _ => panic!("converted bitmap lost native name membership"),
+            };
+            assert_eq!(reference(console_shader), reference(hud_shader));
+            assert_eq!(reference(hud_shader).node, nodes[0]);
+            assert_eq!(physical, Some(bodies));
+        } else {
+            physical = Some(bodies);
+        }
+    }
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
 }

@@ -3,12 +3,17 @@ pub mod console;
 pub mod hud;
 pub(crate) mod native;
 pub mod text;
+use crate::model_assets::ModelProfile;
 use crate::{
     client_scene::{ClientSceneInput, SceneCounts},
     host::ClientView,
 };
 use qa_core::{math::angle_vectors, sys_events::SeatId};
 use qa_platform::{Stopwatch, Window, WorkerError, Workers};
+use qa_render::shader::{
+    reference::{NativeShaders, ShaderView},
+    registration::ShaderOwner,
+};
 use qa_render::{
     Assets, BackendStats, BlendPhase, FrontEnd, Limits, Refdef, Viewport,
     cpu::{CpuBackend, CpuLimits, RasterBands, RasterConfig, run_cpu_job},
@@ -307,6 +312,7 @@ pub struct SceneComposer {
     frame: Option<qa_render::scene::Frame>,
     publisher: Option<qa_core::primitives::ModuleId>,
     native_owned: [bool; SeatId::COUNT],
+    graphics_owners: [Option<ShaderOwner>; SeatId::COUNT],
     native_axes: [Option<[qa_core::primitives::Vec3; 3]>; SeatId::COUNT],
     kind: Kind,
     beam: qa_render::ShaderBindingId,
@@ -389,8 +395,59 @@ impl SceneComposer {
     pub fn has_hud(&self, rules: qa_core::primitives::RuleSetId) -> bool {
         self.hud[rules as usize].is_some()
     }
-    pub fn hud_font(&self, rules: qa_core::primitives::RuleSetId) -> Option<console::FontAssets> {
+    pub fn hud_font(
+        &self,
+        rules: qa_core::primitives::RuleSetId,
+    ) -> Option<std::sync::Arc<console::FontAssets>> {
         self.console.as_ref()?.font_for(rules)
+    }
+    pub(crate) fn graphics_owners(&mut self, owners: [Option<ShaderOwner>; SeatId::COUNT]) {
+        self.graphics_owners = owners;
+    }
+    pub(crate) fn graphic_profiles(&self) -> impl Iterator<Item = ModelProfile> + Clone {
+        self.console
+            .iter()
+            .map(console::ConsoleAssets::profile)
+            .chain(self.hud.iter().enumerate().filter_map(|(index, hud)| {
+                let profile = hud.as_ref()?.profile();
+                (!self
+                    .console
+                    .as_ref()
+                    .is_some_and(|console| console.profile() == profile)
+                    && !self.hud[..index]
+                        .iter()
+                        .flatten()
+                        .any(|previous| previous.profile() == profile))
+                .then_some(profile)
+            }))
+    }
+    pub(crate) fn graphic_registrations(
+        &self,
+    ) -> impl Iterator<Item = (ModelProfile, &qa_render::ShaderRegistration)> + Clone {
+        self.console
+            .iter()
+            .flat_map(|console| {
+                console
+                    .registrations()
+                    .map(move |registration| (console.profile(), registration))
+            })
+            .chain(self.hud.iter().flatten().flat_map(|hud| {
+                hud.registrations()
+                    .map(move |registration| (hud.profile(), registration))
+            }))
+    }
+    pub(crate) fn replay_graphics(
+        &self,
+        contexts: &mut crate::modules::renderer_contexts::Contexts,
+        handle: qa_render::shader::reference::ShaderContextId,
+        profile: ModelProfile,
+    ) -> Result<(), String> {
+        contexts.replay_graphics(
+            handle,
+            self.graphic_registrations()
+                .filter(move |(owner, _)| *owner == profile)
+                .map(|(_, registration)| registration),
+        )
     }
     pub fn append_hud(
         &mut self,
@@ -398,9 +455,17 @@ impl SceneComposer {
         assets: &Assets,
         view: hud::HudView<'_>,
         refdef: Refdef,
+        native: &dyn NativeShaders,
+        owner: ShaderOwner,
     ) -> hud::HudStats {
         match self.hud[view.rules as usize].as_mut() {
-            Some(hud) => hud.append(frame, assets, view, refdef),
+            Some(hud) => {
+                let profile = hud.profile();
+                let context = native
+                    .context(owner, profile)
+                    .or_else(|| native.context(ShaderOwner::Engine, profile));
+                hud.append(frame, assets, view, refdef, ShaderView { native, context })
+            }
             None => hud::HudStats {
                 missing_font: u32::from(view.show_text),
                 ..Default::default()
@@ -415,11 +480,29 @@ impl SceneComposer {
         width: u32,
         height: u32,
         software: bool,
+        native: &dyn NativeShaders,
     ) -> console::ConsoleStats {
+        let authority = view
+            .editor
+            .seat()
+            .and_then(|seat| self.graphics_owners[seat.index()]);
         self.console
             .as_mut()
             .map_or_else(Default::default, |console| {
-                console.append(frame, assets, view, width, height, software)
+                let profile = console.profile();
+                let owner = authority
+                    .filter(|&owner| native.context(owner, profile).is_some())
+                    .unwrap_or(ShaderOwner::Engine);
+                let context = native.context(owner, profile);
+                console.append(
+                    frame,
+                    assets,
+                    view,
+                    width,
+                    height,
+                    software,
+                    ShaderView { native, context },
+                )
             })
     }
 
@@ -492,6 +575,7 @@ impl SceneComposer {
                 publisher: None,
                 native_owned: [false; SeatId::COUNT],
                 native_axes: [None; SeatId::COUNT],
+                graphics_owners: [None; SeatId::COUNT],
                 kind: Kind::Cpu,
                 beam,
                 beam_alpha,
@@ -965,7 +1049,14 @@ impl Renderer {
                     rejected += 1;
                 }
                 if let Some(hud) = hud[seat] {
-                    self.sample.hud += composition.append_hud(frame, resources.assets, hud, refdef);
+                    self.sample.hud += composition.append_hud(
+                        frame,
+                        resources.assets,
+                        hud,
+                        refdef,
+                        native,
+                        ShaderOwner::Client(hud.client, hud.client_lifetime),
+                    );
                 }
             }
         });
@@ -976,6 +1067,7 @@ impl Renderer {
             self.width,
             self.height,
             matches!(self.kind, Kind::Cpu),
+            native,
         );
         rejected += self.sample.console.rejected;
         rejected += self.sample.hud.rejected;

@@ -24,7 +24,7 @@ use qa_app::{
     map::SpawnAnchor,
     model_assets::{ModelAssets, ModelRequest},
     modules::{Export, ModuleResult, Q3Spec, State, load_q3},
-    renderer::{SceneComposer, hud::HudView},
+    renderer::{Renderer, SceneComposer, console::ConsoleAssets, hud::HudView},
 };
 use qa_audio::{Bank, Listener, Mixer};
 use qa_compat::services::ModelLookup;
@@ -38,13 +38,15 @@ use qa_formats::program::qvm::Opcode;
 use qa_network::{channel::commands::write_gamestate, commands::packet::Protocol};
 use qa_render::{Assets, Limits, scene::Command};
 use qa_session::timing::TickRate;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 const INITIAL: u32 = 0x4000;
 const INLINE: u32 = 0x4004;
 const CLIENT: u32 = 0x4008;
 const SOUND: u32 = 0x400c;
 const PATH: u32 = 0x4018;
+const GRAPHICS_HANDLE: u32 = 0x4020;
+const GRAPHICS_TEXT: u32 = 0x4740;
 const INIT_TEXT: u32 = 0x4200;
 const STOP_TEXT: u32 = 0x4220;
 const ERROR_TEXT: u32 = 0x4240;
@@ -69,6 +71,7 @@ fn data() -> Vec<u8> {
         (STOP_TEXT, b"restart shutdown\n\0".as_slice()),
         (UI_INIT_TEXT, b"renderer ui init\n\0".as_slice()),
         (UI_STOP_TEXT, b"renderer ui shutdown\n\0".as_slice()),
+        (GRAPHICS_TEXT, b"graphics/after-engine\0".as_slice()),
         (
             ERROR_TEXT,
             b"restart did not recreate pristine memory\0".as_slice(),
@@ -148,6 +151,9 @@ fn qvm_file() -> Vec<u8> {
     qvm_role(false, false)
 }
 fn qvm_role(ui: bool, fail_shutdown: bool) -> Vec<u8> {
+    qvm_role_with_graphics(ui, fail_shutdown, false)
+}
+fn qvm_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<u8> {
     use Opcode::*;
     let mut ops = vec![(Enter, 64)];
     let mut branches = Vec::new();
@@ -164,9 +170,23 @@ fn qvm_role(ui: bool, fail_shutdown: bool) -> Vec<u8> {
                 1 => {
                     qvm_check(&mut ops, INITIAL, 7, 0);
                     qvm_check(&mut ops, BSS, 0, 0);
+                    if graphics {
+                        // Engine font, white, and console own the first three
+                        // real registrations before this guest shader.
+                        ops.push((Const, GRAPHICS_HANDLE as i32));
+                        qvm_call(&mut ops, 20, &[ImportArg::Pointer(GRAPHICS_TEXT)]);
+                        ops.push((Store4, 0));
+                        qvm_check(&mut ops, GRAPHICS_HANDLE, 4, 0);
+                    }
                     qvm_call(&mut ops, 1, &[ImportArg::Pointer(UI_INIT_TEXT)]);
                 }
                 2 => {
+                    if graphics {
+                        ops.push((Const, GRAPHICS_HANDLE as i32));
+                        qvm_call(&mut ops, 20, &[ImportArg::Pointer(GRAPHICS_TEXT)]);
+                        ops.push((Store4, 0));
+                        qvm_check(&mut ops, GRAPHICS_HANDLE, 4, 0);
+                    }
                     qvm_call(&mut ops, 1, &[ImportArg::Pointer(UI_STOP_TEXT)]);
                     ops.push((Pop, 0));
                     if fail_shutdown {
@@ -188,8 +208,27 @@ fn qvm_role(ui: bool, fail_shutdown: bool) -> Vec<u8> {
                         (Store4, 0),
                         (Const, 0),
                     ]);
+                    if graphics {
+                        ops.push((Pop, 0));
+                        qvm_call(
+                            &mut ops,
+                            27,
+                            &[
+                                ImportArg::Integer(0),
+                                ImportArg::Integer(0),
+                                ImportArg::Integer(2f32.to_bits()),
+                                ImportArg::Integer(2f32.to_bits()),
+                                ImportArg::Integer(0),
+                                ImportArg::Integer(0),
+                                ImportArg::Integer(1f32.to_bits()),
+                                ImportArg::Integer(1f32.to_bits()),
+                                ImportArg::Word(GRAPHICS_HANDLE),
+                            ],
+                        );
+                    }
                 }
                 7 => ops.extend([(Const, INITIAL as i32), (Load4, 0)]),
+                8 if graphics => ops.extend([(Const, GRAPHICS_HANDLE as i32), (Load4, 0)]),
                 10 => ops.extend([(Const, BSS as i32), (Load4, 0)]),
                 _ => ops.push((Const, 0)),
             }
@@ -318,6 +357,10 @@ fn native_file() -> Vec<u8> {
 }
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn native_role(ui: bool, fail_shutdown: bool) -> Vec<u8> {
+    native_role_with_graphics(ui, fail_shutdown, false)
+}
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn native_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<u8> {
     use native_image::*;
     let mut file = lifecycle::elf_lifecycle_file();
     // Retain the shared fixture's real ELF constructor/finalizer chain, but
@@ -419,11 +462,20 @@ fn native_role(ui: bool, fail_shutdown: bool) -> Vec<u8> {
                     // The same fresh native child constructor already checks
                     // initialized/BSS storage before dllEntry and this UI_INIT.
                     code.extend([0x48, 0x83, 0xec, 8]);
+                    if graphics {
+                        call(&mut code, 20, &[ImportArg::Pointer(GRAPHICS_TEXT)], base);
+                        rip(&mut code, &[0x89, 0x05], GRAPHICS_HANDLE, base);
+                        code.extend([0x83, 0xf8, 4, 0x74, 2, 0x0f, 0x0b]);
+                    }
                     call(&mut code, 1, &[ImportArg::Pointer(UI_INIT_TEXT)], base);
                     code.extend([0x48, 0x83, 0xc4, 8, 0x31, 0xc0, 0xc3]);
                 }
                 2 => {
                     code.extend([0x48, 0x83, 0xec, 8]);
+                    if graphics {
+                        call(&mut code, 20, &[ImportArg::Pointer(GRAPHICS_TEXT)], base);
+                        code.extend([0x83, 0xf8, 4, 0x74, 2, 0x0f, 0x0b]);
+                    }
                     call(&mut code, 1, &[ImportArg::Pointer(UI_STOP_TEXT)], base);
                     if fail_shutdown {
                         call(&mut code, 0, &[ImportArg::Pointer(ERROR_TEXT)], base);
@@ -439,7 +491,35 @@ fn native_role(ui: bool, fail_shutdown: bool) -> Vec<u8> {
                     let adjusted = i32::from_le_bytes(code[displacement..].try_into().unwrap()) - 4;
                     code[displacement..].copy_from_slice(&adjusted.to_le_bytes());
                     code.extend(99u32.to_le_bytes());
+                    if graphics {
+                        // Variadic integer ABI: five register arguments, then
+                        // t1/s2/t2 and the actual returned shader on the stack.
+                        code.extend([0x48, 0x83, 0xec, 40]);
+                        code.extend([0x48, 0xc7, 0x04, 0x24, 0, 0, 0, 0]);
+                        for offset in [8, 16] {
+                            code.extend([0x48, 0xc7, 0x44, 0x24, offset]);
+                            code.extend(1f32.to_bits().to_le_bytes());
+                        }
+                        rip(&mut code, &[0x8b, 0x05], GRAPHICS_HANDLE, base);
+                        code.extend([0x48, 0x89, 0x44, 0x24, 24, 0x45, 0x31, 0xc9]);
+                        call(
+                            &mut code,
+                            27,
+                            &[
+                                ImportArg::Integer(0),
+                                ImportArg::Integer(0),
+                                ImportArg::Integer(2f32.to_bits()),
+                                ImportArg::Integer(2f32.to_bits()),
+                            ],
+                            base,
+                        );
+                        code.extend([0x48, 0x83, 0xc4, 40]);
+                    }
                     code.extend([0x31, 0xc0, 0xc3]);
+                }
+                8 if graphics => {
+                    rip(&mut code, &[0x8b, 0x05], GRAPHICS_HANDLE, base);
+                    code.push(0xc3);
                 }
                 7 | 10 => {
                     rip(
@@ -722,6 +802,19 @@ fn setup_renderers(
     [ClientId; 2],
     [EntityId; 2],
 ) {
+    setup_renderers_with_graphics(module, ui, false)
+}
+fn setup_renderers_with_graphics(
+    module: Vec<u8>,
+    ui: Option<Vec<u8>>,
+    graphics: bool,
+) -> (
+    files::Fixture,
+    FrameHost,
+    Source,
+    [ClientId; 2],
+    [EntityId; 2],
+) {
     let has_ui = ui.is_some();
     let mut entries = vec![
         ("vm/restart", module),
@@ -732,6 +825,12 @@ fn setup_renderers(
     ];
     if let Some(ui) = ui {
         entries.push(("vm/ui", ui));
+    }
+    if graphics {
+        entries.push((
+            "scripts/engine-graphics.shader",
+            b"gfx/2d/bigchars { { map $whiteimage } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\ngraphics/after-engine { { map $whiteimage } }\n".to_vec(),
+        ));
     }
     let mut fixture = files::Fixture::new(&entries);
     let mut runtime = Runtime::load(2, []).unwrap();
@@ -801,7 +900,18 @@ fn setup_renderers(
             ]),
         )
         .unwrap();
-    let backend = asset_frames::Source::load(owner.assets());
+    let console = graphics.then(|| {
+        ConsoleAssets::load(
+            &runtime.vfs,
+            &mut owner,
+            RuleSetId::Quake3,
+            qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+            64,
+            48,
+        )
+        .unwrap()
+    });
+    let mut backend = asset_frames::Source::load(owner.assets());
     runtime.model_assets = Some(owner);
     runtime.scene = Some(scene);
     let mut host = FrameHost::load_modules(
@@ -813,6 +923,48 @@ fn setup_renderers(
     .unwrap();
     host.local_clients[0] = Some(ids[0]);
     host.local_clients[1] = Some(ids[1]);
+    if let Some(console) = console {
+        let mut defaults = [None; 5];
+        defaults[RuleSetId::Quake3 as usize] = Some(profile);
+        host.configure_native_scenes(&defaults, &[[None; 5]; SeatId::COUNT], 64, 48)
+            .unwrap();
+        let effects = qa_render::effects::Effects::load(
+            Arc::new(qa_core::effects::EffectCatalog::new(
+                Box::default(),
+                [None; 5],
+            )),
+            Limits::default().particles / SeatId::COUNT,
+            SeatId::COUNT,
+            &[None],
+        )
+        .unwrap();
+        let configuration = Arc::new(qa_core::presentation::RendererConfiguration {
+            display: qa_core::presentation::DisplayConfiguration {
+                width: 64,
+                height: 48,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let huds = std::array::from_fn(|_| None);
+        let (assets, staged) = host.stage_engine_graphics(&console, &huds).unwrap();
+        let (renderer, scene) = Renderer::load(
+            qa_app::renderer::Context::Cpu(configuration),
+            64,
+            48,
+            assets,
+            vec![],
+            Some(qa_render::cpu::RasterBands::One),
+            console,
+            huds,
+            effects,
+        )
+        .unwrap();
+        staged.commit();
+        host.runtime.scene = Some(scene);
+        backend = asset_frames::Source::load(host.runtime.model_assets.as_ref().unwrap().assets());
+        assert_eq!(renderer.admitted_assets(), backend.cpu.admitted_assets());
+    }
     host.publish_model_admission(backend.cpu.admitted_assets().unwrap())
         .unwrap();
     host.bind_client_model_assets(ids.map(|id| (id, profile, None)));
@@ -1455,19 +1607,32 @@ fn verify_standalone_ui(ui: Vec<u8>) {
 }
 
 fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
-    let (_fixture, mut host, mut source, ids, _) = setup_renderers(module, Some(ui));
+    let (_fixture, mut host, mut source, ids, _) =
+        setup_renderers_with_graphics(module, Some(ui), true);
     // Both real cgame requests deliberately precede both UI requests. UI owns
     // no CLIENT service binding and needs no gamestate to initialize menus.
     // The renderer must also tolerate an optional resource owner not yet bound.
     let resources = host.runtime.client_resources[ids[0].0 as usize].take();
-    host.initialize_modules(qa_app::modules::Phase::Client);
+    host.initialize_modules_with_driver(qa_app::modules::Phase::Client, &mut source.driver());
     host.runtime.client_resources[ids[0].0 as usize] = resources;
     for module in [ModuleId(1), ModuleId(2)] {
         assert_eq!(host.module_state(module), Some(State::Pending));
     }
     for module in [ModuleId(3), ModuleId(4)] {
-        assert_eq!(host.module_state(module), Some(State::Running));
+        assert_eq!(
+            host.module_state(module),
+            Some(State::Running),
+            "module {}, counts {:?}, console: {}",
+            module.0,
+            host.module_counts(module),
+            host.console
+                .scrollback
+                .chunks(&host.runtime.server.events.texts)
+                .map(String::from_utf8_lossy)
+                .collect::<String>(),
+        );
         assert_eq!(ui_query(&mut host, module, 7), Ok(7));
+        assert_eq!(ui_query(&mut host, module, 8), Ok(4));
     }
     let mut replacement = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     replacement.rules = RuleSetId::Quake2;
@@ -1491,6 +1656,24 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
         assert_eq!(host.module_state(module), Some(State::Running));
     }
     assert_eq!(&renderer_markers(&host)[before..], b"uuUUCC");
+    for module in [ModuleId(3), ModuleId(4)] {
+        assert_eq!(ui_query(&mut host, module, 8), Ok(4));
+    }
+    let profile = host
+        .runtime
+        .scene
+        .as_ref()
+        .unwrap()
+        .hud_font(RuleSetId::Quake3)
+        .unwrap()
+        .profile;
+    let owners = ids.map(|client| {
+        qa_render::shader::registration::ShaderOwner::Client(
+            client,
+            host.runtime.server.clients[client.0 as usize].entity,
+        )
+    });
+    let contexts = owners.map(|owner| host.native_shaders().context(owner, profile).unwrap());
     let peer_frames = ui_query(&mut host, ModuleId(4), 10).unwrap();
     let before = renderer_markers(&host).len();
     source.reject_reset = Some(ids[0]);
@@ -1502,6 +1685,10 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
     assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
     assert_eq!(host.module_state(ModuleId(3)), Some(State::Pending));
     assert_eq!(&renderer_markers(&host)[before..], b"cu");
+    assert_eq!(
+        host.native_shaders().context(owners[1], profile),
+        Some(contexts[1])
+    );
     queue_gamestate(&mut host, ids[0], "c", 33, false);
     source.step(&mut host);
     assert_eq!(&renderer_markers(&host)[before..], b"cu");
@@ -1511,6 +1698,16 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
     assert_eq!(&renderer_markers(&host)[before..], b"cuUC");
     assert_eq!(query(&mut host, ModuleId(1), 9), Ok(33));
     assert_eq!(host.module_state(ModuleId(3)), Some(State::Running));
+    assert_eq!(ui_query(&mut host, ModuleId(3), 8), Ok(4));
+    assert_eq!(ui_query(&mut host, ModuleId(4), 8), Ok(4));
+    assert_ne!(
+        host.native_shaders().context(owners[0], profile),
+        Some(contexts[0])
+    );
+    assert_eq!(
+        host.native_shaders().context(owners[1], profile),
+        Some(contexts[1])
+    );
     for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
         assert_eq!(host.module_counts(module).unwrap().traps, 0);
     }
@@ -1595,7 +1792,7 @@ fn main() {
         std::process::exit(status);
     }
     verify_standalone_ui(qvm_role(true, false));
-    verify_renderer_lifecycle(qvm_file(), qvm_role(true, false));
+    verify_renderer_lifecycle(qvm_file(), qvm_role_with_graphics(true, false, true));
     verify_ui_shutdown_failure_isolation(qvm_file(), qvm_role(true, true));
     verify_ui_association_replacement(qvm_file(), qvm_role(true, false));
     println!("actual load_q3 QVM shared UI/cgame renderer lifecycle passed");
@@ -1606,7 +1803,7 @@ fn main() {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         verify_standalone_ui(native_role(true, false));
-        verify_renderer_lifecycle(native_file(), native_role(true, false));
+        verify_renderer_lifecycle(native_file(), native_role_with_graphics(true, false, true));
         verify_ui_shutdown_failure_isolation(native_file(), native_role(true, true));
         verify_ui_association_replacement(native_file(), native_role(true, false));
         println!("actual load_q3 owned-native shared UI/cgame renderer lifecycle passed");

@@ -1,9 +1,10 @@
 //! Load-only shader definitions for the one shared material table.
 //! Native grammar: qsrc quake-iii-arena/code/renderer/tr_shader.c.
 pub mod context;
-pub mod reference;
 mod lexer;
 mod parse;
+pub mod reference;
+pub mod registration;
 pub use crate::assets::DepthFunc;
 pub use parse::parse_sources;
 pub use qa_core::names::canonical_path;

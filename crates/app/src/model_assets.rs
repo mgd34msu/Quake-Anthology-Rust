@@ -70,16 +70,7 @@ impl<'a> ModelRequest<'a> {
     }
 }
 
-/// File provenance and presentation are explicit registration choices. They
-/// never alter the filename's exact NameId or the shared decoded mesh.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ModelProfile {
-    pub source_rules: RuleSetId,
-    pub rules: RuleSetId,
-    pub source_palette: Option<PaletteId>,
-    pub palette: Option<PaletteId>,
-    pub image_settings: ImageSettings,
-}
+pub use qa_render::shader::registration::{ModelProfile, ShaderResource};
 
 /// Cold world policies are explicit and independent of BSP decoding.
 pub struct WorldRegistration {
@@ -531,12 +522,10 @@ struct ModelPolicy {
     source: ModelSource,
     presentation: ModelPresentation,
 }
-impl ModelProfile {
-    fn model_policy(self) -> ModelPolicy {
-        ModelPolicy {
-            source: appearance::model_source(self.source_rules),
-            presentation: appearance::model_presentation(self.rules),
-        }
+fn model_policy(profile: ModelProfile) -> ModelPolicy {
+    ModelPolicy {
+        source: appearance::model_source(profile.source_rules),
+        presentation: appearance::model_presentation(profile.rules),
     }
 }
 impl ProfileImages {
@@ -601,7 +590,7 @@ impl ProfileImages {
         Ok((
             Self {
                 profile,
-                model_policy: profile.model_policy(),
+                model_policy: model_policy(profile),
                 state: Some(state),
                 colors: PaletteColors::load(profile, assets),
                 native_default,
@@ -681,12 +670,6 @@ pub struct ModelAssets {
     initial_registration: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ShaderResource {
-    World(u32),
-    Model(u32),
-    Skin(u32),
-}
 #[derive(Clone, Copy)]
 pub struct RendererAdmission<'a> {
     pub resource: Option<ShaderResource>,
@@ -1222,6 +1205,81 @@ impl ModelAssets {
         ((id.0 as usize) < admitted.palettes && self.assets.palette(id).is_some()).then_some(id)
     }
 
+    pub(crate) fn graphics_profile(
+        &mut self,
+        vfs: &Vfs,
+        rules: RuleSetId,
+        settings: ImageSettings,
+    ) -> Result<ModelProfile, String> {
+        let palette = match crate::render_settings::palette_resource(
+            vfs,
+            &mut self.assets,
+            rules,
+            &mut self.palettes,
+        ) {
+            Ok(palette) => palette,
+            Err(ResourceError::Missing(_)) => None,
+            Err(error) => return Err(format!("graphic palette: {error:?}")),
+        };
+        let profile = ModelProfile {
+            source_rules: rules,
+            rules,
+            source_palette: palette,
+            palette,
+            image_settings: settings,
+        };
+        if !self
+            .catalog
+            .profiles
+            .iter()
+            .any(|entry| entry.profile == profile)
+        {
+            if let Some(blend) = self.append_profile(profile)? {
+                self.assets.install_palette_translucency(blend);
+            }
+        }
+        Ok(profile)
+    }
+    pub(crate) fn graphic_shader(
+        &mut self,
+        vfs: &Vfs,
+        profile: ModelProfile,
+        name: &str,
+    ) -> Result<ShaderRegistration, String> {
+        self.admit_shader(
+            vfs,
+            name.as_bytes(),
+            profile.source_rules,
+            true,
+            ShaderLighting::TwoDimensional,
+        )
+        .map_err(|error| format!("graphic shader: {error:?}"))?;
+        self.catalog
+            .shader_outcome_candidate(name.as_bytes(), profile, ShaderLighting::TwoDimensional)
+            .map(|(registration, _)| *registration)
+            .ok_or_else(|| "graphic shader unavailable".into())
+    }
+    pub(crate) fn graphic_images<T>(
+        &mut self,
+        vfs: &Vfs,
+        profile: ModelProfile,
+        compile: impl FnOnce(&mut Images<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.catalog
+            .profiles
+            .iter_mut()
+            .find(|entry| entry.profile == profile)
+            .ok_or("graphic profile unavailable")?
+            .with_images(vfs, &mut self.assets, compile)
+    }
+    pub(crate) fn graphic_default(&self, profile: ModelProfile) -> Option<ShaderBindingId> {
+        self.catalog
+            .profiles
+            .iter()
+            .find(|entry| entry.profile == profile)?
+            .native_default
+            .map(|(id, _)| id)
+    }
     fn append_profile(
         &mut self,
         profile: ModelProfile,
@@ -1810,33 +1868,27 @@ impl ModelAssets {
         rules: RuleSetId,
         settings: ImageSettings,
         width: u32,
-        reuse_font: Option<crate::renderer::console::FontAssets>,
+        reuse_font: Option<std::sync::Arc<crate::renderer::console::FontAssets>>,
         stage: impl FnOnce(ModelView<'_>, crate::renderer::hud::HudAssets) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(T, AssetCounts), String> {
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("HUD registration requires a published resource prefix".to_owned());
         }
-        let checkpoint = RegistrationCheckpoint::base(self)?;
+        let mut checkpoint = ProfileCheckpoint::capture(self)?;
+        if let Some(request) = crate::renderer::console::FontAssets::registration_request(rules) {
+            checkpoint.registration.capture_target(self, &request)?;
+        }
         let result = (|| {
-            let font = match reuse_font {
+            let font = match reuse_font.filter(|font| {
+                font.profile.source_rules == rules
+                    && font.profile.rules == rules
+                    && font.profile.image_settings == settings
+            }) {
                 Some(font) => font,
-                None => crate::renderer::console::FontAssets::load(
-                    vfs,
-                    &mut self.assets,
-                    rules,
-                    &mut self.palettes,
-                    settings,
-                )?,
+                None => crate::renderer::console::FontAssets::load(vfs, self, rules, settings)?,
             };
-            let candidate = crate::renderer::hud::HudAssets::load(
-                vfs,
-                &mut self.assets,
-                rules,
-                font,
-                settings,
-                width,
-            )?;
+            let candidate = crate::renderer::hud::HudAssets::load(vfs, self, rules, font, width)?;
             let staged = stage(self.view(), candidate)?;
             let counts = self.assets.counts();
             self.validate_admission(counts)
@@ -1849,7 +1901,7 @@ impl ModelAssets {
             Ok(ready) => Ok(ready),
             Err(error) => {
                 checkpoint
-                    .rollback(self, RegistrationRollback::Retry)
+                    .rollback(self)
                     .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
                 Err(error)
             }

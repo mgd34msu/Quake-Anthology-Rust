@@ -1,9 +1,9 @@
 //! Owned shader selections from frontend submission through backend handoff.
-use super::context::ShaderNodeId;
-use crate::{
-    Assets, ShaderBindingId, ShaderRegistration, assets::MaterialSettings,
-    world::WorldPresentationId,
+use super::{
+    context::ShaderNodeId,
+    registration::{ModelProfile, ShaderOwner, ShaderResource},
 };
+use crate::{Assets, ShaderBindingId, ShaderRegistration, assets::MaterialSettings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShaderContextId {
@@ -54,6 +54,23 @@ impl ShaderView<'static> {
     }
 }
 impl ShaderView<'_> {
+    pub fn graphic(
+        self,
+        registration: &ShaderRegistration,
+        choice: ShaderChoice,
+        default: ShaderDefault,
+    ) -> Option<ShaderRef> {
+        let nodes = self.context.and_then(|context| {
+            self.native
+                .resource_nodes(context, ShaderResource::Graphic(registration.key))
+        });
+        self.choice(
+            choice,
+            std::slice::from_ref(registration),
+            nodes,
+            default,
+        )
+    }
     pub fn choice(
         self,
         choice: ShaderChoice,
@@ -168,10 +185,13 @@ pub trait NativeShaders {
     fn resolve(&self, _reference: NativeShaderRef, _assets: &Assets) -> Option<ResolvedShader> {
         None
     }
-    fn world_nodes(
+    fn context(&self, _owner: ShaderOwner, _profile: ModelProfile) -> Option<ShaderContextId> {
+        None
+    }
+    fn resource_nodes(
         &self,
         _context: ShaderContextId,
-        _presentation: WorldPresentationId,
+        _resource: ShaderResource,
     ) -> Option<&[ShaderNodeId]> {
         None
     }

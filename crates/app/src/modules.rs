@@ -1382,6 +1382,7 @@ impl FrameHost {
             .len()
             .checked_mul(assets.profile_count())
             .and_then(|clients| clients.checked_add(modules.rows.len()))
+            .and_then(|slots| slots.checked_add(assets.profile_count()))
             .ok_or("renderer context slots")?;
         self.renderer_contexts.reserve(capacity)?;
         self.renderer_contexts.retain_clients(|client, lifetime| {
@@ -1404,6 +1405,9 @@ impl FrameHost {
             .row_mut(module)
             .ok_or("missing renderer module")?
             .renderer_context = Some(handle);
+        if let Some(scene) = self.runtime.scene.as_ref() {
+            scene.replay_graphics(&mut self.renderer_contexts, handle, profile)?;
+        }
         Ok(())
     }
 

@@ -1444,6 +1444,9 @@ impl GlBackend {
         inputs: DrawInputs,
         stats: &mut BackendStats,
     ) {
+        if particle.alpha == 0 {
+            return;
+        }
         let Some(shader) = particle.shader.resolve(assets, &()) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;

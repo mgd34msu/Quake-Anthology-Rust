@@ -4,6 +4,7 @@ use super::{
     console::FontAssets,
     text::{BitmapFont, TextStats},
 };
+use crate::model_assets::{ModelAssets, ModelProfile};
 use qa_console::presentation::{Layout, Style};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
@@ -14,7 +15,9 @@ use qa_core::{
 };
 use qa_formats::entities::{EntitySyntax, EntityTokens};
 use qa_gameplay::rules::presentation::{StyleAnimation, center_y, text_rules};
+use qa_render::shader::reference::ShaderView;
 use qa_render::{Assets, CpuPresentation, Frame, Refdef, Viewport, surface_cache::IndexedLighting};
+use std::sync::Arc;
 
 const MAX_GLYPHS: usize = 2048;
 #[derive(Clone, Copy)]
@@ -29,6 +32,7 @@ pub struct HudView<'a> {
     pub time: EventTime,
     pub style_time: ThinkTime,
     pub server_frame: u32,
+    pub client: qa_core::primitives::ClientId,
     pub client_lifetime: EntityId,
     pub style_interpolation: i32,
     pub show_text: bool,
@@ -117,12 +121,12 @@ impl HudStats {
 }
 pub struct HudAssets {
     rules: RuleSetId,
-    font: FontAssets,
+    font: Arc<FontAssets>,
     notify: Layout,
     pictures: pictures::Pictures,
 }
 impl HudAssets {
-    pub fn from_font(rules: RuleSetId, font: FontAssets, width: u32) -> Result<Self, String> {
+    pub fn from_font(rules: RuleSetId, font: Arc<FontAssets>, width: u32) -> Result<Self, String> {
         let rules_data = text_rules(rules);
         let notify = Layout::load(
             (width / 8).saturating_sub(2).max(2) as usize,
@@ -143,15 +147,25 @@ impl HudAssets {
     }
     pub fn load(
         vfs: &qa_content::vfs::Vfs,
-        assets: &mut Assets,
+        owner: &mut ModelAssets,
         rules: RuleSetId,
-        font: FontAssets,
-        settings: qa_render::material::resources::ImageSettings,
+        font: Arc<FontAssets>,
         width: u32,
     ) -> Result<Self, String> {
-        let mut hud = Self::from_font(rules, font, width)?;
-        hud.pictures = pictures::Pictures::load(vfs, assets, rules, font, settings)?;
+        let mut hud = Self::from_font(rules, Arc::clone(&font), width)?;
+        hud.pictures = pictures::Pictures::load(vfs, owner, rules, &font)?;
         Ok(hud)
+    }
+    pub fn profile(&self) -> ModelProfile {
+        self.font.profile
+    }
+    pub(crate) fn registrations(
+        &self,
+    ) -> impl Iterator<Item = &qa_render::ShaderRegistration> + Clone {
+        self.font
+            .registration
+            .iter()
+            .chain(self.pictures.registrations())
     }
     pub fn rules(&self) -> RuleSetId {
         self.rules
@@ -173,13 +187,14 @@ impl HudAssets {
         assets: &Assets,
         view: HudView<'_>,
         refdef: Refdef,
+        shaders: ShaderView<'_>,
     ) -> HudStats {
         let mut stats = HudStats::default();
         if self.rules != view.rules {
             stats.rejected += 1;
             return stats;
         }
-        let font = self.font.font;
+        let font = self.font.painter(shaders);
         stats.missing_font += u32::from(font.is_none());
         stats.non_native_font += u32::from(!self.font.native);
         frame.clear_scene();
@@ -196,12 +211,7 @@ impl HudAssets {
             }),
             ..Refdef::default()
         };
-        if !frame.render_scene(
-            ui,
-            &[],
-            assets,
-            qa_render::shader::reference::ShaderView::direct(),
-        ) {
+        if !frame.render_scene(ui, &[], assets, shaders) {
             stats.rejected += 1;
             return stats;
         }
@@ -293,6 +303,8 @@ impl HudAssets {
                     font,
                     &self.pictures,
                     assets,
+                    shaders,
+                    &self.font,
                     frame,
                     text.text,
                     view,
@@ -314,6 +326,8 @@ impl HudAssets {
                         font,
                         &self.pictures,
                         assets,
+                        shaders,
+                        &self.font,
                         frame,
                         text,
                         view,
@@ -361,6 +375,8 @@ fn append_layout(
     font: Option<BitmapFont>,
     pictures: &pictures::Pictures,
     assets: &Assets,
+    shaders: ShaderView<'_>,
+    font_assets: &FontAssets,
     frame: &mut Frame,
     text: &[u8],
     view: HudView<'_>,
@@ -471,6 +487,8 @@ fn append_layout(
                         .ok_or(())?
                         .text;
                     pictures.picture(
+                        shaders,
+                        font_assets,
                         assets,
                         std::str::from_utf8(name).map_err(|_| ())?,
                         frame,
@@ -483,6 +501,8 @@ fn append_layout(
                 }
                 b"picn" => {
                     pictures.picture(
+                        shaders,
+                        font_assets,
                         assets,
                         std::str::from_utf8(next()?).map_err(|_| ())?,
                         frame,
@@ -497,6 +517,8 @@ fn append_layout(
                     let width = atoi_prefix(next()?);
                     let ordinal = usize::try_from(atoi_prefix(next()?)).map_err(|_| ())?;
                     pictures.number(
+                        shaders,
+                        font_assets,
                         frame,
                         (viewport.x as i32).saturating_add(x),
                         (viewport.y as i32).saturating_add(y),
@@ -526,6 +548,8 @@ fn append_layout(
                         (index == 1 && value <= 0) || (index != 5 && value <= warning && flash);
                     if view.stat(15).ok_or(())? & flag != 0 {
                         pictures.picture(
+                            shaders,
+                            font_assets,
                             assets,
                             "field_3",
                             frame,
@@ -537,6 +561,8 @@ fn append_layout(
                         );
                     }
                     pictures.number(
+                        shaders,
+                        font_assets,
                         frame,
                         (viewport.x as i32).saturating_add(x),
                         (viewport.y as i32).saturating_add(y),

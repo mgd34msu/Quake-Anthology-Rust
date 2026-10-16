@@ -20,10 +20,11 @@ fn admit_assets(host: &mut FrameHost) -> qa_render::cpu::CpuBackend {
     backend
 }
 
+const SHADER_HANDLE: u32 = 864;
 const CALLS: &[(u8, &[u32])] = &[
     (39, &[16]),
     (45, &[32]),
-    (87, &[1, 3, 64, 2]),
+    (87, &[0, 3, 64, 2]),
     (44, &[256]),
     (
         46,
@@ -36,12 +37,12 @@ const CALLS: &[(u8, &[u32])] = &[
             0,
             1.0f32.to_bits(),
             1.0f32.to_bits(),
-            1,
+            0,
         ],
     ),
     (40, &[]),
     (36, &[224]),
-    (87, &[1, 3, 65528, 2]),
+    (87, &[0, 3, 65528, 2]),
     (45, &[0]),
     (87, &[0, 3, u32::MAX, 2]),
 ];
@@ -110,7 +111,6 @@ fn data() -> [u8; 1024] {
         data[700 + offset..704 + offset].copy_from_slice(&value.to_le_bytes());
     }
     data[780..784].copy_from_slice(&1i32.to_le_bytes());
-    data[812..816].copy_from_slice(&1i32.to_le_bytes());
     data[816..820].copy_from_slice(&[201, 150, 90, 255]);
     data
 }
@@ -120,6 +120,9 @@ fn pointer_argument(command: usize, index: usize) -> bool {
         (command, index),
         (0 | 1 | 3 | 6 | 8 | 12 | 13, 0) | (2 | 7 | 9, 2) | (20, 1 | 2 | 4 | 6)
     )
+}
+fn shader_argument(command: usize, index: usize) -> bool {
+    matches!((command, index), (2 | 7, 0) | (4, 8))
 }
 fn ordinal(ui: bool, value: u8) -> u8 {
     if !ui {
@@ -207,10 +210,29 @@ fn qvm_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
         } else {
             let (number, words) = scene_call(command);
             let ordinal = ordinal(ui, number);
+            if command == 0 {
+                operations.push((Const, SHADER_HANDLE as i32));
+            }
             for (index, &word) in words.iter().enumerate() {
-                operations.extend([(Const, word as i32), (Arg, 8 + index as i32 * 4)]);
+                if shader_argument(command, index) {
+                    operations.extend([(Const, SHADER_HANDLE as i32), (Load4, 0)]);
+                } else {
+                    operations.push((Const, word as i32));
+                }
+                operations.push((Arg, 8 + index as i32 * 4));
             }
             operations.extend([(Const, -i32::from(ordinal) - 1), (Call, 0)]);
+            if command == 0 {
+                operations.extend([
+                    (Store4, 0),
+                    (Const, 812),
+                    (Const, SHADER_HANDLE as i32),
+                    (Load4, 0),
+                    (Store4, 0),
+                    (Const, SHADER_HANDLE as i32),
+                    (Load4, 0),
+                ]);
+            }
         }
         operations.push((Leave, 96));
     }
@@ -320,6 +342,21 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
             let (number, arguments) = scene_call(command);
             let ordinal = ordinal(ui, number);
             for (index, &argument) in arguments.iter().enumerate() {
+                if shader_argument(command, index) {
+                    code.extend([0x48, 0xb8]);
+                    code.extend((source + u64::from(SHADER_HANDLE)).to_le_bytes());
+                    if index < 3 {
+                        code.extend(match index {
+                            0 => [0x8b, 0x10].as_slice(),
+                            1 => [0x44, 0x8b, 0x00].as_slice(),
+                            _ => [0x44, 0x8b, 0x08].as_slice(),
+                        });
+                    } else {
+                        code.extend([0x8b, 0x00]);
+                        code.extend([0x48, 0x89, 0x44, 0x24, (0x20 + (index - 3) * 8) as u8]);
+                    }
+                    continue;
+                }
                 let value = if pointer_argument(command, index) && argument != 0 {
                     source + u64::from(argument)
                 } else {
@@ -337,6 +374,13 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
             code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
             code.extend(callback.to_le_bytes());
             code.extend([0xff, 0xd0]);
+            if command == 0 {
+                for address in [u64::from(SHADER_HANDLE), 812] {
+                    code.extend([0x48, 0xb9]);
+                    code.extend((source + address).to_le_bytes());
+                    code.extend([0x89, 0x01]);
+                }
+            }
         }
         code.extend([0x48, 0x83, 0xc4, 0x58, 0xc3]);
         let end = code.len();
@@ -458,7 +502,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
     if !ui {
         assert_eq!(probe(&mut host, 0, 6, 0), 0);
     } // Cold selection, before any scene owner.
-    assert_eq!(probe(&mut host, 0, 0, 0), 1);
+    assert!(probe(&mut host, 0, 0, 0) > 0);
     assert!(probe(&mut host, 1, 0, 0) > 0);
     host.bind_client_model_assets([]);
     let models = host.runtime.model_assets.as_ref().unwrap().catalog();
@@ -836,7 +880,26 @@ fn sun_contexts(native: bool) {
 pub(super) fn ownership() {
     use qa_app::renderer::{Context as RenderContext, Renderer};
     use qa_render::material::resources::ImageSettings;
+    let mut fixture = model_support::Fixture::new(&[
+        (
+            "gfx/2d/bigchars.tga",
+            model_support::tga(128, 128, &vec![[255; 4]; 128 * 128]),
+        ),
+        (
+            "gfx/2d/conback.tga",
+            model_support::tga(2, 2, &[[30, 40, 50, 255]; 4]),
+        ),
+        (
+            "ui/pic.tga",
+            model_support::tga(2, 2, &[[90, 20, 10, 255]; 4]),
+        ),
+        (
+            "scripts/graphics.shader",
+            b"white { { map $whiteimage } } console { { map gfx/2d/conback.tga } }".to_vec(),
+        ),
+    ]);
     let (mut runtime, ids) = runtime(2);
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
     let requests = ids
         .iter()
         .enumerate()
@@ -874,16 +937,31 @@ pub(super) fn ownership() {
         200,
     )
     .unwrap();
+    let mut owner = ModelAssets::new(assets, [], [world], Default::default()).unwrap();
     let console = qa_app::renderer::console::ConsoleAssets::load(
         &host.runtime.vfs,
-        &mut assets,
+        &mut owner,
         RuleSetId::Quake3,
-        &mut qa_app::render_settings::PaletteRegistrations::default(),
         ImageSettings::native(RuleSetId::Quake3),
         320,
         200,
     )
     .unwrap();
+    let font_registration = console.font_assets().registration.unwrap();
+    assert!(font_registration.defaulted.is_none());
+    // Prepare the guest resource physically without creating a native logical node.
+    assert!(
+        qa_compat::services::ModelLoader::register_shader(
+            &mut owner,
+            &host.runtime.vfs,
+            b"ui/pic.tga",
+            RuleSetId::Quake3,
+            true,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
+        .unwrap()
+            > 0
+    );
     let effects = std::sync::Arc::clone(&host.runtime.catalog.registry.effects);
     let bindings = vec![None; effects.len() + 1];
     let effects = qa_render::effects::Effects::load(effects, 8, 2, &bindings).unwrap();
@@ -905,21 +983,23 @@ pub(super) fn ownership() {
         .into_boxed_slice(),
         diagnostics: Box::default(),
     };
-    host.runtime.model_assets =
-        Some(ModelAssets::new(assets, [], [world], Default::default()).unwrap());
-    host.bind_client_model_assets([]);
+    host.runtime.model_assets = Some(owner);
+    let huds = std::array::from_fn(|_| None);
+    let (assets, staged) = host.stage_engine_graphics(&console, &huds).unwrap();
     let (renderer, scene) = Renderer::load(
         RenderContext::Cpu(configuration),
         320,
         200,
-        host.runtime.model_assets.as_mut().unwrap().assets_mut(),
+        assets,
         vec![loaded],
         Some(qa_render::cpu::RasterBands::One),
         console,
-        std::array::from_fn(|_| None),
+        huds,
         effects,
     )
     .unwrap();
+    staged.commit();
+    host.bind_client_model_assets([]);
     host.publish_model_admission(renderer.admitted_assets().unwrap())
         .unwrap();
     host.runtime.scene = Some(scene);
@@ -994,6 +1074,96 @@ pub(super) fn ownership() {
     assert_eq!(source.renderer.sample.stats.rejected, 0);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+
+    use qa_render::shader::{
+        reference::ShaderRef,
+        registration::{ShaderOwner, ShaderResource},
+    };
+    // These already-running fixture modules create their renderer contexts on
+    // their first actual registration. Engine graphics replay before that guest node.
+    let graphics_prefix = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    host.runtime.vfs.take_lookup_count();
+    let handle = probe(&mut host, 0, 0, 0);
+    assert!(
+        handle > 3,
+        "font, white and console must precede guest shader nodes"
+    );
+    let peer_handle = probe(&mut host, 1, 0, 0);
+    assert!(peer_handle > 3);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        graphics_prefix
+    );
+    let lifetime = host.runtime.server.clients[ids[0].0 as usize].entity;
+    let owner = ShaderOwner::Client(ids[0], lifetime);
+    let context = host.native_shaders().context(owner, profile).unwrap();
+    let font_nodes = host
+        .native_shaders()
+        .resource_nodes(context, ShaderResource::Graphic(font_registration.key))
+        .unwrap();
+    assert_eq!(font_nodes.len(), 1);
+    let font_ref = qa_render::shader::reference::NativeShaderRef {
+        context,
+        node: font_nodes[0],
+    };
+    assert_eq!(
+        host.native_shaders().source(font_ref).unwrap().shader,
+        font_registration.shader
+    );
+    let peer_lifetime = host.runtime.server.clients[ids[1].0 as usize].entity;
+    let peer_context = host
+        .native_shaders()
+        .context(ShaderOwner::Client(ids[1], peer_lifetime), profile)
+        .unwrap();
+    assert_ne!(context, peer_context);
+
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    probe(&mut host, 0, 4, 0);
+    let mut packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
+    let draw = packet
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            Command::Draw2d(draw) => Some(draw),
+            _ => None,
+        })
+        .unwrap();
+    let ShaderRef::Native(reference) = draw.shader else {
+        panic!("native picture lost its renderer context")
+    };
+    assert_eq!(reference.context, context);
+    assert_eq!(reference.node.0 + 1, handle);
+    let physical = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .catalog()
+        .shader_outcome(
+            b"ui/pic.tga",
+            profile,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
+        .unwrap()
+        .shader;
+    assert_eq!(draw.shader.source(host.native_shaders()), Some(physical));
+    packet.resolve_shaders(
+        host.runtime.model_assets.as_ref().unwrap().assets(),
+        host.native_shaders(),
+    );
+    assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
 }
 
 pub(super) fn entities(native: bool, ui: bool) {

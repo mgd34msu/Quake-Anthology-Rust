@@ -918,17 +918,15 @@ fn run() -> Result<(), String> {
         )
     };
     let console_rules = host.console.cvars.context().source;
-    let (assets, palettes) = host
+    let owner = host
         .runtime
         .model_assets
         .as_mut()
-        .ok_or("missing model assets")?
-        .unpublished_assets()?;
+        .ok_or("missing model assets")?;
     let console_assets = qa_app::renderer::console::ConsoleAssets::load(
         &host.runtime.vfs,
-        assets,
+        owner,
         console_rules,
-        palettes,
         qa_app::render_settings::image_settings(&host.console.cvars, console_rules)?,
         width as u32,
         height as u32,
@@ -949,23 +947,22 @@ fn run() -> Result<(), String> {
         } else {
             qa_app::renderer::console::FontAssets::load(
                 &host.runtime.vfs,
-                assets,
+                owner,
                 rules,
-                palettes,
                 qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
             )?
         };
         hud_assets[rules as usize] = Some(qa_app::renderer::hud::HudAssets::load(
             &host.runtime.vfs,
-            assets,
+            owner,
             rules,
             font,
-            qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
             width as u32,
         )?);
     }
     let effect_catalog = std::sync::Arc::clone(&host.runtime.catalog.registry.effects);
     let effect_bindings = vec![None; effect_catalog.len() + 1];
+    let (assets, palettes) = owner.unpublished_assets()?;
     let _ = qa_app::render_settings::palette(
         &host.runtime.vfs,
         assets,
@@ -978,6 +975,7 @@ fn run() -> Result<(), String> {
         host.runtime.server.clients.len(),
         &effect_bindings,
     )?;
+    let (assets, graphics) = host.stage_engine_graphics(&console_assets, &hud_assets)?;
     let (mut renderer, scene) = Renderer::load(
         renderer_context,
         width as u32,
@@ -989,6 +987,7 @@ fn run() -> Result<(), String> {
         hud_assets,
         effects,
     )?;
+    graphics.commit();
     host.publish_model_admission(
         renderer
             .admitted_assets()
@@ -1023,6 +1022,7 @@ fn run() -> Result<(), String> {
     if matches!(renderer_kind, Kind::Cpu) {
         host.console.cvars.set_latch_active(band_cvar, true);
     }
+    host.capture_graphics_owners();
     let mut scene = host.runtime.scene.take().ok_or("missing scene composer")?;
     renderer.frame(
         &mut scene,

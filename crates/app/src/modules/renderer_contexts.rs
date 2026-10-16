@@ -1,16 +1,12 @@
 //! Renderer lifetime contexts shared by CLIENT UI and cgame, independent of the frontend.
 use crate::model_assets::{ModelProfile, RendererAdmission, ShaderResource};
-use qa_core::primitives::{ClientId, EntityId, IndexSpan, ModuleId, Vec3};
+use qa_core::primitives::{ClientId, EntityId, IndexSpan, Vec3};
 use qa_render::shader::{
     context::{ShaderContext, ShaderContextAppend, ShaderNodeId},
     reference::{NativeShaderRef, NativeShaders, ResolvedShader, ShaderContextId},
 };
 
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum Owner {
-    Client(ClientId, EntityId),
-    Private(ModuleId, EntityId),
-}
+pub(super) use qa_render::shader::registration::ShaderOwner as Owner;
 pub(super) type Handle = ShaderContextId;
 struct ResourceAdmission {
     resource: ShaderResource,
@@ -153,6 +149,69 @@ impl Contexts {
             generation: self.generation,
         })
     }
+    pub(crate) fn ensure_owner(
+        &mut self,
+        owner: Owner,
+        profile: ModelProfile,
+        assets: &qa_render::Assets,
+        budget: (usize, usize),
+        reset: Option<u64>,
+    ) -> Result<Handle, String> {
+        if let Some(handle) = self.find(owner, profile)
+            && self
+                .get(handle)
+                .is_some_and(|context| context.reset == Some(reset))
+        {
+            return Ok(handle);
+        }
+        if self.find(owner, profile).is_none() {
+            self.reserve(
+                self.slots
+                    .len()
+                    .checked_add(1)
+                    .ok_or("renderer context slots")?,
+            )?;
+        }
+        let handle = self.bind(None, owner, profile, assets, budget, reset)?;
+        self.release(Some(handle));
+        Ok(handle)
+    }
+    pub(crate) fn replay_graphics<'r>(
+        &mut self,
+        handle: Handle,
+        registrations: impl Iterator<Item = &'r qa_render::ShaderRegistration> + Clone,
+    ) -> Result<(), String> {
+        let context = self
+            .slots
+            .get_mut(handle.slot as usize)
+            .and_then(Option::as_mut)
+            .filter(|context| context.generation == handle.generation)
+            .ok_or("stale renderer context")?;
+        stage_entries(
+            context,
+            (0, 0),
+            registrations.map(|registration| {
+                (
+                    Some(ShaderResource::Graphic(registration.key)),
+                    std::slice::from_ref(registration),
+                )
+            }),
+        )?
+        .commit();
+        Ok(())
+    }
+    fn find(&self, owner: Owner, profile: ModelProfile) -> Option<Handle> {
+        let (slot, context) = self.slots.iter().enumerate().find_map(|(slot, entry)| {
+            entry
+                .as_ref()
+                .filter(|context| context.owner == owner && context.profile == profile)
+                .map(|context| (slot, context))
+        })?;
+        Some(Handle {
+            slot: u32::try_from(slot).ok()?,
+            generation: context.generation,
+        })
+    }
     fn get(&self, handle: Handle) -> Option<&Context> {
         self.slots
             .get(handle.slot as usize)?
@@ -245,57 +304,113 @@ impl Contexts {
             .and_then(Option::as_mut)
             .filter(|context| context.generation == handle.generation)
             .ok_or("stale renderer context")?;
-        let repeated = admission.resource.is_some_and(|resource| {
-            context
-                .resources
-                .iter()
-                .any(|previous| previous.resource == resource)
-        });
-        if admission.resource.is_some()
-            && !repeated
-            && (context.uses.capacity()
-                < context
-                    .uses
-                    .len()
-                    .saturating_add(admission.registrations.len())
-                || context.resources.capacity() == context.resources.len())
-        {
-            let budget = admission.budget();
-            if context.uses.capacity() < budget.0 {
-                context
-                    .uses
-                    .try_reserve_exact(budget.0 - context.uses.len())
-                    .map_err(|_| "renderer occurrence capacity")?;
-            }
-            if context.resources.capacity() < budget.1 {
-                context
+        stage_entries(
+            context,
+            admission.budget(),
+            std::iter::once((admission.resource, admission.registrations)),
+        )
+    }
+    pub(crate) fn stage_graphics<'a, 'r>(
+        &'a mut self,
+        registrations: impl Iterator<Item = (ModelProfile, &'r qa_render::ShaderRegistration)> + Clone,
+    ) -> Result<Vec<Append<'a>>, String> {
+        self.slots
+            .iter_mut()
+            .flatten()
+            .filter_map(|context| {
+                let profile = context.profile;
+                let selected = registrations
+                    .clone()
+                    .filter(move |(owner, _)| *owner == profile);
+                if selected.clone().next().is_none() {
+                    return None;
+                }
+                Some(stage_entries(
+                    context,
+                    (0, 0),
+                    selected.map(|(_, registration)| {
+                        (
+                            Some(ShaderResource::Graphic(registration.key)),
+                            std::slice::from_ref(registration),
+                        )
+                    }),
+                ))
+            })
+            .collect()
+    }
+}
+fn stage_entries<'a, 'r>(
+    context: &'a mut Context,
+    budget: (usize, usize),
+    entries: impl Iterator<Item = (Option<ShaderResource>, &'r [qa_render::ShaderRegistration])> + Clone,
+) -> Result<Append<'a>, String> {
+    let additional = entries
+        .clone()
+        .filter(|(resource, _)| {
+            resource.is_some_and(|resource| {
+                !context
                     .resources
-                    .try_reserve_exact(budget.1 - context.resources.len())
-                    .map_err(|_| "renderer resource capacity")?;
-            }
-        }
-        let retained_uses = context.uses.len();
-        let retained_resources = context.resources.len();
-        let mut append = Append {
-            shaders: Some(context.shaders.append()),
-            uses: &mut context.uses,
-            resources: &mut context.resources,
-            retained_uses,
-            retained_resources,
-            committed: false,
-            shader_handle: 0,
-        };
-        if let Some(resource) = admission.resource {
+                    .iter()
+                    .any(|entry| entry.resource == resource)
+            })
+        })
+        .try_fold((0usize, 0usize), |(uses, resources), (_, registrations)| {
+            Ok::<_, String>((
+                uses.checked_add(registrations.len())
+                    .ok_or("renderer occurrence capacity")?,
+                resources
+                    .checked_add(1)
+                    .ok_or("renderer resource capacity")?,
+            ))
+        })?;
+    let uses = budget.0.max(
+        context
+            .uses
+            .len()
+            .checked_add(additional.0)
+            .ok_or("renderer occurrence capacity")?,
+    );
+    let resources = budget.1.max(
+        context
+            .resources
+            .len()
+            .checked_add(additional.1)
+            .ok_or("renderer resource capacity")?,
+    );
+    if context.uses.capacity() < uses {
+        context
+            .uses
+            .try_reserve_exact(uses - context.uses.len())
+            .map_err(|_| "renderer occurrence capacity")?;
+    }
+    if context.resources.capacity() < resources {
+        context
+            .resources
+            .try_reserve_exact(resources - context.resources.len())
+            .map_err(|_| "renderer resource capacity")?;
+    }
+    let retained_uses = context.uses.len();
+    let retained_resources = context.resources.len();
+    let mut append = Append {
+        shaders: Some(context.shaders.append()),
+        uses: &mut context.uses,
+        resources: &mut context.resources,
+        retained_uses,
+        retained_resources,
+        committed: false,
+        shader_handle: 0,
+    };
+    for (resource, registrations) in entries {
+        if let Some(resource) = resource {
             if let Some(previous) = append
                 .resources
                 .iter()
-                .find(|previous| previous.resource == resource)
+                .find(|entry| entry.resource == resource)
             {
-                // This span is the original occurrence-to-node mapping, not another seen set.
                 if previous.uses.range().end > append.uses.len() {
                     return Err("renderer occurrence span".into());
                 }
-                return Ok(append);
+                continue;
             }
             if matches!(resource, ShaderResource::World(_)) {
                 append
@@ -305,7 +420,7 @@ impl Contexts {
                     .reset_sun_direction();
             }
             let first = u32::try_from(append.uses.len()).map_err(|_| "renderer occurrence span")?;
-            for &registration in admission.registrations {
+            for &registration in registrations {
                 append.uses.push(
                     append
                         .shaders
@@ -319,12 +434,12 @@ impl Contexts {
                 resource,
                 uses: IndexSpan {
                     first,
-                    count: u32::try_from(admission.registrations.len())
+                    count: u32::try_from(registrations.len())
                         .map_err(|_| "renderer occurrence span")?,
                 },
             });
         } else {
-            for &registration in admission.registrations {
+            for &registration in registrations {
                 let shaders = append.shaders.as_mut().ok_or("renderer context append")?;
                 let node = shaders.admit(registration).map_err(str::to_owned)?;
                 let selected = shaders.node(node).ok_or("renderer shader node")?;
@@ -338,10 +453,11 @@ impl Contexts {
                 };
             }
         }
-        Ok(append)
     }
+    Ok(append)
 }
-pub(super) struct Append<'a> {
+
+pub(crate) struct Append<'a> {
     shaders: Option<ShaderContextAppend<'a>>,
     uses: &'a mut Vec<ShaderNodeId>,
     resources: &'a mut Vec<ResourceAdmission>,
@@ -386,11 +502,14 @@ impl NativeShaders for Contexts {
             .time_offset;
         ResolvedShader::select(assets, source, source, offset)
     }
-    fn world_nodes(
+    fn context(&self, owner: Owner, profile: ModelProfile) -> Option<ShaderContextId> {
+        self.find(owner, profile)
+    }
+    fn resource_nodes(
         &self,
         context: ShaderContextId,
-        presentation: qa_render::world::WorldPresentationId,
+        resource: ShaderResource,
     ) -> Option<&[ShaderNodeId]> {
-        self.resource_nodes(context, ShaderResource::World(presentation.0))
+        Contexts::resource_nodes(self, context, resource)
     }
 }

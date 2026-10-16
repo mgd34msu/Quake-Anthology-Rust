@@ -100,6 +100,13 @@ impl FrameHost {
         if published {
             self.refresh_model_consumers();
         }
+        if let Err(error) = self.prepare_graphics_contexts() {
+            let _ = self
+                .runtime
+                .server
+                .events
+                .console_formatted(format_args!("engine graphics: {error}\n"));
+        }
     }
 
     fn prepare_received_hud(
@@ -179,13 +186,41 @@ impl FrameHost {
                 .as_mut()
                 .ok_or("missing model assets")?;
             let reuse_font = scene.hud_font(rules);
+            let contexts = &mut self.renderer_contexts;
+            let client_profile = resources.state.models.profile();
+            let reset = resources.state.completed_presentation_reset().flatten();
             let (append, _) = owner.prepare_hud(
                 &self.runtime.vfs,
                 rules,
                 settings,
                 width,
                 reuse_font,
-                |_, candidate| scene.stage_hud(candidate),
+                |view, candidate| {
+                    let profile = candidate.profile();
+                    contexts.ensure_owner(
+                        qa_render::shader::registration::ShaderOwner::Engine,
+                        profile,
+                        view.assets,
+                        (0, 0),
+                        None,
+                    )?;
+                    if client_profile == Some(profile) {
+                        contexts.ensure_owner(
+                            qa_render::shader::registration::ShaderOwner::Client(client, lifetime),
+                            profile,
+                            view.assets,
+                            (0, 0),
+                            reset,
+                        )?;
+                    }
+                    let graphs = contexts.stage_graphics(
+                        candidate
+                            .registrations()
+                            .map(move |registration| (profile, registration)),
+                    )?;
+                    let scene = scene.stage_hud(candidate)?;
+                    Ok((scene, graphs))
+                },
                 |assets, append| {
                     if self.runtime.server.clients.get(slot).is_none_or(|row| {
                         row.entity != lifetime
@@ -195,10 +230,13 @@ impl FrameHost {
                     {
                         return Err("CLIENT HUD admission lifetime changed".to_owned());
                     }
-                    preparer.prepare_assets(assets, Some(append.limits()))
+                    preparer.prepare_assets(assets, Some(append.0.limits()))
                 },
             )?;
-            append.commit();
+            for graph in append.1 {
+                graph.commit();
+            }
+            append.0.commit();
             Ok::<_, String>(())
         })();
         if let Err(error) = result {

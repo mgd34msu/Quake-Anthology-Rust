@@ -5,7 +5,7 @@ use qa_render::{
     Assets,
     assets::{PaletteId, upload},
     material::{
-        resources::{ImageSettings, PaletteSource, load_palette},
+        resources::{ImageSettings, PaletteSource, ResourceError, load_palette},
         world_load::WorldPresentationProfile,
     },
 };
@@ -47,13 +47,22 @@ pub fn palette(
     rules: RuleSetId,
     registered: &mut PaletteRegistrations,
 ) -> Result<Option<PaletteId>, String> {
+    palette_resource(vfs, assets, rules, registered).map_err(|error| format!("palette: {error:?}"))
+}
+
+pub(crate) fn palette_resource(
+    vfs: &Vfs,
+    assets: &mut Assets,
+    rules: RuleSetId,
+    registered: &mut PaletteRegistrations,
+) -> Result<Option<PaletteId>, ResourceError> {
     let Some(source) = PaletteSource::native(rules) else {
         return Ok(None);
     };
     if let Some(id) = registered.get(rules) {
         return Ok(Some(id));
     }
-    let id = load_palette(vfs, assets, source).map_err(|error| format!("palette: {error:?}"))?;
+    let id = load_palette(vfs, assets, source)?;
     for rule in RuleSetId::ALL {
         if PaletteSource::native(rule) == Some(source) {
             registered.ids[rule as usize] = Some(id);

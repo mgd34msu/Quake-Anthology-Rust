@@ -3726,6 +3726,8 @@ fn queued_native_client_loads_its_late_hud_role_and_draws_through_the_shared_fro
     let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
     let assets = host.runtime.model_assets.as_ref().unwrap().assets();
     let [width, height] = backend.backend.cpu.dimensions();
+    let hud_owner =
+        qa_render::shader::registration::ShaderOwner::Client(hud.client, hud.client_lifetime);
     let drawn = scene.append_hud(
         &mut frame,
         assets,
@@ -3738,13 +3740,16 @@ fn queued_native_client_loads_its_late_hud_role_and_draws_through_the_shared_fro
             },
             ..Default::default()
         },
+        host.native_shaders(),
+        hud_owner,
     );
     assert!(drawn.glyphs > 0, "{drawn:?}");
     assert_eq!(
         (drawn.missing_font, drawn.non_native_font, drawn.rejected),
         (0, 0, 0)
     );
-    let packet = frame.finish();
+    let mut packet = frame.finish();
+    packet.resolve_shaders(assets, host.native_shaders());
     assert_eq!(backend.backend.cpu.render(&packet, assets).rejected, 0);
     assert!(
         backend

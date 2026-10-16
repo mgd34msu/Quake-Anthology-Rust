@@ -357,18 +357,19 @@ fn same_named_samples_keep_each_faces_lighting_when_the_logical_node_is_reused()
         fn resolve(&self, reference: NativeShaderRef, assets: &Assets) -> Option<ResolvedShader> {
             self.reader.resolve(reference, assets)
         }
-        fn world_nodes(
+        fn resource_nodes(
             &self,
             context: ShaderContextId,
-            presentation: WorldPresentationId,
+            resource: qa_render::shader::registration::ShaderResource,
         ) -> Option<&[ShaderNodeId]> {
             (context
                 == (ShaderContextId {
                     slot: 0,
                     generation: self.reader.generation,
                 })
-                && presentation == self.presentation)
-                .then_some(&self.nodes)
+                && resource
+                    == qa_render::shader::registration::ShaderResource::World(self.presentation.0))
+            .then_some(&self.nodes)
         }
     }
 
@@ -583,4 +584,56 @@ fn converted_surface_keeps_its_body_when_the_named_history_reuses_another_varian
     }
     assert_eq!(pixels[0], u32::from_le_bytes([0, 128, 255, 255]));
     assert_eq!(pixels[1], pixels[0]);
+}
+
+#[test]
+fn stale_particle_choice_drops_without_hiding_a_healthy_point() {
+    use qa_render::{SceneParticle, surface_cache::PaletteLighting};
+    let (mut assets, reader, refs) = fixture();
+    let rgb: Vec<_> = (0..256)
+        .flat_map(|index| match index {
+            1 => [0, 255, 0],
+            2 => [255, 0, 0],
+            _ => [0, 0, 0],
+        })
+        .collect();
+    let map: Vec<_> = (0..64).flat_map(|_| 0..=255_u8).collect();
+    let palette = assets
+        .register_palette(PaletteLighting::load(&rgb, &map, None, 256).unwrap())
+        .unwrap();
+    let ShaderRef::Native(mut stale) = refs[0] else {
+        panic!("native shader")
+    };
+    stale.context.generation = 0;
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
+    for (position, color, shader) in [
+        ([16., 16., 0.], 1, refs[0]),
+        ([16., -16., 0.], 2, ShaderRef::Native(stale)),
+    ] {
+        assert!(frame.add_particle(SceneParticle {
+            position: Vec3(position),
+            color,
+            palette,
+            shader,
+            ..Default::default()
+        }));
+    }
+    assert!(frame.render_scene(
+        view(),
+        &[],
+        &assets,
+        ShaderView {
+            native: &reader,
+            context: Some(stale.context)
+        }
+    ));
+    let mut packet = frame.finish();
+    packet.resolve_shaders(&assets, &reader);
+    let mut cpu = CpuBackend::load(8, 8).unwrap();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 1);
+    assert!(cpu.pixels().contains(&u32::from_le_bytes([0, 255, 0, 255])));
+    assert!(!cpu.pixels().contains(&u32::from_le_bytes([255, 0, 0, 255])));
+    packet.resolve_shaders(&assets, &reader);
+    assert_eq!(packet.rejected, 1);
 }

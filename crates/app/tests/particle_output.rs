@@ -472,19 +472,15 @@ impl RendererSource {
         };
         let mut owner =
             ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
-        let console = {
-            let (assets, palettes) = owner.unpublished_assets().unwrap();
-            ConsoleAssets::load(
-                &host.runtime.vfs,
-                assets,
-                RuleSetId::Quake3,
-                palettes,
-                qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
-                160,
-                120,
-            )
-            .unwrap()
-        };
+        let console = ConsoleAssets::load(
+            &host.runtime.vfs,
+            &mut owner,
+            RuleSetId::Quake3,
+            qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+            160,
+            120,
+        )
+        .unwrap();
         let catalog = Arc::clone(&host.runtime.catalog.registry.effects);
         let bindings = vec![None; catalog.len() + 1];
         let effects =
@@ -497,23 +493,29 @@ impl RendererSource {
             },
             ..Default::default()
         });
+        host.runtime.model_assets = Some(owner);
+        let huds = std::array::from_fn(|_| None);
+        let (assets, staged) = host.stage_engine_graphics(&console, &huds).unwrap();
         let (renderer, scene) = Renderer::load(
             Context::Cpu(configuration),
             160,
             120,
-            owner.assets_mut(),
+            assets,
             vec![],
             Some(qa_render::cpu::RasterBands::One),
             console,
-            std::array::from_fn(|_| None),
+            huds,
             effects,
         )
         .unwrap();
-        owner
-            .publish_admission(renderer.admitted_assets().unwrap())
+        staged.commit();
+        host.publish_model_admission(renderer.admitted_assets().unwrap())
             .unwrap();
-        owner.end_initial_registration();
-        host.runtime.model_assets = Some(owner);
+        host.runtime
+            .model_assets
+            .as_mut()
+            .unwrap()
+            .end_initial_registration();
         host.runtime.scene = Some(scene);
         Self {
             time: EventTime::from_milliseconds(1000),

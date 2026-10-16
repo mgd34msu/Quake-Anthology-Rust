@@ -3,34 +3,32 @@ use super::{
     super::console::{FontAssets, bitmap_sampler, bitmap_shader},
     HudStats,
 };
+use crate::model_assets::ModelAssets;
 use qa_content::vfs::Vfs;
 use qa_core::{
     primitives::{NameId, RuleSetId},
     text::FixedText,
 };
-use qa_render::{
-    Assets, Draw2d, Frame, ShaderBindingId, Viewport,
-    material::resources::{ImageSettings, ImageUse, Images},
-};
+use qa_render::{Assets, Draw2d, Frame, ShaderBindingId, Viewport, material::resources::ImageUse};
+use qa_render::{ShaderRegistration, shader::reference::ShaderView};
 use std::fmt::Write;
 
 #[derive(Clone, Copy)]
 pub struct Picture {
-    shader: ShaderBindingId,
+    shader: ShaderRegistration,
     size: [u32; 2],
 }
 #[derive(Default)]
 pub struct Pictures {
     entries: Vec<(NameId, Picture)>,
-    numbers: [[Option<Picture>; 11]; 2],
+    numbers: [[Option<usize>; 11]; 2],
 }
 impl Pictures {
     pub fn load(
         vfs: &Vfs,
-        assets: &mut Assets,
+        owner: &mut ModelAssets,
         rules: RuleSetId,
-        font: FontAssets,
-        settings: ImageSettings,
+        font: &FontAssets,
     ) -> Result<Self, String> {
         let mut result = Self::default();
         if !matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) {
@@ -52,33 +50,37 @@ impl Pictures {
             .collect();
         paths.sort_unstable();
         paths.dedup();
-        let mut images = Images::new(vfs, assets, rules, rules, settings, None)
-            .map_err(|e| format!("HUD images: {e:?}"))?;
-        for path in paths {
-            let loaded = images
-                .indexed_pcx(
-                    path,
-                    palette,
-                    Some(255),
-                    None,
-                    ImageUse {
-                        sampler: bitmap_sampler(),
-                        ..ImageUse::pic()
-                    },
-                )
-                .map_err(|e| format!("{e:?}"))
-                .and_then(|image| {
-                    bitmap_shader(&mut images, path, image, bitmap_sampler(), None)
-                        .map_err(str::to_owned)
-                });
-            match loaded {
-                Ok(shader) => result.register(images.assets, path, shader)?,
-                Err(error) => {
-                    qa_console::logger::console(format_args!("HUD picture {path}: {error}\n"))
+        owner.graphic_images(vfs, font.profile, |images| {
+            for path in paths {
+                let loaded = images
+                    .indexed_pcx(
+                        path,
+                        palette,
+                        Some(255),
+                        None,
+                        ImageUse {
+                            sampler: bitmap_sampler(),
+                            ..ImageUse::pic()
+                        },
+                    )
+                    .map_err(|e| format!("{e:?}"))
+                    .and_then(|image| {
+                        bitmap_shader(images, path, image, bitmap_sampler(), None)
+                            .map_err(str::to_owned)
+                    });
+                match loaded {
+                    Ok(shader) => result.register_receipt(images.assets, path, shader)?,
+                    Err(error) => {
+                        qa_console::logger::console(format_args!("HUD picture {path}: {error}\n"))
+                    }
                 }
             }
-        }
+            Ok(())
+        })?;
         Ok(result)
+    }
+    pub(crate) fn registrations(&self) -> impl Iterator<Item = &ShaderRegistration> + Clone {
+        self.entries.iter().map(|entry| &entry.1.shader)
     }
     /// Called only during cold registration, never from layout execution.
     pub fn register(
@@ -87,8 +89,19 @@ impl Pictures {
         path: &str,
         shader: ShaderBindingId,
     ) -> Result<(), String> {
+        let registration = assets
+            .shader_registration(path.as_bytes(), shader)
+            .map_err(str::to_owned)?;
+        self.register_receipt(assets, path, registration)
+    }
+    fn register_receipt(
+        &mut self,
+        assets: &mut Assets,
+        path: &str,
+        shader: ShaderRegistration,
+    ) -> Result<(), String> {
         let image = assets
-            .shader_binding(shader)
+            .shader_binding(shader.shader)
             .and_then(|binding| assets.material(binding.material))
             .and_then(|m| m.stages.first())
             .and_then(|stage| {
@@ -99,10 +112,8 @@ impl Pictures {
                 }
             })
             .ok_or("HUD picture needs an image shader")?;
-        let picture = Picture {
-            shader,
-            size: [image.width, image.height],
-        };
+        let size = [image.width, image.height];
+        let picture = Picture { shader, size };
         let name = assets.intern_name(path).map_err(str::to_owned)?;
         match self
             .entries
@@ -120,12 +131,12 @@ impl Pictures {
                 } else {
                     write!(name, "{prefix}_{digit}").map_err(|_| "HUD number name")?;
                 }
-                self.numbers[color][digit] = self.find(assets, name.as_str());
+                self.numbers[color][digit] = self.find_index(assets, name.as_str());
             }
         }
         Ok(())
     }
-    fn find(&self, assets: &Assets, name: &str) -> Option<Picture> {
+    fn find_index(&self, assets: &Assets, name: &str) -> Option<usize> {
         if name.is_empty() {
             return None;
         }
@@ -140,10 +151,12 @@ impl Pictures {
             .entries
             .binary_search_by_key(&id.0, |entry| entry.0.0)
             .ok()?;
-        Some(self.entries[index].1)
+        Some(index)
     }
     pub fn picture(
         &self,
+        shaders: ShaderView<'_>,
+        font: &FontAssets,
         assets: &Assets,
         name: &str,
         frame: &mut Frame,
@@ -156,14 +169,18 @@ impl Pictures {
         if name.is_empty() {
             return;
         }
-        if let Some(picture) = self.find(assets, name) {
-            picture.draw(frame, x, y, viewport, remaining, stats);
+        if let Some(index) = self.find_index(assets, name) {
+            self.entries[index]
+                .1
+                .draw(shaders, font, frame, x, y, viewport, remaining, stats);
         } else {
             stats.missing_picture += 1;
         }
     }
     pub fn number(
         &self,
+        shaders: ShaderView<'_>,
+        font: &FontAssets,
         frame: &mut Frame,
         x: i32,
         y: i32,
@@ -191,8 +208,10 @@ impl Pictures {
             } else {
                 usize::from(digit - b'0')
             };
-            if let Some(picture) = self.numbers[usize::from(alternate)][digit] {
-                picture.draw(frame, x, y, viewport, remaining, stats);
+            if let Some(index) = self.numbers[usize::from(alternate)][digit] {
+                self.entries[index]
+                    .1
+                    .draw(shaders, font, frame, x, y, viewport, remaining, stats);
             } else {
                 stats.missing_picture += 1;
             }
@@ -203,6 +222,8 @@ impl Pictures {
 impl Picture {
     fn draw(
         self,
+        shaders: ShaderView<'_>,
+        font: &FontAssets,
         frame: &mut Frame,
         x: i32,
         y: i32,
@@ -210,11 +231,15 @@ impl Picture {
         remaining: &mut usize,
         stats: &mut HudStats,
     ) {
+        let Some(shader) = font.graphic(shaders, &self.shader) else {
+            stats.rejected += 1;
+            return;
+        };
         let Some(draw) = (Draw2d {
             rect: [x as f32, y as f32, self.size[0] as f32, self.size[1] as f32],
             texcoords: [0., 0., 1., 1.],
             color: [255; 4],
-            shader: self.shader.into(),
+            shader,
         })
         .clipped(viewport) else {
             return;
