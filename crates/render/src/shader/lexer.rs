@@ -22,14 +22,16 @@ pub(super) struct LexError {
 
 /// COM_Compress removes comments before COM_ParseExt. In particular, line
 /// breaks inside block comments do not terminate animMap/tcMod arguments.
-pub(super) fn lex(bytes: &[u8]) -> Result<Vec<Token>, LexError> {
-    if std::str::from_utf8(bytes).is_err() {
-        return Err(LexError {
-            line: 1,
-            kind: DiagnosticKind::InvalidUtf8,
-        });
-    }
+pub(super) struct Lexed {
+    pub tokens: Vec<Token>,
+    pub error: Option<LexError>,
+}
+pub(super) fn lex(bytes: &[u8]) -> Lexed {
     let mut tokens = Vec::new();
+    let error = lex_into(bytes, &mut tokens).err();
+    Lexed { tokens, error }
+}
+fn lex_into(bytes: &[u8], tokens: &mut Vec<Token>) -> Result<(), LexError> {
     let mut at = 0;
     let mut line = 1;
     let mut newline = false;
@@ -98,6 +100,16 @@ pub(super) fn lex(bytes: &[u8]) -> Result<Vec<Token>, LexError> {
                 at += 1;
             }
             if at == bytes.len() {
+                let text = String::from_utf8(text).map_err(|_| LexError {
+                    line: first_line,
+                    kind: DiagnosticKind::InvalidUtf8,
+                })?;
+                tokens.push(Token {
+                    text,
+                    kind,
+                    line: first_line,
+                    newline_before: before,
+                });
                 return Err(LexError {
                     line: first_line,
                     kind: DiagnosticKind::UnterminatedQuote,
@@ -119,7 +131,21 @@ pub(super) fn lex(bytes: &[u8]) -> Result<Vec<Token>, LexError> {
                     break;
                 }
                 if bytes[at..].starts_with(b"/*") {
-                    skip_block(bytes, &mut at, &mut line)?;
+                    if let Err(error) = skip_block(bytes, &mut at, &mut line) {
+                        if !text.is_empty() {
+                            let text = String::from_utf8(text).map_err(|_| LexError {
+                                line: first_line,
+                                kind: DiagnosticKind::InvalidUtf8,
+                            })?;
+                            tokens.push(Token {
+                                text,
+                                kind,
+                                line: first_line,
+                                newline_before: before,
+                            });
+                        }
+                        return Err(error);
+                    }
                     continue;
                 }
                 text.push(bytes[at]);
@@ -143,7 +169,7 @@ pub(super) fn lex(bytes: &[u8]) -> Result<Vec<Token>, LexError> {
             newline_before: before,
         });
     }
-    Ok(tokens)
+    Ok(())
 }
 fn skip_block(bytes: &[u8], at: &mut usize, line: &mut usize) -> Result<(), LexError> {
     let first_line = *line;

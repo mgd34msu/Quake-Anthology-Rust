@@ -151,6 +151,7 @@ fn material(
     };
     let light = Stage {
         texture: StageTexture::Lightmap,
+        is_lightmap: true,
         texgen: TexCoordGen::Lightmap,
         rgb_gen: RgbGen::IdentityLighting,
         sampler: Sampler {

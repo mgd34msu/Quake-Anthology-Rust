@@ -10,10 +10,9 @@ use crate::{
     Assets, BlendPhase, CpuPresentation, LightStyle, PaletteOperation, PaletteTransform,
     PerspectiveStep, Refdef,
     assets::{
-        CubeSkyParams, DepthFunc, Filter, Flow, ImageId, MaterialId, MaterialSettings,
-        NativeDefaultKind, Sampler, ShaderBinding, ShaderBindingId, ShaderRegistration, Sky,
-        SkyDistance, SoftwareTiled, Stage, StageTexture, TcMod, TextureIntensity, UvWarp, Wrap,
-        upload,
+        CubeSkyParams, DepthFunc, Flow, ImageId, MaterialId, MaterialSettings, NativeDefaultKind,
+        Sampler, ShaderBinding, ShaderBindingId, ShaderRegistration, Sky, SkyDistance,
+        SoftwareTiled, Stage, StageTexture, TcMod, TextureIntensity, UvWarp, Wrap, upload,
     },
     lightmap::{
         Atlas, AtlasBuilder, AtlasRegion, LightmapConversion, LightmapError, Q1GlScale,
@@ -21,7 +20,7 @@ use crate::{
     },
     shader::{
         AlphaFunc, AlphaGen, BlendFactor, Cull, Deform, RgbGen, ShaderCatalog, ShaderDef,
-        StageBlend, TexCoordGen, TextureMap, canonical_path,
+        StageBlend, TexCoordGen, canonical_path,
     },
     sky::{CloudSphere, LayeredSphere, split_layered_sky},
     surface_cache::{IndexedLighting, IndexedTexture},
@@ -852,6 +851,24 @@ fn compile_presentation(
                 .map(|(mip, name)| mip.borrowed(name))
         })
         .collect::<Vec<_>>();
+    // Resolve authored overrides once, before generated resources are admitted.
+    // Legacy texture names use the same textures/ namespace as their override lookup.
+    let definitions = source
+        .surfaces
+        .iter()
+        .map(|surface| {
+            let raw =
+                source_surface_name(source, surface, &texture_names, &info_names, &shader_names)
+                    .ok()?;
+            let raw = std::str::from_utf8(raw).ok()?;
+            let name = if geometry_source == RuleSetId::Quake3 {
+                canonical_path(raw)
+            } else {
+                canonical_path(&format!("textures/{raw}"))
+            };
+            catalog.find_canonical(&name)
+        })
+        .collect::<Vec<_>>();
     let presentation_rules = profile.rules;
     let mut image_state = ImagesState::new(
         geometry_source,
@@ -866,7 +883,9 @@ fn compile_presentation(
             transparent_index: Some(255),
         }),
     )?;
-    let native_default = if geometry_source == RuleSetId::Quake3 || request.native_default.is_some()
+    let native_default = if geometry_source == RuleSetId::Quake3
+        || request.native_default.is_some()
+        || definitions.iter().any(Option::is_some)
     {
         Some(native_default_shader(
             &mut image_state,
@@ -924,7 +943,12 @@ fn compile_presentation(
         }
     }
     let mut sun = None;
-    for (surface, &kind) in source.surfaces.iter().zip(&source.legacy_kinds) {
+    for ((surface, &kind), definition) in source
+        .surfaces
+        .iter()
+        .zip(&source.legacy_kinds)
+        .zip(definitions)
+    {
         let (warp, sky) = kind;
         if surface.no_draw {
             let raw = match source_surface_name(
@@ -1064,46 +1088,48 @@ fn compile_presentation(
         if warp {
             scale = [1.0 / 64.0; 2];
         }
-        let legacy_shader_name = (!matches!(geometry_source, RuleSetId::Quake3))
-            .then(|| canonical_path(&format!("textures/{name}")));
-        let definition = catalog.find_canonical(legacy_shader_name.as_deref().unwrap_or(&name));
+        let raw = source_surface_name(source, surface, &texture_names, &info_names, &shader_names)?;
+        let lightmap = lightmaps[surface.source_id as usize].unwrap_or(ImageId(0));
         let mut named_registration = None;
-        let material = if let Some(definition) = definition.filter(|d| d.valid) {
-            if let Some(parameters) = definition.sun {
-                sun = Some(parameters.direction());
-            }
-            compile_definition(definition, &mut images)?
+        let material = if let Some(definition) = definition {
+            let compiled = compile_definition(
+                definition,
+                &mut images,
+                NamedShaderLighting {
+                    source: surface.light_source,
+                    lightmap,
+                },
+            )?;
+            sun = compiled.sun.map(|sun| sun.direction()).or(sun);
+            let mut registration = images
+                .assets
+                .shader_registration_value(
+                    raw,
+                    ShaderBinding {
+                        lightmap,
+                        ..ShaderBinding::material(compiled.material, surface.light_source)
+                    },
+                    compiled.defaulted,
+                )
+                .map_err(WorldMaterialError::Boundary)?;
+            registration.sun = compiled.sun;
+            named_registration = Some(registration);
+            compiled.material
         } else {
-            if definition.is_some() {
-                diagnostics.push(format!("native shader fallback: {name}"));
-            }
             if matches!(geometry_source, RuleSetId::Quake3) {
-                if definition.is_none() {
-                    let raw = source_surface_name(
-                        source,
-                        surface,
-                        &texture_names,
-                        &info_names,
-                        &shader_names,
-                    )?;
-                    let registration = compile_named_binding(
-                        catalog,
-                        raw,
-                        true,
-                        NamedShaderLighting {
-                            source: surface.light_source,
-                            lightmap: lightmaps[surface.source_id as usize].unwrap_or(ImageId(0)),
-                        },
-                        &mut images,
-                    )?;
-                    let material = registration.shader.material;
-                    named_registration = Some(registration);
-                    material
-                } else {
-                    let image =
-                        images.raster(&name, ImageUse::default(), images.raster_target())?;
-                    default_material(&name, image, surface.light_source, &mut images)?
-                }
+                let registration = compile_named_binding(
+                    catalog,
+                    raw,
+                    true,
+                    NamedShaderLighting {
+                        source: surface.light_source,
+                        lightmap,
+                    },
+                    &mut images,
+                )?;
+                let material = registration.shader.material;
+                named_registration = Some(registration);
+                material
             } else {
                 legacy_material(
                     &name,
@@ -1133,7 +1159,6 @@ fn compile_presentation(
             .then_some(lightmap_conversion),
             styled_surface: None,
         };
-        let raw = source_surface_name(source, surface, &texture_names, &info_names, &shader_names)?;
         let registration = match named_registration {
             Some(registration) => registration.map_shader(|_| binding),
             None => images
@@ -1489,6 +1514,7 @@ fn default_material(
         LightSource::Page(_) | LightSource::ExternalPage(_) | LightSource::Samples => vec![
             Stage {
                 texture: StageTexture::Lightmap,
+                is_lightmap: true,
                 texgen: TexCoordGen::Lightmap,
                 sampler: Sampler {
                     wrap: Wrap::Clamp,
@@ -1649,23 +1675,13 @@ fn compile_named_binding(
     let display = std::str::from_utf8(crate::shader::registration_key(raw))
         .map_err(|_| WorldMaterialError::Boundary("invalid shader name"))?;
     let definition = catalog.find_canonical(&canonical_path(display));
-    if definition.is_some_and(|definition| !definition.valid) {
-        return Err(WorldMaterialError::Shader("invalid shader definition"));
-    }
     let mut defaulted = None;
+    let mut sun = None;
     let material = if let Some(definition) = definition {
-        let mut definition = definition.clone();
-        if !matches!(
-            lighting.source,
-            LightSource::Page(_) | LightSource::ExternalPage(_) | LightSource::Samples
-        ) {
-            for stage in &mut definition.stages {
-                if stage.map == Some(TextureMap::Lightmap) {
-                    stage.map = Some(TextureMap::White);
-                }
-            }
-        }
-        compile_definition(&definition, images)?
+        let compiled = compile_definition(definition, images, lighting)?;
+        defaulted = compiled.defaulted;
+        sun = compiled.sun;
+        compiled.material
     } else {
         let image = images.raster(
             image,
@@ -1695,7 +1711,17 @@ fn compile_named_binding(
                 defaulted = Some(kind);
                 images
                     .assets
-                    .register_native_default_material(display, kind)
+                    .register_native_material(
+                        display,
+                        crate::assets::NativeMaterialFinish {
+                            stages: &[],
+                            settings: MaterialSettings {
+                                sort: 7.,
+                                ..Default::default()
+                            },
+                            has_lightmap: false,
+                        },
+                    )
                     .map_err(WorldMaterialError::Boundary)?
             }
             Err(error) => return Err(error.into()),
@@ -1703,151 +1729,514 @@ fn compile_named_binding(
     };
     let mut binding = ShaderBinding::material(material, lighting.source);
     binding.lightmap = lighting.lightmap;
-    images
+    let mut registration = images
         .assets
         .shader_registration_value(raw, binding, defaulted)
-        .map_err(WorldMaterialError::Boundary)
+        .map_err(WorldMaterialError::Boundary)?;
+    registration.sun = sun;
+    Ok(registration)
+}
+
+#[derive(Clone, Copy)]
+enum BundleImage {
+    Image(ImageId),
+    Lightmap,
+}
+struct ShaderSlot {
+    active: bool,
+    images: [Option<BundleImage>; crate::shader::MAX_ANIMATIONS],
+    count: usize,
+    frequency: f32,
+    stage: Stage,
+    rgb: Option<RgbGen>,
+    rgb_wave: crate::shader::Waveform,
+    alpha_wave: crate::shader::Waveform,
+    vectors: [[f32; 3]; 2],
+    tcgen: bool,
+    texmods: usize,
+    source: Option<BlendFactor>,
+    destination: Option<BlendFactor>,
+    pending_depth: bool,
+    depth_explicit: bool,
+    pending_alpha: AlphaFunc,
+    pending_func: DepthFunc,
+}
+impl ShaderSlot {
+    fn new() -> Self {
+        let wave = crate::shader::Waveform {
+            function: crate::shader::WaveFunction::Sin,
+            base: 0.,
+            amplitude: 0.,
+            phase: 0.,
+            frequency: 0.,
+        };
+        Self {
+            active: true,
+            images: [None; crate::shader::MAX_ANIMATIONS],
+            count: 0,
+            frequency: 0.,
+            stage: Stage {
+                depth_write: false,
+                ..Default::default()
+            },
+            rgb: None,
+            rgb_wave: wave,
+            alpha_wave: wave,
+            vectors: [[0.; 3]; 2],
+            tcgen: false,
+            texmods: 0,
+            source: None,
+            destination: None,
+            pending_depth: true,
+            depth_explicit: false,
+            pending_alpha: AlphaFunc::None,
+            pending_func: DepthFunc::Lequal,
+        }
+    }
+    fn commit(&mut self) -> Result<(), WorldMaterialError> {
+        let rgb = self.rgb.unwrap_or(match self.source {
+            None | Some(BlendFactor::One | BlendFactor::SourceAlpha) => RgbGen::IdentityLighting,
+            _ => RgbGen::Identity,
+        });
+        self.stage.rgb_gen = rgb;
+        self.rgb = Some(rgb);
+        self.stage.blend = match (self.source, self.destination) {
+            (None, None) => None,
+            (Some(BlendFactor::One), Some(BlendFactor::Zero)) => {
+                self.pending_depth = true;
+                None
+            }
+            (Some(source), Some(destination)) => Some(StageBlend {
+                source,
+                destination,
+            }),
+            _ => return Err(WorldMaterialError::Shader("incomplete native blend state")),
+        };
+        self.stage.depth_write = self.pending_depth;
+        self.stage.alpha_test = self.pending_alpha;
+        self.stage.depth_func = self.pending_func;
+        if self.stage.alpha_gen == AlphaGen::Entity
+            && matches!(rgb, RgbGen::Identity | RgbGen::LightingDiffuse)
+        {
+            self.stage.alpha_gen = AlphaGen::Skip
+        }
+        Ok(())
+    }
+}
+fn update_wave(wave: &mut crate::shader::Waveform, update: crate::shader::WaveUpdate) {
+    if let Some(function) = update.function {
+        wave.function = function
+    }
+    for (target, value) in [
+        &mut wave.base,
+        &mut wave.amplitude,
+        &mut wave.phase,
+        &mut wave.frequency,
+    ]
+    .into_iter()
+    .zip(update.values)
+    {
+        if let Some(value) = value {
+            *target = value
+        }
+    }
+}
+pub struct CompiledShader {
+    pub material: MaterialId,
+    pub defaulted: Option<NativeDefaultKind>,
+    pub sun: Option<crate::shader::SunParms>,
 }
 
 pub fn compile_definition(
     definition: &ShaderDef,
     images: &mut Images<'_>,
-) -> Result<MaterialId, WorldMaterialError> {
-    if definition.has_unsupported_runtime() {
-        return Err(WorldMaterialError::Shader(
-            "unsupported runtime shader declaration",
-        ));
-    }
-    // Topology-changing native deforms need the shared geometry builder. Fail
-    // at the resource boundary instead of registering a draw that disappears.
-    if definition.deforms.iter().any(|deform| {
-        matches!(
-            deform,
-            Deform::AutoSprite | Deform::AutoSprite2 | Deform::ProjectionShadow | Deform::Text(_)
-        )
-    }) {
-        return Err(WorldMaterialError::Shader(
-            "shader topology deformation pending",
-        ));
-    }
+    lighting: NamedShaderLighting,
+) -> Result<CompiledShader, WorldMaterialError> {
+    use crate::shader::{HeaderOp, ShaderAction, ShaderFailure, ShaderMap, StageOp};
     let mut settings = MaterialSettings {
-        cull: definition.cull,
-        sort: definition.sort,
-        polygon_offset: definition.polygon_offset,
-        clamp_time: definition.clamp_time,
-        fog: definition.fog,
-        surface_flags: definition.surface_flags,
-        content_flags: definition.content_flags,
-        portal: definition.portal,
-        ..MaterialSettings::default()
+        sort: 0.,
+        ..Default::default()
     };
-    for (slot, &deform) in settings.deforms.iter_mut().zip(definition.deforms.iter()) {
-        *slot = Some(deform);
+    let mut slots = Vec::<ShaderSlot>::with_capacity(crate::shader::MAX_STAGES);
+    let mut no_mips = false;
+    let mut no_picmip = false;
+    let mut reason = None;
+    let mut sun = None;
+    let mut deforms = 0;
+    let mut outer = None;
+    let mut inner = None;
+    let mut cloud_height = 512.;
+    let mut sky = false;
+    for op in &definition.ops {
+        match &op.action {
+            ShaderAction::Abort(ShaderFailure::Native) => {
+                reason = Some(crate::assets::ExplicitDefaultReason::Parse);
+                break;
+            }
+            ShaderAction::Abort(ShaderFailure::Limit(_)) => {
+                return Err(WorldMaterialError::Shader("native shader limit exceeded"));
+            }
+            ShaderAction::Abort(ShaderFailure::InvalidData(error)) => {
+                return Err(WorldMaterialError::Shader(error));
+            }
+            ShaderAction::BeginStage => {
+                if slots.len() == crate::shader::MAX_STAGES {
+                    return Err(WorldMaterialError::Shader("native shader stage limit"));
+                }
+                slots.push(ShaderSlot::new());
+            }
+            ShaderAction::EndStage => slots
+                .last_mut()
+                .ok_or(WorldMaterialError::Shader("stage close without stage"))?
+                .commit()?,
+            ShaderAction::EndShader => {
+                if slots.is_empty() && !sky && settings.content_flags & 64 == 0 {
+                    reason = Some(crate::assets::ExplicitDefaultReason::Parse)
+                }
+                break;
+            }
+            ShaderAction::Header(header) => match header {
+                HeaderOp::Cull(value) => settings.cull = *value,
+                HeaderOp::Sort(value) => settings.sort = *value,
+                HeaderOp::SurfaceParm { surface, contents } => {
+                    settings.surface_flags |= surface;
+                    settings.content_flags |= contents
+                }
+                HeaderOp::NoMipmaps => {
+                    no_mips = true;
+                    no_picmip = true
+                }
+                HeaderOp::NoPicmip => no_picmip = true,
+                HeaderOp::PolygonOffset => settings.polygon_offset = true,
+                HeaderOp::EntityMergable => {}
+                HeaderOp::Portal => {
+                    settings.portal = true;
+                    settings.sort = 1.
+                }
+                HeaderOp::ClampTime(value) => settings.clamp_time = Some(*value),
+                HeaderOp::Sun(value) => sun = Some(*value),
+                HeaderOp::SkyOuter(name) => {
+                    if name.is_some() {
+                        outer = load_box(name.as_deref(), Wrap::Clamp, images)?;
+                    }
+                }
+                HeaderOp::SkyHeight(value) => cloud_height = *value,
+                HeaderOp::SkyInner(name) => {
+                    if name.is_some() {
+                        inner = load_box(name.as_deref(), Wrap::Repeat, images)?;
+                    }
+                    sky = true
+                }
+                HeaderOp::FogColor(values) => {
+                    let fog = settings.fog.get_or_insert(crate::shader::FogParms {
+                        color: [0.; 3],
+                        depth_opaque: 0.,
+                    });
+                    for (target, value) in fog.color.iter_mut().zip(values) {
+                        if let Some(value) = value {
+                            *target = *value
+                        }
+                    }
+                }
+                HeaderOp::FogDepth(value) => {
+                    settings
+                        .fog
+                        .get_or_insert(crate::shader::FogParms {
+                            color: [0.; 3],
+                            depth_opaque: 0.,
+                        })
+                        .depth_opaque = *value
+                }
+                HeaderOp::Deform(value) => {
+                    if deforms == settings.deforms.len() {
+                        return Err(WorldMaterialError::Shader("native shader deform limit"));
+                    }
+                    if value.is_some_and(|value| {
+                        matches!(
+                            value,
+                            Deform::AutoSprite
+                                | Deform::AutoSprite2
+                                | Deform::ProjectionShadow
+                                | Deform::Text(_)
+                        )
+                    }) {
+                        return Err(WorldMaterialError::Shader(
+                            "shader topology deformation pending",
+                        ));
+                    }
+                    settings.deforms[deforms] = *value;
+                    deforms += 1;
+                }
+                HeaderOp::Unsupported(declaration) => {
+                    if declaration.effect != crate::shader::DeclarationEffect::CompileOnly {
+                        return Err(WorldMaterialError::Shader(
+                            "unsupported runtime shader declaration",
+                        ));
+                    }
+                }
+            },
+            ShaderAction::Stage(action) => {
+                let slot = slots
+                    .last_mut()
+                    .ok_or(WorldMaterialError::Shader("shader directive without stage"))?;
+                match action {
+                    StageOp::Map(map) => {
+                        let loaded = match map {
+                            ShaderMap::White => Ok((
+                                BundleImage::Image(ImageId(0)),
+                                Some(Sampler {
+                                    mipmaps: false,
+                                    ..Sampler::default()
+                                }),
+                            )),
+                            ShaderMap::Lightmap => {
+                                slot.stage.is_lightmap = true;
+                                Ok((
+                                    if matches!(
+                                        lighting.source,
+                                        LightSource::Page(_)
+                                            | LightSource::ExternalPage(_)
+                                            | LightSource::Samples
+                                    ) {
+                                        BundleImage::Lightmap
+                                    } else {
+                                        BundleImage::Image(ImageId(0))
+                                    },
+                                    Some(Sampler {
+                                        wrap: Wrap::Clamp,
+                                        mipmaps: false,
+                                        ..Sampler::default()
+                                    }),
+                                ))
+                            }
+                            ShaderMap::Image { name, clamp } => images
+                                .raster(
+                                    name,
+                                    ImageUse {
+                                        sampler: Sampler {
+                                            wrap: if *clamp { Wrap::Clamp } else { Wrap::Repeat },
+                                            mipmaps: !no_mips,
+                                            ..Default::default()
+                                        },
+                                        allow_picmip: !no_picmip,
+                                        ..Default::default()
+                                    },
+                                    images.raster_target(),
+                                )
+                                .map(|image| (BundleImage::Image(image.id), Some(image.sampler))),
+                        };
+                        match loaded {
+                            Ok((image, sampler)) => {
+                                slot.images[0] = Some(image);
+                                if let Some(sampler) = sampler {
+                                    slot.stage.sampler = sampler
+                                }
+                            }
+                            Err(ResourceError::Missing(_)) => {
+                                slot.images[0] = None;
+                                reason = Some(crate::assets::ExplicitDefaultReason::ImageMissing);
+                                break;
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    StageOp::AnimationSpeed(value) => slot.frequency = *value,
+                    StageOp::AnimationFrame(name) => {
+                        if slot.count == slot.images.len() {
+                            return Err(WorldMaterialError::Shader(
+                                "native shader animation limit",
+                            ));
+                        }
+                        let loaded = images.raster(
+                            name,
+                            ImageUse {
+                                sampler: Sampler {
+                                    mipmaps: !no_mips,
+                                    ..Default::default()
+                                },
+                                allow_picmip: !no_picmip,
+                                ..Default::default()
+                            },
+                            images.raster_target(),
+                        );
+                        match loaded {
+                            Ok(image) => {
+                                slot.images[slot.count] = Some(BundleImage::Image(image.id));
+                                slot.count += 1;
+                                slot.stage.sampler = image.sampler
+                            }
+                            Err(ResourceError::Missing(_)) => {
+                                slot.images[slot.count] = None;
+                                reason = Some(crate::assets::ExplicitDefaultReason::ImageMissing);
+                                break;
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    StageOp::BlendSource(value) => slot.source = Some(*value),
+                    StageOp::BlendDestination(value) => slot.destination = Some(*value),
+                    StageOp::BlendComplete => {
+                        if !slot.depth_explicit {
+                            slot.pending_depth = false
+                        }
+                    }
+                    StageOp::RgbGen(value) => {
+                        slot.rgb = Some(*value);
+                        slot.stage.rgb_gen = *value;
+                        if *value == RgbGen::Vertex && slot.stage.alpha_gen == AlphaGen::Identity {
+                            slot.stage.alpha_gen = AlphaGen::Vertex
+                        }
+                    }
+                    StageOp::RgbWave(update) => {
+                        update_wave(&mut slot.rgb_wave, *update);
+                        slot.rgb = Some(RgbGen::Wave(slot.rgb_wave));
+                        slot.stage.rgb_gen = RgbGen::Wave(slot.rgb_wave)
+                    }
+                    StageOp::AlphaGen(value) => slot.stage.alpha_gen = *value,
+                    StageOp::AlphaWave(update) => {
+                        update_wave(&mut slot.alpha_wave, *update);
+                        slot.stage.alpha_gen = AlphaGen::Wave(slot.alpha_wave)
+                    }
+                    StageOp::TcGen(value) => {
+                        slot.stage.texgen = *value;
+                        slot.tcgen = true
+                    }
+                    StageOp::TcVector(update) => {
+                        for (target, values) in slot.vectors.iter_mut().zip(update) {
+                            for (target, value) in target.iter_mut().zip(values) {
+                                if let Some(value) = value {
+                                    *target = *value
+                                }
+                            }
+                        }
+                        slot.stage.texgen = TexCoordGen::Vector(slot.vectors);
+                        slot.tcgen = true
+                    }
+                    StageOp::TexMod(value) => {
+                        let target = slot
+                            .stage
+                            .tcmods
+                            .get_mut(slot.texmods)
+                            .ok_or(WorldMaterialError::Shader("native shader texmod limit"))?;
+                        *target = value.map(TcMod::Script);
+                        slot.texmods += 1
+                    }
+                    StageOp::AlphaFunc(value) => slot.pending_alpha = *value,
+                    StageOp::DepthFunc(value) => slot.pending_func = *value,
+                    StageOp::DepthWrite => {
+                        slot.pending_depth = true;
+                        slot.depth_explicit = true
+                    }
+                    StageOp::Detail => slot.stage.detail = true,
+                    StageOp::Unsupported(_) => {
+                        return Err(WorldMaterialError::Shader(
+                            "unsupported runtime shader declaration",
+                        ));
+                    }
+                }
+            }
+        }
     }
-    if let Some(sky) = &definition.sky {
+    if sky {
         settings.sky = Some(Sky::Cube {
-            outer_box: load_box(sky.outer_box.as_deref(), Wrap::Clamp, images)?,
-            inner_box: load_box(sky.inner_box.as_deref(), Wrap::Repeat, images)?,
-            clouds: CloudSphere::native(sky.cloud_height),
+            outer_box: outer,
+            inner_box: inner,
+            clouds: CloudSphere::native(cloud_height),
             rotation: None,
             params: CubeSkyParams::default(),
         });
+        settings.sort = 2.
     }
-    let mut stages = Vec::with_capacity(definition.stages.len());
-    for parsed in &definition.stages {
-        let mut sampler = Sampler {
-            filter: Filter::Linear,
-            mipmaps: !definition.no_mipmaps,
-            ..Sampler::default()
-        };
-        let texture = match parsed
-            .map
-            .as_ref()
-            .ok_or(WorldMaterialError::Shader("shader stage has no map"))?
-        {
-            TextureMap::Image { name, clamp } => {
-                sampler.wrap = if *clamp { Wrap::Clamp } else { Wrap::Repeat };
-                let image = images.raster(
-                    name,
-                    ImageUse {
-                        sampler,
-                        allow_picmip: !definition.no_picmip,
-                        ..ImageUse::default()
-                    },
-                    images.raster_target(),
-                )?;
-                sampler = image.sampler;
-                StageTexture::Image(image.id)
-            }
-            TextureMap::White => {
-                sampler.mipmaps = false;
-                StageTexture::Image(ImageId(0))
-            }
-            TextureMap::Lightmap => {
-                sampler.wrap = Wrap::Clamp;
-                sampler.mipmaps = false;
-                StageTexture::Lightmap
-            }
-            TextureMap::Animation {
-                frequency,
-                images: names,
-            } => {
-                let mut frames = [ImageId(0); 8];
-                for (slot, name) in frames.iter_mut().zip(names.iter()) {
-                    let image = images.raster(
-                        name,
-                        ImageUse {
-                            sampler,
-                            allow_picmip: !definition.no_picmip,
-                            ..ImageUse::default()
-                        },
-                        images.raster_target(),
-                    )?;
-                    *slot = image.id;
-                }
-                StageTexture::Animation {
-                    images: frames,
-                    count: names.len() as u8,
-                    frequency: *frequency,
-                }
-            }
-            TextureMap::Video(_) => {
-                return Err(WorldMaterialError::Shader(
-                    "video shader image decoder pending",
-                ));
-            }
-        };
-        let mut tcmods = [None; 4];
-        for (slot, &modification) in tcmods.iter_mut().zip(parsed.tc_mods.iter()) {
-            *slot = Some(TcMod::Script(modification));
+    if settings.polygon_offset && settings.sort == 0. {
+        settings.sort = 4.
+    }
+    let first_blended = slots.first().is_some_and(|slot| slot.stage.blend.is_some());
+    let mut finish_has_lightmap = false;
+    let mut scan = 0;
+    for slot in &mut slots {
+        if !slot.active {
+            break;
         }
-        let texgen = match (&definition.sky, parsed.tc_gen) {
-            (Some(sky), TexCoordGen::Texture) => TexCoordGen::CloudSky {
-                radius: 4096.0,
-                height: sky.cloud_height,
-            },
-            _ => parsed.tc_gen,
+        scan += 1;
+        if slot.images[0].is_none() {
+            slot.active = false;
+            continue;
+        }
+        if !slot.tcgen {
+            slot.stage.texgen = if slot.stage.is_lightmap {
+                TexCoordGen::Lightmap
+            } else {
+                TexCoordGen::Texture
+            }
+        }
+        finish_has_lightmap |= slot.stage.is_lightmap;
+        if first_blended && slot.stage.blend.is_some() && settings.sort == 0. {
+            settings.sort = if slot.stage.depth_write { 5. } else { 9. }
+        }
+        if slot.rgb.is_none() {
+            slot.stage.rgb_gen = RgbGen::IdentityLighting
+        }
+        if sky && slot.stage.texgen == TexCoordGen::Texture {
+            slot.stage.texgen = TexCoordGen::CloudSky {
+                radius: 4096.,
+                height: cloud_height,
+            }
+        }
+        slot.stage.texture = if slot.count == 0 {
+            match slot.images[0] {
+                Some(BundleImage::Image(id)) => StageTexture::Image(id),
+                Some(BundleImage::Lightmap) => StageTexture::Lightmap,
+                None => continue,
+            }
+        } else {
+            let mut frames = [ImageId(0); crate::shader::MAX_ANIMATIONS];
+            for (target, source) in frames.iter_mut().zip(slot.images.iter()).take(slot.count) {
+                *target = match source {
+                    Some(BundleImage::Image(id)) => *id,
+                    Some(BundleImage::Lightmap) => lighting.lightmap,
+                    None => ImageId(0),
+                }
+            }
+            StageTexture::Animation {
+                images: frames,
+                count: slot.count as u8,
+                frequency: slot.frequency,
+            }
         };
-        stages.push(Stage {
-            texture,
-            sampler,
-            texture_intensity: TextureIntensity::Preserve,
-            blend: parsed.blend,
-            rgb_gen: parsed.rgb_gen,
-            alpha_gen: parsed.alpha_gen,
-            alpha_test: parsed.alpha_func,
-            texgen,
-            tcmods,
-            depth_func: parsed.depth_func,
-            depth_write: parsed.depth_write,
-            detail: parsed.detail,
-        });
     }
-    images
+    if settings.sort == 0. {
+        settings.sort = 3.
+    }
+    if scan == 0 {
+        settings.sort = 7.
+    }
+    let stages = slots
+        .iter()
+        .take_while(|slot| slot.active)
+        .map(|slot| slot.stage)
+        .collect::<Vec<_>>();
+    let material = images
         .assets
-        .register_material(&definition.name, &stages, settings)
-        .map_err(WorldMaterialError::Boundary)
+        .register_native_material(
+            &definition.name,
+            crate::assets::NativeMaterialFinish {
+                stages: &stages,
+                settings,
+                has_lightmap: finish_has_lightmap,
+            },
+        )
+        .map_err(WorldMaterialError::Boundary)?;
+    let defaulted = reason
+        .map(|reason| images.assets.explicit_default(material, reason))
+        .transpose()
+        .map_err(WorldMaterialError::Boundary)?;
+    Ok(CompiledShader {
+        material,
+        defaulted,
+        sun,
+    })
 }
+
 fn load_box(
     name: Option<&str>,
     wrap: Wrap,
@@ -1901,22 +2290,24 @@ fn load_box_with_suffix(
         .iter_mut()
         .zip(crate::sky::CubeFace::ALL.map(crate::sky::CubeFace::suffix))
     {
-        *slot = images
-            .raster(
-                &format!("{name}{separator}{suffix}.tga"),
-                // Native ParseSkyParms forces mips/picmip for box faces even if
-                // the cloud material has nomipmaps/nopicmip.
-                ImageUse {
-                    role: ImageRole::CubeSky,
-                    sampler: Sampler {
-                        wrap,
-                        ..Sampler::default()
-                    },
-                    allow_picmip: true,
+        *slot = match images.raster(
+            &format!("{name}{separator}{suffix}.tga"),
+            // Native ParseSkyParms forces mips/picmip for box faces even if
+            // the cloud material has nomipmaps/nopicmip.
+            ImageUse {
+                role: ImageRole::CubeSky,
+                sampler: Sampler {
+                    wrap,
+                    ..Sampler::default()
                 },
-                images.raster_target(),
-            )?
-            .id;
+                allow_picmip: true,
+            },
+            images.raster_target(),
+        ) {
+            Ok(image) => image.id,
+            Err(ResourceError::Missing(_)) => images.native_default_image()?.id,
+            Err(error) => return Err(error.into()),
+        };
     }
     Ok(Some(result))
 }
@@ -2040,6 +2431,7 @@ fn legacy_material(
     if !warp && alpha.is_none() && light == LightSource::Samples {
         stages.push(Stage {
             texture: StageTexture::Lightmap,
+            is_lightmap: true,
             texgen: TexCoordGen::Lightmap,
             sampler: Sampler {
                 wrap: Wrap::Clamp,

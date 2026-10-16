@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|(_, name)| name.starts_with(b"scripts/") && name.ends_with(b".shader"))
         .count();
     let mut report = format!(
-        "{{\"map\":{map_name:?},\"scripts\":{scripts},\"geometry_surfaces\":{},\"geometry_vertices\":{},\"geometry_boundaries\":{},\"light_samples\":{},\"patch_surfaces\":{},\"definitions\":{},\"invalid_definitions\":{},\"diagnostics\":{},\"error_diagnostics\":{},\"referenced_shaders\":{},\"materials\":[",
+        "{{\"map\":{map_name:?},\"scripts\":{scripts},\"geometry_surfaces\":{},\"geometry_vertices\":{},\"geometry_boundaries\":{},\"light_samples\":{},\"patch_surfaces\":{},\"definitions\":{},\"incomplete_definitions\":{},\"diagnostics\":{},\"error_diagnostics\":{},\"referenced_shaders\":{},\"materials\":[",
         geometry.surfaces.len(),
         geometry.vertices.len(),
         geometry.boundaries.len(),
@@ -65,7 +65,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|s| s.kind == GeometryKind::Patch)
             .count(),
         catalog.definitions.len(),
-        catalog.definitions.iter().filter(|s| !s.valid).count(),
+        catalog
+            .definitions
+            .iter()
+            .filter(|s| !s.is_complete())
+            .count(),
         catalog.diagnostics.len(),
         catalog
             .diagnostics
@@ -74,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .count(),
         map.shaders.len()
     );
-    let (mut scripted, mut invalid, mut unsupported, mut stages) = (0, 0, 0, 0);
+    let (mut scripted, mut incomplete, mut unsupported, mut stages) = (0, 0, 0, 0);
     for (index, shader) in map.shaders.iter().enumerate() {
         if index != 0 {
             report.push(',');
@@ -82,24 +86,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let name = canonical_path(std::str::from_utf8(shader.name)?);
         if let Some(definition) = catalog.find_canonical(&name) {
             scripted += 1;
-            invalid += usize::from(!definition.valid);
+            incomplete += usize::from(!definition.is_complete());
             unsupported += usize::from(definition.has_unsupported_runtime());
-            stages += definition.stages.len();
+            stages += definition
+                .ops
+                .iter()
+                .filter(|op| matches!(op.action, qa_render::shader::ShaderAction::BeginStage))
+                .count();
             write!(
                 report,
-                "{{\"name\":{name:?},\"scripted\":true,\"valid\":{},\"stages\":{},\"deforms\":{},\"no_draw\":{},\"unsupported_runtime\":{},\"declarations\":[",
-                definition.valid,
-                definition.stages.len(),
-                definition.deforms.len(),
+                "{{\"name\":{name:?},\"scripted\":true,\"complete\":{},\"stages\":{},\"deforms\":{},\"no_draw\":{},\"unsupported_runtime\":{},\"declarations\":[",
+                definition.is_complete(),
+                definition
+                    .ops
+                    .iter()
+                    .filter(|op| matches!(op.action, qa_render::shader::ShaderAction::BeginStage))
+                    .count(),
+                definition
+                    .ops
+                    .iter()
+                    .filter(|op| matches!(
+                        op.action,
+                        qa_render::shader::ShaderAction::Header(
+                            qa_render::shader::HeaderOp::Deform(_)
+                        )
+                    ))
+                    .count(),
                 shader.surface_flags & 128 != 0,
                 definition.has_unsupported_runtime()
             )?;
             let mut first = true;
-            for declaration in definition
-                .unsupported
-                .iter()
-                .chain(definition.stages.iter().flat_map(|s| s.unsupported.iter()))
-            {
+            for declaration in definition.ops.iter().filter_map(|op| match &op.action {
+                qa_render::shader::ShaderAction::Header(
+                    qa_render::shader::HeaderOp::Unsupported(declaration),
+                )
+                | qa_render::shader::ShaderAction::Stage(
+                    qa_render::shader::StageOp::Unsupported(declaration),
+                ) => Some(declaration),
+                _ => None,
+            }) {
                 if !first {
                     report.push(',');
                 }
@@ -116,11 +141,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     write!(
         report,
-        "],\"scripted_references\":{scripted},\"invalid_references\":{invalid},\"unsupported_runtime_references\":{unsupported},\"scripted_stages\":{stages},\"rendering_qualified\":false}}\n"
+        "],\"scripted_references\":{scripted},\"incomplete_references\":{incomplete},\"unsupported_runtime_references\":{unsupported},\"scripted_stages\":{stages},\"rendering_qualified\":false}}\n"
     )?;
     qa_platform::files::write(output, report)?;
     println!(
-        "scripts={scripts} definitions={} map_shaders={} scripted={scripted} invalid={invalid} unsupported={unsupported} stages={stages}",
+        "scripts={scripts} definitions={} map_shaders={} scripted={scripted} incomplete={incomplete} unsupported={unsupported} stages={stages}",
         catalog.definitions.len(),
         map.shaders.len()
     );

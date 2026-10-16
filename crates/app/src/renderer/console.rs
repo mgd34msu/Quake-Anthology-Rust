@@ -6,7 +6,9 @@ use qa_core::primitives::RuleSetId;
 use qa_render::{
     Assets, CpuPresentation, Draw2d, Frame, PaletteId, Refdef, ShaderBinding, ShaderBindingId,
     Viewport,
-    assets::{AlphaTest, DepthFunc, Filter, MaterialSettings, Sampler, Stage, StageTexture, Wrap},
+    assets::{
+        AlphaTest, DepthFunc, Filter, ImageId, MaterialSettings, Sampler, Stage, StageTexture, Wrap,
+    },
     material::{
         self,
         resources::{ImageSettings, ImageUse, Images},
@@ -107,17 +109,25 @@ impl ConsoleAssets {
                 .map_err(|error| format!("console shaders: {error:?}"))?;
             for (name, slot) in [("console", &mut console.background)] {
                 let result = if let Some(definition) = catalog.find_canonical(name) {
-                    compile_definition(definition, &mut images)
-                        .map_err(|error| format!("{error:?}"))
-                        .and_then(|material| {
-                            images
-                                .assets
-                                .register_shader_binding(ShaderBinding::material(
-                                    material,
-                                    LightSource::TwoDimensional,
-                                ))
-                                .map_err(str::to_owned)
-                        })
+                    compile_definition(
+                        definition,
+                        &mut images,
+                        material::world_load::NamedShaderLighting {
+                            source: LightSource::TwoDimensional,
+                            lightmap: ImageId(0),
+                        },
+                    )
+                    .map_err(|error| format!("{error:?}"))
+                    .and_then(|compiled| {
+                        let material = compiled.material;
+                        images
+                            .assets
+                            .register_shader_binding(ShaderBinding::material(
+                                material,
+                                LightSource::TwoDimensional,
+                            ))
+                            .map_err(str::to_owned)
+                    })
                 } else {
                     images
                         .raster(name, ImageUse::pic(), None)
@@ -383,12 +393,19 @@ fn register_font(
             material::load_catalog(vfs).map_err(|error| format!("console shaders: {error:?}"))?;
         let name = "gfx/2d/bigchars";
         if let Some(definition) = catalog.find_canonical(name) {
-            let material =
-                compile_definition(definition, images).map_err(|error| format!("{error:?}"))?;
+            let material = compile_definition(
+                definition,
+                images,
+                material::world_load::NamedShaderLighting {
+                    source: LightSource::TwoDimensional,
+                    lightmap: ImageId(0),
+                },
+            )
+            .map_err(|error| format!("{error:?}"))?;
             return images
                 .assets
                 .register_shader_binding(ShaderBinding::material(
-                    material,
+                    material.material,
                     LightSource::TwoDimensional,
                 ))
                 .map_err(str::to_owned);

@@ -35,6 +35,7 @@ fn nonparallel_binding_ids_select_distinct_lightmaps_from_one_material() {
             "shared lightmap stages",
             &[Stage {
                 texture: StageTexture::Lightmap,
+                is_lightmap: true,
                 ..stage(qa_render::ImageId(0))
             }],
             Default::default(),
@@ -531,5 +532,109 @@ fn world_registration_rejects_native_metadata_that_disagrees_with_its_actual_bod
             .unwrap()
             .shader_registrations(),
         &[registration]
+    );
+}
+
+#[test]
+fn explicit_native_default_reason_cannot_be_transplanted_to_another_material() {
+    use qa_content::vfs::Vfs;
+    use qa_core::primitives::RuleSetId;
+    use qa_render::{
+        material::{
+            resources::{ImageSettings, Images},
+            world_load::{NamedShaderLighting, compile_named_shader},
+        },
+        shader::{ShaderSource, parse_sources},
+        world::{PreparedShader, WorldPresentationInput},
+    };
+    let vfs = Vfs::default();
+    let catalog = parse_sources(&[ShaderSource {
+        name: "default-proof.shader",
+        bytes: b"failed { { map $whiteimage\n } bogus\n }",
+    }]);
+    let mut assets = Assets::load().unwrap();
+    let original = {
+        let mut images = Images::new(
+            &vfs,
+            &mut assets,
+            RuleSetId::Quake3,
+            RuleSetId::Quake3,
+            ImageSettings::native(RuleSetId::Quake3),
+            None,
+        )
+        .unwrap();
+        compile_named_shader(
+            &catalog,
+            b"failed",
+            true,
+            NamedShaderLighting {
+                source: LightSource::None,
+                lightmap: qa_render::ImageId(0),
+            },
+            &mut images,
+        )
+        .unwrap()
+    };
+    assert!(original.defaulted.is_some());
+    let original_binding = *assets.shader_binding(original.shader).unwrap();
+    let material = assets.material(original_binding.material).unwrap();
+    let stages = material.stages.to_vec();
+    let settings = material.settings;
+    assert_eq!(stages.len(), 1);
+    let other_material = assets
+        .register_material("another/body", &stages, settings)
+        .unwrap();
+    assert_ne!(other_material, original_binding.material);
+    let replacement = ShaderBinding::material(other_material, LightSource::None);
+    let surface = SurfaceMaterial {
+        shader: replacement,
+        texture_scale: [1.0; 2],
+    };
+    let prefix = assets.counts();
+    for payload in [
+        PreparedShader::Binding(replacement),
+        PreparedShader::Surface(0),
+    ] {
+        let forged = original.map_shader(|_| payload);
+        let (geometry, visibility) = world_surfaces::inputs(1);
+        assert!(
+            assets
+                .register_world(
+                    geometry,
+                    visibility,
+                    &[WorldPresentationInput {
+                        surfaces: &[surface],
+                        registrations: &[forged],
+                        native_page0: None,
+                        native_default: None,
+                    }],
+                )
+                .is_err()
+        );
+        assert_eq!(assets.counts(), prefix);
+    }
+    let (geometry, visibility) = world_surfaces::inputs(1);
+    let world = assets
+        .register_world(
+            geometry,
+            visibility,
+            &[WorldPresentationInput {
+                surfaces: &[SurfaceMaterial {
+                    shader: original_binding,
+                    texture_scale: [1.0; 2],
+                }],
+                registrations: &[original.map_shader(|_| PreparedShader::Surface(0))],
+                native_page0: None,
+                native_default: None,
+            }],
+        )
+        .unwrap();
+    let presentation = assets.world(world).unwrap().presentations()[0];
+    assert_eq!(
+        assets
+            .world_presentation(presentation)
+            .unwrap()
+            .shader_registrations(),
+        &[original]
     );
 }

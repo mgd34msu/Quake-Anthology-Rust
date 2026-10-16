@@ -8,60 +8,61 @@ pub fn parse_sources(sources: &[ShaderSource<'_>]) -> ShaderCatalog {
     let mut definitions = Vec::new();
     let mut diagnostics = Vec::new();
     for source in sources {
-        match lexer::lex(source.bytes) {
-            Ok(tokens) => {
-                let mut parser = Parser {
-                    source: source.name,
-                    tokens: &tokens,
-                    at: 0,
-                    shader: None,
-                    diagnostics: &mut diagnostics,
-                };
-                while let Some(name) = parser.next(true) {
-                    if name.kind != Kind::Text {
-                        parser.report(
-                            name.line,
-                            Severity::Error,
-                            DiagnosticKind::Expected {
-                                expected: "shader name",
-                                found: name.text.clone(),
-                            },
-                        );
-                        continue;
-                    }
-                    parser.shader = Some(canonical_path(&name.text));
-                    let Some(open) = parser.next(true) else {
-                        parser.report(
-                            name.line,
-                            Severity::Error,
-                            DiagnosticKind::Expected {
-                                expected: "{",
-                                found: String::new(),
-                            },
-                        );
-                        break;
-                    };
-                    if open.kind != Kind::Open {
-                        parser.report(
-                            open.line,
-                            Severity::Error,
-                            DiagnosticKind::Expected {
-                                expected: "{",
-                                found: open.text.clone(),
-                            },
-                        );
-                        continue;
-                    }
-                    definitions.push(parser.definition(name));
-                }
+        let lexed = lexer::lex(source.bytes);
+        let mut parser = Parser {
+            source: source.name,
+            tokens: &lexed.tokens,
+            at: 0,
+            newline_consumed: false,
+            depth: 0,
+            shader: None,
+            diagnostics: &mut diagnostics,
+        };
+        while let Some(name) = parser.next(true) {
+            if name.kind != Kind::Text {
+                parser.report(
+                    name.line,
+                    Severity::Error,
+                    DiagnosticKind::Expected {
+                        expected: "shader name",
+                        found: name.text.clone(),
+                    },
+                );
+                continue;
             }
-            Err(error) => diagnostics.push(Diagnostic {
+            parser.shader = Some(canonical_path(&name.text));
+            let Some(open) = parser.next(true) else {
+                parser.report(
+                    name.line,
+                    Severity::Error,
+                    DiagnosticKind::Expected {
+                        expected: "{",
+                        found: String::new(),
+                    },
+                );
+                break;
+            };
+            if open.kind != Kind::Open {
+                parser.report(
+                    open.line,
+                    Severity::Error,
+                    DiagnosticKind::Expected {
+                        expected: "{",
+                        found: open.text.clone(),
+                    },
+                );
+                continue;
+            }
+            definitions.push(parser.definition(name));
+        }
+        if let Some(error) = lexed.error {
+            diagnostics.push(Diagnostic {
                 source: source.name.into(),
                 shader: None,
                 line: error.line,
                 severity: Severity::Error,
                 kind: error.kind,
-            }),
+            });
         }
     }
     definitions.sort_by(|a, b| a.name.cmp(&b.name));
@@ -94,17 +95,26 @@ struct Parser<'t, 's, 'd> {
     source: &'s str,
     tokens: &'t [Token],
     at: usize,
+    newline_consumed: bool,
+    depth: usize,
     shader: Option<String>,
     diagnostics: &'d mut Vec<Diagnostic>,
 }
 impl<'t> Parser<'t, '_, '_> {
     fn next(&mut self, line_breaks: bool) -> Option<&'t Token> {
         let token = self.tokens.get(self.at)?;
-        if !line_breaks && token.newline_before {
+        if !line_breaks && token.newline_before && !self.newline_consumed {
+            self.newline_consumed = true;
             return None;
         }
         self.at += 1;
-        Some(token)
+        self.newline_consumed = false;
+        match token.kind {
+            Kind::Open => self.depth += 1,
+            Kind::Close => self.depth = self.depth.saturating_sub(1),
+            _ => {}
+        }
+        (!token.text.is_empty()).then_some(token)
     }
     fn report(&mut self, line: usize, severity: Severity, kind: DiagnosticKind) {
         self.diagnostics.push(Diagnostic {
@@ -116,24 +126,15 @@ impl<'t> Parser<'t, '_, '_> {
         });
     }
     fn argument(&mut self, directive: &str, line: usize) -> Option<&'t Token> {
-        let Some(token) = self.tokens.get(self.at) else {
+        let token = self.next(false);
+        if token.is_none() {
             self.report(
                 line,
                 Severity::Error,
                 DiagnosticKind::MissingArgument(directive.into()),
-            );
-            return None;
-        };
-        if token.newline_before || token.kind != Kind::Text {
-            self.report(
-                line,
-                Severity::Error,
-                DiagnosticKind::MissingArgument(directive.into()),
-            );
-            return None;
+            )
         }
-        self.at += 1;
-        Some(token)
+        token
     }
     fn number(&mut self, directive: &str, line: usize) -> Option<f32> {
         let token = self.argument(directive, line)?;
@@ -147,51 +148,6 @@ impl<'t> Parser<'t, '_, '_> {
         let mut values = [0.0; N];
         for value in &mut values {
             *value = self.number(directive, line)?
-        }
-        Some(values)
-    }
-    fn vector(&mut self, directive: &str, line: usize) -> Option<[f32; 3]> {
-        let Some(token) = self.next(false) else {
-            self.report(
-                line,
-                Severity::Error,
-                DiagnosticKind::MissingArgument(directive.into()),
-            );
-            return None;
-        };
-        if token.kind != Kind::LeftParen {
-            self.report(
-                token.line,
-                Severity::Error,
-                DiagnosticKind::Expected {
-                    expected: "(",
-                    found: token.text.clone(),
-                },
-            );
-            return None;
-        }
-        let values = self.numbers(directive, line)?;
-        let Some(token) = self.next(false) else {
-            self.report(
-                line,
-                Severity::Error,
-                DiagnosticKind::Expected {
-                    expected: ")",
-                    found: String::new(),
-                },
-            );
-            return None;
-        };
-        if token.kind != Kind::RightParen {
-            self.report(
-                token.line,
-                Severity::Error,
-                DiagnosticKind::Expected {
-                    expected: ")",
-                    found: token.text.clone(),
-                },
-            );
-            return None;
         }
         Some(values)
     }
@@ -245,54 +201,18 @@ impl<'t> Parser<'t, '_, '_> {
             },
         );
     }
-    fn skip_section(&mut self) {
-        let mut depth = 1;
-        while let Some(token) = self.next(true) {
-            match token.kind {
-                Kind::Open => depth += 1,
-                Kind::Close => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return;
-                    }
-                }
-                _ => {}
-            }
+    fn emit(ops: &mut Vec<ShaderOp>, line: usize, action: ShaderAction) {
+        ops.push(ShaderOp { line, action });
+    }
+    fn recover(&mut self, _depth: usize) {
+        while self.depth != 0 && self.at < self.tokens.len() {
+            self.next(true);
         }
     }
-
-    #[expect(
-        clippy::collapsible_if,
-        reason = "Keep tr_shader.c skyParms outer/height/inner and fogParms color/depth token reads as separate failure phases."
-    )]
     fn definition(&mut self, name: &Token) -> ShaderDef {
-        let diagnostic_start = self.diagnostics.len();
-        let mut definition = ShaderDef {
-            name: canonical_path(&name.text),
-            source: self.source.into(),
-            line: name.line,
-            valid: true,
-            cull: Cull::Front,
-            sort: 0.0,
-            sort_explicit: false,
-            surface_flags: 0,
-            content_flags: 0,
-            sky: None,
-            fog: None,
-            sun: None,
-            polygon_offset: false,
-            no_mipmaps: false,
-            no_picmip: false,
-            entity_mergable: false,
-            portal: false,
-            clamp_time: None,
-            stages: Box::new([]),
-            deforms: Box::new([]),
-            unsupported: Box::new([]),
-        };
-        let mut stages = Vec::new();
-        let mut deforms = Vec::new();
-        let mut unsupported = Vec::new();
+        let mut ops = Vec::new();
+        let mut stages = 0;
+        let mut deforms = 0;
         loop {
             let Some(token) = self.next(true) else {
                 self.report(
@@ -303,228 +223,177 @@ impl<'t> Parser<'t, '_, '_> {
                         found: String::new(),
                     },
                 );
+                Self::emit(
+                    &mut ops,
+                    name.line,
+                    ShaderAction::Abort(ShaderFailure::Native),
+                );
                 break;
             };
-            match token.kind {
-                Kind::Close => break,
-                Kind::Open => {
-                    if stages.len() == MAX_STAGES {
-                        self.report(
-                            token.line,
-                            Severity::Error,
-                            DiagnosticKind::LimitExceeded(LimitKind::Stages),
-                        );
-                        self.skip_section();
-                    } else {
-                        stages.push(self.stage(token.line))
-                    }
-                    continue;
-                }
-                Kind::Text => {}
-                _ => {
+            let line = token.line;
+            if token.kind == Kind::Close {
+                Self::emit(&mut ops, line, ShaderAction::EndShader);
+                break;
+            }
+            if token.kind == Kind::Open {
+                if stages == MAX_STAGES {
                     self.report(
-                        token.line,
+                        line,
                         Severity::Error,
-                        DiagnosticKind::Expected {
-                            expected: "shader declaration",
-                            found: token.text.clone(),
-                        },
+                        DiagnosticKind::LimitExceeded(LimitKind::Stages),
                     );
-                    continue;
+                    Self::emit(
+                        &mut ops,
+                        line,
+                        ShaderAction::Abort(ShaderFailure::Limit(LimitKind::Stages)),
+                    );
+                    self.recover(2);
+                    break;
                 }
+                stages += 1;
+                Self::emit(&mut ops, line, ShaderAction::BeginStage);
+                if let Err((failure, depth)) = self.stage(&mut ops, line) {
+                    Self::emit(&mut ops, line, ShaderAction::Abort(failure));
+                    self.recover(depth);
+                    break;
+                }
+                continue;
             }
             let key = token.text.to_ascii_lowercase();
+            let mut emit = |op| Self::emit(&mut ops, line, ShaderAction::Header(op));
             match key.as_str() {
                 "cull" => {
-                    if let Some(value) = self.argument(&key, token.line) {
-                        definition.cull = match value.text.to_ascii_lowercase().as_str() {
-                            "none" | "twosided" | "disable" => Cull::None,
-                            "back" | "backside" | "backsided" => Cull::Back,
-                            _ => {
-                                self.fallback(value, &key);
-                                definition.cull
-                            }
-                        };
+                    if let Some(value) = self.argument(&key, line) {
+                        match value.text.to_ascii_lowercase().as_str() {
+                            "none" | "twosided" | "disable" => emit(HeaderOp::Cull(Cull::None)),
+                            "back" | "backside" | "backsided" => emit(HeaderOp::Cull(Cull::Back)),
+                            _ => self.fallback(value, &key),
+                        }
                     }
                 }
                 "sort" => {
-                    if let Some(value) = self.argument(&key, token.line) {
-                        let (sort, converted) = sort_value(&value.text);
-                        if converted {
+                    if let Some(value) = self.argument(&key, line) {
+                        let (parsed, fallback) = sort_value(&value.text);
+                        if fallback {
                             self.fallback(value, &key)
                         }
-                        definition.sort = sort;
-                        definition.sort_explicit = true;
+                        emit(HeaderOp::Sort(parsed));
                     }
                 }
                 "surfaceparm" => {
-                    if let Some(value) = self.argument(&key, token.line) {
+                    if let Some(value) = self.argument(&key, line) {
                         if let Some((surface, contents)) = surface_parm(&value.text) {
-                            definition.surface_flags |= surface;
-                            definition.content_flags |= contents;
+                            emit(HeaderOp::SurfaceParm { surface, contents })
                         } else {
-                            self.fallback(value, &key);
-                            unsupported.push(UnsupportedDeclaration {
-                                keyword: token.text.clone(),
-                                arguments: vec![value.text.clone()].into_boxed_slice(),
-                                line: token.line,
-                                effect: DeclarationEffect::Unknown,
-                            });
+                            self.fallback(value, &key)
                         }
                     }
                 }
                 "skyparms" => {
-                    if let Some(outer) = self.argument(&key, token.line) {
-                        if let Some(height) = self.number(&key, token.line) {
-                            if let Some(inner) = self.argument(&key, token.line) {
-                                definition.sky = Some(SkyParms {
-                                    outer_box: (outer.text != "-")
-                                        .then(|| canonical_path(&outer.text)),
-                                    cloud_height: if height == 0.0 { 512.0 } else { height },
-                                    inner_box: (inner.text != "-")
-                                        .then(|| canonical_path(&inner.text)),
-                                });
+                    if let Some(outer) = self.argument(&key, line) {
+                        emit(HeaderOp::SkyOuter(
+                            (outer.text != "-").then(|| canonical_path(&outer.text)),
+                        ));
+                        if let Some(height) = self.number(&key, line) {
+                            emit(HeaderOp::SkyHeight(if height == 0. {
+                                512.
+                            } else {
+                                height
+                            }));
+                            if let Some(inner) = self.argument(&key, line) {
+                                emit(HeaderOp::SkyInner(
+                                    (inner.text != "-").then(|| canonical_path(&inner.text)),
+                                ))
                             }
                         }
                     }
                 }
                 "fogparms" => {
-                    if let Some(color) = self.vector(&key, token.line) {
-                        if let Some(depth_opaque) = self.number(&key, token.line) {
-                            definition.fog = Some(FogParms {
-                                color,
-                                depth_opaque,
-                            });
-                        }
+                    let (color, complete) = self.vector_update(&key, line);
+                    emit(HeaderOp::FogColor(color));
+                    if !complete {
+                        Self::emit(&mut ops, line, ShaderAction::Abort(ShaderFailure::Native));
+                        self.recover(1);
+                        break;
                     }
-                    // Native old-gradient arguments are ignored, not generators.
-                    let ignored = self.rest_of_line();
-                    if !ignored.is_empty() {
-                        unsupported.push(UnsupportedDeclaration {
-                            keyword: "fogParms gradient".into(),
-                            arguments: ignored,
-                            line: token.line,
-                            effect: DeclarationEffect::CompileOnly,
-                        });
+                    if let Some(depth) = self.number(&key, line) {
+                        emit(HeaderOp::FogDepth(depth));
+                        self.rest_of_line();
                     }
                 }
                 "q3map_sun" => {
-                    if let Some([r, g, b, intensity, azimuth_degrees, elevation_degrees]) =
-                        self.numbers(&key, token.line)
-                    {
-                        definition.sun = Some(SunParms {
-                            color: [r, g, b],
-                            intensity,
-                            azimuth_degrees,
-                            elevation_degrees,
-                        });
+                    let values: [f32; 6] =
+                        std::array::from_fn(|_| self.number(&key, line).unwrap_or(0.));
+                    let [r, g, b, intensity, azimuth_degrees, elevation_degrees] = values;
+                    emit(HeaderOp::Sun(SunParms {
+                        color: [r, g, b],
+                        intensity,
+                        azimuth_degrees,
+                        elevation_degrees,
+                    }));
+                }
+                "nomipmaps" => emit(HeaderOp::NoMipmaps),
+                "nopicmip" => emit(HeaderOp::NoPicmip),
+                "polygonoffset" => emit(HeaderOp::PolygonOffset),
+                "entitymergable" => emit(HeaderOp::EntityMergable),
+                "portal" => emit(HeaderOp::Portal),
+                "clamptime" => {
+                    if let Some(value) = self.number(&key, line) {
+                        emit(HeaderOp::ClampTime(value))
                     }
                 }
-                "nomipmaps" => {
-                    definition.no_mipmaps = true;
-                    definition.no_picmip = true
-                }
-                "nopicmip" => definition.no_picmip = true,
-                "polygonoffset" => definition.polygon_offset = true,
-                "entitymergable" => definition.entity_mergable = true,
-                "portal" => {
-                    definition.portal = true;
-                    definition.sort = 1.0;
-                    definition.sort_explicit = true
-                }
-                "clamptime" => definition.clamp_time = self.number(&key, token.line),
                 "deformvertexes" => {
-                    let first = self.at;
-                    let end = self.line_end();
-                    if deforms.len() == MAX_DEFORMS {
+                    if deforms == MAX_DEFORMS {
                         self.report(
-                            token.line,
+                            line,
                             Severity::Warning,
                             DiagnosticKind::LimitExceeded(LimitKind::Deforms),
                         );
-                        unsupported.push(UnsupportedDeclaration {
-                            keyword: token.text.clone(),
-                            arguments: self.rest_of_line(),
-                            line: token.line,
-                            effect: DeclarationEffect::CompileOnly,
-                        });
-                    } else if let Some(deform) = self.deform(token.line) {
-                        deforms.push(deform);
+                        self.argument(&key, line);
                     } else {
-                        unsupported.push(UnsupportedDeclaration {
-                            keyword: token.text.clone(),
-                            arguments: self.tokens[first..end]
-                                .iter()
-                                .map(|argument| argument.text.clone())
-                                .collect::<Vec<_>>()
-                                .into_boxed_slice(),
-                            line: token.line,
-                            effect: DeclarationEffect::Unknown,
-                        });
-                        self.at = end;
+                        let before = self.at;
+                        let deform = self.deform(line);
+                        if self.at != before {
+                            deforms += 1;
+                            emit(HeaderOp::Deform(deform));
+                        }
                     }
                 }
-                "tesssize" | "light" => {
-                    unsupported.push(self.unsupported(token, DeclarationEffect::CompileOnly))
+                "light" => {
+                    self.argument(&key, line);
                 }
-                _ if key.starts_with("qer") || key.starts_with("q3map") => {
-                    unsupported.push(self.unsupported(token, DeclarationEffect::CompileOnly));
+                "tesssize" => emit(HeaderOp::Unsupported(
+                    self.unsupported(token, DeclarationEffect::CompileOnly),
+                )),
+                _ if key.starts_with("qer") || key.starts_with("q3map") => emit(
+                    HeaderOp::Unsupported(self.unsupported(token, DeclarationEffect::CompileOnly)),
+                ),
+                _ => {
+                    self.report(
+                        line,
+                        Severity::Error,
+                        DiagnosticKind::Unsupported(token.text.clone()),
+                    );
+                    Self::emit(&mut ops, line, ShaderAction::Abort(ShaderFailure::Native));
+                    self.recover(1);
+                    break;
                 }
-                _ => unsupported.push(self.unsupported(token, DeclarationEffect::Unknown)),
             }
         }
-        if stages.is_empty() && definition.sky.is_none() && definition.content_flags & 64 == 0 {
-            self.report(name.line, Severity::Error, DiagnosticKind::NoStages);
+        ShaderDef {
+            name: canonical_path(&name.text),
+            source: self.source.into(),
+            line: name.line,
+            ops: ops.into_boxed_slice(),
         }
-        if definition.sky.is_some() {
-            definition.sort = 2.0
-        }
-        if definition.polygon_offset && definition.sort == 0.0 {
-            definition.sort = 4.0
-        }
-        if definition.sort == 0.0 {
-            definition.sort = if stages.first().is_some_and(|stage| stage.blend.is_some()) {
-                if stages.first().is_some_and(|stage| stage.depth_write) {
-                    5.0
-                } else {
-                    9.0
-                }
-            } else {
-                3.0
-            };
-        }
-        if stages.is_empty() {
-            definition.sort = 7.0
-        }
-        definition.stages = stages.into_boxed_slice();
-        definition.deforms = deforms.into_boxed_slice();
-        definition.unsupported = unsupported.into_boxed_slice();
-        definition.valid = !self.diagnostics[diagnostic_start..]
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error);
-        definition
     }
-
-    fn stage(&mut self, line: usize) -> ShaderStage {
-        let mut stage = ShaderStage {
-            map: None,
-            blend: None,
-            rgb_gen: RgbGen::IdentityLighting,
-            alpha_gen: AlphaGen::Identity,
-            tc_gen: TexCoordGen::Texture,
-            tc_mods: Box::new([]),
-            alpha_func: AlphaFunc::None,
-            depth_func: DepthFunc::Lequal,
-            depth_write: true,
-            detail: false,
-            unsupported: Box::new([]),
-        };
-        let mut rgb_explicit = false;
-        let mut tc_explicit = false;
-        let mut depth_explicit = false;
-        let mut tc_mods = Vec::new();
-        let mut tc_mod_count = 0;
-        let mut unsupported = Vec::new();
+    fn stage(
+        &mut self,
+        ops: &mut Vec<ShaderOp>,
+        line: usize,
+    ) -> Result<(), (ShaderFailure, usize)> {
+        let mut texmods = 0;
+        let mut animations = 0;
         loop {
             let Some(token) = self.next(true) else {
                 self.report(
@@ -535,121 +404,137 @@ impl<'t> Parser<'t, '_, '_> {
                         found: String::new(),
                     },
                 );
-                break;
+                return Err((ShaderFailure::Native, 0));
             };
+            let line = token.line;
             if token.kind == Kind::Close {
-                break;
+                Self::emit(ops, line, ShaderAction::EndStage);
+                return Ok(());
             }
             if token.kind != Kind::Text {
-                self.report(
-                    token.line,
-                    Severity::Error,
-                    DiagnosticKind::Expected {
-                        expected: "stage declaration",
-                        found: token.text.clone(),
-                    },
-                );
-                if token.kind == Kind::Open {
-                    self.skip_section()
-                }
-                continue;
+                return Err((
+                    ShaderFailure::Native,
+                    if token.kind == Kind::Open { 3 } else { 2 },
+                ));
             }
             let key = token.text.to_ascii_lowercase();
+            let mut emit = |op| Self::emit(ops, line, ShaderAction::Stage(op));
             match key.as_str() {
                 "map" | "clampmap" => {
-                    if let Some(value) = self.argument(&key, token.line) {
-                        let image = canonical_path(&value.text);
-                        stage.map = Some(if key == "map" && image == "$whiteimage" {
-                            TextureMap::White
-                        } else if key == "map" && image == "$lightmap" {
-                            TextureMap::Lightmap
+                    let Some(value) = self.argument(&key, line) else {
+                        return Err((ShaderFailure::Native, 2));
+                    };
+                    emit(StageOp::Map(
+                        if key == "map" && value.text.eq_ignore_ascii_case("$whiteimage") {
+                            ShaderMap::White
+                        } else if key == "map" && value.text.eq_ignore_ascii_case("$lightmap") {
+                            ShaderMap::Lightmap
                         } else {
-                            TextureMap::Image {
-                                name: image,
+                            ShaderMap::Image {
+                                name: canonical_path(&value.text),
                                 clamp: key == "clampmap",
                             }
-                        });
-                    }
+                        },
+                    ));
                 }
                 "animmap" => {
-                    if let Some(frequency) = self.number(&key, token.line) {
-                        let images = self.rest_of_line();
-                        if images.is_empty() {
-                            self.report(token.line, Severity::Error, DiagnosticKind::MissingImage)
-                        }
-                        if images.len() > MAX_ANIMATIONS {
+                    let Some(speed) = self.number(&key, line) else {
+                        return Err((ShaderFailure::Native, 2));
+                    };
+                    emit(StageOp::AnimationSpeed(speed));
+                    let images = self.rest_of_line();
+                    for image in images.iter() {
+                        if animations < MAX_ANIMATIONS {
+                            emit(StageOp::AnimationFrame(canonical_path(image)));
+                            animations += 1
+                        } else {
                             self.report(
-                                token.line,
+                                line,
                                 Severity::Warning,
                                 DiagnosticKind::LimitExceeded(LimitKind::AnimationFrames),
                             );
+                            break;
                         }
-                        stage.map = Some(TextureMap::Animation {
-                            frequency,
-                            images: images
-                                .iter()
-                                .take(MAX_ANIMATIONS)
-                                .map(|image| canonical_path(image))
-                                .collect::<Vec<_>>()
-                                .into_boxed_slice(),
-                        });
                     }
                 }
                 "videomap" => {
-                    if let Some(value) = self.argument(&key, token.line) {
-                        stage.map = Some(TextureMap::Video(canonical_path(&value.text)));
-                        unsupported.push(UnsupportedDeclaration {
+                    if let Some(value) = self.argument(&key, line) {
+                        emit(StageOp::Unsupported(UnsupportedDeclaration {
                             keyword: token.text.clone(),
                             arguments: vec![value.text.clone()].into_boxed_slice(),
-                            line: token.line,
+                            line,
                             effect: DeclarationEffect::Runtime,
-                        });
-                        self.report(
-                            token.line,
-                            Severity::Warning,
-                            DiagnosticKind::Unsupported(token.text.clone()),
-                        );
+                        }));
+                    } else {
+                        return Err((ShaderFailure::Native, 2));
                     }
                 }
                 "blendfunc" => {
-                    if let Some(blend) = self.blend(token.line) {
-                        stage.blend = Some(blend);
-                        if !depth_explicit {
-                            stage.depth_write = false
+                    if let Some(source) = self.argument(&key, line) {
+                        let blend = match source.text.to_ascii_lowercase().as_str() {
+                            "add" => Some(StageBlend {
+                                source: BlendFactor::One,
+                                destination: BlendFactor::One,
+                            }),
+                            "filter" => Some(StageBlend {
+                                source: BlendFactor::DestinationColor,
+                                destination: BlendFactor::Zero,
+                            }),
+                            "blend" => Some(StageBlend::ALPHA),
+                            _ => None,
+                        };
+                        if let Some(blend) = blend {
+                            emit(StageOp::BlendSource(blend.source));
+                            emit(StageOp::BlendDestination(blend.destination));
+                            emit(StageOp::BlendComplete)
+                        } else {
+                            emit(StageOp::BlendSource(self.blend_factor(source, true)));
+                            if let Some(destination) = self.argument(&key, line) {
+                                emit(StageOp::BlendDestination(
+                                    self.blend_factor(destination, false),
+                                ));
+                                emit(StageOp::BlendComplete)
+                            }
                         }
                     }
                 }
                 "rgbgen" => {
-                    if let Some(value) = self.argument(&key, token.line) {
+                    if let Some(value) = self.argument(&key, line) {
                         let generated = match value.text.to_ascii_lowercase().as_str() {
                             "identity" => Some(RgbGen::Identity),
                             "identitylighting" => Some(RgbGen::IdentityLighting),
                             "entity" => Some(RgbGen::Entity),
                             "oneminusentity" => Some(RgbGen::OneMinusEntity),
-                            "vertex" => {
-                                if stage.alpha_gen == AlphaGen::Identity {
-                                    stage.alpha_gen = AlphaGen::Vertex
-                                }
-                                Some(RgbGen::Vertex)
-                            }
+                            "vertex" => Some(RgbGen::Vertex),
                             "exactvertex" => Some(RgbGen::ExactVertex),
                             "oneminusvertex" => Some(RgbGen::OneMinusVertex),
                             "lightingdiffuse" => Some(RgbGen::LightingDiffuse),
-                            "wave" => self.wave(&key, token.line).map(RgbGen::Wave),
-                            "const" => self.vector(&key, token.line).map(RgbGen::Const),
+                            "wave" => {
+                                emit(StageOp::RgbWave(self.wave_update(&key, line)));
+                                None
+                            }
+                            "const" => {
+                                let (values, _) = self.vector_update(&key, line);
+                                if values.iter().any(Option::is_none) {
+                                    return Err((
+                                        ShaderFailure::InvalidData("incomplete constant color"),
+                                        2,
+                                    ));
+                                }
+                                Some(RgbGen::Const(values.map(|v| v.unwrap_or(0.))))
+                            }
                             _ => {
                                 self.fallback(value, &key);
                                 None
                             }
                         };
-                        if let Some(generated) = generated {
-                            stage.rgb_gen = generated;
-                            rgb_explicit = true
+                        if let Some(value) = generated {
+                            emit(StageOp::RgbGen(value))
                         }
                     }
                 }
                 "alphagen" => {
-                    if let Some(value) = self.argument(&key, token.line) {
+                    if let Some(value) = self.argument(&key, line) {
                         let generated = match value.text.to_ascii_lowercase().as_str() {
                             "identity" => Some(AlphaGen::Identity),
                             "entity" => Some(AlphaGen::Entity),
@@ -657,80 +542,64 @@ impl<'t> Parser<'t, '_, '_> {
                             "vertex" => Some(AlphaGen::Vertex),
                             "oneminusvertex" => Some(AlphaGen::OneMinusVertex),
                             "lightingspecular" => Some(AlphaGen::LightingSpecular),
-                            "wave" => self.wave(&key, token.line).map(AlphaGen::Wave),
-                            "const" => self.number(&key, token.line).map(AlphaGen::Const),
+                            "wave" => {
+                                emit(StageOp::AlphaWave(self.wave_update(&key, line)));
+                                None
+                            }
+                            "const" => Some(AlphaGen::Const(self.number(&key, line).unwrap_or(0.))),
                             "portal" => {
-                                let range = if self.tokens.get(self.at).is_some_and(|next| {
-                                    !next.newline_before && next.kind == Kind::Text
-                                }) {
-                                    self.number(&key, token.line)
-                                } else {
-                                    Some(256.0)
-                                };
-                                range.map(AlphaGen::Portal)
+                                Some(AlphaGen::Portal(self.number(&key, line).unwrap_or(256.)))
                             }
                             _ => {
                                 self.fallback(value, &key);
                                 None
                             }
                         };
-                        if let Some(generated) = generated {
-                            stage.alpha_gen = generated
+                        if let Some(value) = generated {
+                            emit(StageOp::AlphaGen(value))
                         }
                     }
                 }
                 "tcgen" | "texgen" => {
-                    if let Some(value) = self.argument(&key, token.line) {
+                    if let Some(value) = self.argument(&key, line) {
                         let generated = match value.text.to_ascii_lowercase().as_str() {
                             "base" | "texture" => Some(TexCoordGen::Texture),
                             "lightmap" => Some(TexCoordGen::Lightmap),
                             "environment" => Some(TexCoordGen::Environment),
-                            "vector" => self.vector(&key, token.line).and_then(|s| {
-                                self.vector(&key, token.line)
-                                    .map(|t| TexCoordGen::Vector([s, t]))
-                            }),
+                            "vector" => {
+                                let (s, _) = self.vector_update(&key, line);
+                                let (t, _) = self.vector_update(&key, line);
+                                emit(StageOp::TcVector([s, t]));
+                                None
+                            }
                             _ => {
                                 self.fallback(value, &key);
                                 None
                             }
                         };
-                        if let Some(generated) = generated {
-                            stage.tc_gen = generated;
-                            tc_explicit = true
+                        if let Some(value) = generated {
+                            emit(StageOp::TcGen(value))
                         }
                     }
                 }
                 "tcmod" => {
-                    if tc_mod_count == MAX_TEXMODS {
+                    if texmods == MAX_TEXMODS {
                         self.report(
-                            token.line,
+                            line,
                             Severity::Error,
                             DiagnosticKind::LimitExceeded(LimitKind::TexMods),
                         );
-                        self.rest_of_line();
-                    } else {
-                        tc_mod_count += 1;
-                        let first = self.at;
-                        let end = self.line_end();
-                        if let Some(modifier) = self.texmod(token.line) {
-                            tc_mods.push(modifier);
-                        } else {
-                            unsupported.push(UnsupportedDeclaration {
-                                keyword: token.text.clone(),
-                                arguments: self.tokens[first..end]
-                                    .iter()
-                                    .map(|argument| argument.text.clone())
-                                    .collect::<Vec<_>>()
-                                    .into_boxed_slice(),
-                                line: token.line,
-                                effect: DeclarationEffect::Unknown,
-                            });
-                        }
+                        return Err((ShaderFailure::Limit(LimitKind::TexMods), 2));
                     }
+                    texmods += 1;
+                    emit(StageOp::TexMod(self.texmod(line)));
                 }
                 "alphafunc" => {
-                    if let Some(value) = self.argument(&key, token.line) {
-                        stage.alpha_func = match value.text.to_ascii_lowercase().as_str() {
+                    let Some(value) = self.argument(&key, line) else {
+                        return Err((ShaderFailure::Native, 2));
+                    };
+                    emit(StageOp::AlphaFunc(
+                        match value.text.to_ascii_lowercase().as_str() {
                             "gt0" => AlphaFunc::GreaterZero,
                             "lt128" => AlphaFunc::LessThanHalf,
                             "ge128" => AlphaFunc::AtLeastHalf,
@@ -738,59 +607,107 @@ impl<'t> Parser<'t, '_, '_> {
                                 self.fallback(value, &key);
                                 AlphaFunc::None
                             }
-                        };
-                    }
+                        },
+                    ));
                 }
                 "depthfunc" => {
-                    if let Some(value) = self.argument(&key, token.line) {
-                        match value.text.to_ascii_lowercase().as_str() {
-                            "lequal" => stage.depth_func = DepthFunc::Lequal,
-                            "equal" => stage.depth_func = DepthFunc::Equal,
-                            _ => self.fallback(value, &key),
-                        }
+                    let Some(value) = self.argument(&key, line) else {
+                        return Err((ShaderFailure::Native, 2));
+                    };
+                    match value.text.to_ascii_lowercase().as_str() {
+                        "lequal" => emit(StageOp::DepthFunc(DepthFunc::Lequal)),
+                        "equal" => emit(StageOp::DepthFunc(DepthFunc::Equal)),
+                        _ => self.fallback(value, &key),
                     }
                 }
-                "depthwrite" => {
-                    stage.depth_write = true;
-                    depth_explicit = true
+                "depthwrite" => emit(StageOp::DepthWrite),
+                "detail" => emit(StageOp::Detail),
+                _ => {
+                    self.report(
+                        line,
+                        Severity::Error,
+                        DiagnosticKind::Unsupported(token.text.clone()),
+                    );
+                    return Err((ShaderFailure::Native, 2));
                 }
-                "detail" => stage.detail = true,
-                _ => unsupported.push(self.unsupported(token, DeclarationEffect::Unknown)),
             }
         }
-        if stage.map.is_none() {
-            self.report(line, Severity::Error, DiagnosticKind::MissingImage)
+    }
+    fn vector_update(&mut self, directive: &str, line: usize) -> ([Option<f32>; 3], bool) {
+        let mut values = [None; 3];
+        let Some(open) = self.next(false) else {
+            self.report(
+                line,
+                Severity::Error,
+                DiagnosticKind::MissingArgument(directive.into()),
+            );
+            return (values, false);
+        };
+        if open.kind != Kind::LeftParen {
+            self.report(
+                line,
+                Severity::Error,
+                DiagnosticKind::Expected {
+                    expected: "(",
+                    found: open.text.clone(),
+                },
+            );
+            return (values, false);
         }
-        if !rgb_explicit {
-            stage.rgb_gen = match stage.blend.map(|blend| blend.source) {
-                None | Some(BlendFactor::One | BlendFactor::SourceAlpha) => {
-                    RgbGen::IdentityLighting
-                }
-                _ => RgbGen::Identity,
+        for value in &mut values {
+            let Some(token) = self.next(false) else {
+                self.report(
+                    line,
+                    Severity::Error,
+                    DiagnosticKind::MissingArgument(directive.into()),
+                );
+                return (values, false);
             };
+            let (number, converted) = native_number(&token.text);
+            if converted {
+                self.fallback(token, directive)
+            }
+            *value = Some(number);
         }
-        if stage.blend
-            == Some(StageBlend {
-                source: BlendFactor::One,
-                destination: BlendFactor::Zero,
-            })
-        {
-            stage.blend = None;
-            stage.depth_write = true;
+        let complete = self
+            .next(false)
+            .is_some_and(|token| token.kind == Kind::RightParen);
+        if !complete {
+            self.report(
+                line,
+                Severity::Error,
+                DiagnosticKind::Expected {
+                    expected: ")",
+                    found: String::new(),
+                },
+            )
         }
-        if !tc_explicit && stage.map == Some(TextureMap::Lightmap) {
-            stage.tc_gen = TexCoordGen::Lightmap
+        (values, complete)
+    }
+    fn wave_update(&mut self, directive: &str, line: usize) -> WaveUpdate {
+        let mut update = WaveUpdate::default();
+        let Some(function) = self.argument(directive, line) else {
+            return update;
+        };
+        update.function = Some(match function.text.to_ascii_lowercase().as_str() {
+            "sin" => WaveFunction::Sin,
+            "square" => WaveFunction::Square,
+            "triangle" => WaveFunction::Triangle,
+            "sawtooth" => WaveFunction::Sawtooth,
+            "inversesawtooth" => WaveFunction::InverseSawtooth,
+            "noise" => WaveFunction::Noise,
+            _ => {
+                self.fallback(function, directive);
+                WaveFunction::Sin
+            }
+        });
+        for value in &mut update.values {
+            let Some(number) = self.number(directive, line) else {
+                break;
+            };
+            *value = Some(number)
         }
-        // qsrc ParseStage compares alphaGen against CGEN_IDENTITY (numeric 2),
-        // which is AGEN_ENTITY. Retain that observable original enum quirk.
-        if stage.alpha_gen == AlphaGen::Entity
-            && matches!(stage.rgb_gen, RgbGen::Identity | RgbGen::LightingDiffuse)
-        {
-            stage.alpha_gen = AlphaGen::Skip;
-        }
-        stage.tc_mods = tc_mods.into_boxed_slice();
-        stage.unsupported = unsupported.into_boxed_slice();
-        stage
+        update
     }
 
     fn deform(&mut self, line: usize) -> Option<Deform> {
@@ -856,25 +773,6 @@ impl<'t> Parser<'t, '_, '_> {
         }
     }
 
-    fn blend(&mut self, line: usize) -> Option<StageBlend> {
-        let source = self.argument("blendFunc", line)?;
-        let (source_factor, destination_factor) = match source.text.to_ascii_lowercase().as_str() {
-            "add" => (BlendFactor::One, BlendFactor::One),
-            "filter" => (BlendFactor::DestinationColor, BlendFactor::Zero),
-            "blend" => (StageBlend::ALPHA.source, StageBlend::ALPHA.destination),
-            _ => {
-                let destination = self.argument("blendFunc", line)?;
-                (
-                    self.blend_factor(source, true),
-                    self.blend_factor(destination, false),
-                )
-            }
-        };
-        Some(StageBlend {
-            source: source_factor,
-            destination: destination_factor,
-        })
-    }
     fn blend_factor(&mut self, token: &Token, source: bool) -> BlendFactor {
         let factor = match token.text.to_ascii_lowercase().as_str() {
             "gl_zero" => Some(BlendFactor::Zero),
@@ -896,26 +794,14 @@ impl<'t> Parser<'t, '_, '_> {
         })
     }
     fn wave(&mut self, directive: &str, line: usize) -> Option<Waveform> {
-        let function = self.argument(directive, line)?;
-        let function = match function.text.to_ascii_lowercase().as_str() {
-            "sin" => WaveFunction::Sin,
-            "square" => WaveFunction::Square,
-            "triangle" => WaveFunction::Triangle,
-            "sawtooth" => WaveFunction::Sawtooth,
-            "inversesawtooth" => WaveFunction::InverseSawtooth,
-            "noise" => WaveFunction::Noise,
-            _ => {
-                self.fallback(function, directive);
-                WaveFunction::Sin
-            }
-        };
-        let [base, amplitude, phase, frequency] = self.numbers(directive, line)?;
+        let update = self.wave_update(directive, line);
+        let values = update.values.map(|value| value.unwrap_or(0.));
         Some(Waveform {
-            function,
-            base,
-            amplitude,
-            phase,
-            frequency,
+            function: update.function.unwrap_or(WaveFunction::Sin),
+            base: values[0],
+            amplitude: values[1],
+            phase: values[2],
+            frequency: values[3],
         })
     }
     fn texmod(&mut self, line: usize) -> Option<TexMod> {
@@ -925,7 +811,20 @@ impl<'t> Parser<'t, '_, '_> {
             "scale" => self.numbers("tcMod scale", line).map(TexMod::Scale),
             "scroll" => self.numbers("tcMod scroll", line).map(TexMod::Scroll),
             "rotate" => self.number("tcMod rotate", line).map(TexMod::Rotate),
-            "stretch" => self.wave("tcMod stretch", line).map(TexMod::Stretch),
+            "stretch" => {
+                let update = self.wave_update("tcMod stretch", line);
+                if update.function.is_some() && update.values.iter().all(Option::is_some) {
+                    Some(TexMod::Stretch(Waveform {
+                        function: update.function.unwrap_or(WaveFunction::Sin),
+                        base: update.values[0].unwrap_or(0.),
+                        amplitude: update.values[1].unwrap_or(0.),
+                        phase: update.values[2].unwrap_or(0.),
+                        frequency: update.values[3].unwrap_or(0.),
+                    }))
+                } else {
+                    None
+                }
+            }
             "turb" => {
                 self.numbers("tcMod turb", line)
                     .map(|[base, amplitude, phase, frequency]| TexMod::Turbulent {

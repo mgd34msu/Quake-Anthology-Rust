@@ -44,38 +44,94 @@ pub struct ShaderDef {
     pub name: String,
     pub source: String,
     pub line: usize,
-    /// False means the native grammar/limits were not satisfied. Keep the
-    /// definition so a caller can report fallback instead of hiding the failure.
-    pub valid: bool,
-    pub cull: Cull,
-    pub sort: f32,
-    pub sort_explicit: bool,
-    pub surface_flags: u32,
-    pub content_flags: u32,
-    pub sky: Option<SkyParms>,
-    pub fog: Option<FogParms>,
-    pub sun: Option<SunParms>,
-    pub polygon_offset: bool,
-    pub no_mipmaps: bool,
-    pub no_picmip: bool,
-    pub entity_mergable: bool,
-    pub portal: bool,
-    pub clamp_time: Option<f32>,
-    pub stages: Box<[ShaderStage]>,
-    pub deforms: Box<[Deform]>,
-    pub unsupported: Box<[UnsupportedDeclaration]>,
+    pub ops: Box<[ShaderOp]>,
 }
 impl ShaderDef {
     pub fn has_unsupported_runtime(&self) -> bool {
-        self.unsupported
-            .iter()
-            .chain(
-                self.stages
-                    .iter()
-                    .flat_map(|stage| stage.unsupported.iter()),
-            )
-            .any(|declaration| declaration.effect != DeclarationEffect::CompileOnly)
+        self.ops.iter().any(|op| {
+            matches!(&op.action,
+            ShaderAction::Header(HeaderOp::Unsupported(declaration))
+            | ShaderAction::Stage(StageOp::Unsupported(declaration))
+            if declaration.effect == DeclarationEffect::Runtime)
+        })
     }
+    pub fn is_complete(&self) -> bool {
+        self.ops
+            .last()
+            .is_some_and(|op| matches!(op.action, ShaderAction::EndShader))
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShaderOp {
+    pub line: usize,
+    pub action: ShaderAction,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShaderAction {
+    Header(HeaderOp),
+    BeginStage,
+    Stage(StageOp),
+    EndStage,
+    EndShader,
+    Abort(ShaderFailure),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShaderFailure {
+    Native,
+    Limit(LimitKind),
+    InvalidData(&'static str),
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum HeaderOp {
+    Cull(Cull),
+    Sort(f32),
+    SurfaceParm { surface: u32, contents: u32 },
+    SkyOuter(Option<String>),
+    SkyHeight(f32),
+    SkyInner(Option<String>),
+    FogColor([Option<f32>; 3]),
+    FogDepth(f32),
+    Sun(SunParms),
+    NoMipmaps,
+    NoPicmip,
+    PolygonOffset,
+    EntityMergable,
+    Portal,
+    ClampTime(f32),
+    Deform(Option<Deform>),
+    Unsupported(UnsupportedDeclaration),
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShaderMap {
+    Image { name: String, clamp: bool },
+    White,
+    Lightmap,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WaveUpdate {
+    pub function: Option<WaveFunction>,
+    pub values: [Option<f32>; 4],
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum StageOp {
+    Map(ShaderMap),
+    AnimationSpeed(f32),
+    AnimationFrame(String),
+    BlendSource(BlendFactor),
+    BlendDestination(BlendFactor),
+    BlendComplete,
+    RgbGen(RgbGen),
+    RgbWave(WaveUpdate),
+    AlphaGen(AlphaGen),
+    AlphaWave(WaveUpdate),
+    TcGen(TexCoordGen),
+    TcVector([[Option<f32>; 3]; 2]),
+    TexMod(Option<TexMod>),
+    AlphaFunc(AlphaFunc),
+    DepthFunc(DepthFunc),
+    DepthWrite,
+    Detail,
+    Unsupported(UnsupportedDeclaration),
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Cull {
@@ -127,35 +183,6 @@ impl SunParms {
             elevation.sin() as f32,
         ])
     }
-}
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShaderStage {
-    pub map: Option<TextureMap>,
-    /// None is native opaque GL_ONE/GL_ZERO with blending disabled.
-    pub blend: Option<StageBlend>,
-    pub rgb_gen: RgbGen,
-    pub alpha_gen: AlphaGen,
-    pub tc_gen: TexCoordGen,
-    pub tc_mods: Box<[TexMod]>,
-    pub alpha_func: AlphaFunc,
-    pub depth_func: DepthFunc,
-    pub depth_write: bool,
-    pub detail: bool,
-    pub unsupported: Box<[UnsupportedDeclaration]>,
-}
-#[derive(Clone, Debug, PartialEq)]
-pub enum TextureMap {
-    Image {
-        name: String,
-        clamp: bool,
-    },
-    White,
-    Lightmap,
-    Animation {
-        frequency: f32,
-        images: Box<[String]>,
-    },
-    Video(String),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StageBlend {

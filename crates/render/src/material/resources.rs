@@ -600,6 +600,12 @@ impl ImagesState {
         };
         Ok(self.remember(key, id, usage))
     }
+    fn native_default_key(&self, name: NameId) -> Option<ImageKey> {
+        self.named_range(name).find_map(|index| {
+            let key = self.resolved[index].0;
+            matches!(key.recipe, ImageRecipe::NativeDefault { .. }).then_some(key)
+        })
+    }
     fn cached_use(&mut self, key: ImageKey, usage: ImageUse) -> Option<ResolvedImage> {
         let index = self.find(key)?;
         let first = self.resolved[index].2;
@@ -1171,6 +1177,21 @@ impl<'a> Images<'a> {
         self.remember(key, id, usage);
         Ok(id)
     }
+    /// Native sky fallback reuses the generated builtin and its first upload policy.
+    pub(crate) fn native_default_image(&mut self) -> Result<ResolvedImage, ResourceError> {
+        let name = self
+            .assets
+            .intern_name("*default")
+            .map_err(ResourceError::Asset)?;
+        let indexed = match self.state.native_default_key(name).map(|key| key.recipe) {
+            Some(ImageRecipe::NativeDefault { indexed }) => indexed,
+            _ => self.state.raster_target.map(|target| IndexedTarget {
+                transparent_index: None,
+                ..target
+            }),
+        };
+        self.state.native_default_image(self.assets, indexed, None)
+    }
     /// Original Q3 lookup tries TGA, then JPEG for a missing TGA. Explicit
     /// supported extensions are retained; newer formats use the same decoder.
     pub fn raster(
@@ -1189,10 +1210,7 @@ impl<'a> Images<'a> {
             ..target
         });
         if self.assets.name(name_id) == Some("*default") {
-            let cached = self.state.named_range(name_id).find_map(|index| {
-                let key = self.state.resolved[index].0;
-                matches!(key.recipe, ImageRecipe::NativeDefault { .. }).then_some(key)
-            });
+            let cached = self.state.native_default_key(name_id);
             let key = if let Some(key) = cached {
                 Some(key)
             } else if rules == RuleSetId::Quake3 {

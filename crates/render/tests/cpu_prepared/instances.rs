@@ -490,6 +490,7 @@ fn opacity_fixture(extra: &[Stage]) -> (Assets, WorldId) {
         },
         Stage {
             texture: StageTexture::Lightmap,
+            is_lightmap: true,
             texgen: TexCoordGen::Lightmap,
             depth_write: false,
             depth_func: DepthFunc::Equal,

@@ -85,6 +85,7 @@ fn fixture(reverse: bool, vertex_color: bool, equal: bool) -> Fixture {
     };
     let light_stage = Stage {
         texture: StageTexture::Lightmap,
+        is_lightmap: true,
         texgen: TexCoordGen::Lightmap,
         rgb_gen,
         // Admission must not reject native mip0 lightmaps merely because this

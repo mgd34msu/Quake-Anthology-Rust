@@ -517,6 +517,7 @@ fn material_registration_validates_at_load_and_handles_remain_numeric() {
     );
     let shared = Stage {
         texture: StageTexture::Lightmap,
+        is_lightmap: true,
         ..Stage::default()
     };
     let id = assets

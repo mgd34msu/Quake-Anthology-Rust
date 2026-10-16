@@ -716,6 +716,7 @@ fn rgba_pair(
     };
     let light_stage = Stage {
         texture: StageTexture::Lightmap,
+        is_lightmap: true,
         texgen: TexCoordGen::Lightmap,
         sampler: Sampler {
             wrap: qa_render::assets::Wrap::Clamp,
@@ -1229,6 +1230,7 @@ fn linear_rank_one_texture_uses_native_texel_lattice_and_reuses_cache() {
                     },
                     Stage {
                         texture: StageTexture::Lightmap,
+                        is_lightmap: true,
                         texgen: TexCoordGen::Lightmap,
                         blend: Some(StageBlend {
                             source: BlendFactor::DestinationColor,
@@ -1313,6 +1315,7 @@ fn variable_linear_lightmap_is_baked_on_native_texture_lattice() {
                     },
                     Stage {
                         texture: StageTexture::Lightmap,
+                        is_lightmap: true,
                         texgen: TexCoordGen::Lightmap,
                         sampler,
                         blend: Some(StageBlend {
@@ -1399,6 +1402,7 @@ fn linear_identity_lattice_invalidates_on_lighting_change_and_then_reuses() {
                     },
                     Stage {
                         texture: StageTexture::Lightmap,
+                        is_lightmap: true,
                         texgen: TexCoordGen::Lightmap,
                         blend: Some(StageBlend {
                             source: BlendFactor::DestinationColor,

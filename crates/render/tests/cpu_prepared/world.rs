@@ -839,6 +839,7 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
             },
             Stage {
                 texture: StageTexture::Lightmap,
+                is_lightmap: true,
                 texgen: TexCoordGen::Lightmap,
                 depth_write: false,
                 depth_func: DepthFunc::Equal,
@@ -1005,6 +1006,7 @@ fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
                 },
                 Stage {
                     texture: StageTexture::Lightmap,
+                    is_lightmap: true,
                     texgen: TexCoordGen::Lightmap,
                     depth_write: false,
                     depth_func: DepthFunc::Equal,
@@ -1261,6 +1263,7 @@ fn non_affine_vertex_colors_keep_factor_cache_counter_merge() {
             },
             Stage {
                 texture: StageTexture::Lightmap,
+                is_lightmap: true,
                 texgen: TexCoordGen::Lightmap,
                 depth_write: false,
                 depth_func: DepthFunc::Equal,

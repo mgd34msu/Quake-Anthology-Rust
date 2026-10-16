@@ -663,10 +663,10 @@ impl StageEvaluator {
         // A zero stretch produces non-finite texture coordinates in qsrc;
         // scope the failure to this draw instead of uploading undefined data.
         let mut tcmods = [TexCoordOp::None; 4];
+        // Native TMOD_NONE ends the bundle, including an incomplete parsed slot.
         for (output, modifier) in tcmods.iter_mut().zip(stage.tcmods) {
-            if let Some(modifier) = modifier {
-                *output = self.prepare_texmod(modifier, time, inputs)?;
-            }
+            let Some(modifier) = modifier else { break };
+            *output = self.prepare_texmod(modifier, time, inputs)?;
         }
         let uniform_color = match stage.rgb_gen {
             RgbGen::Identity => [255; 4],

@@ -23,13 +23,14 @@ pub struct ImageId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MaterialId(pub u32);
 /// Native lookup identity in this Assets name arena, paired with its variant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShaderRegistration<S = ShaderBindingId> {
     pub key: NameId,
     pub requested: LightSource,
     pub finished: LightSource,
     pub shader: S,
     pub defaulted: Option<NativeDefaultKind>,
+    pub sun: Option<crate::shader::SunParms>,
 }
 impl<S> ShaderRegistration<S> {
     pub fn map_shader<T>(self, map: impl FnOnce(S) -> T) -> ShaderRegistration<T> {
@@ -39,12 +40,34 @@ impl<S> ShaderRegistration<S> {
             finished: self.finished,
             shader: map(self.shader),
             defaulted: self.defaulted,
+            sun: self.sun,
         }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeDefaultKind {
     MissingImage,
+    Explicit(ExplicitDefault),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExplicitDefaultReason {
+    Parse,
+    ImageMissing,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExplicitDefault {
+    material: MaterialId,
+    reason: ExplicitDefaultReason,
+}
+impl ExplicitDefault {
+    pub fn reason(self) -> ExplicitDefaultReason {
+        self.reason
+    }
+}
+pub(crate) struct NativeMaterialFinish<'a> {
+    pub stages: &'a [Stage],
+    pub settings: MaterialSettings,
+    pub has_lightmap: bool,
 }
 /// A shader variant binds compiled stages to its selected lighting resource.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -222,6 +245,7 @@ pub struct Stage {
     pub depth_func: DepthFunc,
     pub depth_write: bool,
     pub detail: bool,
+    pub is_lightmap: bool,
 }
 impl Default for Stage {
     fn default() -> Self {
@@ -238,6 +262,7 @@ impl Default for Stage {
             depth_func: DepthFunc::Lequal,
             depth_write: true,
             detail: false,
+            is_lightmap: false,
         }
     }
 }
@@ -364,7 +389,14 @@ pub struct Material {
     pub name: NameId,
     pub stages: Box<[Stage]>,
     pub settings: MaterialSettings,
+    finish_has_lightmap: bool,
 }
+impl Material {
+    pub fn finish_has_lightmap(&self) -> bool {
+        self.finish_has_lightmap
+    }
+}
+
 pub struct Model {
     pub vertices: Box<[Vertex]>,
     pub indices: Box<[u32]>,
@@ -591,6 +623,7 @@ impl Assets {
                     sort: 0.0,
                     ..MaterialSettings::default()
                 },
+                finish_has_lightmap: false,
             }],
             shader_bindings,
             shader_next,
@@ -801,44 +834,56 @@ impl Assets {
     ) -> Result<MaterialId, &'static str> {
         self.intern_material(name, stages, settings, None)
     }
-    pub(crate) fn register_native_default_material(
+    pub(crate) fn register_native_material(
         &mut self,
         name: &str,
-        kind: NativeDefaultKind,
+        finish: NativeMaterialFinish<'_>,
     ) -> Result<MaterialId, &'static str> {
         self.intern_material(
             name,
-            &[],
-            MaterialSettings {
-                sort: 7.0,
-                ..MaterialSettings::default()
-            },
-            Some(kind),
+            finish.stages,
+            finish.settings,
+            Some(finish.has_lightmap),
         )
+    }
+    pub(crate) fn explicit_default(
+        &self,
+        material: MaterialId,
+        reason: ExplicitDefaultReason,
+    ) -> Result<NativeDefaultKind, &'static str> {
+        self.material(material)
+            .ok_or("missing explicit default body")?;
+        Ok(NativeDefaultKind::Explicit(ExplicitDefault {
+            material,
+            reason,
+        }))
     }
     fn intern_material(
         &mut self,
         name: &str,
         stages: &[Stage],
         settings: MaterialSettings,
-        native_default: Option<NativeDefaultKind>,
+        native_finish: Option<bool>,
     ) -> Result<MaterialId, &'static str> {
         let name = self.intern_name(name)?;
         if (stages.is_empty()
             && settings.sky.is_none()
             && settings.fog.is_none()
-            && native_default.is_none())
+            && native_finish.is_none())
             || stages.len() > 8
             || !settings_valid(settings, self)
             || stages.iter().any(|s| !stage_valid(*s, self))
         {
             return Err("invalid material stages");
         }
-        if let Some(index) = self
-            .materials
-            .iter()
-            .position(|m| m.name == name && m.stages.as_ref() == stages && m.settings == settings)
-        {
+        let finish_has_lightmap =
+            native_finish.unwrap_or_else(|| stages.iter().any(|stage| stage.is_lightmap));
+        if let Some(index) = self.materials.iter().position(|m| {
+            m.name == name
+                && m.stages.as_ref() == stages
+                && m.settings == settings
+                && m.finish_has_lightmap == finish_has_lightmap
+        }) {
             return Ok(MaterialId(index as u32));
         }
         let id =
@@ -848,6 +893,7 @@ impl Assets {
             name,
             stages: stages.into(),
             settings,
+            finish_has_lightmap,
         });
         Ok(id)
     }
@@ -881,6 +927,7 @@ impl Assets {
             finished,
             shader,
             defaulted,
+            sun: None,
         })
     }
     fn shader_metadata(
@@ -899,14 +946,16 @@ impl Assets {
         {
             return Err("invalid native default body");
         }
+        if let Some(NativeDefaultKind::Explicit(origin)) = defaulted
+            && origin.material != shader.material
+        {
+            return Err("explicit default body changed");
+        }
         let requested = shader.light_source;
         let finished = if matches!(
             requested,
             LightSource::Page(_) | LightSource::ExternalPage(_) | LightSource::Samples
-        ) && !material
-            .stages
-            .iter()
-            .any(|stage| stage.texture == StageTexture::Lightmap)
+        ) && !material.finish_has_lightmap()
         {
             LightSource::None
         } else {

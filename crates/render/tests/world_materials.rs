@@ -1059,8 +1059,7 @@ fn palette_translation_preserves_cutout_and_cloud_mask_indices() -> Result<(), S
 }
 
 #[test]
-fn ordered_native_requests_keep_named_defaults_and_omit_unsupported_hidden_recipes()
--> Result<(), String> {
+fn ordered_native_requests_keep_named_default_bodies_for_hidden_surfaces() -> Result<(), String> {
     use qa_formats::bsp::Fog;
     use qa_render::{ShaderBindingId, world::geometry::LightSource};
     let root = resources("native-requests")?;
@@ -1146,6 +1145,7 @@ fn ordered_native_requests_keep_named_defaults_and_omit_unsupported_hidden_recip
             "textures/missing",
             "textures/modern",
             "textures/hidden",
+            "textures/stageless",
         ]
     );
     assert_eq!(registrations[2].shader, presentation.bindings()[0].shader);
@@ -1190,6 +1190,21 @@ fn ordered_native_requests_keep_named_defaults_and_omit_unsupported_hidden_recip
         assert!(material.settings.fog.is_none());
     }
     assert_ne!(registrations[5].shader, ShaderBindingId(0));
+    assert!(registrations[6].defaulted.is_some());
+    assert_ne!(
+        registrations[6].defaulted,
+        Some(qa_render::NativeDefaultKind::MissingImage)
+    );
+    let stageless = assets
+        .material(
+            assets
+                .shader_binding(registrations[6].shader)
+                .unwrap()
+                .material,
+        )
+        .unwrap();
+    assert!(stageless.stages.is_empty());
+    assert_eq!(stageless.settings.sort, 7.0);
     for surface in [1, 3, 4] {
         assert_eq!(presentation.bindings()[surface].shader, ShaderBindingId(0));
         assert!(assets.world(loaded.world).unwrap().geometry().surfaces[surface].no_draw);
@@ -1200,7 +1215,7 @@ fn ordered_native_requests_keep_named_defaults_and_omit_unsupported_hidden_recip
             .iter()
             .filter(|diagnostic| diagnostic.starts_with("native shader registration omitted:"))
             .count(),
-        1
+        0
     );
     std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
     Ok(())
@@ -1346,8 +1361,7 @@ fn native_hidden_out_of_range_lightmap_registers_vertex_lighting_before_draw_ski
 }
 
 #[test]
-fn named_outcomes_keep_requested_finished_modes_and_only_implicit_missing_defaults()
--> Result<(), String> {
+fn named_outcomes_keep_requested_finished_modes_and_typed_native_defaults() -> Result<(), String> {
     use qa_render::{
         NativeDefaultKind,
         material::world_load::{NamedShaderLighting, WorldMaterialError, compile_named_shader},
@@ -1479,11 +1493,40 @@ fn named_outcomes_keep_requested_finished_modes_and_only_implicit_missing_defaul
             "the public material boundary still rejects accidental empty bodies"
         );
     }
-    for raw in [
-        b"textures/authored_missing".as_slice(),
-        b"textures/invalid",
-        b"textures/unsupported",
+    for (raw, sort) in [
+        (b"textures/authored_missing".as_slice(), 3.0),
+        (b"textures/invalid".as_slice(), 7.0),
     ] {
+        let registration = compile_named_shader(
+            &catalog,
+            raw,
+            true,
+            NamedShaderLighting {
+                source: LightSource::None,
+                lightmap,
+            },
+            &mut images,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        assert!(registration.defaulted.is_some());
+        assert_ne!(
+            registration.defaulted,
+            Some(NativeDefaultKind::MissingImage)
+        );
+        let body = images
+            .assets
+            .material(
+                images
+                    .assets
+                    .shader_binding(registration.shader)
+                    .unwrap()
+                    .material,
+            )
+            .unwrap();
+        assert!(body.stages.is_empty());
+        assert_eq!(body.settings.sort, sort);
+    }
+    for raw in [b"textures/unsupported".as_slice()] {
         let counts = images.assets.counts();
         let result = compile_named_shader(
             &catalog,
@@ -1771,3 +1814,57 @@ fn indexed_foreground_rejection_and_cutout_preserve_background_coverage() {
         );
     }
 }
+
+#[test]
+fn legacy_worlds_use_the_shared_global_default_after_authored_shader_parse_failure() {
+    let root = resources("legacy-native-default").unwrap();
+    std::fs::write(
+        root.join("scripts/test.shader"),
+        br#"
+        textures/wall { { map $whiteimage
+                        }
+                        bogus
+        }
+    "#,
+    )
+    .unwrap();
+    let vfs = mount(&root).unwrap();
+    for family in [1, 2] {
+        let bytes = map_bytes(family);
+        let map = legacy_map(&bytes, family).unwrap();
+        let mut assets = Assets::load().unwrap();
+        let loaded = load_native_world(
+            &vfs,
+            &map,
+            &mut assets,
+            map.bsp.format.rule_set(),
+            Default::default(),
+        )
+        .unwrap();
+        let presentation = assets
+            .world_presentation(loaded.presentations[0].id)
+            .unwrap();
+        let registration = presentation.shader_registrations()[0];
+        assert!(registration.defaulted.is_some());
+        let named = assets
+            .material(assets.shader_binding(registration.shader).unwrap().material)
+            .unwrap();
+        assert_eq!(named.stages.len(), 1);
+        assert_eq!(named.stages[0].texture, StageTexture::Image(ImageId(0)));
+        let fallback = presentation.native_default().unwrap();
+        assert_eq!(presentation.bindings()[0].shader, fallback);
+        assert_ne!(fallback, registration.shader);
+        let body = assets
+            .material(assets.shader_binding(fallback).unwrap().material)
+            .unwrap();
+        assert_eq!(assets.name(body.name), Some("<default>"));
+        let StageTexture::Image(image) = body.stages[0].texture else {
+            panic!("default bitmap")
+        };
+        assert!(assets.image(image).unwrap().indexed.is_some());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[path = "world_materials/ordered.rs"]
+mod ordered;
