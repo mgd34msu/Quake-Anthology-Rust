@@ -1,18 +1,17 @@
 //! Renderer lifetime contexts shared by CLIENT UI and cgame, independent of the frontend.
 use crate::model_assets::{ModelProfile, RendererAdmission, ShaderResource};
 use qa_core::primitives::{ClientId, EntityId, IndexSpan, ModuleId, Vec3};
-use qa_render::shader::context::{ShaderContext, ShaderContextAppend, ShaderNodeId};
+use qa_render::shader::{
+    context::{ShaderContext, ShaderContextAppend, ShaderNodeId},
+    reference::{NativeShaderRef, NativeShaders, ResolvedShader, ShaderContextId},
+};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Owner {
     Client(ClientId, EntityId),
     Private(ModuleId, EntityId),
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct Handle {
-    slot: usize,
-    generation: u64,
-}
+pub(super) type Handle = ShaderContextId;
 struct ResourceAdmission {
     resource: ShaderResource,
     uses: IndexSpan,
@@ -27,7 +26,7 @@ struct Context {
     uses: Vec<ShaderNodeId>,
     resources: Vec<ResourceAdmission>,
 }
-pub(super) struct Contexts {
+pub(crate) struct Contexts {
     slots: Vec<Option<Context>>,
     generation: u64,
 }
@@ -39,6 +38,9 @@ impl Contexts {
         }
     }
     pub fn reserve(&mut self, capacity: usize) -> Result<(), String> {
+        if capacity > u32::MAX as usize {
+            return Err("renderer context slots".into());
+        }
         if self.slots.len() < capacity {
             self.slots
                 .try_reserve_exact(capacity - self.slots.len())
@@ -59,7 +61,7 @@ impl Contexts {
             }
         }
     }
-    pub fn bind(
+    pub(super) fn bind(
         &mut self,
         previous: Option<Handle>,
         owner: Owner,
@@ -103,7 +105,10 @@ impl Contexts {
             context.users += 1;
             let generation = context.generation;
             self.release(previous);
-            return Ok(Handle { slot, generation });
+            return Ok(Handle {
+                slot: u32::try_from(slot).map_err(|_| "renderer context slots")?,
+                generation,
+            });
         }
         let slot = self
             .slots
@@ -116,7 +121,7 @@ impl Contexts {
                             context.users == 1 && matches!(context.owner, Owner::Private(..))
                         })
                     })
-                    .map(|handle| handle.slot)
+                    .map(|handle| handle.slot as usize)
             })
             .ok_or("renderer context slots")?;
         let shaders = ShaderContext::load(assets.name_capacity(), assets.shader_binding_capacity())
@@ -144,13 +149,13 @@ impl Contexts {
             resources,
         });
         Ok(Handle {
-            slot,
+            slot: u32::try_from(slot).map_err(|_| "renderer context slots")?,
             generation: self.generation,
         })
     }
     fn get(&self, handle: Handle) -> Option<&Context> {
         self.slots
-            .get(handle.slot)?
+            .get(handle.slot as usize)?
             .as_ref()
             .filter(|context| context.generation == handle.generation)
     }
@@ -158,13 +163,13 @@ impl Contexts {
         let Some(handle) = handle else { return };
         if let Some(context) = self
             .slots
-            .get_mut(handle.slot)
+            .get_mut(handle.slot as usize)
             .and_then(Option::as_mut)
             .filter(|context| context.generation == handle.generation)
         {
             context.users -= 1;
             if context.users == 0 && matches!(context.owner, Owner::Private(..)) {
-                self.slots[handle.slot] = None;
+                self.slots[handle.slot as usize] = None;
             }
         }
     }
@@ -208,17 +213,35 @@ impl Contexts {
         }
         Ok(())
     }
+    pub fn resource_nodes(
+        &self,
+        handle: Handle,
+        resource: ShaderResource,
+    ) -> Option<&[ShaderNodeId]> {
+        let context = self.get(handle)?;
+        let span = context
+            .resources
+            .iter()
+            .find(|entry| entry.resource == resource)?
+            .uses;
+        context.uses.get(span.range())
+    }
+    pub fn shader(&self, context: Handle, handle: i32) -> Option<NativeShaderRef> {
+        let node = ShaderNodeId(u32::try_from(handle.checked_sub(1)?).ok()?);
+        self.get(context)?.shaders.node(node)?;
+        Some(NativeShaderRef { context, node })
+    }
     pub fn sun(&self, handle: Option<Handle>) -> Option<Vec3> {
         Some(self.get(handle?)?.shaders.sun_direction())
     }
-    pub fn stage(
+    pub(super) fn stage(
         &mut self,
         handle: Handle,
         admission: RendererAdmission<'_>,
     ) -> Result<Append<'_>, String> {
         let context = self
             .slots
-            .get_mut(handle.slot)
+            .get_mut(handle.slot as usize)
             .and_then(Option::as_mut)
             .filter(|context| context.generation == handle.generation)
             .ok_or("stale renderer context")?;
@@ -260,6 +283,7 @@ impl Contexts {
             retained_uses,
             retained_resources,
             committed: false,
+            shader_handle: 0,
         };
         if let Some(resource) = admission.resource {
             if let Some(previous) = append
@@ -301,12 +325,17 @@ impl Contexts {
             });
         } else {
             for &registration in admission.registrations {
-                append
-                    .shaders
-                    .as_mut()
-                    .ok_or("renderer context append")?
-                    .admit(registration)
-                    .map_err(str::to_owned)?;
+                let shaders = append.shaders.as_mut().ok_or("renderer context append")?;
+                let node = shaders.admit(registration).map_err(str::to_owned)?;
+                let selected = shaders.node(node).ok_or("renderer shader node")?;
+                append.shader_handle = if selected.defaulted.is_some() {
+                    0
+                } else {
+                    node.0
+                        .checked_add(1)
+                        .and_then(|value| i32::try_from(value).ok())
+                        .ok_or("native shader handle capacity")?
+                };
             }
         }
         Ok(append)
@@ -319,8 +348,12 @@ pub(super) struct Append<'a> {
     retained_uses: usize,
     retained_resources: usize,
     committed: bool,
+    shader_handle: i32,
 }
 impl Append<'_> {
+    pub fn shader_handle(&self) -> i32 {
+        self.shader_handle
+    }
     pub fn commit(mut self) {
         if let Some(shaders) = self.shaders.take() {
             shaders.commit();
@@ -334,5 +367,30 @@ impl Drop for Append<'_> {
             self.uses.truncate(self.retained_uses);
             self.resources.truncate(self.retained_resources);
         }
+    }
+}
+
+impl NativeShaders for Contexts {
+    fn source(&self, reference: NativeShaderRef) -> Option<&qa_render::ShaderRegistration> {
+        self.get(reference.context)?.shaders.node(reference.node)
+    }
+    fn resolve(
+        &self,
+        reference: NativeShaderRef,
+        assets: &qa_render::Assets,
+    ) -> Option<ResolvedShader> {
+        let source = self.source(reference)?.shader;
+        let offset = assets
+            .material(assets.shader_binding(source)?.material)?
+            .settings
+            .time_offset;
+        ResolvedShader::select(assets, source, source, offset)
+    }
+    fn world_nodes(
+        &self,
+        context: ShaderContextId,
+        presentation: qa_render::world::WorldPresentationId,
+    ) -> Option<&[ShaderNodeId]> {
+        self.resource_nodes(context, ShaderResource::World(presentation.0))
     }
 }

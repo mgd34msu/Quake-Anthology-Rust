@@ -921,7 +921,10 @@ fn compile_presentation(
             diagnostics,
         )?;
         if let Some(registration) = registration {
-            registrations.push(registration.map_shader(PreparedShader::Binding));
+            registrations.push(registration.map_shader(|shader| PreparedShader::Binding {
+                shader,
+                surface: None,
+            }));
         }
     }
     for ((surface, &kind), definition) in source
@@ -965,7 +968,10 @@ fn compile_presentation(
                 diagnostics,
             )?;
             if let Some(registration) = registration {
-                registrations.push(registration.map_shader(PreparedShader::Binding));
+                registrations.push(registration.map_shader(|shader| PreparedShader::Binding {
+                    shader,
+                    surface: None,
+                }));
             }
             bindings.push(SurfaceMaterial::default());
             continue;
@@ -1072,6 +1078,7 @@ fn compile_presentation(
         let raw = source_surface_name(source, surface, &texture_names, &info_names, &shader_names)?;
         let lightmap = lightmaps[surface.source_id as usize].unwrap_or(ImageId(0));
         let mut named_registration = None;
+        let converted = geometry_source != RuleSetId::Quake3 && definition.is_none();
         let material = if let Some(definition) = definition {
             let compiled = compile_definition(
                 definition,
@@ -1147,7 +1154,10 @@ fn compile_presentation(
                 .map_err(WorldMaterialError::Boundary)?,
         };
         if registration.defaulted.is_some() {
-            registrations.push(registration.map_shader(PreparedShader::Binding));
+            registrations.push(registration.map_shader(|shader| PreparedShader::Binding {
+                shader,
+                surface: Some(bindings.len() as u32),
+            }));
             let shader = *images
                 .assets
                 .shader_binding(
@@ -1159,8 +1169,13 @@ fn compile_presentation(
                 texture_scale: scale,
             });
         } else {
-            registrations
-                .push(registration.map_shader(|_| PreparedShader::Surface(surface.source_id)));
+            registrations.push(registration.map_shader(|_| {
+                if converted {
+                    PreparedShader::ConvertedSurface(surface.source_id)
+                } else {
+                    PreparedShader::Surface(surface.source_id)
+                }
+            }));
             bindings.push(SurfaceMaterial {
                 shader: binding,
                 texture_scale: scale,

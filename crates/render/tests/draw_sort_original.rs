@@ -75,9 +75,14 @@ fn sorted_items(assets: &Assets, materials: &[ShaderBindingId], keys: &[usize]) 
             texcoord: [index as f32, 0.0],
             ..Vertex::default()
         }; 3];
-        assert!(frame.add_poly(materials[key], &vertices));
+        assert!(frame.add_poly(materials[key].into(), &vertices));
     }
-    assert!(frame.render_scene(Refdef::default(), &[], assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -88,12 +93,15 @@ fn sorted_items(assets: &Assets, materials: &[ShaderBindingId], keys: &[usize]) 
         .map(|draw| {
             assert_eq!(draw.kind, DrawKind::Poly);
             let poly = packet.poly(draw.index);
-            assert_eq!(poly.shader, materials[keys[draw.index as usize]]);
+            assert_eq!(
+                poly.shader.source(&()).unwrap(),
+                materials[keys[draw.index as usize]]
+            );
             assert_eq!(
                 packet.vertices(poly.vertices)[0].texcoord[0],
                 draw.index as f32
             );
-            (poly.shader.0, draw.index)
+            (poly.shader.source(&()).unwrap().0, draw.index)
         })
         .collect();
     assert_eq!(items.len(), keys.len());

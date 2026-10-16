@@ -90,6 +90,9 @@ pub struct ShaderContextAppend<'a> {
     committed: bool,
 }
 impl ShaderContextAppend<'_> {
+    pub fn node(&self, id: ShaderNodeId) -> Option<&ShaderRegistration> {
+        self.context.node(id)
+    }
     pub fn reset_sun_direction(&mut self) {
         self.context.sun_direction = crate::lighting::default_sun_direction();
     }

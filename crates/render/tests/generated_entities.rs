@@ -22,10 +22,15 @@ fn shared_beams_apply_world_or_entity_pose_and_keep_supplied_color() {
             origin,
             axes,
             color,
-            shader: Some(ShaderBindingId(0)),
+            shader: Some(ShaderBindingId(0).into()),
             ..Default::default()
         }));
-        assert!(frame.render_scene(Refdef::default(), &[], &assets));
+        assert!(frame.render_scene(
+            Refdef::default(),
+            &[],
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
+        ));
         let packet = frame.finish();
         let Command::View(view) = packet.commands()[1] else {
             panic!("beam view")
@@ -66,7 +71,7 @@ fn native_float_entity_alpha_reaches_cpu_pixels_without_byte_narrowing() {
         origin: Vec3([16., 0., 0.]),
         color: [255, 0, 0, 76],
         alpha: Some(0.3),
-        shader: Some(material),
+        shader: Some(material.into()),
         ..Default::default()
     }));
     assert!(frame.render_scene(
@@ -79,7 +84,8 @@ fn native_float_entity_alpha_reaches_cpu_pixels_without_byte_narrowing() {
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = frame.finish();
     let mut cpu = qa_render::cpu::CpuBackend::load(64, 64).unwrap();
@@ -148,7 +154,7 @@ fn indexed_beams_use_flat_palette_indices_and_the_native_translucency_table() {
         },
         origin: Vec3([40., 0., 0.]),
         palette_color: Some((palette, 0)),
-        shader: Some(backdrop),
+        shader: Some(backdrop.into()),
         ..Default::default()
     }));
     assert!(frame.add_entity(SceneEntity {
@@ -161,7 +167,7 @@ fn indexed_beams_use_flat_palette_indices_and_the_native_translucency_table() {
         color: [33, 33, 33, 76],
         alpha: Some(0.3),
         palette_color: Some((palette, 33)),
-        shader: Some(material),
+        shader: Some(material.into()),
         ..Default::default()
     }));
     assert!(frame.render_scene(
@@ -180,7 +186,8 @@ fn indexed_beams_use_flat_palette_indices_and_the_native_translucency_table() {
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = frame.finish();
     let mut cpu = qa_render::cpu::CpuBackend::load(64, 64).unwrap();
@@ -239,12 +246,17 @@ fn generated_geometry_uses_one_packet_and_keeps_entity_inputs() {
             model,
             origin: Vec3([8., 0., 0.]),
             color: [200, 100, 50, 255],
-            shader: Some(ShaderBindingId(0)),
+            shader: Some(ShaderBindingId(0).into()),
             shader_time: 1.25,
             shader_texcoord: [0.125, 0.5],
             ..Default::default()
         }));
-        assert!(frame.render_scene(Refdef::default(), &[], &assets));
+        assert!(frame.render_scene(
+            Refdef::default(),
+            &[],
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
+        ));
         let packet = frame.finish();
         let Command::View(view) = packet.commands()[1] else {
             panic!("view")
@@ -273,16 +285,21 @@ fn generated_capacity_failure_drops_a_whole_entity_and_keeps_a_peer_polygon() {
     })
     .unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 3]));
     assert!(frame.add_entity(SceneEntity {
         model: SceneModel::Sprite {
             radius: 2.,
             rotation: 0.
         },
-        shader: Some(ShaderBindingId(0)),
+        shader: Some(ShaderBindingId(0).into()),
         ..Default::default()
     }));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!("view")
@@ -304,7 +321,12 @@ fn model_group_overflow_restores_previous_entity_and_draw_ranges() {
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_entity(SceneEntity::default()));
     assert!(!frame.add_entities([SceneEntity::default(); 2]));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!("view")
@@ -337,7 +359,8 @@ fn view_visibility_filters_native_person_flags_without_dropping_shared_state() {
                 ..Default::default()
             },
             &[],
-            &assets
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
         let packet = frame.finish();
         let Command::View(view) = packet.commands()[1] else {

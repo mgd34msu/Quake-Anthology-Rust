@@ -824,6 +824,7 @@ impl Renderer {
         &mut self,
         composition: &mut SceneComposer,
         resources: crate::model_assets::ModelView<'_>,
+        native: &dyn qa_render::shader::reference::NativeShaders,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<ClientSceneInput<'_>>; SeatId::COUNT],
         hud: &[Option<hud::HudView<'_>>; SeatId::COUNT],
@@ -943,7 +944,12 @@ impl Renderer {
                         }),
                 );
                 let rendered = if no_world {
-                    frame.render_scene(refdef, hidden_areas, resources.assets)
+                    frame.render_scene(
+                        refdef,
+                        hidden_areas,
+                        resources.assets,
+                        qa_render::shader::reference::ShaderView::direct(),
+                    )
                 } else {
                     frame.render_world_scene(
                         client.world,
@@ -952,6 +958,7 @@ impl Renderer {
                         hidden_areas,
                         &mut scene.views[seat],
                         resources.assets,
+                        qa_render::shader::reference::ShaderView::direct(),
                     )
                 };
                 if !world_added || !rendered {
@@ -972,7 +979,8 @@ impl Renderer {
         );
         rejected += self.sample.console.rejected;
         rejected += self.sample.hud.rejected;
-        let packet = frame.finish();
+        let mut packet = frame.finish();
+        packet.resolve_shaders(resources.assets, native);
         self.sample.frontend_ns = timer.elapsed().as_nanos() as u64;
         let timer = Stopwatch::start();
         let result = match &mut self.backend {

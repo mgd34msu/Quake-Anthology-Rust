@@ -330,7 +330,12 @@ fn static_and_inline_scene_references_refresh_one_owned_atlas_residency() {
         origin: Vec3([17.0, -4.0, 2.0]),
         ..SceneEntity::default()
     }));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let list = frame.finish();
     let mut updates = AtlasUpdates::load(&assets).unwrap();
     let mut submitted = 0;

@@ -1357,7 +1357,7 @@ impl ClientSceneInput<'_> {
                     color[2],
                     (capabilities.alpha * 255.0) as u8,
                 ],
-                shader: Some(presentation.shader),
+                shader: Some(presentation.shader.into()),
                 ..Default::default()
             });
             counts.beams += u32::from(added);
@@ -1477,7 +1477,7 @@ impl ClientSceneInput<'_> {
                         if capabilities.alias_motion && model.sprite.is_none() {
                             entity.previous_origin = Some(record.appearance.old_origin);
                         }
-                        entity.shader = Some(binding.shader);
+                        entity.shader = Some(binding.shader.into());
                         entity.frame = current_frame;
                         entity.old_frame = old_frame;
                         entity.back_lerp = 1.0 - fraction;
@@ -1613,7 +1613,7 @@ impl ClientSceneInput<'_> {
                 };
             let entity = SceneEntity {
                 model: binding.model.into(),
-                shader: Some(binding.shader),
+                shader: Some(binding.shader.into()),
                 origin: refdef.origin + offset + (weapon.offset - offset) * fraction,
                 axes: angle_vectors(angles).axes(),
                 frame: current_frame,

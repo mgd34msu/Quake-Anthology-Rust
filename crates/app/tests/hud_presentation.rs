@@ -360,17 +360,23 @@ fn native_icons_and_numeric_fields_keep_decimal_truncation_and_seat_clipping() {
             }
         })
         .collect();
-    assert_eq!(draws[0].shader, icon);
+    assert_eq!(draws[0].shader.source(&()).unwrap(), icon);
     assert_eq!(draws[0].rect, [40., 20., 8., 24.]);
     assert_eq!(draws[0].texcoords, [0.5, 0., 1., 1.]);
     assert_eq!(draws[1].rect, [58., 44., 16., 24.]);
     assert_eq!(
-        draws[1..4].iter().map(|d| d.shader).collect::<Vec<_>>(),
+        draws[1..4]
+            .iter()
+            .map(|d| d.shader.source(&()).unwrap())
+            .collect::<Vec<_>>(),
         vec![numbers[0][10], numbers[0][1], numbers[0][2]]
     );
     assert_eq!(draws[4].rect, [58., 70., 16., 24.]);
     assert_eq!(
-        draws[4..].iter().map(|d| d.shader).collect::<Vec<_>>(),
+        draws[4..]
+            .iter()
+            .map(|d| d.shader.source(&()).unwrap())
+            .collect::<Vec<_>>(),
         vec![numbers[1][2], numbers[1][4]]
     );
 }
@@ -415,7 +421,7 @@ fn hud_flash_clock_armor_zero_and_negative_ammo_keep_each_native_rule() {
             .iter()
             .filter_map(|c| {
                 if let Command::Draw2d(d) = c {
-                    Some(d.shader)
+                    Some(d.shader.source(&()).unwrap())
                 } else {
                     None
                 }
@@ -498,7 +504,7 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
                 .iter()
                 .find_map(|c| {
                     if let Command::Draw2d(d) = c {
-                        Some(d.shader)
+                        Some(d.shader.source(&()).unwrap())
                     } else {
                         None
                     }

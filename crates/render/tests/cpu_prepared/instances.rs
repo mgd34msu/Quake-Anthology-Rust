@@ -32,7 +32,12 @@ fn instance_packet(assets: &Assets, entities: &[SceneEntity], view: Refdef) -> C
     for entity in entities {
         assert!(frame.add_entity(*entity));
     }
-    assert!(frame.render_scene(view, &[], assets));
+    assert!(frame.render_scene(
+        view,
+        &[],
+        assets,
+        crate::shader::reference::ShaderView::direct()
+    ));
     frame.finish()
 }
 
@@ -219,7 +224,12 @@ fn mixed_static_and_instanced_bsp_surfaces_use_plane_depth_order() {
         origin: Vec3([-2.0, 0.0, 0.0]),
         ..instance(&assets, world)
     }));
-    assert!(frame.render_scene(test_view(), &[], &assets));
+    assert!(frame.render_scene(
+        test_view(),
+        &[],
+        &assets,
+        crate::shader::reference::ShaderView::direct()
+    ));
     let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     assert_eq!(cpu.render(&frame.finish(), &assets).rejected, 0);
     assert_eq!(
@@ -379,7 +389,7 @@ fn world_instances_use_copied_entity_shader_inputs_and_material_override() {
         ..test_view()
     };
     let entity = SceneEntity {
-        shader: Some(replacement),
+        shader: Some(replacement.into()),
         color: [101, 203, 47, 255],
         ..instance(&assets, world)
     };
@@ -535,7 +545,12 @@ fn opacity_packet(assets: &Assets, entities: &[SceneEntity], view: Refdef) -> Co
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = frontend.begin_frame([40, 40, 40, 255]).unwrap();
     assert!(frame.add_entities(entities.iter().copied()));
-    assert!(frame.render_scene(view, &[], assets));
+    assert!(frame.render_scene(
+        view,
+        &[],
+        assets,
+        crate::shader::reference::ShaderView::direct()
+    ));
     frame.finish()
 }
 
@@ -710,7 +725,7 @@ fn animated_opacity_is_outside_material_time_and_keeps_alpha_test_holes() {
     let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     let center = 29 * 9 + 13;
     let entity = SceneEntity {
-        shader: Some(material),
+        shader: Some(material.into()),
         material_opacity: MaterialOpacity::new(0.25),
         ..instance(&assets, world)
     };
@@ -733,7 +748,7 @@ fn animated_opacity_is_outside_material_time_and_keeps_alpha_test_holes() {
         assert_eq!(&cpu.frame.pixels[center].to_le_bytes()[..3], &color);
     }
     let entity = SceneEntity {
-        shader: Some(hole_material),
+        shader: Some(hole_material.into()),
         ..entity
     };
     assert_eq!(

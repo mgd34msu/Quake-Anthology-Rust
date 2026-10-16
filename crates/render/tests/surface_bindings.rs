@@ -47,23 +47,17 @@ fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
     let world = assets.world(id).unwrap();
     for (binding, region, expected) in [
         (
-            assets
-                .world_presentation(world.presentations()[0])
-                .unwrap()
-                .bindings()[0],
+            assets.surface_shader(world.presentations()[0], 0).unwrap(),
             red,
             [17, 0, 0, 255],
         ),
         (
-            assets
-                .world_presentation(world.presentations()[0])
-                .unwrap()
-                .bindings()[1],
+            assets.surface_shader(world.presentations()[0], 1).unwrap(),
             blue,
             [0, 0, 231, 255],
         ),
     ] {
-        let binding = assets.shader_binding(binding.shader).unwrap();
+        let binding = assets.shader_binding(binding).unwrap();
         assert_eq!(binding.lightmap, image);
         assert_eq!(binding.lightmap_region, Some(region));
         assert_eq!(binding.material, materials[0].shader.material);
@@ -154,8 +148,8 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
                 assets
                     .world_presentation(assets.world(id).unwrap().presentations()[0])
                     .unwrap()
-                    .bindings()[0]
-                    .shader
+                    .surface_shader(0)
+                    .unwrap()
             )
             .unwrap()
             .lightmap_region,
@@ -192,13 +186,7 @@ fn authored_full_page_keeps_uvs_and_default_region_none() {
     let world = assets.world(id).unwrap();
     assert_eq!(
         assets
-            .shader_binding(
-                assets
-                    .world_presentation(world.presentations()[0])
-                    .unwrap()
-                    .bindings()[0]
-                    .shader
-            )
+            .shader_binding(assets.surface_shader(world.presentations()[0], 0).unwrap())
             .unwrap()
             .lightmap_region,
         None

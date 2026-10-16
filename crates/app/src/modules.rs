@@ -33,7 +33,7 @@ pub use clients::{ClientCommandError, ClientLifecycleInfo};
 mod cues;
 mod execution;
 mod input;
-mod renderer_contexts;
+pub(crate) mod renderer_contexts;
 pub use execution::Driver;
 use execution::ModuleDispatch;
 pub(crate) use execution::{ExecutionSlot, TraceAccess};
@@ -427,7 +427,6 @@ pub struct Modules {
     functions: Arc<FunctionTable<FrameHost, ModuleDispatch>>,
     rows: Box<[Option<Module>]>,
     storage: ServiceStorage,
-    renderer_contexts: renderer_contexts::Contexts,
     signon: Box<[SignonCursor]>,
     input: [input::Recipients; qa_core::sys_events::SeatId::COUNT],
 }
@@ -1058,7 +1057,6 @@ impl FrameHost {
         });
         host.modules = Some(Modules {
             functions: Arc::new(functions),
-            renderer_contexts: renderer_contexts::Contexts::load(rows.len()),
             rows,
             storage,
             signon,
@@ -1128,7 +1126,7 @@ impl FrameHost {
             let handle = modules
                 .row_mut(module)
                 .and_then(|row| row.renderer_context.take());
-            modules.renderer_contexts.release(handle);
+            self.renderer_contexts.release(handle);
         }
         self.runtime.server.retire_module_entities(module, time);
         if let Some(modules) = &mut self.modules {
@@ -1385,18 +1383,16 @@ impl FrameHost {
             .checked_mul(assets.profile_count())
             .and_then(|clients| clients.checked_add(modules.rows.len()))
             .ok_or("renderer context slots")?;
-        modules.renderer_contexts.reserve(capacity)?;
-        modules
-            .renderer_contexts
-            .retain_clients(|client, lifetime| {
-                self.runtime
-                    .server
-                    .clients
-                    .get(client.0 as usize)
-                    .is_some_and(|row| row.entity == lifetime && row.connection.is_some())
-                    && self.runtime.server.entities.resolve(lifetime).is_some()
-            });
-        let handle = modules.renderer_contexts.bind(
+        self.renderer_contexts.reserve(capacity)?;
+        self.renderer_contexts.retain_clients(|client, lifetime| {
+            self.runtime
+                .server
+                .clients
+                .get(client.0 as usize)
+                .is_some_and(|row| row.entity == lifetime && row.connection.is_some())
+                && self.runtime.server.entities.resolve(lifetime).is_some()
+        });
+        let handle = self.renderer_contexts.bind(
             previous,
             owner,
             profile,
@@ -1695,7 +1691,7 @@ impl FrameHost {
                         )
                     })
                     .and_then(|row| row.renderer_context.take());
-                modules.renderer_contexts.release(handle);
+                self.renderer_contexts.release(handle);
             }
         }
         // All old callback/finalizer vectors complete before one reset per CLIENT.
@@ -1711,16 +1707,12 @@ impl FrameHost {
                 if let Some(modules) = self.modules.as_mut() {
                     for row in modules.rows.iter_mut().flatten() {
                         if row.renderer_context.is_some_and(|handle| {
-                            modules
-                                .renderer_contexts
-                                .owns_client(handle, client, lifetime)
+                            self.renderer_contexts.owns_client(handle, client, lifetime)
                         }) {
-                            modules
-                                .renderer_contexts
-                                .release(row.renderer_context.take());
+                            self.renderer_contexts.release(row.renderer_context.take());
                         }
                     }
-                    let _ = modules.renderer_contexts.reset_client(client, lifetime);
+                    let _ = self.renderer_contexts.reset_client(client, lifetime);
                 }
                 if let Some(resources) = self.runtime.client_resources[client_index].as_mut() {
                     resources.state.request_presentation_reset(lifetime);

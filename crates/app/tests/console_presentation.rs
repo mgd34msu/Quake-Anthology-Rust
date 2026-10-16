@@ -473,12 +473,17 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
             );
             assert_eq!(background.texcoords, [0.0, 0.5, 1.0, 1.0]);
             let material = assets
-                .material(assets.shader_binding(background.shader).unwrap().material)
+                .material(
+                    assets
+                        .shader_binding(background.shader.source(&()).unwrap())
+                        .unwrap()
+                        .material,
+                )
                 .unwrap();
             assert_eq!(material.stages[0].blend, Some(StageBlend::ALPHA));
             assert_eq!(
-                *background_material.get_or_insert(background.shader),
-                background.shader
+                *background_material.get_or_insert(background.shader.source(&()).unwrap()),
+                background.shader.source(&()).unwrap()
             );
             assert!(front.recycle(packet).is_ok());
         }
@@ -528,12 +533,13 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
                     ..qa_render::Refdef::default()
                 },
                 &[],
-                &assets
+                &assets,
+                qa_render::shader::reference::ShaderView::direct()
             ));
             assert!(frame.draw_2d(qa_render::Draw2d {
                 rect: [0.0, 0.0, 160.0, 60.0],
                 color,
-                shader: material,
+                shader: material.into(),
                 ..qa_render::Draw2d::default()
             }));
             let packet = frame.finish();

@@ -314,7 +314,7 @@ fn shared_view_lighting_keeps_explicit_values_and_does_not_light_generated_geome
             radius: 1.,
             rotation: 0.
         },
-        shader: Some(ShaderBindingId(0)),
+        shader: Some(ShaderBindingId(0).into()),
         ..Default::default()
     }));
     let mut samples = 0;
@@ -323,7 +323,12 @@ fn shared_view_lighting_keeps_explicit_values_and_does_not_light_generated_geome
         unlit_sample(1., Vec3([0., 0., 1.]))
     });
     assert_eq!(samples, 1);
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let qa_render::scene::Command::View(view) = packet.commands()[1] else {
         panic!("view")
@@ -390,7 +395,8 @@ fn no_world_diffuse_models_reach_cpu_pixels_through_shared_lighting() {
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let mut cpu = CpuBackend::load(32, 24).unwrap();
     let stats = cpu.render(&frame.finish(), &assets);

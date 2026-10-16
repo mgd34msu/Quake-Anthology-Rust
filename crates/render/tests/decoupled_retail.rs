@@ -165,7 +165,12 @@ fn retail_base1_decoupled_samples_reach_the_indexed_surface_cache() {
             depth_key: 1,
         }]
     ));
-    assert!(frame.render_scene(view, &[], &assets));
+    assert!(frame.render_scene(
+        view,
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     assert_eq!(cpu.render(&packet, &assets).rejected, 0);
     assert!(cpu.world_stats().pixels > 0, "face {surface_index}");

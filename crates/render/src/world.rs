@@ -1,4 +1,5 @@
 //! BSP boundary conversion. Drawing uses only the normalized world primitives.
+use crate::shader::reference::{ShaderChoice, ShaderDefault, ShaderView};
 use crate::{
     assets::{ImageId, MaterialId, ModelId, ShaderBinding, ShaderBindingId, ShaderRegistration},
     scene::{Refdef, Span},
@@ -36,7 +37,7 @@ impl WorldPresentation {
         world: WorldId,
         materials: &[SurfaceMaterial],
         mesh_ranges: impl Iterator<Item = Span>,
-        shaders: impl Iterator<Item = ShaderBindingId>,
+        shaders: impl Iterator<Item = ShaderChoice>,
         registrations: Box<[ShaderRegistration]>,
         native_page0: Option<ImageId>,
         native_default: Option<ShaderBindingId>,
@@ -91,6 +92,16 @@ impl WorldPresentation {
     pub fn world(&self) -> WorldId {
         self.world
     }
+    pub fn surface_shader(&self, surface: u32) -> Option<ShaderBindingId> {
+        ShaderView::direct()
+            .choice(
+                self.bindings.get(surface as usize)?.shader,
+                &self.registrations,
+                None,
+                ShaderDefault::Global(self.native_default),
+            )?
+            .source(&())
+    }
     pub fn bindings(&self) -> &[SurfaceBinding] {
         &self.bindings
     }
@@ -98,7 +109,7 @@ impl WorldPresentation {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SurfaceBinding {
-    pub shader: ShaderBindingId,
+    pub shader: ShaderChoice,
     /// Range in the world's packed static triangle mesh.
     pub mesh_indices: Span,
     /// Source geometry retains its original texture projection scale.
@@ -122,7 +133,11 @@ impl Default for SurfaceMaterial {
 #[derive(Clone, Copy, Debug)]
 pub enum PreparedShader {
     Surface(u32),
-    Binding(ShaderBinding),
+    ConvertedSurface(u32),
+    Binding {
+        shader: ShaderBinding,
+        surface: Option<u32>,
+    },
 }
 /// One cold presentation input; native requests retain their authored order.
 #[derive(Clone, Copy)]

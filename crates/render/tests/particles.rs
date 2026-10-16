@@ -95,7 +95,7 @@ fn gl_point_vertices_match_native_scale_order_axes_uvs_and_palette_color() {
             color: 73,
             alpha: 123,
             palette,
-            shader: material,
+            shader: material.into(),
             ..SceneParticle::default()
         };
         let output = gl_vertices(particle, &view, assets.palette(palette).unwrap()).unwrap();
@@ -152,7 +152,7 @@ fn card_uses_the_same_palette_and_fixed_vertex_output() {
         alpha: 64,
         size: 4.0,
         palette,
-        shader: material,
+        shader: material.into(),
         presentation: ParticlePresentation::Card,
     };
     let output = gl_vertices(
@@ -194,16 +194,26 @@ fn particles_are_copied_bounded_and_kept_in_separate_view_ranges() {
     let mut particle = SceneParticle {
         position: Vec3([17.0, 2.0, 3.0]),
         palette,
-        shader: material,
+        shader: material.into(),
         ..SceneParticle::default()
     };
     assert!(frame.add_particle(particle));
     particle.position = Vec3([31.0, 7.0, 11.0]);
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     frame.clear_scene();
     assert!(frame.add_particle(particle));
     assert!(!frame.add_particle(particle));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
         panic!()
@@ -230,7 +240,12 @@ fn particles_are_copied_bounded_and_kept_in_separate_view_ranges() {
     assert!(front.recycle(empty).is_ok());
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_particle(particle));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -254,12 +269,22 @@ fn failed_view_and_invalid_particle_do_not_damage_valid_peers_or_prior_views() {
     let mut frame = front.begin_frame([0; 4]).unwrap();
     let particle = SceneParticle {
         palette,
-        shader: material,
+        shader: material.into(),
         ..SceneParticle::default()
     };
     assert!(frame.add_particle(particle));
-    assert!(!frame.render_scene(Refdef::default(), &[1, 2], &assets));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(!frame.render_scene(
+        Refdef::default(),
+        &[1, 2],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     assert!(frame.add_particle(SceneParticle {
         palette: PaletteId(u32::MAX),
         ..particle
@@ -268,12 +293,22 @@ fn failed_view_and_invalid_particle_do_not_damage_valid_peers_or_prior_views() {
         color: 9,
         ..particle
     }));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     assert!(frame.add_particle(SceneParticle {
-        shader: qa_render::ShaderBindingId(u32::MAX),
+        shader: qa_render::ShaderBindingId(u32::MAX).into(),
         ..particle
     }));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
         panic!()
@@ -301,7 +336,7 @@ fn nonfinite_or_nonpositive_particle_admission_leaves_capacity_for_valid_data() 
     let (assets, palette, material) = resources();
     let particle = SceneParticle {
         palette,
-        shader: material,
+        shader: material.into(),
         ..SceneParticle::default()
     };
     let mut front = FrontEnd::load(Limits {
@@ -331,7 +366,12 @@ fn nonfinite_or_nonpositive_particle_admission_leaves_capacity_for_valid_data() 
         assert!(!frame.add_particle(bad));
     }
     assert!(frame.add_particle(particle));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()

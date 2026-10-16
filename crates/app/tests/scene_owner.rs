@@ -270,6 +270,7 @@ impl FrameSource for Source {
         &mut self,
         scene: Option<&mut SceneComposer>,
         _: Option<qa_app::model_assets::ModelView<'_>>,
+        _native: &dyn qa_render::shader::reference::NativeShaders,
         _: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
         _: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         _: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],

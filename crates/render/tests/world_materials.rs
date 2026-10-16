@@ -241,11 +241,12 @@ fn independent_lightmap_projection_packs_large_grids_with_original_styles() -> R
             }
         ));
         let world = assets.world(loaded.world).ok_or("world")?;
-        let binding = *assets
-            .surface_binding(loaded.presentations[0].id, 0)
-            .unwrap();
         let binding = assets
-            .shader_binding(binding.shader)
+            .shader_binding(
+                assets
+                    .surface_shader(loaded.presentations[0].id, 0)
+                    .unwrap(),
+            )
             .ok_or("shader binding")?;
         let region = binding.lightmap_region.ok_or("lit region")?;
         assert_eq!(region.page_size, expected_page_size);
@@ -273,9 +274,8 @@ fn independent_lightmap_projection_packs_large_grids_with_original_styles() -> R
             assets
                 .shader_binding(
                     assets
-                        .surface_binding(loaded.presentations[0].id, 1)
+                        .surface_shader(loaded.presentations[0].id, 1)
                         .unwrap()
-                        .shader
                 )
                 .unwrap()
                 .lightmap_region
@@ -285,9 +285,8 @@ fn independent_lightmap_projection_packs_large_grids_with_original_styles() -> R
             assets
                 .shader_binding(
                     assets
-                        .surface_binding(loaded.presentations[0].id, 1)
+                        .surface_shader(loaded.presentations[0].id, 1)
                         .unwrap()
-                        .shader
                 )
                 .unwrap()
                 .lightmap,
@@ -454,13 +453,20 @@ fn authored_stages_replace_only_matching_legacy_faces_and_keep_their_lightmaps()
             let first = *assets
                 .surface_binding(loaded.presentations[0].id, 0)
                 .unwrap();
-            let second = *assets
-                .surface_binding(loaded.presentations[0].id, 1)
-                .unwrap();
             assert_eq!(first.texture_scale, [1.0 / 16.0; 2]);
-            let first = assets.shader_binding(first.shader).ok_or("first shader")?;
+            let first = assets
+                .shader_binding(
+                    assets
+                        .surface_shader(loaded.presentations[0].id, 0)
+                        .unwrap(),
+                )
+                .ok_or("first shader")?;
             let second = assets
-                .shader_binding(second.shader)
+                .shader_binding(
+                    assets
+                        .surface_shader(loaded.presentations[0].id, 1)
+                        .unwrap(),
+                )
                 .ok_or("second shader")?;
             let changed = assets.material(first.material).ok_or("first material")?;
             let stock = assets.material(second.material).ok_or("second material")?;
@@ -521,11 +527,12 @@ fn opaque_native_water_and_flow_register_software_sampling_without_changing_gl_s
             WorldLoadOptions::default(),
         )
         .map_err(|e| format!("water material: {e:?}"))?;
-        let binding = *assets
-            .surface_binding(loaded.presentations[0].id, 0)
-            .ok_or("binding")?;
         let binding = assets
-            .shader_binding(binding.shader)
+            .shader_binding(
+                assets
+                    .surface_shader(loaded.presentations[0].id, 0)
+                    .unwrap(),
+            )
             .ok_or("shader binding")?;
         let material = assets.material(binding.material).ok_or("material")?;
         let base = &material.stages[0];
@@ -567,7 +574,7 @@ fn surface_image(assets: &Assets, presentation: WorldPresentationId) -> ImageId 
     let material = assets
         .material(
             assets
-                .shader_binding(assets.surface_binding(presentation, 0).unwrap().shader)
+                .shader_binding(assets.surface_shader(presentation, 0).unwrap())
                 .unwrap()
                 .material,
         )
@@ -689,7 +696,12 @@ fn selected_cpu_palette_preserves_source_colors_with_load_time_index_translation
                 ..Refdef::default()
             };
             loaded.presentations[0].defaults.apply(&mut view);
-            assert!(frame.render_scene(view, &[], &assets));
+            assert!(frame.render_scene(
+                view,
+                &[],
+                &assets,
+                qa_render::shader::reference::ShaderView::direct()
+            ));
             let packet = frame.finish();
             let stats = cpu.render(&packet, &assets);
             assert_eq!(stats.rejected, 0);
@@ -833,7 +845,12 @@ fn draw_registered_profiles(
             ..Refdef::default()
         };
         profile.defaults.apply(&mut view);
-        assert!(frame.render_scene(view, &[], assets));
+        assert!(frame.render_scene(
+            view,
+            &[],
+            assets,
+            qa_render::shader::reference::ShaderView::direct()
+        ));
     }
     let packet = frame.finish();
     assert_eq!(cpu.render(&packet, assets).rejected, 0);
@@ -1158,8 +1175,14 @@ fn ordered_native_requests_keep_named_default_bodies_for_hidden_surfaces() -> Re
             "textures/stageless",
         ]
     );
-    assert_eq!(registrations[2].shader, presentation.bindings()[0].shader);
-    assert_eq!(registrations[4].shader, presentation.bindings()[2].shader);
+    assert_eq!(
+        registrations[2].shader,
+        presentation.surface_shader(0).unwrap()
+    );
+    assert_eq!(
+        registrations[4].shader,
+        presentation.surface_shader(2).unwrap()
+    );
     assert_eq!(registrations[2], registrations[4]);
     assert_eq!(
         assets
@@ -1216,7 +1239,10 @@ fn ordered_native_requests_keep_named_default_bodies_for_hidden_surfaces() -> Re
     assert!(stageless.stages.is_empty());
     assert_eq!(stageless.settings.sort, 7.0);
     for surface in [1, 3, 4] {
-        assert_eq!(presentation.bindings()[surface].shader, ShaderBindingId(0));
+        assert_eq!(
+            presentation.surface_shader(surface as u32).unwrap(),
+            ShaderBindingId(0)
+        );
         assert!(assets.world(loaded.world).unwrap().geometry().surfaces[surface].no_draw);
     }
     assert_eq!(
@@ -1259,7 +1285,7 @@ fn unreferenced_native_page_zero_is_real_converted_resource_and_late_metadata_ro
         .ok_or("presentation")?;
     let page_zero = presentation.native_page0().ok_or("page zero")?;
     let source = assets
-        .shader_binding(presentation.bindings()[0].shader)
+        .shader_binding(presentation.surface_shader(0).unwrap())
         .ok_or("source binding")?;
     assert_ne!(page_zero, source.lightmap);
     assert!(
@@ -1321,7 +1347,7 @@ fn unreferenced_native_page_zero_is_real_converted_resource_and_late_metadata_ro
     );
     assert_eq!(
         admitted.shader_registrations()[0].shader,
-        admitted.bindings()[0].shader
+        admitted.surface_shader(0).unwrap()
     );
     std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
     Ok(())
@@ -1352,7 +1378,7 @@ fn native_hidden_out_of_range_lightmap_registers_vertex_lighting_before_draw_ski
         .ok_or("presentation")?;
     assert_eq!(presentation.native_page0(), None);
     assert_eq!(
-        presentation.bindings()[0].shader,
+        presentation.surface_shader(0).unwrap(),
         qa_render::ShaderBindingId(0),
         "nodraw surfaces have no draw binding"
     );
@@ -1586,10 +1612,10 @@ fn implicit_missing_world_shader_keeps_named_body_and_draws_global_fallback() ->
         registration.defaulted,
         Some(NativeDefaultKind::MissingImage)
     );
-    assert_ne!(registration.shader, presentation.bindings()[0].shader);
+    assert_ne!(registration.shader, presentation.surface_shader(0).unwrap());
     let fallback = presentation.native_default().unwrap();
     assert_ne!(fallback, qa_render::ShaderBindingId(0));
-    assert_eq!(presentation.bindings()[0].shader, fallback);
+    assert_eq!(presentation.surface_shader(0).unwrap(), fallback);
     let shader = assets.shader_binding(fallback).unwrap();
     let material = assets.material(shader.material).unwrap();
     assert_eq!(assets.name(material.name), Some("<default>"));
@@ -1656,7 +1682,7 @@ fn q3_default_world_uses_independent_indexed_presentation_without_dropping_nativ
         .world_presentation(loaded.presentations[0].id)
         .unwrap();
     let fallback = presentation.native_default().unwrap();
-    assert_eq!(presentation.bindings()[0].shader, fallback);
+    assert_eq!(presentation.surface_shader(0).unwrap(), fallback);
     let material = assets
         .material(assets.shader_binding(fallback).unwrap().material)
         .unwrap();
@@ -1810,7 +1836,8 @@ fn indexed_foreground_rejection_and_cutout_preserve_background_coverage() {
                 ..Default::default()
             },
             &[],
-            &assets
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
         let stats = cpu.render(&frame.finish(), &assets);
         if cutout {
@@ -1862,7 +1889,7 @@ fn legacy_worlds_use_the_shared_global_default_after_authored_shader_parse_failu
         assert_eq!(named.stages.len(), 1);
         assert_eq!(named.stages[0].texture, StageTexture::Image(ImageId(0)));
         let fallback = presentation.native_default().unwrap();
-        assert_eq!(presentation.bindings()[0].shader, fallback);
+        assert_eq!(presentation.surface_shader(0).unwrap(), fallback);
         assert_ne!(fallback, registration.shader);
         let body = assets
             .material(assets.shader_binding(fallback).unwrap().material)
@@ -1878,3 +1905,77 @@ fn legacy_worlds_use_the_shared_global_default_after_authored_shader_parse_failu
 
 #[path = "world_materials/ordered.rs"]
 mod ordered;
+
+#[test]
+fn generated_same_texture_legacy_variants_keep_their_cold_body_and_history_ordinal()
+-> Result<(), String> {
+    use qa_render::shader::reference::ShaderChoice;
+    let root = resources("converted-variants")?;
+    let bytes = map_bytes(2);
+    let mut map = legacy_map(&bytes, 2)?;
+    map.texture_info[1].name = map.texture_info[0].name;
+    map.texture_info[1].texture = map.texture_info[0].texture;
+    map.texture_info[1].flags = 64 | 32;
+    let vfs = mount(&root)?;
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let loaded = load_native_world(
+        &vfs,
+        &map,
+        &mut assets,
+        RuleSetId::Quake2,
+        WorldLoadOptions::default(),
+    )
+    .map_err(|error| format!("converted materials: {error:?}"))?;
+    let presentation = loaded.presentations[0].id;
+    let receipts = assets
+        .world_presentation(presentation)
+        .ok_or("presentation")?
+        .shader_registrations();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[0].key, receipts[1].key);
+    let shaders = [0, 1].map(|surface| {
+        let ShaderChoice::Converted {
+            binding,
+            occurrence,
+        } = assets
+            .surface_binding(presentation, surface)
+            .unwrap()
+            .shader
+        else {
+            panic!("generated legacy surface needs a converted choice");
+        };
+        assert_eq!(occurrence.0, surface);
+        assert_eq!(assets.surface_shader(presentation, surface), Some(binding));
+        binding
+    });
+    let first = assets
+        .material(
+            assets
+                .shader_binding(shaders[0])
+                .ok_or("first binding")?
+                .material,
+        )
+        .ok_or("first material")?;
+    let second = assets
+        .material(
+            assets
+                .shader_binding(shaders[1])
+                .ok_or("second binding")?
+                .material,
+        )
+        .ok_or("second material")?;
+    assert_ne!(
+        assets.shader_binding(shaders[0]).unwrap().material,
+        assets.shader_binding(shaders[1]).unwrap().material
+    );
+    assert!(first.stages[0].blend.is_none());
+    assert!(first.stages[0].tcmods.iter().all(Option::is_none));
+    assert!(second.stages[0].blend.is_some());
+    assert!(
+        second.stages[0]
+            .tcmods
+            .iter()
+            .any(|modifier| matches!(modifier, Some(TcMod::Flow(_))))
+    );
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())
+}

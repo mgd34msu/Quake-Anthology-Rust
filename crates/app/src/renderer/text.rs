@@ -98,7 +98,7 @@ impl BitmapFont {
                 t + (bottom - y) / height * 0.0625,
             ],
             color,
-            shader: self.shader,
+            shader: self.shader.into(),
         });
         TextStats {
             glyphs: u32::from(accepted),

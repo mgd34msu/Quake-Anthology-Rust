@@ -128,7 +128,12 @@ fn gl_material_transactions_keep_complete_stage_results_depth_and_context_state(
             material_opacity: MaterialOpacity::new(amount),
             ..Default::default()
         }));
-        assert!(frame.render_scene(view, &[], &assets));
+        assert!(frame.render_scene(
+            view,
+            &[],
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
+        ));
         let packet = frame.finish();
         assert_eq!(gl.render(&packet, &assets).rejected, 0);
         assert_eq!(cpu.render(&packet, &assets).rejected, 0);
@@ -157,11 +162,16 @@ fn gl_material_transactions_keep_complete_stage_results_depth_and_context_state(
     }));
     assert!(frame.add_entity(SceneEntity {
         model: SceneModel::Mesh(model),
-        shader: Some(back_material),
+        shader: Some(back_material.into()),
         origin: Vec3([4., 0., 0.]),
         ..Default::default()
     }));
-    assert!(frame.render_scene(view, &[], &assets));
+    assert!(frame.render_scene(
+        view,
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     assert_eq!(gl.render(&packet, &assets).rejected, 0);
     assert!(gl.read_pixels(&mut pixels));
@@ -181,7 +191,8 @@ fn gl_material_transactions_keep_complete_stage_results_depth_and_context_state(
             ..view
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     assert_eq!(gl.render(&frame.finish(), &assets).rejected, 0);
     assert!(gl.read_pixels(&mut pixels));

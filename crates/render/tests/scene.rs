@@ -15,7 +15,7 @@ fn background_commands_precede_native_views_and_ui_with_owned_ranges() {
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_poly(
-        ShaderBindingId(0),
+        ShaderBindingId(0).into(),
         &[Vertex {
             color: [11; 4],
             ..Default::default()
@@ -27,7 +27,8 @@ fn background_commands_precede_native_views_and_ui_with_owned_ranges() {
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     assert!(frame.draw_2d(qa_render::scene::Draw2d {
         rect: [1., 2., 3., 4.],
@@ -36,7 +37,7 @@ fn background_commands_precede_native_views_and_ui_with_owned_ranges() {
     frame.background(|frame| {
         frame.clear_scene();
         assert!(frame.add_poly(
-            ShaderBindingId(0),
+            ShaderBindingId(0).into(),
             &[Vertex {
                 color: [22; 4],
                 ..Default::default()
@@ -48,7 +49,8 @@ fn background_commands_precede_native_views_and_ui_with_owned_ranges() {
                 ..Default::default()
             },
             &[],
-            &assets
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
     });
     let packet = frame.finish();
@@ -121,7 +123,8 @@ fn hyperspace_clears_only_the_native_viewport_on_cpu() {
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = frame.finish();
     let mut cpu = qa_render::cpu::CpuBackend::load(12, 6).unwrap();
@@ -199,9 +202,14 @@ fn poly_order(assets: &Assets, materials: &[ShaderBindingId]) -> Vec<u32> {
             color: [index as u8, 0, 0, 128],
             ..Vertex::default()
         }; 3];
-        assert!(frame.add_poly(material, &vertices));
+        assert!(frame.add_poly(material.into(), &vertices));
     }
-    assert!(frame.render_scene(Refdef::default(), &[], assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -429,7 +437,7 @@ fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_vie
                 radius: 0.1,
                 rotation: 0.
             },
-            shader: Some(red),
+            shader: Some(red.into()),
             ..Default::default()
         }));
         assert!(frame.add_light(Light {
@@ -438,7 +446,7 @@ fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_vie
         }));
         assert!(
             frame.add_poly(
-                red,
+                red.into(),
                 &[
                     Vec3([-1., -3., -3.]),
                     Vec3([-1., 3., -3.]),
@@ -459,7 +467,15 @@ fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_vie
                 depth_key: 1
             }]
         ));
-        assert!(frame.render_world_scene(world, presentation, view, &[], &mut scratch, &assets));
+        assert!(frame.render_world_scene(
+            world,
+            presentation,
+            view,
+            &[],
+            &mut scratch,
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
+        ));
         let packet = frame.finish();
         let views: Vec<_> = packet
             .commands()
@@ -530,8 +546,13 @@ fn presentation_variants_select_sort_materials_for_world_and_inline_and_reject_w
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_world(world, first, &[VisibleSurface::default()]));
-    assert!(frame.add_poly(middle, &[Vertex::default(); 3]));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.add_poly(middle.into(), &[Vertex::default(); 3]));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     assert!(frame.add_entity(SceneEntity {
         model: SceneModel::World {
             world,
@@ -540,14 +561,24 @@ fn presentation_variants_select_sort_materials_for_world_and_inline_and_reject_w
         },
         ..Default::default()
     }));
-    assert!(frame.add_poly(middle, &[Vertex::default(); 3]));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.add_poly(middle.into(), &[Vertex::default(); 3]));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     assert!(frame.add_world(
         world,
         presentation(&assets, foreign),
         &[VisibleSurface::default()]
     ));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let views: Vec<_> = packet
         .commands()
@@ -599,14 +630,24 @@ fn world_submissions_copy_surface_ids_and_keep_prior_views_on_overflow() {
     }];
     assert!(frame.add_world(first_world, presentation(&assets, first_world), &visible));
     visible[0].surface = 1;
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     assert!(!frame.add_world(
         WorldId(8),
         qa_render::WorldPresentationId(u32::MAX),
         &[visible[0]; 2]
     ));
     assert!(frame.add_world(second_world, presentation(&assets, second_world), &visible));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
         panic!()
@@ -636,9 +677,14 @@ fn scenes_copy_payloads_and_advance_ranges() {
     };
     assert!(frame.add_entity(first));
     let mut vertices = [Vertex::default(); 3];
-    assert!(frame.add_poly(ShaderBindingId(0), &vertices));
+    assert!(frame.add_poly(ShaderBindingId(0).into(), &vertices));
     let mut areas = [0x55u8, 0xaa];
-    assert!(frame.render_scene(Refdef::default(), &areas, &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &areas,
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     vertices[0].color = [0; 4];
     assert_eq!(vertices[0].color, [0; 4]);
     areas.fill(0);
@@ -647,7 +693,12 @@ fn scenes_copy_payloads_and_advance_ranges() {
         frame: 11,
         ..SceneEntity::default()
     }));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view0) = packet.commands()[1] else {
         panic!()
@@ -746,7 +797,7 @@ fn dropped_capacity_stage_preserves_arenas_and_commit_grows_the_same_owner() {
     }
     assert!(!grown.add_entity(SceneEntity::default()));
     for _ in 0..2 {
-        assert!(grown.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
+        assert!(grown.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 3]));
     }
     assert!(
         grown.add_world(
@@ -760,7 +811,12 @@ fn dropped_capacity_stage_preserves_arenas_and_commit_grows_the_same_owner() {
                 .collect::<Vec<_>>()
         )
     );
-    assert!(grown.render_scene(Refdef::default(), &[1, 2], &assets));
+    assert!(grown.render_scene(
+        Refdef::default(),
+        &[1, 2],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = grown.finish();
     assert_eq!(packet.frame, 2);
     let Command::View(view) = packet.commands()[1] else {
@@ -827,10 +883,20 @@ fn rejected_poly_and_view_leave_existing_payloads_intact() {
     };
     let mut front = FrontEnd::load(limits).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(!frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 4]));
-    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
-    assert!(!frame.render_scene(Refdef::default(), &[0; 3], &assets));
-    assert!(frame.render_scene(Refdef::default(), &[0; 2], &assets));
+    assert!(!frame.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 4]));
+    assert!(frame.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 3]));
+    assert!(!frame.render_scene(
+        Refdef::default(),
+        &[0; 3],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[0; 2],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     assert_eq!(packet.rejected, 2);
     let Command::View(view) = packet.commands()[1] else {
@@ -869,11 +935,16 @@ fn shared_draw_order_places_translucent_surfaces_after_opaque_entities() {
         }]
     ));
     assert!(frame.add_entity(SceneEntity {
-        shader: Some(opaque),
+        shader: Some(opaque.into()),
         ..SceneEntity::default()
     }));
-    assert!(frame.add_poly(middle, &[Vertex::default(); 3]));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.add_poly(middle.into(), &[Vertex::default(); 3]));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -891,8 +962,17 @@ fn shared_draw_order_places_translucent_surfaces_after_opaque_entities() {
         ]
     );
     assert_eq!(packet.surface(draws[2].index).depth_key, 7);
-    assert_eq!(packet.entity(draws[0].index).shader, Some(opaque));
-    assert_eq!(packet.poly(draws[1].index).shader, middle);
+    assert_eq!(
+        packet
+            .entity(draws[0].index)
+            .shader
+            .map(|shader| shader.source(&()).unwrap()),
+        Some(opaque)
+    );
+    assert_eq!(
+        packet.poly(draws[1].index).shader.source(&()).unwrap(),
+        middle
+    );
 }
 
 #[test]
@@ -905,9 +985,14 @@ fn shared_draw_order_retains_fractional_sorts_and_numeric_material_ties() {
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     for material in [later, tied_second, earlier, tied_first] {
-        assert!(frame.add_poly(material, &[Vertex::default(); 3]));
+        assert!(frame.add_poly(material.into(), &[Vertex::default(); 3]));
     }
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -916,7 +1001,7 @@ fn shared_draw_order_retains_fractional_sorts_and_numeric_material_ties() {
         packet
             .draws(view.scene.draws)
             .iter()
-            .map(|draw| packet.poly(draw.index).shader)
+            .map(|draw| packet.poly(draw.index).shader.source(&()).unwrap())
             .collect::<Vec<_>>(),
         [earlier, tied_first, tied_second, later]
     );
@@ -938,7 +1023,7 @@ fn equal_native_keys_keep_native_cross_kind_shortsort_swaps() {
     };
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(frame.add_poly(material, &[Vertex::default(); 3]));
+    assert!(frame.add_poly(material.into(), &[Vertex::default(); 3]));
     assert!(frame.add_world(
         world,
         presentation(&assets, world),
@@ -947,8 +1032,13 @@ fn equal_native_keys_keep_native_cross_kind_shortsort_swaps() {
             depth_key: 1
         }]
     ));
-    assert!(frame.add_poly(material, &[Vertex::default(); 3]));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.add_poly(material.into(), &[Vertex::default(); 3]));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -1043,7 +1133,12 @@ fn draw_keys_group_lightmaps_without_reordering_raw_depth_surfaces() {
             },
         ]
     ));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -1099,9 +1194,19 @@ fn surface_draw_ranks_are_native_view_local_and_preserve_bsp_depth_keys() {
         },
     ];
     assert!(frame.add_world(world, presentation(&assets, world), &surfaces));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     assert!(frame.add_world(world, presentation(&assets, world), &surfaces[..2]));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
         panic!()
@@ -1152,14 +1257,24 @@ fn separately_sorted_view_ranges_keep_absolute_payload_indices() {
     let mut frame = front.begin_frame([0; 4]).unwrap();
     let vertices = [Vertex::default(); 3];
     for material in [late, early] {
-        assert!(frame.add_poly(material, &vertices));
+        assert!(frame.add_poly(material.into(), &vertices));
     }
-    assert!(frame.render_scene(Refdef::default(), &[1], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[1],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     frame.clear_scene();
     for material in [late, early] {
-        assert!(frame.add_poly(material, &vertices));
+        assert!(frame.add_poly(material.into(), &vertices));
     }
-    assert!(frame.render_scene(Refdef::default(), &[2], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[2],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
         panic!()
@@ -1204,9 +1319,14 @@ fn draw_capacity_drops_whole_payload_submissions_atomically() {
         qa_render::WorldPresentationId(u32::MAX),
         &[VisibleSurface::default(); 2]
     ));
-    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 3]));
     assert!(!frame.add_entity(SceneEntity::default()));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -1228,14 +1348,39 @@ fn failed_view_preserves_previous_draws_and_native_pending_order() {
     })
     .unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
-    assert!(!frame.render_scene(Refdef::default(), &[0; 2], &assets));
-    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
-    assert!(frame.render_scene(Refdef::default(), &[7], &assets));
-    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
-    assert!(!frame.render_scene(Refdef::default(), &[8], &assets));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
-    assert!(!frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 3]));
+    assert!(!frame.render_scene(
+        Refdef::default(),
+        &[0; 2],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
+    assert!(frame.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 3]));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[7],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
+    assert!(frame.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 3]));
+    assert!(!frame.render_scene(
+        Refdef::default(),
+        &[8],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
+    assert!(!frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
         panic!()
@@ -1268,7 +1413,7 @@ fn invalid_frozen_handles_only_drop_the_affected_draw() {
     let assets = Assets::load().unwrap();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(frame.add_poly(ShaderBindingId(999), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(999).into(), &[Vertex::default(); 3]));
     assert!(frame.add_entity(SceneEntity {
         model: qa_render::ModelId(999).into(),
         ..SceneEntity::default()
@@ -1278,10 +1423,20 @@ fn invalid_frozen_handles_only_drop_the_affected_draw() {
         qa_render::WorldPresentationId(u32::MAX),
         &[VisibleSurface::default()]
     ));
-    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
-    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 3]));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
+    assert!(frame.add_poly(ShaderBindingId(0).into(), &[Vertex::default(); 3]));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
         panic!()
@@ -1316,9 +1471,14 @@ fn native_signed_zero_sort_keeps_numeric_material_registration_order() {
     let negative = material(&mut assets, "negative-zero", -0.0);
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(frame.add_poly(negative, &[Vertex::default(); 3]));
-    assert!(frame.add_poly(positive, &[Vertex::default(); 3]));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.add_poly(negative.into(), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(positive.into(), &[Vertex::default(); 3]));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -1327,7 +1487,7 @@ fn native_signed_zero_sort_keeps_numeric_material_registration_order() {
         packet
             .draws(view.scene.draws)
             .iter()
-            .map(|draw| packet.poly(draw.index).shader)
+            .map(|draw| packet.poly(draw.index).shader.source(&()).unwrap())
             .collect::<Vec<_>>(),
         [positive, negative]
     );
@@ -1401,11 +1561,21 @@ fn inline_surface_submission_owns_one_pose_and_keeps_per_face_bindings() {
             depth_key: 19
         }]
     ));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     frame.clear_scene();
-    entity.shader = Some(high);
+    entity.shader = Some(high.into());
     assert!(frame.add_entity(entity));
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
         panic!()
@@ -1475,7 +1645,12 @@ fn inline_surface_capacity_failure_leaves_entity_and_draw_arenas_unchanged() {
             },
             ..instance
         }));
-        assert!(frame.render_scene(Refdef::default(), &[], &assets));
+        assert!(frame.render_scene(
+            Refdef::default(),
+            &[],
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
+        ));
         let packet = frame.finish();
         let Command::View(view) = packet.commands()[1] else {
             panic!()

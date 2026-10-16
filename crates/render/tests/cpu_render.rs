@@ -58,7 +58,7 @@ fn portal_plane_clips_polygons_and_rotated_models_to_the_same_half_screen() {
                 ..Default::default()
             }));
         } else {
-            assert!(frame.add_poly(material, &vertices));
+            assert!(frame.add_poly(material.into(), &vertices));
         }
         assert!(frame.render_scene(
             Refdef {
@@ -72,7 +72,8 @@ fn portal_plane_clips_polygons_and_rotated_models_to_the_same_half_screen() {
                 ..Default::default()
             },
             &[],
-            &assets
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
         let packet = frame.finish();
         assert_eq!(cpu.render(&packet, &assets).rejected, 0);
@@ -149,7 +150,7 @@ fn fence_holes_ignore_equal_depth_lightmap_pass() {
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let background = [40, 80, 120, 255];
     let mut frame = frontend.begin_frame(background).unwrap();
-    assert!(frame.add_poly(material, &vertices));
+    assert!(frame.add_poly(material.into(), &vertices));
     assert!(frame.render_scene(
         Refdef {
             viewport: Viewport {
@@ -162,6 +163,7 @@ fn fence_holes_ignore_equal_depth_lightmap_pass() {
         },
         &[],
         &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let mut cpu = CpuBackend::load(4, 4).unwrap();
     let packet = frame.finish();
@@ -198,6 +200,7 @@ fn final_palette_phase_covers_statusbar_after_2d() {
             },
             &[],
             &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
         assert!(frame.draw_2d(Draw2d {
             rect: [0.0, 2.0, 4.0, 2.0],
@@ -230,7 +233,7 @@ fn two_dimensional_color_alpha_blends_and_submission_failures_are_reported() {
     let assets = Assets::load().unwrap();
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = frontend.begin_frame([0, 0, 255, 255]).unwrap();
-    assert!(!frame.add_poly(ShaderBindingId(0), &[]));
+    assert!(!frame.add_poly(ShaderBindingId(0).into(), &[]));
     assert!(frame.draw_2d(Draw2d {
         rect: [0.0, 0.0, 2.0, 2.0],
         color: [255, 0, 0, 128],
@@ -290,7 +293,7 @@ fn native_first_image_sampler_overrides_later_material_requests() {
         let mut frontend = FrontEnd::load(Limits::default()).unwrap();
         let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
         assert!(frame.draw_2d(Draw2d {
-            shader: material,
+            shader: material.into(),
             rect: [0.0, 0.0, 2.0, 2.0],
             texcoords: [1.25, 0.0, 1.25, 0.0],
             ..Draw2d::default()

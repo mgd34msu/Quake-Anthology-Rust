@@ -64,7 +64,7 @@ fn native_software_water_warp_scales_320_by_240_and_stays_inside_its_viewport() 
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut reference = CpuBackend::load(320, 240).unwrap();
     let mut frame = frontend.begin_frame([1, 2, 3, 255]).unwrap();
-    assert!(frame.add_poly(material, &quad()));
+    assert!(frame.add_poly(material.into(), &quad()));
     assert!(frame.render_scene(
         Refdef {
             viewport: Viewport {
@@ -76,7 +76,8 @@ fn native_software_water_warp_scales_320_by_240_and_stays_inside_its_viewport() 
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = frame.finish();
     assert_eq!(reference.render(&packet, &assets).rejected, 0);
@@ -90,7 +91,7 @@ fn native_software_water_warp_scales_320_by_240_and_stays_inside_its_viewport() 
     let background = u32::from_le_bytes([1, 2, 3, 255]);
     let mut output = CpuBackend::load(672, 392).unwrap();
     let mut frame = frontend.begin_frame([1, 2, 3, 255]).unwrap();
-    assert!(frame.add_poly(material, &quad()));
+    assert!(frame.add_poly(material.into(), &quad()));
     assert!(frame.render_scene(
         Refdef {
             viewport,
@@ -100,7 +101,8 @@ fn native_software_water_warp_scales_320_by_240_and_stays_inside_its_viewport() 
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = frame.finish();
     assert_eq!(output.render(&packet, &assets).rejected, 0);
@@ -141,7 +143,7 @@ fn underwater_flag_requires_explicit_software_policy_and_uv_has_no_invented_effe
         PlayerViewFlags::UNDERWATER | PlayerViewFlags::ULTRAVIOLET,
     ] {
         let mut frame = frontend.begin_frame([1, 2, 3, 255]).unwrap();
-        assert!(frame.add_poly(material, &quad()));
+        assert!(frame.add_poly(material.into(), &quad()));
         assert!(frame.render_scene(
             Refdef {
                 viewport: Viewport {
@@ -154,7 +156,8 @@ fn underwater_flag_requires_explicit_software_policy_and_uv_has_no_invented_effe
                 ..Default::default()
             },
             &[],
-            &assets
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
         let packet = frame.finish();
         assert_eq!(output.render(&packet, &assets).rejected, 0);
@@ -207,11 +210,12 @@ fn damage_vignette_uses_native_byte_truncation_border_and_before_hud_phase() {
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     assert!(frame.draw_2d(Draw2d {
         rect: [2., 2., 1., 1.],
-        shader: hud,
+        shader: hud.into(),
         color: [0, 255, 0, 255],
         ..Default::default()
     }));
@@ -329,7 +333,8 @@ fn infrared_changes_only_eligible_models_with_native_indexed_and_rgb_paths() {
                     ..Default::default()
                 },
                 &[],
-                &assets
+                &assets,
+                qa_render::shader::reference::ShaderView::direct()
             ));
             let packet = frame.finish();
             assert_eq!(cpu.render(&packet, &assets).rejected, 0);
@@ -352,7 +357,7 @@ fn second_empty_warped_view_does_not_inherit_another_seats_pixels() {
     let mut cpu = CpuBackend::load(40, 20).unwrap();
     let background = [2, 3, 4, 255];
     let mut frame = frontend.begin_frame(background).unwrap();
-    assert!(frame.add_poly(material, &quad()));
+    assert!(frame.add_poly(material.into(), &quad()));
     let first = Refdef {
         viewport: Viewport {
             x: 0,
@@ -365,7 +370,12 @@ fn second_empty_warped_view_does_not_inherit_another_seats_pixels() {
         software_waterwarp: true,
         ..Default::default()
     };
-    assert!(frame.render_scene(first, &[], &assets));
+    assert!(frame.render_scene(
+        first,
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     frame.clear_scene();
     assert!(frame.render_scene(
         Refdef {
@@ -378,7 +388,8 @@ fn second_empty_warped_view_does_not_inherit_another_seats_pixels() {
             ..first
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = frame.finish();
     let stats = cpu.render(&packet, &assets);

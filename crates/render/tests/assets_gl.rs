@@ -191,7 +191,8 @@ fn draw(gl: &mut GlBackend, assets: &Assets, model: qa_render::ModelId) -> [u8; 
             ..Default::default()
         },
         &[],
-        assets
+        assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     assert_eq!(gl.render(&frame.finish(), assets).rejected, 0);
     let mut pixels = vec![0; 64 * 48 * 4];

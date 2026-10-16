@@ -559,7 +559,8 @@ fn native_scene_calls_use_the_session_frame(program: impl Fn() -> Program) {
     assert!(scene.frame_mut().unwrap().render_scene(
         qa_render::Refdef::default(),
         &[],
-        &qa_render::Assets::load().unwrap()
+        &qa_render::Assets::load().unwrap(),
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = scene.finish_frame().unwrap();
     assert_eq!(packet.rejected, 1);

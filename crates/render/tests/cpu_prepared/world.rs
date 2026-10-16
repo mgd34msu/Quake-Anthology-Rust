@@ -183,7 +183,12 @@ fn packet(assets: &Assets, worlds: &[WorldId], refdef: Refdef) -> CommandList {
             }]
         ));
     }
-    assert!(frame.render_scene(refdef, &[], assets));
+    assert!(frame.render_scene(
+        refdef,
+        &[],
+        assets,
+        crate::shader::reference::ShaderView::direct()
+    ));
     frame.finish()
 }
 
@@ -292,6 +297,7 @@ fn windowed(
                         DrawKind::Entity => cpu.entity(
                             &camera,
                             list.entity(item.index),
+                            crate::scene::item_shader(list, assets, *item).unwrap(),
                             rank as u32,
                             assets,
                             &mut stats,
@@ -299,6 +305,7 @@ fn windowed(
                         DrawKind::Poly => cpu.poly(
                             &camera,
                             list.poly(item.index),
+                            crate::scene::item_shader(list, assets, *item).unwrap(),
                             rank as u32,
                             list,
                             assets,
@@ -2731,20 +2738,21 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
         color: [127, 255, 191, 255],
         ..crate::scene::SceneEntity::default()
     }));
-    assert!(frame.add_poly(translucent, &vertices));
+    assert!(frame.add_poly(translucent.into(), &vertices));
     assert!(frame.render_scene(
         Refdef {
             blend: [0.2, 0.1, 0.3, 0.25],
             ..test_view()
         },
         &[],
-        &assets
+        &assets,
+        crate::shader::reference::ShaderView::direct()
     ));
     assert!(frame.draw_2d(crate::scene::Draw2d {
         rect: [4.0, 4.0, 13.0, 3.0],
         texcoords: [0.0, 0.0, 1.0, 1.0],
         color: [255; 4],
-        shader: opaque
+        shader: opaque.into()
     }));
     frame.clear_scene();
     assert!(frame.add_world(
@@ -2780,13 +2788,14 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
             ..test_view()
         },
         &[],
-        &assets
+        &assets,
+        crate::shader::reference::ShaderView::direct()
     ));
     assert!(frame.draw_2d(crate::scene::Draw2d {
         rect: [3.0, 9.0, 7.0, 2.0],
         texcoords: [0.0, 0.0, 1.0, 1.0],
         color: [255; 4],
-        shader: translucent
+        shader: translucent.into()
     }));
     exact_rows(&assets, &frame.finish());
 }
@@ -2888,9 +2897,14 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
             ..crate::scene::SceneEntity::default()
         }));
     }
-    assert!(frame.add_poly(materials[3], &vertices));
-    assert!(frame.add_poly(materials[6], &vertices));
-    assert!(frame.render_scene(test_view(), &[], &assets));
+    assert!(frame.add_poly(materials[3].into(), &vertices));
+    assert!(frame.add_poly(materials[6].into(), &vertices));
+    assert!(frame.render_scene(
+        test_view(),
+        &[],
+        &assets,
+        crate::shader::reference::ShaderView::direct()
+    ));
     let frame = frame.finish();
     exact_rows(&assets, &frame);
     for bands in [

@@ -104,7 +104,12 @@ fn selected_packet(
             }]
         ));
     }
-    assert!(frame.render_scene(view, &[], assets));
+    assert!(frame.render_scene(
+        view,
+        &[],
+        assets,
+        crate::shader::reference::ShaderView::direct()
+    ));
     frame.finish()
 }
 
@@ -207,7 +212,12 @@ fn two_views_of_one_world_and_inline_entities_select_independent_presentations()
                     }]
                 ));
             }
-            assert!(frame.render_scene(selected_view(palettes[i], i as u32 * 16), &[], &assets));
+            assert!(frame.render_scene(
+                selected_view(palettes[i], i as u32 * 16),
+                &[],
+                &assets,
+                crate::shader::reference::ShaderView::direct()
+            ));
         }
         let packet = frame.finish();
         let mut cpu = CpuBackend::load_with_assets(32, 16, &assets).unwrap();
@@ -243,7 +253,7 @@ fn two_views_of_one_world_and_inline_entities_select_independent_presentations()
 #[test]
 fn mismatched_world_presentation_is_rejected_without_affecting_a_healthy_surface() {
     let (mut assets, world, presentations, palettes) = variants();
-    let material = assets.surface_binding(presentations[1], 0).unwrap().shader;
+    let material = assets.surface_shader(presentations[1], 0).unwrap();
     let shader = *assets.shader_binding(material).unwrap();
     let other = fixture_world(
         &mut assets,
@@ -326,7 +336,12 @@ fn mismatched_world_presentation_is_rejected_without_affecting_a_healthy_surface
                     ));
                 }
             }
-            assert!(frame.render_scene(selected_view(palettes[0], 0), &[], &assets));
+            assert!(frame.render_scene(
+                selected_view(palettes[0], 0),
+                &[],
+                &assets,
+                crate::shader::reference::ShaderView::direct()
+            ));
             let mut combined = CpuBackend::load_with_assets(16, 16, &assets).unwrap();
             combined.render(&frame.finish(), &assets);
             instances::assert_frame(&combined, &healthy);

@@ -82,7 +82,7 @@ fn nonparallel_binding_ids_select_distinct_lightmaps_from_one_material() {
     for (x, shader) in [(0., red_shader), (2., blue_shader)] {
         assert!(frame.draw_2d(Draw2d {
             rect: [x, 0., 2., 2.],
-            shader,
+            shader: shader.into(),
             color: [255; 4],
             ..Default::default()
         }));
@@ -123,8 +123,8 @@ fn draw_keys_keep_material_order_when_binding_admission_order_is_reversed() {
     });
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
-    assert!(frame.add_poly(high, &vertices));
-    assert!(frame.add_poly(low, &vertices));
+    assert!(frame.add_poly(high.into(), &vertices));
+    assert!(frame.add_poly(low.into(), &vertices));
     assert!(frame.render_scene(
         Refdef {
             viewport: Viewport {
@@ -135,7 +135,8 @@ fn draw_keys_keep_material_order_when_binding_admission_order_is_reversed() {
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = frame.finish();
     let qa_render::Command::View(view) = packet.commands()[1] else {
@@ -144,7 +145,7 @@ fn draw_keys_keep_material_order_when_binding_admission_order_is_reversed() {
     let ordered: Vec<_> = packet
         .draws(view.scene.draws)
         .iter()
-        .map(|draw| packet.poly(draw.index).shader)
+        .map(|draw| packet.poly(draw.index).shader.source(&()).unwrap())
         .collect();
     assert_eq!(ordered, [low, high]);
 }
@@ -234,7 +235,7 @@ fn capacity_and_partial_world_failure_restore_binding_heads_and_styled_provenanc
         )
         .unwrap();
     let presentation = assets.world(world).unwrap().presentations()[0];
-    let shader = assets.surface_binding(presentation, 0).unwrap().shader;
+    let shader = assets.surface_shader(presentation, 0).unwrap();
     assert_eq!(shader, retry);
     assert_eq!(
         assets.shader_binding(shader).unwrap().styled_surface,
@@ -306,8 +307,9 @@ fn native_registration_keys_and_styled_requests_share_atomic_canonical_rows() {
         ShaderRegistration {
             requested: LightSource::Vertex,
             finished: LightSource::Vertex,
-            ..backslash.map_shader(|_| {
-                PreparedShader::Binding(ShaderBinding::material(material, LightSource::Vertex))
+            ..backslash.map_shader(|_| PreparedShader::Binding {
+                shader: ShaderBinding::material(material, LightSource::Vertex),
+                surface: None,
             })
         },
     ];
@@ -350,9 +352,9 @@ fn native_registration_keys_and_styled_requests_share_atomic_canonical_rows() {
     let presentation = assets.world_presentation(id).unwrap();
     assert_eq!(
         presentation.shader_registrations(),
-        &[registrations[0].map_shader(|_| presentation.bindings()[0].shader)]
+        &[registrations[0].map_shader(|_| presentation.surface_shader(0).unwrap())]
     );
-    let styled = presentation.bindings()[0].shader;
+    let styled = presentation.surface_shader(0).unwrap();
     assert_eq!(styled.0 as usize, prefix.shader_bindings);
     assert_eq!(
         assets.counts().shader_bindings,
@@ -421,7 +423,7 @@ fn named_zero_pass_body_is_safe_as_a_generic_world_draw_without_cpu_rejection() 
         .unwrap();
     let presentation = assets.world(world).unwrap().presentations()[0];
     assert_eq!(
-        assets.surface_binding(presentation, 0).unwrap().shader,
+        assets.surface_shader(presentation, 0).unwrap(),
         registration.shader
     );
     let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
@@ -438,7 +440,8 @@ fn named_zero_pass_body_is_safe_as_a_generic_world_draw_without_cpu_rejection() 
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = frame.finish();
     let qa_render::Command::View(view) = packet.commands()[1] else {
@@ -478,7 +481,13 @@ fn world_registration_rejects_native_metadata_that_disagrees_with_its_actual_bod
         texture_scale: [1.0; 2],
     };
     let counts = assets.counts();
-    for payload in [PreparedShader::Surface(0), PreparedShader::Binding(body)] {
+    for payload in [
+        PreparedShader::Surface(0),
+        PreparedShader::Binding {
+            shader: body,
+            surface: None,
+        },
+    ] {
         let valid = registration.map_shader(|_| payload);
         for invalid in [
             qa_render::ShaderRegistration {
@@ -592,7 +601,10 @@ fn explicit_native_default_reason_cannot_be_transplanted_to_another_material() {
     };
     let prefix = assets.counts();
     for payload in [
-        PreparedShader::Binding(replacement),
+        PreparedShader::Binding {
+            shader: replacement,
+            surface: None,
+        },
         PreparedShader::Surface(0),
     ] {
         let forged = original.map_shader(|_| payload);

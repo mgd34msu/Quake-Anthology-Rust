@@ -2,7 +2,7 @@
 mod mark_world;
 use super::*;
 use qa_app::model_assets::{ModelAssets, ModelRequest};
-use qa_compat::services::{ModelLoader, ModelLookup};
+use qa_compat::services::ModelLookup;
 use qa_render::material::world_load::{
     LoadedWorld, LoadedWorldPresentation, WorldPresentationProfile,
 };
@@ -459,10 +459,25 @@ pub(super) fn submissions(native: bool, ui: bool) {
         assert_eq!(probe(&mut host, 0, 6, 0), 0);
     } // Cold selection, before any scene owner.
     assert_eq!(probe(&mut host, 0, 0, 0), 1);
+    assert!(probe(&mut host, 1, 0, 0) > 0);
     host.bind_client_model_assets([]);
     let models = host.runtime.model_assets.as_ref().unwrap().catalog();
-    let material = models.shader_binding(1, profile).unwrap();
-    let peer_material = models.shader_binding(1, peer_profile).unwrap();
+    let material = models
+        .shader_outcome(
+            b"ui/pic.tga",
+            profile,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
+        .unwrap()
+        .shader;
+    let peer_material = models
+        .shader_outcome(
+            b"ui/pic.tga",
+            peer_profile,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
+        .unwrap()
+        .shader;
     assert_ne!(material, peer_material);
     host.runtime.scene = Some(
         qa_app::renderer::SceneComposer::load(
@@ -521,7 +536,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
     let Command::Draw2d(picture) = packet.commands()[2] else {
         panic!("native picture")
     };
-    assert_eq!(picture.shader, material);
+    assert_eq!(picture.shader.source(host.native_shaders()), Some(material));
     assert_eq!(picture.rect, [0., 0., 90., 30.]);
     assert_eq!(picture.color, [127, 63, 255, 191]);
     let Command::View(second) = packet.commands()[3] else {
@@ -535,12 +550,15 @@ pub(super) fn submissions(native: bool, ui: bool) {
     };
     assert_eq!(peer.rect, [160., 0., 90., 30.]);
     assert_eq!(peer.color, [255; 4]);
-    assert_eq!(peer.shader, peer_material);
+    assert_eq!(
+        peer.shader.source(host.native_shaders()),
+        Some(peer_material)
+    );
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
 }
 
-fn sun_program(native: bool, ui: bool, name: &[u8]) -> Program {
+fn named_scene_program(native: bool, ui: bool, name: &[u8]) -> Program {
     let mut initial = data();
     assert!(name.len() < 16);
     initial[16..32].fill(0);
@@ -670,7 +688,7 @@ fn sun_contexts(native: bool) {
                 &mut runtime,
                 ModuleId(index as u16 + 1),
                 client.unwrap_or(clients[0]),
-                sun_program(native, ui, name),
+                named_scene_program(native, ui, name),
             );
             row.entries = (0..26).collect();
             row.frame.client = client;
@@ -932,6 +950,7 @@ pub(super) fn ownership() {
             &mut self,
             scene: Option<&mut qa_app::renderer::SceneComposer>,
             resources: Option<qa_app::model_assets::ModelView<'_>>,
+            native: &dyn qa_render::shader::reference::NativeShaders,
             _: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
             _: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
             _: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],
@@ -940,6 +959,7 @@ pub(super) fn ownership() {
             self.renderer.frame(
                 scene.unwrap(),
                 resources.unwrap(),
+                native,
                 &self.views,
                 &std::array::from_fn(|_| None),
                 &std::array::from_fn(|_| None),
@@ -979,15 +999,7 @@ pub(super) fn ownership() {
 pub(super) fn entities(native: bool, ui: bool) {
     let mut fixture = model_support::Fixture::surfaces();
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
-    let program = || {
-        if native {
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            {
-                return native_scene(ui);
-            }
-        }
-        qvm_scene(ui)
-    };
+    let program = || named_scene_program(native, ui, b"textures/glow");
     let (mut runtime, ids) = runtime(1);
     runtime.vfs = std::mem::take(&mut fixture.vfs);
     let mut request = request(&mut runtime, ModuleId(1), ids[0], program());
@@ -1022,20 +1034,8 @@ pub(super) fn entities(native: bool, ui: bool) {
     let model = probe(&mut host, 0, 12, 0);
     assert!(model > 0);
     assert_eq!(probe(&mut host, 0, 14, model as u64), 0);
-    let shader = host
-        .runtime
-        .model_assets
-        .as_mut()
-        .unwrap()
-        .register_shader(
-            &host.runtime.vfs,
-            b"textures/glow",
-            RuleSetId::Quake3,
-            true,
-            qa_compat::services::ShaderLighting::TwoDimensional,
-        )
-        .unwrap();
-    assert_eq!(shader, 1);
+    let shader = probe(&mut host, 0, 0, 0);
+    assert!(shader > 0);
     let skin = probe(&mut host, 0, 16, 0);
     assert!(skin > 0);
     host.bind_client_model_assets([]);
@@ -1052,7 +1052,14 @@ pub(super) fn entities(native: bool, ui: bool) {
         )
         .unwrap()
         .collect::<Vec<_>>();
-    let override_material = models.shader_binding(shader, profile).unwrap();
+    let override_material = models
+        .shader_outcome(
+            b"textures/glow",
+            profile,
+            qa_compat::services::ShaderLighting::TwoDimensional,
+        )
+        .unwrap()
+        .shader;
     host.runtime.scene = Some(
         qa_app::renderer::SceneComposer::load(
             qa_render::Limits {
@@ -1070,8 +1077,7 @@ pub(super) fn entities(native: bool, ui: bool) {
     assert_eq!(probe(&mut host, 0, 13, 0), 0);
     assert_eq!(probe(&mut host, 0, 13, 0), 0); // A full two-surface model fails atomically.
     assert_eq!(probe(&mut host, 0, 3, 0), 0);
-    let owner = host.runtime.scene.as_mut().unwrap();
-    let packet = owner.finish_frame().unwrap();
+    let packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
     assert_eq!(packet.rejected, 1);
     let Command::View(view) = packet.commands()[1] else {
         panic!("model view")
@@ -1089,23 +1095,27 @@ pub(super) fn entities(native: bool, ui: bool) {
             "native no-world model lighting reaches the shared stage inputs"
         );
     }
-    assert!(owner.recycle(packet).is_ok());
+    assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
     assert_eq!(probe(&mut host, 0, 16, 0), skin);
     assert_eq!(probe(&mut host, 0, 17, skin as u64), 0);
     assert_eq!(probe(&mut host, 0, 18, 0), 0);
     assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
     assert_eq!(probe(&mut host, 0, 13, 0), 0);
     assert_eq!(probe(&mut host, 0, 3, 0), 0);
-    let owner = host.runtime.scene.as_mut().unwrap();
-    let packet = owner.finish_frame().unwrap();
+    let packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
     let Command::View(view) = packet.commands()[1] else {
         panic!("skin view")
     };
     for (entity, binding) in packet.entities(view.scene.entities).iter().zip(&skinned) {
-        assert_eq!(entity.shader, Some(binding.shader));
+        assert_eq!(
+            entity
+                .shader
+                .and_then(|shader| shader.source(host.native_shaders())),
+            Some(binding.shader)
+        );
     }
     assert_eq!(packet.rejected, 0);
-    assert!(owner.recycle(packet).is_ok());
+    assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
     // A custom shader takes priority; an invalid positive handle uses the default.
     for (handle, expected) in [
         (shader as u64, override_material),
@@ -1124,19 +1134,18 @@ pub(super) fn entities(native: bool, ui: bool) {
         assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
         assert_eq!(probe(&mut host, 0, 13, 0), 0);
         assert_eq!(probe(&mut host, 0, 3, 0), 0);
-        let owner = host.runtime.scene.as_mut().unwrap();
-        let packet = owner.finish_frame().unwrap();
+        let packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
         let Command::View(view) = packet.commands()[1] else {
             panic!("override view")
         };
-        assert!(
-            packet
-                .entities(view.scene.entities)
-                .iter()
-                .all(|entity| entity.shader == Some(expected))
-        );
+        assert!(packet.entities(view.scene.entities).iter().all(|entity| {
+            entity
+                .shader
+                .and_then(|shader| shader.source(host.native_shaders()))
+                == Some(expected)
+        }));
         assert_eq!(packet.rejected, 0);
-        assert!(owner.recycle(packet).is_ok());
+        assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
     }
     assert_eq!(probe(&mut host, 0, 18, shader as u64), 0);
     for (kind, triangles) in [(1, 0), (2, 2), (3, 12), (4, 2), (5, 2), (6, 8), (7, 0)] {
@@ -1144,8 +1153,7 @@ pub(super) fn entities(native: bool, ui: bool) {
         assert_eq!(probe(&mut host, 0, 15, kind), 0);
         assert_eq!(probe(&mut host, 0, 13, 0), 0);
         assert_eq!(probe(&mut host, 0, 3, 0), 0);
-        let owner = host.runtime.scene.as_mut().unwrap();
-        let packet = owner.finish_frame().unwrap();
+        let packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
         let Command::View(view) = packet.commands()[1] else {
             panic!("generated view")
         };
@@ -1164,7 +1172,7 @@ pub(super) fn entities(native: bool, ui: bool) {
             );
         }
         assert_eq!(packet.rejected, 0);
-        assert!(owner.recycle(packet).is_ok());
+        assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
     }
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }

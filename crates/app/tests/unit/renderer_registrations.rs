@@ -935,3 +935,73 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         Some(original)
     );
 }
+
+#[test]
+fn embedded_mdl_skin_choices_preserve_distinct_images_in_a_native_view() {
+    use qa_render::shader::reference::{ShaderChoice, ShaderContextId, ShaderView};
+    let mut bytes = support::mdl();
+    bytes[48..52].copy_from_slice(&2i32.to_le_bytes());
+    bytes.splice(90..90, [0, 0, 0, 0, 3, 4]);
+    let fixture = support::Fixture::new(&[("progs/two.mdl", bytes)]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = ModelRequest::native("", RuleSetId::Quake3, Some(palette)).profile();
+    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let handle = owner
+        .register_model(&fixture.vfs, b"progs/two.mdl", profile.source_rules)
+        .unwrap();
+    let (owner, _cpu) = publish(owner);
+    let catalog = owner.catalog();
+    let registration = catalog.renderer_registration(handle, profile).unwrap();
+    let receipts = catalog
+        .renderer_registrations(RendererRegistration::Model, handle, profile)
+        .unwrap();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[0].key, receipts[1].key);
+    let view = ShaderView {
+        native: &(),
+        context: Some(ShaderContextId {
+            slot: 0,
+            generation: 1,
+        }),
+    };
+    let bindings = [0, 1].map(|skin| {
+        let choice = catalog
+            .bindings(registration, skin, Default::default())
+            .unwrap()
+            .choices()
+            .next()
+            .unwrap();
+        assert!(matches!(choice.shader, ShaderChoice::Direct(_)));
+        let selected = view
+            .choice(choice.shader, choice.registrations, None, choice.default)
+            .unwrap()
+            .source(&())
+            .unwrap();
+        assert_eq!(selected, choice.physical_binding().unwrap().shader);
+        selected
+    });
+    assert_ne!(bindings[0], bindings[1]);
+    for (binding, indices) in bindings.into_iter().zip([[1, 2], [3, 4]]) {
+        let material = owner
+            .assets()
+            .material(owner.assets().shader_binding(binding).unwrap().material)
+            .unwrap();
+        let StageTexture::Image(image) = material.stages[0].texture else {
+            panic!("embedded skin image");
+        };
+        assert_eq!(
+            owner
+                .assets()
+                .image(image)
+                .unwrap()
+                .indexed
+                .as_ref()
+                .unwrap()
+                .mip(0)
+                .unwrap()
+                .indices(),
+            indices
+        );
+    }
+}

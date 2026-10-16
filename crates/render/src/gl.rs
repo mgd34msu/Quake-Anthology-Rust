@@ -10,6 +10,7 @@ use crate::scene::{
     BlendPhase, Command, CommandList, Draw2d, DrawItem, DrawKind, Refdef, SceneEntity,
     SceneParticle, Span, Viewport,
 };
+use crate::shader::reference::ResolvedShader;
 use crate::shader::{AlphaGen, RgbGen, StageBlend};
 use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyBatches, SkyClip};
 use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, TexCoordOp};
@@ -757,6 +758,7 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
         }
         let mut inputs = DrawInputs::default();
+        let mut lightstyles = [crate::scene::LightStyle::default(); 256];
         for command in list.commands() {
             match *command {
                 Command::Empty => {}
@@ -782,6 +784,7 @@ impl GlBackend {
                     }
                     let projection = view_projection(view.refdef, tangent);
                     inputs = DrawInputs::for_view(&view.refdef);
+                    lightstyles = view.refdef.lightstyles;
                     self.collect_skies(
                         list,
                         view.scene.draws,
@@ -873,7 +876,7 @@ impl GlBackend {
                         },
                         false,
                     );
-                    if !self.draw_2d(draw, assets, inputs) {
+                    if !self.draw_2d(draw, assets, inputs, &lightstyles) {
                         stats.rejected = stats.rejected.saturating_add(1);
                     } else {
                         stats.draws_2d = stats.draws_2d.saturating_add(1);
@@ -921,19 +924,21 @@ impl GlBackend {
         view: &Refdef,
         stats: &mut BackendStats,
     ) {
+        let Some(shader) = crate::scene::item_shader(list, assets, item) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        if !self.refresh_lightmap(shader, &view.lightstyles, assets) {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
         match item.kind {
             DrawKind::Surface => self.world_surface(
-                item,
-                list,
-                assets,
-                projection,
-                inputs,
-                &view.lightstyles,
-                view.far,
-                stats,
+                item, shader, list, assets, projection, inputs, view.far, stats,
             ),
             DrawKind::Entity => self.entity(
                 list.entity(item.index),
+                shader,
                 assets,
                 projection,
                 inputs,
@@ -943,27 +948,16 @@ impl GlBackend {
             DrawKind::Poly => {
                 let poly = list.poly(item.index);
                 let inputs = inputs.for_poly(poly, list);
-                let Some(binding) = assets.shader_binding(poly.shader) else {
+                let Some(settings) = shader.settings(assets) else {
                     stats.rejected = stats.rejected.saturating_add(1);
                     return;
                 };
-                let Some(material) = assets.material(binding.material) else {
-                    stats.rejected = stats.rejected.saturating_add(1);
-                    return;
-                };
-                if material.settings.fog.is_some() {
+                if settings.fog.is_some() {
                     stats.rejected = stats.rejected.saturating_add(1);
                     return;
                 }
-                if matches!(material.settings.sky, Some(Sky::Cube { .. })) {
-                    self.draw_sky(
-                        binding.material,
-                        assets,
-                        projection,
-                        inputs,
-                        view.far,
-                        stats,
-                    );
+                if matches!(settings.sky, Some(Sky::Cube { .. })) {
+                    self.draw_sky(shader, assets, projection, inputs, view.far, stats);
                     return;
                 }
                 let vertices = list.vertices(poly.vertices);
@@ -973,7 +967,7 @@ impl GlBackend {
                 };
                 if !self.draw_dynamic(
                     assets,
-                    poly.shader,
+                    shader,
                     first,
                     vertices.len(),
                     projection,
@@ -1149,14 +1143,23 @@ impl GlBackend {
 
     fn draw_sky(
         &mut self,
-        material_id: MaterialId,
+        shader: ResolvedShader,
         assets: &Assets,
         projection: &[f32; 16],
         inputs: DrawInputs,
         far: f32,
         stats: &mut BackendStats,
     ) {
+        let Some(binding) = shader.resources(assets) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let material_id = binding.material;
         let Some(material) = assets.material(material_id) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(settings) = shader.settings(assets) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -1166,7 +1169,7 @@ impl GlBackend {
             clouds: _,
             rotation,
             params,
-        }) = material.settings.sky
+        }) = settings.sky
         else {
             return;
         };
@@ -1177,7 +1180,7 @@ impl GlBackend {
         let Some(mut bounds) = bounds else {
             return;
         };
-        if material.settings.fog.is_some() {
+        if settings.fog.is_some() {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
@@ -1196,6 +1199,7 @@ impl GlBackend {
         self.draw_clouds(
             material_id,
             material,
+            settings,
             bounds,
             params,
             projection,
@@ -1263,6 +1267,7 @@ impl GlBackend {
         &mut self,
         material_id: MaterialId,
         material: &crate::assets::Material,
+        settings: MaterialSettings,
         bounds: [FaceBounds; 6],
         params: CubeSkyParams,
         projection: &[f32; 16],
@@ -1316,7 +1321,7 @@ impl GlBackend {
             // The shared load-generated cloud grid already supplies this
             // generator's coordinates, like native tess.texCoords[0].
             let stage = crate::sky::cloud_stage(stage);
-            if !self.stage(stage, material.settings, inputs, projection, true, false) {
+            if !self.stage(stage, settings, inputs, projection, true, false) {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             }
@@ -1328,9 +1333,14 @@ impl GlBackend {
         stats.triangles = stats.triangles.saturating_add(written as u32 / 3);
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A mesh draw consumes its sealed shader alongside copied view and entity inputs."
+    )]
     fn entity(
         &mut self,
         entity: &SceneEntity,
+        shader: ResolvedShader,
         assets: &Assets,
         projection: &[f32; 16],
         mut inputs: DrawInputs,
@@ -1351,11 +1361,7 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(shader) = entity.shader(assets) else {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        };
-        let Some(binding) = assets.shader_binding(shader) else {
+        let Some(binding) = shader.resources(assets) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -1364,16 +1370,21 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        let Some(settings) = shader.settings(assets) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
         inputs.lightmap = binding.lightmap;
-        if material.settings.fog.is_some() {
+        if settings.fog.is_some() {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
         if mesh.count == 0 {
             return;
         }
-        if matches!(material.settings.sky, Some(Sky::Cube { .. })) {
-            self.draw_sky(material_id, assets, projection, inputs, far, stats);
+        if matches!(settings.sky, Some(Sky::Cube { .. })) {
+            let inputs = inputs.entity_inputs(entity, false);
+            self.draw_sky(shader, assets, projection, inputs, far, stats);
             return;
         }
         let matrix = multiply(projection, &model_matrix(entity));
@@ -1405,7 +1416,7 @@ impl GlBackend {
         }
         self.set_depth_hack(entity.depth_hack);
         for stage in material.stages.iter() {
-            if !self.stage(*stage, material.settings, inputs, &matrix, true, false) {
+            if !self.stage(*stage, settings, inputs, &matrix, true, false) {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             }
@@ -1433,6 +1444,14 @@ impl GlBackend {
         inputs: DrawInputs,
         stats: &mut BackendStats,
     ) {
+        let Some(shader) = particle.shader.resolve(assets, &()) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        if !self.refresh_lightmap(shader, &view.lightstyles, assets) {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
         let Some(vertices) = assets
             .palette(particle.palette)
             .and_then(|palette| crate::particles::gl_vertices(particle, view, palette))
@@ -1447,7 +1466,7 @@ impl GlBackend {
         };
         if !self.draw_dynamic(
             assets,
-            particle.shader,
+            shader,
             first,
             vertices.len(),
             projection,
@@ -1459,8 +1478,8 @@ impl GlBackend {
             return;
         }
         stats.triangles = stats.triangles.saturating_add(vertices.len() as u32 - 2);
-        if let Some(material) = assets
-            .shader_binding(particle.shader)
+        if let Some(material) = shader
+            .resources(assets)
             .and_then(|shader| assets.material(shader.material))
         {
             stats.stages = stats.stages.saturating_add(material.stages.len() as u32);
@@ -1474,11 +1493,11 @@ impl GlBackend {
     fn world_surface(
         &mut self,
         item: DrawItem,
+        shader: ResolvedShader,
         list: &CommandList,
         assets: &Assets,
         projection: &[f32; 16],
         mut inputs: DrawInputs,
-        lightstyles: &[crate::scene::LightStyle; 256],
         far: f32,
         stats: &mut BackendStats,
     ) {
@@ -1491,17 +1510,11 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(source_shader) = assets.shader_binding(binding.shader) else {
+        let Some(shader_binding) = shader.resources(assets) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(shader) =
-            crate::scene::item_shader(list, assets, item).and_then(|id| assets.shader_binding(id))
-        else {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        };
-        let material_id = shader.material;
+        let material_id = shader_binding.material;
         let (Some(material), Some(&mesh)) = (
             assets.material(material_id),
             self.meshes.get(world.mesh.0 as usize),
@@ -1509,19 +1522,76 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        if material.settings.fog.is_some() {
+        let Some(settings) = shader.settings(assets) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        if settings.fog.is_some() {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
         if binding.mesh_indices.count == 0 {
             return;
         }
+        if let Some(Sky::Cube { .. }) = settings.sky {
+            let inputs = surface.entity.map_or(inputs, |index| {
+                inputs.entity_inputs(list.entity(index), false)
+            });
+            self.draw_sky(shader, assets, projection, inputs, far, stats);
+            stats.surfaces = stats.surfaces.saturating_add(1);
+            return;
+        }
+        let entity = surface.entity.map(|index| list.entity(index));
+        let matrix = entity.map(|entity| multiply(projection, &model_matrix(entity)));
+        let projection = matrix.as_ref().unwrap_or(projection);
+        if let Some(entity) = entity {
+            inputs = inputs.for_entity(entity);
+        }
+        inputs.lightmap = shader_binding.lightmap;
+        inputs.texture_scale = binding.texture_scale;
+        self.bind_vao(self.static_vao);
+        self.set_depth_hack(entity.is_some_and(|entity| entity.depth_hack));
+        for stage in &material.stages {
+            if !self.stage(*stage, settings, inputs, projection, true, false) {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            }
+            unsafe {
+                (self.gl.draw_elements)(
+                    TRIANGLES,
+                    binding.mesh_indices.count as i32,
+                    UNSIGNED_INT,
+                    ((mesh.first_index + binding.mesh_indices.first as usize) * size_of::<u32>())
+                        as *const c_void,
+                    mesh.base_vertex,
+                );
+            }
+            stats.stages = stats.stages.saturating_add(1);
+        }
+        stats.surfaces = stats.surfaces.saturating_add(1);
+        stats.triangles = stats
+            .triangles
+            .saturating_add(binding.mesh_indices.count / 3);
+        self.set_depth_hack(false);
+    }
+
+    fn refresh_lightmap(
+        &mut self,
+        shader: ResolvedShader,
+        lightstyles: &[crate::scene::LightStyle; 256],
+        assets: &Assets,
+    ) -> bool {
+        let Some(binding) = shader.resources(assets) else {
+            return false;
+        };
+        let Some((presentation, surface)) = binding.styled_surface else {
+            return true;
+        };
         let (gl, state, textures) = (&self.gl, &mut self.state, &self.textures);
-        if self
-            .lightmap_updates
+        self.lightmap_updates
             .refresh(
-                surface.presentation,
-                surface.surface,
+                presentation,
+                surface,
                 lightstyles,
                 assets,
                 |image, region, pixels| {
@@ -1549,58 +1619,14 @@ impl GlBackend {
                     true
                 },
             )
-            .is_err()
-        {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        }
-        if let Some(Sky::Cube { .. }) = material.settings.sky {
-            let inputs = surface.entity.map_or(inputs, |index| {
-                inputs.entity_inputs(list.entity(index), false)
-            });
-            self.draw_sky(material_id, assets, projection, inputs, far, stats);
-            stats.surfaces = stats.surfaces.saturating_add(1);
-            return;
-        }
-        let entity = surface.entity.map(|index| list.entity(index));
-        let matrix = entity.map(|entity| multiply(projection, &model_matrix(entity)));
-        let projection = matrix.as_ref().unwrap_or(projection);
-        if let Some(entity) = entity {
-            inputs = inputs.for_entity(entity);
-        }
-        inputs.lightmap = source_shader.lightmap;
-        inputs.texture_scale = binding.texture_scale;
-        self.bind_vao(self.static_vao);
-        self.set_depth_hack(entity.is_some_and(|entity| entity.depth_hack));
-        for stage in &material.stages {
-            if !self.stage(*stage, material.settings, inputs, projection, true, false) {
-                stats.rejected = stats.rejected.saturating_add(1);
-                continue;
-            }
-            unsafe {
-                (self.gl.draw_elements)(
-                    TRIANGLES,
-                    binding.mesh_indices.count as i32,
-                    UNSIGNED_INT,
-                    ((mesh.first_index + binding.mesh_indices.first as usize) * size_of::<u32>())
-                        as *const c_void,
-                    mesh.base_vertex,
-                );
-            }
-            stats.stages = stats.stages.saturating_add(1);
-        }
-        stats.surfaces = stats.surfaces.saturating_add(1);
-        stats.triangles = stats
-            .triangles
-            .saturating_add(binding.mesh_indices.count / 3);
-        self.set_depth_hack(false);
+            .is_ok()
     }
 
     #[allow(clippy::too_many_arguments)]
     fn draw_dynamic(
         &mut self,
         assets: &Assets,
-        shader: crate::ShaderBindingId,
+        shader: ResolvedShader,
         first: usize,
         count: usize,
         matrix: &[f32; 16],
@@ -1608,28 +1634,24 @@ impl GlBackend {
         depth: bool,
         force_alpha: bool,
     ) -> bool {
-        let Some(binding) = assets.shader_binding(shader) else {
+        let Some(binding) = shader.resources(assets) else {
             return false;
         };
         let Some(material) = assets.material(binding.material) else {
             return false;
         };
+        let Some(settings) = shader.settings(assets) else {
+            return false;
+        };
         inputs.lightmap = binding.lightmap;
-        if material.settings.fog.is_some() {
+        if settings.fog.is_some() {
             return false;
         }
         self.bind_vao(self.dynamic.vao);
         self.set_depth_hack(false);
         let mut complete = true;
         for stage in material.stages.iter() {
-            if !self.stage(
-                *stage,
-                material.settings,
-                inputs,
-                matrix,
-                depth,
-                force_alpha,
-            ) {
+            if !self.stage(*stage, settings, inputs, matrix, depth, force_alpha) {
                 complete = false;
                 continue;
             }
@@ -1638,7 +1660,19 @@ impl GlBackend {
         complete
     }
 
-    fn draw_2d(&mut self, draw: Draw2d, assets: &Assets, mut inputs: DrawInputs) -> bool {
+    fn draw_2d(
+        &mut self,
+        draw: Draw2d,
+        assets: &Assets,
+        mut inputs: DrawInputs,
+        lightstyles: &[crate::scene::LightStyle; 256],
+    ) -> bool {
+        let Some(shader) = draw.shader.resolve(assets, &()) else {
+            return false;
+        };
+        if !self.refresh_lightmap(shader, lightstyles, assets) {
+            return false;
+        }
         let vertices = quad(draw.rect, draw.texcoords, draw.color);
         let Some(first) = self.upload(&vertices) else {
             return false;
@@ -1647,7 +1681,7 @@ impl GlBackend {
         inputs.entity_color = draw.color;
         self.draw_dynamic(
             assets,
-            draw.shader,
+            shader,
             first,
             vertices.len(),
             &projection,

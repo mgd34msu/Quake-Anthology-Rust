@@ -325,7 +325,8 @@ fn render_presentation(
             ..Refdef::default()
         },
         &[],
-        assets
+        assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let mut cpu = CpuBackend::load(32, 24).unwrap();
     let stats = cpu.render(&frame.finish(), assets);
@@ -499,7 +500,7 @@ fn indexed_polygons_keep_native_indices_cutouts_and_final_palette_phase() {
     let background = [3, 5, 7, 255];
     for shifted in [false, true] {
         let mut frame = frontend.begin_frame(background).unwrap();
-        assert!(frame.add_poly(material, &vertices));
+        assert!(frame.add_poly(material.into(), &vertices));
         let mut transform = qa_render::PaletteTransform::default();
         transform.shifts[0] = qa_render::PaletteShift {
             destination: [255, 0, 0],
@@ -524,7 +525,8 @@ fn indexed_polygons_keep_native_indices_cutouts_and_final_palette_phase() {
                 ..Refdef::default()
             },
             &[],
-            &assets
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
         let packet = frame.finish();
         assert_eq!(cpu.render(&packet, &assets).rejected, 0);

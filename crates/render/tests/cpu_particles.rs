@@ -58,7 +58,12 @@ fn draw(
     for particle in particles {
         assert!(frame.add_particle(*particle));
     }
-    assert!(frame.render_scene(view, &[], assets));
+    assert!(frame.render_scene(
+        view,
+        &[],
+        assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let mut cpu = CpuBackend::load(dimensions[0], dimensions[1]).unwrap();
     assert_eq!(cpu.render(&frame.finish(), assets).rejected, 0);
     cpu
@@ -239,7 +244,7 @@ fn native_equal_integer_depth_bucket_overwrites_float_wall_but_nearer_bucket_occ
         });
         let mut frontend = FrontEnd::load(Limits::default()).unwrap();
         let mut frame = frontend.begin_frame(BACKGROUND).unwrap();
-        assert!(frame.add_poly(material, &vertices));
+        assert!(frame.add_poly(material.into(), &vertices));
         assert!(frame.add_particle(point(palette, [8.0, 0.0, 0.0], 1.0, 37)));
         assert!(frame.render_scene(
             Refdef {
@@ -253,7 +258,8 @@ fn native_equal_integer_depth_bucket_overwrites_float_wall_but_nearer_bucket_occ
                 ..Refdef::default()
             },
             &[],
-            &assets
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
         let mut cpu = CpuBackend::load(32, 32).unwrap();
         assert_eq!(cpu.render(&frame.finish(), &assets).rejected, 0);

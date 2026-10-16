@@ -141,13 +141,14 @@ pub(crate) fn first_child(
     source: SceneRanges,
     assets: &Assets,
     view: Refdef,
+    native: &dyn crate::shader::reference::NativeShaders,
 ) -> Option<Refdef> {
     if view.portal || view.hyperspace {
         return None;
     }
     let frustum = crate::world::frustum(view).ok()?;
     for &item in list.draws(source.draws) {
-        let (material, _) = crate::scene::item_material_lightmap(list, assets, item)?;
+        let (material, _) = crate::scene::source_material_lightmap(assets, item, native)?;
         let material = assets.material(material)?;
         if material.settings.sort > 1. {
             break;

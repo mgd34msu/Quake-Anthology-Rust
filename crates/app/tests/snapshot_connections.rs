@@ -4049,7 +4049,8 @@ fn queued_unseen_client_world_waits_for_cold_capacity_then_activates_without_cha
             ..Default::default()
         },
         &[],
-        host.runtime.model_assets.as_ref().unwrap().assets()
+        host.runtime.model_assets.as_ref().unwrap().assets(),
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = scene.finish_frame().unwrap();
     let assets = host.runtime.model_assets.as_ref().unwrap().assets();

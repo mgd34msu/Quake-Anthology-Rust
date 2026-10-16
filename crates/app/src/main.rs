@@ -1031,6 +1031,7 @@ fn run() -> Result<(), String> {
             .as_ref()
             .ok_or("missing model assets")?
             .view(),
+        host.native_shaders(),
         &host.client_views(),
         &host.client_scene_inputs(),
         &host.client_hud_inputs(),

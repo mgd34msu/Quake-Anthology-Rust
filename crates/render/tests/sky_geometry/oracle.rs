@@ -160,7 +160,8 @@ fn sky_entity_triangles_use_the_same_selected_frame_pair_as_mesh_draws() {
                 ..Refdef::default()
             },
             &[],
-            &assets
+            &assets,
+            crate::shader::reference::ShaderView::direct()
         ));
         let list = submission.finish();
         let draws = list
@@ -381,7 +382,12 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
             ..Refdef::default()
         };
         assert!(submission.add_entity(first_entity));
-        assert!(submission.render_scene(refdef, &[], &assets));
+        assert!(submission.render_scene(
+            refdef,
+            &[],
+            &assets,
+            crate::shader::reference::ShaderView::direct()
+        ));
         assert!(submission.add_world(world, presentation, &[VisibleSurface::default()]));
         let second_entity = SceneEntity {
             model: SceneModel::World {
@@ -395,11 +401,16 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
                 Vec3([-1.0, 0.0, 0.0]),
                 Vec3([0.0, 0.0, 1.0]),
             ],
-            shader: material,
+            shader: material.map(|shader| shader.into()),
             ..SceneEntity::default()
         };
         assert!(submission.add_entity(second_entity));
-        assert!(submission.render_scene(refdef, &[], &assets));
+        assert!(submission.render_scene(
+            refdef,
+            &[],
+            &assets,
+            crate::shader::reference::ShaderView::direct()
+        ));
         let list = submission.finish();
         let Command::View(view) = list.commands()[2] else {
             panic!()
@@ -439,11 +450,17 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
             ));
             let binding = assets.surface_binding(presentation, index as u32).unwrap();
             assert_eq!(
-                assets.shader_binding(binding.shader).unwrap().material,
+                assets
+                    .shader_binding(assets.surface_shader(presentation, index as u32).unwrap())
+                    .unwrap()
+                    .material,
                 bindings[index].shader.material
             );
             assert_eq!(
-                assets.shader_binding(binding.shader).unwrap().lightmap,
+                assets
+                    .shader_binding(assets.surface_shader(presentation, index as u32).unwrap())
+                    .unwrap()
+                    .lightmap,
                 bindings[index].shader.lightmap
             );
             assert_eq!(binding.texture_scale, bindings[index].texture_scale);
@@ -521,7 +538,12 @@ fn world_sky_variants_share_geometry_and_keep_the_selected_material() {
                 origin,
                 ..SceneEntity::default()
             }));
-            assert!(frame.render_scene(Refdef::default(), &[], &assets));
+            assert!(frame.render_scene(
+                Refdef::default(),
+                &[],
+                &assets,
+                crate::shader::reference::ShaderView::direct()
+            ));
         }
         let list = frame.finish();
         let mut views = 0;

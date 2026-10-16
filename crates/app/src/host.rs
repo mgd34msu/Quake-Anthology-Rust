@@ -50,6 +50,7 @@ pub trait FrameSource {
         &mut self,
         _composition: Option<&mut crate::renderer::SceneComposer>,
         _resources: Option<crate::model_assets::ModelView<'_>>,
+        _native: &dyn qa_render::shader::reference::NativeShaders,
         _views: &[Option<ClientView>; SeatId::COUNT],
         _scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         _huds: &[Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT],
@@ -255,6 +256,7 @@ impl FrameSource for LiveFrame<'_> {
         &mut self,
         composition: Option<&mut crate::renderer::SceneComposer>,
         resources: Option<crate::model_assets::ModelView<'_>>,
+        native: &dyn qa_render::shader::reference::NativeShaders,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         huds: &[Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT],
@@ -263,7 +265,7 @@ impl FrameSource for LiveFrame<'_> {
         if let (Some(renderer), Some(composition), Some(resources)) =
             (self.renderer.as_deref_mut(), composition, resources)
         {
-            renderer.frame(composition, resources, views, scenes, huds, console);
+            renderer.frame(composition, resources, native, views, scenes, huds, console);
         }
     }
 }
@@ -290,6 +292,7 @@ struct ClientUserinfo {
 
 pub struct FrameHost {
     pub(crate) modules: Option<crate::modules::Modules>,
+    pub(crate) renderer_contexts: crate::modules::renderer_contexts::Contexts,
     pub(crate) muzzle_sounds: crate::audio::MuzzleSounds,
     pub console: Console<Runtime>,
     pub runtime: Runtime,
@@ -395,6 +398,9 @@ pub(crate) fn local_seat<'a>(
 }
 
 impl FrameHost {
+    pub fn native_shaders(&self) -> &dyn qa_render::shader::reference::NativeShaders {
+        &self.renderer_contexts
+    }
     pub(crate) fn retain_command_producers(
         &mut self,
         retained: impl FnMut(qa_core::primitives::CommandProducer) -> bool,
@@ -685,6 +691,7 @@ impl FrameHost {
             .collect::<Result<Box<[_]>, _>>()?;
         Ok(Self {
             modules: None,
+            renderer_contexts: crate::modules::renderer_contexts::Contexts::load(0),
             execution: crate::modules::ExecutionSlot::reserve(1)?,
             muzzle_sounds: crate::audio::MuzzleSounds::default(),
             console,
@@ -931,6 +938,7 @@ impl FrameHost {
                 .model_assets
                 .as_ref()
                 .map(crate::model_assets::ModelAssets::view),
+            &self.renderer_contexts,
             &views,
             &self.client_scene_inputs(),
             &self.client_hud_inputs(),

@@ -252,7 +252,12 @@ impl ConsoleAssets {
             }),
             ..Refdef::default()
         };
-        counts.rejected += u32::from(!frame.render_scene(refdef, &[], assets));
+        counts.rejected += u32::from(!frame.render_scene(
+            refdef,
+            &[],
+            assets,
+            qa_render::shader::reference::ShaderView::direct(),
+        ));
         if let Some(shader) = self.background {
             let draw = Draw2d {
                 rect: [
@@ -271,7 +276,7 @@ impl ConsoleAssets {
                     [0.0, 1.0 - self.height as f32 / height as f32, 1.0, 1.0]
                 },
                 color: self.background_color(height, software),
-                shader,
+                shader: shader.into(),
             };
             let accepted = frame.draw_2d(draw);
             counts.backgrounds += u32::from(accepted);
@@ -285,7 +290,7 @@ impl ConsoleAssets {
                 rect: [0.0, self.height.saturating_sub(2) as f32, width as f32, 2.0],
                 texcoords: [0.0, 0.0, 1.0, 1.0],
                 color: [255, 0, 0, 255],
-                shader: ShaderBindingId(0),
+                shader: ShaderBindingId(0).into(),
             }));
         }
         let Some(font) = self.font else {

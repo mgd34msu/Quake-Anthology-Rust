@@ -20,6 +20,7 @@ use qa_render::material::resources::{
 use qa_render::material::world_load::{
     NamedShaderLighting, WorldPresentationRequest, compile_named_shader, native_default_shader,
 };
+use qa_render::shader::reference::{ShaderChoice, ShaderDefault, ShaderOccurrence, ShaderView};
 use qa_render::shader::{AlphaFunc, AlphaGen, Cull, RgbGen, ShaderCatalog, StageBlend};
 use qa_render::surface_cache::IndexedTexture;
 use qa_render::world::geometry::LightSource;
@@ -165,8 +166,47 @@ impl ModelMaterialPolicy {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ModelMaterials {
-    variants: [ModelBinding; 4],
+    variants: [ModelChoice; 4],
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ModelChoice {
+    model: ModelId,
+    shader: ShaderChoice,
+    pose: AliasPose,
+}
+#[derive(Clone)]
+pub struct SelectedModelChoice<'a> {
+    pub model: ModelId,
+    pub shader: ShaderChoice,
+    pub pose: AliasPose,
+    pub resource: ShaderResource,
+    pub registrations: &'a [ShaderRegistration],
+    pub default: ShaderDefault,
+}
+impl SelectedModelChoice<'_> {
+    pub fn physical_binding(&self) -> Option<ModelBinding> {
+        let shader = ShaderView::direct()
+            .choice(self.shader, self.registrations, None, self.default)?
+            .source(&())?;
+        Some(ModelBinding {
+            model: self.model,
+            shader,
+            pose: self.pose,
+        })
+    }
+}
+#[derive(Clone)]
+pub struct ModelChoices<'a>(ModelBindings<'a>);
+impl<'a> Iterator for ModelChoices<'a> {
+    type Item = SelectedModelChoice<'a>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next_choice()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+impl ExactSizeIterator for ModelChoices<'_> {}
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SurfaceMaterials {
     name: NameId,
@@ -182,12 +222,16 @@ pub struct ModelBindings<'a> {
     materials: &'a [ModelMaterials],
     skin: u32,
     policy: ModelMaterialPolicy,
-    custom: Option<&'a [SkinMapping]>,
+    custom: Option<(u32, Option<&'a SkinReady>)>,
+    registrations: &'a [ShaderRegistration],
+    resource: ShaderResource,
     default_shader: ShaderBindingId,
 }
-impl Iterator for ModelBindings<'_> {
-    type Item = ModelBinding;
-    fn next(&mut self) -> Option<Self::Item> {
+impl<'a> ModelBindings<'a> {
+    pub fn choices(self) -> ModelChoices<'a> {
+        ModelChoices(self)
+    }
+    fn next_choice(&mut self) -> Option<SelectedModelChoice<'a>> {
         let (surface, remaining) = self.surfaces.split_first()?;
         self.surfaces = remaining;
         let selected = if surface.frame_skins {
@@ -204,15 +248,39 @@ impl Iterator for ModelBindings<'_> {
         };
         let mut binding =
             self.materials[(surface.skins.first + skin) as usize].variants[self.policy.index()];
-        if let Some(custom) = self.custom.filter(|_| !surface.frame_skins) {
-            binding.shader = custom
-                .binary_search_by_key(&surface.name.0, |entry| entry.surface.0)
-                .ok()
-                .map_or(self.default_shader, |index| {
-                    custom[index].shaders[self.policy.index()]
-                });
+        let mut registrations = self.registrations;
+        let mut resource = self.resource;
+        let mut default = ShaderDefault::Global(Some(self.default_shader));
+        if let Some((handle, custom)) = self.custom.filter(|_| !surface.frame_skins) {
+            binding.shader = ShaderChoice::Direct(self.default_shader);
+            if let Some(custom) = custom {
+                let mapping = custom
+                    .mappings
+                    .binary_search_by_key(&surface.name.0, |entry| entry.surface.0)
+                    .ok();
+                binding.shader = mapping
+                    .map_or(ShaderChoice::Direct(self.default_shader), |index| {
+                        custom.mappings[index].shaders[self.policy.index()]
+                    });
+                registrations = &custom.registrations;
+                resource = ShaderResource::Skin(handle);
+                default = ShaderDefault::Named;
+            }
         }
-        Some(binding)
+        Some(SelectedModelChoice {
+            model: binding.model,
+            shader: binding.shader,
+            pose: binding.pose,
+            resource,
+            registrations,
+            default,
+        })
+    }
+}
+impl Iterator for ModelBindings<'_> {
+    type Item = ModelBinding;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_choice()?.physical_binding()
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.surfaces.len(), Some(self.surfaces.len()))
@@ -363,6 +431,7 @@ struct SkinProfile {
     profile: ModelProfile,
     state: RegistrationState<SkinReady>,
 }
+#[derive(Debug, PartialEq)]
 struct SkinReady {
     mappings: Box<[SkinMapping]>,
     registrations: Box<[ShaderRegistration]>,
@@ -370,7 +439,7 @@ struct SkinReady {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SkinMapping {
     surface: NameId,
-    shaders: [ShaderBindingId; 4],
+    shaders: [ShaderChoice; 4],
 }
 /// File-native metadata survives unsupported renderer features. It is not the
 /// bounds of an interpolated mesh or a selected presentation profile.
@@ -2963,8 +3032,17 @@ impl ModelAssets {
                 };
                 let materials = match result {
                     Ok((materials, registration)) => {
+                        let occurrence = ShaderOccurrence(
+                            u32::try_from(registrations.len()).map_err(|_| CallError::Capacity)?,
+                        );
                         registrations.push(registration);
-                        materials
+                        std::array::from_fn(|index| {
+                            if index == 0 || !alias {
+                                ShaderChoice::Occurrence(occurrence)
+                            } else {
+                                ShaderChoice::Direct(materials[index])
+                            }
+                        })
                     }
                     Err(error) => {
                         self.catalog.diagnostics.push(ModelDiagnostic {
@@ -2976,7 +3054,7 @@ impl ModelAssets {
                         if alias {
                             continue;
                         }
-                        [ShaderBindingId(0); 4]
+                        [ShaderChoice::Direct(ShaderBindingId(0)); 4]
                     }
                 };
                 compiled.push(SkinMapping {
@@ -3418,11 +3496,6 @@ impl ModelCatalog {
             .native_default?;
         self.admitted(Some(required)).then_some(shader)
     }
-    pub fn renderer_shader(&self, handle: i32, profile: ModelProfile) -> Option<ShaderBindingId> {
-        self.shader_binding(handle, profile)
-            .or_else(|| self.native_default(profile))
-    }
-
     pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<ShaderBindingId> {
         let entry = self.shader_profile(handle, profile)?;
         let (registration, required_assets) = entry.state.ready()?;
@@ -3581,7 +3654,8 @@ impl ModelCatalog {
             .and_then(|value| usize::try_from(value).ok())
             .and_then(|index| self.skins.get(index))
         {
-            Some(skin) => Some(
+            Some(skin) => Some((
+                policy.custom_skin as u32,
                 match skin.profiles.iter().find(|skin| {
                     skin.profile == self.registrations[registration.0 as usize].profile
                 }) {
@@ -3593,14 +3667,14 @@ impl ModelCatalog {
                             if !self.admitted(*required_assets) {
                                 return None;
                             }
-                            value.mappings.as_ref()
+                            Some(value)
                         }
-                        RegistrationState::Failed(_) => &[][..],
+                        RegistrationState::Failed(_) => None,
                         RegistrationState::Unattempted => return None,
                     },
-                    None => &[][..],
+                    None => None,
                 },
-            ),
+            )),
             None => None,
         };
         Some(ModelBindings {
@@ -3609,6 +3683,8 @@ impl ModelCatalog {
             skin,
             policy,
             custom,
+            registrations: &ready.registrations,
+            resource: ShaderResource::Model(registration.0),
             default_shader: ready.default_shader,
         })
     }
@@ -3815,9 +3891,21 @@ fn register(
             .filter(|&count| count <= limits.skins && count <= u32::MAX as usize)
             .ok_or("model skin capacity")?;
         let materials = if let Some(materials) = &alias {
-            materials.clone()
+            materials
+                .iter()
+                .enumerate()
+                .map(|(skin, variants)| {
+                    std::array::from_fn(|index| {
+                        if index == 0 && matches!(model.skins[skin], Image::External(_)) {
+                            ShaderChoice::Occurrence(ShaderOccurrence(skin as u32))
+                        } else {
+                            ShaderChoice::Direct(variants[index])
+                        }
+                    })
+                })
+                .collect::<Vec<_>>()
         } else if mesh.shaders.is_empty() {
-            vec![[native_default; 4]]
+            vec![[ShaderChoice::Direct(native_default); 4]]
         } else {
             mesh.shaders
                 .iter()
@@ -3836,12 +3924,12 @@ fn register(
                         images,
                     )
                     .map_err(|error| format!("model shader: {error:?}"))?;
+                    let occurrence = ShaderOccurrence(
+                        u32::try_from(registrations.len())
+                            .map_err(|_| "model shader occurrence capacity")?,
+                    );
                     registrations.push(registration);
-                    Ok([if registration.defaulted.is_some() {
-                        native_default
-                    } else {
-                        registration.shader
-                    }; 4])
+                    Ok([ShaderChoice::Occurrence(occurrence); 4])
                 })
                 .collect::<Result<Vec<_>, String>>()?
         };
@@ -3851,7 +3939,16 @@ fn register(
             let native = (model.format == ModelFormat::Md2).then_some(model.frames.as_slice());
             let (vertices, frame_size, indices, packed) =
                 mesh_vertices(mesh, native, capacity, limits)?;
-            let material = materials.first().ok_or("model has no skin material")?[0];
+            let choice = materials.first().ok_or("model has no skin material")?[0];
+            let material = ShaderView::direct()
+                .choice(
+                    choice,
+                    &registrations,
+                    None,
+                    ShaderDefault::Global(Some(native_default)),
+                )
+                .and_then(|shader| shader.source(&()))
+                .ok_or("model shader choice")?;
             let id = images
                 .assets
                 .register_animated_model(&vertices, frame_size, &indices, material)?;
@@ -3872,7 +3969,7 @@ fn register(
             materials
                 .into_iter()
                 .map(|materials| ModelMaterials {
-                    variants: materials.map(|material| ModelBinding {
+                    variants: materials.map(|material| ModelChoice {
                         model: id,
                         shader: material,
                         pose: model_policy.presentation.pose,
@@ -3971,9 +4068,13 @@ fn register_sprites(
             }
         };
         frames.push(ModelMaterials {
-            variants: variants.map(|material| ModelBinding {
+            variants: std::array::from_fn(|index| ModelChoice {
                 model,
-                shader: material,
+                shader: if index == 0 {
+                    ShaderChoice::Occurrence(ShaderOccurrence((registrations.len() - 1) as u32))
+                } else {
+                    ShaderChoice::Direct(variants[index])
+                },
                 pose: policy.presentation.pose,
             }),
         });

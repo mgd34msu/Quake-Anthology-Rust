@@ -1,5 +1,8 @@
 //! Q3-style append-only scene ranges in alternating owned packets.
 use crate::assets::{Assets, MaterialId, ModelId, PaletteId, ShaderBindingId, Vertex};
+use crate::shader::reference::{
+    NativeShaders, ResolvedShader, ShaderDefault, ShaderRef, ShaderView,
+};
 use crate::surface_cache::IndexedLighting;
 use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
 pub use qa_core::primitives::LightStyle;
@@ -381,7 +384,7 @@ pub struct SceneEntity {
     /// depth even at opacity one. None keeps the ordinary opaque/shader path.
     pub material_opacity: Option<MaterialOpacity>,
     pub palette_color: Option<(PaletteId, u8)>,
-    pub shader: Option<ShaderBindingId>,
+    pub shader: Option<ShaderRef>,
     pub frame: u32,
     pub old_frame: u32,
     pub back_lerp: f32,
@@ -418,9 +421,9 @@ impl SceneEntity {
     pub fn light_origin(&self) -> Vec3 {
         self.lighting_origin.unwrap_or(self.origin)
     }
-    pub fn shader(&self, assets: &Assets) -> Option<ShaderBindingId> {
+    pub fn shader(&self, assets: &Assets) -> Option<ShaderRef> {
         self.shader
-            .or_else(|| Some(assets.model(self.model.mesh()?)?.shader))
+            .or_else(|| Some(assets.model(self.model.mesh()?)?.shader.into()))
     }
 }
 impl Default for SceneEntity {
@@ -461,7 +464,7 @@ pub struct Light {
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Poly {
-    pub shader: ShaderBindingId,
+    pub shader: ShaderRef,
     pub vertices: Span,
     pub entity: Option<u32>,
 }
@@ -470,7 +473,7 @@ pub struct Draw2d {
     pub rect: [f32; 4],
     pub texcoords: [f32; 4],
     pub color: [u8; 4],
-    pub shader: ShaderBindingId,
+    pub shader: ShaderRef,
 }
 impl Draw2d {
     /// Preserve UV interpolation while confining a module picture to its seat.
@@ -528,7 +531,7 @@ pub struct SceneParticle {
     pub color: u8,
     pub alpha: u8,
     pub palette: PaletteId,
-    pub shader: ShaderBindingId,
+    pub shader: ShaderRef,
     pub size: f32,
     pub presentation: ParticlePresentation,
 }
@@ -539,7 +542,7 @@ impl Default for SceneParticle {
             color: 0,
             alpha: 255,
             palette: PaletteId(0),
-            shader: ShaderBindingId(0),
+            shader: ShaderBindingId(0).into(),
             size: 1.0,
             presentation: ParticlePresentation::default(),
         }
@@ -658,6 +661,8 @@ pub struct SurfaceRef {
     /// View-local position in the one sorted draw list. Exact-depth ties use
     /// the later draw, matching the shared LEQUAL stage order.
     pub draw_rank: u32,
+    /// Absolute draw selection captured for this surface in its submitted view.
+    pub draw_index: Option<u32>,
     /// Absolute index in this packet's one copied entity arena. Static world
     /// visibility keeps None; inline geometry borrows its instance inputs.
     pub entity: Option<u32>,
@@ -675,12 +680,13 @@ pub enum DrawKind {
 pub struct DrawItem {
     pub kind: DrawKind,
     pub index: u32,
+    pub shader: Option<ShaderRef>,
     key: DrawKey,
 }
 #[derive(Clone, Copy, Debug, Default)]
 struct DrawKey {
     sort: f32,
-    material: u32,
+    material: u64,
     instance: u32,
     lightmap: u32,
 }
@@ -885,6 +891,41 @@ impl CommandList {
     }
     pub fn poly(&self, index: u32) -> &Poly {
         &self.polys[index as usize]
+    }
+    pub fn surface_draw(&self, surface: &SurfaceRef) -> Option<DrawItem> {
+        let draw = *self.draws.get(surface.draw_index? as usize)?;
+        (draw.kind == DrawKind::Surface
+            && self
+                .surfaces
+                .get(draw.index as usize)
+                .is_some_and(|selected| std::ptr::eq(selected, surface)))
+        .then_some(draw)
+    }
+    /// Resolve the captured choices after every producer has finished this packet.
+    pub fn resolve_shaders(&mut self, assets: &Assets, native: &dyn NativeShaders) {
+        for draw in &mut self.draws[..self.draw_count] {
+            draw.shader = draw
+                .shader
+                .and_then(|shader| shader.resolve(assets, native))
+                .map(ShaderRef::Resolved);
+        }
+        for command in &mut self.commands[..self.command_count] {
+            if let Command::Draw2d(draw) = command {
+                if let Some(shader) = draw.shader.resolve(assets, native) {
+                    draw.shader = ShaderRef::Resolved(shader);
+                } else {
+                    *command = Command::Empty;
+                    self.rejected += 1;
+                }
+            }
+        }
+        // Particle view ranges cannot move independently. Failed references are
+        // left unresolved and rejected by the same backend reference resolver.
+        for particle in &mut self.particles[..self.particle_count] {
+            if let Some(shader) = particle.shader.resolve(assets, native) {
+                particle.shader = ShaderRef::Resolved(shader);
+            }
+        }
     }
     fn reset(&mut self, frame: u64) {
         self.command_count = 0;
@@ -1131,6 +1172,7 @@ impl Frame {
         hidden_areas: &[u8],
         scratch: &mut crate::world::WorldView,
         assets: &Assets,
+        shaders: ShaderView<'_>,
     ) -> bool {
         let checkpoint = self.checkpoint();
         let source = checkpoint.first.through(checkpoint.end);
@@ -1147,7 +1189,8 @@ impl Frame {
                 let mut count = 0;
                 for index in source.draws.range() {
                     let mut draw = self.list.draws[index];
-                    if let Some(key) = draw_key(&self.list, assets, draw) {
+                    draw.shader = source_shader(&self.list, assets, draw, shaders);
+                    if let Some(key) = draw_key(&self.list, assets, draw, shaders) {
                         draw.key = key;
                         self.list.draws[first + count] = draw;
                         count += 1;
@@ -1161,7 +1204,8 @@ impl Frame {
                     },
                     ..source
                 };
-                if let Some(child) = crate::portal::first_child(&self.list, sorted, assets, refdef)
+                if let Some(child) =
+                    crate::portal::first_child(&self.list, sorted, assets, refdef, shaders.native)
                 {
                     let rejected = self.list.rejected;
                     let retained = self.copy_scene(source, Some(world))
@@ -1170,7 +1214,7 @@ impl Frame {
                                 .query(loaded, child, None, hidden_areas)
                                 .is_ok_and(|surfaces| self.add_world(world, presentation, surfaces))
                         })
-                        && self.render_scene(child, hidden_areas, assets)
+                        && self.render_scene(child, hidden_areas, assets, shaders)
                         && self.copy_scene(source, None)
                         && self.generated_fits(refdef, assets)
                         && self.list.command_count < self.list.commands.len()
@@ -1186,7 +1230,7 @@ impl Frame {
                 self.reject_submission();
             }
         }
-        self.render_scene(refdef, hidden_areas, assets)
+        self.render_scene(refdef, hidden_areas, assets, shaders)
     }
 
     pub fn reject_submission(&mut self) -> bool {
@@ -1317,7 +1361,10 @@ impl Frame {
         for index in first..self.list.particle_count {
             let particle = self.list.particles[index];
             if assets.palette(particle.palette).is_some()
-                && assets.shader_binding(particle.shader).is_some()
+                && match particle.shader {
+                    ShaderRef::Native(_) | ShaderRef::Surface { .. } => true,
+                    _ => particle.shader.resolve(assets, &()).is_some(),
+                }
             {
                 self.list.particles[valid] = particle;
                 valid += 1;
@@ -1417,14 +1464,14 @@ impl Frame {
         self.list.entity_count += 1;
         true
     }
-    pub fn add_poly(&mut self, shader: ShaderBindingId, vertices: &[Vertex]) -> bool {
+    pub fn add_poly(&mut self, shader: ShaderRef, vertices: &[Vertex]) -> bool {
         self.add_poly_from(shader, vertices.len(), &mut |index| vertices[index])
     }
     /// Copy directly into the packet after reserving all polygon storage. This
     /// admits checked module vertices without a temporary allocation.
     pub fn add_poly_from(
         &mut self,
-        shader: ShaderBindingId,
+        shader: ShaderRef,
         count: usize,
         vertex: &mut dyn FnMut(usize) -> Vertex,
     ) -> bool {
@@ -1516,15 +1563,27 @@ impl Frame {
             kind,
             index,
             key: DrawKey::default(),
+            shader: None,
         };
         self.list.draw_count += 1;
     }
-    pub fn render_scene(&mut self, refdef: Refdef, hidden_areas: &[u8], assets: &Assets) -> bool {
+    pub fn render_scene(
+        &mut self,
+        refdef: Refdef,
+        hidden_areas: &[u8],
+        assets: &Assets,
+        shaders: ShaderView<'_>,
+    ) -> bool {
         if self.list.command_count == self.list.commands.len()
             || hidden_areas.len() > self.list.area_bytes.len() - self.list.area_count
         {
             self.list.rejected += 1;
             return false;
+        }
+        for surface in
+            &mut self.list.surfaces[self.first.surfaces.first as usize..self.list.surface_count]
+        {
+            surface.draw_index = None;
         }
         let end = self.list.draw_count;
         let first_draw = self.first.draws.first as usize;
@@ -1588,7 +1647,8 @@ impl Frame {
         let mut valid = first_draw;
         for index in first_draw..self.list.draw_count {
             let mut draw = self.list.draws[index];
-            if let Some(key) = draw_key(&self.list, assets, draw) {
+            draw.shader = source_shader(&self.list, assets, draw, shaders);
+            if let Some(key) = draw_key(&self.list, assets, draw, shaders) {
                 draw.key = key;
                 self.list.draws[valid] = draw;
                 valid += 1;
@@ -1602,6 +1662,8 @@ impl Frame {
         for (rank, draw) in self.list.draws[first_draw..valid].iter().enumerate() {
             if draw.kind == DrawKind::Surface {
                 self.list.surfaces[draw.index as usize].draw_rank = rank as u32;
+                self.list.surfaces[draw.index as usize].draw_index =
+                    Some((first_draw + rank) as u32);
             }
         }
         let current = self.current();
@@ -1635,46 +1697,68 @@ pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<&SceneEn
         DrawKind::Poly => list.poly(draw.index).entity.map(|index| list.entity(index)),
     }
 }
-pub(crate) fn item_shader(
+fn source_shader(
     list: &CommandList,
     assets: &Assets,
     draw: DrawItem,
-) -> Option<ShaderBindingId> {
+    shaders: ShaderView<'_>,
+) -> Option<ShaderRef> {
+    if let Some(shader) = draw.shader {
+        return Some(shader);
+    }
     match draw.kind {
         DrawKind::Surface => {
             let surface = list.surface(draw.index);
             let binding = assets.scene_binding(*surface)?;
-            Some(
-                surface
-                    .entity
-                    .and_then(|index| list.entity(index).shader)
-                    .unwrap_or(binding.shader),
-            )
+            if let Some(shader) = surface.entity.and_then(|index| list.entity(index).shader) {
+                return Some(shader);
+            }
+            let presentation = assets.world_presentation(surface.presentation)?;
+            shaders
+                .choice(
+                    binding.shader,
+                    presentation.shader_registrations(),
+                    shaders.context.and_then(|context| {
+                        shaders.native.world_nodes(context, surface.presentation)
+                    }),
+                    ShaderDefault::Global(presentation.native_default()),
+                )?
+                .for_surface(assets, presentation.surface_shader(surface.surface)?)
         }
         DrawKind::Entity => list.entity(draw.index).shader(assets),
         DrawKind::Poly => Some(list.poly(draw.index).shader),
     }
+}
+pub(crate) fn item_shader(
+    _list: &CommandList,
+    assets: &Assets,
+    draw: DrawItem,
+) -> Option<ResolvedShader> {
+    draw.shader?.resolve(assets, &())
 }
 pub(crate) fn item_material_lightmap(
     list: &CommandList,
     assets: &Assets,
     draw: DrawItem,
 ) -> Option<(MaterialId, u32)> {
-    let binding = assets.shader_binding(item_shader(list, assets, draw)?)?;
-    let lightmap = match draw.kind {
-        DrawKind::Surface => {
-            assets
-                .shader_binding(assets.scene_binding(*list.surface(draw.index))?.shader)?
-                .lightmap
-                .0
-        }
-        DrawKind::Entity | DrawKind::Poly => 0,
-    };
-    Some((binding.material, lightmap))
+    let binding = item_shader(list, assets, draw)?.resources(assets)?;
+    Some((binding.material, binding.lightmap.0))
 }
-
-fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawKey> {
-    let (material, lightmap) = item_material_lightmap(list, assets, draw)?;
+pub(crate) fn source_material_lightmap(
+    assets: &Assets,
+    draw: DrawItem,
+    native: &dyn NativeShaders,
+) -> Option<(MaterialId, u32)> {
+    let binding = assets.shader_binding(draw.shader?.source(native)?)?;
+    Some((binding.material, binding.lightmap.0))
+}
+fn draw_key(
+    list: &CommandList,
+    assets: &Assets,
+    draw: DrawItem,
+    shaders: ShaderView<'_>,
+) -> Option<DrawKey> {
+    let (material, lightmap) = source_material_lightmap(assets, draw, shaders.native)?;
     let instance = match draw.kind {
         DrawKind::Entity => draw.index,
         DrawKind::Surface => list.surface(draw.index).entity.unwrap_or(u32::MAX),
@@ -1682,15 +1766,21 @@ fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawK
     };
     if draw_entity(list, draw).is_some_and(|entity| entity.material_opacity.is_some()) {
         return Some(DrawKey {
-            sort: 6.0,
+            sort: 6.,
             material: 0,
             instance,
             lightmap: draw.index,
         });
     }
+    let order = match draw.shader? {
+        ShaderRef::Native(reference) | ShaderRef::Surface { reference, .. } => {
+            u64::from(reference.node.0)
+        }
+        _ => (1_u64 << 32) | u64::from(material.0),
+    };
     Some(DrawKey {
         sort: assets.material(material)?.settings.sort,
-        material: material.0,
+        material: order,
         instance,
         lightmap,
     })

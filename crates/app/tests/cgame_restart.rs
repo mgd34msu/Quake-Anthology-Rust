@@ -669,6 +669,7 @@ impl FrameSource for Source {
         &mut self,
         scene: Option<&mut SceneComposer>,
         resources: Option<qa_app::model_assets::ModelView<'_>>,
+        native: &dyn qa_render::shader::reference::NativeShaders,
         _: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
         _: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         _: &[Option<HudView<'_>>; SeatId::COUNT],
@@ -678,7 +679,7 @@ impl FrameSource for Source {
         let (Some(scene), Some(resources)) = (scene, resources) else {
             return;
         };
-        let Some(packet) = scene.finish_frame() else {
+        let Some(mut packet) = scene.finish_frame() else {
             return;
         };
         for command in packet.commands() {
@@ -694,6 +695,7 @@ impl FrameSource for Source {
                 }
             }
         }
+        packet.resolve_shaders(resources.assets, native);
         self.backend.cpu.render(&packet, resources.assets);
         assert!(scene.recycle(packet).is_ok());
     }

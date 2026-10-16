@@ -333,6 +333,7 @@ struct Primitive {
     world: WorldId,
     presentation: WorldPresentationId,
     surface: u32,
+    lightmap_region: Option<crate::lightmap::AtlasRegion>,
     boundary: u32,
     depth_key: u32,
     draw_rank: u32,
@@ -735,7 +736,11 @@ impl WorldRaster {
                 for (surface_index, surface) in geometry.surfaces.iter().enumerate() {
                     let binding = &presentation.bindings()[surface_index];
                     let material = assets
-                        .shader_binding(binding.shader)
+                        .shader_binding(
+                            presentation
+                                .surface_shader(surface_index as u32)
+                                .ok_or("invalid world shader")?,
+                        )
                         .and_then(|shader| assets.material(shader.material))
                         .ok_or("invalid world material")?;
                     let loops = &geometry.boundaries[surface.boundaries.range()];
@@ -784,7 +789,11 @@ impl WorldRaster {
                             boundary_index,
                             crate::world::SurfaceMaterial {
                                 shader: *assets
-                                    .shader_binding(binding.shader)
+                                    .shader_binding(
+                                        presentation
+                                            .surface_shader(surface_index as u32)
+                                            .ok_or("invalid world shader")?,
+                                    )
                                     .ok_or("invalid world shader")?,
                                 texture_scale: binding.texture_scale,
                             },
@@ -1313,12 +1322,18 @@ impl WorldPrepare {
             self.geometry.reject(stats);
             return PreparedDraw::Skip;
         };
+        let Some(settings) = crate::scene::item_shader(list, assets, item)
+            .and_then(|shader| shader.settings(assets))
+        else {
+            self.geometry.reject(stats);
+            return PreparedDraw::Skip;
+        };
         let Some(Sky::Cube {
             outer_box,
             rotation,
             params,
             ..
-        }) = material.settings.sky
+        }) = settings.sky
         else {
             return external;
         };
@@ -1371,7 +1386,7 @@ impl WorldPrepare {
         };
         let first_cloud = self.geometry.primitive_count;
         if !material.stages.is_empty() {
-            let Ok(deforms) = evaluator.prepare_deforms(&material.settings, &inputs) else {
+            let Ok(deforms) = evaluator.prepare_deforms(&settings, &inputs) else {
                 self.geometry.reject(stats);
                 return PreparedDraw::Sky {
                     boxes,
@@ -1384,7 +1399,7 @@ impl WorldPrepare {
             let mut valid = true;
             for (index, &stage) in material.stages.iter().enumerate() {
                 let stage = crate::sky::cloud_stage(stage);
-                match evaluator.prepare(&stage, material.settings, inputs) {
+                match evaluator.prepare(&stage, settings, inputs) {
                     Ok(prepared) if assets.image(prepared.image).is_some() => {
                         self.sky_stages[index] = Some(prepared)
                     }
@@ -1407,7 +1422,7 @@ impl WorldPrepare {
                             &vertices,
                             material.stages.len(),
                             deforms,
-                            material.settings.cull,
+                            settings.cull,
                             rank,
                             depth_override,
                             &self.sky_stages,
@@ -1467,6 +1482,9 @@ impl SurfacePrepare {
                 .is_some_and(|world| world.geometry().partition == GeometryPartition::SplitBsp)
         });
         for (reference_index, reference) in references.iter().enumerate() {
+            let Some(draw) = list.surface_draw(reference) else {
+                continue;
+            };
             certified &= Some(reference.world) == first_world && reference.entity.is_none();
             let view_camera = camera;
             let entity = reference.entity.map(|index| list.entity(index));
@@ -1494,19 +1512,23 @@ impl SurfacePrepare {
                 continue;
             };
             let source_binding = binding;
-            let Some(source_shader) = assets.shader_binding(source_binding.shader) else {
+            let Some(shader) = crate::scene::item_shader(list, assets, draw) else {
                 self.reject(stats);
                 continue;
             };
-            let shader_id = entity
-                .and_then(|e| e.shader)
-                .unwrap_or(source_binding.shader);
-            let Some(binding) = assets.shader_binding(shader_id) else {
+            let Some(binding) = shader.resources(assets) else {
                 self.reject(stats);
                 continue;
             };
+            let cache_compatible = assets
+                .surface_shader(reference.presentation, reference.surface)
+                .is_some_and(|source| shader.matches_cache(assets, source));
             let material_id = binding.material;
             let Some(material) = assets.material(material_id) else {
+                self.reject(stats);
+                continue;
+            };
+            let Some(settings) = shader.settings(assets) else {
                 self.reject(stats);
                 continue;
             };
@@ -1518,16 +1540,15 @@ impl SurfacePrepare {
                 self.reject(stats);
                 continue;
             };
-            if info.raster_empty && material.settings.deforms.iter().all(Option::is_none) {
+            if info.raster_empty && settings.deforms.iter().all(Option::is_none) {
                 continue;
             }
-            if material.settings.sky.is_some() {
+            if settings.sky.is_some() {
                 if self.catalog.sky_enabled(material_id) && camera.rgb() {
                     stats.surfaces = stats.surfaces.saturating_add(1);
                     continue;
                 }
-                let Some(source) = info.sky.filter(|_| material_id == source_shader.material)
-                else {
+                let Some(source) = info.sky.filter(|_| cache_compatible) else {
                     self.reject(stats);
                     continue;
                 };
@@ -1546,28 +1567,25 @@ impl SurfacePrepare {
                 }
                 continue;
             }
-            if material.stages.is_empty() && material.settings.fog.is_none() {
+            if material.stages.is_empty() && settings.fog.is_none() {
                 continue;
             }
-            if material.stages.is_empty()
-                || material.settings.fog.is_some()
-                || material.settings.polygon_offset
-            {
+            if material.stages.is_empty() || settings.fog.is_some() || settings.polygon_offset {
                 self.reject(stats);
                 continue;
             }
-            certified &= material.settings.deforms.iter().all(Option::is_none);
+            certified &= settings.deforms.iter().all(Option::is_none);
             let inputs = DrawInputs {
-                lightmap: source_shader.lightmap,
+                lightmap: binding.lightmap,
                 texture_scale: source_binding.texture_scale,
                 ..DrawInputs::for_view(&view_camera.refdef)
             };
             let inputs = entity.map_or(inputs, |entity| inputs.for_entity(entity));
-            let Ok(base) = evaluator.prepare(&material.stages[0], material.settings, inputs) else {
+            let Ok(base) = evaluator.prepare(&material.stages[0], settings, inputs) else {
                 self.reject(stats);
                 continue;
             };
-            let Ok(deforms) = evaluator.prepare_deforms(&material.settings, &inputs) else {
+            let Ok(deforms) = evaluator.prepare_deforms(&settings, &inputs) else {
                 self.reject(stats);
                 continue;
             };
@@ -1579,6 +1597,9 @@ impl SurfacePrepare {
                         continue;
                     }
                     indexed_material(material, base).filter(|source| {
+                        if !cache_compatible {
+                            return false;
+                        }
                         let Some(texture) =
                             assets.image(source.image).and_then(|i| i.indexed.as_ref())
                         else {
@@ -1643,17 +1664,17 @@ impl SurfacePrepare {
                     self.reject(stats);
                     break;
                 }
-                let current =
-                    if camera.rgb() && native.is_none() && material_id == source_shader.material {
-                        self.catalog
-                            .current_rgba(reference.presentation, boundary, assets)
-                    } else {
-                        None
-                    };
+                let current = if camera.rgb() && native.is_none() && cache_compatible {
+                    self.catalog
+                        .current_rgba(reference.presentation, boundary, assets)
+                } else {
+                    None
+                };
                 let mut primitive = Primitive {
                     world: reference.world,
                     presentation: reference.presentation,
                     surface: reference.surface,
+                    lightmap_region: binding.lightmap_region,
                     boundary: boundary as u32,
                     depth_key: reference.depth_key,
                     draw_rank: reference.draw_rank,
@@ -1704,13 +1725,7 @@ impl SurfacePrepare {
                     continue;
                 }
                 let area = crate::affine::cull_area(count, |index| self.screen[index].xy);
-                if super::culled(
-                    material
-                        .settings
-                        .cull
-                        .for_view(camera.refdef.reflected_view),
-                    area,
-                ) {
+                if super::culled(settings.cull.for_view(camera.refdef.reflected_view), area) {
                     continue;
                 }
                 if let Some(source) = native {
@@ -1764,8 +1779,7 @@ impl SurfacePrepare {
                     }
                     let mut valid = true;
                     for (stage_index, stage) in material.stages.iter().enumerate() {
-                        let Ok(prepared) = evaluator.prepare(stage, material.settings, inputs)
-                        else {
+                        let Ok(prepared) = evaluator.prepare(stage, settings, inputs) else {
                             valid = false;
                             break;
                         };
@@ -2696,12 +2710,7 @@ fn stage_span(
         if prepared.stage.texture == StageTexture::Lightmap
             && primitive.domain == PrimitiveDomain::WorldSurface
         {
-            let Some(bounded) = texels.region(
-                assets
-                    .surface_binding(primitive.presentation, primitive.surface)
-                    .and_then(|surface| assets.shader_binding(surface.shader))
-                    .and_then(|binding| binding.lightmap_region),
-            ) else {
+            let Some(bounded) = texels.region(primitive.lightmap_region) else {
                 stats.rejected += 1;
                 continue;
             };
@@ -2831,10 +2840,7 @@ fn factor_spans(
         first_levels |= 1 << mips[0];
         pairs[mips[0] as usize] |= 1 << mips[1];
     }
-    let region = assets
-        .surface_binding(primitive.presentation, primitive.surface)
-        .and_then(|surface| assets.shader_binding(surface.shader))
-        .and_then(|binding| binding.lightmap_region);
+    let region = primitive.lightmap_region;
     while first_levels != 0 {
         let first_mip = first_levels.trailing_zeros() as u8;
         first_levels &= first_levels - 1;

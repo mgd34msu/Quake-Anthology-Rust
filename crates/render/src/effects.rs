@@ -438,7 +438,7 @@ impl Effects {
                         color: self.particles.colors[slot],
                         alpha: (self.particles.alphas[slot].clamp(0.0, 1.0) * 255.0) as u8,
                         palette: binding.palette,
-                        shader: binding.shader,
+                        shader: binding.shader.into(),
                         size: 1.0,
                         presentation: binding.presentation,
                     }) {

@@ -227,7 +227,8 @@ fn packet(assets: &Assets, worlds: &[WorldId]) -> CommandList {
             ..Refdef::default()
         },
         &[],
-        assets
+        assets,
+        crate::shader::reference::ShaderView::direct()
     ));
     frame.finish()
 }

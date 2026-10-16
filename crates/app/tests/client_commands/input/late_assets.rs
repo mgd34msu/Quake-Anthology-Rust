@@ -116,19 +116,22 @@ impl FrameSource for Source {
         &mut self,
         composer: Option<&mut SceneComposer>,
         resources: Option<qa_app::model_assets::ModelView<'_>>,
+        native: &dyn qa_render::shader::reference::NativeShaders,
         _: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
         _: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         _: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],
         _: qa_console::presentation::ConsoleView<'_>,
     ) {
         let composer = composer.unwrap();
-        let packet = composer.finish_frame().unwrap();
+        let resources = resources.unwrap();
+        let mut packet = composer.finish_frame().unwrap();
         for command in packet.commands() {
             if let qa_render::scene::Command::View(view) = command {
                 self.models += view.scene.entities.count;
             }
         }
-        let stats = self.backend.render(&packet, resources.unwrap().assets);
+        packet.resolve_shaders(resources.assets, native);
+        let stats = self.backend.render(&packet, resources.assets);
         self.views += stats.views;
         self.rejected += stats.rejected;
         assert!(composer.recycle(packet).is_ok());

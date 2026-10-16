@@ -1,11 +1,13 @@
 //! An invocation-scoped borrow of the session's scene, catalog and view scratch.
 use super::SceneComposer;
 use crate::model_assets::{ModelCatalog, ModelProfile, ModelView};
+use crate::modules::renderer_contexts::Contexts;
 use qa_compat::{
     renderer::{EntityKind, EntitySubmission, SceneService, SceneView},
     services::CallError,
 };
 use qa_core::{primitives::ModuleId, sys_events::SeatId};
+use qa_render::shader::reference::{ShaderContextId, ShaderRef, ShaderView};
 use qa_render::{
     Vertex, Viewport,
     scene::{Draw2d, Light},
@@ -112,6 +114,8 @@ pub(crate) struct SceneBorrow<'a> {
     software_waterwarp: bool,
     client: Option<qa_render::effects::EffectClient>,
     sun_direction: Option<qa_core::primitives::Vec3>,
+    native: &'a Contexts,
+    context: Option<ShaderContextId>,
 }
 impl<'a> SceneBorrow<'a> {
     pub(crate) fn new(
@@ -121,6 +125,8 @@ impl<'a> SceneBorrow<'a> {
         cvars: &qa_console::cvars::Cvars,
         client: Option<qa_render::effects::EffectClient>,
         sun_direction: Option<qa_core::primitives::Vec3>,
+        native: &'a Contexts,
+        context: Option<ShaderContextId>,
     ) -> Self {
         let rails = role.target.as_ref().map_or((6, 16, 32.), |target| {
             (
@@ -148,8 +154,23 @@ impl<'a> SceneBorrow<'a> {
             software_waterwarp,
             client,
             sun_direction,
+            native,
+            context,
         }
     }
+}
+
+fn shader_handle(
+    native: &Contexts,
+    context: Option<ShaderContextId>,
+    models: &ModelCatalog,
+    profile: ModelProfile,
+    handle: i32,
+) -> Option<ShaderRef> {
+    context
+        .and_then(|context| native.shader(context, handle))
+        .map(ShaderRef::Native)
+        .or_else(|| models.native_default(profile).map(ShaderRef::Direct))
 }
 
 /// Select the actual guest entry separately from reconstructing a short scene
@@ -303,8 +324,13 @@ impl SceneService for SceneBorrow<'_> {
             return frame.add_entity(pose);
         }
         let shader = if submitted.custom_shader != 0 && submitted.kind != EntityKind::Beam {
-            let Some(shader) = models.renderer_shader(submitted.custom_shader, target.profile)
-            else {
+            let Some(shader) = shader_handle(
+                self.native,
+                self.context,
+                models,
+                target.profile,
+                submitted.custom_shader,
+            ) else {
                 return frame.reject_submission();
             };
             Some(shader)
@@ -327,11 +353,26 @@ impl SceneService for SceneBorrow<'_> {
             ) else {
                 return frame.reject_submission();
             };
-            let Some(first) = bindings
-                .clone()
-                .next()
-                .and_then(|binding| assets.model(binding.model))
-            else {
+            let choices = bindings.choices();
+            let Some(first_choice) = choices.clone().next() else {
+                return frame.reject_submission();
+            };
+            let nodes = self
+                .context
+                .and_then(|context| self.native.resource_nodes(context, first_choice.resource));
+            let shaders = ShaderView {
+                native: self.native,
+                context: self.context,
+            };
+            if !choices.clone().all(|choice| {
+                shader.is_some()
+                    || shaders
+                        .choice(choice.shader, choice.registrations, nodes, choice.default)
+                        .is_some()
+            }) {
+                return frame.reject_submission();
+            }
+            let Some(first) = assets.model(first_choice.model) else {
                 return frame.reject_submission();
             };
             let count = first.frame_count();
@@ -355,17 +396,21 @@ impl SceneService for SceneBorrow<'_> {
                 pose.frame = current as u32;
                 pose.old_frame = old as u32;
             }
-            return frame.add_entities(bindings.map(|binding| {
+            return frame.add_entities(choices.filter_map(|choice| {
                 let mut entity = pose;
-                entity.model = SceneModel::Mesh(binding.model);
-                entity.shader = shader.or(Some(binding.shader));
-                entity
+                entity.model = SceneModel::Mesh(choice.model);
+                entity.shader = Some(shader.or_else(|| {
+                    shaders.choice(choice.shader, choice.registrations, nodes, choice.default)
+                })?);
+                Some(entity)
             }));
         }
         pose.shader = Some(if submitted.kind == EntityKind::Beam {
-            composer.beam
+            ShaderRef::Direct(composer.beam)
         } else {
-            let Some(shader) = shader.or_else(|| models.native_default(target.profile)) else {
+            let Some(shader) =
+                shader.or_else(|| models.native_default(target.profile).map(ShaderRef::Direct))
+            else {
                 return frame.reject_submission();
             };
             shader
@@ -416,10 +461,9 @@ impl SceneService for SceneBorrow<'_> {
         let Some(target) = self.role.target.as_ref() else {
             return false;
         };
-        let Some(shader) = self
-            .models
-            .and_then(|models| models.renderer_shader(shader, target.profile))
-        else {
+        let Some(shader) = self.models.and_then(|models| {
+            shader_handle(self.native, self.context, models, target.profile, shader)
+        }) else {
             return false;
         };
         self.composer
@@ -436,10 +480,9 @@ impl SceneService for SceneBorrow<'_> {
         let Some(target) = self.role.target.as_ref() else {
             return false;
         };
-        let Some(shader) = self
-            .models
-            .and_then(|models| models.renderer_shader(shader, target.profile))
-        else {
+        let Some(shader) = self.models.and_then(|models| {
+            shader_handle(self.native, self.context, models, target.profile, shader)
+        }) else {
             return false;
         };
         rect[0] += target.viewport.x as f32;
@@ -535,9 +578,21 @@ impl SceneService for SceneBorrow<'_> {
                     &view.hidden_areas,
                     &mut scratch.views[seat.index()],
                     assets,
+                    ShaderView {
+                        native: self.native,
+                        context: self.context,
+                    },
                 ))
             } else {
-                Ok(frame.render_scene(view.refdef, &view.hidden_areas, assets))
+                Ok(frame.render_scene(
+                    view.refdef,
+                    &view.hidden_areas,
+                    assets,
+                    ShaderView {
+                        native: self.native,
+                        context: self.context,
+                    },
+                ))
             }
         })?;
         if accepted && let Some(seat) = target.seat {

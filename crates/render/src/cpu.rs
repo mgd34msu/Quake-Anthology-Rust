@@ -260,7 +260,7 @@ struct Camera {
 
 #[derive(Clone, Copy)]
 struct RasterPass<'a> {
-    material: &'a Material,
+    settings: crate::assets::MaterialSettings,
     stage: PreparedStage,
     image: &'a Image,
     sampler: ShadeFn,
@@ -834,12 +834,13 @@ impl CpuBackend {
         &mut self,
         camera: &Camera,
         poly: &Poly,
+        shader: crate::shader::reference::ResolvedShader,
         draw_rank: u32,
         list: &CommandList,
         assets: &Assets,
         stats: &mut BackendStats,
     ) {
-        let Some(binding) = assets.shader_binding(poly.shader) else {
+        let Some(binding) = shader.resources(assets) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -859,6 +860,7 @@ impl CpuBackend {
         self.mesh_stages(
             camera,
             material,
+            shader.settings(assets).unwrap_or(material.settings),
             inputs,
             false,
             draw_rank,
@@ -899,13 +901,23 @@ impl CpuBackend {
             return Ok(end);
         }
         let item = list.draws(draws)[rank];
+        let Some(shader) = crate::scene::item_shader(list, assets, item) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return Ok(rank + 1);
+        };
         match item.kind {
-            DrawKind::Entity => {
-                self.entity(camera, list.entity(item.index), rank as u32, assets, stats)
-            }
+            DrawKind::Entity => self.entity(
+                camera,
+                list.entity(item.index),
+                shader,
+                rank as u32,
+                assets,
+                stats,
+            ),
             DrawKind::Poly => self.poly(
                 camera,
                 list.poly(item.index),
+                shader,
                 rank as u32,
                 list,
                 assets,
@@ -920,6 +932,7 @@ impl CpuBackend {
         &mut self,
         camera: &Camera,
         entity: &SceneEntity,
+        shader: crate::shader::reference::ResolvedShader,
         draw_rank: u32,
         assets: &Assets,
         stats: &mut BackendStats,
@@ -932,10 +945,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(binding) = entity
-            .shader(assets)
-            .and_then(|id| assets.shader_binding(id))
-        else {
+        let Some(binding) = shader.resources(assets) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -958,6 +968,7 @@ impl CpuBackend {
         self.mesh_stages(
             camera,
             material,
+            shader.settings(assets).unwrap_or(material.settings),
             inputs,
             entity.depth_hack,
             draw_rank,
@@ -984,6 +995,7 @@ impl CpuBackend {
         &mut self,
         camera: &Camera,
         material: &Material,
+        settings: crate::assets::MaterialSettings,
         inputs: DrawInputs,
         depth_hack: bool,
         draw_rank: u32,
@@ -994,19 +1006,18 @@ impl CpuBackend {
         assets: &Assets,
         stats: &mut BackendStats,
     ) {
-        if material
-            .settings
+        if settings
             .software_alias
             .is_some_and(|alias| alias.missing_skin)
         {
             return;
         }
-        let Ok(deforms) = self.evaluator.prepare_deforms(&material.settings, &inputs) else {
+        let Ok(deforms) = self.evaluator.prepare_deforms(&settings, &inputs) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
         for (stage_index, stage) in material.stages.iter().enumerate() {
-            let Ok(stage) = self.evaluator.prepare(stage, material.settings, inputs) else {
+            let Ok(stage) = self.evaluator.prepare(stage, settings, inputs) else {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             };
@@ -1019,7 +1030,7 @@ impl CpuBackend {
                 image,
                 &stage,
                 indexed::Shading::Alias {
-                    software_alias: material.settings.software_alias,
+                    software_alias: settings.software_alias,
                     lighting: inputs.lighting,
                 },
                 assets,
@@ -1028,7 +1039,7 @@ impl CpuBackend {
                 continue;
             };
             let pass = RasterPass {
-                material,
+                settings,
                 stage,
                 image,
                 sampler: stage_sampler(image, stage.stage.sampler),
@@ -1120,10 +1131,7 @@ impl CpuBackend {
         // Q3 CT_FRONT_SIDED culls GL_FRONT with GL_CCW. The retained winding
         // therefore has positive area in this top-left-origin framebuffer.
         if culled(
-            pass.material
-                .settings
-                .cull
-                .for_view(camera.refdef.reflected_view),
+            pass.settings.cull.for_view(camera.refdef.reflected_view),
             area,
         ) {
             return;
@@ -1257,7 +1265,11 @@ impl CpuBackend {
     }
 
     fn draw_2d(&mut self, draw: Draw2d, assets: &Assets, stats: &mut BackendStats) {
-        let Some(binding) = assets.shader_binding(draw.shader) else {
+        let Some(shader) = draw.shader.resolve(assets, &()) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(binding) = shader.resources(assets) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -1265,6 +1277,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        let settings = shader.settings(assets).unwrap_or(material.settings);
         if !draw
             .rect
             .iter()
@@ -1289,10 +1302,10 @@ impl CpuBackend {
             0,
             self.frame.height,
         );
-        if material.settings.sky.is_some()
-            || material.settings.fog.is_some()
-            || material.settings.portal
-            || material.settings.deforms.iter().any(Option::is_some)
+        if settings.sky.is_some()
+            || settings.fog.is_some()
+            || settings.portal
+            || settings.deforms.iter().any(Option::is_some)
         {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
@@ -1304,7 +1317,7 @@ impl CpuBackend {
             ..DrawInputs::default()
         };
         for stage in material.stages.iter() {
-            let Ok(prepared) = self.evaluator.prepare(stage, material.settings, inputs) else {
+            let Ok(prepared) = self.evaluator.prepare(stage, settings, inputs) else {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             };

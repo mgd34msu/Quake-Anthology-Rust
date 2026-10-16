@@ -249,7 +249,10 @@ fn world_presentations_keep_immutable_initial_suns_using_the_same_creation_rules
     let b = *rows.assets.shader_binding(rows.other.shader).unwrap();
     let first_registrations = [
         rows.vertex.map_shader(|_| PreparedShader::Surface(0)),
-        rows.other.map_shader(|_| PreparedShader::Binding(b)),
+        rows.other.map_shader(|_| PreparedShader::Binding {
+            shader: b,
+            surface: None,
+        }),
         rows.vertex.map_shader(|_| PreparedShader::Surface(0)),
     ];
     let second_registrations = [rows.vertex.map_shader(|_| PreparedShader::Surface(0))];
@@ -290,5 +293,4 @@ fn world_presentations_keep_immutable_initial_suns_using_the_same_creation_rules
     let second = rows.assets.world_presentation(presentations[1]).unwrap();
     assert_eq!(second.sun_direction(), rows.vertex.sun.unwrap().direction());
     assert_eq!(second.sun_light(), Vec3([20., 0., 0.]));
-
 }

@@ -130,6 +130,7 @@ impl FrameSource for Source {
         &mut self,
         _: Option<&mut qa_app::renderer::SceneComposer>,
         _: Option<qa_app::model_assets::ModelView<'_>>,
+        _native: &dyn qa_render::shader::reference::NativeShaders,
         _: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
         _: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         _: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],
@@ -142,7 +143,12 @@ impl FrameSource for Source {
             self.appended += self
                 .effects
                 .append(&mut frame, client.client, client.lifetime);
-            assert!(frame.render_scene(Refdef::default(), &[], &self.assets));
+            assert!(frame.render_scene(
+                Refdef::default(),
+                &[],
+                &self.assets,
+                qa_render::shader::reference::ShaderView::direct()
+            ));
             // The renderer reads copied scene records; simulation owns its SoA.
             self.effects
                 .finish_frame(client.client, client.lifetime, self.time, self.gravity);
@@ -563,6 +569,7 @@ impl FrameSource for RendererSource {
         &mut self,
         scene: Option<&mut qa_app::renderer::SceneComposer>,
         resources: Option<qa_app::model_assets::ModelView<'_>>,
+        native: &dyn qa_render::shader::reference::NativeShaders,
         views: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
         scenes: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         hud: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],
@@ -587,10 +594,11 @@ impl FrameSource for RendererSource {
                     },
                     &[],
                     resources.assets,
+                    qa_render::shader::reference::ShaderView::direct()
                 ))
         );
         self.renderer
-            .frame(scene, resources, views, scenes, hud, console);
+            .frame(scene, resources, native, views, scenes, hud, console);
     }
 }
 

@@ -1578,7 +1578,7 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
         let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
         assert!(frame.add_entity(SceneEntity {
             model: binding.model.into(),
-            shader: Some(binding.shader),
+            shader: Some(binding.shader.into()),
             origin: Vec3([16., 0., 0.]),
             ..Default::default()
         }));
@@ -1591,7 +1591,12 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
             },
             ..Default::default()
         };
-        assert!(frame.render_scene(refdef, &[], &assets));
+        assert!(frame.render_scene(
+            refdef,
+            &[],
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
+        ));
         let packet = frame.finish();
         let view = packet
             .commands()
@@ -2615,7 +2620,10 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
             for index in 0..limit {
                 let entity = packet.entity(index as u32);
                 assert_eq!(entity.model, expected[index % 2].model.into());
-                assert_eq!(entity.shader, Some(expected[index % 2].shader));
+                assert_eq!(
+                    entity.shader.map(|shader| shader.source(&()).unwrap()),
+                    Some(expected[index % 2].shader)
+                );
                 assert_eq!(entity.frame, 1);
                 assert_eq!(entity.old_frame, 1);
                 assert_eq!(entity.depth_hack, index >= 2);
@@ -4087,7 +4095,7 @@ fn render_indexed_on(
     let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
     assert!(frame.add_entity(qa_render::SceneEntity {
         model: binding.model.into(),
-        shader: Some(binding.shader),
+        shader: Some(binding.shader.into()),
         origin: Vec3([0.0, -24.0, -36.0]),
         lighting: Some(qa_render::stage::EntityLighting {
             ambient: [255.0; 3],
@@ -4114,6 +4122,7 @@ fn render_indexed_on(
         },
         &[],
         assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let stats = cpu.render(&frame.finish(), assets);
     (cpu.pixels().to_vec(), stats)
@@ -5790,7 +5799,10 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
             catalog.resolve_inline(selected, 1).unwrap().surfaces
         );
         assert_eq!(entity.origin, record.position);
-        assert_eq!(entity.shader, None);
+        assert_eq!(
+            entity.shader.map(|shader| shader.source(&()).unwrap()),
+            None
+        );
     }
     record.appearance.models[0] = ModelRef::native(ResourceNamespace::Client(ClientId(8)), 50);
     let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();

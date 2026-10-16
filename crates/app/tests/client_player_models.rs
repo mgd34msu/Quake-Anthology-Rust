@@ -368,7 +368,10 @@ fn configured_player_models_and_weapons_survive_initial_registration_and_static_
             .next()
             .unwrap()
             .shader;
-        assert_eq!(entities[0].shader, Some(expected));
+        assert_eq!(
+            entities[0].shader.and_then(|shader| shader.source(&())),
+            Some(expected)
+        );
         let row = ConfigLayout::for_rules(rules).players.get(0).unwrap();
         assert!(host.runtime.client_resources[0].as_mut().unwrap().apply(
             row,
@@ -697,7 +700,7 @@ fn queued_player_and_weapon_changes_prepare_once_and_bad_models_do_not_starve_he
             .material(
                 owner
                     .assets()
-                    .shader_binding(entities[0].shader.unwrap())
+                    .shader_binding(entities[0].shader.unwrap().source(&()).unwrap())
                     .unwrap()
                     .material,
             )
@@ -765,7 +768,7 @@ fn queued_player_and_weapon_changes_prepare_once_and_bad_models_do_not_starve_he
             .material(
                 owner
                     .assets()
-                    .shader_binding(entities[0].shader.unwrap())
+                    .shader_binding(entities[0].shader.unwrap().source(&()).unwrap())
                     .unwrap()
                     .material,
             )

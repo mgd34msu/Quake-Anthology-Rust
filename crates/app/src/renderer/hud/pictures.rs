@@ -214,7 +214,7 @@ impl Picture {
             rect: [x as f32, y as f32, self.size[0] as f32, self.size[1] as f32],
             texcoords: [0., 0., 1., 1.],
             color: [255; 4],
-            shader: self.shader,
+            shader: self.shader.into(),
         })
         .clipped(viewport) else {
             return;

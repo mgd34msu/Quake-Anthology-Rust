@@ -196,7 +196,12 @@ impl HudAssets {
             }),
             ..Refdef::default()
         };
-        if !frame.render_scene(ui, &[], assets) {
+        if !frame.render_scene(
+            ui,
+            &[],
+            assets,
+            qa_render::shader::reference::ShaderView::direct(),
+        ) {
             stats.rejected += 1;
             return stats;
         }

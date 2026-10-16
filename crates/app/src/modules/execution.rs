@@ -1389,11 +1389,7 @@ fn operation(
                 let selected = request
                     .world
                     .and_then(|world| row.scene_role.presentation_for(world));
-                let contexts = &mut host
-                    .modules
-                    .as_mut()
-                    .ok_or("missing renderer modules")?
-                    .renderer_contexts;
+                let contexts = &mut host.renderer_contexts;
                 let owner = host
                     .runtime
                     .model_assets
@@ -1412,8 +1408,16 @@ fn operation(
                             .prepare_assets(assets, None)
                     },
                 )?;
+                let result = if matches!(
+                    request.kind,
+                    qa_compat::services::RendererRegistration::Shader { .. }
+                ) {
+                    staged.shader_handle()
+                } else {
+                    handle
+                };
                 staged.commit();
-                Ok::<_, String>((handle, counts))
+                Ok::<_, String>((result, counts))
             })();
             let value = match result {
                 Ok((handle, _)) => {
@@ -1454,7 +1458,7 @@ fn operation(
                 }
                 let admission = owner.world_admission(*world, profile, selected)?;
                 let modules = host.modules.as_mut().ok_or("missing renderer modules")?;
-                let staged = modules.renderer_contexts.stage(context, admission)?;
+                let staged = host.renderer_contexts.stage(context, admission)?;
                 staged.commit();
                 modules
                     .row_mut(start.module)
@@ -1680,11 +1684,10 @@ fn advance(
     else {
         return Err(());
     };
-    let sun_direction = host.modules.as_ref().and_then(|modules| {
-        modules
-            .row(start.module)
-            .and_then(|row| modules.renderer_contexts.sun(row.renderer_context))
-    });
+    let context = host
+        .module_row(start.module)
+        .and_then(|row| row.renderer_context);
+    let sun_direction = host.renderer_contexts.sun(context);
     let (row, storage, traces) = host
         .modules
         .as_mut()
@@ -1816,6 +1819,8 @@ fn advance(
             .or(start.connection)
             .map(|(client, lifetime)| qa_render::effects::EffectClient { client, lifetime }),
         sun_direction,
+        &host.renderer_contexts,
+        context,
     );
     services.callbacks = Some(functions.as_ref());
     services.client_disconnect = row

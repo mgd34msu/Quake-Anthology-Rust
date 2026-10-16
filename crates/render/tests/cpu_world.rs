@@ -147,7 +147,7 @@ fn cloud_grid_stages_draw_once_across_world_and_poly_sources() {
             position: Vec3(position),
             ..Vertex::default()
         });
-        assert!(frame.add_poly(cloud, &vertices));
+        assert!(frame.add_poly(cloud.into(), &vertices));
         assert!(frame.add_entity(qa_render::SceneEntity {
             model: model.into(),
             ..qa_render::SceneEntity::default()
@@ -159,7 +159,8 @@ fn cloud_grid_stages_draw_once_across_world_and_poly_sources() {
                 ..view(PaletteId(0))
             },
             &[],
-            &assets
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
         let packet = frame.finish();
         let stats = cpu.render(&packet, &assets);
@@ -1190,7 +1191,7 @@ fn transformed_2d_coordinates_select_the_native_prepared_mip() {
     assert!(frame.draw_2d(Draw2d {
         rect: [0.0, 0.0, 64.0, 64.0],
         texcoords: [0.0, 0.0, 1.0, 1.0],
-        shader: material,
+        shader: material.into(),
         color: [255; 4],
     }));
     let frame = frame.finish();
@@ -1830,7 +1831,12 @@ fn packet(
             }]
         ));
     }
-    assert!(frame.render_scene(view, &[], assets));
+    assert!(frame.render_scene(
+        view,
+        &[],
+        assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     frame.finish()
 }
 
@@ -2083,13 +2089,14 @@ fn transformed_hud(operation: PaletteOperation) -> Vec<u32> {
             ..view(palette)
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     assert!(frame.draw_2d(Draw2d {
         rect: [0.0, 0.0, 4.0, 4.0],
         texcoords: [0.0, 0.0, 1.0, 1.0],
         color: [255; 4],
-        shader: material
+        shader: material.into()
     }));
     let packet = frame.finish();
     let stats = cpu.render(&packet, &assets);
@@ -2253,7 +2260,8 @@ fn coincident_entity_and_world_obey_the_same_shared_draw_order() {
                 ..view(PaletteId(0))
             },
             &[],
-            &assets
+            &assets,
+            qa_render::shader::reference::ShaderView::direct()
         ));
         let packet = frame.finish();
         let stats = cpu.render(&packet, &assets);
@@ -2915,7 +2923,8 @@ fn cold_asset_preparation_preserves_old_ids_limits_and_unchanged_residency() {
             ..view(palette)
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let new_packet = frame.finish();
     let stats = cpu.render(&new_packet, &assets);
@@ -2966,7 +2975,7 @@ fn cold_asset_preparation_adds_cloud_scratch_without_reselecting_automatic_bands
             position: Vec3(position),
             ..Default::default()
         });
-    assert!(frame.add_poly(sky, &vertices));
+    assert!(frame.add_poly(sky.into(), &vertices));
     assert!(frame.render_scene(
         Refdef {
             viewport: Viewport {
@@ -2978,7 +2987,8 @@ fn cold_asset_preparation_adds_cloud_scratch_without_reselecting_automatic_bands
             ..Default::default()
         },
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     ));
     let packet = frame.finish();
     assert_eq!(cpu.render(&packet, &assets).rejected, 0);
@@ -3152,10 +3162,7 @@ fn cold_world_append_preserves_old_ids_and_renders_the_new_palette() {
     assert_eq!(assets.world(original).unwrap().mesh(), original_mesh);
     assert_eq!(only_presentation(&assets, original), original_presentation);
     assert_eq!(
-        assets
-            .surface_binding(original_presentation, 0)
-            .unwrap()
-            .shader,
+        assets.surface_shader(original_presentation, 0).unwrap(),
         original_material
     );
     assert_eq!(assets.image(image).unwrap().rgba[0], 7);

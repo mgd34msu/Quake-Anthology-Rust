@@ -988,8 +988,8 @@ impl Assets {
         binding
             .styled_surface
             .is_none_or(|(presentation, surface)| {
-                self.surface_binding(presentation, surface)
-                    .and_then(|surface| self.shader_binding(surface.shader))
+                self.surface_shader(presentation, surface)
+                    .and_then(|shader| self.shader_binding(shader))
                     .is_some_and(|source| {
                         source.light_source == LightSource::Samples
                             && binding.light_source == source.light_source
@@ -1174,7 +1174,13 @@ impl Assets {
         &mut self,
         presentation: WorldPresentationId,
         input: WorldPresentationInput<'_>,
-    ) -> Result<(Vec<ShaderBindingId>, Box<[ShaderRegistration]>), &'static str> {
+    ) -> Result<
+        (
+            Vec<crate::shader::reference::ShaderChoice>,
+            Box<[ShaderRegistration]>,
+        ),
+        &'static str,
+    > {
         if input
             .native_page0
             .is_some_and(|id| self.image(id).is_none())
@@ -1189,14 +1195,19 @@ impl Assets {
         }
         for registration in input.registrations {
             let binding = match registration.shader {
-                PreparedShader::Surface(index) => {
+                PreparedShader::Surface(index) | PreparedShader::ConvertedSurface(index) => {
                     input
                         .surfaces
                         .get(index as usize)
                         .ok_or("invalid native shader surface")?
                         .shader
                 }
-                PreparedShader::Binding(binding) => binding,
+                PreparedShader::Binding { shader, surface } => {
+                    if surface.is_some_and(|index| index as usize >= input.surfaces.len()) {
+                        return Err("invalid native shader surface");
+                    }
+                    shader
+                }
             };
             if self.names.folded(registration.key) != Some(registration.key)
                 || !self.shader_binding_valid(binding)
@@ -1219,18 +1230,43 @@ impl Assets {
                 self.intern_shader_binding(binding)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let mut choices: Vec<_> = shaders
+            .iter()
+            .copied()
+            .map(crate::shader::reference::ShaderChoice::Direct)
+            .collect();
         let registrations = input
             .registrations
             .iter()
-            .map(|registration| {
-                let shader = match registration.shader {
-                    PreparedShader::Surface(index) => shaders[index as usize],
-                    PreparedShader::Binding(binding) => self.intern_shader_binding(binding)?,
+            .enumerate()
+            .map(|(occurrence, registration)| {
+                let (shader, surface, converted) = match registration.shader {
+                    PreparedShader::Surface(index) | PreparedShader::ConvertedSurface(index) => (
+                        shaders[index as usize],
+                        Some(index),
+                        matches!(registration.shader, PreparedShader::ConvertedSurface(_)),
+                    ),
+                    PreparedShader::Binding { shader, surface } => {
+                        (self.intern_shader_binding(shader)?, surface, false)
+                    }
                 };
+                if let Some(surface) = surface {
+                    let occurrence = crate::shader::reference::ShaderOccurrence(
+                        u32::try_from(occurrence).map_err(|_| "shader occurrence capacity")?,
+                    );
+                    choices[surface as usize] = if converted {
+                        crate::shader::reference::ShaderChoice::Converted {
+                            binding: shader,
+                            occurrence,
+                        }
+                    } else {
+                        crate::shader::reference::ShaderChoice::Occurrence(occurrence)
+                    };
+                }
                 Ok(registration.map_shader(|_| shader))
             })
             .collect::<Result<Box<[_]>, &'static str>>()?;
-        Ok((shaders, registrations))
+        Ok((choices, registrations))
     }
     pub(crate) fn append_world_presentation(
         &mut self,
@@ -1428,6 +1464,15 @@ impl Assets {
             self.presentations[entry.id.0 as usize].profile = Some((entry.profile, entry.defaults));
         }
         Ok(())
+    }
+
+    pub fn surface_shader(
+        &self,
+        presentation: WorldPresentationId,
+        surface: u32,
+    ) -> Option<ShaderBindingId> {
+        self.world_presentation(presentation)?
+            .surface_shader(surface)
     }
 
     pub fn world_presentation_registration(

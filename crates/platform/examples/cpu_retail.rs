@@ -577,7 +577,12 @@ fn run() -> Result<(), String> {
         .ok_or("scene packet unavailable")?;
     frame.clear_scene();
     if !frame.add_world(loaded.render.world, presentation.id, surfaces)
-        || !frame.render_scene(refdef, &[], &assets)
+        || !frame.render_scene(
+            refdef,
+            &[],
+            &assets,
+            qa_render::shader::reference::ShaderView::direct(),
+        )
     {
         return Err("fixed retail scene capacity".into());
     }
@@ -624,8 +629,12 @@ fn run() -> Result<(), String> {
                 loaded.render.world,
                 presentation.id,
                 std::slice::from_ref(surface),
-            ) || !isolated.render_scene(refdef, &[], &assets)
-            {
+            ) || !isolated.render_scene(
+                refdef,
+                &[],
+                &assets,
+                qa_render::shader::reference::ShaderView::direct(),
+            ) {
                 return Err("diagnostic scene capacity".into());
             }
             let packet = isolated.finish();
@@ -640,9 +649,8 @@ fn run() -> Result<(), String> {
                     assets
                         .shader_binding(
                             assets
-                                .surface_binding(presentation.id, surface.surface)
+                                .surface_shader(presentation.id, surface.surface)
                                 .ok_or("missing diagnostic surface binding")?
-                                .shader
                         )
                         .ok_or("missing diagnostic shader binding")?
                         .material

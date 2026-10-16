@@ -331,10 +331,20 @@ fn repeated_views_copy_source_palette_and_do_not_advance_particle_state() {
     .unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert_eq!(effects.append(&mut frame, CLIENT, LIFE), 1);
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     frame.clear_scene();
     assert_eq!(effects.append(&mut frame, CLIENT, LIFE), 1);
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
         panic!()
@@ -430,7 +440,12 @@ fn late_binding_fills_only_the_requested_slot_and_preserves_live_simulation() {
     .unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert_eq!(effects.append(&mut frame, CLIENT, LIFE), 2);
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let Command::View(view) = packet.commands()[1] else {
         panic!()
@@ -438,11 +453,11 @@ fn late_binding_fills_only_the_requested_slot_and_preserves_live_simulation() {
     let particles = packet.particles(view.scene.particles);
     assert_eq!(
         (particles[0].palette, particles[0].shader),
-        (new_palette, new_material)
+        (new_palette, new_material.into())
     );
     assert_eq!(
         (particles[1].palette, particles[1].shader),
-        (old_palette, old_material)
+        (old_palette, old_material.into())
     );
 }
 
@@ -484,7 +499,7 @@ fn recorded_native_views_receive_late_particles_once_with_recipient_isolation() 
     };
     let original = qa_render::scene::SceneParticle {
         palette,
-        shader: material,
+        shader: material.into(),
         color: 99,
         ..Default::default()
     };
@@ -498,7 +513,8 @@ fn recorded_native_views_receive_late_particles_once_with_recipient_isolation() 
     assert!(frame.for_client(Some(owner), |frame| frame.render_scene(
         Refdef::default(),
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     )));
     for recipient in [owner, other, stale] {
         frame.clear_scene();
@@ -506,7 +522,8 @@ fn recorded_native_views_receive_late_particles_once_with_recipient_isolation() 
             frame.for_client(Some(recipient), |frame| frame.render_scene(
                 Refdef::default(),
                 &[],
-                &assets
+                &assets,
+                qa_render::shader::reference::ShaderView::direct()
             ))
         );
     }
@@ -521,12 +538,22 @@ fn recorded_native_views_receive_late_particles_once_with_recipient_isolation() 
     let before = state(&effects)[0];
     frame.append_client_effects(&mut effects, &assets);
     frame.append_client_effects(&mut effects, &assets);
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     // The existing built-in path shares simulation, without inheriting the
     // payload ranges appended to the recorded native views.
     frame.clear_scene();
     assert_eq!(effects.append(&mut frame, CLIENT, LIFE), 1);
-    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    assert!(frame.render_scene(
+        Refdef::default(),
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let packet = frame.finish();
     let views: Vec<_> = packet
         .commands()
@@ -589,7 +616,7 @@ fn late_particle_capacity_failure_keeps_native_payload_and_healthy_view() {
     effects.synchronize(&[Some(owner)]);
     let original = qa_render::scene::SceneParticle {
         palette,
-        shader: material,
+        shader: material.into(),
         color: 99,
         ..Default::default()
     };
@@ -603,13 +630,15 @@ fn late_particle_capacity_failure_keeps_native_payload_and_healthy_view() {
     assert!(frame.for_client(Some(owner), |frame| frame.render_scene(
         Refdef::default(),
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     )));
     frame.clear_scene();
     assert!(frame.for_client(Some(owner), |frame| frame.render_scene(
         Refdef::default(),
         &[],
-        &assets
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
     )));
     assert!(effects.accept_with_random(event(2, 1), || 256));
     frame.append_client_effects(&mut effects, &assets);

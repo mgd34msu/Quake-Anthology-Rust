@@ -214,7 +214,11 @@ fn native_linked_model_cells_keep_their_own_skin_alpha_and_draw_properties() {
                     .unwrap()
                     .next()
                     .unwrap();
-                assert_eq!(entity.shader, Some(expected.shader), "{rules:?} slot{slot}");
+                assert_eq!(
+                    entity.shader.map(|shader| shader.source(&()).unwrap()),
+                    Some(expected.shader),
+                    "{rules:?} slot{slot}"
+                );
                 assert_eq!(entity.model, expected.model.into());
                 assert_eq!(
                     entity.previous_origin.is_some(),
@@ -318,10 +322,20 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
             (counts.models, counts.rejected, counts.missing_models),
             (1, 0, 0)
         );
-        assert!(frame.render_scene(refdef, &[], assets));
+        assert!(frame.render_scene(
+            refdef,
+            &[],
+            assets,
+            qa_render::shader::reference::ShaderView::direct()
+        ));
         let packet = frame.finish();
         let entity = packet.entity(0);
-        materials.push(entity.shader.unwrap());
+        materials.push(
+            entity
+                .shader
+                .map(|shader| shader.source(&()).unwrap())
+                .unwrap(),
+        );
         let qa_render::SceneModel::Mesh(model) = entity.model else {
             panic!("sprite model")
         };
@@ -618,7 +632,12 @@ fn received_native_beams_keep_palette_width_endpoints_and_float_alpha_without_a_
             ),
             (1, 0, 0, 0, 0)
         );
-        assert!(frame.render_scene(refdef, &[], assets));
+        assert!(frame.render_scene(
+            refdef,
+            &[],
+            assets,
+            qa_render::shader::reference::ShaderView::direct()
+        ));
         let packet = frame.finish();
         let entity = packet.entity(0);
         let (origin, end, radius) = if source == RuleSetId::Quake2 {
@@ -772,7 +791,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
         qa_core::math::angle_vectors(Vec3([-20.0, 45.0, 10.0])).axes()
     );
     let static_model = copied.model;
-    let static_material = copied.shader;
+    let static_material = copied.shader.map(|shader| shader.source(&()).unwrap());
     assert!(frontend.recycle(scene).is_ok());
 
     // Reusing the native source edict changes accepted dynamic rows, not the
@@ -814,7 +833,13 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
     let scene = frame.finish();
     assert_eq!(scene.entity(0).origin, retained.position);
     assert_eq!(scene.entity(0).model, static_model);
-    assert_eq!(scene.entity(0).shader, static_material);
+    assert_eq!(
+        scene
+            .entity(0)
+            .shader
+            .map(|shader| shader.source(&()).unwrap()),
+        static_material
+    );
     assert_eq!((scene.entity(0).frame, scene.entity(0).old_frame), (1, 1));
     assert_eq!(scene.entity(0).back_lerp, 0.0);
     assert_eq!(resources.state.static_entities().len(), 1);
@@ -1222,7 +1247,10 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
     assert_eq!(packet.entity(1).old_frame, 0);
     assert_eq!(packet.entity(1).back_lerp, 0.5);
     assert_eq!(
-        packet.entity(1).shader,
+        packet
+            .entity(1)
+            .shader
+            .map(|shader| shader.source(&()).unwrap()),
         Some(
             catalog
                 .registration("models/test/tris.md2", profile)
@@ -1234,7 +1262,10 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         )
     );
     assert_ne!(
-        packet.entity(1).shader,
+        packet
+            .entity(1)
+            .shader
+            .map(|shader| shader.source(&()).unwrap()),
         Some(
             catalog
                 .registration("models/test/tris.md2", profile)
@@ -1435,7 +1466,10 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
                 qa_core::math::angle_vectors(packet_angles).axes()
             );
             assert_eq!(
-                scene.entity(0).shader,
+                scene
+                    .entity(0)
+                    .shader
+                    .map(|shader| shader.source(&()).unwrap()),
                 Some(
                     catalog
                         .registration("models/test/tris.md2", profile)
@@ -1749,7 +1783,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
     assert_eq!((gun.frame, gun.old_frame), (1, 0));
     assert_eq!(gun.back_lerp, 1.0 - 12.0 / 100.0);
     assert_eq!(
-        gun.shader,
+        gun.shader.map(|shader| shader.source(&()).unwrap()),
         Some(
             catalog
                 .registration("models/test/tris.md2", profile)

@@ -80,7 +80,7 @@ fn mesh_uses_shared_sample_depth_gate_without_changing_depth_policy() {
             &camera,
             vertices,
             RasterPass {
-                material,
+                settings: material.settings,
                 stage,
                 image,
                 sampler: stage_sampler(image, stage.stage.sampler),

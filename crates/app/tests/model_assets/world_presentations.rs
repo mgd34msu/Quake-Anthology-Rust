@@ -33,7 +33,12 @@ fn draw_world(
         .unwrap();
     assert_eq!(surfaces.len(), 1);
     assert!(frame.add_world(world, presentation.id, surfaces));
-    assert!(frame.render_scene(refdef, &[], assets));
+    assert!(frame.render_scene(
+        refdef,
+        &[],
+        assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
     let stats = cpu.render(&frame.finish(), assets);
     (cpu.pixels().to_vec(), stats)
 }

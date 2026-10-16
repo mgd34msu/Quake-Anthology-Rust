@@ -1,6 +1,7 @@
 //! Load-only shader definitions for the one shared material table.
 //! Native grammar: qsrc quake-iii-arena/code/renderer/tr_shader.c.
 pub mod context;
+pub mod reference;
 mod lexer;
 mod parse;
 pub use crate::assets::DepthFunc;

@@ -133,7 +133,7 @@ impl Fixture {
             if !frame.add_entity(SceneEntity {
                 model: self.model.into(),
                 ..SceneEntity::default()
-            }) || !frame.add_poly(self.poly_material, &self.poly)
+            }) || !frame.add_poly(self.poly_material.into(), &self.poly)
                 || !frame.add_light(Light {
                     origin: Vec3([8.0, 0.0, 8.0]),
                     radius: 16.0,
@@ -161,6 +161,7 @@ impl Fixture {
                     },
                     &[],
                     assets,
+                    qa_render::shader::reference::ShaderView::direct(),
                 )
             {
                 return Err("fixture scene capacity");
@@ -175,7 +176,7 @@ impl Fixture {
                     rect: [x + seat as f32 * 320.0, 360.0, width, 20.0],
                     texcoords: [0.0, 0.0, 1.0, 1.0],
                     color,
-                    shader: ShaderBindingId(0),
+                    shader: ShaderBindingId(0).into(),
                 }) {
                     return Err("fixture 2D capacity");
                 }
