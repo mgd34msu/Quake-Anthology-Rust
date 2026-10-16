@@ -5,6 +5,90 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+#[path = "../../../formats/tests/support/brushlist.rs"]
+pub mod brushlist;
+
+/// Parsed Q1 world with one embedded-texture face and two authored clip models.
+/// No spawn entity is needed by a receiving CLIENT.
+pub fn world_map(size: f32) -> Vec<u8> {
+    let brushes = [
+        brushlist::chunk(0, &[brushlist::SourceBrush::cube(0.0, -2)]),
+        brushlist::chunk(1, &[brushlist::SourceBrush::cube(10.0, -2)]),
+    ]
+    .concat();
+    brushlist::bsp_with_lumps(29, 2, true, Some(&brushes), |lumps| {
+        lumps[0] = b"{\"classname\" \"worldspawn\"}\0".to_vec();
+        let mut texture = vec![0; 40];
+        texture[..4].copy_from_slice(b"wall");
+        for (at, value) in [
+            (16, 16u32),
+            (20, 16),
+            (24, 40),
+            (28, 296),
+            (32, 360),
+            (36, 376),
+        ] {
+            texture[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        texture.resize(380, 11);
+        lumps[2] = [
+            1u32.to_le_bytes().as_slice(),
+            8u32.to_le_bytes().as_slice(),
+            &texture,
+        ]
+        .concat();
+        lumps[3] = [
+            [0.0, -size, -size],
+            [0.0, size, -size],
+            [0.0, size, size],
+            [0.0, -size, size],
+        ]
+        .into_iter()
+        .flatten()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+        for (at, value) in [
+            (8, -512i16),
+            (10, -512),
+            (12, -512),
+            (14, 512),
+            (16, 512),
+            (18, 512),
+            (22, 1),
+        ] {
+            lumps[5][at..at + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        lumps[6] = [0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .chain([0; 8])
+            .collect();
+        lumps[7] = vec![0; 20];
+        lumps[7][8..10].copy_from_slice(&4u16.to_le_bytes());
+        lumps[7][12..16].fill(255);
+        lumps[7][16..20].copy_from_slice(&(-1i32).to_le_bytes());
+        for leaf in 0..2 {
+            for (axis, value) in [-512i16, -512, -512, 512, 512, 512].into_iter().enumerate() {
+                let at = leaf * 28 + 8 + axis * 2;
+                lumps[10][at..at + 2].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        lumps[10][50..52].copy_from_slice(&1u16.to_le_bytes());
+        lumps[11] = 0u16.to_le_bytes().to_vec();
+        lumps[12] = [0u16, 1, 1, 2, 2, 3, 3, 0]
+            .into_iter()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        lumps[13] = [0i32, 1, 2, 3]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect();
+        for model in 0..2 {
+            lumps[14][model * 64 + 60..model * 64 + 64].copy_from_slice(&1i32.to_le_bytes());
+        }
+    })
+}
+
 pub struct Fixture {
     pub vfs: Vfs,
     root: std::path::PathBuf,

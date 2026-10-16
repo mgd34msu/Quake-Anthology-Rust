@@ -271,6 +271,7 @@ impl MapInput {
         mut options: WorldLoadOptions,
     ) -> Result<LoadedMap, String> {
         let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;
+        let collision_bounds = map.models.first().ok_or("missing world model")?.bounds;
         let portals = load_portals(&map)?;
         let (spawns, entity_count, sky_environment) = spawns(&map, self.native_source)?;
         let (collision, collision_brushes) = collision(&map, geometry)?;
@@ -285,7 +286,7 @@ impl MapInput {
         Ok(LoadedMap {
             collision,
             portals,
-            collision_bounds: map.models.first().ok_or("missing world model")?.bounds,
+            collision_bounds,
             render,
             spawns,
             native_source: self.native_source,
@@ -485,9 +486,8 @@ fn spawns(
     }
     let primary = preferred
         .or(fallback)
-        .or_else(|| candidates.first().copied())
-        .ok_or("no supported player spawn in the map")?;
-    let mut anchors = vec![primary];
+        .or_else(|| candidates.first().copied());
+    let mut anchors: Vec<_> = primary.into_iter().collect();
     for anchor in candidates {
         if !anchors
             .iter()

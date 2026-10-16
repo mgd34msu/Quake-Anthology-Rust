@@ -742,6 +742,32 @@ impl Limits {
                 .checked_add(self.polys)
         }
     }
+
+    fn capacities(self) -> [usize; 9] {
+        [
+            self.commands,
+            self.entities,
+            self.polys,
+            self.vertices,
+            self.lights,
+            self.particles,
+            self.area_bytes,
+            self.surfaces,
+            self.draws,
+        ]
+    }
+
+    fn resolved(mut self) -> Result<Self, &'static str> {
+        self.draws = self.draw_capacity().ok_or("scene draw capacity overflow")?;
+        if self
+            .capacities()
+            .iter()
+            .any(|&n| n == 0 || n > u32::MAX as usize)
+        {
+            return Err("invalid scene capacity");
+        }
+        Ok(self)
+    }
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -862,9 +888,27 @@ impl CommandList {
 }
 pub struct FrontEnd {
     lists: [Option<CommandList>; 2],
+    limits: Limits,
+    automatic_draws: bool,
     next: usize,
     frame: u64,
     owner: u64,
+}
+
+/// A cold candidate borrows the existing owner until committed or discarded.
+/// No live frame or outstanding consumer can coexist with this borrow.
+pub struct FrontEndCapacity<'a> {
+    frontend: &'a mut FrontEnd,
+    lists: Option<[Option<CommandList>; 2]>,
+    limits: Limits,
+}
+impl FrontEndCapacity<'_> {
+    pub fn commit(self) {
+        if let Some(lists) = self.lists {
+            self.frontend.lists = lists;
+        }
+        self.frontend.limits = self.limits;
+    }
 }
 pub struct Frame {
     list: CommandList,
@@ -880,35 +924,66 @@ struct SceneCheckpoint {
     areas: usize,
 }
 impl FrontEnd {
-    pub fn load(mut limits: Limits) -> Result<Self, &'static str> {
-        limits.draws = limits
-            .draw_capacity()
-            .ok_or("scene draw capacity overflow")?;
-        if [
-            limits.commands,
-            limits.entities,
-            limits.polys,
-            limits.vertices,
-            limits.lights,
-            limits.particles,
-            limits.area_bytes,
-            limits.surfaces,
-            limits.draws,
-        ]
-        .iter()
-        .any(|&n| n == 0 || n > u32::MAX as usize)
-        {
-            return Err("invalid scene capacity");
-        }
+    pub fn load(limits: Limits) -> Result<Self, &'static str> {
+        let automatic_draws = limits.draws == 0;
+        let limits = limits.resolved()?;
         let owner = crate::next_owner_id().map_err(|_| "scene owner ids exhausted")?;
         Ok(Self {
             lists: [
                 Some(CommandList::load(limits, owner, 0)),
                 Some(CommandList::load(limits, owner, 1)),
             ],
+            limits,
+            automatic_draws,
             next: 0,
             frame: 0,
             owner,
+        })
+    }
+
+    pub fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    /// Reserve larger arenas only after both existing lists have returned.
+    /// Dropping the candidate leaves capacities and sequence ownership intact.
+    pub fn stage_capacity(
+        &mut self,
+        required: Limits,
+    ) -> Result<FrontEndCapacity<'_>, &'static str> {
+        if self.lists.iter().any(Option::is_none) {
+            return Err("scene command lists are outstanding");
+        }
+        let current = self.limits;
+        let mut limits = Limits {
+            commands: current.commands.max(required.commands),
+            entities: current.entities.max(required.entities),
+            polys: current.polys.max(required.polys),
+            vertices: current.vertices.max(required.vertices),
+            lights: current.lights.max(required.lights),
+            particles: current.particles.max(required.particles),
+            area_bytes: current.area_bytes.max(required.area_bytes),
+            surfaces: current.surfaces.max(required.surfaces),
+            draws: current.draws.max(required.draws),
+        };
+        if self.automatic_draws {
+            limits.draws = limits.draws.max(
+                Limits { draws: 0, ..limits }
+                    .draw_capacity()
+                    .ok_or("scene draw capacity overflow")?,
+            );
+        }
+        let limits = limits.resolved()?;
+        let lists = (limits.capacities() != current.capacities()).then(|| {
+            [
+                Some(CommandList::load(limits, self.owner, 0)),
+                Some(CommandList::load(limits, self.owner, 1)),
+            ]
+        });
+        Ok(FrontEndCapacity {
+            frontend: self,
+            lists,
+            limits,
         })
     }
     /// A packet leaves the pool until its consumer returns ownership. Two

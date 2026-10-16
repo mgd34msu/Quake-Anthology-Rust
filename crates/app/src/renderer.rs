@@ -306,7 +306,7 @@ fn apply_presentation(
 /// and built-in client composition.
 pub struct SceneComposer {
     frontend: FrontEnd,
-    scenes: Box<[Option<WorldScene>]>,
+    scenes: Vec<Option<WorldScene>>,
     frame: Option<qa_render::scene::Frame>,
     publisher: Option<qa_core::primitives::ModuleId>,
     native_owned: [bool; SeatId::COUNT],
@@ -314,6 +314,29 @@ pub struct SceneComposer {
     kind: Kind,
     beam: qa_render::MaterialId,
     beam_alpha: qa_render::MaterialId,
+}
+
+/// Cold staging retains the existing scene owner until backend preparation
+/// succeeds. Dropping this value publishes no world or arena replacement.
+pub struct SceneWorldAppend<'a> {
+    scenes: &'a mut Vec<Option<WorldScene>>,
+    frontend: qa_render::scene::FrontEndCapacity<'a>,
+    scene: WorldScene,
+}
+impl SceneWorldAppend<'_> {
+    pub fn commit(self) {
+        self.frontend.commit();
+        self.scenes.push(Some(self.scene));
+    }
+}
+
+fn scene_surface_limits(mut limits: Limits, surfaces: usize) -> Result<Limits, String> {
+    limits.surfaces = limits.surfaces.max(
+        surfaces
+            .checked_mul(SeatId::COUNT)
+            .ok_or("scene surface capacity")?,
+    );
+    Ok(limits)
 }
 
 impl SceneComposer {
@@ -346,11 +369,7 @@ impl SceneComposer {
         if scenes.iter().any(Option::is_none) {
             return Err("missing loaded world geometry".into());
         }
-        limits.surfaces = limits.surfaces.max(
-            max_surfaces
-                .checked_mul(SeatId::COUNT)
-                .ok_or("scene surface capacity")?,
-        );
+        limits = scene_surface_limits(limits, max_surfaces)?;
 
         let frontend = FrontEnd::load(limits)?;
         let beam = qa_render::entities::register_beam_material(
@@ -369,7 +388,7 @@ impl SceneComposer {
         Ok((
             Self {
                 frontend,
-                scenes: scenes.into_boxed_slice(),
+                scenes,
                 frame: None,
                 publisher: None,
                 native_owned: [false; SeatId::COUNT],
@@ -380,6 +399,46 @@ impl SceneComposer {
             },
             limits,
         ))
+    }
+
+    pub fn stage_world<'a>(
+        &'a mut self,
+        assets: &Assets,
+        loaded: &LoadedWorld,
+    ) -> Result<SceneWorldAppend<'a>, String> {
+        if self.frame.is_some() {
+            return Err("scene frame is active".to_owned());
+        }
+        if loaded.world.0 as usize != self.scenes.len()
+            || self.scenes.len().checked_add(1) != Some(assets.worlds().len())
+        {
+            return Err("scene world prefix does not match appended world".to_owned());
+        }
+        let world = assets.world(loaded.world).ok_or("missing appended world")?;
+        if loaded.presentations.is_empty()
+            || loaded.presentations.iter().any(|entry| {
+                assets
+                    .world_presentation(entry.id)
+                    .is_none_or(|presentation| presentation.world() != loaded.world)
+            })
+        {
+            return Err("invalid appended world presentation".to_owned());
+        }
+        let limits =
+            scene_surface_limits(self.frontend.limits(), world.visibility().surface_count())?;
+        let frontend = self.frontend.stage_capacity(limits)?;
+        self.scenes
+            .try_reserve(1)
+            .map_err(|_| "scene world capacity".to_owned())?;
+        let scene = WorldScene {
+            views: std::array::from_fn(|_| WorldView::load(world)),
+            presentations: loaded.presentations.clone(),
+        };
+        Ok(SceneWorldAppend {
+            scenes: &mut self.scenes,
+            frontend,
+            scene,
+        })
     }
 
     pub fn frame_mut(&mut self) -> Option<&mut qa_render::scene::Frame> {

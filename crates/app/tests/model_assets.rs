@@ -3,7 +3,7 @@ mod support;
 
 use qa_app::model_assets::{
     ModelAssets, ModelCatalog, ModelLimits, ModelMaterialPolicy, ModelProfile, ModelRequest,
-    ModelView,
+    ModelView, WorldRegistration,
 };
 use qa_compat::services::{ModelLoader, ModelLookup};
 use qa_core::primitives::{Bounds, RuleSetId, Vec3};
@@ -39,6 +39,531 @@ fn renderer_request(
         source,
         world,
     }
+}
+
+fn world_registration(profile: ModelProfile, palette: PaletteId) -> WorldRegistration {
+    let mut presentation = qa_render::material::world_load::WorldPresentationProfile::native(
+        profile.rules,
+        profile.palette,
+    );
+    presentation.image_settings = profile.image_settings;
+    WorldRegistration {
+        profile,
+        source_palette: Some(palette),
+        presentation,
+        options: Default::default(),
+        trace_rules: qa_world::collision::TraceRules::ARENA,
+    }
+}
+
+#[test]
+fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
+    use qa_app::map;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    use qa_world::collision::{CollisionStore, TraceQuery, trace_policy};
+    let fixture = support::Fixture::new(&[
+        ("maps/first.bsp", support::world_map(8.0)),
+        ("maps/second.bsp", support::world_map(16.0)),
+        ("maps/staged.bsp", support::world_map(8.0)),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
+    let mut geometry = CollisionStore::new();
+    let first = map::read(&fixture.vfs, "first")
+        .unwrap()
+        .load(
+            &fixture.vfs,
+            &mut assets,
+            &mut geometry,
+            Some(palette),
+            &[world_registration(profile, palette).presentation],
+            Default::default(),
+        )
+        .unwrap();
+    assert!(first.spawns.is_empty());
+    let first_world = first.render.world;
+    let (mut scene, _) =
+        qa_app::renderer::SceneComposer::load(Default::default(), &mut assets, vec![first.render])
+            .unwrap();
+    let mut owner = ModelAssets::new(assets, [profile], [first_world], Default::default()).unwrap();
+    owner
+        .bind_loaded_world(
+            &first.virtual_path,
+            first_world,
+            Some(first.collision),
+            first.collision_bounds,
+        )
+        .unwrap();
+    let first_inline = owner.register_inline(first_world, 1).unwrap();
+    let first_file = owner
+        .catalog()
+        .file_handle(first.virtual_path.as_bytes())
+        .unwrap();
+    let first_binding = owner
+        .catalog()
+        .loaded_world(first.virtual_path.as_bytes())
+        .unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        64,
+        48,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 65_536,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let initial = cpu.admitted_assets().unwrap();
+    owner.publish_admission(initial).unwrap();
+    owner.end_initial_registration();
+    for unconfigured in [
+        ModelProfile {
+            source_rules: RuleSetId::Quake3,
+            ..profile
+        },
+        ModelProfile {
+            image_settings: qa_render::material::resources::ImageSettings {
+                picmip: 1,
+                ..profile.image_settings
+            },
+            ..profile
+        },
+    ] {
+        assert!(
+            owner
+                .prepare_world(
+                    &fixture.vfs,
+                    &mut geometry,
+                    map::read(&fixture.vfs, "second").unwrap(),
+                    world_registration(unconfigured, palette),
+                    |_, _, _| -> Result<(), String> {
+                        panic!("unconfigured profile must fail before staging")
+                    },
+                    |_| panic!("unconfigured profile must fail before preparation")
+                )
+                .is_err()
+        );
+    }
+    assert_eq!(owner.assets().counts(), initial);
+    assert_eq!(geometry.geometries().collect::<Vec<_>>(), [first.collision]);
+    let staged_called = std::cell::Cell::new(false);
+    let (second, (append, mut scratch), counts) = owner
+        .prepare_world(
+            &fixture.vfs,
+            &mut geometry,
+            map::read(&fixture.vfs, "second").unwrap(),
+            world_registration(profile, palette),
+            |view, store, loaded| {
+                assert!(loaded.spawns.is_empty());
+                assert_eq!(loaded.native_source, RuleSetId::Quake);
+                assert_eq!(
+                    view.catalog.loaded_world(b"maps/first.bsp"),
+                    Some(first_binding)
+                );
+                assert_eq!(
+                    view.catalog
+                        .loaded_world(loaded.virtual_path.as_bytes())
+                        .unwrap()
+                        .collision,
+                    Some(loaded.collision)
+                );
+                assert_eq!(
+                    view.assets
+                        .world_presentation(loaded.render.presentations[0].id)
+                        .unwrap()
+                        .world(),
+                    loaded.render.world
+                );
+                let append = scene.stage_world(view.assets, &loaded.render)?;
+                staged_called.set(true);
+                Ok((append, store.scratch()))
+            },
+            |assets| {
+                assert!(staged_called.get());
+                assert_eq!(cpu.admitted_assets(), Some(initial));
+                cpu.prepare_assets(assets).map_err(str::to_owned)
+            },
+        )
+        .unwrap();
+    append.commit();
+    assert_eq!(counts, owner.assets().counts());
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(counts.worlds, initial.worlds + 1);
+    assert_eq!(counts.presentations, initial.presentations + 1);
+    assert_eq!(owner.catalog().capacity().inline_bindings, 4);
+    assert_eq!(
+        owner.catalog().file_handle(b"maps/first.bsp"),
+        Some(first_file)
+    );
+    assert_eq!(
+        owner.catalog().inline_handle(first_world, 1),
+        Some(first_inline)
+    );
+    assert_eq!(
+        owner.catalog().loaded_world(b"maps/first.bsp"),
+        Some(first_binding)
+    );
+    assert_eq!(geometry.model_count(first.collision), Some(2));
+    assert_eq!(geometry.model_count(second.collision), Some(2));
+    assert_eq!(
+        owner
+            .catalog()
+            .resolve_inline(second.render.world, 1)
+            .unwrap()
+            .index,
+        1
+    );
+    for role in [RuleSetId::Quake, RuleSetId::Quake3] {
+        let (rules, model_rules) = trace_policy(role);
+        for (model, x) in [(0, 0.0), (1, 10.0)] {
+            let hit = geometry
+                .trace_model(
+                    second.collision,
+                    model,
+                    TraceQuery::point(
+                        Vec3([x + 3.0, 0.0, 0.0]),
+                        Vec3([x, 0.0, 0.0]),
+                        rules,
+                        model_rules,
+                    ),
+                    &mut scratch,
+                )
+                .unwrap();
+            assert!(hit.fraction < 1.0, "{role:?}/{model}");
+        }
+    }
+    let stable = owner.assets().counts();
+    let old_geometries = geometry.geometries().collect::<Vec<_>>();
+    let staged_geometry = std::cell::Cell::new(None);
+    assert!(
+        owner
+            .prepare_world(
+                &fixture.vfs,
+                &mut geometry,
+                map::read(&fixture.vfs, "staged").unwrap(),
+                world_registration(profile, palette),
+                |view, _, loaded| -> Result<(), String> {
+                    let _append = scene.stage_world(view.assets, &loaded.render)?;
+                    staged_geometry.set(Some(loaded.collision));
+                    Err("caller capacity rejected".to_owned())
+                },
+                |_| panic!("caller staging failure must not reach backend")
+            )
+            .is_err()
+    );
+    assert_eq!(geometry.model_count(staged_geometry.get().unwrap()), None);
+    assert_eq!(geometry.geometries().collect::<Vec<_>>(), old_geometries);
+    assert_eq!(owner.assets().counts(), stable);
+    assert_eq!(cpu.admitted_assets(), Some(stable));
+    assert_eq!(owner.catalog().loaded_world(b"maps/staged.bsp"), None);
+    let error = owner
+        .prepare_world(
+            &fixture.vfs,
+            &mut geometry,
+            map::read(&fixture.vfs, "first").unwrap(),
+            world_registration(profile, palette),
+            |_, _, _| -> Result<(), String> { panic!("filename conflict must precede staging") },
+            |_| panic!("filename conflict must precede backend"),
+        )
+        .err()
+        .unwrap();
+    assert!(error.contains("filename conflict"), "{error}");
+    assert_eq!(owner.assets().counts(), stable);
+    assert_eq!(geometry.geometries().collect::<Vec<_>>(), old_geometries);
+    assert_eq!(
+        owner.catalog().loaded_world(b"maps/first.bsp"),
+        Some(first_binding)
+    );
+    assert_eq!(
+        owner.catalog().inline_handle(first_world, 1),
+        Some(first_inline)
+    );
+}
+
+#[test]
+fn parsed_world_inline_capacity_failure_rolls_back_before_caller_or_backend() {
+    use qa_app::map;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    use qa_world::collision::CollisionStore;
+    let fixture = support::Fixture::new(&[("maps/two.bsp", support::world_map(8.0))]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
+    let old = support::world(&mut assets, 0.0);
+    let mut owner = ModelAssets::new(
+        assets,
+        [profile],
+        [old],
+        ModelLimits {
+            inline_models: 3,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        64,
+        48,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 4096,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let initial = cpu.admitted_assets().unwrap();
+    owner.publish_admission(initial).unwrap();
+    owner.end_initial_registration();
+    let capacity = owner.catalog().capacity();
+    let mut geometry = CollisionStore::new();
+    let error = owner
+        .prepare_world(
+            &fixture.vfs,
+            &mut geometry,
+            map::read(&fixture.vfs, "two").unwrap(),
+            world_registration(profile, palette),
+            |_, _, _| -> Result<(), String> { panic!("inline capacity must precede staging") },
+            |assets| cpu.prepare_assets(assets).map_err(str::to_owned),
+        )
+        .err()
+        .unwrap();
+    assert!(error.contains("inline model capacity"), "{error}");
+    assert_eq!(owner.assets().counts(), initial);
+    assert_eq!(owner.catalog().capacity(), capacity);
+    assert_eq!(
+        owner
+            .catalog()
+            .resolve_inline(WorldId(initial.worlds as u32), 0),
+        None
+    );
+    assert_eq!(geometry.geometries().count(), 0);
+    assert_eq!(cpu.admitted_assets(), Some(initial));
+}
+
+#[test]
+fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
+    use qa_app::map;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    use qa_world::collision::CollisionStore;
+    let fixture = support::Fixture::new(&[
+        ("maps/old.bsp", support::world_map(8.0)),
+        ("maps/large.bsp", support::world_map(256.0)),
+        ("maps/small.bsp", support::world_map(8.0)),
+        (
+            "models/test/tris.md2",
+            support::md2_quad_skin(b"models/test/skin0.pcx"),
+        ),
+        ("models/test/skin0.pcx", support::pcx(11)),
+        ("models/test/skin1.pcx", support::pcx(22)),
+        (
+            "textures/retained.tga",
+            support::tga(1, 1, &[[17, 31, 223, 255]]),
+        ),
+        (
+            "scripts/retained.shader",
+            b"maps/large { { map textures/retained.tga } }".to_vec(),
+        ),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
+    let mut geometry = CollisionStore::new();
+    let old = map::read(&fixture.vfs, "old")
+        .unwrap()
+        .load(
+            &fixture.vfs,
+            &mut assets,
+            &mut geometry,
+            Some(palette),
+            &[world_registration(profile, palette).presentation],
+            Default::default(),
+        )
+        .unwrap();
+    let old_world = old.render.world;
+    let (mut scene, _) =
+        qa_app::renderer::SceneComposer::load(Default::default(), &mut assets, vec![old.render])
+            .unwrap();
+    let mut owner = ModelAssets::load(
+        &fixture.vfs,
+        assets,
+        [ModelRequest::native(
+            "models/test/tris.md2",
+            RuleSetId::Quake2,
+            Some(palette),
+        )],
+        [old_world],
+        Default::default(),
+    )
+    .unwrap();
+    owner
+        .bind_loaded_world(
+            &old.virtual_path,
+            old_world,
+            Some(old.collision),
+            old.collision_bounds,
+        )
+        .unwrap();
+    let shader = owner
+        .register_shader(&fixture.vfs, b"maps/large.bsp", RuleSetId::Quake2, true)
+        .unwrap();
+    let retained_skin = owner
+        .register_skin(&fixture.vfs, b"maps/large.bsp", RuleSetId::Quake2)
+        .unwrap();
+    let old_name = (0..owner.catalog().capacity().names)
+        .find(|&index| {
+            owner
+                .catalog()
+                .name(qa_core::primitives::NameId(index as u32))
+                == Some("maps/large.bsp")
+        })
+        .unwrap() as i32;
+    assert_eq!(owner.catalog().file_handle(b"maps/large.bsp"), None);
+    let retained_material = owner.catalog().shader_binding(shader, profile).unwrap();
+    let original = binding(owner.catalog(), "models/test/tris.md2", profile, 0).unwrap();
+    let old_inline = owner.register_inline(old_world, 1).unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        64,
+        48,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 4096,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let initial = cpu.admitted_assets().unwrap();
+    let old_config = cpu.raster_config();
+    owner.publish_admission(initial).unwrap();
+    owner.end_initial_registration();
+    let old_capacity = owner.catalog().capacity();
+    let pixels = render_indexed_on(&mut cpu, owner.assets(), original, palette);
+    assert!(pixels.1.triangles > 0);
+    let created = std::cell::Cell::new(None);
+    let staged_called = std::cell::Cell::new(false);
+    let mut attempts = 0;
+    let rejected = owner.prepare_world(
+        &fixture.vfs,
+        &mut geometry,
+        map::read(&fixture.vfs, "large").unwrap(),
+        world_registration(profile, palette),
+        |view, store, loaded| {
+            created.set(Some(loaded.collision));
+            let append = scene.stage_world(view.assets, &loaded.render)?;
+            staged_called.set(true);
+            Ok((append, store.scratch()))
+        },
+        |assets| {
+            attempts += 1;
+            assert!(staged_called.get());
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        },
+    );
+    let error = rejected.err().expect("real fixed-budget CPU rejection");
+    assert!(error.contains("mandatory surface"), "{error}");
+    assert_eq!(attempts, 1);
+    assert_eq!(geometry.model_count(created.get().unwrap()), None);
+    assert_eq!(geometry.geometries().collect::<Vec<_>>(), [old.collision]);
+    assert_eq!(owner.assets().counts(), initial);
+    assert_eq!(owner.catalog().capacity(), old_capacity);
+    assert_eq!(owner.catalog().file_handle(b"maps/large.bsp"), None);
+    assert_eq!(
+        owner.catalog().registration_cached(
+            qa_compat::services::RendererRegistration::Skin,
+            b"maps/large.bsp",
+            profile,
+            None
+        ),
+        Some(retained_skin)
+    );
+    assert_eq!(
+        owner.catalog().shader_binding(shader, profile),
+        Some(retained_material)
+    );
+    assert_eq!(
+        owner.catalog().inline_handle(old_world, 1),
+        Some(old_inline)
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .resolve_inline(WorldId(initial.worlds as u32), 0),
+        None
+    );
+    assert_eq!(cpu.admitted_assets(), Some(initial));
+    assert_eq!(cpu.raster_config(), old_config);
+    assert_eq!(
+        render_indexed_on(&mut cpu, owner.assets(), original, palette),
+        pixels
+    );
+
+    let (small, append, counts) = owner
+        .prepare_world(
+            &fixture.vfs,
+            &mut geometry,
+            map::read(&fixture.vfs, "small").unwrap(),
+            world_registration(profile, palette),
+            |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
+            |assets| cpu.prepare_assets(assets).map_err(str::to_owned),
+        )
+        .unwrap();
+    append.commit();
+    assert_eq!(small.render.world.0 as usize, initial.worlds);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(geometry.model_count(small.collision), Some(2));
+    assert_eq!(
+        render_indexed_on(&mut cpu, owner.assets(), original, palette),
+        pixels
+    );
+
+    // A new explicit backend budget makes the rejected world admissible. The
+    // retained filename and old Empty file row must not poison its retry.
+    cpu = CpuBackend::load_with_limits(
+        64,
+        48,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 2 * 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (large, append, counts) = owner
+        .prepare_world(
+            &fixture.vfs,
+            &mut geometry,
+            map::read(&fixture.vfs, "large").unwrap(),
+            world_registration(profile, palette),
+            |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
+            |assets| cpu.prepare_assets(assets).map_err(str::to_owned),
+        )
+        .unwrap();
+    append.commit();
+    assert_eq!(large.render.world.0, small.render.world.0 + 1);
+    assert_ne!(large.collision, created.get().unwrap());
+    assert_eq!(geometry.geometries().count(), 3);
+    assert_eq!(geometry.model_count(old.collision), Some(2));
+    assert_eq!(geometry.model_count(created.get().unwrap()), None);
+    assert_eq!(
+        owner
+            .catalog()
+            .loaded_world(b"maps/large.bsp")
+            .unwrap()
+            .collision,
+        Some(large.collision)
+    );
+    assert_eq!(
+        owner.catalog().file_handle(b"maps/large.bsp"),
+        Some(old_name)
+    );
+    assert_eq!(
+        owner.catalog().shader_binding(shader, profile),
+        Some(retained_material)
+    );
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(
+        render_indexed_on(&mut cpu, owner.assets(), original, palette),
+        pixels
+    );
 }
 
 #[test]

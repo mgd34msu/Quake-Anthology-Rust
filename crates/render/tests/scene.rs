@@ -643,6 +643,132 @@ fn two_outstanding_packets_prevent_reuse_until_returned() {
     assert!(front.recycle(third).is_ok());
 }
 
+fn cold_limits() -> Limits {
+    Limits {
+        commands: 4,
+        entities: 1,
+        polys: 1,
+        vertices: 3,
+        lights: 1,
+        particles: 1,
+        area_bytes: 1,
+        surfaces: 1,
+        draws: 0,
+    }
+}
+
+#[test]
+fn cold_capacity_stage_requires_both_owned_packets_returned() {
+    let limits = cold_limits();
+    let mut front = FrontEnd::load(limits).unwrap();
+    let first = front.begin_frame([1; 4]).unwrap().finish();
+    assert!(front.stage_capacity(limits).is_err());
+    let second = front.begin_frame([2; 4]).unwrap().finish();
+    assert!(front.stage_capacity(limits).is_err());
+    assert!(front.recycle(first).is_ok());
+    assert!(front.stage_capacity(limits).is_err());
+    assert!(matches!(second.commands(), [Command::Clear([2, 2, 2, 2])]));
+    assert!(front.recycle(second).is_ok());
+    front.stage_capacity(limits).unwrap().commit();
+    let third = front.begin_frame([3; 4]).unwrap().finish();
+    assert_eq!(third.frame, 3);
+    assert!(front.recycle(third).is_ok());
+}
+
+#[test]
+fn dropped_capacity_stage_preserves_arenas_and_commit_grows_the_same_owner() {
+    let mut assets = Assets::load().unwrap();
+    let world = world(&mut assets, &[SurfaceMaterial::default(); 3]);
+    let presentation = presentation(&assets, world);
+    let mut front = FrontEnd::load(cold_limits()).unwrap();
+    let required = Limits {
+        entities: 3,
+        polys: 2,
+        vertices: 6,
+        surfaces: 3,
+        area_bytes: 2,
+        ..cold_limits()
+    };
+    drop(front.stage_capacity(required).unwrap());
+    assert_eq!(front.limits().entities, 1);
+    let mut old = front.begin_frame([0; 4]).unwrap();
+    assert!(old.add_entity(SceneEntity::default()));
+    assert!(!old.add_entity(SceneEntity::default()));
+    assert!(front.recycle(old.finish()).is_ok());
+
+    front.stage_capacity(required).unwrap().commit();
+    assert_eq!(front.limits().draws, 8);
+    let mut grown = front.begin_frame([0; 4]).unwrap();
+    for _ in 0..3 {
+        assert!(grown.add_entity(SceneEntity::default()));
+    }
+    assert!(!grown.add_entity(SceneEntity::default()));
+    for _ in 0..2 {
+        assert!(grown.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+    }
+    assert!(
+        grown.add_world(
+            world,
+            presentation,
+            &(0..3)
+                .map(|surface| VisibleSurface {
+                    surface,
+                    depth_key: 1,
+                })
+                .collect::<Vec<_>>()
+        )
+    );
+    assert!(grown.render_scene(Refdef::default(), &[1, 2], &assets));
+    let packet = grown.finish();
+    assert_eq!(packet.frame, 2);
+    let Command::View(view) = packet.commands()[1] else {
+        panic!("grown scene")
+    };
+    assert_eq!(view.scene.entities.count, 3);
+    assert_eq!(view.scene.polys.count, 2);
+    assert_eq!(view.scene.surfaces.count, 3);
+    assert_eq!(view.scene.draws.count, 8);
+    assert_eq!(packet.hidden_areas(view.hidden_areas), &[1, 2]);
+    assert!(front.recycle(packet).is_ok());
+    front.stage_capacity(cold_limits()).unwrap().commit();
+    assert_eq!(front.limits().entities, 3);
+    assert_eq!(front.limits().surfaces, 3);
+}
+
+#[test]
+fn rejected_capacity_stage_preserves_pool_and_explicit_draw_budget() {
+    let mut front = FrontEnd::load(cold_limits()).unwrap();
+    assert!(
+        front
+            .stage_capacity(Limits {
+                entities: usize::MAX,
+                ..cold_limits()
+            })
+            .is_err()
+    );
+    let packet = front.begin_frame([0; 4]).unwrap().finish();
+    assert!(front.recycle(packet).is_ok());
+    let mut front = FrontEnd::load(Limits {
+        draws: 2,
+        ..cold_limits()
+    })
+    .unwrap();
+    front
+        .stage_capacity(Limits {
+            entities: 3,
+            surfaces: 3,
+            ..cold_limits()
+        })
+        .unwrap()
+        .commit();
+    assert_eq!(front.limits().draws, 2);
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    assert!(frame.add_entity(SceneEntity::default()));
+    assert!(frame.add_entity(SceneEntity::default()));
+    assert!(!frame.add_entity(SceneEntity::default()));
+    assert!(front.recycle(frame.finish()).is_ok());
+}
+
 #[test]
 fn rejected_poly_and_view_leave_existing_payloads_intact() {
     let assets = Assets::load().unwrap();

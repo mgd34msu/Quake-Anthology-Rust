@@ -7,7 +7,9 @@ use qa_console::{commands::Console, views::Context};
 use qa_core::sys_events::{EventKind, EventTime, SeatId, SysEvent, SysEventQueue};
 use qa_render::{
     Assets, Limits,
+    material::world_load::{LoadedWorld, LoadedWorldPresentation, WorldPresentationProfile},
     scene::{Command, Draw2d},
+    world::geometry::{GeometryPartition, PatchStats, WorldGeometry},
 };
 use qa_session::timing::TickRate;
 use std::time::Duration;
@@ -30,6 +32,111 @@ fn scene(commands: usize) -> SceneComposer {
     )
     .unwrap()
     .0
+}
+
+fn empty_world(assets: &mut Assets) -> LoadedWorld {
+    use qa_core::primitives::{Bounds, RuleSetId};
+    use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
+    let visibility = VisibilityWorld::load(
+        vec![],
+        vec![],
+        vec![VisLeaf {
+            selector: None,
+            area: None,
+            solid: false,
+            bounds: Bounds::default(),
+            surfaces: SurfaceSpan::default(),
+        }],
+        vec![],
+        0,
+        -1,
+        PvsRows::all_visible(0),
+    )
+    .unwrap();
+    let world = assets
+        .register_world(
+            WorldGeometry {
+                partition: GeometryPartition::Unpartitioned,
+                world_has_lightdata: false,
+                vertices: vec![],
+                indices: vec![],
+                boundaries: vec![],
+                surfaces: vec![],
+                light_samples: vec![],
+                models: vec![],
+                patch_stats: PatchStats::default(),
+            },
+            visibility,
+            &[&[]],
+        )
+        .unwrap();
+    LoadedWorld {
+        world,
+        presentations: vec![LoadedWorldPresentation {
+            id: qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first),
+            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            defaults: Default::default(),
+        }]
+        .into_boxed_slice(),
+        diagnostics: Box::default(),
+    }
+}
+
+#[test]
+fn cold_world_stage_waits_for_the_existing_frame_and_both_consumers() {
+    let mut assets = Assets::load().unwrap();
+    let first = empty_world(&mut assets);
+    let (mut owner, _) = SceneComposer::load(Limits::default(), &mut assets, vec![first]).unwrap();
+    let second = empty_world(&mut assets);
+    assert!(owner.begin_frame());
+    assert!(owner.stage_world(&assets, &second).is_err());
+    let first_packet = owner.finish_frame().unwrap();
+    assert!(owner.stage_world(&assets, &second).is_err());
+    assert!(owner.begin_frame());
+    let second_packet = owner.finish_frame().unwrap();
+    assert!(owner.stage_world(&assets, &second).is_err());
+    assert!(owner.recycle(first_packet).is_ok());
+    assert!(owner.stage_world(&assets, &second).is_err());
+    assert_eq!(second_packet.frame, 2);
+    assert!(matches!(second_packet.commands(), [Command::Clear(_)]));
+    assert!(owner.recycle(second_packet).is_ok());
+    owner.stage_world(&assets, &second).unwrap().commit();
+    assert!(owner.begin_frame());
+    let packet = owner.finish_frame().unwrap();
+    assert_eq!(packet.frame, 3);
+    assert!(owner.recycle(packet).is_ok());
+    assert!(owner.stage_world(&assets, &second).is_err());
+}
+
+#[test]
+fn dropped_world_stage_allows_suffix_rollback_and_clean_same_id_retry() {
+    let mut assets = Assets::load().unwrap();
+    let (mut owner, _) = SceneComposer::load(Limits::default(), &mut assets, vec![]).unwrap();
+    let first = empty_world(&mut assets);
+    owner.stage_world(&assets, &first).unwrap().commit();
+    let retained = assets.counts();
+    let mut rejected = empty_world(&mut assets);
+    let candidate_id = rejected.world;
+    let original = rejected.presentations[0].id;
+    rejected.presentations[0].id = first.presentations[0].id;
+    assert!(owner.stage_world(&assets, &rejected).is_err());
+    rejected.presentations[0].id = original;
+    drop(owner.stage_world(&assets, &rejected).unwrap());
+    assets.discard_registration_suffix(retained).unwrap();
+    assert!(assets.world(first.world).is_some());
+    assert!(assets.world(candidate_id).is_none());
+
+    let retry = empty_world(&mut assets);
+    assert_eq!(retry.world, candidate_id);
+    owner.stage_world(&assets, &retry).unwrap().commit();
+    let third = empty_world(&mut assets);
+    owner.stage_world(&assets, &third).unwrap().commit();
+    for frame in 1..=4 {
+        assert!(owner.begin_frame());
+        let packet = owner.finish_frame().unwrap();
+        assert_eq!(packet.frame, frame);
+        assert!(owner.recycle(packet).is_ok());
+    }
 }
 
 #[test]

@@ -71,6 +71,15 @@ pub struct ModelProfile {
     pub palette: Option<PaletteId>,
     pub image_settings: ImageSettings,
 }
+
+/// Cold world policies are explicit and independent of BSP decoding.
+pub struct WorldRegistration {
+    pub profile: ModelProfile,
+    pub source_palette: Option<PaletteId>,
+    pub presentation: qa_render::material::world_load::WorldPresentationProfile,
+    pub options: qa_render::material::world_load::WorldLoadOptions,
+    pub trace_rules: qa_world::collision::TraceRules,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelRegistrationId(u32);
 
@@ -486,8 +495,8 @@ pub struct ModelCatalog {
     bindings: Vec<ModelMaterials>,
     surfaces: Vec<SurfaceMaterials>,
     tags: Vec<TaggedOrientation>,
-    worlds: Box<[IndexSpan]>,
-    inline: Box<[RegisteredInline]>,
+    worlds: Vec<IndexSpan>,
+    inline: Vec<RegisteredInline>,
     capacity: ModelCapacity,
     limits: ModelLimits,
     pub diagnostics: Vec<ModelDiagnostic>,
@@ -520,6 +529,8 @@ struct RegistrationCheckpoint {
     shader_bindings: usize,
     skins: usize,
     diagnostics: usize,
+    worlds: usize,
+    inline_count: usize,
     file: Option<ModelCheckpoint>,
     shader_index: Option<(NameId, Option<u32>)>,
     shader: Option<ShaderCheckpoint>,
@@ -631,6 +642,8 @@ impl RegistrationCheckpoint {
             shader_bindings: catalog.shader_bindings.len(),
             skins: catalog.skins.len(),
             diagnostics: catalog.diagnostics.len(),
+            worlds: catalog.worlds.len(),
+            inline_count: catalog.inline.len(),
             file: file_name.map(|name| {
                 let profiles = catalog.models[name.0 as usize];
                 ModelCheckpoint {
@@ -668,6 +681,8 @@ impl RegistrationCheckpoint {
         catalog.bindings.truncate(self.bindings);
         catalog.surfaces.truncate(self.surfaces);
         catalog.tags.truncate(self.tags);
+        catalog.worlds.truncate(self.worlds);
+        catalog.inline.truncate(self.inline_count);
         if matches!(mode, RegistrationRollback::Retry) {
             catalog.registrations.truncate(self.registrations);
             catalog.shaders.truncate(self.shaders);
@@ -991,6 +1006,105 @@ impl ModelAssets {
                 checkpoint
                     .rollback(self, rollback)
                     .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Load one world through the shared BSP boundary and stage caller-owned
+    /// cold state before the backend commits its appended asset prefix.
+    pub fn prepare_world<T>(
+        &mut self,
+        vfs: &Vfs,
+        geometry: &mut qa_world::collision::CollisionStore,
+        input: crate::map::MapInput,
+        registration: WorldRegistration,
+        stage: impl FnOnce(
+            ModelView<'_>,
+            &qa_world::collision::CollisionStore,
+            &crate::map::LoadedMap,
+        ) -> Result<T, String>,
+        prepare: impl FnOnce(&Assets) -> Result<(), String>,
+    ) -> Result<(crate::map::LoadedMap, T, AssetCounts), String> {
+        if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
+            return Err("world registration requires a published resource prefix".to_owned());
+        }
+        let WorldRegistration {
+            profile,
+            source_palette,
+            presentation,
+            options,
+            trace_rules,
+        } = registration;
+        if !self
+            .catalog
+            .profiles
+            .iter()
+            .any(|entry| entry.profile == profile)
+            || presentation.rules != profile.rules
+            || presentation.indexed_palette != profile.palette
+            || presentation.image_settings != profile.image_settings
+        {
+            return Err("world registration source/profile mismatch".to_owned());
+        }
+        let checkpoint = RegistrationCheckpoint::capture(
+            self,
+            &RendererRequest {
+                name: input.virtual_path.as_bytes(),
+                source: profile.source_rules,
+                kind: RendererRegistration::Model,
+                world: None,
+            },
+        )?;
+        let hulls = input.native_source.lineage() == qa_formats::entities::EntitySyntax::Quake;
+        let mut created = None;
+        let result = (|| {
+            let loaded = input.load(
+                vfs,
+                &mut self.assets,
+                geometry,
+                source_palette,
+                &[presentation],
+                options,
+            )?;
+            created = Some(loaded.collision);
+            if hulls && trace_rules.hull_shape == qa_world::collision::HullShape::ExactBox {
+                geometry
+                    .prepare_hull_positions(loaded.collision, Default::default())
+                    .map_err(|error| format!("world trace capability: {error:?}"))?;
+            }
+            append_inline_bindings(
+                &self.assets,
+                &mut self.catalog.worlds,
+                &mut self.catalog.inline,
+                loaded.render.world,
+                self.catalog.limits,
+            )?;
+            self.catalog.capacity.inline_bindings = self.catalog.inline.len();
+            self.bind_loaded_world(
+                &loaded.virtual_path,
+                loaded.render.world,
+                Some(loaded.collision),
+                loaded.collision_bounds,
+            )?;
+            let staged = stage(self.view(), geometry, &loaded)?;
+            let counts = self.assets.counts();
+            self.validate_admission(counts)
+                .map_err(|error| format!("world publication: {error:?}"))?;
+            prepare(&self.assets)?;
+            // Backend success is irreversible. Every fallible owner and caller
+            // check has completed before this infallible publication.
+            self.apply_admission(counts);
+            Ok((loaded, staged, counts))
+        })();
+        match result {
+            Ok(ready) => Ok(ready),
+            Err(error) => {
+                let rolled_back = checkpoint.rollback(self, RegistrationRollback::Retry);
+                if let Some(created) = created {
+                    geometry.remove(created);
+                }
+                rolled_back.map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
                 Err(error)
             }
         }
@@ -2511,42 +2625,54 @@ fn inline_bindings(
     assets: &Assets,
     worlds: impl IntoIterator<Item = WorldId>,
     limits: ModelLimits,
-) -> Result<(Box<[IndexSpan]>, Box<[RegisteredInline]>), String> {
-    let mut ranges = vec![IndexSpan::default(); assets.worlds().len()].into_boxed_slice();
+) -> Result<(Vec<IndexSpan>, Vec<RegisteredInline>), String> {
+    let mut ranges = vec![IndexSpan::default(); assets.worlds().len()];
     let mut inline = Vec::new();
     for id in worlds {
-        let range = ranges
-            .get_mut(id.0 as usize)
-            .ok_or("inline model world handle")?;
-        if range.count != 0 {
-            continue;
-        }
-        let geometry = assets
-            .world(id)
-            .ok_or("inline model world handle")?
-            .geometry();
-        let next = inline
-            .len()
-            .checked_add(geometry.models.len())
-            .filter(|&count| count <= limits.inline_models && count <= u32::MAX as usize)
-            .ok_or("inline model capacity")?;
-        let first = inline.len() as u32;
-        for (index, model) in geometry.models.iter().enumerate() {
-            inline.push(RegisteredInline {
-                binding: InlineBinding {
-                    world: id,
-                    index: index as u32,
-                    surfaces: model.surfaces,
-                },
-                handle: None,
-            });
-        }
-        *range = IndexSpan {
-            first,
-            count: (next - first as usize) as u32,
-        };
+        append_inline_bindings(assets, &mut ranges, &mut inline, id, limits)?;
     }
-    Ok((ranges, inline.into_boxed_slice()))
+    Ok((ranges, inline))
+}
+
+fn append_inline_bindings(
+    assets: &Assets,
+    ranges: &mut Vec<IndexSpan>,
+    inline: &mut Vec<RegisteredInline>,
+    id: WorldId,
+    limits: ModelLimits,
+) -> Result<(), String> {
+    let geometry = assets
+        .world(id)
+        .ok_or("inline model world handle")?
+        .geometry();
+    if ranges
+        .get(id.0 as usize)
+        .is_some_and(|range| range.count != 0)
+    {
+        return Ok(());
+    }
+    let next = inline
+        .len()
+        .checked_add(geometry.models.len())
+        .filter(|&count| count <= limits.inline_models && count <= u32::MAX as usize)
+        .ok_or("inline model capacity")?;
+    ranges.resize(assets.worlds().len(), IndexSpan::default());
+    let first = inline.len() as u32;
+    for (index, model) in geometry.models.iter().enumerate() {
+        inline.push(RegisteredInline {
+            binding: InlineBinding {
+                world: id,
+                index: index as u32,
+                surfaces: model.surfaces,
+            },
+            handle: None,
+        });
+    }
+    ranges[id.0 as usize] = IndexSpan {
+        first,
+        count: (next - first as usize) as u32,
+    };
+    Ok(())
 }
 
 fn validate_model(model: &Model<'_>) -> Result<(), String> {
