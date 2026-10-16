@@ -24,15 +24,14 @@ struct Target {
     software_waterwarp: qa_console::cvars::View,
 }
 impl Target {
-    fn world_presentation<'a>(
+    fn world_presentation(
         &self,
-        scenes: &'a [Option<super::WorldScene>],
+        resources: ModelView<'_>,
         world: WorldId,
-    ) -> Option<&'a qa_render::material::world_load::LoadedWorldPresentation> {
-        super::world_presentation(
-            scenes,
+    ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
+        resources.world_presentation(
             world,
-            self.profile,
+            Some(self.profile),
             self.world
                 .filter(|&(selected, _)| selected == world)
                 .map(|(_, presentation)| presentation),
@@ -63,12 +62,15 @@ impl SceneRole {
     pub(crate) fn registration_world_available(
         &self,
         composer: Option<&SceneComposer>,
+        resources: Option<ModelView<'_>>,
         world: WorldId,
     ) -> bool {
-        let (Some(target), Some(composer)) = (self.target.as_ref(), composer) else {
+        let (Some(target), Some(composer), Some(resources)) =
+            (self.target.as_ref(), composer, resources)
+        else {
             return false;
         };
-        target.world_presentation(&composer.scenes, world).is_some()
+        composer.has_world(world) && target.world_presentation(resources, world).is_some()
     }
 
     pub(crate) fn configure(
@@ -185,10 +187,14 @@ impl SceneService for SceneBorrow<'_> {
             let Some(world) = world else {
                 return Some(0);
             };
-            if !self
-                .role
-                .registration_world_available(self.composer.as_deref(), world)
-            {
+            if !self.role.registration_world_available(
+                self.composer.as_deref(),
+                Some(ModelView {
+                    assets: self.assets?,
+                    catalog: models,
+                }),
+                world,
+            ) {
                 return Some(0);
             }
         }
@@ -236,6 +242,10 @@ impl SceneService for SceneBorrow<'_> {
         let Some(composer) = self.composer.as_deref_mut() else {
             return false;
         };
+        let inline = (submitted.kind == EntityKind::Model)
+            .then(|| self.models?.renderer_inline(submitted.model))
+            .flatten()
+            .map(|binding| (binding, composer.has_world(binding.world)));
         let Some(frame) = composer.frame.as_mut() else {
             return false;
         };
@@ -255,8 +265,16 @@ impl SceneService for SceneBorrow<'_> {
                 .unwrap_or(qa_render::MaterialId(0))
         });
         if submitted.kind == EntityKind::Model {
-            if let Some(binding) = models.renderer_inline(submitted.model) {
-                let Some(presentation) = target.world_presentation(&composer.scenes, binding.world)
+            if let Some((binding, world_present)) = inline {
+                let Some(presentation) = target
+                    .world_presentation(
+                        ModelView {
+                            assets,
+                            catalog: models,
+                        },
+                        binding.world,
+                    )
+                    .filter(|_| world_present)
                 else {
                     return frame.reject_submission();
                 };
@@ -415,6 +433,10 @@ impl SceneService for SceneBorrow<'_> {
             .contains(qa_core::primitives::PlayerViewFlags::NO_WORLD_MODEL);
         let selected_world = self.selected_world();
         let assets = self.assets.ok_or(CallError::Geometry)?;
+        let resources = ModelView {
+            assets,
+            catalog: self.models.ok_or(CallError::Geometry)?,
+        };
         let target = self.role.target.as_ref().ok_or(CallError::Geometry)?;
         let composer = self.composer.as_deref_mut().ok_or(CallError::Geometry)?;
         let local = view.refdef.viewport;
@@ -430,7 +452,7 @@ impl SceneService for SceneBorrow<'_> {
             .ok_or(CallError::Geometry)?;
         let frame = composer.frame.as_mut().ok_or(CallError::Geometry)?;
         let modulate = selected_world
-            .and_then(|world| target.world_presentation(&composer.scenes, world))
+            .and_then(|world| target.world_presentation(resources, world))
             .map_or(1., |entry| entry.profile.q2_modulate);
         let point_view = selected_world.zip(target.seat).and_then(|(world, seat)| {
             composer
@@ -456,7 +478,7 @@ impl SceneService for SceneBorrow<'_> {
             if view.world && !view.refdef.hyperspace {
                 let world_id = selected_world.ok_or(CallError::Geometry)?;
                 let presentation = target
-                    .world_presentation(&composer.scenes, world_id)
+                    .world_presentation(resources, world_id)
                     .ok_or(CallError::Geometry)?
                     .id;
                 let seat = target.seat.ok_or(CallError::Geometry)?;

@@ -309,12 +309,14 @@ impl FrameHost {
             if world != selected || world.collision.is_none() {
                 return None;
             }
+            if !self.runtime.scene.as_ref()?.has_world(world.render) {
+                return None;
+            }
             let presentation =
-                self.runtime
-                    .scene
-                    .as_ref()?
-                    .world_presentation(world.render, profile, None)?;
-            Some((profile, world, *presentation))
+                owner
+                    .view()
+                    .world_presentation(world.render, Some(profile), None)?;
+            Some((profile, world, presentation))
         })();
         if let Some((profile, world, presentation)) = cached {
             self.activate_received_world(
@@ -444,9 +446,10 @@ impl FrameHost {
                 if world.collision.is_none() {
                     return Err("CLIENT world has no collision model".to_owned());
                 }
-                if let Some(presentation) = scene
-                    .world_presentation(world.render, profile, None)
-                    .copied()
+                if let Some(presentation) = owner
+                    .view()
+                    .world_presentation(world.render, Some(profile), None)
+                    .filter(|_| scene.has_world(world.render))
                 {
                     return Ok((profile, world, presentation));
                 }

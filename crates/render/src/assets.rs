@@ -1016,16 +1016,35 @@ impl Assets {
         result
     }
 
-    pub(crate) fn set_world_presentation_profile(
+    /// Attach the caller's presentation policies to existing numeric world
+    /// bindings. Published metadata is immutable; repeated registration agrees.
+    pub fn register_world_presentation_metadata(
         &mut self,
-        id: WorldPresentationId,
-        profile: crate::material::world_load::WorldPresentationProfile,
-        defaults: crate::material::world_load::PresentationDefaults,
+        world: WorldId,
+        entries: &[crate::material::world_load::LoadedWorldPresentation],
     ) -> Result<(), &'static str> {
-        self.presentations
-            .get_mut(id.0 as usize)
-            .ok_or("missing world presentation")?
-            .profile = Some((profile, defaults));
+        let registered = self.world(world).ok_or("missing world")?;
+        for (index, entry) in entries.iter().enumerate() {
+            if !registered.presentations().contains(&entry.id)
+                || self
+                    .world_presentation(entry.id)
+                    .is_none_or(|presentation| presentation.world() != world)
+            {
+                return Err("world presentation does not belong to world");
+            }
+            if self
+                .world_presentation_registration(entry.id)
+                .is_some_and(|current| current != *entry)
+                || entries[..index]
+                    .iter()
+                    .any(|previous| previous.id == entry.id && previous != entry)
+            {
+                return Err("world presentation metadata changed");
+            }
+        }
+        for entry in entries {
+            self.presentations[entry.id.0 as usize].profile = Some((entry.profile, entry.defaults));
+        }
         Ok(())
     }
 

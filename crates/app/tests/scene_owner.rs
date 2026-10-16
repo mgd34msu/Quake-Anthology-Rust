@@ -83,11 +83,65 @@ fn empty_world(assets: &mut Assets) -> LoadedWorld {
 }
 
 #[test]
+fn in_memory_world_metadata_is_adopted_once_and_stage_requires_that_same_registration() {
+    let mut assets = Assets::load().unwrap();
+    let first = empty_world(&mut assets);
+    let world = first.world;
+    let entry = first.presentations[0];
+    assert!(assets.world_presentation_registration(entry.id).is_none());
+    let (mut owner, _) = SceneComposer::load(Limits::default(), &mut assets, vec![first]).unwrap();
+    assert_eq!(
+        assets.world_presentation_registration(entry.id),
+        Some(entry)
+    );
+    let mut changed = entry;
+    changed.profile.q2_modulate = 2.;
+    assert!(
+        assets
+            .register_world_presentation_metadata(world, &[changed])
+            .is_err()
+    );
+    assert_eq!(
+        assets.world_presentation_registration(entry.id),
+        Some(entry)
+    );
+
+    let second = empty_world(&mut assets);
+    let candidate = second.presentations[0];
+    assert!(owner.stage_world(&assets, &second).is_err());
+    assert!(
+        assets
+            .register_world_presentation_metadata(second.world, &[candidate, entry])
+            .is_err()
+    );
+    assert!(
+        assets
+            .world_presentation_registration(candidate.id)
+            .is_none()
+    );
+    assets
+        .register_world_presentation_metadata(second.world, &second.presentations)
+        .unwrap();
+    let mut inconsistent = second;
+    inconsistent.presentations[0].defaults.identity_light = 0.5;
+    assert!(owner.stage_world(&assets, &inconsistent).is_err());
+    inconsistent.presentations[0] = candidate;
+    owner.stage_world(&assets, &inconsistent).unwrap().commit();
+    assert!(owner.begin_frame());
+    let packet = owner.finish_frame().unwrap();
+    assert_eq!(packet.frame, 1);
+    assert!(owner.recycle(packet).is_ok());
+}
+
+#[test]
 fn cold_world_stage_waits_for_the_existing_frame_and_both_consumers() {
     let mut assets = Assets::load().unwrap();
     let first = empty_world(&mut assets);
     let (mut owner, _) = SceneComposer::load(Limits::default(), &mut assets, vec![first]).unwrap();
     let second = empty_world(&mut assets);
+    assets
+        .register_world_presentation_metadata(second.world, &second.presentations)
+        .unwrap();
     assert!(owner.begin_frame());
     assert!(owner.stage_world(&assets, &second).is_err());
     let first_packet = owner.finish_frame().unwrap();
@@ -105,8 +159,8 @@ fn cold_world_stage_waits_for_the_existing_frame_and_both_consumers() {
     let packet = owner.finish_frame().unwrap();
     assert_eq!(packet.frame, 3);
     assert!(owner.recycle(packet).is_ok());
-    // Existing worlds now accept staged presentation metadata as well. Dropping
-    // that candidate must preserve the same command-list owner and frame count.
+    // Existing worlds stage frontend capacity only. Dropping that candidate
+    // preserves the same command-list owner and frame count.
     drop(owner.stage_world(&assets, &second).unwrap());
     assert!(owner.begin_frame());
     let packet = owner.finish_frame().unwrap();
@@ -119,9 +173,15 @@ fn dropped_world_stage_allows_suffix_rollback_and_clean_same_id_retry() {
     let mut assets = Assets::load().unwrap();
     let (mut owner, _) = SceneComposer::load(Limits::default(), &mut assets, vec![]).unwrap();
     let first = empty_world(&mut assets);
+    assets
+        .register_world_presentation_metadata(first.world, &first.presentations)
+        .unwrap();
     owner.stage_world(&assets, &first).unwrap().commit();
     let retained = assets.counts();
     let mut rejected = empty_world(&mut assets);
+    assets
+        .register_world_presentation_metadata(rejected.world, &rejected.presentations)
+        .unwrap();
     let candidate_id = rejected.world;
     let original = rejected.presentations[0].id;
     rejected.presentations[0].id = first.presentations[0].id;
@@ -133,9 +193,15 @@ fn dropped_world_stage_allows_suffix_rollback_and_clean_same_id_retry() {
     assert!(assets.world(candidate_id).is_none());
 
     let retry = empty_world(&mut assets);
+    assets
+        .register_world_presentation_metadata(retry.world, &retry.presentations)
+        .unwrap();
     assert_eq!(retry.world, candidate_id);
     owner.stage_world(&assets, &retry).unwrap().commit();
     let third = empty_world(&mut assets);
+    assets
+        .register_world_presentation_metadata(third.world, &third.presentations)
+        .unwrap();
     owner.stage_world(&assets, &third).unwrap().commit();
     for frame in 1..=4 {
         assert!(owner.begin_frame());

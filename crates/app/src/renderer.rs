@@ -240,7 +240,6 @@ enum Backend {
 }
 struct WorldScene {
     views: [WorldView; SeatId::COUNT],
-    presentations: Box<[qa_render::material::world_load::LoadedWorldPresentation]>,
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn light_view_entities(
@@ -322,17 +321,7 @@ pub struct SceneComposer {
 /// succeeds. Dropping this value publishes no world or arena replacement.
 pub struct SceneWorldAppend<'a> {
     frontend: qa_render::scene::FrontEndCapacity<'a>,
-    action: SceneWorldAction<'a>,
-}
-enum SceneWorldAction<'a> {
-    World {
-        scenes: &'a mut Vec<Option<WorldScene>>,
-        scene: WorldScene,
-    },
-    Presentations {
-        target: &'a mut Box<[qa_render::material::world_load::LoadedWorldPresentation]>,
-        candidate: Box<[qa_render::material::world_load::LoadedWorldPresentation]>,
-    },
+    append: Option<(&'a mut Vec<Option<WorldScene>>, WorldScene)>,
 }
 impl SceneWorldAppend<'_> {
     pub fn limits(&self) -> Limits {
@@ -341,9 +330,8 @@ impl SceneWorldAppend<'_> {
 
     pub fn commit(self) {
         self.frontend.commit();
-        match self.action {
-            SceneWorldAction::World { scenes, scene } => scenes.push(Some(scene)),
-            SceneWorldAction::Presentations { target, candidate } => *target = candidate,
+        if let Some((scenes, scene)) = self.append {
+            scenes.push(Some(scene));
         }
     }
 }
@@ -389,34 +377,11 @@ fn scene_surface_limits(mut limits: Limits, surfaces: usize) -> Result<Limits, S
     Ok(limits)
 }
 
-fn world_presentation(
-    scenes: &[Option<WorldScene>],
-    world: qa_render::world::WorldId,
-    profile: crate::model_assets::ModelProfile,
-    selected: Option<qa_render::world::WorldPresentationId>,
-) -> Option<&qa_render::material::world_load::LoadedWorldPresentation> {
-    let scene = scenes.get(world.0 as usize)?.as_ref()?;
-    if let Some(selected) = selected {
-        return scene
-            .presentations
-            .iter()
-            .find(|entry| entry.id == selected);
-    }
-    scene.presentations.iter().find(|entry| {
-        entry.profile.rules == profile.rules
-            && entry.profile.indexed_palette == profile.palette
-            && entry.profile.image_settings == profile.image_settings
-    })
-}
-
 impl SceneComposer {
-    pub(crate) fn world_presentation(
-        &self,
-        world: qa_render::world::WorldId,
-        profile: crate::model_assets::ModelProfile,
-        selected: Option<qa_render::world::WorldPresentationId>,
-    ) -> Option<&qa_render::material::world_load::LoadedWorldPresentation> {
-        world_presentation(&self.scenes, world, profile, selected)
+    pub(crate) fn has_world(&self, world: qa_render::world::WorldId) -> bool {
+        self.scenes
+            .get(world.0 as usize)
+            .is_some_and(Option::is_some)
     }
 
     pub fn asset_stage_ready(&mut self) -> bool {
@@ -487,6 +452,7 @@ impl SceneComposer {
             (0..assets.worlds().len()).map(|_| None).collect();
         let mut max_surfaces = 0usize;
         for loaded in worlds {
+            assets.register_world_presentation_metadata(loaded.world, &loaded.presentations)?;
             let world = assets.world(loaded.world).ok_or("missing loaded world")?;
             let index = loaded.world.0 as usize;
             if scenes[index].is_some() {
@@ -501,7 +467,6 @@ impl SceneComposer {
             max_surfaces = max_surfaces.max(world.visibility().surface_count());
             scenes[index] = Some(WorldScene {
                 views: std::array::from_fn(|_| WorldView::load(world)),
-                presentations: loaded.presentations,
             });
         }
         if scenes.iter().any(Option::is_none) {
@@ -566,8 +531,9 @@ impl SceneComposer {
         if loaded.presentations.is_empty()
             || loaded.presentations.iter().any(|entry| {
                 assets
-                    .world_presentation(entry.id)
-                    .is_none_or(|presentation| presentation.world() != loaded.world)
+                    .world_presentation_registration(entry.id)
+                    .is_none_or(|presentation| presentation != *entry)
+                    || !world.presentations().contains(&entry.id)
             })
         {
             return Err("invalid appended world presentation".to_owned());
@@ -575,37 +541,20 @@ impl SceneComposer {
         let limits =
             scene_surface_limits(self.frontend.limits(), world.visibility().surface_count())?;
         let frontend = self.frontend.stage_capacity(limits)?;
-        let action = if append_world {
+        let append = if append_world {
             self.scenes
                 .try_reserve(1)
                 .map_err(|_| "scene world capacity".to_owned())?;
-            SceneWorldAction::World {
-                scenes: &mut self.scenes,
-                scene: WorldScene {
+            Some((
+                &mut self.scenes,
+                WorldScene {
                     views: std::array::from_fn(|_| WorldView::load(world)),
-                    presentations: loaded.presentations.clone(),
                 },
-            }
+            ))
         } else {
-            let index = loaded.world.0 as usize;
-            let target = &mut self
-                .scenes
-                .get_mut(index)
-                .and_then(Option::as_mut)
-                .ok_or("missing staged scene world")?
-                .presentations;
-            let mut presentations = target.to_vec();
-            for &entry in &loaded.presentations {
-                if !presentations.iter().any(|existing| existing.id == entry.id) {
-                    presentations.push(entry);
-                }
-            }
-            SceneWorldAction::Presentations {
-                target,
-                candidate: presentations.into_boxed_slice(),
-            }
+            None
         };
-        Ok(SceneWorldAppend { frontend, action })
+        Ok(SceneWorldAppend { frontend, append })
     }
 
     pub fn frame_mut(&mut self) -> Option<&mut qa_render::scene::Frame> {
@@ -924,6 +873,14 @@ impl Renderer {
                     rejected += 1;
                     continue;
                 };
+                let Some(presentation) = resources.world_presentation(
+                    client.world,
+                    None,
+                    Some(client.world_presentation),
+                ) else {
+                    rejected += 1;
+                    continue;
+                };
                 let mut refdef = view_refdef(*client, viewport, self.kind);
                 if let Some(hud) = hud[seat] {
                     self.sample.hud +=
@@ -981,11 +938,7 @@ impl Renderer {
                     !no_world,
                     client.lighting_scales,
                     Some(&mut scene.views[seat]),
-                    scene
-                        .presentations
-                        .iter()
-                        .find(|entry| entry.id == client.world_presentation)
-                        .map_or(1., |entry| entry.profile.q2_modulate),
+                    presentation.profile.q2_modulate,
                 );
                 let rendered = if no_world {
                     frame.render_scene(refdef, hidden_areas, resources.assets)

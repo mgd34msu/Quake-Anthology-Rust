@@ -107,7 +107,7 @@ impl Default for WorldLoadOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PresentationDefaults {
     pub software_waterwarp: bool,
     pub cpu: CpuPresentation,
@@ -171,7 +171,7 @@ impl WorldPresentationProfile {
         }
     }
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoadedWorldPresentation {
     pub id: WorldPresentationId,
     pub profile: WorldPresentationProfile,
@@ -576,7 +576,14 @@ pub fn load_world(
         .to_vec();
     for ((&id, &profile), &defaults) in ids.iter().zip(&distinct).zip(&defaults) {
         assets
-            .set_world_presentation_profile(id, profile, defaults)
+            .register_world_presentation_metadata(
+                world,
+                &[LoadedWorldPresentation {
+                    id,
+                    profile,
+                    defaults,
+                }],
+            )
             .map_err(WorldMaterialError::Boundary)?;
     }
     assets
@@ -647,7 +654,14 @@ pub fn append_world_presentation(
             .append_world_presentation(world, &bindings)
             .map_err(WorldMaterialError::Boundary)?;
         assets
-            .set_world_presentation_profile(id, profile, defaults)
+            .register_world_presentation_metadata(
+                world,
+                &[LoadedWorldPresentation {
+                    id,
+                    profile,
+                    defaults,
+                }],
+            )
             .map_err(WorldMaterialError::Boundary)?;
         Ok(LoadedWorld {
             world,

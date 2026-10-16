@@ -558,6 +558,43 @@ pub struct ModelView<'a> {
     pub assets: &'a Assets,
     pub catalog: &'a ModelCatalog,
 }
+impl ModelView<'_> {
+    pub fn world_presentation(
+        self,
+        world: WorldId,
+        profile: Option<ModelProfile>,
+        selected: Option<qa_render::world::WorldPresentationId>,
+    ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
+        let admitted = self.catalog.admitted_assets?;
+        if world.0 as usize >= admitted.worlds {
+            return None;
+        }
+        let world = self.assets.world(world)?;
+        let presentation = |id: qa_render::world::WorldPresentationId| {
+            if id.0 as usize >= admitted.presentations {
+                return None;
+            }
+            self.assets.world_presentation_registration(id)
+        };
+        if let Some(selected) = selected {
+            return if world.presentations().contains(&selected) {
+                presentation(selected)
+            } else {
+                None
+            };
+        }
+        let profile = profile?;
+        world
+            .presentations()
+            .iter()
+            .filter_map(|&id| presentation(id))
+            .find(|entry| {
+                entry.profile.rules == profile.rules
+                    && entry.profile.indexed_palette == profile.palette
+                    && entry.profile.image_settings == profile.image_settings
+            })
+    }
+}
 
 struct RegistrationCheckpoint {
     assets: AssetCounts,

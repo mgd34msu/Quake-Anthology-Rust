@@ -1265,8 +1265,11 @@ fn operation(
                     qa_compat::services::RendererRegistration::Model
                 ) && request.name.as_bytes().starts_with(b"*")
                     && !request.world.is_some_and(|world| {
-                        row.scene_role
-                            .registration_world_available(host.runtime.scene.as_ref(), world)
+                        row.scene_role.registration_world_available(
+                            host.runtime.scene.as_ref(),
+                            host.runtime.model_assets.as_ref().map(|owner| owner.view()),
+                            world,
+                        )
                     })
                 {
                     return Err("missing inline model presentation".to_owned());

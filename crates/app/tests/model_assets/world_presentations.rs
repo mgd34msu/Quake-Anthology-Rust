@@ -131,6 +131,16 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
         .publish_admission(cpu.admitted_assets().unwrap())
         .unwrap();
     owner.end_initial_registration();
+    assert_eq!(
+        owner.view().world_presentation(world, Some(profile), None),
+        Some(first_presentation)
+    );
+    assert!(
+        owner
+            .view()
+            .world_presentation(world, None, Some(other_presentation.id))
+            .is_none()
+    );
     let original = draw_world(
         &mut cpu,
         owner.assets(),
@@ -206,7 +216,26 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
                 world,
                 selected,
                 presentation,
-                |view, loaded| scene.stage_world(view.assets, loaded),
+                |view, loaded| {
+                    assert_eq!(
+                        view.assets
+                            .world_presentation_registration(loaded.presentations[0].id),
+                        Some(loaded.presentations[0])
+                    );
+                    assert!(
+                        view.world_presentation(world, Some(selected), None)
+                            .is_none()
+                    );
+                    assert!(
+                        view.world_presentation(world, None, Some(loaded.presentations[0].id))
+                            .is_none()
+                    );
+                    assert_eq!(
+                        view.world_presentation(world, None, Some(first_presentation.id)),
+                        Some(first_presentation)
+                    );
+                    scene.stage_world(view.assets, loaded)
+                },
                 |assets, append| {
                     cpu.prepare_assets(assets, Some(append.limits()))
                         .map_err(str::to_owned)
@@ -220,6 +249,10 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             "late {target:?} reread a resource"
         );
         let published = loaded.presentations[0];
+        assert_eq!(
+            owner.view().world_presentation(world, Some(selected), None),
+            Some(published)
+        );
         assert_eq!(published.id.0 as usize, profile_counts.presentations);
         new_ids.push(published.id);
         assert_eq!(owner.assets().counts().models, initial.models);

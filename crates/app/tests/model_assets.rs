@@ -187,6 +187,14 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
                         .world(),
                     loaded.render.world
                 );
+                assert!(
+                    view.world_presentation(
+                        loaded.render.world,
+                        None,
+                        Some(loaded.render.presentations[0].id)
+                    )
+                    .is_none()
+                );
                 let append = scene.stage_world(view.assets, &loaded.render)?;
                 staged_called.set(true);
                 Ok((append, store.scratch()))
@@ -204,6 +212,14 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
     assert_eq!(cpu.admitted_assets(), Some(counts));
     assert_eq!(counts.worlds, initial.worlds + 1);
     assert_eq!(counts.presentations, initial.presentations + 1);
+    assert_eq!(
+        owner.view().world_presentation(
+            second.render.world,
+            Some(profile),
+            Some(second.render.presentations[0].id)
+        ),
+        Some(second.render.presentations[0])
+    );
     assert_eq!(owner.catalog().capacity().inline_bindings, 4);
     assert_eq!(
         owner.catalog().file_handle(b"maps/first.bsp"),
