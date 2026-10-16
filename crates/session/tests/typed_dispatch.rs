@@ -430,3 +430,81 @@ fn due_missing_functions_complete_the_typed_rejection_after_clearing_only_the_de
         Some(CallbackId(99))
     );
 }
+
+#[test]
+fn caller_owned_completion_keeps_qw_repetition_and_stops_on_rejection() {
+    let mut world = world(3);
+    let id = entity(&mut world, ModuleId(1));
+    let table = table(RuleSetId::QuakeWorld, &[100, 101]);
+    install(&mut world, &table);
+    schedule(&mut world, id, CallbackId(0), 0.5);
+    let mut admitted = Vec::new();
+    let result = qa_session::dispatch::run_think_with_rebind_and_completion(
+        &mut world,
+        &table,
+        id,
+        |_| {
+            Some(ThinkFrame::Seconds {
+                now: 0.5,
+                step: 0.25,
+            })
+        },
+        |world, current| world.entities.resolve(current).map(|_| current),
+        |world, outcome, call| {
+            let Outcome::Started { module, entry } = outcome else {
+                return false;
+            };
+            admitted.push((module, entry, call.entity()));
+            if entry == 100 {
+                schedule(world, call.entity(), CallbackId(1), 0.6);
+                true
+            } else {
+                false
+            }
+        },
+    );
+    assert_eq!((result.called, result.rejected), (1, 1));
+    assert_eq!(result.current_entity, Some(id));
+    assert_eq!(admitted, [(ModuleId(1), 100, id), (ModuleId(1), 101, id)]);
+    assert_eq!((world.starts, world.completions), (2, 0));
+    assert_eq!(world.entities.columns.next_think[id.slot as usize], None);
+}
+
+#[test]
+fn caller_owned_one_shot_completion_runs_before_lifetime_rebinding() {
+    let mut world = world(2);
+    let id = entity(&mut world, ModuleId(1));
+    let table = table(RuleSetId::Quake, &[100]);
+    install(&mut world, &table);
+    schedule(&mut world, id, CallbackId(0), 0.5);
+    let mut completed = false;
+    let result = qa_session::dispatch::call_think_once_with_completion(
+        &mut world,
+        &table,
+        id,
+        None,
+        ThinkTime::Seconds(0.5),
+        |world| {
+            let replacement = world.replacement.expect("completion must publish first");
+            world.entities.resolve(replacement).map(|_| replacement)
+        },
+        |world, outcome, call| {
+            let Outcome::Started { module, entry: 100 } = outcome else {
+                return false;
+            };
+            completed = true;
+            assert!(
+                world
+                    .entities
+                    .release(call.entity(), ThinkTime::Seconds(0.5))
+            );
+            world.replacement = Some(entity(world, module));
+            true
+        },
+    );
+    assert!(completed);
+    assert_eq!((result.called, result.rejected), (1, 0));
+    assert_eq!(result.current_entity, world.replacement);
+    assert!(world.entities.resolve(id).is_none());
+    assert_eq!((world.starts, world.completions), (1, 0));
+}

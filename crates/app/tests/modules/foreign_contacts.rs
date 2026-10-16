@@ -330,6 +330,7 @@ fn foreign_qc_touch_uses_recipient_clock_stable_alias_and_private_words() {
         Some(ThinkTime::Seconds(42.0)),
         false,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(
@@ -354,6 +355,7 @@ fn foreign_qc_touch_uses_recipient_clock_stable_alias_and_private_words() {
         Some(ThinkTime::Seconds(42.0)),
         false,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(inspect(&mut host, B, 4)[0], 123.0f32.to_bits());
@@ -379,6 +381,7 @@ fn foreign_contact_dedup_uses_invoking_batch_canonical_slots() {
         None,
         true,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     touch(
@@ -390,6 +393,7 @@ fn foreign_contact_dedup_uses_invoking_batch_canonical_slots() {
         None,
         true,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     let calls = host.module_counts(B).unwrap().calls;
@@ -402,6 +406,7 @@ fn foreign_contact_dedup_uses_invoking_batch_canonical_slots() {
         None,
         true,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(host.module_counts(B).unwrap().calls, calls);
@@ -548,6 +553,7 @@ fn qw_contact_dedup_keeps_captured_slot_when_callback_reuses_native_at_another_s
         None,
         true,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     let replacement = host
@@ -588,6 +594,7 @@ fn qw_contact_dedup_keeps_captured_slot_when_callback_reuses_native_at_another_s
         None,
         true,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(host.module_counts(A).unwrap().calls, calls);
@@ -647,6 +654,7 @@ fn foreign_impact_pins_weak_other_before_first_callback_retires_mover() {
         mover,
         obstacle,
         ThinkTime::Seconds(42.0),
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert!(host.runtime.server.entities.resolve(a).is_none());
@@ -686,6 +694,7 @@ fn foreign_impact_with_no_touch_ignores_full_recipient_alias_capacity() {
         mover,
         obstacle,
         ThinkTime::Seconds(42.0),
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     release(&mut host, held_a).unwrap();
@@ -724,6 +733,7 @@ fn foreign_impact_runs_mover_touch_when_no_touch_recipient_has_full_alias_capaci
         mover,
         obstacle,
         ThinkTime::Seconds(42.0),
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(
@@ -757,6 +767,7 @@ fn foreign_reciprocal_impact_rebinds_other_after_first_callback_reuses_native_ro
         mover,
         obstacle_ref,
         ThinkTime::Seconds(0.0),
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     let replacement = host
@@ -833,6 +844,7 @@ fn native_private_trigger_is_counted_without_hiding_later_qc_recipient() {
         TraceAccess::empty(),
         a,
         ThinkTime::Seconds(42.0),
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(host.module_counts(A).unwrap().unsupported_contacts, 1);
@@ -864,6 +876,7 @@ fn qc_contact_reads_published_native_body_without_importing_alias_back() {
         None,
         false,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(
@@ -906,7 +919,11 @@ fn rejected_prepared_foreign_touch_releases_its_alias_lease() {
     .unwrap()
     .unwrap();
     host.runtime.server.entities.columns.owner[b.slot as usize] = NATIVE;
-    assert!(prepared.invoke(&mut host).is_err());
+    assert!(
+        prepared
+            .invoke(&mut host, &mut crate::modules::Driver::cache_only())
+            .is_err()
+    );
     host.runtime.server.entities.columns.owner[b.slot as usize] = B;
     let native_capture = capture(&host, native).unwrap();
     let native = native_capture.reference().unwrap();
@@ -929,6 +946,7 @@ fn rejected_prepared_foreign_touch_releases_its_alias_lease() {
         None,
         false,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(
@@ -968,6 +986,7 @@ fn captured_retired_foreign_mover_keeps_weak_other_at_reciprocal_impact() {
             mover,
             obstacle,
             ThinkTime::Seconds(42.0),
+            &mut crate::modules::Driver::cache_only(),
         )
         .unwrap();
         let Some(super::super::ModuleResult::QuakeC(words)) =
@@ -1030,6 +1049,7 @@ fn impact_admits_anonymous_other_pose_and_skips_its_absent_native_callback() {
         mover,
         other,
         ThinkTime::Seconds(42.0),
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(
@@ -1082,7 +1102,11 @@ fn retired_anonymous_other_traps_on_read_without_retargeting_reused_common_slot(
         host.runtime.server.entities.resolve_reference(original),
         None
     );
-    assert!(prepared.invoke(&mut host).is_err());
+    assert!(
+        prepared
+            .invoke(&mut host, &mut crate::modules::Driver::cache_only())
+            .is_err()
+    );
     assert_eq!(host.module_counts(B).unwrap().traps, 1);
     let Program::QuakeC(qc) = &host.module_row(B).unwrap().request.program else {
         unreachable!()
@@ -1105,6 +1129,7 @@ fn retired_anonymous_other_traps_on_read_without_retargeting_reused_common_slot(
         None,
         false,
         false,
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(inspect(&mut host, B, 3), fresh_pose.0.map(f32::to_bits));
@@ -1127,6 +1152,7 @@ fn anonymous_published_callback_is_resolved_before_missing_native_self_is_counte
         mover,
         other,
         ThinkTime::Seconds(42.0),
+        &mut crate::modules::Driver::cache_only(),
     )
     .unwrap();
     assert_eq!(host.module_counts(A).unwrap().unsupported_contacts, 1);

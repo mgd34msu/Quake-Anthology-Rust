@@ -15,7 +15,7 @@ use qa_core::primitives::{
 use qa_session::{
     dispatch::{
         CallError, FunctionBinding, FunctionTable, PreparedNativeThink, ThinkFrame, ThinkWorld,
-        run_think_with_rebind,
+        run_think_with_rebind_and_completion,
     },
     timing::{Tick, TickRate},
 };
@@ -31,6 +31,7 @@ pub use clients::{ClientCommandError, ClientLifecycleInfo};
 mod cues;
 mod execution;
 mod input;
+pub use execution::Driver;
 use execution::ModuleDispatch;
 pub(crate) use execution::{ExecutionSlot, TraceAccess};
 mod map_start;
@@ -382,7 +383,7 @@ impl Modules {
     }
 }
 impl FrameHost {
-    pub(crate) fn retire_stale_modules(&mut self) {
+    pub(crate) fn retire_stale_modules(&mut self, driver: &mut crate::modules::Driver<'_>) {
         let count = self
             .modules
             .as_ref()
@@ -403,7 +404,7 @@ impl FrameHost {
                 row.state = State::Failed;
                 row.counts.rejected += 1;
             }
-            self.cleanup_failed_module(module);
+            self.cleanup_failed_module(module, driver);
         }
     }
 
@@ -417,9 +418,9 @@ impl FrameHost {
         row.failure_cleanup = true;
         true
     }
-    fn cleanup_failed_module(&mut self, module: ModuleId) {
+    fn cleanup_failed_module(&mut self, module: ModuleId, driver: &mut crate::modules::Driver<'_>) {
         if self.claim_failed_module(module) {
-            self.disconnect_module_recipients(module);
+            self.disconnect_module_recipients(module, driver);
             self.retire_module_state(module);
         }
     }
@@ -1166,7 +1167,21 @@ impl FrameHost {
         export: Export,
         time: ThinkTime,
     ) -> Result<(), CallError> {
-        self.call_module_command(module, export, time, Default::default())
+        self.call_module_export_with_driver(
+            module,
+            export,
+            time,
+            &mut crate::modules::Driver::cache_only(),
+        )
+    }
+    pub fn call_module_export_with_driver(
+        &mut self,
+        module: ModuleId,
+        export: Export,
+        time: ThinkTime,
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> Result<(), CallError> {
+        self.call_module_command(module, export, time, Default::default(), driver)
     }
 
     fn call_module_command(
@@ -1175,6 +1190,7 @@ impl FrameHost {
         export: Export,
         time: ThinkTime,
         command: qa_core::primitives::CommandArgs<'_>,
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), CallError> {
         let row = self.module_row(module).ok_or(CallError::MissingModule)?;
         let entity = row.request.anchor;
@@ -1205,7 +1221,7 @@ impl FrameHost {
                 Argument::ClientNativeNumber => u64::from(startup()?.client_num),
             };
         }
-        self.call_module(
+        self.call_module_with_driver(
             export.callback,
             CallbackCall::Export {
                 entity,
@@ -1214,11 +1230,19 @@ impl FrameHost {
                 client: export.client,
                 command,
             },
+            driver,
         )
     }
     /// Load-time startup or the frame's command phase uses the same entries.
     pub fn initialize_modules(&mut self, phase: Phase) {
-        self.module_lifecycle(Some(phase));
+        self.initialize_modules_with_driver(phase, &mut crate::modules::Driver::cache_only())
+    }
+    pub fn initialize_modules_with_driver(
+        &mut self,
+        phase: Phase,
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
+        self.module_lifecycle(Some(phase), driver);
     }
     /// Pending queued startup is not a completed registration boundary.
     pub fn registration_pending(&self, phase: Phase) -> Result<bool, String> {
@@ -1252,7 +1276,10 @@ impl FrameHost {
         source: &mut impl crate::host::FrameSource,
         timeout: std::time::Duration,
     ) -> Result<(), String> {
-        self.initialize_modules(Phase::Client);
+        self.initialize_modules_with_driver(
+            Phase::Client,
+            &mut Driver::new(source.asset_preparer()),
+        );
         let started = qa_platform::Stopwatch::start();
         while self.registration_pending(Phase::Client)? && !self.runtime.quit {
             if started.elapsed() >= timeout {
@@ -1264,10 +1291,13 @@ impl FrameHost {
     }
     /// Called for ordinary quit and frame-limit exit; repeating it is a no-op.
     pub fn shutdown_modules(&mut self) {
-        self.disconnect_module_clients();
-        self.module_lifecycle(None);
+        self.shutdown_modules_with_driver(&mut crate::modules::Driver::cache_only())
     }
-    fn module_lifecycle(&mut self, phase: Option<Phase>) {
+    pub fn shutdown_modules_with_driver(&mut self, driver: &mut crate::modules::Driver<'_>) {
+        self.disconnect_module_clients(driver);
+        self.module_lifecycle(None, driver);
+    }
+    fn module_lifecycle(&mut self, phase: Option<Phase>, driver: &mut crate::modules::Driver<'_>) {
         let shutdown = phase.is_none();
         let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
         for index in 0..count {
@@ -1294,21 +1324,33 @@ impl FrameHost {
                 // trapping or claiming resources from SERVER state.
                 continue;
             }
-            self.module_lifecycle_row(ModuleId(index as u16), shutdown);
+            self.module_lifecycle_row(ModuleId(index as u16), shutdown, driver);
         }
         self.update_console_policy(false);
     }
     /// Stop one module without stopping the shared frame loop or other providers.
     pub fn shutdown_module(&mut self, module: ModuleId) -> bool {
+        self.shutdown_module_with_driver(module, &mut crate::modules::Driver::cache_only())
+    }
+    pub fn shutdown_module_with_driver(
+        &mut self,
+        module: ModuleId,
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> bool {
         if self.module_state(module) != Some(State::Running) {
             return false;
         }
-        self.module_lifecycle_row(module, true);
+        self.module_lifecycle_row(module, true, driver);
         true
     }
-    fn module_lifecycle_row(&mut self, module: ModuleId, shutdown: bool) {
+    fn module_lifecycle_row(
+        &mut self,
+        module: ModuleId,
+        shutdown: bool,
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
         if shutdown {
-            self.disconnect_module_recipients(module);
+            self.disconnect_module_recipients(module, driver);
         }
         let Some(row) = self.module_row(module) else {
             return;
@@ -1320,14 +1362,20 @@ impl FrameHost {
         } else {
             LifecycleSequence::Prepare
         };
-        let result = self.module_sequence(module, sequence, time).and_then(|()| {
-            if shutdown {
-                return Ok(());
-            }
-            api.map_or(Ok(()), |api| self.check_module_api(module, api, time))
-                .and_then(|()| self.module_sequence(module, LifecycleSequence::Initialize, time))
-                .and_then(|()| self.initialize_quakec_map(module))
-        });
+        let result = self
+            .module_sequence(module, sequence, time, driver)
+            .and_then(|()| {
+                if shutdown {
+                    return Ok(());
+                }
+                api.map_or(Ok(()), |api| {
+                    self.check_module_api(module, api, time, driver)
+                })
+                .and_then(|()| {
+                    self.module_sequence(module, LifecycleSequence::Initialize, time, driver)
+                })
+                .and_then(|()| self.initialize_quakec_map(module, driver))
+            });
         if let Some(row) = self.module_row_mut(module) {
             if result.is_err() {
                 row.counts.rejected += 1;
@@ -1346,7 +1394,7 @@ impl FrameHost {
         if shutdown {
             self.retire_module_state(module);
         } else if result.is_err() {
-            self.cleanup_failed_module(module);
+            self.cleanup_failed_module(module, driver);
         }
     }
     fn check_module_api(
@@ -1354,8 +1402,9 @@ impl FrameHost {
         module: ModuleId,
         api: ApiCheck,
         time: ThinkTime,
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), CallError> {
-        self.call_module_export(module, api.export(), time)?;
+        self.call_module_export_with_driver(module, api.export(), time, driver)?;
         let row = self
             .module_row_mut(module)
             .ok_or(CallError::MissingModule)?;
@@ -1387,6 +1436,7 @@ impl FrameHost {
         module: ModuleId,
         sequence: LifecycleSequence,
         time: ThinkTime,
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), CallError> {
         let count = self
             .module_row(module)
@@ -1397,13 +1447,16 @@ impl FrameHost {
                 .and_then(|row| row.request.sequence(sequence).get(index))
                 .copied()
                 .ok_or(CallError::MissingModule)?;
-            self.call_module_export(module, export, time)?;
+            self.call_module_export_with_driver(module, export, time, driver)?;
         }
         Ok(())
     }
     pub fn client_modules(&mut self) {
-        self.initialize_modules(Phase::Client);
-        self.client_configurations();
+        self.client_modules_with_driver(&mut crate::modules::Driver::cache_only())
+    }
+    pub fn client_modules_with_driver(&mut self, driver: &mut crate::modules::Driver<'_>) {
+        self.initialize_modules_with_driver(Phase::Client, driver);
+        self.client_configurations(driver);
         // Init registers into these owners. Draw exports may use only the
         // published catalog and scene consumer, after registration completes.
         if self
@@ -1458,11 +1511,11 @@ impl FrameHost {
                 } else {
                     row.time(self.time)
                 };
-                invoke_frame(self, ModuleId(index as u16), time);
+                invoke_frame(self, ModuleId(index as u16), time, driver);
             }
         }
     }
-    fn client_configurations(&mut self) {
+    fn client_configurations(&mut self, driver: &mut crate::modules::Driver<'_>) {
         let team_chats_only = self
             .console
             .cvars
@@ -1500,7 +1553,7 @@ impl FrameHost {
                 None
             };
             if let Some(termination) = disconnected {
-                self.finish_client_termination(id, termination);
+                self.finish_client_termination(id, termination, driver);
             }
         }
     }
@@ -1509,6 +1562,14 @@ impl FrameHost {
         &mut self,
         callback: CallbackId,
         call: CallbackCall,
+    ) -> Result<(), CallError> {
+        self.call_module_with_driver(callback, call, &mut crate::modules::Driver::cache_only())
+    }
+    pub fn call_module_with_driver(
+        &mut self,
+        callback: CallbackId,
+        call: CallbackCall,
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), CallError> {
         let functions = Arc::clone(
             &self
@@ -1523,15 +1584,22 @@ impl FrameHost {
             .entities
             .resolve(call.entity())
             .map(|slot| self.runtime.server.entities.columns.owner[slot]);
-        let result = functions.invoke(self, callback, call);
+        let result = functions
+            .dispatch(self, callback, call)
+            .and_then(|outcome| {
+                driver
+                    .complete(self, outcome, call)
+                    .then_some(())
+                    .ok_or(CallError::Rejected)
+            });
         if let Some(module) = module {
-            self.cleanup_failed_module(module);
+            self.cleanup_failed_module(module, driver);
         }
         result
     }
 }
 
-fn frame(host: &mut FrameHost, tick: Tick) {
+fn frame(host: &mut FrameHost, tick: Tick, driver: &mut crate::modules::Driver<'_>) {
     let qa_session::timing::TickTarget::Provider(module) = tick.target else {
         return;
     };
@@ -1593,10 +1661,10 @@ fn frame(host: &mut FrameHost, tick: Tick) {
         qc.vm.frame_time(step);
     }
     if physics_due {
-        host.prepare_module_client_commands(module, step);
+        host.prepare_module_client_commands(module, step, driver);
     }
-    if physics_due && invoke_frame(host, module, time) && quakec {
-        quakec_entity_phase(host, module, time, step);
+    if physics_due && invoke_frame(host, module, time, driver) && quakec {
+        quakec_entity_phase(host, module, time, step, driver);
     }
     if let Some(row) = host.module_row_mut(module) {
         row.request.context.server_frame = tick.index;
@@ -1605,7 +1673,12 @@ fn frame(host: &mut FrameHost, tick: Tick) {
         }
     }
 }
-fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) -> bool {
+fn invoke_frame(
+    host: &mut FrameHost,
+    module: ModuleId,
+    time: ThinkTime,
+    driver: &mut crate::modules::Driver<'_>,
+) -> bool {
     let Some(row) = host.module_row(module) else {
         return false;
     };
@@ -1613,7 +1686,10 @@ fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) -> bool
         return false;
     }
     let export = row.request.frame;
-    if host.call_module_export(module, export, time).is_err() {
+    if host
+        .call_module_export_with_driver(module, export, time, driver)
+        .is_err()
+    {
         if let Some(row) = host.module_row_mut(module) {
             row.counts.rejected += 1;
         }
@@ -1625,7 +1701,13 @@ fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) -> bool
 
 /// Native motion belongs after StartFrame in the native edict-order pass.
 /// Each motion phase places the shared think dispatcher at its native position.
-fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, step: f64) {
+fn quakec_entity_phase(
+    host: &mut FrameHost,
+    module: ModuleId,
+    time: ThinkTime,
+    step: f64,
+    driver: &mut crate::modules::Driver<'_>,
+) {
     let Some(modules) = host.modules.as_ref() else {
         return;
     };
@@ -1648,7 +1730,7 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
             && let Some(id) = host.runtime.server.client_for_native(entity.native)
             && host.runtime.server.module_moves(id) == Some(entity.native)
         {
-            match clients::quakec::frame(host, module, id, time, step) {
+            match clients::quakec::frame(host, module, id, time, step, driver) {
                 Ok(true) => {}
                 Ok(false) => {
                     if let Some(row) = host.module_row_mut(module) {
@@ -1665,20 +1747,21 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
         }
         match next {
             Ok(Some(entity)) if entity.phase == Motion::Push => {
-                if motion::push(host, module, entity.entity, time, step).is_err()
+                if motion::push(host, module, entity.entity, time, step, driver).is_err()
                     && let Some(row) = host.module_row_mut(module)
                 {
                     row.counts.rejected += 1;
                 }
             }
             Ok(Some(entity)) if entity.phase == Motion::Step => {
-                let execution = motion::step_fall(host, module, entity.entity, time, step)
+                let execution = motion::step_fall(host, module, entity.entity, time, step, driver)
                     .and_then(|current| {
                         if let Some(current) = current
-                            && let Some(current) =
-                                entity_think(host, module, &functions, &entity, current, time, step)
+                            && let Some(current) = entity_think(
+                                host, module, &functions, &entity, current, time, step, driver,
+                            )
                         {
-                            motion::water_transition(host, module, current, time)?;
+                            motion::water_transition(host, module, current, time, driver)?;
                         }
                         Ok(())
                     });
@@ -1699,13 +1782,20 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
                         | Motion::FlyMissile
                 ) =>
             {
-                if let Some(current) =
-                    entity_think(host, module, &functions, &entity, entity.entity, time, step)
-                {
+                if let Some(current) = entity_think(
+                    host,
+                    module,
+                    &functions,
+                    &entity,
+                    entity.entity,
+                    time,
+                    step,
+                    driver,
+                ) {
                     let execution = match entity.phase {
                         Motion::Noclip => motion::noclip(host, module, current, motion_step),
                         Motion::Toss | Motion::Bounce | Motion::Fly | Motion::FlyMissile => {
-                            motion::toss(host, module, current, time, step)
+                            motion::toss(host, module, current, time, step, driver)
                         }
                         _ => Ok(()),
                     };
@@ -1741,8 +1831,9 @@ fn entity_think(
     current: EntityId,
     time: ThinkTime,
     step: f64,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Option<EntityId> {
-    let result = run_think_with_rebind(
+    let result = run_think_with_rebind_and_completion(
         host,
         functions,
         current,
@@ -1762,6 +1853,7 @@ fn entity_think(
                 .ok()
                 .flatten()
         },
+        |host, outcome, call| driver.complete(host, outcome, call),
     );
     if let Some(row) = host.module_row_mut(module) {
         row.counts.rejected += u64::from(result.rejected);

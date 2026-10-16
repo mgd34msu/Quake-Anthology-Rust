@@ -1535,3 +1535,6 @@ fn background_track_ordinals_publish_leased_paths_in_all_address_modes() {
         }
     }
 }
+
+#[path = "support/renderer_requests.rs"]
+mod renderer_requests;

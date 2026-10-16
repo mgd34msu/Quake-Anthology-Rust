@@ -1,7 +1,7 @@
 //! Cold model registration. Native config ordinals resolve through filenames;
 //! inline ordinals retain their explicit world and existing surface ranges.
 use qa_compat::services::{
-    CallError, LoadedWorldBinding, ModelLoader, ModelLookup, RendererRegistration,
+    CallError, LoadedWorldBinding, ModelLoader, ModelLookup, RendererRegistration, RendererRequest,
 };
 use qa_content::vfs::Vfs;
 use qa_core::names::{NameTable, canonical_path};
@@ -13,7 +13,8 @@ use qa_render::assets::{
     AssetCounts, ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture,
 };
 use qa_render::material::resources::{
-    ImageSettings, ImageUse, Images, ImagesState, IndexedTarget, ResourceError,
+    ImageRegistrationMark, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget,
+    ResourceError,
 };
 use qa_render::shader::{
     AlphaFunc, AlphaGen, Cull, DepthFunc, RgbGen, ShaderCatalog, ShaderDef, ShaderStage,
@@ -447,6 +448,141 @@ pub struct ModelView<'a> {
     pub assets: &'a Assets,
     pub catalog: &'a ModelCatalog,
 }
+
+struct RegistrationCheckpoint {
+    assets: AssetCounts,
+    names: usize,
+    capacity: ModelCapacity,
+    registrations: usize,
+    bindings: usize,
+    surfaces: usize,
+    tags: usize,
+    shaders: usize,
+    shader_bindings: usize,
+    skins: usize,
+    diagnostics: usize,
+    file: Option<(NameId, IndexSpan)>,
+    shader_index: Option<(NameId, Option<u32>)>,
+    skin_index: Option<(NameId, Option<u32>)>,
+    inline: Option<(usize, Option<NameId>)>,
+    images: Vec<Option<ImageRegistrationMark>>,
+}
+impl RegistrationCheckpoint {
+    fn capture(owner: &ModelAssets, request: &RendererRequest) -> Result<Self, String> {
+        let catalog = &owner.catalog;
+        let mut file_name = None;
+        let mut shader_index = None;
+        let mut skin_index = None;
+        let mut inline = None;
+        let raw = request.name.as_bytes();
+        match request.kind {
+            RendererRegistration::Model if raw.starts_with(b"*") => {
+                let world = request.world.ok_or("inline registration world")?;
+                let index =
+                    qa_core::text::inline_model_index(raw).ok_or("inline registration index")?;
+                let slot = inline_slot(&catalog.worlds, world, index)
+                    .ok_or("inline registration model")?;
+                inline = Some((slot, catalog.inline[slot].handle));
+                let key = format!("\0engine:inline/{}/{}", world.0, index);
+                file_name = catalog.names.find(key.as_bytes());
+            }
+            RendererRegistration::Model => {
+                let path = canonical_path(
+                    std::str::from_utf8(raw).map_err(|_| "model name is not UTF-8")?,
+                );
+                file_name = catalog.names.find(path.as_bytes());
+            }
+            RendererRegistration::Skin => {
+                let path =
+                    canonical_path(std::str::from_utf8(raw).map_err(|_| "skin name is not UTF-8")?);
+                skin_index = catalog
+                    .names
+                    .find_folded(path.as_bytes())
+                    .map(|group| (group, catalog.skin_indices[group.0 as usize]));
+            }
+            RendererRegistration::Shader { .. } => {
+                shader_index = catalog
+                    .names
+                    .find_folded(shader_key(raw))
+                    .map(|group| (group, catalog.shader_indices[group.0 as usize]));
+            }
+        }
+        let images = catalog
+            .profiles
+            .iter()
+            .map(|profile| match &profile.state {
+                Some(Ok(state)) => Ok(Some(state.registration_mark())),
+                Some(Err(_)) => Ok(None),
+                None => Err("model image state already borrowed".to_owned()),
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            assets: owner.assets.counts(),
+            names: catalog.names.len(),
+            capacity: catalog.capacity,
+            registrations: catalog.registrations.len(),
+            bindings: catalog.bindings.len(),
+            surfaces: catalog.surfaces.len(),
+            tags: catalog.tags.len(),
+            shaders: catalog.shaders.len(),
+            shader_bindings: catalog.shader_bindings.len(),
+            skins: catalog.skins.len(),
+            diagnostics: catalog.diagnostics.len(),
+            file: file_name
+                .filter(|name| matches!(catalog.files[name.0 as usize], ModelFile::Empty))
+                .map(|name| (name, catalog.models[name.0 as usize])),
+            shader_index,
+            skin_index,
+            inline,
+            images,
+        })
+    }
+
+    fn rollback(self, owner: &mut ModelAssets) -> Result<(), String> {
+        owner.assets.discard_registration_suffix(self.assets)?;
+        let catalog = &mut owner.catalog;
+        for (profile, mark) in catalog.profiles.iter_mut().zip(self.images) {
+            if let (Some(Ok(state)), Some(mark)) = (&mut profile.state, mark) {
+                state.rollback_registration(mark, self.assets.images);
+            }
+        }
+        catalog.registrations.truncate(self.registrations);
+        catalog.bindings.truncate(self.bindings);
+        catalog.surfaces.truncate(self.surfaces);
+        catalog.tags.truncate(self.tags);
+        catalog.shaders.truncate(self.shaders);
+        catalog.shader_bindings.truncate(self.shader_bindings);
+        catalog.skins.truncate(self.skins);
+        catalog.diagnostics.truncate(self.diagnostics);
+        // Names remain interned, including names admitted for surfaces/tags.
+        // Their aligned rows must remain present without rejected bindings.
+        for index in self.names..catalog.names.len() {
+            catalog.files[index] = ModelFile::Empty;
+            catalog.models[index] = IndexSpan::default();
+            catalog.shader_indices[index] = None;
+            catalog.skin_indices[index] = None;
+        }
+        if let Some((name, models)) = self.file {
+            catalog.files[name.0 as usize] = ModelFile::Empty;
+            catalog.models[name.0 as usize] = models;
+        }
+        if let Some((group, index)) = self.shader_index {
+            catalog.shader_indices[group.0 as usize] = index;
+        }
+        if let Some((group, index)) = self.skin_index {
+            catalog.skin_indices[group.0 as usize] = index;
+        }
+        if let Some((slot, handle)) = self.inline {
+            catalog.inline[slot].handle = handle;
+        }
+        catalog.capacity = ModelCapacity {
+            names: catalog.capacity.names,
+            name_bytes: catalog.capacity.name_bytes,
+            ..self.capacity
+        };
+        Ok(())
+    }
+}
 impl ModelAssets {
     pub fn new(
         mut assets: Assets,
@@ -593,9 +729,85 @@ impl ModelAssets {
         self.initial_registration = false;
     }
 
+    /// Register one late native request and publish it only after the backend
+    /// accepts the complete appended resource prefix.
+    pub fn prepare_registration(
+        &mut self,
+        vfs: &Vfs,
+        request: &RendererRequest,
+        profile: ModelProfile,
+        prepare: impl FnOnce(&Assets) -> Result<(), String>,
+    ) -> Result<(i32, AssetCounts), String> {
+        if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
+            return Err("late registration requires a published resource prefix".to_owned());
+        }
+        if request.name.as_bytes().is_empty() || request.name.as_bytes().len() >= 64 {
+            return Err("renderer registration name length".to_owned());
+        }
+        if profile.source_rules != request.source
+            || !self
+                .catalog
+                .profiles
+                .iter()
+                .any(|entry| entry.profile == profile)
+        {
+            return Err("renderer registration source/profile mismatch".to_owned());
+        }
+        let checkpoint = RegistrationCheckpoint::capture(self, request)?;
+        let result = (|| {
+            let raw = request.name.as_bytes();
+            let handle = match request.kind {
+                RendererRegistration::Model if raw.starts_with(b"*") => request
+                    .world
+                    .zip(qa_core::text::inline_model_index(raw))
+                    .ok_or(CallError::File)
+                    .and_then(|(world, index)| self.register_inline(world, index)),
+                RendererRegistration::Model => self.register_model(vfs, raw, request.source),
+                RendererRegistration::Skin => self.register_skin(vfs, raw, request.source),
+                RendererRegistration::Shader { mipmaps } => {
+                    self.register_shader(vfs, raw, request.source, mipmaps)
+                }
+            }
+            .map_err(|error| format!("renderer registration: {error:?}"))?;
+            if !self
+                .catalog
+                .renderer_candidate(request.kind, handle, profile)
+            {
+                return Err("renderer registration unavailable for invoking profile".to_owned());
+            }
+            let counts = self.assets.counts();
+            self.validate_admission(counts)
+                .map_err(|error| format!("renderer publication: {error:?}"))?;
+            prepare(&self.assets)?;
+            // The backend has committed this prefix. All owner checks already
+            // passed, so publication cannot fail or discard accepted resources.
+            self.apply_admission(counts);
+            Ok((handle, counts))
+        })();
+        match result {
+            Ok(ready) => Ok(ready),
+            Err(error) => {
+                let error = self.catalog.diagnostics[checkpoint.diagnostics..]
+                    .iter()
+                    .find(|entry| entry.profile == profile)
+                    .map_or(error.clone(), |entry| format!("{error}: {}", entry.error));
+                checkpoint
+                    .rollback(self)
+                    .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
+                Err(error)
+            }
+        }
+    }
+
     /// Publish only the prefix reported by a successfully prepared backend.
     /// Registration and source metadata alone do not establish readiness.
     pub fn publish_admission(&mut self, counts: AssetCounts) -> Result<(), CallError> {
+        self.validate_admission(counts)?;
+        self.apply_admission(counts);
+        Ok(())
+    }
+
+    fn validate_admission(&self, counts: AssetCounts) -> Result<(), CallError> {
         if !self.assets.counts().extends(counts)
             || self
                 .catalog
@@ -604,6 +816,10 @@ impl ModelAssets {
         {
             return Err(CallError::Geometry);
         }
+        Ok(())
+    }
+
+    fn apply_admission(&mut self, counts: AssetCounts) {
         self.catalog.admitted_assets = Some(counts);
         for required in self
             .catalog
@@ -628,7 +844,6 @@ impl ModelAssets {
                 *required = None;
             }
         }
-        Ok(())
     }
 
     fn admit_name(&mut self, bytes: &[u8]) -> Result<NameId, CallError> {

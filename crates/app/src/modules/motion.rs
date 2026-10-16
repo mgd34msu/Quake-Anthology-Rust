@@ -8,7 +8,7 @@ use qa_core::primitives::{
     CallbackCall, ClientId, CollisionOwner, EntityId, ModuleId, Motion, NativeEntity,
     NativeEntityRef, ResourceNamespace, RuleSetId, ThinkTime, UserCmd, Vec3,
 };
-use qa_session::dispatch::{CallOutcome, call_think_once};
+use qa_session::dispatch::call_think_once_with_completion;
 use qa_session::physics::{
     self, ClientHost, MotionFrame, MotionHost, MotionState, MotionTrace, MotionWrite, PhysicsError,
     PushFrame, PushHost, PushNumber,
@@ -142,12 +142,13 @@ pub(super) fn toss(
     entity: EntityId,
     time: ThinkTime,
     elapsed: f64,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     let rules = host
         .module_row(module)
         .and_then(|row| row.toss)
         .ok_or(ClientCommandError::Unsupported)?;
-    let mut host = Host::new(host, module, entity, time)?;
+    let mut host = Host::new(host, module, entity, time, driver)?;
     let frame = host.frame(elapsed)?;
     physics::toss(&mut host, entity, frame, &rules)
 }
@@ -158,6 +159,7 @@ pub(super) fn push(
     entity: EntityId,
     time: ThinkTime,
     elapsed: f64,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     let (anchor, rules, mut undo) = {
         let row = host
@@ -175,7 +177,7 @@ pub(super) fn push(
             .resolve(entity)
             .ok_or(ClientCommandError::Inactive)?]
         .ok_or(ClientCommandError::InvalidSlot)?;
-        let mut adapter = Host::new(host, module, entity, time)?;
+        let mut adapter = Host::new(host, module, entity, time, driver)?;
         physics::push_frame(
             &mut adapter,
             CollisionOwner::Native(native),
@@ -201,12 +203,13 @@ pub(super) fn step_fall(
     entity: EntityId,
     time: ThinkTime,
     elapsed: f64,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<Option<EntityId>, ClientCommandError> {
     let (rules, sweep) = host
         .module_row(module)
         .and_then(|row| row.step)
         .ok_or(ClientCommandError::Unsupported)?;
-    let mut host = Host::new(host, module, entity, time)?;
+    let mut host = Host::new(host, module, entity, time, driver)?;
     let frame = host.frame(elapsed)?;
     physics::step_fall(&mut host, entity, frame, &rules, &sweep)
 }
@@ -216,8 +219,9 @@ pub(super) fn water_transition(
     module: ModuleId,
     entity: EntityId,
     time: ThinkTime,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
-    Host::new(host, module, entity, time)?.water_transition(entity)
+    Host::new(host, module, entity, time, driver)?.water_transition(entity)
 }
 
 pub(super) fn client_control(
@@ -227,8 +231,9 @@ pub(super) fn client_control(
     start: qa_movement::ControlStart,
     time: ThinkTime,
     elapsed: f64,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
-    let mut host = Host::client(host, module, id, time)?;
+    let mut host = Host::client(host, module, id, time, driver)?;
     let entity = host.client_entity().ok_or(ClientCommandError::Inactive)?;
     let rules = qa_gameplay::rules::motion::client_motion_rules(RuleSetId::Quake)
         .ok_or(ClientCommandError::Unsupported)?;
@@ -243,8 +248,9 @@ pub(super) fn client_move(
     phase: Motion,
     time: ThinkTime,
     elapsed: f64,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
-    let mut host = Host::client(host, module, id, time)?;
+    let mut host = Host::client(host, module, id, time, driver)?;
     let entity = host.client_entity().ok_or(ClientCommandError::Inactive)?;
     let rules = qa_gameplay::rules::motion::client_motion_rules(RuleSetId::Quake)
         .ok_or(ClientCommandError::Unsupported)?;
@@ -258,8 +264,9 @@ enum PushCursor {
     Done,
 }
 
-struct Host<'a> {
+struct Host<'a, 'd> {
     host: &'a mut FrameHost,
+    driver: &'a mut crate::modules::Driver<'d>,
     module: ModuleId,
     native: u32,
     mover: EntityReference,
@@ -267,17 +274,19 @@ struct Host<'a> {
     client: Option<(ClientId, EntityId)>,
     trace_rules: Option<RuleSetId>,
 }
-impl<'a> Host<'a> {
+impl<'a, 'd> Host<'a, 'd> {
     fn new(
         host: &'a mut FrameHost,
         module: ModuleId,
         entity: EntityId,
         time: ThinkTime,
+        driver: &'a mut crate::modules::Driver<'d>,
     ) -> Result<Self, ClientCommandError> {
         let native = native_offset(host, module, entity)?;
         let mover = contacts::capture(host, entity)?;
         Ok(Self {
             host,
+            driver,
             module,
             native,
             mover,
@@ -291,6 +300,7 @@ impl<'a> Host<'a> {
         module: ModuleId,
         id: ClientId,
         time: ThinkTime,
+        driver: &'a mut crate::modules::Driver<'d>,
     ) -> Result<Self, ClientCommandError> {
         let client = host
             .runtime
@@ -301,7 +311,7 @@ impl<'a> Host<'a> {
             .ok_or(ClientCommandError::Inactive)?;
         let entity = client.entity;
         let trace_rules = client.player.trace_rules;
-        let mut result = Self::new(host, module, entity, time)?;
+        let mut result = Self::new(host, module, entity, time, driver)?;
         result.client = Some((id, entity));
         result.trace_rules = Some(trace_rules);
         result.client_entity().ok_or(ClientCommandError::Inactive)?;
@@ -510,7 +520,7 @@ impl<'a> Host<'a> {
     }
 }
 
-impl PushHost for Host<'_> {
+impl PushHost for Host<'_, '_> {
     type Error = ClientCommandError;
     type Cursor = PushCursor;
 
@@ -696,6 +706,7 @@ impl PushHost for Host<'_> {
                 crate::modules::execution::TraceAccess::empty(),
                 entity,
                 time,
+                self.driver,
             )?;
         }
         Ok(())
@@ -723,9 +734,9 @@ impl PushHost for Host<'_> {
         };
         let client = self.active_client(module, entity);
         let mut moving = if let Some(client) = client {
-            Host::client(self.host, module, client, time)?
+            Host::client(self.host, module, client, time, self.driver)?
         } else {
-            Host::new(self.host, module, entity, time)?
+            Host::new(self.host, module, entity, time, self.driver)?
         };
         physics::push_entity(&mut moving, entity, displacement).map(|_| ())
     }
@@ -782,9 +793,12 @@ impl PushHost for Host<'_> {
             .dispatch_resolved(self.host, resolved, call)
             .map_err(ClientCommandError::Dispatch)
             .and_then(|dispatch| {
-                dispatch.complete(self.host, call).then_some(()).ok_or(
-                    ClientCommandError::Dispatch(qa_session::dispatch::CallError::Rejected),
-                )
+                self.driver
+                    .complete(self.host, dispatch, call)
+                    .then_some(())
+                    .ok_or(ClientCommandError::Dispatch(
+                        qa_session::dispatch::CallError::Rejected,
+                    ))
             });
         let released = admitted
             .map(|admitted| contacts::release(self.host, admitted))
@@ -809,9 +823,15 @@ impl PushHost for Host<'_> {
             .as_ref()
             .map(|modules| Arc::clone(&modules.functions))
             .ok_or(ClientCommandError::MissingModule)?;
-        let result = call_think_once(self.host, &functions, entity, Some(subject), time, |host| {
-            contacts::current(host, subject).ok().flatten()
-        });
+        let result = call_think_once_with_completion(
+            self.host,
+            &functions,
+            entity,
+            Some(subject),
+            time,
+            |host| contacts::current(host, subject).ok().flatten(),
+            |host, outcome, call| self.driver.complete(host, outcome, call),
+        );
         (result.rejected == 0)
             .then_some(())
             .ok_or(ClientCommandError::Dispatch(
@@ -820,7 +840,7 @@ impl PushHost for Host<'_> {
     }
 }
 
-impl MotionHost for Host<'_> {
+impl MotionHost for Host<'_, '_> {
     type Error = ClientCommandError;
 
     fn entities(&mut self) -> &mut EntityTable {
@@ -907,6 +927,7 @@ impl MotionHost for Host<'_> {
             crate::modules::execution::TraceAccess::empty(),
             entity,
             self.time,
+            self.driver,
         )?;
         self.current()
     }
@@ -925,6 +946,7 @@ impl MotionHost for Host<'_> {
             self.mover,
             obstacle,
             self.time,
+            self.driver,
         )?;
         self.current()
     }
@@ -964,7 +986,7 @@ impl MotionHost for Host<'_> {
     }
 }
 
-impl ClientHost for Host<'_> {
+impl ClientHost for Host<'_, '_> {
     fn command(&mut self, entity: EntityId) -> Result<UserCmd, Self::Error> {
         if self.client_entity() != Some(entity) {
             return Err(ClientCommandError::Inactive);

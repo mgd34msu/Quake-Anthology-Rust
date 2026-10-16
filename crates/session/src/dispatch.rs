@@ -454,6 +454,26 @@ pub fn call_think_once<C: ThinkWorld, R: CallOutcome<C>>(
     time: ThinkTime,
     rebind: impl FnOnce(&mut C) -> Option<EntityId>,
 ) -> ThinkResult {
+    call_think_once_with_completion(
+        world,
+        table,
+        entity,
+        subject,
+        time,
+        rebind,
+        |world, outcome, call| outcome.complete(world, call),
+    )
+}
+
+pub fn call_think_once_with_completion<C: ThinkWorld, R: CallOutcome<C>>(
+    world: &mut C,
+    table: &FunctionTable<C, R>,
+    entity: EntityId,
+    subject: Option<NativeEntityRef>,
+    time: ThinkTime,
+    rebind: impl FnOnce(&mut C) -> Option<EntityId>,
+    complete: impl FnOnce(&mut C, R, CallbackCall<'_>) -> bool,
+) -> ThinkResult {
     let execute = (|| {
         let entities = world.entities();
         let slot = entities.resolve(entity)?;
@@ -478,7 +498,7 @@ pub fn call_think_once<C: ThinkWorld, R: CallOutcome<C>>(
         Some(
             table
                 .dispatch_resolved(world, resolved, call)
-                .is_ok_and(|outcome| outcome.complete(world, call)),
+                .is_ok_and(|outcome| complete(world, outcome, call)),
         )
     })();
     if execute == Some(true) {
@@ -520,9 +540,27 @@ pub fn run_think<C: ThinkWorld, R: CallOutcome<C>>(
 pub fn run_think_with_rebind<C: ThinkWorld, R: CallOutcome<C>>(
     world: &mut C,
     table: &FunctionTable<C, R>,
+    entity: EntityId,
+    clock: impl FnMut(ModuleId) -> Option<ThinkFrame>,
+    rebind: impl FnMut(&mut C, EntityId) -> Option<EntityId>,
+) -> ThinkResult {
+    run_think_with_rebind_and_completion(
+        world,
+        table,
+        entity,
+        clock,
+        rebind,
+        |world, outcome, call| outcome.complete(world, call),
+    )
+}
+
+pub fn run_think_with_rebind_and_completion<C: ThinkWorld, R: CallOutcome<C>>(
+    world: &mut C,
+    table: &FunctionTable<C, R>,
     mut entity: EntityId,
     mut clock: impl FnMut(ModuleId) -> Option<ThinkFrame>,
     mut rebind: impl FnMut(&mut C, EntityId) -> Option<EntityId>,
+    mut complete: impl FnMut(&mut C, R, CallbackCall<'_>) -> bool,
 ) -> ThinkResult {
     let mut result = ThinkResult::default();
     loop {
@@ -557,9 +595,15 @@ pub fn run_think_with_rebind<C: ThinkWorld, R: CallOutcome<C>>(
                 return result;
             }
         };
-        let once = call_think_once(world, table, entity, None, time, |world| {
-            rebind(world, entity)
-        });
+        let once = call_think_once_with_completion(
+            world,
+            table,
+            entity,
+            None,
+            time,
+            |world| rebind(world, entity),
+            &mut complete,
+        );
         result.current_entity = once.current_entity;
         result.rejected = result.rejected.saturating_add(once.rejected);
         if once.rejected != 0 {

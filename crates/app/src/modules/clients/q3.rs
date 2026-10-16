@@ -69,9 +69,10 @@ fn callback(
     id: ClientId,
     event: ClientCallback,
     argv: CommandArgs<'_>,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     let (callback, call) = prepare_callback(host, module, id, event, argv)?;
-    host.call_module(callback, call)
+    host.call_module_with_driver(callback, call, driver)
         .map_err(ClientCommandError::Dispatch)
 }
 
@@ -118,6 +119,7 @@ pub(super) fn connect(
     module: ModuleId,
     id: ClientId,
     _: &[u8],
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<u32, String> {
     let info = host.client_info(module).ok_or("missing client lifecycle")?;
     let row = host
@@ -199,6 +201,7 @@ pub(super) fn connect(
             time,
             &[u64::from(number), 1, u64::from(is_bot)],
             CommandArgs::default(),
+            driver,
         )
         .map_err(|e| format!("ClientConnect: {e:?}"))?;
         if let Some(text) = denial(host, module)? {
@@ -213,6 +216,7 @@ pub(super) fn connect(
             id,
             ClientCallback::Begin,
             CommandArgs::default(),
+            driver,
         )
         .map_err(|e| format!("ClientBegin: {e:?}"))?;
         host.runtime.native_numbers[id.0 as usize].set_native_clients(info.clients as u32, 0);
@@ -225,7 +229,7 @@ pub(super) fn connect(
         Ok(number)
     })();
     if result.is_err() {
-        host.disconnect_client(id);
+        host.disconnect_client_with_driver(id, driver);
     }
     result
 }
@@ -236,6 +240,7 @@ pub(super) fn command(
     id: ClientId,
     _: &UserCmd,
     _: u32,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     callback(
         host,
@@ -243,6 +248,7 @@ pub(super) fn command(
         id,
         ClientCallback::BeforeMove,
         CommandArgs::default(),
+        driver,
     )
 }
 pub(super) fn prepare_disconnect(
@@ -263,14 +269,16 @@ pub(super) fn text(
     module: ModuleId,
     id: ClientId,
     argv: CommandArgs<'_>,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
-    callback(host, module, id, ClientCallback::Command, argv)
+    callback(host, module, id, ClientCallback::Command, argv, driver)
 }
 pub(super) fn userinfo(
     host: &mut FrameHost,
     module: ModuleId,
     id: ClientId,
     _: &[u8],
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     callback(
         host,
@@ -278,5 +286,6 @@ pub(super) fn userinfo(
         id,
         ClientCallback::UserinfoChanged,
         CommandArgs::default(),
+        driver,
     )
 }

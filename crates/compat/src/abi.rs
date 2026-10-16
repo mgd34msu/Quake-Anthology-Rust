@@ -133,25 +133,64 @@ fn register_renderer(
     c: &mut Invocation<'_, '_, '_>,
     kind: crate::services::RendererRegistration,
     nullable: bool,
-) -> Result<u64, CallError> {
+) -> Result<CallValue, CallError> {
     if nullable && c.null_pointer(0)? {
-        return Ok(0);
+        return Ok(CallValue::Word(0));
     }
     let name = c.memory.cstring(c.required_pointer(0)?)?;
-    (ENGINE_CALLS.register_renderer)(c.services, name, c.context.native_rules, kind)
-        .map(|handle| handle as u32 as u64)
+    let available = c.services.model_loader.is_none()
+        && c.services
+            .scene
+            .as_deref()
+            .is_some_and(|scene| scene.registration_available());
+    if !available || name.is_empty() || name.len() >= 64 {
+        return (ENGINE_CALLS.register_renderer)(c.services, name, c.context.native_rules, kind)
+            .map(|handle| CallValue::Word(handle as u32 as u64));
+    }
+    if let Some(handle) = c
+        .services
+        .renderer_handle(name, c.context.native_rules, kind)
+        && c.services
+            .scene
+            .as_deref()
+            .is_some_and(|scene| scene.registration_ready(kind, handle))
+    {
+        return Ok(CallValue::Word(handle as u32 as u64));
+    }
+    let mut copied = qa_core::text::FixedText::default();
+    copied.set_bytes(name).map_err(|_| CallError::Text)?;
+    let world =
+        if matches!(kind, crate::services::RendererRegistration::Model) && name.starts_with(b"*") {
+            c.services
+                .scene
+                .as_deref()
+                .and_then(|scene| scene.selected_world())
+        } else {
+            None
+        };
+    Ok(CallValue::Host(
+        HostRequest::RegisterRenderer(crate::services::RendererRequest {
+            name: copied,
+            source: c.context.native_rules,
+            kind,
+            world,
+        }),
+        ImportContinuation::HostValue,
+    ))
 }
-fn register_shader<const MIPMAPS: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn register_shader<const MIPMAPS: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<CallValue, CallError> {
     register_renderer(
         c,
         crate::services::RendererRegistration::Shader { mipmaps: MIPMAPS },
         false,
     )
 }
-fn register_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn register_model(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
     register_renderer(c, crate::services::RendererRegistration::Model, true)
 }
-fn register_skin(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn register_skin(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
     register_renderer(c, crate::services::RendererRegistration::Skin, true)
 }
 fn renderer_model_bounds(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -320,6 +359,12 @@ macro_rules! client_audio {
     };
 }
 macro_rules! value {
+    ($handler:expr) => {
+        Some(CallEntry {
+            handler: Handler::Shared(|call, _| ($handler)(call)),
+            quakec: None,
+        })
+    };
     ($handler:expr, $signature:expr) => {
         Some(CallEntry {
             handler: Handler::Shared(|call, _| ($handler)(call)),
@@ -597,8 +642,8 @@ const fn client() -> CallTable {
     t.entries[35] = scalar!(client_sound::start_background);
     t.entries[69] = scalar!(client_sound::stop_background);
     t.entries[36] = scalar!(renderer_load_world);
-    t.entries[37] = scalar!(register_model);
-    t.entries[38] = scalar!(register_skin);
+    t.entries[37] = value!(register_model);
+    t.entries[38] = value!(register_skin);
     t.entries[40] = scalar!(renderer_clear_scene);
     t.entries[41] = scalar!(renderer_entity);
     t.entries[42] = scalar!(renderer_add_polys::<false>);
@@ -610,7 +655,7 @@ const fn client() -> CallTable {
     t.entries[85] = scalar!(renderer_add_light::<true>);
     t.entries[47] = scalar!(renderer_model_bounds);
     t.entries[48] = scalar!(renderer_lerp_tag::<true>);
-    t.entries[39] = scalar!(register_shader::<true>);
+    t.entries[39] = value!(register_shader::<true>);
     t.entries[49] = scalar!(renderer_configuration);
     t.entries[50] = scalar!(client_game_state);
     t.entries[51] = scalar!(client_snapshot_number);
@@ -624,7 +669,7 @@ const fn client() -> CallTable {
     t.entries[54] = scalar!(client_command_number);
     t.entries[55] = scalar!(client_usercmd);
     t.entries[56] = scalar!(q3_set_usercmd_value);
-    t.entries[57] = scalar!(register_shader::<false>);
+    t.entries[57] = value!(register_shader::<false>);
     t.entries[60] = scalar!(input::key_down);
     t.entries[61] = scalar!(input::catchers);
     t.entries[62] = scalar!(input::set_catchers);
@@ -668,9 +713,9 @@ const fn ui() -> CallTable {
     t.entries[13] = scalar!(file_open);
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
-    t.entries[18] = scalar!(register_model);
-    t.entries[19] = scalar!(register_skin);
-    t.entries[20] = scalar!(register_shader::<false>);
+    t.entries[18] = value!(register_model);
+    t.entries[19] = value!(register_skin);
+    t.entries[20] = value!(register_shader::<false>);
     t.entries[21] = scalar!(renderer_clear_scene);
     t.entries[22] = scalar!(renderer_entity);
     t.entries[23] = scalar!(renderer_add_polys::<false>);
@@ -1510,7 +1555,9 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
                                     .map_err(|_| qvm::Trap::Syscall)?;
                                 0
                             }
-                            HostRequest::TouchTriggers { .. } | HostRequest::ExecuteNow { .. } => {
+                            HostRequest::TouchTriggers { .. }
+                            | HostRequest::ExecuteNow { .. }
+                            | HostRequest::RegisterRenderer(_) => {
                                 return Err(qvm::Trap::Syscall);
                             }
                         };

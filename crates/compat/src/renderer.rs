@@ -13,6 +13,9 @@ use qa_render::{
 /// The caller owns its renderer role; each invocation borrows the session's
 /// one scene owner. Guest addresses never cross this interface.
 pub trait SceneService {
+    fn registration_available(&self) -> bool {
+        false
+    }
     fn registration_ready(&self, kind: RendererRegistration, handle: i32) -> bool {
         let _ = (kind, handle);
         false

@@ -4,7 +4,7 @@ use qa_compat::{abi::CallbackRequest, quakec::AdmittedEntity};
 use qa_core::primitives::{
     CallbackCall, EntityId, ModuleId, NativeEntityRef, ResourceNamespace, ThinkTime,
 };
-use qa_session::dispatch::{CallError, CallOutcome};
+use qa_session::dispatch::CallError;
 use qa_world::area::{AreaCursor, LinkFlags};
 use qa_world::entities::EntityReference;
 use std::sync::Arc;
@@ -159,6 +159,7 @@ pub(super) fn triggers(
     access: TraceAccess<'_>,
     entity: EntityId,
     time: ThinkTime,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     let mover = reference(host, entity)?;
     if mover.namespace != ResourceNamespace::Module(module) {
@@ -166,7 +167,7 @@ pub(super) fn triggers(
     }
     let mut run = TriggerRun::begin(host, mover, time)?;
     while let Some(touch) = run.next(host, access)? {
-        touch.invoke(host)?;
+        touch.invoke(host, driver)?;
     }
     Ok(())
 }
@@ -205,7 +206,11 @@ impl PreparedTouch {
         release(host, self.admitted)
     }
 
-    fn invoke(self, host: &mut FrameHost) -> Result<(), ClientCommandError> {
+    fn invoke(
+        self,
+        host: &mut FrameHost,
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> Result<(), ClientCommandError> {
         let request = self.request;
         let result = (|| {
             let functions = host
@@ -213,10 +218,10 @@ impl PreparedTouch {
                 .as_ref()
                 .map(|modules| Arc::clone(&modules.functions))
                 .ok_or(ClientCommandError::MissingModule)?;
-            Ok(functions
+            let outcome = functions
                 .dispatch_resolved(host, request.target, request.call)
-                .map_err(ClientCommandError::Dispatch)?
-                .complete(host, request.call))
+                .map_err(ClientCommandError::Dispatch)?;
+            Ok(driver.complete(host, outcome, request.call))
         })();
         let completed = self.complete(host, result.as_ref().is_ok_and(|accepted| *accepted));
         result.map(|_| ()).and(completed)
@@ -402,6 +407,7 @@ pub(super) fn touch(
     time: Option<ThinkTime>,
     deduplicate: bool,
     trigger_only: bool,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     if let Some(touch) = prepare_touch(
         host,
@@ -413,7 +419,7 @@ pub(super) fn touch(
         deduplicate,
         trigger_only,
     )? {
-        touch.invoke(host)?;
+        touch.invoke(host, driver)?;
     }
     Ok(())
 }
@@ -426,6 +432,7 @@ pub(super) fn impact(
     mover: EntityReference,
     obstacle: EntityReference,
     time: ThinkTime,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     let restore = super::edit_quakec(host, module, access, |vm, _, _| vm.prepare_impact(time))?;
     let mut first = None;
@@ -471,7 +478,7 @@ pub(super) fn impact(
                 false,
             )?
         {
-            touch.invoke(host)?;
+            touch.invoke(host, driver)?;
         }
         if let Some(entity) = host.runtime.server.entities.resolve_reference(obstacle) {
             let replacement = host.runtime.server.entities.resolve_reference(mover);
@@ -493,7 +500,7 @@ pub(super) fn impact(
                 false,
                 false,
             )? {
-                touch.invoke(host)?;
+                touch.invoke(host, driver)?;
             }
         }
         Ok(())

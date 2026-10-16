@@ -17,6 +17,14 @@ impl FrameHost {
             .as_mut()
             .ok_or(qa_compat::services::CallError::File)?;
         owner.publish_admission(counts)?;
+        self.refresh_model_consumers();
+        Ok(())
+    }
+
+    pub(crate) fn refresh_model_consumers(&mut self) {
+        let Some(owner) = self.runtime.model_assets.as_ref() else {
+            return;
+        };
         let catalog = owner.catalog();
         for resources in self.runtime.client_resources.iter_mut().flatten() {
             resources.state.rejected += u64::from(
@@ -27,7 +35,6 @@ impl FrameHost {
             );
             resources.state.complete_static_models(catalog);
         }
-        Ok(())
     }
 
     pub fn register_client_model_assets(&mut self) {

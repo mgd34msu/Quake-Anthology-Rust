@@ -495,6 +495,7 @@ fn engine_client_rejects_live_foreign_target_before_commit_and_next_client_still
         .body(entity.slot as usize);
     let bounds = host.runtime.server.area.bounds(entity);
     let links = host.runtime.server.area.relinks;
+    let mut driver = crate::modules::Driver::cache_only();
     for id in &clients {
         host.received_command(
             *id,
@@ -505,10 +506,11 @@ fn engine_client_rejects_live_foreign_target_before_commit_and_next_client_still
             },
             CommandExecution::FrameLatest,
             None,
+            &mut driver,
         );
     }
     host.time = EventTime::from_milliseconds(50);
-    host.run_pending_commands(EventTime::from_milliseconds(50));
+    host.run_pending_commands(EventTime::from_milliseconds(50), &mut driver);
     let client = &host.runtime.server.clients[bad.0 as usize];
     assert!(client.is_active());
     assert_eq!(client.player.body.position, body.position);

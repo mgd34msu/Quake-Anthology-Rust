@@ -39,6 +39,21 @@ impl Assets {
             palettes: self.palettes.len(),
         }
     }
+
+    /// Discard resources from a rejected cold registration. Interned names
+    /// retain their identities; worlds and presentation resources stay fixed.
+    pub fn discard_registration_suffix(
+        &mut self,
+        retained: AssetCounts,
+    ) -> Result<(), &'static str> {
+        if !self.counts().extends(retained) {
+            return Err("invalid registration resource prefix");
+        }
+        self.models.truncate(retained.models);
+        self.materials.truncate(retained.materials);
+        self.images.truncate(retained.images);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

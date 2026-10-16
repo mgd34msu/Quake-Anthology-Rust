@@ -25,6 +25,476 @@ fn native_profile(rules: RuleSetId, palette: PaletteId) -> ModelProfile {
     ModelRequest::native("", rules, Some(palette)).profile()
 }
 
+fn renderer_request(
+    name: &str,
+    kind: qa_compat::services::RendererRegistration,
+    source: RuleSetId,
+    world: Option<WorldId>,
+) -> qa_compat::services::RendererRequest {
+    let mut text = qa_core::text::FixedText::default();
+    text.set(name).unwrap();
+    qa_compat::services::RendererRequest {
+        name: text,
+        kind,
+        source,
+        world,
+    }
+}
+
+#[test]
+fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries() {
+    use qa_compat::services::RendererRegistration;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    let fixture = support::Fixture::new(&[
+        ("models/test/tris.md2", support::md2_quad_skin(b"models/test/skin0.pcx")),
+        ("models/test/skin0.pcx", support::pcx(11)),
+        ("models/test/skin1.pcx", support::pcx(22)),
+        ("textures/bad.tga", support::tga(1, 1, &[[211, 13, 17, 255]])),
+        ("textures/good.tga", support::tga(1, 1, &[[19, 23, 227, 255]])),
+        ("scripts/late.shader", b"ui/bad { skyparms - 1e30 - { map textures/bad.tga } }\nui/good { { map textures/good.tga } }\nui/good_alias { { map textures/good.tga } }\n".to_vec()),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
+    let mut owner = load(
+        &fixture,
+        assets,
+        &[ModelRequest::native(
+            "models/test/tris.md2",
+            profile.source_rules,
+            Some(palette),
+        )],
+        Default::default(),
+    )
+    .unwrap();
+    let original = binding(owner.catalog(), "models/test/tris.md2", profile, 0).unwrap();
+    let original_handle = owner
+        .catalog()
+        .file_handle(b"models/test/tris.md2")
+        .unwrap();
+    let bounds = owner.catalog().model_bounds(original_handle).unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        64,
+        48,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 4096,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let initial = cpu.admitted_assets().unwrap();
+    owner.publish_admission(initial).unwrap();
+    owner.end_initial_registration();
+    let pixels = render_indexed_on(&mut cpu, owner.assets(), original, palette);
+    assert!(pixels.1.triangles > 0);
+    let original_capacity = owner.catalog().capacity();
+    let bad = renderer_request(
+        "ui/bad",
+        RendererRegistration::Shader { mipmaps: true },
+        profile.source_rules,
+        None,
+    );
+    let mut attempted = 0;
+    let error = owner
+        .prepare_registration(&fixture.vfs, &bad, profile, |assets| {
+            attempted += 1;
+            assert_eq!(
+                assets.images().last().unwrap().rgba.as_ref(),
+                [211, 13, 17, 255]
+            );
+            assert!(assets.materials().last().unwrap().settings.sky.is_some());
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap_err();
+    assert!(error.contains("sky cloud projection"), "{error}");
+    assert_eq!(attempted, 1);
+    assert_eq!(owner.assets().counts(), initial);
+    assert_eq!(cpu.admitted_assets(), Some(initial));
+    assert_eq!(owner.catalog().shader_handle(b"ui/bad"), None);
+    let capacity = owner.catalog().capacity();
+    assert_eq!(
+        qa_app::model_assets::ModelCapacity {
+            names: original_capacity.names,
+            name_bytes: original_capacity.name_bytes,
+            ..capacity
+        },
+        original_capacity
+    );
+    assert!(capacity.names > original_capacity.names);
+    assert!(capacity.name_bytes > original_capacity.name_bytes);
+    assert_eq!(
+        render_indexed_on(&mut cpu, owner.assets(), original, palette),
+        pixels
+    );
+
+    let good = renderer_request("ui/good", bad.kind, profile.source_rules, None);
+    let (good_handle, good_counts) = owner
+        .prepare_registration(&fixture.vfs, &good, profile, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(cpu.admitted_assets(), Some(good_counts));
+    let good_material = owner
+        .catalog()
+        .shader_binding(good_handle, profile)
+        .unwrap();
+    let good_texture = owner.assets().material(good_material).unwrap().stages[0].texture;
+    let StageTexture::Image(good_image) = good_texture else {
+        panic!("good image")
+    };
+    assert_eq!(good_image.0 as usize, initial.images);
+    assert_eq!(
+        owner.assets().image(good_image).unwrap().rgba.as_ref(),
+        [19, 23, 227, 255]
+    );
+
+    // The rejected image's older NameId inserts before this healthy cached
+    // image. Truncating the sorted cache by its length would discard the wrong
+    // entry, leaving a stale numeric image on the next retry.
+    for _ in 0..2 {
+        let error = owner
+            .prepare_registration(&fixture.vfs, &bad, profile, |assets| {
+                attempted += 1;
+                assert_eq!(assets.images().len(), good_counts.images + 1);
+                assert_eq!(
+                    assets.images().last().unwrap().rgba.as_ref(),
+                    [211, 13, 17, 255]
+                );
+                cpu.prepare_assets(assets).map_err(str::to_owned)
+            })
+            .unwrap_err();
+        assert!(error.contains("sky cloud projection"), "{error}");
+        assert_eq!(owner.assets().counts(), good_counts);
+        assert_eq!(cpu.admitted_assets(), Some(good_counts));
+    }
+    assert_eq!(attempted, 3);
+    let alias = renderer_request("ui/good_alias", bad.kind, profile.source_rules, None);
+    let (alias_handle, alias_counts) = owner
+        .prepare_registration(&fixture.vfs, &alias, profile, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(alias_counts.images, good_counts.images);
+    assert_eq!(
+        owner
+            .assets()
+            .material(
+                owner
+                    .catalog()
+                    .shader_binding(alias_handle, profile)
+                    .unwrap()
+            )
+            .unwrap()
+            .stages[0]
+            .texture,
+        good_texture
+    );
+    assert_eq!(owner.catalog().model_bounds(original_handle), Some(bounds));
+    assert_eq!(
+        binding(owner.catalog(), "models/test/tris.md2", profile, 0),
+        Some(original)
+    );
+    assert_eq!(
+        render_indexed_on(&mut cpu, owner.assets(), original, palette),
+        pixels
+    );
+    let (cached, counts) = owner
+        .prepare_registration(&fixture.vfs, &good, profile, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(cached, good_handle);
+    assert_eq!(counts, alias_counts);
+}
+
+#[test]
+fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures() {
+    use qa_compat::services::RendererRegistration;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    let mut initial_model = support::md3_surfaces();
+    let surface = i32::from_le_bytes(initial_model[100..104].try_into().unwrap()) as usize;
+    initial_model[surface + 4..surface + 68].fill(0);
+    initial_model[surface + 4..surface + 14].copy_from_slice(b"progs/test");
+    let fixture = support::Fixture::new(&[
+        ("progs/test", support::mdl()),
+        ("progs/test.tga", support::tga(1, 1, &[[40, 80, 120, 255]])),
+        ("models/initial.md3", initial_model),
+        (
+            "textures/body.tga",
+            support::tga(1, 1, &[[31, 43, 59, 255]]),
+        ),
+        (
+            "textures/alternate.tga",
+            support::tga(1, 1, &[[61, 73, 89, 255]]),
+        ),
+        (
+            "textures/glow.tga",
+            support::tga(1, 1, &[[97, 107, 127, 255]]),
+        ),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake, palette);
+    let mut failed_profile = profile;
+    failed_profile.image_settings.max_dimension = 0;
+    let shader_profile = shader_profile(RuleSetId::Quake3);
+    let mut owner = ModelAssets::new(
+        assets,
+        [profile, failed_profile, shader_profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    owner
+        .register_model(
+            &fixture.vfs,
+            b"models/initial.md3",
+            shader_profile.source_rules,
+        )
+        .unwrap();
+    let shader = owner
+        .register_shader(&fixture.vfs, b"progs/test.tga", RuleSetId::Quake3, false)
+        .unwrap();
+    let shader_material = owner
+        .catalog()
+        .shader_binding(shader, shader_profile)
+        .unwrap();
+    let old_name = (0..owner.catalog().capacity().names)
+        .find(|&index| {
+            owner
+                .catalog()
+                .name(qa_core::primitives::NameId(index as u32))
+                == Some("progs/test")
+        })
+        .unwrap() as i32;
+    assert_eq!(owner.catalog().file_handle(b"progs/test"), None);
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 4096,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let initial = cpu.admitted_assets().unwrap();
+    owner.publish_admission(initial).unwrap();
+    owner.end_initial_registration();
+    let request = renderer_request(
+        "progs/test",
+        RendererRegistration::Model,
+        profile.source_rules,
+        None,
+    );
+    let error = owner
+        .prepare_registration(&fixture.vfs, &request, failed_profile, |_| {
+            panic!("failed exact profile reached backend")
+        })
+        .unwrap_err();
+    assert!(error.contains("image"), "{error}");
+    assert_eq!(owner.catalog().file_handle(b"progs/test"), None);
+    assert_eq!(owner.assets().counts(), initial);
+    assert_eq!(
+        owner.catalog().shader_binding(shader, shader_profile),
+        Some(shader_material)
+    );
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &request, profile, |_| Err(
+                "rejected backend".to_owned()
+            ))
+            .is_err()
+    );
+    assert_eq!(owner.catalog().model_bounds(old_name), None);
+    assert_eq!(owner.catalog().file_handle(b"progs/test"), None);
+    assert_eq!(owner.assets().counts(), initial);
+    let (handle, counts) = owner
+        .prepare_registration(&fixture.vfs, &request, profile, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(handle, old_name);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert!(
+        owner
+            .catalog()
+            .renderer_registration(handle, profile)
+            .is_some()
+    );
+    assert!(
+        owner
+            .catalog()
+            .renderer_registration(handle, failed_profile)
+            .is_none()
+    );
+    assert_eq!(
+        owner.catalog().shader_binding(shader, shader_profile),
+        Some(shader_material)
+    );
+    assert_eq!(
+        owner.catalog().shader_name(shader),
+        Some(b"progs/test".as_slice())
+    );
+}
+
+#[test]
+fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
+    use qa_compat::services::RendererRegistration;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    let mut initial_model = support::md3_surfaces();
+    let surface = i32::from_le_bytes(initial_model[100..104].try_into().unwrap()) as usize;
+    initial_model[surface + 4..surface + 68].fill(0);
+    initial_model[surface + 4..surface + 12].copy_from_slice(b"SHARED_1");
+    let fixture = support::Fixture::new(&[
+        ("models/test.md3", initial_model),
+        (
+            "textures/body.tga",
+            support::tga(1, 1, &[[31, 43, 59, 255]]),
+        ),
+        (
+            "textures/alternate.tga",
+            support::tga(1, 1, &[[61, 73, 89, 255]]),
+        ),
+        (
+            "textures/glow.tga",
+            support::tga(1, 1, &[[97, 107, 127, 255]]),
+        ),
+        ("shared.tga", support::tga(1, 1, &[[139, 149, 163, 255]])),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let world = world(&mut assets, 0.0);
+    let profile = shader_profile(RuleSetId::Quake3);
+    let mut owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    owner
+        .register_model(&fixture.vfs, b"models/test.md3", profile.source_rules)
+        .unwrap();
+    let original = binding(owner.catalog(), "models/test.md3", profile, 0).unwrap();
+    assert!((0..owner.catalog().capacity().names).any(|index| {
+        owner
+            .catalog()
+            .name(qa_core::primitives::NameId(index as u32))
+            == Some("SHARED")
+    }));
+    assert!(!(0..owner.catalog().capacity().names).any(|index| {
+        owner
+            .catalog()
+            .name(qa_core::primitives::NameId(index as u32))
+            == Some("shared")
+    }));
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    owner.end_initial_registration();
+    let mut retained_skin = None;
+    for kind in [
+        RendererRegistration::Skin,
+        RendererRegistration::Shader { mipmaps: true },
+    ] {
+        let request = renderer_request("shared", kind, profile.source_rules, None);
+        let before = owner.assets().counts();
+        assert!(
+            owner
+                .prepare_registration(&fixture.vfs, &request, profile, |_| Err(
+                    "rejected backend".to_owned()
+                ))
+                .is_err()
+        );
+        assert_eq!(owner.assets().counts(), before);
+        if let Some(handle) = retained_skin {
+            assert!(owner.catalog().renderer_skin(handle, profile));
+        }
+        match kind {
+            RendererRegistration::Shader { .. } => {
+                assert_eq!(owner.catalog().shader_handle(b"shared"), None)
+            }
+            RendererRegistration::Skin => {
+                let different = renderer_request(
+                    "textures/alternate",
+                    RendererRegistration::Skin,
+                    profile.source_rules,
+                    None,
+                );
+                let (handle, counts) = owner
+                    .prepare_registration(&fixture.vfs, &different, profile, |assets| {
+                        cpu.prepare_assets(assets).map_err(str::to_owned)
+                    })
+                    .unwrap();
+                assert_eq!(cpu.admitted_assets(), Some(counts));
+                assert_eq!(
+                    owner
+                        .catalog()
+                        .skin_handle(b"textures/alternate", profile.source_rules),
+                    Some(handle)
+                );
+                assert_eq!(
+                    owner.catalog().skin_handle(b"shared", profile.source_rules),
+                    None
+                );
+            }
+            RendererRegistration::Model => unreachable!(),
+        }
+        let (handle, counts) = owner
+            .prepare_registration(&fixture.vfs, &request, profile, |assets| {
+                cpu.prepare_assets(assets).map_err(str::to_owned)
+            })
+            .unwrap();
+        assert!(owner.catalog().renderer_candidate(kind, handle, profile));
+        if matches!(kind, RendererRegistration::Skin) {
+            retained_skin = Some(handle);
+        }
+        assert_eq!(cpu.admitted_assets(), Some(counts));
+        assert_eq!(
+            binding(owner.catalog(), "models/test.md3", profile, 0),
+            Some(original)
+        );
+    }
+    let inline = renderer_request(
+        "*1",
+        RendererRegistration::Model,
+        profile.source_rules,
+        Some(world),
+    );
+    let before = owner.assets().counts();
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &inline, profile, |_| Err(
+                "rejected backend".to_owned()
+            ))
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(owner.catalog().inline_handle(world, 1), None);
+    let retained_names = owner.catalog().capacity().names;
+    let (handle, counts) = owner
+        .prepare_registration(&fixture.vfs, &inline, profile, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(counts, before);
+    assert_eq!(owner.catalog().capacity().names, retained_names);
+    assert_eq!(owner.catalog().inline_handle(world, 1), Some(handle));
+    assert_eq!(
+        owner.catalog().renderer_inline(handle),
+        owner.catalog().resolve_inline(world, 1)
+    );
+    assert_eq!(
+        owner.catalog().model_bounds(handle),
+        Some(owner.assets().world(world).unwrap().geometry().models[1].bounds)
+    );
+}
+
 #[test]
 fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication() {
     use qa_compat::services::RendererRegistration;
@@ -1724,6 +2194,16 @@ fn render_indexed(
     binding: qa_app::model_assets::ModelBinding,
     palette: PaletteId,
 ) -> (Vec<u32>, qa_render::BackendStats) {
+    let mut cpu = qa_render::cpu::CpuBackend::load(64, 48).unwrap();
+    render_indexed_on(&mut cpu, assets, binding, palette)
+}
+
+fn render_indexed_on(
+    cpu: &mut qa_render::cpu::CpuBackend,
+    assets: &Assets,
+    binding: qa_app::model_assets::ModelBinding,
+    palette: PaletteId,
+) -> (Vec<u32>, qa_render::BackendStats) {
     let mut frontend = qa_render::FrontEnd::load(Default::default()).unwrap();
     let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
     assert!(frame.add_entity(qa_render::SceneEntity {
@@ -1756,7 +2236,6 @@ fn render_indexed(
         &[],
         assets,
     ));
-    let mut cpu = qa_render::cpu::CpuBackend::load(64, 48).unwrap();
     let stats = cpu.render(&frame.finish(), assets);
     (cpu.pixels().to_vec(), stats)
 }

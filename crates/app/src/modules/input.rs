@@ -135,18 +135,29 @@ impl FrameHost {
         Some(time)
     }
 
-    fn input_export(&mut self, recipient: Recipient, callback: u32, words: &[u64]) {
-        let result = self.call_module_export(
+    fn input_export(
+        &mut self,
+        recipient: Recipient,
+        callback: u32,
+        words: &[u64],
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
+        let result = self.call_module_export_with_driver(
             recipient.module,
             Export::words(CallbackId(callback), words),
             recipient.time,
+            driver,
         );
         if result.is_err() {
-            self.fail_input_recipient(recipient.module);
+            self.fail_input_recipient(recipient.module, driver);
         }
     }
 
-    pub(crate) fn module_input(&mut self, atom: InputAtom) -> InputCapture {
+    pub(crate) fn module_input_with_driver(
+        &mut self,
+        atom: InputAtom,
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> InputCapture {
         if matches!(
             atom,
             InputAtom::Character {
@@ -178,7 +189,7 @@ impl FrameHost {
                 if let Some(recipient) = recipient
                     && let Some(callback) = recipient.input.event_handling
                 {
-                    self.input_export(recipient, callback, &[0]);
+                    self.input_export(recipient, callback, &[0], driver);
                 }
                 return InputCapture::Caught;
             }
@@ -192,7 +203,7 @@ impl FrameHost {
                         snapshot.applied != 0 && snapshot.interpolation().is_some()
                     });
                 self.runtime.input.set_text_seat(seat);
-                self.input_export(recipient, callback, &[if active { 2 } else { 1 }]);
+                self.input_export(recipient, callback, &[if active { 2 } else { 1 }], driver);
                 return InputCapture::Caught;
             }
         }
@@ -200,9 +211,11 @@ impl FrameHost {
             return InputCapture::Pass;
         }
         if let Some((module, callback, call)) = self.input_call(atom, false)
-            && self.call_module(callback, call).is_err()
+            && self
+                .call_module_with_driver(callback, call, driver)
+                .is_err()
         {
-            self.fail_input_recipient(module);
+            self.fail_input_recipient(module, driver);
         }
         // A failed/missing recipient never turns the caught physical press
         // into a gameplay command during the same dispatch continuation.
@@ -264,12 +277,16 @@ impl FrameHost {
         ))
     }
 
-    pub(super) fn fail_input_recipient(&mut self, module: ModuleId) {
+    pub(super) fn fail_input_recipient(
+        &mut self,
+        module: ModuleId,
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
         if let Some(row) = self.module_row_mut(module)
             && row.state.can_invoke()
         {
             row.state = State::Failed;
-            self.cleanup_failed_module(module);
+            self.cleanup_failed_module(module, driver);
         }
     }
 

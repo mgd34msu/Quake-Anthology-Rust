@@ -103,8 +103,15 @@ fn push_entity_foreign_impact_retains_mover_identity_across_removing_relink_trig
     }
     let calls = host.module_counts(ModuleId(2)).unwrap().calls;
     let (trace, current) = {
-        let mut moving =
-            Host::new(&mut host, ModuleId(1), actor, ThinkTime::Seconds(42.0)).unwrap();
+        let mut driver = crate::modules::Driver::cache_only();
+        let mut moving = Host::new(
+            &mut host,
+            ModuleId(1),
+            actor,
+            ThinkTime::Seconds(42.0),
+            &mut driver,
+        )
+        .unwrap();
         physics::push_entity(&mut moving, actor, Vec3([20.0, 0.0, 0.0])).unwrap()
     };
     assert_eq!(trace.trace.entity, Some(obstacle));

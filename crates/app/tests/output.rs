@@ -48,7 +48,7 @@ impl FrameSource for Source {
         true
     }
 }
-fn emit(host: &mut FrameHost, tick: Tick) {
+fn emit(host: &mut FrameHost, tick: Tick, _driver: &mut qa_app::modules::Driver<'_>) {
     let runtime = &mut host.runtime;
     let id = tick.source_slot as u32;
     let _ = runtime.server.events.push(FrameEvent::Sound(SoundEvent {
@@ -275,7 +275,7 @@ fn consume_module(
     clients[10 + tick.source_slot].player.health += 1;
     qa_core::events::OutputSubmission::BestEffort
 }
-fn emit_print(host: &mut FrameHost, tick: Tick) {
+fn emit_print(host: &mut FrameHost, tick: Tick, _driver: &mut qa_app::modules::Driver<'_>) {
     let runtime = &mut host.runtime;
     runtime.print_event(
         None,

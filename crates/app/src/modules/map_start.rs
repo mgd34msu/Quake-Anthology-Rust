@@ -31,8 +31,12 @@ fn edit<R>(
 }
 
 impl FrameHost {
-    pub(super) fn initialize_quakec_map(&mut self, module: ModuleId) -> Result<(), CallError> {
-        self.start_quakec_map(module).map_err(|error| {
+    pub(super) fn initialize_quakec_map(
+        &mut self,
+        module: ModuleId,
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> Result<(), CallError> {
+        self.start_quakec_map(module, driver).map_err(|error| {
             if let Some((row, storage)) = self.modules.as_mut().and_then(|m| m.parts_mut(module)) {
                 let mut services =
                     self.runtime
@@ -46,7 +50,11 @@ impl FrameHost {
         })
     }
 
-    fn start_quakec_map(&mut self, module: ModuleId) -> Result<(), ServiceError> {
+    fn start_quakec_map(
+        &mut self,
+        module: ModuleId,
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> Result<(), ServiceError> {
         let row = self.module_row_mut(module).ok_or(ServiceError::Aborted)?;
         let Program::QuakeC(qc) = &mut row.request.program else {
             return Ok(());
@@ -180,7 +188,7 @@ impl FrameHost {
                 .map_err(|_| ServiceError::Memory)
         })?;
         if rules == RuleSetId::QuakeWorld {
-            self.call_module_export(module, frame, time)
+            self.call_module_export_with_driver(module, frame, time, driver)
                 .map_err(|_| ServiceError::Aborted)?;
         }
         let bindings = {
@@ -255,8 +263,12 @@ impl FrameHost {
             if let Some(callback) = callback {
                 // The same lifetime table guards entry; callbacks may spawn
                 // or free later ordinals before the next source record.
-                self.call_module(callback, CallbackCall::Spawn { entity, time })
-                    .map_err(|_| ServiceError::Aborted)?;
+                self.call_module_with_driver(
+                    callback,
+                    CallbackCall::Spawn { entity, time },
+                    driver,
+                )
+                .map_err(|_| ServiceError::Aborted)?;
             }
         }
         Ok(())

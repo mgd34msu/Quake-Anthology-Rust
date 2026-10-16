@@ -437,6 +437,7 @@ impl Fixture {
             self.pusher,
             ThinkTime::Seconds(77.0),
             0.0625,
+            &mut crate::modules::Driver::cache_only(),
         )
     }
     fn raw_position(&mut self, module: ModuleId, native: i32) -> Vec3 {
@@ -476,7 +477,15 @@ fn foreign_primary_passenger_routes_once_through_its_owner_and_retained_geometry
             unreachable!()
         };
         let first_foreign = qc.vm.client_count().unwrap() as i32 + 1;
-        let mut adapter = Host::new(&mut f.host, A, f.pusher, ThinkTime::Seconds(77.0)).unwrap();
+        let mut driver = crate::modules::Driver::cache_only();
+        let mut adapter = Host::new(
+            &mut f.host,
+            A,
+            f.pusher,
+            ThinkTime::Seconds(77.0),
+            &mut driver,
+        )
+        .unwrap();
         let mut cursor = adapter.start_candidates();
         let mut candidates = vec![];
         while let Some(candidate) = adapter.next_candidate(&mut cursor).unwrap() {
@@ -875,7 +884,15 @@ fn saved_foreign_native_origin_store_rejects_alias_takeover_before_any_write() {
         .entities
         .columns
         .body(target.slot as usize);
-    let mut adapter = Host::new(&mut f.host, A, f.pusher, ThinkTime::Seconds(77.0)).unwrap();
+    let mut driver = crate::modules::Driver::cache_only();
+    let mut adapter = Host::new(
+        &mut f.host,
+        A,
+        f.pusher,
+        ThinkTime::Seconds(77.0),
+        &mut driver,
+    )
+    .unwrap();
     assert!(matches!(
         PushHost::store(
             &mut adapter,

@@ -80,7 +80,7 @@ pub fn dispatch(
     notify_time: f64,
     center_time: f64,
 ) -> OutputCounts {
-    let counts = retire_resync_clients(runtime);
+    let counts = retire_resync_clients(runtime, &mut crate::modules::Driver::cache_only());
     dispatch_frame(
         runtime,
         source,
@@ -96,13 +96,13 @@ pub fn dispatch(
 
 pub(crate) trait RetirementOwner {
     fn runtime(&mut self) -> &mut Runtime;
-    fn retire(&mut self, client: ClientId);
+    fn retire(&mut self, client: ClientId, driver: &mut crate::modules::Driver<'_>);
 }
 impl RetirementOwner for Runtime {
     fn runtime(&mut self) -> &mut Runtime {
         self
     }
-    fn retire(&mut self, client: ClientId) {
+    fn retire(&mut self, client: ClientId, _driver: &mut crate::modules::Driver<'_>) {
         self.disconnect_client(client);
     }
 }
@@ -110,12 +110,15 @@ impl RetirementOwner for crate::host::FrameHost {
     fn runtime(&mut self) -> &mut Runtime {
         &mut self.runtime
     }
-    fn retire(&mut self, client: ClientId) {
-        self.disconnect_client(client);
+    fn retire(&mut self, client: ClientId, driver: &mut crate::modules::Driver<'_>) {
+        self.disconnect_client_with_driver(client, driver);
     }
 }
 
-pub(crate) fn retire_resync_clients(owner: &mut impl RetirementOwner) -> OutputCounts {
+pub(crate) fn retire_resync_clients(
+    owner: &mut impl RetirementOwner,
+    driver: &mut crate::modules::Driver<'_>,
+) -> OutputCounts {
     let mut counts = OutputCounts::default();
     // Teardown must finish before borrowing SERVER state for the output pass.
     let clients = owner.runtime().server.clients.len();
@@ -138,7 +141,7 @@ pub(crate) fn retire_resync_clients(owner: &mut impl RetirementOwner) -> OutputC
             }
         };
         if retire {
-            owner.retire(ClientId(slot as u32));
+            owner.retire(ClientId(slot as u32), driver);
             counts.native_disconnected += 1;
         }
     }

@@ -8,8 +8,9 @@ pub struct CallbackRequest {
     pub call: CallbackCall<'static>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum HostRequest {
+    RegisterRenderer(crate::services::RendererRequest),
     ExecuteNow {
         context: qa_console::views::Context,
         text: Option<u64>,
@@ -38,6 +39,7 @@ pub enum ImportStep {
 #[derive(Debug)]
 pub enum ImportContinuation {
     Return(u64),
+    HostValue,
     DropClient {
         target: crate::services::DropClientTarget,
         reason_address: u64,
@@ -47,10 +49,11 @@ impl ImportContinuation {
     pub fn resume(
         self,
         invocation: &mut Invocation<'_, '_, '_>,
-        _returned: u64,
+        returned: u64,
     ) -> Result<ImportStep, CallError> {
         match self {
             Self::Return(value) => Ok(ImportStep::Return(value)),
+            Self::HostValue => Ok(ImportStep::Return(returned)),
             Self::DropClient {
                 target,
                 reason_address,

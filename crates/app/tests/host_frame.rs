@@ -114,7 +114,7 @@ fn before(
     runtime.server.clients[0].player.health = 10;
     Ok(())
 }
-fn provider(host: &mut FrameHost, tick: Tick) {
+fn provider(host: &mut FrameHost, tick: Tick, _driver: &mut qa_app::modules::Driver<'_>) {
     let runtime = &mut host.runtime;
     assert!(runtime.server.clients[0].player.health >= 10);
     runtime.server.clients[0].player.health = 20;
@@ -131,7 +131,7 @@ fn provider(host: &mut FrameHost, tick: Tick) {
 
 #[test]
 fn provider_commands_use_the_host_console_before_client_phase() {
-    fn frame(host: &mut FrameHost, _: Tick) {
+    fn frame(host: &mut FrameHost, _: Tick, _driver: &mut qa_app::modules::Driver<'_>) {
         host.console
             .append_line("sensitivity 5 extra", Context::default())
             .unwrap();

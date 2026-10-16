@@ -2,7 +2,7 @@
 use super::*;
 use qa_compat::services::{CallError as ServiceError, ForeignTraceRead};
 use qa_core::primitives::{EntityId, Motion, MovementMode};
-use qa_session::dispatch::{ThinkFrame, run_think_with_rebind};
+use qa_session::dispatch::{ThinkFrame, run_think_with_rebind_and_completion};
 use std::sync::Arc;
 
 use super::super::edit_quakec as edit;
@@ -126,9 +126,10 @@ fn callback(
     module: ModuleId,
     id: ClientId,
     event: ClientCallback,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     let (callback, call) = prepare_callback(host, module, id, event)?;
-    host.call_module(callback, call)
+    host.call_module_with_driver(callback, call, driver)
         .map_err(ClientCommandError::Dispatch)
 }
 
@@ -137,6 +138,7 @@ pub(super) fn connect(
     module: ModuleId,
     id: ClientId,
     userinfo: &[u8],
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<u32, String> {
     let info = host.client_info(module).ok_or("missing client lifecycle")?;
     if info.rules == RuleSetId::Quake
@@ -219,7 +221,7 @@ pub(super) fn connect(
             crate::modules::execution::TraceAccess::empty(),
             |vm, services, _| vm.bind_client(&services.server.entities, native, entity),
         )?;
-        callback(host, module, id, ClientCallback::NewParameters)?;
+        callback(host, module, id, ClientCallback::NewParameters, driver)?;
         let parms = edit(
             host,
             module,
@@ -242,8 +244,8 @@ pub(super) fn connect(
                 vm.write_spawn_parms(parms)
             },
         )?;
-        callback(host, module, id, ClientCallback::Connect)?;
-        callback(host, module, id, ClientCallback::Begin)?;
+        callback(host, module, id, ClientCallback::Connect, driver)?;
+        callback(host, module, id, ClientCallback::Begin, driver)?;
         // The native module becomes movement owner only after Begin succeeds.
         host.runtime.server.clients[id.0 as usize].module_movement = true;
         edit(
@@ -256,7 +258,7 @@ pub(super) fn connect(
         Ok(())
     })();
     if let Err(error) = result {
-        host.disconnect_client(id);
+        host.disconnect_client_with_driver(id, driver);
         return Err(error.to_string());
     }
     Ok(native_client)
@@ -270,6 +272,7 @@ pub(super) fn receive(
     id: ClientId,
     command: &UserCmd,
     _: u32,
+    _driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     let offset = native(host, module, id)?;
     edit(
@@ -286,6 +289,7 @@ fn think(
     id: ClientId,
     time: ThinkTime,
     step: f64,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<Option<EntityId>, ClientCommandError> {
     let entity = host.runtime.server.clients[id.0 as usize].entity;
     let functions = Arc::clone(
@@ -295,7 +299,7 @@ fn think(
             .ok_or(ClientCommandError::MissingModule)?
             .functions,
     );
-    let result = run_think_with_rebind(
+    let result = run_think_with_rebind_and_completion(
         host,
         &functions,
         entity,
@@ -321,6 +325,7 @@ fn think(
                 .ok()
                 .flatten()
         },
+        |host, outcome, call| driver.complete(host, outcome, call),
     );
     if result.rejected != 0 {
         return Err(ClientCommandError::Inactive);
@@ -414,7 +419,12 @@ fn move_frame_client(
 }
 
 /// Native control uses the retained command, in edict order, before StartFrame.
-pub(super) fn controls(host: &mut FrameHost, module: ModuleId, seconds: f64) {
+pub(super) fn controls(
+    host: &mut FrameHost,
+    module: ModuleId,
+    seconds: f64,
+    driver: &mut crate::modules::Driver<'_>,
+) {
     let Some(info) = host.client_info(module) else {
         return;
     };
@@ -448,7 +458,9 @@ pub(super) fn controls(host: &mut FrameHost, module: ModuleId, seconds: f64) {
                     .ok_or(ClientCommandError::MissingModule)?
                     .time(host.time);
                 with_tuning(host, id, |host| {
-                    super::super::motion::client_control(host, module, id, start, time, seconds)
+                    super::super::motion::client_control(
+                        host, module, id, start, time, seconds, driver,
+                    )
                 })?;
             }
             Ok::<(), ClientCommandError>(())
@@ -466,7 +478,7 @@ pub(super) fn controls(host: &mut FrameHost, module: ModuleId, seconds: f64) {
                 }
             }
             if !unsupported {
-                host.disconnect_client(id);
+                host.disconnect_client_with_driver(id, driver);
             }
         }
     }
@@ -481,9 +493,10 @@ pub(in crate::modules) fn frame(
     id: ClientId,
     time: ThinkTime,
     step: f64,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<bool, ClientCommandError> {
     let captured = host.runtime.server.clients[id.0 as usize].entity;
-    callback(host, module, id, ClientCallback::BeforeMove)?;
+    callback(host, module, id, ClientCallback::BeforeMove, driver)?;
     if !same_client(host, module, id, captured) {
         return Ok(true);
     }
@@ -505,7 +518,7 @@ pub(in crate::modules) fn frame(
         | Motion::Bounce => {}
         _ => return Ok(false),
     }
-    if think(host, module, id, time, step)?.is_none() {
+    if think(host, module, id, time, step, driver)?.is_none() {
         return Ok(true);
     }
     let offset = native(host, module, id)?;
@@ -515,7 +528,7 @@ pub(in crate::modules) fn frame(
         == RuleSetId::Quake
     {
         with_tuning(host, id, |host| {
-            super::super::motion::client_move(host, module, id, phase, time, step)
+            super::super::motion::client_move(host, module, id, phase, time, step, driver)
         })?;
     } else if phase != Motion::None {
         move_frame_client(
@@ -546,12 +559,13 @@ pub(in crate::modules) fn frame(
         crate::modules::execution::TraceAccess::empty(),
         entity,
         time,
+        driver,
     )?;
     if !same_client(host, module, id, captured) {
         return Ok(true);
     }
     native(host, module, id)?;
-    callback(host, module, id, ClientCallback::AfterMove)?;
+    callback(host, module, id, ClientCallback::AfterMove, driver)?;
     Ok(true)
 }
 
@@ -561,6 +575,7 @@ pub(super) fn command(
     id: ClientId,
     command: &UserCmd,
     _frame: u32,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     let captured = host.runtime.server.clients[id.0 as usize].entity;
     for mut command in qa_movement::quakeworld_steps(*command) {
@@ -574,7 +589,7 @@ pub(super) fn command(
             crate::modules::execution::TraceAccess::empty(),
             |vm, services, context| vm.prepare_client_command(services, context, offset, &command),
         )?;
-        callback(host, module, id, ClientCallback::BeforeMove)?;
+        callback(host, module, id, ClientCallback::BeforeMove, driver)?;
         if !same_client(host, module, id, captured) {
             return Ok(());
         }
@@ -582,7 +597,7 @@ pub(super) fn command(
             .module_row(module)
             .ok_or(ClientCommandError::MissingModule)?
             .time(host.time);
-        if think(host, module, id, time, step)?.is_none() {
+        if think(host, module, id, time, step, driver)?.is_none() {
             return Ok(());
         }
         let offset = native(host, module, id)?;
@@ -660,6 +675,7 @@ pub(super) fn command(
                 crate::modules::execution::TraceAccess::empty(),
                 entity,
                 time,
+                driver,
             )?;
             for contact in contacts[..moved.contact_count].iter().flatten() {
                 if !same_client(host, module, id, captured) {
@@ -674,6 +690,7 @@ pub(super) fn command(
                     None,
                     true,
                     false,
+                    driver,
                 )?;
             }
         }
@@ -685,8 +702,9 @@ pub(super) fn finish(
     host: &mut FrameHost,
     module: ModuleId,
     id: ClientId,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
-    callback(host, module, id, ClientCallback::AfterMove)
+    callback(host, module, id, ClientCallback::AfterMove, driver)
 }
 pub(super) fn prepare_disconnect(
     host: &mut FrameHost,
@@ -700,6 +718,7 @@ pub(super) fn text(
     _: ModuleId,
     _: ClientId,
     _: CommandArgs<'_>,
+    _driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     Err(ClientCommandError::Unsupported)
 }
@@ -708,6 +727,7 @@ pub(super) fn userinfo(
     _: ModuleId,
     _: ClientId,
     _: &[u8],
+    _driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     Err(ClientCommandError::Unsupported)
 }

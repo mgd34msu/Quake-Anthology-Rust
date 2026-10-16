@@ -323,6 +323,7 @@ fn qc_host_yield_publishes_unrelated_dirty_body_without_relinking_it() {
             &mut frame,
             Arguments::default(),
             TraceAccess::empty(),
+            &mut crate::modules::Driver::cache_only(),
         )
         .unwrap() else {
             panic!("walkmove must yield before its trigger callback");
@@ -368,7 +369,15 @@ fn qc_host_yield_publishes_unrelated_dirty_body_without_relinking_it() {
                 touch: None,
             },
         });
-        assert!(drive(&mut host, Frame::Guest(frame), CommandArgs::default()).is_ok());
+        assert!(
+            drive(
+                &mut host,
+                Frame::Guest(frame),
+                CommandArgs::default(),
+                &mut crate::modules::Driver::cache_only()
+            )
+            .is_ok()
+        );
         assert_eq!(
             host.module_counts(MODULE).unwrap().last_result,
             Some(ModuleResult::QuakeC([
@@ -402,7 +411,8 @@ fn qc_rejected_host_publication_consumes_continuation_before_cancel_and_recovers
                 &mut host,
                 &mut frame,
                 Arguments::default(),
-                TraceAccess::empty()
+                TraceAccess::empty(),
+                &mut crate::modules::Driver::cache_only()
             )
             .is_err()
         );
@@ -435,7 +445,15 @@ fn qc_rejected_host_publication_consumes_continuation_before_cancel_and_recovers
         assert!(!qc.vm.is_running());
         assert_eq!(qc.vm.image.globals[34], SENTINEL as u32 * stride);
         completing(&mut host, &mut frame, Err(()));
-        assert!(!drive(&mut host, Frame::Guest(frame), CommandArgs::default()).is_ok());
+        assert!(
+            !drive(
+                &mut host,
+                Frame::Guest(frame),
+                CommandArgs::default(),
+                &mut crate::modules::Driver::cache_only()
+            )
+            .is_ok()
+        );
         host.call_module(repair, call(ids[0])).unwrap();
         assert_eq!(
             host.module_counts(MODULE).unwrap().last_result,

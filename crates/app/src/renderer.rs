@@ -435,28 +435,20 @@ pub struct Renderer {
     hud: [Option<hud::HudAssets>; 5],
     lightstyles: [hud::LightStyles; SeatId::COUNT],
 }
-impl Renderer {
-    /// Admit a cold registration before the suspended module receives its
-    /// handle. The caller must have completed all scoped raster jobs.
-    pub fn prepare_assets(
-        &mut self,
-        resources: crate::model_assets::ModelView<'_>,
-        profile: crate::model_assets::ModelProfile,
-        kind: qa_compat::services::RendererRegistration,
-        handle: i32,
-    ) -> Result<(), String> {
-        let valid = resources.catalog.renderer_candidate(kind, handle, profile);
-        if !valid {
-            return Err("renderer registration has no binding for its presentation".to_owned());
-        }
+/// A short cold borrow; implementations prepare the complete resource prefix.
+/// Success retains every existing resource and admits all supplied additions.
+pub trait AssetPreparer {
+    fn prepare_assets(&mut self, assets: &Assets) -> Result<(), String>;
+}
+impl AssetPreparer for Renderer {
+    fn prepare_assets(&mut self, assets: &Assets) -> Result<(), String> {
         match &mut self.backend {
-            Backend::Cpu { backend, .. } => backend
-                .prepare_assets(resources.assets)
-                .map_err(str::to_owned),
-            Backend::Gl(backend) => backend.prepare_assets(resources.assets),
+            Backend::Cpu { backend, .. } => backend.prepare_assets(assets).map_err(str::to_owned),
+            Backend::Gl(backend) => backend.prepare_assets(assets),
         }
     }
-
+}
+impl Renderer {
     pub fn admitted_assets(&self) -> Option<qa_render::assets::AssetCounts> {
         match &self.backend {
             Backend::Cpu { backend, .. } => backend.admitted_assets(),

@@ -619,8 +619,11 @@ fn fixture_roles(
 
 #[path = "input/clear_states.rs"]
 mod clear_states;
+#[path = "input/late_assets.rs"]
+mod late_assets;
 
 pub(super) fn queued_native_input(native: bool) {
+    late_assets::run(native);
     clear_states::run(native);
     queued_callbacks_and_imports(native);
     binding_capture_releases_and_atomic_catchers(native);

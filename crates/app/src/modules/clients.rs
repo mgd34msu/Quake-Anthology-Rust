@@ -24,17 +24,46 @@ pub(super) struct ClientLifecycle {
     pub(super) disconnect_callback: Option<CallbackId>,
     frame_commands: bool,
     q2: Option<Q2Clients>,
-    connect: fn(&mut FrameHost, ModuleId, ClientId, &[u8]) -> Result<u32, String>,
-    command:
-        fn(&mut FrameHost, ModuleId, ClientId, &UserCmd, u32) -> Result<(), ClientCommandError>,
-    finish: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
+    connect: fn(
+        &mut FrameHost,
+        ModuleId,
+        ClientId,
+        &[u8],
+        &mut crate::modules::Driver<'_>,
+    ) -> Result<u32, String>,
+    command: fn(
+        &mut FrameHost,
+        ModuleId,
+        ClientId,
+        &UserCmd,
+        u32,
+        &mut crate::modules::Driver<'_>,
+    ) -> Result<(), ClientCommandError>,
+    finish: fn(
+        &mut FrameHost,
+        ModuleId,
+        ClientId,
+        &mut crate::modules::Driver<'_>,
+    ) -> Result<(), ClientCommandError>,
     prepare_disconnect: fn(
         &mut FrameHost,
         ModuleId,
         ClientId,
     ) -> Result<(CallbackId, CallbackCall<'static>), ClientCommandError>,
-    text: fn(&mut FrameHost, ModuleId, ClientId, CommandArgs<'_>) -> Result<(), ClientCommandError>,
-    userinfo: fn(&mut FrameHost, ModuleId, ClientId, &[u8]) -> Result<(), ClientCommandError>,
+    text: fn(
+        &mut FrameHost,
+        ModuleId,
+        ClientId,
+        CommandArgs<'_>,
+        &mut crate::modules::Driver<'_>,
+    ) -> Result<(), ClientCommandError>,
+    userinfo: fn(
+        &mut FrameHost,
+        ModuleId,
+        ClientId,
+        &[u8],
+        &mut crate::modules::Driver<'_>,
+    ) -> Result<(), ClientCommandError>,
     publish: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
 }
 impl ClientLifecycle {
@@ -56,7 +85,7 @@ impl ClientLifecycle {
             prepare_disconnect: q3::prepare_disconnect,
             text: q3::text,
             userinfo: q3::userinfo,
-            publish: no_finish,
+            publish: no_publish,
         }
     }
     pub(super) fn quakec(module: ModuleId, rules: RuleSetId, clients: usize) -> Self {
@@ -107,11 +136,19 @@ impl ClientLifecycle {
             prepare_disconnect: q2_disconnect,
             text: q2_text,
             userinfo: q2_userinfo,
-            publish: no_finish,
+            publish: no_publish,
         }
     }
 }
-fn no_finish(_: &mut FrameHost, _: ModuleId, _: ClientId) -> Result<(), ClientCommandError> {
+fn no_publish(_: &mut FrameHost, _: ModuleId, _: ClientId) -> Result<(), ClientCommandError> {
+    Ok(())
+}
+fn no_finish(
+    _: &mut FrameHost,
+    _: ModuleId,
+    _: ClientId,
+    _driver: &mut crate::modules::Driver<'_>,
+) -> Result<(), ClientCommandError> {
     Ok(())
 }
 fn q2_api(host: &FrameHost, module: ModuleId) -> Result<Q2Clients, ClientCommandError> {
@@ -125,9 +162,10 @@ fn q2_connect(
     module: ModuleId,
     id: ClientId,
     text: &[u8],
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<u32, String> {
     let api = q2_api(host, module).map_err(|e| e.to_string())?;
-    host.connect_q2_data(&api, id, text)
+    host.connect_q2_data(&api, id, text, driver)
 }
 fn q2_command(
     host: &mut FrameHost,
@@ -135,8 +173,9 @@ fn q2_command(
     id: ClientId,
     command: &UserCmd,
     frame: u32,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
-    host.think_q2_client(&q2_api(host, module)?, id, command, frame)
+    host.think_q2_client(&q2_api(host, module)?, id, command, frame, driver)
 }
 fn q2_disconnect(
     host: &mut FrameHost,
@@ -167,6 +206,7 @@ fn q2_text(
     module: ModuleId,
     id: ClientId,
     command: CommandArgs<'_>,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
@@ -179,6 +219,7 @@ fn q2_text(
             time,
             &[address],
             command,
+            driver,
         )
     }
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -192,8 +233,9 @@ fn q2_userinfo(
     _: ModuleId,
     id: ClientId,
     text: &[u8],
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
-    host.userinfo_q2_client(id, text)
+    host.userinfo_q2_client(id, text, driver)
 }
 
 #[derive(Debug)]
@@ -283,6 +325,20 @@ impl FrameHost {
         id: ClientId,
         userinfo: &[u8],
     ) -> Result<u32, String> {
+        self.connect_module_client_with_driver(
+            module,
+            id,
+            userinfo,
+            &mut crate::modules::Driver::cache_only(),
+        )
+    }
+    pub fn connect_module_client_with_driver(
+        &mut self,
+        module: ModuleId,
+        id: ClientId,
+        userinfo: &[u8],
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> Result<u32, String> {
         let table = self
             .module_row(module)
             .and_then(|row| row.client_lifecycle)
@@ -295,7 +351,7 @@ impl FrameHost {
                 qa_compat::services::userinfo_rules(table.info.rules),
             )
             .map_err(|e| format!("client userinfo: {e:?}"))?;
-        (table.connect)(self, module, id, userinfo)
+        (table.connect)(self, module, id, userinfo, driver)
     }
     pub fn run_module_client_command(
         &mut self,
@@ -303,6 +359,22 @@ impl FrameHost {
         id: ClientId,
         command: &UserCmd,
         frame: u32,
+    ) -> Result<(), ClientCommandError> {
+        self.run_module_client_command_with_driver(
+            module,
+            id,
+            command,
+            frame,
+            &mut crate::modules::Driver::cache_only(),
+        )
+    }
+    pub fn run_module_client_command_with_driver(
+        &mut self,
+        module: ModuleId,
+        id: ClientId,
+        command: &UserCmd,
+        frame: u32,
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), ClientCommandError> {
         let native = self
             .runtime
@@ -322,10 +394,10 @@ impl FrameHost {
         if implicit {
             self.begin_command_batch(id);
         }
-        let result = (table.command)(self, module, id, command, frame);
+        let result = (table.command)(self, module, id, command, frame, driver);
         if implicit {
             if result.is_ok() {
-                self.end_command_batch(id);
+                self.end_command_batch(id, driver);
             } else if let Some(row) = self.module_row_mut(module) {
                 row.client_batch = None;
             }
@@ -349,7 +421,11 @@ impl FrameHost {
         row.client_contacts.begin();
         row.client_batch = Some(id);
     }
-    pub(crate) fn end_command_batch(&mut self, id: ClientId) {
+    pub(crate) fn end_command_batch(
+        &mut self,
+        id: ClientId,
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
         let Some(native) = self.runtime.server.module_moves(id) else {
             return;
         };
@@ -358,8 +434,8 @@ impl FrameHost {
             .filter(|row| row.client_batch == Some(id))
             .and_then(|row| row.client_lifecycle);
         if let Some(table) = table {
-            if (table.finish)(self, native.module, id).is_err() {
-                self.disconnect_client(id);
+            if (table.finish)(self, native.module, id, driver).is_err() {
+                self.disconnect_client_with_driver(id, driver);
             }
             if let Some(row) = self.module_row_mut(native.module) {
                 row.client_batch = None;
@@ -394,9 +470,10 @@ impl FrameHost {
         time: ThinkTime,
         words: &[u64],
         command: CommandArgs<'_>,
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), ClientCommandError> {
         let call = self.client_call(id, event, time, words, command)?;
-        self.call_module(callback, call)
+        self.call_module_with_driver(callback, call, driver)
             .map_err(ClientCommandError::Dispatch)
     }
     fn client_call<'a>(
@@ -438,6 +515,7 @@ impl FrameHost {
         command: UserCmd,
         execution: qa_network::commands::packet::CommandExecution,
         observation: Option<SnapshotObservation>,
+        driver: &mut crate::modules::Driver<'_>,
     ) {
         let rules = self.runtime.server.clients[id.0 as usize]
             .player
@@ -453,14 +531,19 @@ impl FrameHost {
             .server
             .submit_command(id, command, execution, observation);
         if execution == qa_network::commands::packet::CommandExecution::PerCommand {
-            self.consume_pending_command(id);
+            self.consume_pending_command(id, driver);
             self.runtime.server.commit_attachments();
         }
     }
 
     /// Frame-driven native clients admit their queued fields before StartFrame,
     /// including catch-up provider ticks that precede the current world tick.
-    pub(super) fn prepare_module_client_commands(&mut self, module: ModuleId, seconds: f64) {
+    pub(super) fn prepare_module_client_commands(
+        &mut self,
+        module: ModuleId,
+        seconds: f64,
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
         if !self
             .module_row(module)
             .and_then(|row| row.client_lifecycle)
@@ -476,26 +559,30 @@ impl FrameHost {
                 .module_moves(id)
                 .is_some_and(|native| native.module == module)
             {
-                self.consume_pending_command(id);
+                self.consume_pending_command(id, driver);
             }
         }
-        quakec::controls(self, module, seconds);
+        quakec::controls(self, module, seconds, driver);
     }
 
     /// The host calls this ordered batch for frame-latest commands and bots.
     /// Packet-command protocols already consumed their commands during ingress.
-    pub(crate) fn run_pending_commands(&mut self, span: qa_core::sys_events::EventTime) {
+    pub(crate) fn run_pending_commands(
+        &mut self,
+        span: qa_core::sys_events::EventTime,
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
         for slot in 0..self.runtime.server.clients.len() {
             let id = ClientId(slot as u32);
             self.runtime
                 .server
                 .resolve_frame_command(id, span, self.time);
-            self.consume_pending_command(id);
+            self.consume_pending_command(id, driver);
         }
         self.runtime.server.commit_attachments();
     }
 
-    fn consume_pending_command(&mut self, id: ClientId) {
+    fn consume_pending_command(&mut self, id: ClientId, driver: &mut crate::modules::Driver<'_>) {
         if let Some(native) = self.runtime.server.module_moves(id) {
             let Some((command, observation)) = self.runtime.server.take_pending_command(id) else {
                 return;
@@ -513,14 +600,20 @@ impl FrameHost {
                     .unwrap_or(0)
             });
             if let Some(frame) = bound {
-                let result = self.run_module_client_command(native.module, id, &command, frame);
+                let result = self.run_module_client_command_with_driver(
+                    native.module,
+                    id,
+                    &command,
+                    frame,
+                    driver,
+                );
                 if let Err(error) = result {
                     let _ = self
                         .runtime
                         .server
                         .events
                         .console_formatted(format_args!("ClientThink: {error}\n"));
-                    self.disconnect_client(id);
+                    self.disconnect_client_with_driver(id, driver);
                 }
             }
         } else if let Some(world) = &mut self.runtime.collision {
@@ -598,6 +691,7 @@ impl FrameHost {
         api: &Q2Clients,
         id: ClientId,
         userinfo: &[u8],
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<u32, String> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
@@ -656,6 +750,7 @@ impl FrameHost {
                     time,
                     &[address, api.userinfo, api.social, 0],
                     CommandArgs::default(),
+                    driver,
                 )
                 .map_err(|e| format!("ClientConnect: {e:?}"))?;
                 if !self
@@ -680,6 +775,7 @@ impl FrameHost {
                     time,
                     &[address],
                     CommandArgs::default(),
+                    driver,
                 )
                 .map_err(|e| format!("ClientBegin: {e:?}"))?;
                 // Q2 ClientBegin owns spawn facing through ps.pmove.delta_angles.
@@ -691,7 +787,7 @@ impl FrameHost {
                 Ok(native_client)
             })();
             if result.is_err() {
-                self.disconnect_client(id);
+                self.disconnect_client_with_driver(id, driver);
             }
             result
         }
@@ -711,6 +807,7 @@ impl FrameHost {
         id: ClientId,
         command: &UserCmd,
         server_frame: u32,
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), ClientCommandError> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
@@ -729,6 +826,7 @@ impl FrameHost {
                 time,
                 &[address, api.usercmd],
                 CommandArgs::default(),
+                driver,
             )
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -746,6 +844,20 @@ impl FrameHost {
         id: ClientId,
         rules: qa_core::primitives::RuleSetId,
         bytes: &[u8],
+    ) -> Result<std::ops::ControlFlow<()>, ClientCommandError> {
+        self.client_string_command_with_driver(
+            id,
+            rules,
+            bytes,
+            &mut crate::modules::Driver::cache_only(),
+        )
+    }
+    pub fn client_string_command_with_driver(
+        &mut self,
+        id: ClientId,
+        rules: qa_core::primitives::RuleSetId,
+        bytes: &[u8],
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<std::ops::ControlFlow<()>, ClientCommandError> {
         let api = self
             .runtime
@@ -789,7 +901,7 @@ impl FrameHost {
                 return Ok(std::ops::ControlFlow::Continue(()));
             }
             if args.get_bytes(0) == b"disconnect" {
-                self.disconnect_client(id);
+                self.disconnect_client_with_driver(id, driver);
                 return Ok(std::ops::ControlFlow::Break(()));
             }
             let Some((api, _)) = api else {
@@ -807,6 +919,7 @@ impl FrameHost {
                     argv: &argv[..args.len()],
                     raw: args.raw_bytes(),
                 },
+                driver,
             )?;
             Ok(std::ops::ControlFlow::Continue(()))
         })();
@@ -818,6 +931,14 @@ impl FrameHost {
         &mut self,
         id: ClientId,
         text: &[u8],
+    ) -> Result<(), ClientCommandError> {
+        self.userinfo_module_client_with_driver(id, text, &mut crate::modules::Driver::cache_only())
+    }
+    pub fn userinfo_module_client_with_driver(
+        &mut self,
+        id: ClientId,
+        text: &[u8],
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), ClientCommandError> {
         let native = self
             .runtime
@@ -836,9 +957,14 @@ impl FrameHost {
                 qa_compat::services::userinfo_rules(table.info.rules),
             )
             .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))?;
-        (table.userinfo)(self, native.module, id, text)
+        (table.userinfo)(self, native.module, id, text, driver)
     }
-    fn userinfo_q2_client(&mut self, id: ClientId, text: &[u8]) -> Result<(), ClientCommandError> {
+    fn userinfo_q2_client(
+        &mut self,
+        id: ClientId,
+        text: &[u8],
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> Result<(), ClientCommandError> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             let (native, address, time) = self.module_client(id)?;
@@ -857,6 +983,7 @@ impl FrameHost {
                 time,
                 &[address, api.userinfo],
                 CommandArgs::default(),
+                driver,
             )?;
             self.refresh_q2_userinfo(id, &api)
         }
@@ -943,10 +1070,10 @@ impl FrameHost {
             .ok_or(ClientCommandError::SlotOutsideTable)?;
         Ok((address, time))
     }
-    pub(super) fn disconnect_module_clients(&mut self) {
+    pub(super) fn disconnect_module_clients(&mut self, driver: &mut crate::modules::Driver<'_>) {
         for index in 0..self.runtime.server.clients.len() {
             if self.runtime.server.clients[index].connection.is_some() {
-                self.disconnect_client(ClientId(index as u32));
+                self.disconnect_client_with_driver(ClientId(index as u32), driver);
             }
         }
     }
@@ -968,11 +1095,15 @@ impl FrameHost {
                     })
                 }))
     }
-    pub(super) fn disconnect_module_recipients(&mut self, module: ModuleId) {
+    pub(super) fn disconnect_module_recipients(
+        &mut self,
+        module: ModuleId,
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
         for slot in 0..self.runtime.server.clients.len() {
             let id = ClientId(slot as u32);
             if self.module_recipient(module, id) {
-                self.disconnect_client(id);
+                self.disconnect_client_with_driver(id, driver);
             }
         }
     }
@@ -1035,7 +1166,11 @@ impl FrameHost {
             self.retire_client(id, access);
         }
     }
-    pub(crate) fn disconnect_client(&mut self, id: ClientId) {
+    pub(crate) fn disconnect_client_with_driver(
+        &mut self,
+        id: ClientId,
+        driver: &mut crate::modules::Driver<'_>,
+    ) {
         let Some(lifetime) = self
             .runtime
             .server
@@ -1048,7 +1183,7 @@ impl FrameHost {
         if let Some((callback, call)) =
             self.begin_client_disconnect(id, lifetime, super::execution::TraceAccess::empty())
         {
-            let _ = self.call_module(callback, call);
+            let _ = self.call_module_with_driver(callback, call, driver);
             self.finish_client_disconnect(id, lifetime, super::execution::TraceAccess::empty());
         }
     }
@@ -1056,12 +1191,15 @@ impl FrameHost {
         &mut self,
         id: ClientId,
         termination: qa_compat::services::ClientTermination,
+        driver: &mut crate::modules::Driver<'_>,
     ) {
         match termination {
             qa_compat::services::ClientTermination::ServerDisconnect => {
                 self.received_client_disconnect(id)
             }
-            qa_compat::services::ClientTermination::Rejected => self.disconnect_client(id),
+            qa_compat::services::ClientTermination::Rejected => {
+                self.disconnect_client_with_driver(id, driver)
+            }
         }
     }
     pub(crate) fn retire_client(

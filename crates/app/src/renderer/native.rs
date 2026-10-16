@@ -62,6 +62,21 @@ impl Default for SceneRole {
     }
 }
 impl SceneRole {
+    pub(crate) fn profile(&self) -> Option<ModelProfile> {
+        self.target.map(|target| target.profile)
+    }
+
+    pub(crate) fn registration_world_available(
+        &self,
+        composer: Option<&SceneComposer>,
+        world: WorldId,
+    ) -> bool {
+        let (Some(target), Some(composer)) = (self.target.as_ref(), composer) else {
+            return false;
+        };
+        target.world_presentation(&composer.scenes, world).is_some()
+    }
+
     pub(crate) fn configure(
         &mut self,
         profile: ModelProfile,
@@ -95,6 +110,7 @@ pub(crate) struct SceneBorrow<'a> {
     lighting: [f32; 2],
     software_waterwarp: bool,
     client: Option<qa_render::effects::EffectClient>,
+    registration_available: bool,
 }
 impl<'a> SceneBorrow<'a> {
     pub(crate) fn new(
@@ -129,7 +145,12 @@ impl<'a> SceneBorrow<'a> {
             lighting,
             software_waterwarp,
             client,
+            registration_available: false,
         }
+    }
+
+    pub(crate) fn set_registration_available(&mut self, available: bool) {
+        self.registration_available = available;
     }
 }
 
@@ -151,6 +172,9 @@ pub(crate) fn select_publisher(
     }
 }
 impl SceneService for SceneBorrow<'_> {
+    fn registration_available(&self) -> bool {
+        self.registration_available && self.role.target.is_some() && self.composer.is_some()
+    }
     fn registration_ready(&self, kind: RendererRegistration, handle: i32) -> bool {
         if handle <= 0 {
             return false;
@@ -165,9 +189,8 @@ impl SceneService for SceneBorrow<'_> {
         match kind {
             RendererRegistration::Model => {
                 if let Some(binding) = models.renderer_inline(handle) {
-                    target
-                        .world_presentation(&composer.scenes, binding.world)
-                        .is_some()
+                    self.role
+                        .registration_world_available(Some(composer), binding.world)
                 } else {
                     models
                         .renderer_registration(handle, target.profile)

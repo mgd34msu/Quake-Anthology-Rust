@@ -180,7 +180,11 @@ fn connect_local(runtime: &mut Runtime) -> ClientId {
         .unwrap()
 }
 
-fn advance_provider(host: &mut FrameHost, _: qa_session::timing::Tick) {
+fn advance_provider(
+    host: &mut FrameHost,
+    _: qa_session::timing::Tick,
+    _driver: &mut qa_app::modules::Driver<'_>,
+) {
     for client in host.runtime.server.clients.iter_mut() {
         if client.connection.is_some() {
             client.player.health += 1;

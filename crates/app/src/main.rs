@@ -1255,7 +1255,7 @@ fn run() -> Result<(), String> {
         }
         frame += 1;
     }
-    host.shutdown_modules();
+    host.shutdown_modules_with_driver(&mut qa_app::modules::Driver::new(Some(&mut renderer)));
     host.flush_journal()
         .map_err(|error| format!("flush journal: {error:?}"))?;
     if let Some(error) = host.journal_error.as_ref() {

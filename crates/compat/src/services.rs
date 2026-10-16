@@ -190,11 +190,19 @@ pub trait ModelLoader {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum RendererRegistration {
     Model,
     Skin,
     Shader { mipmaps: bool },
+}
+
+#[derive(Clone, Debug)]
+pub struct RendererRequest {
+    pub name: qa_core::text::FixedText<64>,
+    pub source: RuleSetId,
+    pub kind: RendererRegistration,
+    pub world: Option<qa_render::world::WorldId>,
 }
 
 /// Sound registration extends the one bank only during cold module loading.
@@ -2018,6 +2026,25 @@ impl EngineServices<'_> {
             Err(error) => Err(error),
         }
     }
+    pub(crate) fn renderer_handle(
+        &self,
+        name: &[u8],
+        source: RuleSetId,
+        kind: RendererRegistration,
+    ) -> Option<i32> {
+        let lookup = self.models()?;
+        if matches!(kind, RendererRegistration::Model) && name.starts_with(b"*") {
+            let world = self.scene.as_deref()?.selected_world()?;
+            let index = qa_core::text::inline_model_index(name)?;
+            lookup.inline_handle(world, index)
+        } else {
+            match kind {
+                RendererRegistration::Model => lookup.model_handle(name, source),
+                RendererRegistration::Skin => lookup.skin_handle(name, source),
+                RendererRegistration::Shader { .. } => lookup.shader_handle(name),
+            }
+        }
+    }
     pub fn register_renderer(
         &mut self,
         name: &[u8],
@@ -2029,7 +2056,10 @@ impl EngineServices<'_> {
         }
         let result = if name.len() >= 64 {
             Err(CallError::Text)
-        } else if matches!(kind, RendererRegistration::Model) && name.starts_with(b"*") {
+        } else if matches!(kind, RendererRegistration::Model)
+            && name.starts_with(b"*")
+            && self.model_loader.is_some()
+        {
             let world = self
                 .scene
                 .as_deref()
@@ -2038,13 +2068,10 @@ impl EngineServices<'_> {
             let index = qa_core::text::inline_model_index(name).ok_or(CallError::File);
             world.and_then(|world| {
                 index.and_then(|index| {
-                    if let Some(loader) = self.model_loader.as_deref_mut() {
-                        loader.register_inline(world, index)
-                    } else {
-                        self.model_lookup
-                            .and_then(|lookup| lookup.inline_handle(world, index))
-                            .ok_or(CallError::File)
-                    }
+                    self.model_loader
+                        .as_deref_mut()
+                        .ok_or(CallError::File)?
+                        .register_inline(world, index)
                 })
             })
         } else if let Some(loader) = self.model_loader.as_deref_mut() {
@@ -2056,12 +2083,7 @@ impl EngineServices<'_> {
                 }
             }
         } else {
-            self.model_lookup
-                .and_then(|lookup| match kind {
-                    RendererRegistration::Model => lookup.model_handle(name, source),
-                    RendererRegistration::Skin => lookup.skin_handle(name, source),
-                    RendererRegistration::Shader { .. } => lookup.shader_handle(name),
-                })
+            self.renderer_handle(name, source, kind)
                 .ok_or(CallError::File)
         };
         self.registration_result(

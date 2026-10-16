@@ -479,7 +479,25 @@ pub struct ImagesState {
     resolved: Vec<(ImageKey, ResolvedImage, ImageUse)>,
     conflicts: Vec<ImageConflict>,
 }
+#[derive(Clone, Copy)]
+pub struct ImageRegistrationMark {
+    conflicts: usize,
+}
 impl ImagesState {
+    pub fn registration_mark(&self) -> ImageRegistrationMark {
+        ImageRegistrationMark {
+            conflicts: self.conflicts.len(),
+        }
+    }
+
+    /// The name-sorted cache can insert anywhere, so retain by resource
+    /// identity rather than truncating it to its previous number of entries.
+    pub fn rollback_registration(&mut self, mark: ImageRegistrationMark, images: usize) {
+        self.resolved
+            .retain(|entry| (entry.1.id.0 as usize) < images);
+        self.conflicts.truncate(mark.conflicts);
+    }
+
     pub fn new(
         source_rules: RuleSetId,
         presentation_rules: RuleSetId,

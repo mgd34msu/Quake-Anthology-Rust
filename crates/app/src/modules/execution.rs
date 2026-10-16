@@ -29,23 +29,54 @@ pub(super) enum ModuleDispatch {
     Completed(ExecutionResult),
     Guest(GuestStart),
 }
-impl CallOutcome<FrameHost> for ModuleDispatch {
-    fn rejected() -> Self {
-        Self::Completed(Err(()))
+
+/// A backend borrow belongs to this synchronous execution scope, including
+/// every nested guest and console activation entered through the same driver.
+pub struct Driver<'a> {
+    preparer: Option<&'a mut dyn crate::renderer::AssetPreparer>,
+}
+impl<'a> Driver<'a> {
+    pub fn new(preparer: Option<&'a mut dyn crate::renderer::AssetPreparer>) -> Self {
+        Self { preparer }
     }
-    fn complete(self, host: &mut FrameHost, call: CallbackCall<'_>) -> bool {
-        match self {
-            Self::Completed(result) => result.is_ok(),
-            Self::Guest(start) => {
+    pub fn cache_only() -> Self {
+        Self::new(None)
+    }
+    fn available(&self) -> bool {
+        self.preparer.is_some()
+    }
+    pub(super) fn complete(
+        &mut self,
+        host: &mut FrameHost,
+        outcome: ModuleDispatch,
+        call: CallbackCall<'_>,
+    ) -> bool {
+        match outcome {
+            ModuleDispatch::Completed(result) => result.is_ok(),
+            ModuleDispatch::Guest(start) => {
                 let command = match call {
                     CallbackCall::Export { command, .. } | CallbackCall::Client { command, .. } => {
                         command
                     }
                     _ => CommandArgs::default(),
                 };
-                drive(host, Frame::Guest(Activation::new(start, false)), command).is_ok()
+                drive(
+                    host,
+                    Frame::Guest(Activation::new(start, false)),
+                    command,
+                    self,
+                )
+                .is_ok()
             }
         }
+    }
+}
+impl CallOutcome<FrameHost> for ModuleDispatch {
+    fn rejected() -> Self {
+        Self::Completed(Err(()))
+    }
+    fn complete(self, host: &mut FrameHost, call: CallbackCall<'_>) -> bool {
+        Driver::cache_only().complete(host, self, call)
     }
 }
 
@@ -110,6 +141,7 @@ struct Pending {
     operation: Operation,
 }
 enum Operation {
+    RegisterRenderer(Option<qa_compat::services::RendererRequest>),
     Callback(Option<qa_compat::abi::CallbackRequest>),
     Triggers {
         run: contacts::TriggerRun,
@@ -309,7 +341,7 @@ enum GuestStep {
 enum OperationStep {
     Continue,
     Call(ModuleDispatch),
-    Reply,
+    Reply(u64),
     Abort,
     FailedInput(ModuleId),
     Finished(Result<ModuleResult, ()>),
@@ -519,10 +551,14 @@ fn valid_frame(host: &FrameHost, start: GuestStart, backend: Option<&Backend>) -
 impl FrameHost {
     /// Both Com_Frame command phases and startup use the owned module driver.
     pub fn execute_commands(&mut self) {
+        self.execute_commands_with_driver(&mut Driver::cache_only());
+    }
+    pub(crate) fn execute_commands_with_driver(&mut self, driver: &mut Driver<'_>) {
         let _ = drive(
             self,
             Frame::Console(ConsoleActivation::new(CommandRun::drain())),
             CommandArgs::default(),
+            driver,
         );
     }
 }
@@ -538,7 +574,12 @@ fn arguments<'a>(
     }
 }
 
-fn drive(host: &mut FrameHost, frame: Frame, command: CommandArgs<'_>) -> ExecutionResult {
+fn drive(
+    host: &mut FrameHost,
+    frame: Frame,
+    command: CommandArgs<'_>,
+    driver: &mut Driver<'_>,
+) -> ExecutionResult {
     let mut arena = std::mem::take(&mut host.execution);
     if arena.is_empty() {
         host.execution = arena;
@@ -553,9 +594,13 @@ fn drive(host: &mut FrameHost, frame: Frame, command: CommandArgs<'_>) -> Execut
         };
         let step = match &mut frame {
             Frame::Guest(guest) => match arguments(&arena, guest.arguments, command) {
-                Some(command) => {
-                    guest_step(host, guest, command, TraceAccess::parents(&arena[..index]))
-                }
+                Some(command) => guest_step(
+                    host,
+                    guest,
+                    command,
+                    TraceAccess::parents(&arena[..index]),
+                    driver,
+                ),
                 None => {
                     cancel(
                         host,
@@ -654,6 +699,7 @@ fn guest_step(
     frame: &mut Activation,
     command: Arguments<'_>,
     access: TraceAccess<'_>,
+    driver: &mut Driver<'_>,
 ) -> FrameStep {
     let cleanup = frame
         .pending
@@ -665,14 +711,14 @@ fn guest_step(
         return FrameStep::Continue;
     }
     if frame.pending.is_some() {
-        return match operation(host, frame, access) {
+        return match operation(host, frame, access, driver) {
             OperationStep::Continue => FrameStep::Continue,
-            OperationStep::Reply => {
+            OperationStep::Reply(value) => {
                 if let Some(Pending {
                     point: Some(point), ..
                 }) = frame.pending.take()
                 {
-                    frame.reply = Some((point, 0));
+                    frame.reply = Some((point, value));
                 } else {
                     cancel(host, frame, command, access);
                     completing(host, frame, Err(()));
@@ -728,9 +774,12 @@ fn guest_step(
             OperationStep::Console { context, text } => FrameStep::Console { context, text },
         };
     }
-    match advance(host, frame, command, access) {
+    match advance(host, frame, command, access, driver) {
         Ok(GuestStep::Host(request, point)) => {
             let operation = match request {
+                HostRequest::RegisterRenderer(request) => {
+                    Ok(Operation::RegisterRenderer(Some(request)))
+                }
                 HostRequest::Callback(request) => Ok(Operation::Callback(Some(request))),
                 HostRequest::TouchTriggers { mover, time }
                     if mover.namespace == ResourceNamespace::Module(frame.start.module) =>
@@ -1129,6 +1178,7 @@ fn operation(
     host: &mut FrameHost,
     frame: &mut Activation,
     parents: TraceAccess<'_>,
+    driver: &mut Driver<'_>,
 ) -> OperationStep {
     let Activation {
         start,
@@ -1142,6 +1192,58 @@ fn operation(
         return OperationStep::Abort;
     };
     match &mut pending.operation {
+        Operation::RegisterRenderer(request) => {
+            let Some(request) = request.take() else {
+                return OperationStep::Abort;
+            };
+            let result = (|| {
+                let row = host
+                    .module_row(start.module)
+                    .ok_or_else(|| "missing renderer module".to_owned())?;
+                let profile = row
+                    .scene_role
+                    .profile()
+                    .ok_or_else(|| "missing renderer presentation".to_owned())?;
+                if matches!(
+                    request.kind,
+                    qa_compat::services::RendererRegistration::Model
+                ) && request.name.as_bytes().starts_with(b"*")
+                    && !request.world.is_some_and(|world| {
+                        row.scene_role
+                            .registration_world_available(host.runtime.scene.as_ref(), world)
+                    })
+                {
+                    return Err("missing inline model presentation".to_owned());
+                }
+                let preparer = driver
+                    .preparer
+                    .as_mut()
+                    .ok_or_else(|| "renderer registration has no backend".to_owned())?;
+                let owner = host
+                    .runtime
+                    .model_assets
+                    .as_mut()
+                    .ok_or_else(|| "missing model assets".to_owned())?;
+                owner.prepare_registration(&host.runtime.vfs, &request, profile, |assets| {
+                    (**preparer).prepare_assets(assets)
+                })
+            })();
+            let value = match result {
+                Ok((handle, _)) => {
+                    host.refresh_model_consumers();
+                    handle as u32 as u64
+                }
+                Err(error) => {
+                    let _ = host
+                        .runtime
+                        .server
+                        .events
+                        .console_formatted(format_args!("renderer registration: {error}\n"));
+                    0
+                }
+            };
+            OperationStep::Reply(value)
+        }
         Operation::Console {
             context,
             text,
@@ -1154,7 +1256,7 @@ fn operation(
                     text: *text,
                 }
             } else if matches!(child.take(), Some(Ok(_))) {
-                OperationStep::Reply
+                OperationStep::Reply(0)
             } else {
                 OperationStep::Abort
             }
@@ -1171,7 +1273,7 @@ fn operation(
                         .unwrap_or(ModuleDispatch::Completed(Err(()))),
                 )
             } else if matches!(child.take(), Some(Ok(_))) {
-                return OperationStep::Reply;
+                return OperationStep::Reply(0);
             } else {
                 return OperationStep::Abort;
             }
@@ -1198,7 +1300,7 @@ fn operation(
                         Err(_) => OperationStep::Abort,
                     }
                 }
-                Ok(None) => OperationStep::Reply,
+                Ok(None) => OperationStep::Reply(0),
                 Err(_) => OperationStep::Abort,
             }
         }
@@ -1280,7 +1382,7 @@ fn operation(
                 return OperationStep::Abort;
             };
             match input_advance(host, start.module, current, *context) {
-                Some(DispatchStep::Done) => return OperationStep::Reply,
+                Some(DispatchStep::Done) => return OperationStep::Reply(0),
                 Some(DispatchStep::Atom { atom, resume: next }) => {
                     *resume = Some(next);
                     host.console
@@ -1346,6 +1448,7 @@ fn advance(
     frame: &mut Activation,
     command: Arguments<'_>,
     access: TraceAccess<'_>,
+    driver: &mut Driver<'_>,
 ) -> Result<GuestStep, ()> {
     let start = frame.start;
     let Some(functions) = host
@@ -1483,6 +1586,7 @@ fn advance(
             .connection
             .map(|(client, lifetime)| qa_render::effects::EffectClient { client, lifetime }),
     );
+    scene.set_registration_available(driver.available());
     services.callbacks = Some(functions.as_ref());
     services.client_disconnect = row
         .client_lifecycle

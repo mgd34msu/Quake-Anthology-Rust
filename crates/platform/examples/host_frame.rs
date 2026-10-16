@@ -135,7 +135,7 @@ impl Source {
         self.repeats = true;
     }
 }
-fn provider(host: &mut FrameHost, tick: Tick) {
+fn provider(host: &mut FrameHost, tick: Tick, _: &mut qa_app::modules::Driver<'_>) {
     let runtime = &mut host.runtime;
     if let qa_session::timing::TickTarget::Provider(module) = tick.target {
         runtime.server.clients[module.0 as usize].player.score += 1;
