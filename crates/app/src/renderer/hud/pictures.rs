@@ -6,6 +6,7 @@ use super::{
 use crate::model_assets::ModelAssets;
 use qa_content::vfs::Vfs;
 use qa_core::{
+    names::file_stem,
     primitives::{NameId, RuleSetId},
     text::FixedText,
 };
@@ -49,7 +50,7 @@ impl Pictures {
                 {
                     return None;
                 }
-                let (base, _) = path.rsplit_once('.')?;
+                let base = file_stem(path);
                 Some(format!("{base}.pcx"))
             })
             .collect();
@@ -147,7 +148,7 @@ impl Pictures {
         }
         let mut path = FixedText::<1024>::default();
         if name.starts_with(['/', '\\']) {
-            path.set(&name[1..]).ok()?;
+            write!(path, "{}.pcx", file_stem(&name[1..])).ok()?;
         } else {
             write!(path, "pics/{name}.pcx").ok()?;
         }

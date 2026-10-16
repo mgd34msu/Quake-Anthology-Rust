@@ -1,4 +1,4 @@
-use qa_core::names::{NameMatch, NameTable, NamesError, canonical_path, compare_folded};
+use qa_core::names::{NameMatch, NameTable, NamesError, canonical_path, compare_folded, file_stem};
 use qa_core::primitives::NameId;
 
 #[test]
@@ -318,6 +318,32 @@ fn native_byte_path_lookup_preserves_non_ascii_bytes_and_stable_ids() {
 }
 
 #[test]
+fn file_stems_preserve_spelling_and_only_remove_the_final_component_suffix() {
+    for (path, expected) in [
+        ("", ""),
+        ("wall", "wall"),
+        ("PNG", "PNG"),
+        ("dir.with.dot/wall", "dir.with.dot/wall"),
+        ("dir.with.dot\\wall", "dir.with.dot\\wall"),
+        ("dir.with.dot/mixed\\wall", "dir.with.dot/mixed\\wall"),
+        ("dir.with.dot/WALL.TGA", "dir.with.dot/WALL"),
+        ("dir.with.dot\\WALL.TGA", "dir.with.dot\\WALL"),
+        ("dir/wall.detail.jpeg", "dir/wall.detail"),
+        (".profile", ""),
+        ("dir/.profile", "dir/"),
+        ("dir\\.profile", "dir\\"),
+        ("wall.", "wall"),
+        ("dir.with.dot/", "dir.with.dot/"),
+        ("dir.with.dot\\", "dir.with.dot\\"),
+        ("環境.古/雲.ＰＮＧ", "環境.古/雲"),
+        ("Ä\\Ö.JPEG", "Ä\\Ö"),
+        ("環境.古\\雲", "環境.古\\雲"),
+    ] {
+        assert_eq!(file_stem(path), expected, "{path:?}");
+    }
+}
+
+#[test]
 fn default_extensions_keep_native_component_rules_and_buffer_bounds() {
     use qa_core::{names::default_extension, text::FixedText};
     for (name, backslash, expected) in [
@@ -327,6 +353,11 @@ fn default_extensions_keep_native_component_rules_and_buffer_bounds() {
         ("music.old\\intro", false, "music.old\\intro"),
         ("music.old\\intro", true, "music.old\\intro.wav"),
         ("music/intro.", true, "music/intro."),
+        (".profile", true, ".profile"),
+        ("music/.profile", false, "music/.profile"),
+        ("環境.古\\雲", false, "環境.古\\雲"),
+        ("環境.古\\雲", true, "環境.古\\雲.wav"),
+        ("music/INTRO.OGG", true, "music/INTRO.OGG"),
     ] {
         let mut path = FixedText::<64>::default();
         path.append_bytes(name.as_bytes()).unwrap();

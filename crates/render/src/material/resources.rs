@@ -2,6 +2,7 @@
 use crate::assets::{Assets, ImageId, PaletteId, Sampler, upload};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
 use qa_content::vfs::{Vfs, VfsError};
+use qa_core::names::file_stem;
 use qa_core::primitives::{NameId, RuleSetId};
 use qa_formats::FormatError;
 use qa_formats::archive::ArchiveReader;
@@ -780,7 +781,7 @@ impl<'a> Images<'a> {
     }
     fn file_name(&mut self, name: &str) -> Result<NameId, ResourceError> {
         let name = if self.state.source_rules == RuleSetId::Quake2Rerelease {
-            search::stem(name)
+            file_stem(name)
         } else {
             name
         };
@@ -1497,7 +1498,7 @@ impl<'a> Images<'a> {
         let replacement = if let Ok(lump_name) = std::str::from_utf8(lump) {
             let archive = qa_core::names::canonical_path(name);
             self.select_file(
-                &format!("{}/{lump_name}", search::stem(&archive)),
+                &format!("{}/{lump_name}", file_stem(&archive)),
                 usage,
                 None,
                 true,

@@ -15,6 +15,23 @@ pub fn compare_folded(left: &[u8], right: &[u8]) -> Ordering {
 pub fn path_byte(byte: u8) -> u8 {
     fold(if byte == b'\\' { b'/' } else { byte })
 }
+fn extension_index(path: &[u8], backslash_separator: bool) -> Option<usize> {
+    for (index, &byte) in path.iter().enumerate().rev() {
+        if byte == b'.' {
+            return Some(index);
+        }
+        if byte == b'/' || backslash_separator && byte == b'\\' {
+            break;
+        }
+    }
+    None
+}
+/// Remove only the final component's last suffix, retaining the directory,
+/// case and original spelling. Both slash forms delimit directory components.
+/// A leading dot is a suffix boundary, so `.profile` has an empty stem.
+pub fn file_stem(path: &str) -> &str {
+    extension_index(path.as_bytes(), true).map_or(path, |index| &path[..index])
+}
 /// Native COM_DefaultExtension ignores dots before the final directory
 /// separator. Callers retain the source's backslash interpretation explicitly.
 pub fn default_extension<const N: usize>(
@@ -22,12 +39,7 @@ pub fn default_extension<const N: usize>(
     extension: &[u8],
     backslash_separator: bool,
 ) -> std::fmt::Result {
-    let component = path
-        .as_bytes()
-        .rsplit(|&byte| byte == b'/' || backslash_separator && byte == b'\\')
-        .next()
-        .unwrap_or_default();
-    if component.contains(&b'.') {
+    if extension_index(path.as_bytes(), backslash_separator).is_some() {
         Ok(())
     } else {
         path.append_bytes(extension)

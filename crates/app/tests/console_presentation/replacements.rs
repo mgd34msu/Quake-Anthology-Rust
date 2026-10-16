@@ -160,82 +160,87 @@ fn rerelease_hud_discovers_replacement_only_picture_and_keeps_original_logical_e
         let layout = ConfigLayout::QUAKE2;
         let mut configs =
             ConfigStrings::load((0..layout.count).map(|i| layout.capacity(i).unwrap())).unwrap();
-        configs
-            .set(layout.statusbar().unwrap(), b"xl 4 yt 6 picn health")
-            .unwrap();
-        let localization = qa_content::localization::Catalog::default();
-        let mut front = FrontEnd::load(Limits::default()).unwrap();
-        let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
-        vfs.take_lookup_count();
-        let counts = hud.append(
-            &mut frame,
-            owner.assets(),
-            HudView {
-                hud: &state,
-                texts: &texts,
-                configs: &configs,
-                layout,
-                values: &values,
-                localization: &localization,
-                rules: RuleSetId::Quake2Rerelease,
-                time: EventTime(0),
-                style_time: ThinkTime::Milliseconds(0),
-                server_frame: 0,
-                client: ClientId(0),
-                client_lifetime: EntityId {
-                    slot: 0,
-                    generation: 1,
+        for name in ["health", "/pics/health.tga", "\\pics\\health.TGA"] {
+            configs
+                .set(
+                    layout.statusbar().unwrap(),
+                    format!("xl 4 yt 6 picn {name}").as_bytes(),
+                )
+                .unwrap();
+            let localization = qa_content::localization::Catalog::default();
+            let mut front = FrontEnd::load(Limits::default()).unwrap();
+            let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
+            vfs.take_lookup_count();
+            let counts = hud.append(
+                &mut frame,
+                owner.assets(),
+                HudView {
+                    hud: &state,
+                    texts: &texts,
+                    configs: &configs,
+                    layout,
+                    values: &values,
+                    localization: &localization,
+                    rules: RuleSetId::Quake2Rerelease,
+                    time: EventTime(0),
+                    style_time: ThinkTime::Milliseconds(0),
+                    server_frame: 0,
+                    client: ClientId(0),
+                    client_lifetime: EntityId {
+                        slot: 0,
+                        generation: 1,
+                    },
+                    style_interpolation: 0,
+                    show_text: true,
                 },
-                style_interpolation: 0,
-                show_text: true,
-            },
-            Refdef {
-                viewport: Viewport {
-                    width: 160,
-                    height: 120,
+                Refdef {
+                    viewport: Viewport {
+                        width: 160,
+                        height: 120,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
-            ShaderView::direct(),
-        );
-        assert_eq!(
-            (counts.pictures, counts.missing_picture, counts.rejected),
-            (1, 0, 0)
-        );
-        let packet = frame.finish();
-        assert_eq!(packet.rejected, 0);
-        let draw = packet
-            .commands()
-            .iter()
-            .find_map(|command| match command {
-                Command::Draw2d(draw) => Some(draw),
-                _ => None,
-            })
-            .unwrap();
-        let size = if original { [2, 1] } else { [4, 2] };
-        assert_eq!(draw.rect, [4.0, 6.0, size[0] as f32, size[1] as f32]);
-        let binding = owner
-            .assets()
-            .shader_binding(draw.shader.source(&()).unwrap())
-            .unwrap();
-        let StageTexture::Image(id) =
-            owner.assets().material(binding.material).unwrap().stages[0].texture
-        else {
-            panic!("HUD picture image")
-        };
-        let image = owner.assets().image(id).unwrap();
-        assert_eq!([image.width, image.height], [4, 2]);
-        assert_eq!(image.logical_size(), size);
-        assert_eq!(cpu.render(&packet, owner.assets()).rejected, 0);
-        assert_eq!(
-            cpu.pixels()[6 * 160 + 4],
-            u32::from_le_bytes([17, 23, 31, 255])
-        );
-        assert_eq!(
-            cpu.pixels()[6 * 160 + 4 + size[0] as usize],
-            u32::from_le_bytes([3, 5, 7, 255])
-        );
-        assert_eq!(vfs.take_lookup_count(), 0);
+                ShaderView::direct(),
+            );
+            assert_eq!(
+                (counts.pictures, counts.missing_picture, counts.rejected),
+                (1, 0, 0)
+            );
+            let packet = frame.finish();
+            assert_eq!(packet.rejected, 0);
+            let draw = packet
+                .commands()
+                .iter()
+                .find_map(|command| match command {
+                    Command::Draw2d(draw) => Some(draw),
+                    _ => None,
+                })
+                .unwrap();
+            let size = if original { [2, 1] } else { [4, 2] };
+            assert_eq!(draw.rect, [4.0, 6.0, size[0] as f32, size[1] as f32]);
+            let binding = owner
+                .assets()
+                .shader_binding(draw.shader.source(&()).unwrap())
+                .unwrap();
+            let StageTexture::Image(id) =
+                owner.assets().material(binding.material).unwrap().stages[0].texture
+            else {
+                panic!("HUD picture image")
+            };
+            let image = owner.assets().image(id).unwrap();
+            assert_eq!([image.width, image.height], [4, 2]);
+            assert_eq!(image.logical_size(), size);
+            assert_eq!(cpu.render(&packet, owner.assets()).rejected, 0);
+            assert_eq!(
+                cpu.pixels()[6 * 160 + 4],
+                u32::from_le_bytes([17, 23, 31, 255])
+            );
+            assert_eq!(
+                cpu.pixels()[6 * 160 + 4 + size[0] as usize],
+                u32::from_le_bytes([3, 5, 7, 255])
+            );
+            assert_eq!(vfs.take_lookup_count(), 0);
+        }
     }
 }

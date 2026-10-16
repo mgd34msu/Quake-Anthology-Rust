@@ -1,6 +1,6 @@
 use super::{ImageRole, ImageSettings, ImageUse, ResourceError};
 use qa_content::vfs::Vfs;
-use qa_core::primitives::RuleSetId;
+use qa_core::{names::file_stem, primitives::RuleSetId};
 use qa_formats::{FormatError, image::ImageFormat, text::Tokens};
 
 /// A cold parsed order. A JPEG decoder may have more than one file suffix.
@@ -120,7 +120,7 @@ impl ImageSearchOrder {
         rgba_override: Option<&str>,
         embedded: bool,
     ) -> Result<Option<SelectedFile>, ResourceError> {
-        let base = stem(name);
+        let base = file_stem(name);
         let explicit = base.len() != name.len();
         let original = SourceFormat::from_path(name);
         let native = embedded
@@ -228,20 +228,17 @@ impl SourceFormat {
                 && matches!(presentation, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
     }
     pub(super) fn from_path(path: &str) -> Option<Self> {
-        let component = path.rsplit(['/', '\\']).next()?;
-        let (_, suffix) = component.rsplit_once('.')?;
+        let stem = file_stem(path);
+        if stem.len() == path.len() {
+            return None;
+        }
+        let suffix = &path[stem.len() + 1..];
         if suffix.eq_ignore_ascii_case("wal") {
             Some(Self::Wal)
         } else {
-            ImageFormat::from_path(component.as_bytes()).map(Self::Raster)
+            ImageFormat::from_path(path.as_bytes()).map(Self::Raster)
         }
     }
-}
-pub(super) fn stem(path: &str) -> &str {
-    let component = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    component
-        .rsplit_once('.')
-        .map_or(path, |(_, suffix)| &path[..path.len() - suffix.len() - 1])
 }
 pub(super) struct SelectedFile {
     pub path: String,
