@@ -6,6 +6,38 @@ use qa_core::{
     primitives::{ClientId, RuleSetId},
 };
 
+struct ModelPreparer<'a> {
+    scene: &'a mut Option<crate::renderer::SceneComposer>,
+    backend: &'a mut dyn crate::renderer::AssetPreparer,
+}
+impl crate::renderer::AssetPreparer for ModelPreparer<'_> {
+    fn target_size(&self) -> Option<[u32; 2]> {
+        self.backend.target_size()
+    }
+    fn prepare_assets(
+        &mut self,
+        assets: &qa_render::Assets,
+        required: Option<qa_render::Limits>,
+    ) -> Result<(), String> {
+        let capacity = self
+            .scene
+            .as_mut()
+            .map(|scene| scene.stage_model_choices(assets, required))
+            .transpose()?;
+        self.backend.prepare_assets(
+            assets,
+            capacity
+                .as_ref()
+                .map(|capacity| capacity.limits())
+                .or(required),
+        )?;
+        if let Some(capacity) = capacity {
+            capacity.commit();
+        }
+        Ok(())
+    }
+}
+
 impl FrameHost {
     pub fn publish_model_admission(
         &mut self,
@@ -89,10 +121,14 @@ impl FrameHost {
                         ui_fullscreen,
                     )
                 } else if let Some(preparer) = preparer.as_deref_mut() {
+                    let mut preparer = ModelPreparer {
+                        scene: &mut runtime.scene,
+                        backend: preparer,
+                    };
                     let (rejected, changed) = resources.state.prepare_models(
                         owner,
                         &runtime.vfs,
-                        preparer,
+                        &mut preparer,
                         ui_fullscreen,
                     );
                     published |= changed;

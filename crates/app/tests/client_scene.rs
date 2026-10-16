@@ -165,6 +165,7 @@ fn native_linked_model_cells_keep_their_own_skin_alpha_and_draw_properties() {
             .unwrap();
         for static_record in [false, true] {
             let input = ClientSceneInput {
+                synchronization: None,
                 client,
                 current: (!static_record).then_some(current),
                 previous: None,
@@ -288,6 +289,7 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
         let rows = [Entity { number: 12, words }];
         let native_player = [0; states::Q2_PLAYER_WORDS];
         let input = ClientSceneInput {
+            synchronization: None,
             client,
             current: Some(ReceivedFrame::Quake2(Frame {
                 sequence: 1,
@@ -439,6 +441,7 @@ fn classic_frame_origin_motion_reaches_alias_pose_without_affecting_rerelease() 
             })
         };
         let input = ClientSceneInput {
+            synchronization: None,
             client,
             current: Some(current),
             previous: None,
@@ -585,6 +588,7 @@ fn received_native_beams_keep_palette_width_endpoints_and_float_alpha_without_a_
             }
         };
         let input = ClientSceneInput {
+            synchronization: None,
             client,
             current: Some(frame(1)),
             previous: Some(frame(0)),
@@ -751,6 +755,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
     let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
     let player = PlayerState::default();
     let input = ClientSceneInput {
+        synchronization: None,
         client,
         current: None,
         previous: None,
@@ -928,6 +933,7 @@ fn static_entity_admission_and_scene_capacity_reject_without_growing() {
     let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
     let player = PlayerState::default();
     let input = ClientSceneInput {
+        synchronization: None,
         client,
         current: None,
         previous: None,
@@ -1190,6 +1196,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         ..Default::default()
     };
     let input = ClientSceneInput {
+        synchronization: None,
         client,
         current: Some(ReceivedFrame::Quake2(ring.frame(2).unwrap())),
         previous: Some(ReceivedFrame::Quake2(ring.frame(1).unwrap())),
@@ -1421,6 +1428,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
         assert_eq!(bindings.bind_all(&configs, catalog, profile, None), 0);
         let player = PlayerState::default();
         let input = ClientSceneInput {
+            synchronization: None,
             client,
             current: Some(ReceivedFrame::QuakeWorld(current)),
             previous: None,
@@ -1562,9 +1570,11 @@ fn cached_clock_policy_preserves_native_interpolation_rounding() {
         (67, 0x3f2b851f, 0x3f2b851e),
         (99, 0x3f7d70a4, 0x3f7d70a3),
     ];
+    // QW has no server-time interpolation domain. Its realtime/latency path
+    // has independent native-bit checks in presentation_clock.rs.
     for rules in RuleSetId::ALL
         .into_iter()
-        .filter(|rules| *rules != RuleSetId::Quake3)
+        .filter(|rules| !matches!(rules, RuleSetId::Quake3 | RuleSetId::QuakeWorld))
     {
         let mut clock =
             PresentationClock::load(qa_gameplay::rules::presentation::clock_rules(rules));
@@ -1738,6 +1748,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
     }
     let player = PlayerState::default();
     let input = ClientSceneInput {
+        synchronization: None,
         client,
         current: Some(ReceivedFrame::Quake2Repro(ring.frame(4).unwrap())),
         previous: Some(ReceivedFrame::Quake2Repro(ring.frame(3).unwrap())),
@@ -2216,6 +2227,7 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
         let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
         let player = PlayerState::default();
         let input = ClientSceneInput {
+            synchronization: None,
             client,
             current: None,
             previous: None,

@@ -148,7 +148,10 @@ pub enum Incoming<'a> {
         stage: u8,
     },
     /// One fully decoded NQ fast update, before any following service.
-    NqEntityUpdate,
+    NqEntityUpdate {
+        number: u16,
+        model: Option<qa_core::primitives::ModelRef>,
+    },
     SetAngles(qa_core::primitives::Vec3),
     CdTrack(crate::outputs::CdTrack),
     Print(crate::outputs::Print<'a>),

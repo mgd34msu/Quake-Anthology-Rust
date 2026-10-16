@@ -5,7 +5,7 @@ mod retessellation;
 pub mod upload;
 pub(crate) use admission::AssetAdmission;
 pub use admission::AssetCounts;
-pub use animation::{FrameTiming, ModelAnimation, TimedGroup};
+pub use animation::{FrameTiming, ModelAnimation, SkinTiming, TimedGroup};
 pub use retessellation::WorldRetessellation;
 
 use crate::scene::Span;
@@ -1241,6 +1241,17 @@ impl Assets {
     }
     pub fn models(&self) -> &[Model] {
         &self.models
+    }
+    /// Cold packet demand per entity: native LOD levels or authored skin members.
+    pub fn max_model_choices(&self) -> usize {
+        self.models
+            .iter()
+            .filter_map(Model::animation)
+            .flat_map(|animation| animation.skin_groups())
+            .map(|group| group.members.count as usize)
+            .max()
+            .unwrap_or(0)
+            .max(3)
     }
     pub fn materials(&self) -> &[Material] {
         &self.materials

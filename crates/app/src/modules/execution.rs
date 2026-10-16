@@ -1454,12 +1454,25 @@ fn renderer_scope(
             .is_some_and(|value| value != 0),
     })
 }
+struct RendererAppend<'a> {
+    context: super::renderer_contexts::Append<'a>,
+    capacity: Option<qa_render::scene::FrontEndCapacity<'a>>,
+}
+impl RendererAppend<'_> {
+    fn commit(self) {
+        self.context.commit();
+        if let Some(capacity) = self.capacity {
+            capacity.commit();
+        }
+    }
+}
+
 fn stage_renderer<'a>(
     contexts: &'a mut super::renderer_contexts::Contexts,
-    scene: &mut Option<crate::renderer::SceneComposer>,
+    scene: &'a mut Option<crate::renderer::SceneComposer>,
     scope: RendererScope,
     admission: crate::model_assets::RendererAdmission<'_>,
-) -> Result<super::renderer_contexts::Append<'a>, String> {
+) -> Result<RendererAppend<'a>, String> {
     let admission = admission.selected_presentation(scope.presentation)?;
     let synchronize = match admission.resource {
         Some(resource @ crate::model_assets::ShaderResource::Skin(_)) => {
@@ -1478,7 +1491,19 @@ fn stage_renderer<'a>(
     {
         frame.resolve_draw_shaders(admission.assets(), contexts);
     }
-    contexts.stage(scope.context, admission)
+    let capacity = if matches!(
+        admission.resource,
+        Some(crate::model_assets::ShaderResource::Model(_))
+    ) {
+        scene
+            .as_mut()
+            .map(|scene| scene.stage_model_choices(admission.assets(), None))
+            .transpose()?
+    } else {
+        None
+    };
+    let context = contexts.stage(scope.context, admission)?;
+    Ok(RendererAppend { context, capacity })
 }
 fn register_renderer(
     host: &mut FrameHost,
@@ -1548,21 +1573,25 @@ fn register_renderer(
             scope.profile,
             variant,
             |candidate| stage_renderer(contexts, scene, scope, candidate),
-            |assets, _| {
+            |assets, staged| {
                 driver
                     .preparer
                     .as_mut()
                     .ok_or("renderer registration has no backend")?
-                    .prepare_assets(assets, None)
+                    .prepare_assets(
+                        assets,
+                        staged.capacity.as_ref().map(|capacity| capacity.limits()),
+                    )
             },
         )?;
         let ready = RegisteredRenderer {
             handle: if matches!(request.kind, RendererRegistration::Shader { .. }) {
-                staged.shader_handle()
+                staged.context.shader_handle()
             } else {
                 handle
             },
             shader: staged
+                .context
                 .shader()
                 .map(|(node, registration)| (registration.key, node)),
         };

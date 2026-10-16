@@ -26,7 +26,7 @@ pub use scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame,
     FrameTiming, FrontEnd, Light, LightStyle, Limits, ModelLodSettings, ModelPart,
     PaletteOperation, PaletteShift, PaletteTransform, ParticlePresentation, PerspectiveStep,
-    Refdef, SceneEntity, SceneModel, SceneParticle, Viewport,
+    Refdef, SceneEntity, SceneModel, SceneParticle, SkinTiming, Viewport,
 };
 pub use world::WorldPresentationId;
 

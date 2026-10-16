@@ -632,7 +632,7 @@ impl NqStorage {
         &mut self,
         reader: &mut Reader<'_>,
         packet: &mut NqPacket,
-    ) -> Result<(), packet::Error> {
+    ) -> Result<states::NqEntityUpdate, packet::Error> {
         let header = states::read_nq_entity_header(reader)?;
         let number = usize::from(header.number);
         let baseline = self
@@ -660,7 +660,7 @@ impl NqStorage {
             packet.overflow = true;
         }
         packet.changed = true;
-        Ok(())
+        Ok(decoded)
     }
     pub fn finish(&mut self, sequence: u32, packet: NqPacket) -> Option<u32> {
         if !packet.changed {

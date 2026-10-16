@@ -666,12 +666,23 @@ impl Commands {
                     (Protocol::NetQuake15, opcode) if opcode & 128 != 0 => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;
                         let mut reader = Reader::new(&scratch[at..], Encoding::Bytes);
-                        channel
+                        let update = channel
                             .nq_state_mut()
                             .ok_or(packet::Error::Context)?
                             .entity(&mut reader, packet)?;
                         at += reader.byte_position();
-                        consume(Incoming::NqEntityUpdate);
+                        let mut record = qa_core::primitives::EntityRecord::default();
+                        if !crate::projection::EntityProjection::load(Protocol::NetQuake15).apply(
+                            &update.words.ok_or(packet::Error::Context)?,
+                            &mut record,
+                            namespace,
+                        ) {
+                            return Err(packet::Error::Context);
+                        }
+                        consume(Incoming::NqEntityUpdate {
+                            number: update.number,
+                            model: record.appearance.models[0],
+                        });
                     }
                     (Protocol::QuakeWorld28, 42) => {
                         let (prior, model) = channel

@@ -421,9 +421,9 @@ impl SceneService for SceneBorrow<'_> {
                 .flat_map(|row| row.into_iter().take(info.native_count()).flatten())
                 .all(|choice| {
                     shader.is_some()
-                        || shaders
-                            .choice(choice.shader, choice.registrations, nodes, choice.default)
-                            .is_some()
+                        || choice
+                            .shaders()
+                            .all(|source| choice.resolve_shader(source, shaders, nodes).is_some())
                 })
             {
                 return frame.reject_submission();
@@ -452,22 +452,32 @@ impl SceneService for SceneBorrow<'_> {
                 pose.frame = current as u32;
                 pose.old_frame = old as u32;
             }
+            if let crate::model_assets::ModelSkinChoice::Timed { group, members } =
+                first_choice.shader
+            {
+                return frame.add_timed_model(
+                    pose,
+                    first_choice.model,
+                    group,
+                    members.filter_map(|source| {
+                        shader.or_else(|| first_choice.resolve_shader(source, shaders, nodes))
+                    }),
+                );
+            }
             return frame.add_model_lods(
                 pose,
                 info.radius(pose.frame),
                 choices.map(|row| {
                     row.into_iter().take(info.native_count()).map(|choice| {
                         let choice = choice?;
+                        let crate::model_assets::ModelSkinChoice::Single(source) = choice.shader
+                        else {
+                            return None;
+                        };
                         Some(qa_render::scene::ModelPart {
                             model: choice.model,
-                            shader: shader.or_else(|| {
-                                shaders.choice(
-                                    choice.shader,
-                                    choice.registrations,
-                                    nodes,
-                                    choice.default,
-                                )
-                            })?,
+                            shader: shader
+                                .or_else(|| choice.resolve_shader(source, shaders, nodes))?,
                         })
                     })
                 }),
@@ -593,7 +603,8 @@ impl SceneService for SceneBorrow<'_> {
         view.refdef.viewport.x += target.viewport.x;
         view.refdef.viewport.y += target.viewport.y;
         super::apply_presentation(&mut view.refdef, &target.presentation, composer.kind);
-        view.refdef.frame_timing = super::frame_timing(composer.kind, target.profile.rules);
+        (view.refdef.frame_timing, view.refdef.skin_timing) =
+            super::model_timing(composer.kind, target.profile.rules);
         view.refdef.software_waterwarp &=
             cvars.numeric(target.software_waterwarp).unwrap_or(0.0) != 0.0;
         view.refdef.curve_error = crate::render_settings::curve_error(cvars, target.curve_error);

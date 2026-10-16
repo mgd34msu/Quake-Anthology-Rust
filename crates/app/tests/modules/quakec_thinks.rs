@@ -6532,7 +6532,7 @@ fn push_fixture(
     blocked: u32,
     rider: Vec3,
     wall: Option<Vec3>,
-) -> (FrameHost, Vec<EntityId>) {
+) -> (Box<FrameHost>, Vec<EntityId>) {
     let stride = vm.stride as u32;
     vm.image.globals[80] = 40 * stride;
     vm.image.globals[81] = stride;
@@ -6584,7 +6584,7 @@ fn push_fixture(
     );
     // Reserved native edict 1 participates in PUSH even when the ordinary
     // QW provider scan excludes client edicts. Its Body is the existing row.
-    let mut host = load(runtime, vec![request]);
+    let mut host = Box::new(load(runtime, vec![request]));
     host.call_module_export(
         ModuleId(1),
         Export::clocked(CallbackId(link)),

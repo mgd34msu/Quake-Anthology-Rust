@@ -91,6 +91,7 @@ enum LinkedModels {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct NativeRules {
+    random_model_sync: bool,
     player_model: Option<u32>,
     player_models: Option<PlayerModelRules>,
     secondary_model_alpha: Option<f32>,
@@ -131,6 +132,7 @@ struct NativeRules {
     snapshot_event_base: Option<u32>,
 }
 const NEUTRAL: NativeRules = NativeRules {
+    random_model_sync: false,
     player_model: None,
     player_models: None,
     secondary_model_alpha: None,
@@ -216,6 +218,7 @@ const Q2: NativeRules = NativeRules {
 };
 const RULES: [NativeRules; 5] = [
     NativeRules {
+        random_model_sync: true,
         alias_pitch_reversed: true,
         world_zero: true,
         ..NEUTRAL
@@ -295,6 +298,9 @@ fn model_input_rules(rules: NativeRules, ordinal: u32, usage: Option<ModelUse>) 
 }
 
 impl AppearancePolicy {
+    pub fn random_model_sync(self) -> bool {
+        self.rules.random_model_sync
+    }
     pub fn player_models(self) -> Option<PlayerModelRules> {
         self.rules.player_models
     }

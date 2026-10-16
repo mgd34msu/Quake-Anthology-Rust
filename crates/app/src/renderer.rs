@@ -382,6 +382,7 @@ pub(crate) fn light_view_entities(
 pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef {
     let basis = angle_vectors(client.angles);
     let fov = qa_render::scene::fov_from_x(client.fov_x, viewport.width, viewport.height);
+    let (frame_timing, skin_timing) = model_timing(kind, client.presentation_rules);
     let mut refdef = Refdef {
         viewport,
         origin: client.origin,
@@ -390,7 +391,8 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
         curve_error: client.curve_error,
         model_lod: client.model_lod,
         model_time: client.model_time,
-        frame_timing: frame_timing(kind, client.presentation_rules),
+        frame_timing,
+        skin_timing,
         policy: client.policy,
         near: client.near,
         blend: client.screen_blend,
@@ -403,19 +405,25 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
     refdef
 }
 
-fn frame_timing(
+fn model_timing(
     kind: Kind,
     rules: qa_core::primitives::RuleSetId,
-) -> qa_render::scene::FrameTiming {
+) -> (qa_render::scene::FrameTiming, qa_render::scene::SkinTiming) {
     if matches!(kind, Kind::Gl)
         && matches!(
             rules,
             qa_core::primitives::RuleSetId::Quake | qa_core::primitives::RuleSetId::QuakeWorld
         )
     {
-        qa_render::scene::FrameTiming::UniformFirst
+        (
+            qa_render::scene::FrameTiming::UniformFirst,
+            qa_render::scene::SkinTiming::LegacyFour,
+        )
     } else {
-        qa_render::scene::FrameTiming::Cumulative
+        (
+            qa_render::scene::FrameTiming::Cumulative,
+            qa_render::scene::SkinTiming::Cumulative,
+        )
     }
 }
 
@@ -603,6 +611,20 @@ fn scene_surface_limits(mut limits: Limits, surfaces: usize) -> Result<Limits, S
 }
 
 impl SceneComposer {
+    pub(crate) fn stage_model_choices(
+        &mut self,
+        assets: &Assets,
+        required: Option<Limits>,
+    ) -> Result<qa_render::scene::FrontEndCapacity<'_>, String> {
+        let limits = required
+            .unwrap_or(self.frontend.limits())
+            .for_assets(assets)?;
+        match self.frame.as_mut() {
+            Some(frame) => self.frontend.stage_capacity_with_frame(limits, frame),
+            None => self.frontend.stage_capacity(limits),
+        }
+        .map_err(str::to_owned)
+    }
     pub fn limits(&self) -> Limits {
         self.frontend.limits()
     }
@@ -844,6 +866,7 @@ impl SceneComposer {
             let world = assets.world(world).ok_or("missing video world")?;
             limits = scene_surface_limits(limits, world.visibility().surface_count())?;
         }
+        limits = limits.for_assets(assets)?;
         let frontend = self.frontend.stage_capacity(limits)?;
         Ok(SceneVideoAppend {
             frontend,
@@ -886,6 +909,7 @@ impl SceneComposer {
             return Err("missing loaded world geometry".into());
         }
         limits = scene_surface_limits(limits, max_surfaces)?;
+        limits = limits.for_assets(assets)?;
 
         let frontend = FrontEnd::load(limits)?;
         let beam = qa_render::entities::register_beam_shader(
@@ -948,7 +972,8 @@ impl SceneComposer {
             validate_world_presentation(assets, loaded.world, entry)?;
         }
         let limits =
-            scene_surface_limits(self.frontend.limits(), world.visibility().surface_count())?;
+            scene_surface_limits(self.frontend.limits(), world.visibility().surface_count())?
+                .for_assets(assets)?;
         let frontend = self.frontend.stage_capacity(limits)?;
         let append = if append_world {
             self.scenes

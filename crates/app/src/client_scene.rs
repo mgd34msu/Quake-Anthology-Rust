@@ -1,7 +1,7 @@
 //! CLIENT-owned snapshot values become copied entries in the shared scene list.
 use crate::model_assets::{
     InlineBinding, ModelBinding, ModelBindings, ModelCatalog, ModelLodBindings, ModelLodInfo,
-    ModelMaterialPolicy, ModelProfile, ModelRegistrationId,
+    ModelMaterialPolicy, ModelProfile, ModelRegistrationId, ModelSkinChoice, SelectedModelChoice,
 };
 use crate::snapshots::{GunAnimation, Interpolation};
 use qa_core::{
@@ -89,7 +89,7 @@ impl std::ops::Deref for StaticEntity {
 #[derive(Clone, Copy)]
 enum SceneBinding<'a> {
     Mesh {
-        choices: [Option<ModelBinding>; 3],
+        choices: [Option<SelectedModelChoice<'a>>; 3],
         info: ModelLodInfo<'a>,
     },
     Inline {
@@ -107,11 +107,9 @@ impl<'a> Iterator for SceneBindings<'a> {
         match self {
             Self::Mesh(bindings) => {
                 let info = bindings.info();
-                bindings.next().map(|choices| SceneBinding::Mesh {
-                    choices: choices
-                        .map(|choice| choice.and_then(|choice| choice.physical_binding())),
-                    info,
-                })
+                bindings
+                    .next()
+                    .map(|choices| SceneBinding::Mesh { choices, info })
             }
             Self::Inline(binding) => {
                 binding
@@ -486,6 +484,28 @@ impl ClientModelBindings {
     }
     pub(crate) fn client(&self) -> ClientId {
         self.client
+    }
+    pub(crate) fn animation_source(
+        &self,
+        reference: ModelRef,
+        catalog: &ModelCatalog,
+    ) -> Result<Option<(qa_core::primitives::NameId, i32)>, ()> {
+        if reference.namespace != ResourceNamespace::Client(self.client) {
+            return Err(());
+        }
+        match self
+            .registrations
+            .get(reference.ordinal as usize)
+            .copied()
+            .flatten()
+            .ok_or(())?
+        {
+            ClientModel::Mesh(registration) => catalog
+                .registration_source(registration)
+                .map(Some)
+                .ok_or(()),
+            ClientModel::Inline { .. } => Ok(None),
+        }
     }
 
     /// Text decoding and canonical name lookup happen at configuration changes,
@@ -1398,6 +1418,7 @@ pub struct ClientSceneInput<'a> {
     pub appearance: AppearancePolicy,
     pub player_projection: &'a PlayerProjection,
     pub bindings: &'a ClientModelBindings,
+    pub synchronization: Option<&'a crate::client_resources::ModelSynchronization>,
     pub models: &'a ModelCatalog,
     /// Owned signon values outlive the source edict and snapshot ring slots.
     pub static_entities: &'a [StaticEntity],
@@ -1660,6 +1681,9 @@ impl ClientSceneInput<'_> {
             };
             for binding in bindings {
                 let mut entity = SceneEntity {
+                    sync_base: self.synchronization.map_or(0.0, |sync| {
+                        number.map_or(0.0, |number| sync.base(number, slot))
+                    }),
                     origin: pose.origin,
                     non_normalized_axes: capabilities.scale != 1.0,
                     color: [255, 255, 255, (capabilities.alpha * 255.0) as u8],
@@ -1733,16 +1757,7 @@ impl ClientSceneInput<'_> {
                     .axes()
                     .map(|axis| axis * capabilities.scale);
                 let added = if let Some((choices, radius, count)) = model_lods {
-                    frame.add_model_lods(
-                        entity,
-                        radius,
-                        std::iter::once(
-                            choices
-                                .into_iter()
-                                .take(count)
-                                .map(|choice| choice.map(ModelBinding::scene_part)),
-                        ),
-                    )
+                    append_model_choices(frame, entity, choices, radius, count)
                 } else {
                     frame.add_entity(entity)
                 };
@@ -1824,7 +1839,6 @@ impl ClientSceneInput<'_> {
         });
         let info = bindings.info();
         for choices in bindings {
-            let choices = choices.map(|choice| choice.and_then(|choice| choice.physical_binding()));
             let Some(binding) = choices.iter().flatten().next().copied() else {
                 counts.missing_models += 1;
                 continue;
@@ -1887,15 +1901,12 @@ impl ClientSceneInput<'_> {
                 lighting: Some(native_lighting(binding.pose, angles)),
                 ..SceneEntity::default()
             };
-            let added = frame.add_model_lods(
+            let added = append_model_choices(
+                frame,
                 entity,
+                choices,
                 info.radius(current_frame),
-                std::iter::once(
-                    choices
-                        .into_iter()
-                        .take(info.native_count())
-                        .map(|choice| choice.map(ModelBinding::scene_part)),
-                ),
+                info.native_count(),
             );
             counts.models += u32::from(added);
             counts.rejected += u32::from(!added);
@@ -1908,6 +1919,41 @@ impl ClientSceneInput<'_> {
             ResourceNamespace::Client(self.client),
         )
     }
+}
+
+fn append_model_choices(
+    frame: &mut Frame,
+    entity: SceneEntity,
+    choices: [Option<SelectedModelChoice<'_>>; 3],
+    radius: Option<f32>,
+    count: usize,
+) -> bool {
+    if let Some(choice) = choices.iter().flatten().next().copied()
+        && let ModelSkinChoice::Timed { group, members } = choice.shader
+    {
+        let view = qa_render::shader::reference::ShaderView::direct();
+        if !members
+            .clone()
+            .all(|shader| choice.resolve_shader(shader, view, None).is_some())
+        {
+            return frame.reject_submission();
+        }
+        return frame.add_timed_model(
+            entity,
+            choice.model,
+            group,
+            members.filter_map(|shader| choice.resolve_shader(shader, view, None)),
+        );
+    }
+    frame.add_model_lods(
+        entity,
+        radius,
+        std::iter::once(choices.into_iter().take(count).map(|choice| {
+            choice
+                .and_then(|choice| choice.physical_binding())
+                .map(ModelBinding::scene_part)
+        })),
+    )
 }
 
 /// The selected native view entity can invalidate both camera and weapon

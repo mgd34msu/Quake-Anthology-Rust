@@ -780,7 +780,7 @@ fn cold_limits() -> Limits {
     Limits {
         commands: 4,
         entities: 1,
-        lod_choices: 0,
+        model_choices: 0,
         polys: 1,
         vertices: 3,
         lights: 1,
@@ -875,6 +875,266 @@ fn dropped_capacity_stage_preserves_arenas_and_commit_grows_the_same_owner() {
 }
 
 #[test]
+fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit() {
+    use qa_core::primitives::{ClientId, EntityId, ThinkTime};
+    use qa_render::shader::reference::ShaderView;
+    use qa_render::{
+        effects::EffectClient,
+        scene::{Draw2d, Light, SceneParticle},
+    };
+
+    let (mut assets, model, shaders) = mdl_groups::skin_models();
+    let palette = assets
+        .register_palette(
+            qa_render::surface_cache::PaletteLighting::load(&[255; 768], &[0; 64 * 256], None, 256)
+                .unwrap(),
+        )
+        .unwrap();
+    let world = world(&mut assets, &[SurfaceMaterial::default()]);
+    let presentation = presentation(&assets, world);
+    let limits = Limits {
+        commands: 6,
+        entities: 2,
+        model_choices: 2,
+        polys: 2,
+        vertices: 6,
+        lights: 2,
+        particles: 2,
+        area_bytes: 3,
+        surfaces: 1,
+        draws: 0,
+    };
+    let required = Limits {
+        commands: 8,
+        entities: 4,
+        model_choices: 8,
+        ..limits
+    };
+    let client = EffectClient {
+        client: ClientId(7),
+        lifetime: EntityId {
+            slot: 9,
+            generation: 11,
+        },
+    };
+    let view = Refdef {
+        model_time: Some(ThinkTime::Seconds(0.125)),
+        ..Default::default()
+    };
+    let mut front = FrontEnd::load(limits).unwrap();
+    let mut frame = front.begin_frame([1, 2, 3, 255]).unwrap();
+    frame.for_client(Some(client), |frame| {
+        assert!(frame.add_timed_model(
+            SceneEntity::default(),
+            model,
+            1,
+            shaders[1..3].iter().copied().map(Into::into)
+        ));
+        assert!(frame.add_world(
+            world,
+            presentation,
+            &[VisibleSurface {
+                surface: 0,
+                depth_key: 17
+            }]
+        ));
+        assert!(frame.add_poly(
+            shaders[0].into(),
+            &[Vertex {
+                color: [13; 4],
+                ..Default::default()
+            }; 3]
+        ));
+        assert!(frame.add_light(Light {
+            radius: 19.,
+            ..Default::default()
+        }));
+        assert!(frame.add_particle(SceneParticle {
+            color: 23,
+            palette,
+            ..Default::default()
+        }));
+        assert!(frame.render_scene(view, &[0x55], &assets, ShaderView::direct()));
+        assert!(frame.draw_2d(Draw2d {
+            rect: [1., 2., 3., 4.],
+            shader: shaders[0].into(),
+            ..Default::default()
+        }));
+
+        assert!(frame.add_poly(
+            shaders[0].into(),
+            &[Vertex {
+                color: [29; 4],
+                ..Default::default()
+            }; 3]
+        ));
+        assert!(frame.add_light(Light {
+            radius: 31.,
+            ..Default::default()
+        }));
+        assert!(frame.add_particle(SceneParticle {
+            color: 37,
+            palette,
+            ..Default::default()
+        }));
+        drop(front.stage_capacity_with_frame(required, frame).unwrap());
+        assert_eq!(front.limits().model_choices, 2);
+        assert!(!frame.add_timed_model(
+            SceneEntity::default(),
+            model,
+            3,
+            shaders[6..12].iter().copied().map(Into::into)
+        ));
+        front
+            .stage_capacity_with_frame(required, frame)
+            .unwrap()
+            .commit();
+        assert_eq!(front.limits().model_choices, 8);
+        assert!(frame.add_timed_model(
+            SceneEntity::default(),
+            model,
+            3,
+            shaders[6..12].iter().copied().map(Into::into)
+        ));
+        assert!(frame.render_scene(view, &[0xaa], &assets, ShaderView::direct()));
+    });
+    assert!(frame.render_scene(view, &[0xcc], &assets, ShaderView::direct()));
+    let packet = frame.finish();
+    assert_eq!(packet.frame, 1);
+    assert_eq!(packet.rejected, 1);
+    let [
+        Command::Clear(clear),
+        Command::View(first),
+        Command::Draw2d(picture),
+        Command::View(second),
+        Command::View(empty),
+    ] = packet.commands()
+    else {
+        panic!("preserved active scene commands")
+    };
+    assert_eq!(*clear, [1, 2, 3, 255]);
+    assert_eq!(picture.rect, [1., 2., 3., 4.]);
+    for (captured, begin, color, radius, particle, shader) in [
+        (first, 0, 13, 19., 23, shaders[2]),
+        (second, 1, 29, 31., 37, shaders[7]),
+    ] {
+        assert_eq!(captured.particle_client, Some(client));
+        assert_eq!(
+            captured.scene.entities,
+            Span {
+                first: begin,
+                count: 1
+            }
+        );
+        assert_eq!(
+            captured.scene.polys,
+            Span {
+                first: begin,
+                count: 1
+            }
+        );
+        assert_eq!(
+            captured.scene.lights,
+            Span {
+                first: begin,
+                count: 1
+            }
+        );
+        assert_eq!(
+            captured.scene.particles,
+            Span {
+                first: begin,
+                count: 1
+            }
+        );
+        let poly = packet.polys(captured.scene.polys)[0];
+        assert_eq!(
+            poly.vertices,
+            Span {
+                first: begin * 3,
+                count: 3
+            }
+        );
+        assert_eq!(packet.vertices(poly.vertices)[0].color, [color; 4]);
+        assert_eq!(packet.lights(captured.scene.lights)[0].radius, radius);
+        assert_eq!(
+            packet.particles(captured.scene.particles)[0].color,
+            particle
+        );
+        let entity_draw = packet
+            .draws(captured.scene.draws)
+            .iter()
+            .find(|draw| draw.kind == DrawKind::Entity)
+            .unwrap();
+        assert_eq!(entity_draw.shader.unwrap().source(&()), Some(shader));
+    }
+    assert_eq!(packet.hidden_areas(first.hidden_areas), [0x55]);
+    assert_eq!(packet.hidden_areas(second.hidden_areas), [0xaa]);
+    assert_eq!(packet.hidden_areas(empty.hidden_areas), [0xcc]);
+    assert_eq!(packet.surfaces(first.scene.surfaces)[0].surface, 0);
+    assert_eq!(second.scene.surfaces.count, 0);
+    assert_eq!(empty.scene.entities.count, 0);
+    assert_eq!(empty.scene.polys.count, 0);
+    assert_eq!(empty.scene.lights.count, 0);
+    assert_eq!(empty.scene.particles.count, 0);
+    assert_eq!(empty.scene.draws.count, 0);
+    assert_eq!(empty.particle_client, None);
+    for (captured, choices) in [
+        (first, Span { first: 0, count: 2 }),
+        (second, Span { first: 2, count: 6 }),
+    ] {
+        let SceneModel::Timed {
+            choices: stored, ..
+        } = packet.entities(captured.scene.entities)[0].model
+        else {
+            panic!("timed skin payload")
+        };
+        assert_eq!(stored, choices);
+    }
+    front
+        .recycle(packet)
+        .unwrap_or_else(|_| panic!("same packet owner"));
+    let next = front.begin_frame([0; 4]).unwrap().finish();
+    assert_eq!(next.frame, 2);
+    assert!(front.recycle(next).is_ok());
+}
+
+#[test]
+fn active_capacity_rejects_another_inflight_packet_or_foreign_frame_then_retries() {
+    let mut front = FrontEnd::load(cold_limits()).unwrap();
+    let first = front.begin_frame([1; 4]).unwrap().finish();
+    let mut active = front.begin_frame([2; 4]).unwrap();
+    let required = Limits {
+        model_choices: 6,
+        ..cold_limits()
+    };
+    assert!(
+        front
+            .stage_capacity_with_frame(required, &mut active)
+            .is_err()
+    );
+    assert!(front.recycle(first).is_ok());
+    let mut other = FrontEnd::load(cold_limits()).unwrap();
+    let mut foreign = other.begin_frame([3; 4]).unwrap();
+    assert!(
+        front
+            .stage_capacity_with_frame(required, &mut foreign)
+            .is_err()
+    );
+    assert!(other.recycle(foreign.finish()).is_ok());
+    front
+        .stage_capacity_with_frame(required, &mut active)
+        .unwrap()
+        .commit();
+    let packet = active.finish();
+    assert_eq!(packet.frame, 2);
+    assert_eq!(packet.rejected, 0);
+    assert!(matches!(packet.commands(), [Command::Clear([2, 2, 2, 2])]));
+    assert!(front.recycle(packet).is_ok());
+    assert_eq!(front.limits().model_choices, 6);
+}
+
+#[test]
 fn rejected_capacity_stage_preserves_pool_and_explicit_draw_budget() {
     let mut front = FrontEnd::load(cold_limits()).unwrap();
     assert!(
@@ -914,7 +1174,7 @@ fn rejected_poly_and_view_leave_existing_payloads_intact() {
     let limits = Limits {
         commands: 3,
         entities: 1,
-        lod_choices: 0,
+        model_choices: 0,
         polys: 1,
         vertices: 3,
         lights: 1,

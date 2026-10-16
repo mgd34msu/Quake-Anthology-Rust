@@ -60,7 +60,7 @@ fn sorted_items(assets: &Assets, materials: &[ShaderBindingId], keys: &[usize]) 
     let mut front = FrontEnd::load(Limits {
         commands: 2,
         entities: 1,
-        lod_choices: 0,
+        model_choices: 0,
         polys: count,
         vertices: count * 3,
         lights: 1,

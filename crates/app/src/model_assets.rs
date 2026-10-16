@@ -23,7 +23,10 @@ use qa_render::material::world_load::{
     native_default_shader,
 };
 use qa_render::material::{MaterialFinishPolicy, ShaderCompilePolicy};
-use qa_render::shader::reference::{ShaderChoice, ShaderDefault, ShaderOccurrence, ShaderView};
+use qa_render::shader::context::ShaderNodeId;
+use qa_render::shader::reference::{
+    ShaderChoice, ShaderDefault, ShaderOccurrence, ShaderRef, ShaderView,
+};
 use qa_render::shader::{AlphaFunc, AlphaGen, Cull, RgbGen, ShaderCatalog, StageBlend};
 use qa_render::surface_cache::IndexedTexture;
 use qa_render::world::geometry::LightSource;
@@ -276,19 +279,64 @@ struct ModelChoice {
     shader: ShaderChoice,
     pose: AliasPose,
 }
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkinMembers<'a> {
+    materials: &'a [ModelMaterials],
+    policy: usize,
+}
+impl Iterator for SkinMembers<'_> {
+    type Item = ShaderChoice;
+    fn next(&mut self) -> Option<Self::Item> {
+        let (member, remaining) = self.materials.split_first()?;
+        self.materials = remaining;
+        Some(member.variants[self.policy].shader)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.materials.len(), Some(self.materials.len()))
+    }
+}
+impl ExactSizeIterator for SkinMembers<'_> {}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ModelSkinChoice<'a> {
+    Single(ShaderChoice),
+    Timed {
+        group: u32,
+        members: SkinMembers<'a>,
+    },
+}
+
+#[derive(Clone, Copy)]
 pub struct SelectedModelChoice<'a> {
     pub model: ModelId,
-    pub shader: ShaderChoice,
+    pub shader: ModelSkinChoice<'a>,
     pub pose: AliasPose,
     pub resource: ShaderResource,
     pub registrations: &'a [ShaderRegistration],
     pub default: ShaderDefault,
 }
 impl SelectedModelChoice<'_> {
+    pub fn shaders(&self) -> impl Iterator<Item = ShaderChoice> + Clone {
+        let (single, members) = match self.shader {
+            ModelSkinChoice::Single(shader) => (Some(shader), None),
+            ModelSkinChoice::Timed { members, .. } => (None, Some(members)),
+        };
+        single.into_iter().chain(members.into_iter().flatten())
+    }
+    pub fn resolve_shader(
+        &self,
+        shader: ShaderChoice,
+        view: ShaderView<'_>,
+        nodes: Option<&[ShaderNodeId]>,
+    ) -> Option<ShaderRef> {
+        view.choice(shader, self.registrations, nodes, self.default)
+    }
     pub fn physical_binding(&self) -> Option<ModelBinding> {
-        let shader = ShaderView::direct()
-            .choice(self.shader, self.registrations, None, self.default)?
+        let ModelSkinChoice::Single(shader) = self.shader else {
+            return None;
+        };
+        let shader = self
+            .resolve_shader(shader, ShaderView::direct(), None)?
             .source(&())?;
         Some(ModelBinding {
             model: self.model,
@@ -305,7 +353,8 @@ impl<'a> Iterator for ModelChoices<'a> {
         self.0.next_choice()
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.0.size_hint()
+        let count = self.0.surfaces.len();
+        (count, Some(count))
     }
 }
 impl ExactSizeIterator for ModelChoices<'_> {}
@@ -328,8 +377,15 @@ pub struct ModelBindings<'a> {
     registrations: &'a [ShaderRegistration],
     resource: ShaderResource,
     default_shader: ShaderBindingId,
+    animation: Option<&'a ModelAnimation>,
 }
 impl<'a> ModelBindings<'a> {
+    pub fn len(&self) -> usize {
+        self.surfaces.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.surfaces.is_empty()
+    }
     pub fn choices(self) -> ModelChoices<'a> {
         ModelChoices(self)
     }
@@ -341,7 +397,18 @@ impl<'a> ModelBindings<'a> {
         } else {
             self.skin
         };
-        let skin = if surface.wrap_skins || surface.frame_skins {
+        let timed = self.animation.map(|animation| {
+            let groups = animation.skin_groups();
+            let group = if (selected as usize) < groups.len() {
+                selected
+            } else {
+                0
+            };
+            (group, groups[group as usize].members)
+        });
+        let skin = if let Some((_, members)) = timed {
+            members.first
+        } else if surface.wrap_skins || surface.frame_skins {
             selected % surface.skins.count
         } else if selected < surface.skins.count {
             selected
@@ -353,6 +420,19 @@ impl<'a> ModelBindings<'a> {
         let mut registrations = self.registrations;
         let mut resource = self.resource;
         let mut default = ShaderDefault::Global(Some(self.default_shader));
+        let mut shader = match timed {
+            Some((group, members)) if members.count > 1 => {
+                let first = (surface.skins.first + members.first) as usize;
+                ModelSkinChoice::Timed {
+                    group,
+                    members: SkinMembers {
+                        materials: &self.materials[first..first + members.count as usize],
+                        policy: self.policy.index(),
+                    },
+                }
+            }
+            _ => ModelSkinChoice::Single(binding.shader),
+        };
         if let Some((handle, custom)) = self.custom.filter(|_| !surface.frame_skins) {
             binding.shader = ShaderChoice::Direct(self.default_shader);
             if let Some(custom) = custom {
@@ -368,10 +448,11 @@ impl<'a> ModelBindings<'a> {
                 resource = ShaderResource::Skin(handle);
                 default = ShaderDefault::Named;
             }
+            shader = ModelSkinChoice::Single(binding.shader);
         }
         Some(SelectedModelChoice {
             model: binding.model,
-            shader: binding.shader,
+            shader,
             pose: binding.pose,
             resource,
             registrations,
@@ -385,10 +466,9 @@ impl Iterator for ModelBindings<'_> {
         self.next_choice()?.physical_binding()
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.surfaces.len(), Some(self.surfaces.len()))
+        (0, Some(self.surfaces.len()))
     }
 }
-impl ExactSizeIterator for ModelBindings<'_> {}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelLodInfo<'a> {
@@ -4887,6 +4967,22 @@ impl ModelCatalog {
             .get(id.0 as usize)
             .map(|entry| entry.profile)
     }
+    pub(crate) fn registration_source(&self, id: ModelRegistrationId) -> Option<(NameId, i32)> {
+        self.published_registration(id)?;
+        let row = self.registrations.get(id.0 as usize)?;
+        let sync = match self.files.get(row.file.0 as usize)? {
+            ModelFile::Ready { lods, .. } => lods
+                .source(0)
+                .and_then(|source| self.sources.get(source.0 as usize))
+                .and_then(|source| match source {
+                    ModelSourceFile::Ready { animation, .. } => animation.as_deref(),
+                    _ => None,
+                })
+                .map_or(0, ModelAnimation::sync),
+            _ => 0,
+        };
+        Some((row.file, sync))
+    }
 
     fn admitted(&self, required: Option<AssetCounts>) -> bool {
         required.is_none_or(|required| {
@@ -5386,6 +5482,19 @@ impl ModelCatalog {
             .ready()?
             .0;
         let span = *ready.surfaces.get(slot)?.as_ref()?;
+        let animation = match self
+            .files
+            .get(self.registrations[registration.0 as usize].file.0 as usize)?
+        {
+            ModelFile::Ready { lods, .. } => lods
+                .source(slot)
+                .and_then(|source| self.sources.get(source.0 as usize))
+                .and_then(|source| match source {
+                    ModelSourceFile::Ready { animation, .. } => animation.as_deref(),
+                    _ => None,
+                }),
+            _ => None,
+        };
         let custom = match policy
             .custom_skin
             .checked_sub(1)
@@ -5425,6 +5534,7 @@ impl ModelCatalog {
             registrations: &ready.registrations,
             resource: ShaderResource::Model(self.registrations[registration.0 as usize].file),
             default_shader: ready.default_shader,
+            animation,
         })
     }
     /// Cold CLIENT registration reads the same already-loaded file record.
@@ -5578,13 +5688,6 @@ fn validate_model(model: &Model<'_>) -> Result<(), String> {
             "model format not yet registered: {:?}",
             model.format
         ));
-    }
-    if model
-        .skin_groups
-        .iter()
-        .any(|group| group.members.len() != 1)
-    {
-        return Err("grouped MDL skin timing is not yet registered".to_owned());
     }
     if model.format != ModelFormat::Md3
         && model.format != ModelFormat::Sp2

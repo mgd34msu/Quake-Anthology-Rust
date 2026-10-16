@@ -783,9 +783,8 @@ fn queue_nq_view_snapshot_with_prefix(
     prefix: &[u8],
 ) {
     use qa_network::{
-        message::{Encoding, Writer},
         projection::{EntityContext, EntityProjection},
-        snapshots::{Entity, Frame},
+        snapshots::Entity,
         states,
     };
     let projection = EntityProjection::load(Protocol::NetQuake15);
@@ -826,6 +825,22 @@ fn queue_nq_view_snapshot_with_prefix(
         entities.push(Entity { number, words });
     }
     entities.sort_by_key(|entity| entity.number);
+    queue_nq_entities(host, client, seconds, &entities, view, prefix);
+}
+
+fn queue_nq_entities(
+    host: &mut FrameHost,
+    client: ClientId,
+    seconds: f64,
+    entities: &[qa_network::snapshots::Entity<{ qa_network::states::NQ_ENTITY_WORDS }>],
+    view: Option<u16>,
+    prefix: &[u8],
+) {
+    use qa_network::{
+        message::{Encoding, Writer},
+        snapshots::Frame,
+        states,
+    };
     let mut player = [0; states::NQ_PLAYER_WORDS];
     player[0] = 22.0f32.to_bits();
     player[3] = 32.0f32.to_bits();
@@ -849,7 +864,7 @@ fn queue_nq_view_snapshot_with_prefix(
         qw_dead: 0,
         areas: &[],
         player: &player,
-        entities: &entities,
+        entities,
     });
     let mut bytes = [0; 1400];
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
@@ -930,6 +945,137 @@ fn netquake_camera_host(native_clients: &[u32]) -> (FrameHost, Vec<ClientId>) {
         ));
     }
     (host, clients)
+}
+
+#[test]
+fn queued_netquake_model_transitions_reach_builtin_sync_after_pending_registration() {
+    use qa_app::model_assets::{ModelAssets, ModelRequest};
+
+    let mut bytes = assets_support::mdl();
+    bytes[72..76].copy_from_slice(&1i32.to_le_bytes());
+    let fixture = assets_support::Fixture::new(&[("progs/sync.mdl", bytes)]);
+    let (mut host, clients) = netquake_camera_host(&[5]);
+    let client = clients[0];
+    {
+        let state = &mut host.runtime.client_resources[client.0 as usize]
+            .as_mut()
+            .unwrap()
+            .state;
+        state
+            .configs
+            .set(state.layout.resources[0].get(9).unwrap(), b"progs/sync.mdl")
+            .unwrap();
+    }
+    let target = (1, Vec3([32., 0., 0.]));
+    queue_nq_view_snapshot(&mut host, client, 1., None, target, None);
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.snapshots[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .applied,
+        1
+    );
+    assert!(host.runtime.model_assets.is_none());
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .animation
+            .base(1, 0),
+        0.
+    );
+
+    let mut assets = qa_render::Assets::load().unwrap();
+    let palette = assets_support::palette(&mut assets);
+    let request = ModelRequest::native("progs/sync.mdl", RuleSetId::Quake, Some(palette));
+    let profile = request.profile();
+    let owner = ModelAssets::load(&fixture.vfs, assets, [request], [], Default::default()).unwrap();
+    let backend = asset_frames::Source::load(owner.assets());
+    host.runtime.model_assets = Some(owner);
+    host.publish_model_admission(backend.cpu.admitted_assets().unwrap())
+        .unwrap();
+    host.bind_client_model_assets([(client, profile, None)]);
+    let first = (1804289383u32 & 0x7fff) as f32 / 32767.;
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .animation
+            .base(1, 0)
+            .to_bits(),
+        first.to_bits()
+    );
+
+    let captured_sync = |host: &FrameHost| {
+        let inputs = host.client_scene_inputs();
+        let input = inputs[0].as_ref().unwrap();
+        let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+        let mut frontend = qa_render::FrontEnd::load(Default::default()).unwrap();
+        let mut frame = frontend.begin_frame([0; 4]).unwrap();
+        let counts = input.append(
+            &mut frame,
+            assets,
+            &qa_render::Refdef::default(),
+            true,
+            None,
+        );
+        assert_eq!(counts.rejected, 0);
+        let packet = frame.finish();
+        (0..counts.models)
+            .map(|index| packet.entity(index).sync_base.to_bits())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(captured_sync(&host), [first.to_bits()]);
+    assert_eq!(captured_sync(&host), [first.to_bits()]);
+    queue_nq_view_snapshot(&mut host, client, 1.1, None, target, None);
+    host.drain(&mut Default::default());
+    host.publish_client_feedback();
+    assert_eq!(captured_sync(&host), [first.to_bits()]);
+
+    // An accepted empty frame retires the entity. A later instance of the same
+    // native model consumes a new CLIENT phase rather than reviving its old one.
+    queue_nq_entities(&mut host, client, 1.2, &[], None, &[]);
+    host.drain(&mut Default::default());
+    host.publish_client_feedback();
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .animation
+            .base(1, 0),
+        0.
+    );
+    assert!(captured_sync(&host).is_empty());
+    queue_nq_view_snapshot(&mut host, client, 1.3, None, target, None);
+    host.drain(&mut Default::default());
+    host.publish_client_feedback();
+    let second = (846930886u32 & 0x7fff) as f32 / 32767.;
+    assert_ne!(first.to_bits(), second.to_bits());
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .animation
+            .base(1, 0)
+            .to_bits(),
+        second.to_bits()
+    );
+    assert_eq!(captured_sync(&host), [second.to_bits()]);
+    assert_eq!(captured_sync(&host), [second.to_bits()]);
+    assert_eq!(
+        host.runtime.snapshots[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .applied,
+        4
+    );
+    assert_eq!(host.runtime.network.malformed, 0);
+    assert_eq!(host.runtime.network.command_errors, 0);
 }
 
 #[test]

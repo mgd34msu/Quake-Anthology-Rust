@@ -10,7 +10,7 @@ use qa_core::primitives::{Orientation, PlayerViewFlags, ThinkTime, Vec3};
 use std::cmp::Ordering as SortOrdering;
 mod model_lod;
 mod patch;
-pub use crate::assets::FrameTiming;
+pub use crate::assets::{FrameTiming, SkinTiming};
 pub use model_lod::ModelLodSettings;
 pub(crate) use model_lod::projection_scales;
 pub use patch::{PatchSelection, PatchTriangles};
@@ -127,6 +127,7 @@ pub struct Refdef {
     /// None uses this view's ordinary millisecond clock.
     pub model_time: Option<ThinkTime>,
     pub frame_timing: FrameTiming,
+    pub skin_timing: SkinTiming,
     pub hyperspace: bool,
     pub portal: bool,
     pub reflected_view: bool,
@@ -249,6 +250,7 @@ impl Default for Refdef {
             time_ms: 0,
             model_time: None,
             frame_timing: FrameTiming::default(),
+            skin_timing: SkinTiming::default(),
             hyperspace: false,
             portal: false,
             reflected_view: false,
@@ -359,6 +361,11 @@ pub enum SceneModel {
         choices: Span,
         radius: Option<f32>,
     },
+    Timed {
+        model: ModelId,
+        skin_group: u32,
+        choices: Span,
+    },
     World {
         world: WorldId,
         presentation: WorldPresentationId,
@@ -402,6 +409,7 @@ impl SceneModel {
         match self {
             Self::Mesh(model) => Some(model),
             Self::Lods { .. }
+            | Self::Timed { .. }
             | Self::World { .. }
             | Self::Sprite { .. }
             | Self::Beam { .. }
@@ -828,8 +836,8 @@ pub enum Command {
 pub struct Limits {
     pub commands: usize,
     pub entities: usize,
-    /// Zero disables multi-level model choices; ordinary meshes remain available.
-    pub lod_choices: usize,
+    /// Zero disables deferred model choices; ordinary meshes remain available.
+    pub model_choices: usize,
     pub polys: usize,
     pub vertices: usize,
     pub lights: usize,
@@ -840,6 +848,18 @@ pub struct Limits {
     pub draws: usize,
 }
 impl Limits {
+    /// Resolve one cold packet budget for any admitted entity skin group or LOD.
+    /// Direct FrontEnd callers can retain a smaller explicit bounded arena.
+    pub fn for_assets(mut self, assets: &Assets) -> Result<Self, &'static str> {
+        let required = self
+            .entities
+            .checked_mul(assets.max_model_choices())
+            .ok_or("scene model choice capacity overflow")?;
+        self.model_choices = self.model_choices.max(required);
+        self.resolved()?;
+        Ok(self)
+    }
+
     /// Resolve the load-time draw bound shared by front-end and consumers.
     pub fn draw_capacity(self) -> Option<usize> {
         if self.draws != 0 {
@@ -868,7 +888,7 @@ impl Limits {
     fn capacities(self) -> impl Iterator<Item = usize> {
         self.required_capacities()
             .into_iter()
-            .chain(std::iter::once(self.lod_choices))
+            .chain(std::iter::once(self.model_choices))
     }
 
     pub(crate) fn resolved(mut self) -> Result<Self, &'static str> {
@@ -877,7 +897,7 @@ impl Limits {
             .required_capacities()
             .iter()
             .any(|&n| n == 0 || n > u32::MAX as usize)
-            || self.lod_choices > u32::MAX as usize
+            || self.model_choices > u32::MAX as usize
         {
             return Err("invalid scene capacity");
         }
@@ -902,7 +922,7 @@ impl Default for Limits {
         Self {
             commands: 4096,
             entities: 2048,
-            lod_choices: 6144,
+            model_choices: 6144,
             polys: 8192,
             vertices: 65536,
             lights: 256,
@@ -917,7 +937,7 @@ impl Default for Limits {
 pub struct CommandList {
     commands: Box<[Command]>,
     entities: Box<[SceneEntity]>,
-    lod_choices: Box<[Option<ModelPart>]>,
+    model_choices: Box<[Option<ModelPart>]>,
     polys: Box<[Poly]>,
     vertices: Box<[Vertex]>,
     lights: Box<[Light]>,
@@ -927,7 +947,7 @@ pub struct CommandList {
     draws: Box<[DrawItem]>,
     command_count: usize,
     entity_count: usize,
-    lod_count: usize,
+    model_choice_count: usize,
     poly_count: usize,
     vertex_count: usize,
     light_count: usize,
@@ -945,7 +965,7 @@ impl CommandList {
         Self {
             commands: vec![Command::Empty; l.commands].into_boxed_slice(),
             entities: vec![SceneEntity::default(); l.entities].into_boxed_slice(),
-            lod_choices: vec![None; l.lod_choices].into_boxed_slice(),
+            model_choices: vec![None; l.model_choices].into_boxed_slice(),
             polys: vec![Poly::default(); l.polys].into_boxed_slice(),
             vertices: vec![Vertex::default(); l.vertices].into_boxed_slice(),
             lights: vec![Light::default(); l.lights].into_boxed_slice(),
@@ -955,7 +975,7 @@ impl CommandList {
             draws: vec![DrawItem::default(); l.draws].into_boxed_slice(),
             command_count: 0,
             entity_count: 0,
-            lod_count: 0,
+            model_choice_count: 0,
             poly_count: 0,
             vertex_count: 0,
             light_count: 0,
@@ -969,6 +989,37 @@ impl CommandList {
             rejected: 0,
         }
     }
+    /// Cold storage replacement after the owner has proved every capacity grows.
+    /// Numeric payload references remain absolute within the same owned packet.
+    fn grown(&self, limits: Limits) -> Self {
+        let mut next = Self::load(limits, self.owner, self.slot);
+        next.commands[..self.command_count].copy_from_slice(&self.commands[..self.command_count]);
+        next.command_count = self.command_count;
+        next.entities[..self.entity_count].copy_from_slice(&self.entities[..self.entity_count]);
+        next.entity_count = self.entity_count;
+        next.model_choices[..self.model_choice_count]
+            .copy_from_slice(&self.model_choices[..self.model_choice_count]);
+        next.model_choice_count = self.model_choice_count;
+        next.polys[..self.poly_count].copy_from_slice(&self.polys[..self.poly_count]);
+        next.poly_count = self.poly_count;
+        next.vertices[..self.vertex_count].copy_from_slice(&self.vertices[..self.vertex_count]);
+        next.vertex_count = self.vertex_count;
+        next.lights[..self.light_count].copy_from_slice(&self.lights[..self.light_count]);
+        next.light_count = self.light_count;
+        next.particles[..self.particle_count]
+            .copy_from_slice(&self.particles[..self.particle_count]);
+        next.particle_count = self.particle_count;
+        next.area_bytes[..self.area_count].copy_from_slice(&self.area_bytes[..self.area_count]);
+        next.area_count = self.area_count;
+        next.surfaces[..self.surface_count].copy_from_slice(&self.surfaces[..self.surface_count]);
+        next.surface_count = self.surface_count;
+        next.draws[..self.draw_count].copy_from_slice(&self.draws[..self.draw_count]);
+        next.draw_count = self.draw_count;
+        next.frame = self.frame;
+        next.rejected = self.rejected;
+        next
+    }
+
     pub fn commands(&self) -> &[Command] {
         &self.commands[..self.command_count]
     }
@@ -1052,7 +1103,7 @@ impl CommandList {
     fn reset(&mut self, frame: u64) {
         self.command_count = 0;
         self.entity_count = 0;
-        self.lod_count = 0;
+        self.model_choice_count = 0;
         self.poly_count = 0;
         self.vertex_count = 0;
         self.light_count = 0;
@@ -1073,12 +1124,17 @@ pub struct FrontEnd {
     owner: u64,
 }
 
-/// A cold candidate borrows the existing owner until committed or discarded.
-/// No live frame or outstanding consumer can coexist with this borrow.
+/// A cold candidate borrows the owner and optional caller-owned active frame.
+/// Outstanding consumers cannot coexist with this borrow.
 pub struct FrontEndCapacity<'a> {
     frontend: &'a mut FrontEnd,
     lists: Option<[Option<CommandList>; 2]>,
+    active: Option<ActiveFrameCapacity<'a>>,
     limits: Limits,
+}
+struct ActiveFrameCapacity<'a> {
+    frame: &'a mut Frame,
+    list: Option<CommandList>,
 }
 impl FrontEndCapacity<'_> {
     pub fn limits(&self) -> Limits {
@@ -1086,6 +1142,11 @@ impl FrontEndCapacity<'_> {
     }
 
     pub fn commit(self) {
+        if let Some(active) = self.active
+            && let Some(list) = active.list
+        {
+            active.frame.list = list;
+        }
         if let Some(lists) = self.lists {
             self.frontend.lists = lists;
         }
@@ -1104,7 +1165,7 @@ struct SceneCheckpoint {
     vertices: usize,
     commands: usize,
     areas: usize,
-    lod_choices: usize,
+    model_choices: usize,
 }
 impl FrontEnd {
     pub fn load(limits: Limits) -> Result<Self, &'static str> {
@@ -1128,20 +1189,46 @@ impl FrontEnd {
         self.limits
     }
 
-    /// Reserve larger arenas only after both existing lists have returned.
-    /// Dropping the candidate leaves capacities and sequence ownership intact.
+    /// Reserve larger owned arenas without mutating them until commit.
     pub fn stage_capacity(
         &mut self,
         required: Limits,
     ) -> Result<FrontEndCapacity<'_>, &'static str> {
-        if self.lists.iter().any(Option::is_none) {
+        self.stage_capacity_inner(required, None)
+    }
+
+    /// A parked cold registration may retain its active packet. Its payload
+    /// prefixes are staged with the available list; another consumer still blocks.
+    pub fn stage_capacity_with_frame<'a>(
+        &'a mut self,
+        required: Limits,
+        frame: &'a mut Frame,
+    ) -> Result<FrontEndCapacity<'a>, &'static str> {
+        self.stage_capacity_inner(required, Some(frame))
+    }
+
+    fn stage_capacity_inner<'a>(
+        &'a mut self,
+        required: Limits,
+        active: Option<&'a mut Frame>,
+    ) -> Result<FrontEndCapacity<'a>, &'static str> {
+        let active_slot = active.as_ref().map(|frame| frame.list.slot);
+        if active.as_ref().is_some_and(|frame| {
+            frame.list.owner != self.owner || frame.list.slot >= self.lists.len()
+        }) || self.lists.iter().enumerate().any(|(slot, list)| {
+            if active_slot == Some(slot) {
+                list.is_some()
+            } else {
+                list.is_none()
+            }
+        }) {
             return Err("scene command lists are outstanding");
         }
         let current = self.limits;
         let mut limits = Limits {
             commands: current.commands.max(required.commands),
             entities: current.entities.max(required.entities),
-            lod_choices: current.lod_choices.max(required.lod_choices),
+            model_choices: current.model_choices.max(required.model_choices),
             polys: current.polys.max(required.polys),
             vertices: current.vertices.max(required.vertices),
             lights: current.lights.max(required.lights),
@@ -1158,15 +1245,20 @@ impl FrontEnd {
             );
         }
         let limits = limits.validate_growth(current)?;
-        let lists = limits.capacities().ne(current.capacities()).then(|| {
-            [
-                Some(CommandList::load(limits, self.owner, 0)),
-                Some(CommandList::load(limits, self.owner, 1)),
-            ]
+        let grows = limits.capacities().ne(current.capacities());
+        let lists = grows.then(|| {
+            self.lists
+                .each_ref()
+                .map(|list| list.as_ref().map(|list| list.grown(limits)))
+        });
+        let active = active.map(|frame| ActiveFrameCapacity {
+            list: grows.then(|| frame.list.grown(limits)),
+            frame,
         });
         Ok(FrontEndCapacity {
             frontend: self,
             lists,
+            active,
             limits,
         })
     }
@@ -1207,7 +1299,7 @@ impl Frame {
             vertices: self.list.vertex_count,
             commands: self.list.command_count,
             areas: self.list.area_count,
-            lod_choices: self.list.lod_count,
+            model_choices: self.list.model_choice_count,
         }
     }
     fn restore(&mut self, checkpoint: SceneCheckpoint) {
@@ -1221,7 +1313,7 @@ impl Frame {
         self.list.vertex_count = checkpoint.vertices;
         self.list.command_count = checkpoint.commands;
         self.list.area_count = checkpoint.areas;
-        self.list.lod_count = checkpoint.lod_choices;
+        self.list.model_choice_count = checkpoint.model_choices;
     }
     fn copy_scene(&mut self, source: SceneRanges, skip_world: Option<WorldId>) -> bool {
         if source.entities.count as usize > self.list.entities.len() - self.list.entity_count
@@ -1542,7 +1634,10 @@ impl Frame {
             if entity.lighting.is_none()
                 && matches!(
                     entity.model,
-                    SceneModel::Mesh(_) | SceneModel::Lods { .. } | SceneModel::World { .. }
+                    SceneModel::Mesh(_)
+                        | SceneModel::Lods { .. }
+                        | SceneModel::Timed { .. }
+                        | SceneModel::World { .. }
                 )
             {
                 entity.lighting = Some(crate::lighting::setup_entity(
@@ -1584,18 +1679,11 @@ impl Frame {
                 }
                 continue;
             };
-            let first = self.list.lod_count;
-            for level in [first_level, second_level].into_iter().chain(levels) {
-                if self.list.lod_count == self.list.lod_choices.len() {
-                    self.restore(checkpoint);
-                    return self.reject_submission();
-                }
-                self.list.lod_choices[self.list.lod_count] = level;
-                self.list.lod_count += 1;
-            }
-            let choices = Span {
-                first: first as u32,
-                count: (self.list.lod_count - first) as u32,
+            let Some(choices) =
+                self.capture_model_choices([first_level, second_level].into_iter().chain(levels))
+            else {
+                self.restore(checkpoint);
+                return self.reject_submission();
             };
             let mut entity = pose;
             entity.model = SceneModel::Lods { choices, radius };
@@ -1606,6 +1694,65 @@ impl Frame {
         }
         true
     }
+    /// Capture a cold-validated native skin group's authored members. The
+    /// parent/member mapping comes from ModelAnimation; selection waits for view time.
+    pub fn add_timed_model(
+        &mut self,
+        mut pose: SceneEntity,
+        model: ModelId,
+        skin_group: u32,
+        member_shaders: impl IntoIterator<Item = ShaderRef>,
+    ) -> bool {
+        let mut members = member_shaders.into_iter();
+        let Some(first) = members.next() else {
+            return self.reject_submission();
+        };
+        let Some(second) = members.next() else {
+            pose.model = SceneModel::Mesh(model);
+            pose.shader = pose.shader.or(Some(first));
+            return self.add_entity(pose);
+        };
+        let checkpoint = self.checkpoint();
+        let Some(choices) = self.capture_model_choices(
+            [first, second]
+                .into_iter()
+                .chain(members)
+                .map(|shader| Some(ModelPart { model, shader })),
+        ) else {
+            self.restore(checkpoint);
+            return self.reject_submission();
+        };
+        pose.model = SceneModel::Timed {
+            model,
+            skin_group,
+            choices,
+        };
+        if !self.add_entity_part(pose) {
+            self.restore(checkpoint);
+            return false;
+        }
+        true
+    }
+
+    fn capture_model_choices(
+        &mut self,
+        choices: impl IntoIterator<Item = Option<ModelPart>>,
+    ) -> Option<Span> {
+        let first = self.list.model_choice_count;
+        for choice in choices {
+            let slot = self
+                .list
+                .model_choices
+                .get_mut(self.list.model_choice_count)?;
+            *slot = choice;
+            self.list.model_choice_count += 1;
+        }
+        Some(Span {
+            first: first as u32,
+            count: (self.list.model_choice_count - first) as u32,
+        })
+    }
+
     /// One submitted model may contain several surfaces. Admit that complete
     /// group or restore all counts, without copying/growing packet storage.
     pub fn add_entities(&mut self, entities: impl IntoIterator<Item = SceneEntity>) -> bool {
@@ -1623,14 +1770,15 @@ impl Frame {
             self.list.rejected += 1;
             return false;
         }
-        if let SceneModel::Lods { choices, .. } = entity.model
-            && (choices.count == 0 || !choices.fits(self.list.lod_count))
+        if let SceneModel::Lods { choices, .. } | SceneModel::Timed { choices, .. } = entity.model
+            && (choices.count == 0 || !choices.fits(self.list.model_choice_count))
         {
             return self.reject_submission();
         }
         match entity.model {
             SceneModel::Mesh(_)
             | SceneModel::Lods { .. }
+            | SceneModel::Timed { .. }
             | SceneModel::Sprite { .. }
             | SceneModel::Beam { .. }
             | SceneModel::RailCore { .. }
@@ -1964,7 +2112,10 @@ pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<SceneEnt
     let mut entity = *list.entity(draw_entity_index(list, draw)?);
     if let Some(mesh) = draw.mesh {
         entity.model = SceneModel::Mesh(mesh);
-    } else if matches!(entity.model, SceneModel::Lods { .. }) {
+    } else if matches!(
+        entity.model,
+        SceneModel::Lods { .. } | SceneModel::Timed { .. }
+    ) {
         return None;
     }
     if let Some(shader) = draw.shader {
@@ -2001,10 +2152,38 @@ fn model_draw(
                     projection.ok_or(())?,
                 )
                 .ok_or(())?;
-            let Some(part) = list.lod_choices[choices.range()][level as usize] else {
+            let Some(part) = list.model_choices[choices.range()][level as usize] else {
                 return Ok(None);
             };
             draw.mesh = Some(part.model);
+            draw.shader = entity.shader.or(Some(part.shader));
+        }
+        SceneModel::Timed {
+            model,
+            skin_group,
+            choices,
+        } => {
+            let animation = assets
+                .model(model)
+                .and_then(|model| model.animation())
+                .ok_or(())?;
+            let group = animation.skin_groups().get(skin_group as usize).ok_or(())?;
+            if group.members.count != choices.count {
+                return Err(());
+            }
+            let member = animation
+                .skin_member(
+                    skin_group,
+                    view.model_time(),
+                    entity.sync_base,
+                    view.skin_timing,
+                )
+                .ok_or(())?;
+            let part = list.model_choices[choices.range()][member as usize].ok_or(())?;
+            if part.model != model {
+                return Err(());
+            }
+            draw.mesh = Some(model);
             draw.shader = entity.shader.or(Some(part.shader));
         }
         _ => {}
@@ -2022,7 +2201,11 @@ fn model_draw(
                     .ok_or(())?,
             ]);
         }
-        if matches!(entity.model, SceneModel::Lods { .. }) || model.animation().is_some() {
+        if matches!(
+            entity.model,
+            SceneModel::Lods { .. } | SceneModel::Timed { .. }
+        ) || model.animation().is_some()
+        {
             let selected = draw_entity(list, draw).ok_or(())?;
             model.posed_frames(&selected).ok_or(())?;
         }

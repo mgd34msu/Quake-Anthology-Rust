@@ -272,6 +272,7 @@ fn draw(
     let resources = host.runtime.client_resources[0].as_ref().unwrap();
     let player = PlayerState::default();
     let input = ClientSceneInput {
+        synchronization: None,
         client: ClientId(0),
         current: statics.is_none().then_some(current),
         previous: None,

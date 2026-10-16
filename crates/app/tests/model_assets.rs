@@ -2595,6 +2595,7 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
         qa_app::client_scene::StaticWorld::Selected(None),
     )];
     let input = ClientSceneInput {
+        synchronization: None,
         client,
         current: None,
         previous: None,
@@ -4695,8 +4696,13 @@ fn optional_unsupported_assets_report_diagnostics_without_mesh_placeholders() {
         });
     let owner = load(&fixture, assets, &requests, ModelLimits::default()).unwrap();
     let ModelView { assets, catalog } = owner.view();
-    assert_eq!(catalog.diagnostics.len(), 3);
-    assert_eq!(assets.models().len(), count);
+    assert_eq!(catalog.diagnostics.len(), 2);
+    assert_eq!(assets.models().len(), count + 1);
+    assert!(
+        catalog
+            .registration("progs/group.mdl", requests[0].profile())
+            .is_some()
+    );
     for diagnostic in &catalog.diagnostics {
         assert_eq!(
             catalog.registration(catalog.name(diagnostic.name).unwrap(), diagnostic.profile),
@@ -4708,9 +4714,8 @@ fn optional_unsupported_assets_report_diagnostics_without_mesh_placeholders() {
         catalog
             .diagnostics
             .iter()
-            .any(|d| d.error.contains("grouped MDL"))
+            .any(|d| catalog.name(d.name) == Some("progs/group.spr"))
     );
-    assert!(catalog.diagnostics.iter().any(|d| d.error.contains("Spr")));
     let mut required_assets = Assets::load().unwrap();
     let required_palette = support::palette(&mut required_assets);
     let error = load(
@@ -4988,8 +4993,8 @@ fn native_metadata_survives_unsupported_render_formats_and_initial_registration_
     owner.end_initial_registration();
     assert!(!owner.initial_registration());
     let ModelView { assets, catalog } = owner.view();
-    assert_eq!(assets.models().len(), initial_meshes);
-    assert_eq!(catalog.diagnostics.len(), 2);
+    assert_eq!(assets.models().len(), initial_meshes + 1);
+    assert_eq!(catalog.diagnostics.len(), 1);
     for (path, bounds, format) in [
         (
             "progs/group.mdl",
@@ -5009,7 +5014,10 @@ fn native_metadata_survives_unsupported_render_formats_and_initial_registration_
         let metadata = catalog.metadata(path.as_bytes()).unwrap();
         assert_eq!(metadata.bounds, bounds);
         assert_eq!(metadata.format, format);
-        assert_eq!(catalog.registration(path, profile), None);
+        assert_eq!(
+            catalog.registration(path, profile).is_some(),
+            format == qa_formats::model::ModelFormat::Mdl
+        );
     }
     assert_eq!(catalog.bounds(b"progs/absent.mdl", RuleSetId::Quake), None);
 }
@@ -5794,6 +5802,7 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
             qa_app::client_scene::StaticWorld::Selected(None),
         )];
         let input = ClientSceneInput {
+            synchronization: None,
             client,
             current: None,
             previous: None,
@@ -5854,6 +5863,7 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
         qa_app::client_scene::StaticWorld::Selected(None),
     )];
     let input = ClientSceneInput {
+        synchronization: None,
         client,
         current: None,
         previous: None,

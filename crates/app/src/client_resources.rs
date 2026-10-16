@@ -10,6 +10,9 @@ use qa_core::{
 };
 use qa_network::commands::packet::Protocol;
 
+mod animation;
+pub use animation::ModelSynchronization;
+
 pub(crate) fn model_world(
     connection: Option<qa_session::clients::Connection>,
     resources: Option<&ClientResources>,
@@ -157,6 +160,7 @@ pub struct ResourceState {
     pub configs: ConfigStrings,
     pub models: ClientModelBindings,
     pub layout: ConfigLayout,
+    pub animation: ModelSynchronization,
     pub rejected: u64,
     server_info: Option<ReceivedServerInfo>,
     presentation_reset: PresentationReset,
@@ -197,6 +201,9 @@ impl ClientResources {
                 .map_err(|error| format!("client configuration: {error:?}"))?,
                 models: ClientModelBindings::load(client, layout),
                 layout,
+                animation: ModelSynchronization::load(
+                    qa_network::snapshots::snapshot_limits(protocol).native_numbers,
+                )?,
                 rejected: 0,
                 server_info: None,
                 presentation_reset: PresentationReset::Complete(None),
@@ -367,6 +374,7 @@ impl ClientResources {
         self.state.world_readiness = WorldReadiness::Unmanaged;
         self.nq_signon = None;
         self.state.models.reset_received(world);
+        self.state.animation.clear();
         self.state.sounds.clear();
         self.state.sound_dirty.clear();
         self.state.static_sounds = 0;
@@ -1031,7 +1039,32 @@ impl ResourceState {
     pub fn static_entities(&self) -> &[crate::client_scene::StaticEntity] {
         &self.static_entities[..self.static_entity_count]
     }
+    pub(crate) fn observe_models(
+        &mut self,
+        number: u32,
+        references: [Option<qa_core::primitives::ModelRef>; 4],
+        policy: qa_gameplay::rules::appearance::AppearancePolicy,
+        catalog: Option<&ModelCatalog>,
+    ) {
+        for (cell, reference) in references.into_iter().enumerate() {
+            let source = reference.map_or(Ok(None), |reference| {
+                catalog
+                    .ok_or(())
+                    .and_then(|catalog| self.models.animation_source(reference, catalog))
+            });
+            self.rejected += u64::from(!self.animation.observe(
+                number,
+                cell,
+                reference,
+                policy.random_model_sync(),
+                source,
+            ));
+        }
+    }
+
     pub(crate) fn complete_static_models(&mut self, catalog: &ModelCatalog) {
+        self.animation
+            .resolve_pending(|reference| self.models.animation_source(reference, catalog));
         for entity in &mut self.static_entities[..self.static_entity_count] {
             self.models.complete_static(entity, catalog);
         }

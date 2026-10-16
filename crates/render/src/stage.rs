@@ -355,6 +355,7 @@ impl DrawInputs {
                 entity.model,
                 crate::scene::SceneModel::Mesh(_)
                     | crate::scene::SceneModel::Lods { .. }
+                    | crate::scene::SceneModel::Timed { .. }
                     | crate::scene::SceneModel::World { .. }
             )
         {

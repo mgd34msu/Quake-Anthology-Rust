@@ -1544,9 +1544,11 @@ fn embedded_mdl_skin_choices_preserve_distinct_images_in_a_native_view() {
             .choices()
             .next()
             .unwrap();
-        assert!(matches!(choice.shader, ShaderChoice::Direct(_)));
+        let ModelSkinChoice::Single(shader @ ShaderChoice::Direct(_)) = choice.shader else {
+            panic!("single authored skin");
+        };
         let selected = view
-            .choice(choice.shader, choice.registrations, None, choice.default)
+            .choice(shader, choice.registrations, None, choice.default)
             .unwrap()
             .source(&())
             .unwrap();
@@ -1580,9 +1582,26 @@ fn embedded_mdl_skin_choices_preserve_distinct_images_in_a_native_view() {
 
 fn interleaved_mdl_frames() -> Vec<u8> {
     let original = support::mdl();
-    let mut bytes = original[..142].to_vec();
+    let mut bytes = original[..84].to_vec();
+    bytes[48..52].copy_from_slice(&4i32.to_le_bytes());
     bytes[68..72].copy_from_slice(&4i32.to_le_bytes());
     bytes[72..76].copy_from_slice(&1i32.to_le_bytes());
+    for (members, endpoints) in [
+        (1..2u8, &[][..]),
+        (2..4, &[0.125f32, 0.5][..]),
+        (4..7, &[0.125, 0.375, 1.][..]),
+        (7..13, &[0.125, 0.25, 0.5, 0.75, 1., 1.5][..]),
+    ] {
+        bytes.extend(i32::from(!endpoints.is_empty()).to_le_bytes());
+        if !endpoints.is_empty() {
+            bytes.extend((members.len() as i32).to_le_bytes());
+            bytes.extend(endpoints.iter().flat_map(|value| value.to_le_bytes()));
+        }
+        for member in members {
+            bytes.extend([member; 2]);
+        }
+    }
+    bytes.extend_from_slice(&original[90..142]);
     let pose = |index: u8| {
         let mut body = original[146..182].to_vec();
         body[..8].copy_from_slice(&[0, 0, 0, 0, 32, 32, 32, 0]);
@@ -1614,13 +1633,7 @@ fn interleaved_mdl_frames() -> Vec<u8> {
 
 #[test]
 fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_without_source() {
-    let mut fixture = support::Fixture::new(&[
-        ("progs/grouped.mdl", interleaved_mdl_frames()),
-        (
-            "progs/skins.mdl",
-            include_bytes!("../../../formats/tests/fixtures/models/group.mdl").to_vec(),
-        ),
-    ]);
+    let mut fixture = support::Fixture::new(&[("progs/grouped.mdl", interleaved_mdl_frames())]);
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let original = ModelRequest::native("", RuleSetId::Quake, Some(palette)).profile();
@@ -1637,6 +1650,7 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
             ]),
         )
         .unwrap();
+    let models_before = owner.assets().counts().models;
     let handle = owner
         .register_model(&fixture.vfs, b"progs/grouped.mdl", original.source_rules)
         .unwrap();
@@ -1653,10 +1667,23 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
     let model = owner.assets().model(binding.model).unwrap();
     assert_eq!(model.frame_count(), 7);
     assert_eq!(model.native_frame_count(), 4);
-    assert_eq!(model.native_skin_count(), 1);
+    assert_eq!(model.native_skin_count(), 4);
     let recipe = model.animation().unwrap();
     assert_eq!(recipe.sync(), 1);
-    assert_eq!(recipe.endpoints(), &[0.125, 0.375, 1., 0.25, 0.75]);
+    assert_eq!(&recipe.endpoints()[11..], &[0.125, 0.375, 1., 0.25, 0.75]);
+    assert_eq!(
+        recipe
+            .skin_groups()
+            .iter()
+            .map(|group| group.members)
+            .collect::<Vec<_>>(),
+        [
+            IndexSpan { first: 0, count: 1 },
+            IndexSpan { first: 1, count: 2 },
+            IndexSpan { first: 3, count: 3 },
+            IndexSpan { first: 6, count: 6 },
+        ]
+    );
     assert_eq!(
         recipe
             .frame_groups()
@@ -1687,12 +1714,104 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
         );
     }
     let models = owner.assets().counts().models;
-    assert!(
-        owner
-            .register_model(&fixture.vfs, b"progs/skins.mdl", original.source_rules)
-            .is_err()
+    assert_eq!(models, models_before + 1);
+    let skin_images = owner
+        .catalog()
+        .renderer_registrations(RendererRegistration::Model, handle, original)
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, receipt)| {
+            let material = owner
+                .assets()
+                .material(
+                    owner
+                        .assets()
+                        .shader_binding(receipt.shader)
+                        .unwrap()
+                        .material,
+                )
+                .unwrap();
+            let StageTexture::Image(image) = material.stages[0].texture else {
+                panic!("embedded grouped skin")
+            };
+            let image = owner.assets().image(image).unwrap();
+            assert_eq!(
+                image.indexed.as_ref().unwrap().mip(0).unwrap().indices(),
+                [index as u8 + 1; 2]
+            );
+            (receipt.shader, image.rgba.clone())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(skin_images.len(), 12);
+    let parent_bindings = |owner: &ModelAssets, registration| {
+        [0, 1, 2, 3, u32::MAX].map(|parent| {
+            let mut parts = owner
+                .catalog()
+                .bindings(registration, parent, Default::default())
+                .unwrap()
+                .choices();
+            let part = parts.next().unwrap();
+            assert!(parts.next().is_none());
+            assert_eq!(part.model, binding.model);
+            if (1..=3).contains(&parent) {
+                let ModelSkinChoice::Timed { group, members } = part.shader else {
+                    panic!("grouped native skin parent")
+                };
+                assert_eq!(group, parent);
+                assert_eq!(members.len(), [1, 2, 3, 6][parent as usize]);
+                assert!(part.physical_binding().is_none());
+            } else {
+                assert!(matches!(part.shader, ModelSkinChoice::Single(_)));
+                assert!(part.physical_binding().is_some());
+            }
+            part.shaders()
+                .map(|shader| {
+                    part.resolve_shader(
+                        shader,
+                        qa_render::shader::reference::ShaderView::direct(),
+                        None,
+                    )
+                    .unwrap()
+                    .source(&())
+                    .unwrap()
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let original_skins = parent_bindings(&owner, registration);
+    assert_eq!(
+        original_skins.clone().map(|members| members.len()),
+        [1, 2, 3, 6, 1]
     );
-    assert_eq!(owner.assets().counts().models, models);
+    assert_eq!(original_skins[0], original_skins[4]);
+    assert_eq!(
+        original_skins[..4].concat(),
+        skin_images
+            .iter()
+            .map(|(shader, _)| *shader)
+            .collect::<Vec<_>>()
+    );
+    let check_original_images = |owner: &ModelAssets| {
+        for (shader, rgba) in &skin_images {
+            let material = owner
+                .assets()
+                .material(owner.assets().shader_binding(*shader).unwrap().material)
+                .unwrap();
+            let StageTexture::Image(image) = material.stages[0].texture else {
+                panic!("retained skin image")
+            };
+            assert_eq!(&owner.assets().image(image).unwrap().rgba, rgba);
+        }
+    };
+    assert_eq!(
+        owner
+            .catalog()
+            .bindings(registration, u32::MAX, Default::default())
+            .unwrap()
+            .next(),
+        Some(binding)
+    );
     let (mut owner, mut cpu) = publish(owner);
     fixture.remove("progs/grouped.mdl");
     let (mount, path) = {
@@ -1707,6 +1826,10 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
         vertex_light: true,
         ..original.finish
     };
+    let mut image_settings = original.image_settings;
+    image_settings.gamma_exponent = 0.5;
+    let mut settings = [None; 5];
+    settings[original.rules as usize] = Some(image_settings);
     let prefix = owner.assets().counts();
     let capacity = owner.catalog().capacity();
     let mut prepared = None;
@@ -1719,7 +1842,7 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
                 &fixture.vfs,
                 &[original],
                 &[],
-                [None; 5],
+                settings,
                 finish,
                 false,
                 |_| Ok(()),
@@ -1744,6 +1867,8 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
     drop(prepared.take());
     assert_eq!(owner.assets().counts(), prefix);
     assert_eq!(owner.catalog().capacity(), capacity);
+    check_original_images(&owner);
+    assert_eq!(parent_bindings(&owner, registration), original_skins);
     assert_eq!(cpu.admitted_assets(), Some(prefix));
     assert_eq!(
         owner
@@ -1763,7 +1888,7 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
                     &fixture.vfs,
                     &[original],
                     &[],
-                    [None; 5],
+                    settings,
                     finish,
                     false,
                     |_| Ok(()),
@@ -1779,6 +1904,7 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
     cpu = prepared.take().unwrap();
     assert_eq!(cpu.admitted_assets(), Some(owner.assets().counts()));
     assert_ne!(current, original);
+    assert_eq!(current.image_settings, image_settings);
     let current_registration = owner
         .catalog()
         .renderer_registration(handle, current)
@@ -1794,6 +1920,14 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
         .next()
         .unwrap();
     assert_eq!(current_binding.model, binding.model);
+    let current_skins = parent_bindings(&owner, current_registration);
+    assert_eq!(
+        current_skins.clone().map(|members| members.len()),
+        [1, 2, 3, 6, 1]
+    );
+    assert_eq!(current_skins[0], current_skins[4]);
+    assert_ne!(current_skins, original_skins);
+    check_original_images(&owner);
     assert!(std::ptr::eq(
         owner
             .assets()
@@ -1835,6 +1969,35 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
         .next()
         .unwrap();
     assert_eq!(reloaded.model, binding.model);
+    let reloaded_skins = parent_bindings(&owner, current_registration);
+    assert_eq!(
+        reloaded_skins.clone().map(|members| members.len()),
+        [1, 2, 3, 6, 1]
+    );
+    assert_eq!(reloaded_skins[0], reloaded_skins[4]);
+    for (index, shader) in reloaded_skins[..4].concat().into_iter().enumerate() {
+        let material = owner
+            .assets()
+            .material(owner.assets().shader_binding(shader).unwrap().material)
+            .unwrap();
+        let StageTexture::Image(image) = material.stages[0].texture else {
+            panic!("reloaded grouped skin image")
+        };
+        assert_eq!(
+            owner
+                .assets()
+                .image(image)
+                .unwrap()
+                .indexed
+                .as_ref()
+                .unwrap()
+                .mip(0)
+                .unwrap()
+                .indices(),
+            [index as u8 + 1; 2]
+        );
+    }
+    check_original_images(&owner);
     assert_eq!(owner.assets().counts().models, models);
     assert_eq!(owner.catalog().capacity(), capacity);
     assert!(std::ptr::eq(

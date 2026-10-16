@@ -129,6 +129,7 @@ pub fn static_scene(
     let projection = qa_network::projection::EntityProjection::load(protocol);
     let player_projection = qa_network::projection::PlayerProjection::load(protocol, &[]);
     let input = qa_app::client_scene::ClientSceneInput {
+        synchronization: None,
         client,
         current: None,
         previous: None,

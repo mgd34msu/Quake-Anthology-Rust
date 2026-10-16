@@ -326,7 +326,9 @@ pub fn prepare(entity: &SceneEntity, view: Refdef, assets: &crate::Assets) -> Op
                 color: entity.color,
             }
         }
-        SceneModel::Lods { .. } | SceneModel::World { .. } => return None,
+        SceneModel::Lods { .. } | SceneModel::Timed { .. } | SceneModel::World { .. } => {
+            return None;
+        }
         SceneModel::Portal { .. } | SceneModel::PolyMarker => Prepared::Empty,
     })
 }

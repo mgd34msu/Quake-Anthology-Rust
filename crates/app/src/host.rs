@@ -1807,6 +1807,18 @@ impl FrameHost {
                     .network
                     .get(snapshot.client, qa_core::loopback::Endpoint::Client)
             {
+                if let Some(frame @ qa_network::snapshots::ReceivedFrame::NetQuake(_)) =
+                    connection.channel.current_snapshot()
+                    && let Some(resources) = self
+                        .runtime
+                        .client_resources
+                        .get_mut(snapshot.client.0 as usize)
+                        .and_then(Option::as_mut)
+                {
+                    resources.state.animation.retire_missing(|number| {
+                        crate::client_scene::ClientEntities::row(frame, number).is_some()
+                    });
+                }
                 snapshot.publish_feedback(
                     client.entity,
                     &connection.channel,
@@ -1947,6 +1959,7 @@ impl FrameHost {
                 appearance: entities.appearance,
                 player_projection: snapshot.player_projection(),
                 bindings: &resources.state.models,
+                synchronization: Some(&resources.state.animation),
                 static_entities: resources.state.static_entities(),
                 models: self.runtime.model_assets.as_ref()?.catalog(),
                 player,
@@ -2809,9 +2822,13 @@ impl FrameHost {
                                 }
                                 signon_client = Some(id);
                             }
-                            Incoming::NqEntityUpdate => {
+                            Incoming::NqEntityUpdate { number, model } => {
+                                let policy = self.runtime.snapshots[id.0 as usize].as_ref().and_then(|binding| binding.appearance_policy());
                                 if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
                                     resources.receive_nq_entity();
+                                    if let Some(policy) = policy {
+                                        resources.state.observe_models(u32::from(number), [model, None, None, None], policy, self.runtime.model_assets.as_ref().map(|owner| owner.catalog()));
+                                    }
                                 }
                                 signon_client = Some(id);
                             }

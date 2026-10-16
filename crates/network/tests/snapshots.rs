@@ -2433,7 +2433,7 @@ fn q1_wire_baselines_replace_future_rows_without_mutating_retained_frames() -> R
                     assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 7);
                     frames += 1;
                 }
-                Incoming::CommandProgress(_) | Incoming::NqEntityUpdate => {}
+                Incoming::CommandProgress(_) | Incoming::NqEntityUpdate { .. } => {}
                 Incoming::PacketTiming { .. } => assert_eq!(protocol, Protocol::QuakeWorld28),
                 _ => panic!("baseline/update published an unrelated event"),
             },
@@ -2488,7 +2488,7 @@ fn q1_wire_baselines_replace_future_rows_without_mutating_retained_frames() -> R
                 Incoming::Snapshot(frame) => {
                     assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 9)
                 }
-                Incoming::CommandProgress(_) | Incoming::NqEntityUpdate => {}
+                Incoming::CommandProgress(_) | Incoming::NqEntityUpdate { .. } => {}
                 Incoming::PacketTiming { .. } => assert_eq!(protocol, Protocol::QuakeWorld28),
                 _ => panic!("baseline-derived update"),
             },
@@ -2923,7 +2923,7 @@ fn nq_serverinfo_borrows_header_and_resource_rows_before_following_controls() ->
         &mut connections,
         NQ_BASELINE_UPDATE,
         |_, _, incoming| {
-            if matches!(incoming, Incoming::NqEntityUpdate) {
+            if matches!(incoming, Incoming::NqEntityUpdate { .. }) {
                 return;
             }
             let Incoming::Snapshot(frame) = incoming else {
@@ -3354,7 +3354,7 @@ fn nq_serverinfo_replacement_resets_only_received_state_and_the_in_progress_pack
         |_, _, incoming| match incoming {
             Incoming::ServerInfo(_) => headers += 1,
             Incoming::SetView { entity: 3 } => {}
-            Incoming::NqEntityUpdate => {}
+            Incoming::NqEntityUpdate { .. } => {}
             _ => panic!("new serverinfo leaked its preceding in-progress snapshot"),
         },
     )?;
@@ -3381,7 +3381,7 @@ fn nq_serverinfo_replacement_resets_only_received_state_and_the_in_progress_pack
         &mut connections,
         b"\x81\x40\0\x01",
         |_, _, incoming| {
-            if matches!(incoming, Incoming::NqEntityUpdate) {
+            if matches!(incoming, Incoming::NqEntityUpdate { .. }) {
                 return;
             }
             let Incoming::Snapshot(frame) = incoming else {
@@ -3470,7 +3470,7 @@ fn nq_serverinfo_truncation_or_invalid_header_keeps_the_prior_ring_and_baselines
         &mut connections,
         NQ_BASELINE_UPDATE,
         |_, _, incoming| {
-            if matches!(incoming, Incoming::NqEntityUpdate) {
+            if matches!(incoming, Incoming::NqEntityUpdate { .. }) {
                 return;
             }
             let Incoming::Snapshot(frame) = incoming else {
@@ -3665,7 +3665,7 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
                 assert_eq!(print.text, b"NetQuake");
                 prints += 1;
             }
-            Incoming::NqEntityUpdate => {}
+            Incoming::NqEntityUpdate { .. } => {}
             _ => panic!("NQ snapshot/print stream"),
         },
     )?;
@@ -3771,7 +3771,7 @@ fn nq_fast_update_notifications_follow_complete_records_and_interleaved_signon()
         &mut connections,
         b"\x80\x01\x19\x03\x80\x02\x80\x03\x08after\0",
         |_, _, incoming| match incoming {
-            Incoming::NqEntityUpdate => {
+            Incoming::NqEntityUpdate { .. } => {
                 if stage == 3 {
                     stage = 4;
                     completed += 1;
@@ -3850,7 +3850,7 @@ fn nq_signon_completion_requires_an_entire_fast_update_body() -> Result<(), Erro
         &mut connections,
         &payload,
         |_, _, incoming| match incoming {
-            Incoming::NqEntityUpdate => updates += 1,
+            Incoming::NqEntityUpdate { .. } => updates += 1,
             _ => panic!("malformed tail published more than its complete update prefix"),
         },
     )?;
@@ -3905,7 +3905,7 @@ fn nq_signon_controls_are_connection_local_and_not_admitted_for_qw() -> Result<(
             &[25, stage, 128, 1],
             |_, _, incoming| match incoming {
                 Incoming::SignonStage { stage } => stages[index] = stage,
-                Incoming::NqEntityUpdate => updates[index] += 1,
+                Incoming::NqEntityUpdate { .. } => updates[index] += 1,
                 Incoming::Snapshot(_) => {}
                 _ => panic!("connection-local signon controls"),
             },
@@ -4510,5 +4510,68 @@ fn previous_snapshot_borrows_only_the_prior_accepted_ring_slot() -> Result<(), E
     // Frame38 overwrites frame6's slot; no copied fallback entity state exists.
     assert_eq!(client.current().map(|frame| frame.sequence), Some(38));
     assert!(client.previous().is_none());
+    Ok(())
+}
+
+#[test]
+fn nq_model_transition_receipts_keep_each_admitted_record_before_the_final_snapshot()
+-> Result<(), Error> {
+    use qa_core::primitives::{EntityRecord, ModelRef, ResourceNamespace};
+    use qa_network::projection::{EntityContext, EntityProjection};
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let namespace = ResourceNamespace::Client(ClientId(0));
+    let projection = EntityProjection::load(Protocol::NetQuake15);
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    for ordinal in [1, 2, 1, 0] {
+        let mut record = EntityRecord::default();
+        record.appearance.models[0] = ModelRef::native(namespace, ordinal);
+        let mut words = [0; states::NQ_ENTITY_WORDS];
+        assert!(projection.reduce(
+            &record,
+            &EntityContext::default(),
+            &mut words,
+            |model, _| Some(model.ordinal),
+            |_| None,
+            |_| None
+        ));
+        assert!(states::write_nq_entity(
+            &mut writer,
+            7,
+            &[0; states::NQ_ENTITY_WORDS],
+            &words,
+            false
+        )?);
+    }
+    let mut received = Vec::new();
+    let mut snapshots = 0;
+    server_payload(
+        &mut server,
+        &mut connections,
+        writer.bytes(),
+        |id, endpoint, incoming| {
+            assert_eq!((id, endpoint), (ClientId(0), Endpoint::Client));
+            match incoming {
+                Incoming::NqEntityUpdate { number, model } => {
+                    assert_eq!(number, 7);
+                    assert_eq!(snapshots, 0);
+                    received.push(model);
+                }
+                Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) => {
+                    snapshots += 1;
+                    assert_eq!(frame.entities.len(), 1);
+                    let mut record = EntityRecord::default();
+                    assert!(projection.apply(&frame.entities[0].words, &mut record, namespace));
+                    assert_eq!(record.appearance.models[0], None);
+                }
+                _ => panic!("unexpected model-transition service"),
+            }
+        },
+    )?;
+    assert_eq!(
+        received,
+        [1, 2, 1, 0].map(|ordinal| ModelRef::native(namespace, ordinal))
+    );
+    assert_eq!((snapshots, connections.command_errors), (1, 0));
     Ok(())
 }
