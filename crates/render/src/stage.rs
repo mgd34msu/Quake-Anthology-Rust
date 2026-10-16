@@ -353,7 +353,9 @@ impl DrawInputs {
         if local
             && matches!(
                 entity.model,
-                crate::scene::SceneModel::Mesh(_) | crate::scene::SceneModel::World { .. }
+                crate::scene::SceneModel::Mesh(_)
+                    | crate::scene::SceneModel::Lods { .. }
+                    | crate::scene::SceneModel::World { .. }
             )
         {
             self.view_origin = entity_view_origin(self.view_origin, entity);

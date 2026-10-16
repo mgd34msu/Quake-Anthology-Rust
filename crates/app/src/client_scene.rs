@@ -1,7 +1,7 @@
 //! CLIENT-owned snapshot values become copied entries in the shared scene list.
 use crate::model_assets::{
-    InlineBinding, ModelBinding, ModelBindings, ModelCatalog, ModelMaterialPolicy, ModelProfile,
-    ModelRegistrationId,
+    InlineBinding, ModelBinding, ModelBindings, ModelCatalog, ModelLodBindings, ModelLodInfo,
+    ModelMaterialPolicy, ModelProfile, ModelRegistrationId,
 };
 use crate::snapshots::{GunAnimation, Interpolation};
 use qa_core::{
@@ -87,22 +87,32 @@ impl std::ops::Deref for StaticEntity {
 }
 
 #[derive(Clone, Copy)]
-enum SceneBinding {
-    Mesh(ModelBinding),
+enum SceneBinding<'a> {
+    Mesh {
+        choices: [Option<ModelBinding>; 3],
+        info: ModelLodInfo<'a>,
+    },
     Inline {
         binding: InlineBinding,
         presentation: WorldPresentationId,
     },
 }
 enum SceneBindings<'a> {
-    Mesh(ModelBindings<'a>),
+    Mesh(ModelLodBindings<'a>),
     Inline(Option<(InlineBinding, WorldPresentationId)>),
 }
-impl Iterator for SceneBindings<'_> {
-    type Item = SceneBinding;
+impl<'a> Iterator for SceneBindings<'a> {
+    type Item = SceneBinding<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Mesh(bindings) => bindings.next().map(SceneBinding::Mesh),
+            Self::Mesh(bindings) => {
+                let info = bindings.info();
+                bindings.next().map(|choices| SceneBinding::Mesh {
+                    choices: choices
+                        .map(|choice| choice.and_then(|choice| choice.physical_binding())),
+                    info,
+                })
+            }
             Self::Inline(binding) => {
                 binding
                     .take()
@@ -686,7 +696,7 @@ impl ClientModelBindings {
         policy: ModelMaterialPolicy,
     ) -> Option<ModelBindings<'a>> {
         match self.resolve_scene(reference, skin, models, policy)? {
-            SceneBindings::Mesh(bindings) => Some(bindings),
+            SceneBindings::Mesh(bindings) => bindings.base(),
             SceneBindings::Inline(_) => None,
         }
     }
@@ -717,7 +727,7 @@ impl ClientModelBindings {
     ) -> Option<SceneBindings<'a>> {
         match registration {
             ClientModel::Mesh(registration) => models
-                .bindings(registration, u32::try_from(skin).unwrap_or(0), policy)
+                .lod_bindings(registration, u32::try_from(skin).unwrap_or(0), policy)
                 .map(SceneBindings::Mesh),
             ClientModel::Inline {
                 binding,
@@ -1658,6 +1668,7 @@ impl ClientSceneInput<'_> {
                     infrared_visible: capabilities.infrared_visible,
                     ..SceneEntity::default()
                 };
+                let mut model_lods = None;
                 let angles = match binding {
                     SceneBinding::Inline {
                         binding,
@@ -1679,20 +1690,28 @@ impl ClientSceneInput<'_> {
                         };
                         pose.angles
                     }
-                    SceneBinding::Mesh(binding) => {
+                    SceneBinding::Mesh { choices, info } => {
+                        let Some(binding) = choices.iter().flatten().next().copied() else {
+                            counts.missing_models += 1;
+                            continue;
+                        };
                         let Some(model) = assets.model(binding.model) else {
                             counts.missing_models += 1;
                             continue;
                         };
-                        let current_frame =
-                            native_frame(record.appearance.frame, model.frame_count());
+                        let frames = info.frame_count(model.frame_count());
+                        if frames == 0 {
+                            counts.missing_models += 1;
+                            continue;
+                        }
+                        let current_frame = native_frame(record.appearance.frame, frames);
                         let old_frame = if capabilities.state_old_frame {
-                            native_frame(record.appearance.native.old_frame, model.frame_count())
+                            native_frame(record.appearance.native.old_frame, frames)
                         } else {
                             previous
                                 .filter(|old| old.appearance.models[slot] == Some(reference))
                                 .map_or(current_frame, |old| {
-                                    native_frame(old.appearance.frame, model.frame_count())
+                                    native_frame(old.appearance.frame, frames)
                                 })
                         };
                         let angles = binding.pose.angles(pose.angles, software);
@@ -1700,18 +1719,33 @@ impl ClientSceneInput<'_> {
                         if capabilities.alias_motion && model.sprite.is_none() {
                             entity.previous_origin = Some(record.appearance.old_origin);
                         }
-                        entity.shader = Some(binding.shader.into());
+                        entity.shader = None;
                         entity.frame = current_frame;
                         entity.old_frame = old_frame;
                         entity.back_lerp = 1.0 - fraction;
                         entity.lighting = Some(native_lighting(binding.pose, angles));
+                        model_lods =
+                            Some((choices, info.radius(current_frame), info.native_count()));
                         angles
                     }
                 };
                 entity.axes = angle_vectors(angles)
                     .axes()
                     .map(|axis| axis * capabilities.scale);
-                let added = frame.add_entity(entity);
+                let added = if let Some((choices, radius, count)) = model_lods {
+                    frame.add_model_lods(
+                        entity,
+                        radius,
+                        std::iter::once(
+                            choices
+                                .into_iter()
+                                .take(count)
+                                .map(|choice| choice.map(ModelBinding::scene_part)),
+                        ),
+                    )
+                } else {
+                    frame.add_entity(entity)
+                };
                 counts.models += u32::from(added);
                 counts.rejected += u32::from(!added);
             }
@@ -1733,7 +1767,7 @@ impl ClientSceneInput<'_> {
         let Some(reference) = weapon.model else {
             return;
         };
-        let Some(bindings) = self.bindings.resolve(
+        let Some(SceneBindings::Mesh(bindings)) = self.bindings.resolve_scene(
             reference,
             weapon.skin,
             self.models,
@@ -1788,15 +1822,26 @@ impl ClientSceneInput<'_> {
                 lerp_angle(old.angles.0[axis], weapon.angles.0[axis], fraction)
             }))
         });
-        for binding in bindings {
+        let info = bindings.info();
+        for choices in bindings {
+            let choices = choices.map(|choice| choice.and_then(|choice| choice.physical_binding()));
+            let Some(binding) = choices.iter().flatten().next().copied() else {
+                counts.missing_models += 1;
+                continue;
+            };
             let Some(model) = assets.model(binding.model) else {
                 counts.missing_models += 1;
                 continue;
             };
+            let frames = info.frame_count(model.frame_count());
+            if frames == 0 {
+                counts.missing_models += 1;
+                continue;
+            }
             let angles = binding
                 .pose
                 .angles(self.weapon_view_angles + angles, software);
-            let current_frame = native_frame(weapon.frame, model.frame_count());
+            let current_frame = native_frame(weapon.frame, frames);
             let (old_frame, back_lerp) =
                 if animation_policy == WeaponInterpolation::Rate && previous.is_some() {
                     let back = self.gun_animation.map_or(0.0, |animation| {
@@ -1816,9 +1861,7 @@ impl ClientSceneInput<'_> {
                         counts.unsupported += 1;
                     }
                     (
-                        old.map_or(current_frame, |old| {
-                            native_frame(old.frame, model.frame_count())
-                        }),
+                        old.map_or(current_frame, |old| native_frame(old.frame, frames)),
                         back,
                     )
                 } else if animation_policy == WeaponInterpolation::Snapshot {
@@ -1826,9 +1869,7 @@ impl ClientSceneInput<'_> {
                         previous
                             .filter(|_| weapon.frame != 0)
                             .filter(|old| old.model == weapon.model)
-                            .map_or(current_frame, |old| {
-                                native_frame(old.frame, model.frame_count())
-                            }),
+                            .map_or(current_frame, |old| native_frame(old.frame, frames)),
                         1.0 - fraction,
                     )
                 } else {
@@ -1836,7 +1877,7 @@ impl ClientSceneInput<'_> {
                 };
             let entity = SceneEntity {
                 model: binding.model.into(),
-                shader: Some(binding.shader.into()),
+                shader: None,
                 origin: refdef.origin + offset + (weapon.offset - offset) * fraction,
                 axes: angle_vectors(angles).axes(),
                 frame: current_frame,
@@ -1846,7 +1887,16 @@ impl ClientSceneInput<'_> {
                 lighting: Some(native_lighting(binding.pose, angles)),
                 ..SceneEntity::default()
             };
-            let added = frame.add_entity(entity);
+            let added = frame.add_model_lods(
+                entity,
+                info.radius(current_frame),
+                std::iter::once(
+                    choices
+                        .into_iter()
+                        .take(info.native_count())
+                        .map(|choice| choice.map(ModelBinding::scene_part)),
+                ),
+            );
             counts.models += u32::from(added);
             counts.rejected += u32::from(!added);
         }

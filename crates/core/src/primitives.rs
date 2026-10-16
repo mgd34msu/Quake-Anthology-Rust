@@ -972,6 +972,16 @@ impl Bounds {
         })
     }
 
+    /// Native bounding-sphere radius about the model origin.
+    pub fn radius(self) -> f32 {
+        let corner = Vec3(std::array::from_fn(|axis| {
+            let low = self.mins.0[axis].abs();
+            let high = self.maxs.0[axis].abs();
+            if low > high { low } else { high }
+        }));
+        crate::math::length(corner)
+    }
+
     pub fn corner(self, normal: Vec3, far: bool) -> Vec3 {
         Vec3(std::array::from_fn(|axis| {
             if (normal.0[axis] < 0.0) == far {

@@ -75,7 +75,7 @@ impl SceneService for Scene<'_> {
     fn light(&mut self, _: Light) -> bool {
         true
     }
-    fn entity(&mut self, entity: EntitySubmission) -> bool {
+    fn entity(&mut self, entity: EntitySubmission, _: &qa_console::cvars::Cvars) -> bool {
         self.submitted.set(Some(entity.model));
         true
     }

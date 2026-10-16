@@ -26,6 +26,7 @@ pub struct ClientView {
     pub time_ms: u64,
     pub lighting_scales: [f32; 2],
     pub curve_error: f32,
+    pub model_lod: qa_render::scene::ModelLodSettings,
 }
 
 /// The live adapter delegates every OS operation to platform. The same host
@@ -386,6 +387,7 @@ pub struct FrameHost {
     pub(crate) player_model_options: (qa_console::cvars::View, qa_console::cvars::View),
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
+    model_lod: [qa_console::cvars::View; 2],
     userinfo: Box<[ClientUserinfo]>,
     nq_identity: [(qa_console::cvars::View, qa_console::cvars::View); SeatId::COUNT],
     lighting_scales: [CvarHandle; 2],
@@ -1242,6 +1244,7 @@ impl FrameHost {
             .bind("sw_waterwarp", q2_context)
             .ok_or("missing software water warp cvar")?;
         let curve_error = crate::render_settings::curve_error_view(&console.cvars)?;
+        let model_lod = crate::render_settings::model_lod_views(&console.cvars)?;
         let lighting_scales =
             ["r_ambientScale", "r_directedScale"].map(|name| console.cvars.find(name));
         let [Some(ambient), Some(directed)] = lighting_scales else {
@@ -1349,6 +1352,7 @@ impl FrameHost {
             player_model_options,
             software_waterwarp,
             curve_error,
+            model_lod,
             userinfo: (0..SeatId::COUNT)
                 .map(|_| ClientUserinfo::default())
                 .collect(),
@@ -1607,6 +1611,7 @@ impl FrameHost {
     pub fn client_views(&self) -> [Option<ClientView>; SeatId::COUNT] {
         let curve_error =
             crate::render_settings::curve_error(&self.console.cvars, self.curve_error);
+        let model_lod = crate::render_settings::model_lod(&self.console.cvars, self.model_lod);
         std::array::from_fn(|seat| {
             let (client, row, player) = self.local_seat(seat)?;
             let (world, world_presentation) = self.local_worlds[seat]?;
@@ -1636,6 +1641,7 @@ impl FrameHost {
                     .lighting_scales
                     .map(|handle| self.console.cvars.value(handle)),
                 curve_error,
+                model_lod,
             })
         })
     }

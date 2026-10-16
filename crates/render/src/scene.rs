@@ -8,7 +8,10 @@ use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
 pub use qa_core::primitives::LightStyle;
 use qa_core::primitives::{Orientation, PlayerViewFlags, Vec3};
 use std::cmp::Ordering as SortOrdering;
+mod model_lod;
 mod patch;
+pub use model_lod::ModelLodSettings;
+pub(crate) use model_lod::projection_scales;
 pub use patch::{PatchSelection, PatchTriangles};
 pub const DEFAULT_CURVE_ERROR: f32 = 250.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,6 +128,7 @@ pub struct Refdef {
     pub palette_transform: Option<PaletteTransform>,
     pub lightstyles: [LightStyle; 256],
     pub curve_error: f32,
+    pub model_lod: ModelLodSettings,
 }
 pub fn fov_from_x(fov_x: f32, width: u32, height: u32) -> [f32; 2] {
     let fov_x = if fov_x.is_finite() {
@@ -153,6 +157,7 @@ impl Refdef {
     /// Shared view boundary for visibility and both drawing backends.
     /// Returns the native half-FOV tangents in the original operation order.
     pub fn validate(&self, width: u32, height: u32) -> Option<[f32; 2]> {
+        let tangent = self.tangents()?;
         if !self.viewport.fits(width, height)
             || (self.blend_phase == BlendPhase::FinalPalette
                 && self.blend_viewport.is_some_and(|v| !v.fits(width, height)))
@@ -160,13 +165,11 @@ impl Refdef {
             || self.pvs_origin.is_some_and(|origin| !origin.is_finite())
             || !self.axes.iter().all(|axis| axis.is_finite())
             || !self
-                .fov
+                .blend
                 .iter()
-                .chain(self.blend.iter())
                 .chain(self.damage_blend.iter())
                 .all(|value| value.is_finite())
             || !self.damage_border.is_finite()
-            || self.fov.iter().any(|&fov| fov <= 0.0 || fov >= 180.0)
             || !self.near.is_finite()
             || self.near <= 0.0
             || !(1.0 / self.near).is_finite()
@@ -178,11 +181,24 @@ impl Refdef {
         {
             return None;
         }
+        Some(tangent)
+    }
+    fn tangents(&self) -> Option<[f32; 2]> {
+        if self
+            .fov
+            .iter()
+            .any(|&fov| !fov.is_finite() || fov <= 0.0 || fov >= 180.0)
+        {
+            return None;
+        }
         let tangent = self.fov.map(|fov| (fov.to_radians() * 0.5).tan());
         tangent
             .iter()
             .all(|&t| t > 0.0 && t.is_finite())
             .then_some(tangent)
+    }
+    pub fn projection_scales(&self) -> Option<[f32; 2]> {
+        self.tangents().map(projection_scales)
     }
 }
 impl Default for Refdef {
@@ -214,6 +230,7 @@ impl Default for Refdef {
             palette_transform: None,
             lightstyles: [LightStyle::default(); 256],
             curve_error: DEFAULT_CURVE_ERROR,
+            model_lod: ModelLodSettings::default(),
         }
     }
 }
@@ -292,9 +309,18 @@ impl DamageVignette {
         (vertices, indices.len())
     }
 }
+#[derive(Clone, Copy, Debug)]
+pub struct ModelPart {
+    pub model: ModelId,
+    pub shader: ShaderRef,
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SceneModel {
     Mesh(ModelId),
+    Lods {
+        choices: Span,
+        radius: Option<f32>,
+    },
     World {
         world: WorldId,
         presentation: WorldPresentationId,
@@ -337,7 +363,8 @@ impl SceneModel {
     pub fn mesh(self) -> Option<ModelId> {
         match self {
             Self::Mesh(model) => Some(model),
-            Self::World { .. }
+            Self::Lods { .. }
+            | Self::World { .. }
             | Self::Sprite { .. }
             | Self::Beam { .. }
             | Self::RailCore { .. }
@@ -654,7 +681,9 @@ pub(crate) fn for_each_triangle(
             }
         }
         DrawKind::Entity => {
-            let entity = list.entity(item.index);
+            let Some(entity) = draw_entity(list, item) else {
+                return false;
+            };
             let Some(model) = entity.model.mesh().and_then(|id| assets.model(id)) else {
                 return false;
             };
@@ -665,7 +694,7 @@ pub(crate) fn for_each_triangle(
             for triangle in model.indices.chunks_exact(3) {
                 visit(
                     [triangle[0], triangle[1], triangle[2]]
-                        .map(|index| transform(frames.vertex(index as usize), Some(entity))),
+                        .map(|index| transform(frames.vertex(index as usize), Some(&entity))),
                 );
             }
         }
@@ -708,6 +737,7 @@ pub struct DrawItem {
     pub kind: DrawKind,
     pub index: u32,
     pub shader: Option<ShaderRef>,
+    pub mesh: Option<ModelId>,
     key: DrawKey,
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -755,6 +785,8 @@ pub enum Command {
 pub struct Limits {
     pub commands: usize,
     pub entities: usize,
+    /// Zero disables multi-level model choices; ordinary meshes remain available.
+    pub lod_choices: usize,
     pub polys: usize,
     pub vertices: usize,
     pub lights: usize,
@@ -776,7 +808,7 @@ impl Limits {
         }
     }
 
-    fn capacities(self) -> [usize; 9] {
+    fn required_capacities(self) -> [usize; 9] {
         [
             self.commands,
             self.entities,
@@ -790,12 +822,19 @@ impl Limits {
         ]
     }
 
+    fn capacities(self) -> impl Iterator<Item = usize> {
+        self.required_capacities()
+            .into_iter()
+            .chain(std::iter::once(self.lod_choices))
+    }
+
     pub(crate) fn resolved(mut self) -> Result<Self, &'static str> {
         self.draws = self.draw_capacity().ok_or("scene draw capacity overflow")?;
         if self
-            .capacities()
+            .required_capacities()
             .iter()
             .any(|&n| n == 0 || n > u32::MAX as usize)
+            || self.lod_choices > u32::MAX as usize
         {
             return Err("invalid scene capacity");
         }
@@ -807,7 +846,6 @@ impl Limits {
         let current = current.resolved()?;
         if next
             .capacities()
-            .into_iter()
             .zip(current.capacities())
             .any(|(next, current)| next < current)
         {
@@ -821,6 +859,7 @@ impl Default for Limits {
         Self {
             commands: 4096,
             entities: 2048,
+            lod_choices: 6144,
             polys: 8192,
             vertices: 65536,
             lights: 256,
@@ -835,6 +874,7 @@ impl Default for Limits {
 pub struct CommandList {
     commands: Box<[Command]>,
     entities: Box<[SceneEntity]>,
+    lod_choices: Box<[Option<ModelPart>]>,
     polys: Box<[Poly]>,
     vertices: Box<[Vertex]>,
     lights: Box<[Light]>,
@@ -844,6 +884,7 @@ pub struct CommandList {
     draws: Box<[DrawItem]>,
     command_count: usize,
     entity_count: usize,
+    lod_count: usize,
     poly_count: usize,
     vertex_count: usize,
     light_count: usize,
@@ -861,6 +902,7 @@ impl CommandList {
         Self {
             commands: vec![Command::Empty; l.commands].into_boxed_slice(),
             entities: vec![SceneEntity::default(); l.entities].into_boxed_slice(),
+            lod_choices: vec![None; l.lod_choices].into_boxed_slice(),
             polys: vec![Poly::default(); l.polys].into_boxed_slice(),
             vertices: vec![Vertex::default(); l.vertices].into_boxed_slice(),
             lights: vec![Light::default(); l.lights].into_boxed_slice(),
@@ -870,6 +912,7 @@ impl CommandList {
             draws: vec![DrawItem::default(); l.draws].into_boxed_slice(),
             command_count: 0,
             entity_count: 0,
+            lod_count: 0,
             poly_count: 0,
             vertex_count: 0,
             light_count: 0,
@@ -966,6 +1009,7 @@ impl CommandList {
     fn reset(&mut self, frame: u64) {
         self.command_count = 0;
         self.entity_count = 0;
+        self.lod_count = 0;
         self.poly_count = 0;
         self.vertex_count = 0;
         self.light_count = 0;
@@ -1017,6 +1061,7 @@ struct SceneCheckpoint {
     vertices: usize,
     commands: usize,
     areas: usize,
+    lod_choices: usize,
 }
 impl FrontEnd {
     pub fn load(limits: Limits) -> Result<Self, &'static str> {
@@ -1053,6 +1098,7 @@ impl FrontEnd {
         let mut limits = Limits {
             commands: current.commands.max(required.commands),
             entities: current.entities.max(required.entities),
+            lod_choices: current.lod_choices.max(required.lod_choices),
             polys: current.polys.max(required.polys),
             vertices: current.vertices.max(required.vertices),
             lights: current.lights.max(required.lights),
@@ -1069,7 +1115,7 @@ impl FrontEnd {
             );
         }
         let limits = limits.validate_growth(current)?;
-        let lists = (limits.capacities() != current.capacities()).then(|| {
+        let lists = limits.capacities().ne(current.capacities()).then(|| {
             [
                 Some(CommandList::load(limits, self.owner, 0)),
                 Some(CommandList::load(limits, self.owner, 1)),
@@ -1118,6 +1164,7 @@ impl Frame {
             vertices: self.list.vertex_count,
             commands: self.list.command_count,
             areas: self.list.area_count,
+            lod_choices: self.list.lod_count,
         }
     }
     fn restore(&mut self, checkpoint: SceneCheckpoint) {
@@ -1131,6 +1178,7 @@ impl Frame {
         self.list.vertex_count = checkpoint.vertices;
         self.list.command_count = checkpoint.commands;
         self.list.area_count = checkpoint.areas;
+        self.list.lod_count = checkpoint.lod_choices;
     }
     fn copy_scene(&mut self, source: SceneRanges, skip_world: Option<WorldId>) -> bool {
         if source.entities.count as usize > self.list.entities.len() - self.list.entity_count
@@ -1185,11 +1233,18 @@ impl Frame {
         true
     }
     fn generated_fits(&self, refdef: Refdef, assets: &Assets) -> bool {
-        let generated = self.list.entities
-            [self.first.entities.first as usize..self.list.entity_count]
+        let projection = refdef.projection_scales();
+        let generated = self.list.draws[self.first.draws.first as usize..self.list.draw_count]
             .iter()
+            .filter(|draw| draw.kind == DrawKind::Entity)
+            .filter_map(|&draw| {
+                model_draw(&self.list, assets, draw, &refdef, projection)
+                    .ok()
+                    .flatten()
+            })
+            .filter_map(|draw| draw_entity(&self.list, draw))
             .filter(|entity| entity.visibility.visible(refdef.portal))
-            .filter_map(|entity| crate::entities::prepare(entity, refdef, assets))
+            .filter_map(|entity| crate::entities::prepare(&entity, refdef, assets))
             .try_fold(0usize, |total, geometry| {
                 total.checked_add(geometry.triangle_count())
             });
@@ -1221,11 +1276,20 @@ impl Frame {
                 .iter()
                 .any(|entity| matches!(entity.model, SceneModel::Portal { .. }));
         if has_portal {
+            let projection = refdef.projection_scales();
             let first = self.list.draw_count;
             if source.draws.count as usize <= self.list.draws.len() - first {
                 let mut count = 0;
                 for index in source.draws.range() {
-                    let mut draw = self.list.draws[index];
+                    let Ok(Some(mut draw)) = model_draw(
+                        &self.list,
+                        assets,
+                        self.list.draws[index],
+                        &refdef,
+                        projection,
+                    ) else {
+                        continue;
+                    };
                     draw.shader = source_shader(&self.list, assets, draw, shaders);
                     if let Some(key) = draw_key(&self.list, assets, draw, shaders) {
                         draw.key = key;
@@ -1428,7 +1492,10 @@ impl Frame {
         let lights = &self.list.lights[self.first.lights.first as usize..self.list.light_count];
         for entity in entities {
             if entity.lighting.is_none()
-                && matches!(entity.model, SceneModel::Mesh(_) | SceneModel::World { .. })
+                && matches!(
+                    entity.model,
+                    SceneModel::Mesh(_) | SceneModel::Lods { .. } | SceneModel::World { .. }
+                )
             {
                 entity.lighting = Some(crate::lighting::setup_entity(
                     entity,
@@ -1442,21 +1509,62 @@ impl Frame {
     pub fn add_entity(&mut self, entity: SceneEntity) -> bool {
         self.add_entities(std::iter::once(entity))
     }
+    /// Capture every part's independent levels into this packet, or leave all
+    /// payload counts unchanged. Copied views share these immutable choices.
+    pub fn add_model_lods(
+        &mut self,
+        pose: SceneEntity,
+        radius: Option<f32>,
+        parts: impl IntoIterator<Item = impl IntoIterator<Item = Option<ModelPart>>>,
+    ) -> bool {
+        let checkpoint = self.checkpoint();
+        for levels in parts {
+            let mut levels = levels.into_iter();
+            let Some(first_level) = levels.next() else {
+                self.restore(checkpoint);
+                return self.reject_submission();
+            };
+            let Some(second_level) = levels.next() else {
+                if let Some(part) = first_level {
+                    let mut entity = pose;
+                    entity.model = SceneModel::Mesh(part.model);
+                    entity.shader = pose.shader.or(Some(part.shader));
+                    if !self.add_entity_part(entity) {
+                        self.restore(checkpoint);
+                        return false;
+                    }
+                }
+                continue;
+            };
+            let first = self.list.lod_count;
+            for level in [first_level, second_level].into_iter().chain(levels) {
+                if self.list.lod_count == self.list.lod_choices.len() {
+                    self.restore(checkpoint);
+                    return self.reject_submission();
+                }
+                self.list.lod_choices[self.list.lod_count] = level;
+                self.list.lod_count += 1;
+            }
+            let choices = Span {
+                first: first as u32,
+                count: (self.list.lod_count - first) as u32,
+            };
+            let mut entity = pose;
+            entity.model = SceneModel::Lods { choices, radius };
+            if !self.add_entity_part(entity) {
+                self.restore(checkpoint);
+                return false;
+            }
+        }
+        true
+    }
     /// One submitted model may contain several surfaces. Admit that complete
     /// group or restore all counts, without copying/growing packet storage.
     pub fn add_entities(&mut self, entities: impl IntoIterator<Item = SceneEntity>) -> bool {
-        let before = (
-            self.list.entity_count,
-            self.list.surface_count,
-            self.list.draw_count,
-        );
+        let checkpoint = self.checkpoint();
         for entity in entities {
             if !self.add_entity_part(entity) {
-                (
-                    self.list.entity_count,
-                    self.list.surface_count,
-                    self.list.draw_count,
-                ) = before;
+                self.restore(checkpoint);
                 return false;
             }
         }
@@ -1467,8 +1575,14 @@ impl Frame {
             self.list.rejected += 1;
             return false;
         }
+        if let SceneModel::Lods { choices, .. } = entity.model
+            && (choices.count == 0 || !choices.fits(self.list.lod_count))
+        {
+            return self.reject_submission();
+        }
         match entity.model {
             SceneModel::Mesh(_)
+            | SceneModel::Lods { .. }
             | SceneModel::Sprite { .. }
             | SceneModel::Beam { .. }
             | SceneModel::RailCore { .. }
@@ -1606,6 +1720,7 @@ impl Frame {
             index,
             key: DrawKey::default(),
             shader: None,
+            mesh: None,
         };
         self.list.draw_count += 1;
     }
@@ -1661,18 +1776,32 @@ impl Frame {
             surface.draw_index = None;
         }
         let end = self.list.draw_count;
+        let projection = refdef.projection_scales();
         let first_draw = self.first.draws.first as usize;
         let mut valid = first_draw;
         for index in first_draw..end {
-            let draw = self.list.draws[index];
+            let draw = match model_draw(
+                &self.list,
+                assets,
+                self.list.draws[index],
+                &refdef,
+                projection,
+            ) {
+                Ok(Some(draw)) => draw,
+                Ok(None) => continue,
+                Err(()) => {
+                    self.list.rejected += 1;
+                    continue;
+                }
+            };
             if draw_entity(&self.list, draw)
                 .is_some_and(|entity| !entity.visibility.visible(refdef.portal))
             {
                 continue;
             }
             if draw.kind == DrawKind::Entity
-                && let Some(geometry) =
-                    crate::entities::prepare(self.list.entity(draw.index), refdef, assets)
+                && let Some(entity) = draw_entity(&self.list, draw)
+                && let Some(geometry) = crate::entities::prepare(&entity, refdef, assets)
             {
                 let count = geometry.triangle_count();
                 if count > self.list.polys.len() - self.list.poly_count
@@ -1682,7 +1811,6 @@ impl Frame {
                     self.list.rejected += 1;
                     continue;
                 }
-                let entity = *self.list.entity(draw.index);
                 let Some(shader) = entity.shader(assets) else {
                     self.list.rejected += 1;
                     continue;
@@ -1704,6 +1832,7 @@ impl Frame {
                     self.list.draws[self.list.draw_count] = DrawItem {
                         kind: DrawKind::Poly,
                         index: poly as u32,
+                        mesh: draw.mesh,
                         ..Default::default()
                     };
                     self.list.draw_count += 1;
@@ -1762,15 +1891,68 @@ impl Frame {
         self.command(Command::Draw2d(draw))
     }
 }
-pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<&SceneEntity> {
-    match draw.kind {
-        DrawKind::Entity => Some(list.entity(draw.index)),
+pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<SceneEntity> {
+    let mut entity = match draw.kind {
+        DrawKind::Entity => Some(*list.entity(draw.index)),
         DrawKind::Surface => list
             .surface(draw.index)
             .entity
-            .map(|index| list.entity(index)),
-        DrawKind::Poly => list.poly(draw.index).entity.map(|index| list.entity(index)),
+            .map(|index| *list.entity(index)),
+        DrawKind::Poly => list
+            .poly(draw.index)
+            .entity
+            .map(|index| *list.entity(index)),
+    }?;
+    if let Some(mesh) = draw.mesh {
+        entity.model = SceneModel::Mesh(mesh);
+    } else if matches!(entity.model, SceneModel::Lods { .. }) {
+        return None;
     }
+    if let Some(shader) = draw.shader {
+        entity.shader = Some(shader);
+    }
+    Some(entity)
+}
+
+fn model_draw(
+    list: &CommandList,
+    assets: &Assets,
+    mut draw: DrawItem,
+    view: &Refdef,
+    projection: Option<[f32; 2]>,
+) -> Result<Option<DrawItem>, ()> {
+    if draw.kind != DrawKind::Entity {
+        return Ok(Some(draw));
+    }
+    let entity = list.entity(draw.index);
+    match entity.model {
+        SceneModel::Mesh(model) => draw.mesh = Some(model),
+        SceneModel::Lods { choices, radius } => {
+            let level = view
+                .model_lod
+                .select(
+                    radius.ok_or(())?,
+                    choices.count,
+                    entity.origin,
+                    view,
+                    projection.ok_or(())?,
+                )
+                .ok_or(())?;
+            let Some(part) = list.lod_choices[choices.range()][level as usize] else {
+                return Ok(None);
+            };
+            let mut selected = *entity;
+            selected.model = SceneModel::Mesh(part.model);
+            assets
+                .model(part.model)
+                .and_then(|model| model.posed_frames(&selected))
+                .ok_or(())?;
+            draw.mesh = Some(part.model);
+            draw.shader = entity.shader.or(Some(part.shader));
+        }
+        _ => {}
+    }
+    Ok(Some(draw))
 }
 fn source_shader(
     list: &CommandList,
@@ -1805,7 +1987,7 @@ fn source_shader(
                 )?
                 .for_surface(assets, presentation.surface_shader(surface.surface)?)
         }
-        DrawKind::Entity => list.entity(draw.index).shader(assets),
+        DrawKind::Entity => draw_entity(list, draw)?.shader(assets),
         DrawKind::Poly => Some(list.poly(draw.index).shader),
     }
 }

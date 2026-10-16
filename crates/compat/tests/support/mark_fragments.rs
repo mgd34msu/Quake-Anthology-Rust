@@ -39,7 +39,7 @@ impl SceneService for BoundaryScene<'_> {
     fn light(&mut self, _: Light) -> bool {
         false
     }
-    fn entity(&mut self, _: EntitySubmission) -> bool {
+    fn entity(&mut self, _: EntitySubmission, _: &qa_console::cvars::Cvars) -> bool {
         false
     }
     fn poly(&mut self, _: i32, _: usize, _: &mut dyn FnMut(usize) -> Vertex) -> bool {

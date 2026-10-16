@@ -1495,7 +1495,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     add_entity: |s, entity| {
         s.scene
             .as_deref_mut()
-            .is_some_and(|scene| scene.entity(entity))
+            .is_some_and(|scene| scene.entity(entity, s.cvars))
     },
     add_poly: |s, shader, count, vertex| {
         s.scene

@@ -749,6 +749,7 @@ fn cold_limits() -> Limits {
     Limits {
         commands: 4,
         entities: 1,
+        lod_choices: 0,
         polys: 1,
         vertices: 3,
         lights: 1,
@@ -882,6 +883,7 @@ fn rejected_poly_and_view_leave_existing_payloads_intact() {
     let limits = Limits {
         commands: 3,
         entities: 1,
+        lod_choices: 0,
         polys: 1,
         vertices: 3,
         lights: 1,

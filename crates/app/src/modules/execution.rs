@@ -2146,7 +2146,6 @@ fn advance(
         composer,
         models,
         &mut row.scene_role,
-        services.cvars,
         row.renderer_generation
             .and_then(super::RendererGeneration::stamp)
             .and_then(|stamp| stamp.client)

@@ -1089,16 +1089,22 @@ impl GlBackend {
             DrawKind::Surface => self.world_surface(
                 item, shader, list, assets, projection, inputs, view.far, stats,
             ),
-            DrawKind::Entity => self.entity(
-                list.entity(item.index),
-                shader,
-                SkyKey::for_item(item, list, assets),
-                assets,
-                projection,
-                inputs,
-                view.far,
-                stats,
-            ),
+            DrawKind::Entity => {
+                if let Some(entity) = crate::scene::draw_entity(list, item) {
+                    self.entity(
+                        &entity,
+                        shader,
+                        SkyKey::for_item(item, list, assets),
+                        assets,
+                        projection,
+                        inputs,
+                        view.far,
+                        stats,
+                    );
+                } else {
+                    stats.rejected = stats.rejected.saturating_add(1);
+                }
+            }
             DrawKind::Poly => {
                 let poly = list.poly(item.index);
                 let inputs = inputs.for_poly(poly, list);
@@ -2504,8 +2510,7 @@ unsafe fn shader_log(gl: &Gl, object: u32, program: bool) -> String {
 }
 
 fn view_projection(view: Refdef, tangent: [f32; 2]) -> [f32; 16] {
-    let x = 1.0 / tangent[0];
-    let y = 1.0 / tangent[1];
+    let [x, y] = crate::scene::projection_scales(tangent);
     let a = (view.far + view.near) / (view.far - view.near);
     let b = -2.0 * view.far * view.near / (view.far - view.near);
     let (forward, left, up) = (view.axes[0], view.axes[1], view.axes[2]);

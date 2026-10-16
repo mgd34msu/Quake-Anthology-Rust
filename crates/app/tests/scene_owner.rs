@@ -19,6 +19,7 @@ fn scene(commands: usize) -> SceneComposer {
         Limits {
             commands,
             entities: 1,
+            lod_choices: 0,
             polys: 1,
             vertices: 3,
             lights: 1,

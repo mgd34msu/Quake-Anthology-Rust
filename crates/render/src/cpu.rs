@@ -907,14 +907,13 @@ impl CpuBackend {
             return Ok(rank + 1);
         };
         match item.kind {
-            DrawKind::Entity => self.entity(
-                camera,
-                list.entity(item.index),
-                shader,
-                rank as u32,
-                assets,
-                stats,
-            ),
+            DrawKind::Entity => {
+                if let Some(entity) = crate::scene::draw_entity(list, item) {
+                    self.entity(camera, &entity, shader, rank as u32, assets, stats);
+                } else {
+                    stats.rejected = stats.rejected.saturating_add(1);
+                }
+            }
             DrawKind::Poly => self.poly(
                 camera,
                 list.poly(item.index),

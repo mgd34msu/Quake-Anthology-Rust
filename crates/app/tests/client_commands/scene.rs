@@ -21,6 +21,8 @@ fn admit_assets(host: &mut FrameHost) -> qa_render::cpu::CpuBackend {
 }
 
 const SHADER_HANDLE: u32 = 864;
+const LOD_SCALE_NAME: u32 = 208;
+const LOD_BIAS_NAME: u32 = 240;
 const CURVE_NAME: u32 = 976;
 const CURVE_FIRST: u32 = 992;
 const CURVE_SECOND: u32 = 1000;
@@ -117,6 +119,8 @@ fn data() -> [u8; 1024] {
     data[816..820].copy_from_slice(&[201, 150, 90, 255]);
     for (offset, text) in [
         (CURVE_NAME, b"r_lodCurveError\0".as_slice()),
+        (LOD_SCALE_NAME, b"r_lodscale\0"),
+        (LOD_BIAS_NAME, b"r_lodbias\0"),
         (CURVE_FIRST, b"12.5\0"),
         (CURVE_SECOND, b"-2\0"),
     ] {
@@ -170,8 +174,12 @@ fn qvm_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
         if command == 29 {
             for (number, words) in [
                 (5, &[CURVE_NAME, CURVE_FIRST][..]),
+                (5, &[LOD_SCALE_NAME, CURVE_FIRST][..]),
+                (5, &[LOD_BIAS_NAME, CURVE_SECOND][..]),
                 (44, &[256][..]),
                 (5, &[CURVE_NAME, CURVE_SECOND][..]),
+                (5, &[LOD_SCALE_NAME, CURVE_SECOND][..]),
+                (5, &[LOD_BIAS_NAME, CURVE_FIRST][..]),
                 (44, &[256][..]),
             ] {
                 for (index, &word) in words.iter().enumerate() {
@@ -342,8 +350,12 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
         if command == 29 {
             for (number, words) in [
                 (5, &[CURVE_NAME, CURVE_FIRST][..]),
+                (5, &[LOD_SCALE_NAME, CURVE_FIRST][..]),
+                (5, &[LOD_BIAS_NAME, CURVE_SECOND][..]),
                 (44, &[256][..]),
                 (5, &[CURVE_NAME, CURVE_SECOND][..]),
+                (5, &[LOD_SCALE_NAME, CURVE_SECOND][..]),
+                (5, &[LOD_BIAS_NAME, CURVE_FIRST][..]),
                 (44, &[256][..]),
             ] {
                 for (index, &word) in words.iter().enumerate() {
@@ -737,11 +749,15 @@ pub(super) fn submissions(native: bool, ui: bool) {
         .commands()
         .iter()
         .filter_map(|command| match command {
-            Command::View(view) => Some(view.refdef.curve_error),
+            Command::View(view) => Some((
+                view.refdef.curve_error,
+                view.refdef.model_lod.scale,
+                view.refdef.model_lod.bias,
+            )),
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(captured, [12.5, -2.0]);
+    assert_eq!(captured, [(12.5, 12.5, -2), (-2.0, -2.0, 12)]);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }
 
@@ -1218,6 +1234,7 @@ pub(super) fn ownership() {
         time_ms: 16,
         lighting_scales: [0.6, 1.],
         curve_error: qa_render::scene::DEFAULT_CURVE_ERROR,
+        model_lod: Default::default(),
     };
     let mut source = Source {
         renderer,
@@ -1325,8 +1342,11 @@ pub(super) fn ownership() {
     assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
 }
 
-pub(super) fn entities(native: bool, ui: bool) {
-    let mut fixture = model_support::Fixture::surfaces();
+fn entity_host(
+    native: bool,
+    ui: bool,
+    fixture: &mut model_support::Fixture,
+) -> (FrameHost, qa_app::model_assets::ModelProfile) {
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     let program = || named_scene_program(native, ui, b"textures/glow");
     let (mut runtime, ids) = runtime(1);
@@ -1360,6 +1380,12 @@ pub(super) fn entities(native: bool, ui: bool) {
         )
         .unwrap(),
     );
+    (host, profile)
+}
+
+pub(super) fn entities(native: bool, ui: bool) {
+    let mut fixture = model_support::Fixture::surfaces();
+    let (mut host, profile) = entity_host(native, ui, &mut fixture);
     let model = probe(&mut host, 0, 12, 0);
     assert!(model > 0);
     assert_eq!(probe(&mut host, 0, 14, model as u64), 0);
@@ -1503,6 +1529,120 @@ pub(super) fn entities(native: bool, ui: bool) {
         assert_eq!(packet.rejected, 0);
         assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
     }
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+}
+
+pub(super) fn lod_entities(native: bool, ui: bool) {
+    let mut fixture = model_support::Fixture::new(&[
+        (
+            "models/test.md3",
+            model_support::md3_named_surfaces(&[
+                (b"body_1", &[b"textures/body", b"textures/alternate"]),
+                (b"near_1", &[b"textures/alternate"]),
+            ]),
+        ),
+        (
+            "models/test_1.md3",
+            model_support::md3_named_surfaces(&[
+                (b"coarse_1", &[b"textures/glow"]),
+                (b"cap_1", &[b"textures/body"]),
+                (b"tail_1", &[b"textures/alternate"]),
+            ]),
+        ),
+        (
+            "textures/body.tga",
+            model_support::tga(2, 2, &[[90, 20, 10, 255]; 4]),
+        ),
+        (
+            "textures/alternate.tga",
+            model_support::tga(2, 2, &[[10, 90, 20, 255]; 4]),
+        ),
+        (
+            "textures/glow.tga",
+            model_support::tga(2, 2, &[[20, 10, 90, 255]; 4]),
+        ),
+    ]);
+    let (mut host, profile) = entity_host(native, ui, &mut fixture);
+    let handle = probe(&mut host, 0, 12, 0);
+    assert!(handle > 0);
+    assert_eq!(probe(&mut host, 0, 14, handle as u64), 0);
+    host.bind_client_model_assets([]);
+    let models = host.runtime.model_assets.as_ref().unwrap().catalog();
+    let registration = models
+        .renderer_registration(handle as i32, profile)
+        .unwrap();
+    let lods = models
+        .lod_bindings(registration, 0, Default::default())
+        .unwrap();
+    assert_eq!(lods.native_count(), 2);
+    let mut expected: [Vec<_>; 2] = std::array::from_fn(|_| Vec::new());
+    for parts in lods {
+        for (level, expected) in expected.iter_mut().enumerate() {
+            if let Some(choice) = &parts[level] {
+                let binding = choice.physical_binding().unwrap();
+                expected.push((binding.model, binding.shader));
+            }
+        }
+    }
+    assert_eq!(expected[0].len(), 2);
+    assert_eq!(expected[1].len(), 3);
+    for level in &mut expected {
+        level.sort_by_key(|(model, _)| model.0);
+    }
+    host.runtime.scene = Some(
+        qa_app::renderer::SceneComposer::load(
+            qa_render::Limits {
+                entities: 6,
+                ..Default::default()
+            },
+            host.runtime.model_assets.as_mut().unwrap().assets_mut(),
+            vec![],
+        )
+        .unwrap()
+        .0,
+    );
+    let _backend = admit_assets(&mut host);
+    let context = Context {
+        source: RuleSetId::Quake3,
+        ..Default::default()
+    };
+    let scale = host.console.cvars.bind("r_lodscale", context).unwrap();
+    let bias = host.console.cvars.bind("r_lodbias", context).unwrap();
+    host.console.cvars.force_write(scale, "20").unwrap();
+    host.console.cvars.force_write(bias, "0").unwrap();
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(probe(&mut host, 0, 13, 0), 0);
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    host.console.cvars.force_write(bias, "1").unwrap();
+    assert_eq!(probe(&mut host, 0, 13, 0), 0);
+    assert_eq!(probe(&mut host, 0, 3, 0), 0);
+    let packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
+    let views = packet
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            Command::View(view) => Some(view),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(views.len(), 2);
+    for (level, view) in views.iter().enumerate() {
+        assert_eq!(view.refdef.model_lod.bias, level as i32);
+        let mut draws = packet
+            .draws(view.scene.draws)
+            .iter()
+            .map(|item| {
+                (
+                    item.mesh.unwrap(),
+                    item.shader.unwrap().source(host.native_shaders()).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        draws.sort_by_key(|(model, _)| model.0);
+        assert_eq!(draws, expected[level]);
+    }
+    assert_eq!(packet.rejected, 0);
+    assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }
 

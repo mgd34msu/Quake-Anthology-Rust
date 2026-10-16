@@ -386,6 +386,7 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
         axes: basis.axes(),
         fov,
         curve_error: client.curve_error,
+        model_lod: client.model_lod,
         blend: client.screen_blend,
         damage_blend: client.damage_blend,
         flags: client.flags,

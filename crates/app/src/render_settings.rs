@@ -260,6 +260,21 @@ fn setting_view(vars: &Cvars, source: RuleSetId, name: &str) -> Result<View, &'s
     .ok_or("missing render cvar")
 }
 
+pub(crate) fn model_lod_views(vars: &Cvars) -> Result<[View; 2], &'static str> {
+    Ok([
+        setting_view(vars, RuleSetId::Quake3, "r_lodscale")?,
+        setting_view(vars, RuleSetId::Quake3, "r_lodbias")?,
+    ])
+}
+
+pub(crate) fn model_lod(vars: &Cvars, views: [View; 2]) -> qa_render::scene::ModelLodSettings {
+    let defaults = qa_render::scene::ModelLodSettings::default();
+    qa_render::scene::ModelLodSettings {
+        scale: vars.numeric(views[0]).unwrap_or(defaults.scale),
+        bias: vars.integer_view(views[1]).unwrap_or(defaults.bias),
+    }
+}
+
 pub(crate) fn curve_error_view(vars: &Cvars) -> Result<View, &'static str> {
     setting_view(vars, RuleSetId::Quake3, "r_lodCurveError")
 }

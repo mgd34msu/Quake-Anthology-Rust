@@ -1357,6 +1357,8 @@ fn main() {
     scene::inline_entities(false);
     scene::entities(false, false);
     scene::entities(false, true);
+    scene::lod_entities(false, false);
+    scene::lod_entities(false, true);
     collision::selection(false);
     drop_client::qvm_drop_client_is_synchronous_and_lifetime_checked();
     drop_client::drop_during_client_think_releases_the_implicit_command_batch();
@@ -1376,6 +1378,8 @@ fn main() {
         scene::inline_entities(true);
         scene::entities(true, false);
         scene::entities(true, true);
+        scene::lod_entities(true, false);
+        scene::lod_entities(true, true);
         collision::selection(true);
         drop_client::owned_native_drop_client_uses_the_same_nested_callback_path();
         server::owned_native_import_uses_the_same_service_and_integer_width();

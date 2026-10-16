@@ -545,3 +545,13 @@ fn scalar_vector_ma_keeps_separate_float_operations_and_failure_prefix() {
     );
     assert_eq!(result[1..], base[1..]);
 }
+
+#[test]
+fn model_radius_uses_farthest_axis_extents_about_origin() {
+    let bounds = Bounds {
+        mins: Vec3([-3.0, -2.0, -1.0]),
+        maxs: Vec3([1.0, 4.0, 12.0]),
+    };
+    assert_eq!(bounds.radius(), 13.0);
+    assert_eq!(Bounds::default().radius().to_bits(), 0.0_f32.to_bits());
+}

@@ -28,6 +28,7 @@ struct Target {
     lighting: [qa_console::cvars::View; 2],
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
+    model_lod: [qa_console::cvars::View; 2],
 }
 impl Target {
     fn world_presentation(
@@ -158,6 +159,7 @@ impl SceneRole {
         lighting: [qa_console::cvars::View; 2],
         software_waterwarp: qa_console::cvars::View,
         curve_error: qa_console::cvars::View,
+        model_lod: [qa_console::cvars::View; 2],
     ) {
         self.target = Some(Target {
             profile,
@@ -169,6 +171,7 @@ impl SceneRole {
             lighting,
             software_waterwarp,
             curve_error,
+            model_lod,
         });
     }
 }
@@ -178,9 +181,6 @@ pub(crate) struct SceneBorrow<'a> {
     models: Option<&'a ModelCatalog>,
     assets: Option<&'a qa_render::Assets>,
     role: &'a mut SceneRole,
-    rails: (i32, i32, f32),
-    lighting: [f32; 2],
-    software_waterwarp: bool,
     client: Option<qa_render::effects::EffectClient>,
     sun_direction: Option<qa_core::primitives::Vec3>,
     native: &'a Contexts,
@@ -191,36 +191,16 @@ impl<'a> SceneBorrow<'a> {
         composer: Option<&'a mut SceneComposer>,
         resources: Option<ModelView<'a>>,
         role: &'a mut SceneRole,
-        cvars: &qa_console::cvars::Cvars,
         client: Option<qa_render::effects::EffectClient>,
         sun_direction: Option<qa_core::primitives::Vec3>,
         native: &'a Contexts,
         context: Option<ShaderContextId>,
     ) -> Self {
-        let rails = role.target.as_ref().map_or((6, 16, 32.), |target| {
-            (
-                cvars.integer_view(target.rails[0]).unwrap_or(0),
-                cvars.integer_view(target.rails[1]).unwrap_or(0),
-                cvars.numeric(target.rails[2]).unwrap_or(0.),
-            )
-        });
-        let lighting = role.target.as_ref().map_or([1.; 2], |target| {
-            target
-                .lighting
-                .map(|view| cvars.numeric(view).unwrap_or(0.))
-        });
-        let software_waterwarp = role
-            .target
-            .as_ref()
-            .is_some_and(|target| cvars.numeric(target.software_waterwarp).unwrap_or(0.0) != 0.0);
         Self {
             composer,
             models: resources.map(|view| view.catalog),
             assets: resources.map(|view| view.assets),
             role,
-            rails,
-            lighting,
-            software_waterwarp,
             client,
             sun_direction,
             native,
@@ -344,7 +324,7 @@ impl SceneService for SceneBorrow<'_> {
             .and_then(|composer| composer.frame.as_mut())
             .is_some_and(|frame| frame.add_light(light))
     }
-    fn entity(&mut self, submitted: EntitySubmission) -> bool {
+    fn entity(&mut self, submitted: EntitySubmission, cvars: &qa_console::cvars::Cvars) -> bool {
         use qa_render::scene::SceneModel;
         let Some(composer) = self.composer.as_deref_mut() else {
             return false;
@@ -406,7 +386,7 @@ impl SceneService for SceneBorrow<'_> {
             else {
                 return frame.reject_submission();
             };
-            let Some(bindings) = models.bindings(
+            let Some(bindings) = models.lod_bindings(
                 registration,
                 u32::try_from(submitted.skin).unwrap_or(0),
                 crate::model_assets::ModelMaterialPolicy {
@@ -417,8 +397,13 @@ impl SceneService for SceneBorrow<'_> {
             ) else {
                 return frame.reject_submission();
             };
-            let choices = bindings.choices();
-            let Some(first_choice) = choices.clone().next() else {
+            let info = bindings.info();
+            let choices = bindings;
+            let Some(first_choice) = choices
+                .clone()
+                .flat_map(|row| row.into_iter().flatten())
+                .next()
+            else {
                 return frame.reject_submission();
             };
             let nodes = self
@@ -428,18 +413,22 @@ impl SceneService for SceneBorrow<'_> {
                 native: self.native,
                 context: self.context,
             };
-            if !choices.clone().all(|choice| {
-                shader.is_some()
-                    || shaders
-                        .choice(choice.shader, choice.registrations, nodes, choice.default)
-                        .is_some()
-            }) {
+            if !choices
+                .clone()
+                .flat_map(|row| row.into_iter().take(info.native_count()).flatten())
+                .all(|choice| {
+                    shader.is_some()
+                        || shaders
+                            .choice(choice.shader, choice.registrations, nodes, choice.default)
+                            .is_some()
+                })
+            {
                 return frame.reject_submission();
             }
             let Some(first) = assets.model(first_choice.model) else {
                 return frame.reject_submission();
             };
-            let count = first.frame_count();
+            let count = info.frame_count(first.frame_count());
             if count == 0 {
                 return frame.reject_submission();
             }
@@ -460,14 +449,26 @@ impl SceneService for SceneBorrow<'_> {
                 pose.frame = current as u32;
                 pose.old_frame = old as u32;
             }
-            return frame.add_entities(choices.filter_map(|choice| {
-                let mut entity = pose;
-                entity.model = SceneModel::Mesh(choice.model);
-                entity.shader = Some(shader.or_else(|| {
-                    shaders.choice(choice.shader, choice.registrations, nodes, choice.default)
-                })?);
-                Some(entity)
-            }));
+            return frame.add_model_lods(
+                pose,
+                info.radius(pose.frame),
+                choices.map(|row| {
+                    row.into_iter().take(info.native_count()).map(|choice| {
+                        let choice = choice?;
+                        Some(qa_render::scene::ModelPart {
+                            model: choice.model,
+                            shader: shader.or_else(|| {
+                                shaders.choice(
+                                    choice.shader,
+                                    choice.registrations,
+                                    nodes,
+                                    choice.default,
+                                )
+                            })?,
+                        })
+                    })
+                }),
+            );
         }
         pose.shader = Some(if submitted.kind == EntityKind::Beam {
             ShaderRef::Direct(composer.beam)
@@ -492,12 +493,12 @@ impl SceneService for SceneBorrow<'_> {
             },
             EntityKind::RailCore => SceneModel::RailCore {
                 end: submitted.old_origin,
-                width: self.rails.0,
+                width: cvars.integer_view(target.rails[0]).unwrap_or(0),
             },
             EntityKind::RailRings => SceneModel::RailRings {
                 end: submitted.old_origin,
-                width: self.rails.1,
-                segment_length: self.rails.2,
+                width: cvars.integer_view(target.rails[1]).unwrap_or(0),
+                segment_length: cvars.numeric(target.rails[2]).unwrap_or(0.),
             },
             EntityKind::Lightning => SceneModel::Lightning {
                 end: submitted.old_origin,
@@ -589,8 +590,10 @@ impl SceneService for SceneBorrow<'_> {
         view.refdef.viewport.x += target.viewport.x;
         view.refdef.viewport.y += target.viewport.y;
         super::apply_presentation(&mut view.refdef, &target.presentation, composer.kind);
-        view.refdef.software_waterwarp &= self.software_waterwarp;
+        view.refdef.software_waterwarp &=
+            cvars.numeric(target.software_waterwarp).unwrap_or(0.0) != 0.0;
         view.refdef.curve_error = crate::render_settings::curve_error(cvars, target.curve_error);
+        view.refdef.model_lod = crate::render_settings::model_lod(cvars, target.model_lod);
         view.refdef
             .validate(u32::MAX, u32::MAX)
             .ok_or(CallError::Geometry)?;
@@ -611,7 +614,9 @@ impl SceneService for SceneBorrow<'_> {
             selected_world,
             &view.refdef,
             view.world,
-            self.lighting,
+            target
+                .lighting
+                .map(|view| cvars.numeric(view).unwrap_or(0.)),
             point_view,
             modulate,
             self.sun_direction

@@ -105,7 +105,7 @@ fn planes(list: &CommandList, assets: &Assets, item: DrawItem) -> Option<(Plane,
             } else {
                 Plane::oriented(Vec3([1., 0., 0.]), 0.)
             };
-            (plane, reference.entity.map(|index| list.entity(index)))
+            (plane, crate::scene::draw_entity(list, item))
         }
         DrawKind::Poly => {
             let vertices = list.vertices(list.poly(item.index).vertices);
@@ -119,7 +119,7 @@ fn planes(list: &CommandList, assets: &Assets, item: DrawItem) -> Option<(Plane,
         }
         DrawKind::Entity => (
             Plane::oriented(Vec3([1., 0., 0.]), 0.),
-            Some(list.entity(item.index)),
+            crate::scene::draw_entity(list, item),
         ),
     };
     Some(if let Some(entity) = entity {

@@ -248,6 +248,14 @@ pub fn md3() -> Vec<u8> {
 
 /// Two surfaces, each with its own shader list and two vertex frames.
 pub fn md3_surfaces() -> Vec<u8> {
+    md3_named_surfaces(&[
+        (b"BODY_1", &[b"textures/body", b"textures/alternate"]),
+        (b"glow_1", &[b"textures/glow"]),
+    ])
+}
+
+/// Reuse the real MD3 mesh while varying its native surface and shader declarations.
+pub fn md3_named_surfaces(surfaces: &[(&[u8], &[&[u8]])]) -> Vec<u8> {
     let mut bytes = md3();
     let tags = i32::from_le_bytes(bytes[96..100].try_into().unwrap()) as usize;
     let axes = tags + 112 + 76;
@@ -260,24 +268,29 @@ pub fn md3_surfaces() -> Vec<u8> {
     let at = i32::from_le_bytes(bytes[100..104].try_into().unwrap()) as usize;
     let original = bytes[at..].to_vec();
     let shader_at = i32::from_le_bytes(original[92..96].try_into().unwrap()) as usize;
-    let mut first = original.clone();
-    let mut shader = vec![0; 68];
-    shader[..18].copy_from_slice(b"textures/alternate");
-    first.splice(shader_at + 68..shader_at + 68, shader);
-    first[76..80].copy_from_slice(&2i32.to_le_bytes());
-    for offset in [96, 100, 104] {
-        let value = i32::from_le_bytes(first[offset..offset + 4].try_into().unwrap());
-        first[offset..offset + 4].copy_from_slice(&(value + 68).to_le_bytes());
-    }
-    let mut second = original;
-    second[4..68].fill(0);
-    second[4..10].copy_from_slice(b"glow_1");
-    second[shader_at..shader_at + 64].fill(0);
-    second[shader_at..shader_at + 13].copy_from_slice(b"textures/glow");
+    let old_count = i32::from_le_bytes(original[76..80].try_into().unwrap()) as usize;
     bytes.truncate(at);
-    bytes.extend(first);
-    bytes.extend(second);
-    bytes[84..88].copy_from_slice(&2i32.to_le_bytes());
+    for &(surface_name, shaders) in surfaces {
+        assert!(surface_name.len() < 64);
+        let mut surface = original.clone();
+        surface[4..68].fill(0);
+        surface[4..4 + surface_name.len()].copy_from_slice(surface_name);
+        let mut declarations = Vec::new();
+        for shader in shaders {
+            assert!(shader.len() < 64);
+            name(&mut declarations, shader, 64);
+            integer(&mut declarations, 0);
+        }
+        let change = declarations.len() as i32 - (old_count * 68) as i32;
+        surface.splice(shader_at..shader_at + old_count * 68, declarations);
+        surface[76..80].copy_from_slice(&(shaders.len() as i32).to_le_bytes());
+        for offset in [96, 100, 104] {
+            let value = i32::from_le_bytes(surface[offset..offset + 4].try_into().unwrap());
+            surface[offset..offset + 4].copy_from_slice(&(value + change).to_le_bytes());
+        }
+        bytes.extend(surface);
+    }
+    bytes[84..88].copy_from_slice(&(surfaces.len() as i32).to_le_bytes());
     let end = bytes.len() as i32;
     bytes[104..108].copy_from_slice(&end.to_le_bytes());
     bytes

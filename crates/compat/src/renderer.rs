@@ -29,7 +29,7 @@ pub trait SceneService {
     }
     fn clear(&mut self);
     fn light(&mut self, light: Light) -> bool;
-    fn entity(&mut self, entity: EntitySubmission) -> bool;
+    fn entity(&mut self, entity: EntitySubmission, cvars: &qa_console::cvars::Cvars) -> bool;
     fn poly(&mut self, shader: i32, count: usize, vertex: &mut dyn FnMut(usize) -> Vertex) -> bool;
     fn color(&mut self, color: Option<[f32; 4]>);
     fn picture(&mut self, shader: i32, rect: [f32; 4], texcoords: [f32; 4]) -> bool;

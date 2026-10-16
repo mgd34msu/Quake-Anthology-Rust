@@ -1473,7 +1473,7 @@ impl WorldPrepare {
             lightmap: binding.lightmap,
             ..DrawInputs::for_view(&camera.refdef)
         };
-        let inputs = entity.map_or(inputs, |entity| inputs.entity_inputs(entity, false));
+        let inputs = entity.map_or(inputs, |entity| inputs.entity_inputs(&entity, false));
         let old_primitive_count = self.geometry.primitive_count;
         let depth_override = params.far_depth.then_some(1.0 / camera.refdef.far);
         if let Some(images) = outer_box {

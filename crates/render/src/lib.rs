@@ -24,9 +24,9 @@ pub use assets::{
 };
 pub use scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame, FrontEnd,
-    Light, LightStyle, Limits, PaletteOperation, PaletteShift, PaletteTransform,
-    ParticlePresentation, PerspectiveStep, Refdef, SceneEntity, SceneModel, SceneParticle,
-    Viewport,
+    Light, LightStyle, Limits, ModelLodSettings, ModelPart, PaletteOperation, PaletteShift,
+    PaletteTransform, ParticlePresentation, PerspectiveStep, Refdef, SceneEntity, SceneModel,
+    SceneParticle, Viewport,
 };
 pub use world::WorldPresentationId;
 
