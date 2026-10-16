@@ -42,6 +42,7 @@ impl FrameSource for Source {
     fn render(
         &mut self,
         _: Option<&mut qa_app::renderer::SceneComposer>,
+        _: Option<qa_app::model_assets::ModelView<'_>>,
         views: &[Option<ClientView>; SeatId::COUNT],
         _: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         _: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],

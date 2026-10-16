@@ -306,7 +306,6 @@ fn apply_presentation(
 /// and built-in client composition.
 pub struct SceneComposer {
     frontend: FrontEnd,
-    assets: Assets,
     scenes: Box<[Option<WorldScene>]>,
     frame: Option<qa_render::scene::Frame>,
     publisher: Option<qa_core::primitives::ModuleId>,
@@ -320,7 +319,7 @@ pub struct SceneComposer {
 impl SceneComposer {
     pub fn load(
         mut limits: Limits,
-        mut assets: Assets,
+        assets: &mut Assets,
         worlds: Vec<LoadedWorld>,
     ) -> Result<(Self, Limits), String> {
         let mut scenes: Vec<Option<WorldScene>> =
@@ -355,7 +354,7 @@ impl SceneComposer {
 
         let frontend = FrontEnd::load(limits)?;
         let beam = qa_render::entities::register_beam_material(
-            &mut assets,
+            assets,
             qa_render::shader::StageBlend {
                 source: qa_render::shader::BlendFactor::One,
                 destination: qa_render::shader::BlendFactor::One,
@@ -363,14 +362,13 @@ impl SceneComposer {
         )
         .map_err(str::to_owned)?;
         let beam_alpha = qa_render::entities::register_beam_material(
-            &mut assets,
+            assets,
             qa_render::shader::StageBlend::ALPHA,
         )
         .map_err(str::to_owned)?;
         Ok((
             Self {
                 frontend,
-                assets,
                 scenes: scenes.into_boxed_slice(),
                 frame: None,
                 publisher: None,
@@ -438,12 +436,12 @@ pub struct Renderer {
     lightstyles: [hud::LightStyles; SeatId::COUNT],
 }
 impl Renderer {
-    /// Assets are frozen while a backend and its packets reference them.
+    /// Backend resources borrow the one owner during registration and drawing.
     pub fn load(
         context: Context,
         width: u32,
         height: u32,
-        assets: Assets,
+        assets: &mut Assets,
         worlds: Vec<LoadedWorld>,
         bands: Option<RasterBands>,
         console: console::ConsoleAssets,
@@ -495,7 +493,7 @@ impl Renderer {
                 let backend = CpuBackend::load_with_limits(
                     width,
                     height,
-                    &scene.assets,
+                    assets,
                     CpuLimits {
                         scene: limits,
                         bands: bands.unwrap_or_else(|| RasterBands::at_most(physical_cores)),
@@ -515,7 +513,7 @@ impl Renderer {
                 Backend::Cpu { backend, dispatch }
             }
             Context::Gl(context) => Backend::Gl(unsafe {
-                GlBackend::load(context, &scene.assets, width, height, limits.vertices)?
+                GlBackend::load(context, assets, width, height, limits.vertices)?
             }),
         };
         if let Backend::Gl(gl) = &backend {
@@ -617,6 +615,7 @@ impl Renderer {
     pub fn frame(
         &mut self,
         composition: &mut SceneComposer,
+        resources: crate::model_assets::ModelView<'_>,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<ClientSceneInput<'_>>; SeatId::COUNT],
         hud: &[Option<hud::HudView<'_>>; SeatId::COUNT],
@@ -638,7 +637,7 @@ impl Renderer {
         let count = views.iter().filter(|view| view.is_some()).count();
         let mut view_index = 0;
         let mut rejected = 0;
-        frame.append_client_effects(&mut self.effects, &composition.assets);
+        frame.append_client_effects(&mut self.effects, resources.assets);
         frame.background(|frame| {
             for (seat, client) in views.iter().enumerate() {
                 let Some(client) = client else {
@@ -658,7 +657,7 @@ impl Renderer {
                     rejected += 1;
                     continue;
                 };
-                let Some(world) = composition.assets.world(client.world) else {
+                let Some(world) = resources.assets.world(client.world) else {
                     rejected += 1;
                     continue;
                 };
@@ -698,7 +697,7 @@ impl Renderer {
                     let mut random = || self.effects.random_word();
                     self.sample.client_scene += client_scene.append(
                         frame,
-                        &composition.assets,
+                        resources.assets,
                         &refdef,
                         matches!(self.kind, Kind::Cpu),
                         Some(crate::client_scene::BeamInput {
@@ -713,7 +712,7 @@ impl Renderer {
                 }
                 light_view_entities(
                     frame,
-                    &composition.assets,
+                    resources.assets,
                     Some(client.world),
                     &refdef,
                     !no_world,
@@ -726,7 +725,7 @@ impl Renderer {
                         .map_or(1., |entry| entry.profile.q2_modulate),
                 );
                 let rendered = if no_world {
-                    frame.render_scene(refdef, hidden_areas, &composition.assets)
+                    frame.render_scene(refdef, hidden_areas, resources.assets)
                 } else {
                     frame.render_world_scene(
                         client.world,
@@ -734,7 +733,7 @@ impl Renderer {
                         refdef,
                         hidden_areas,
                         &mut scene.views[seat],
-                        &composition.assets,
+                        resources.assets,
                     )
                 };
                 if !world_added || !rendered {
@@ -742,7 +741,7 @@ impl Renderer {
                 }
                 if let Some(hud) = hud[seat] {
                     if let Some(assets) = self.hud[hud.rules as usize].as_mut() {
-                        self.sample.hud += assets.append(frame, &composition.assets, hud, refdef);
+                        self.sample.hud += assets.append(frame, resources.assets, hud, refdef);
                     } else if hud.show_text {
                         self.sample.hud.missing_font += 1;
                     }
@@ -751,7 +750,7 @@ impl Renderer {
         });
         self.sample.console = self.console.append(
             &mut frame,
-            &composition.assets,
+            resources.assets,
             console,
             self.width,
             self.height,
@@ -764,11 +763,11 @@ impl Renderer {
         let timer = Stopwatch::start();
         let result = match &mut self.backend {
             Backend::Cpu { backend, dispatch } => {
-                backend.render_with_dispatch(&packet, &composition.assets, |jobs| {
+                backend.render_with_dispatch(&packet, resources.assets, |jobs| {
                     dispatch.dispatch(jobs, run_cpu_job)
                 })
             }
-            Backend::Gl(gl) => Ok(gl.render(&packet, &composition.assets)),
+            Backend::Gl(gl) => Ok(gl.render(&packet, resources.assets)),
         };
         self.sample.backend_ns = timer.elapsed().as_nanos() as u64;
         match result {

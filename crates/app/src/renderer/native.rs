@@ -1,6 +1,6 @@
 //! An invocation-scoped borrow of the session's scene, catalog and view scratch.
 use super::SceneComposer;
-use crate::model_assets::{ModelCatalog, ModelProfile};
+use crate::model_assets::{ModelCatalog, ModelProfile, ModelView};
 use qa_compat::{
     renderer::{EntityKind, EntitySubmission, SceneService, SceneView},
     services::CallError,
@@ -89,6 +89,7 @@ impl SceneRole {
 pub(crate) struct SceneBorrow<'a> {
     composer: Option<&'a mut SceneComposer>,
     models: Option<&'a ModelCatalog>,
+    assets: Option<&'a qa_render::Assets>,
     role: &'a mut SceneRole,
     rails: (i32, i32, f32),
     lighting: [f32; 2],
@@ -98,7 +99,7 @@ pub(crate) struct SceneBorrow<'a> {
 impl<'a> SceneBorrow<'a> {
     pub(crate) fn new(
         composer: Option<&'a mut SceneComposer>,
-        models: Option<&'a ModelCatalog>,
+        resources: Option<ModelView<'a>>,
         role: &'a mut SceneRole,
         cvars: &qa_console::cvars::Cvars,
         client: Option<qa_render::effects::EffectClient>,
@@ -121,7 +122,8 @@ impl<'a> SceneBorrow<'a> {
             .is_some_and(|target| cvars.numeric(target.software_waterwarp).unwrap_or(0.0) != 0.0);
         Self {
             composer,
-            models,
+            models: resources.map(|view| view.catalog),
+            assets: resources.map(|view| view.assets),
             role,
             rails,
             lighting,
@@ -197,7 +199,7 @@ impl SceneService for SceneBorrow<'_> {
         let Some(target) = self.role.target.as_ref() else {
             return frame.reject_submission();
         };
-        let Some(models) = self.models else {
+        let (Some(models), Some(assets)) = (self.models, self.assets) else {
             return frame.reject_submission();
         };
         let mut pose = submitted.pose;
@@ -241,7 +243,7 @@ impl SceneService for SceneBorrow<'_> {
             let Some(first) = bindings
                 .clone()
                 .next()
-                .and_then(|binding| composer.assets.model(binding.model))
+                .and_then(|binding| assets.model(binding.model))
             else {
                 return frame.reject_submission();
             };
@@ -369,6 +371,7 @@ impl SceneService for SceneBorrow<'_> {
             .flags
             .contains(qa_core::primitives::PlayerViewFlags::NO_WORLD_MODEL);
         let selected_world = self.selected_world();
+        let assets = self.assets.ok_or(CallError::Geometry)?;
         let target = self.role.target.as_ref().ok_or(CallError::Geometry)?;
         let composer = self.composer.as_deref_mut().ok_or(CallError::Geometry)?;
         let local = view.refdef.viewport;
@@ -395,7 +398,7 @@ impl SceneService for SceneBorrow<'_> {
         });
         super::light_view_entities(
             frame,
-            &composer.assets,
+            assets,
             selected_world,
             &view.refdef,
             view.world,
@@ -414,7 +417,7 @@ impl SceneService for SceneBorrow<'_> {
                     .ok_or(CallError::Geometry)?
                     .id;
                 let seat = target.seat.ok_or(CallError::Geometry)?;
-                let world = composer.assets.world(world_id).ok_or(CallError::Geometry)?;
+                let world = assets.world(world_id).ok_or(CallError::Geometry)?;
                 let scratch = composer
                     .scenes
                     .get_mut(world_id.0 as usize)
@@ -432,10 +435,10 @@ impl SceneService for SceneBorrow<'_> {
                     view.refdef,
                     &view.hidden_areas,
                     &mut scratch.views[seat.index()],
-                    &composer.assets,
+                    assets,
                 ))
             } else {
-                Ok(frame.render_scene(view.refdef, &view.hidden_areas, &composer.assets))
+                Ok(frame.render_scene(view.refdef, &view.hidden_areas, assets))
             }
         })?;
         if accepted && let Some(seat) = target.seat {

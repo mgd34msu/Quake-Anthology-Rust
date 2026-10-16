@@ -42,6 +42,7 @@ pub trait FrameSource {
     fn render(
         &mut self,
         _composition: Option<&mut crate::renderer::SceneComposer>,
+        _resources: Option<crate::model_assets::ModelView<'_>>,
         _views: &[Option<ClientView>; SeatId::COUNT],
         _scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         _huds: &[Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT],
@@ -207,13 +208,16 @@ impl FrameSource for LiveFrame<'_> {
     fn render(
         &mut self,
         composition: Option<&mut crate::renderer::SceneComposer>,
+        resources: Option<crate::model_assets::ModelView<'_>>,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         huds: &[Option<crate::renderer::hud::HudView<'_>>; SeatId::COUNT],
         console: qa_console::presentation::ConsoleView<'_>,
     ) {
-        if let (Some(renderer), Some(composition)) = (self.renderer.as_deref_mut(), composition) {
-            renderer.frame(composition, views, scenes, huds, console);
+        if let (Some(renderer), Some(composition), Some(resources)) =
+            (self.renderer.as_deref_mut(), composition, resources)
+        {
+            renderer.frame(composition, resources, views, scenes, huds, console);
         }
     }
 }
@@ -799,6 +803,10 @@ impl FrameHost {
         let mut composition = self.runtime.scene.take();
         source.render(
             composition.as_mut(),
+            self.runtime
+                .model_assets
+                .as_ref()
+                .map(crate::model_assets::ModelAssets::view),
             &views,
             &self.client_scene_inputs(),
             &self.client_hud_inputs(),
@@ -1059,7 +1067,7 @@ impl FrameHost {
                 player_projection: snapshot.player_projection(),
                 bindings: &resources.state.models,
                 static_entities: resources.state.static_entities(),
-                models: self.runtime.models.as_deref()?,
+                models: self.runtime.model_assets.as_ref()?.catalog(),
                 player,
                 weapon_view_angles: snapshot.weapon_view_angles(
                     player.view_angles,
@@ -1702,8 +1710,7 @@ impl FrameHost {
                                 if let Some(resources) =
                                     self.runtime.client_resources[id.0 as usize].as_mut()
                                 {
-                                    let lookup=self.runtime.models.as_deref().map(|models|models as &dyn qa_compat::services::ModelLookup)
-                                        .or_else(||self.runtime.model_loader.as_ref().map(|models|models as &dyn qa_compat::services::ModelLookup));
+                                    let lookup=self.runtime.model_assets.as_ref().map(|owner|owner.catalog() as &dyn qa_compat::services::ModelLookup);
                                     let world=self.runtime.snapshots[id.0 as usize].as_ref().and_then(|binding|binding.seat()).and_then(|seat|self.local_worlds[seat.index()]);
                                     resources.state.receive_static_entity(entity,lookup,world);
                                 }
@@ -1719,7 +1726,7 @@ impl FrameHost {
                                     music_changed = resources.apply(
                                         config.index as usize,
                                         config.text,
-                                        self.runtime.models.as_deref(),
+                                        self.runtime.model_assets.as_ref().filter(|owner| !owner.initial_registration()).map(crate::model_assets::ModelAssets::catalog),
                                         self.runtime.sound_bank.as_deref(),
                                     ) && music;
                                 }
@@ -1735,7 +1742,7 @@ impl FrameHost {
                                 {
                                     resources.apply_gamestate(
                                         &gamestate,
-                                        self.runtime.models.as_deref(),
+                                        self.runtime.model_assets.as_ref().filter(|owner| !owner.initial_registration()).map(crate::model_assets::ModelAssets::catalog),
                                         self.runtime.sound_bank.as_deref(),
                                     );
                                 }

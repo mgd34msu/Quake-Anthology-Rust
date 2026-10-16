@@ -1638,7 +1638,7 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
 fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
     use qa_app::{
         host::FrameSource,
-        model_assets::{ModelCatalogBuilder, ModelProfile},
+        model_assets::{ModelAssets, ModelProfile},
     };
     use qa_core::{
         events::{FrameEvent, OutputTarget},
@@ -1699,8 +1699,8 @@ fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
         palette: None,
         image_settings: qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
     };
-    host.runtime.model_loader = Some(
-        ModelCatalogBuilder::new(
+    host.runtime.model_assets = Some(
+        ModelAssets::new(
             qa_render::Assets::load().unwrap(),
             [profile],
             [],
@@ -1755,10 +1755,10 @@ fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
             .q3_startup()
             .is_some()
     );
-    let (_, catalog) = host.runtime.model_loader.take().unwrap().finish();
+    let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
     use qa_compat::services::ModelLookup;
     assert_eq!(catalog.shader_handle(b"ui/cold.tga"), Some(1));
-    host.set_model_catalog(std::sync::Arc::new(catalog), []);
+    host.bind_client_model_assets([]);
     source.ready = true;
     host.frame(&mut source, true);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 2);
@@ -1806,7 +1806,7 @@ fn registration_wait_rejects_unreceived_state_instead_of_freezing_it() {
 }
 
 fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
-    use qa_app::model_assets::{ModelCatalogBuilder, ModelProfile};
+    use qa_app::model_assets::{ModelAssets, ModelProfile};
     use qa_compat::services::ModelLookup;
     let bytes = model_files::md2_skin(b"textures/body.tga");
     let expected = qa_formats::model::Model::parse(&bytes).unwrap().bounds;
@@ -1826,8 +1826,8 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
         palette: None,
         image_settings: qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
     };
-    host.runtime.model_loader = Some(
-        ModelCatalogBuilder::new(
+    host.runtime.model_assets = Some(
+        ModelAssets::new(
             qa_render::Assets::load().unwrap(),
             [profile],
             [],
@@ -1845,13 +1845,13 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
     files.remove("models/test.md2");
     files.remove("textures/body.tga");
     assert_eq!(call(&mut host, 0, 12, &[path]), Ok(handle));
-    let (_, catalog) = host.runtime.model_loader.take().unwrap().finish();
+    let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
     assert_eq!(
         catalog.model_handle(b"models/test.md2", RuleSetId::Quake3),
         Some(handle as i32)
     );
     assert!(catalog.registration("models/test.md2", profile).is_some());
-    host.set_model_catalog(std::sync::Arc::new(catalog), []);
+    host.bind_client_model_assets([]);
     assert_eq!(call(&mut host, 0, 12, &[path]), Ok(handle));
     // The two checked destinations retain native mins-then-maxs write order.
     for (mins, maxs) in [(output + 16, output + 32), (output + 48, output + 48)] {
@@ -1887,15 +1887,15 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
 }
 
 fn model_tags_use_shared_services(factory: fn() -> (Program, u64), returns_result: bool) {
-    use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
+    use qa_app::model_assets::{ModelAssets, ModelRequest};
     let mut files = model_files::Fixture::surfaces();
     let bytes = model_files::md3_surfaces();
     let model = qa_formats::model::Model::parse(&bytes).unwrap();
     let (mut host, _, output) = host(factory, 1);
     host.runtime.vfs = std::mem::take(&mut files.vfs);
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
-    host.runtime.model_loader = Some(
-        ModelCatalogBuilder::new(
+    host.runtime.model_assets = Some(
+        ModelAssets::new(
             qa_render::Assets::load().unwrap(),
             [profile],
             [],
@@ -1914,8 +1914,7 @@ fn model_tags_use_shared_services(factory: fn() -> (Program, u64), returns_resul
     for frozen in [false, true] {
         if frozen {
             files.remove("models/test.md3");
-            let (_, catalog) = host.runtime.model_loader.take().unwrap().finish();
-            host.set_model_catalog(std::sync::Arc::new(catalog), []);
+            host.bind_client_model_assets([]);
         }
         for (start, end, fraction) in [
             (0, 1, 0.25f32),

@@ -52,9 +52,8 @@ pub struct Runtime {
     pub native_numbers: Box<[output_namespace::NativeNumbers]>,
     pub(crate) config_publications: Box<[client_resources::ConfigPublication]>,
     pub output_duplicates: output::duplicates::Coordinator,
-    pub models: Option<std::sync::Arc<model_assets::ModelCatalog>>,
-    /// Cold owned assets and metadata become the same frozen catalog after precache.
-    pub model_loader: Option<model_assets::ModelCatalogBuilder>,
+    /// One asset and catalog owner retains registration caches across play.
+    pub model_assets: Option<model_assets::ModelAssets>,
     pub renderer_configuration:
         Option<std::sync::Arc<qa_core::presentation::RendererConfiguration>>,
     pub scene: Option<renderer::SceneComposer>,
@@ -178,7 +177,10 @@ impl Runtime {
             lifetime,
             &mut self.network,
             &mut self.client_resources,
-            self.models.as_deref(),
+            self.model_assets
+                .as_ref()
+                .filter(|owner| !owner.initial_registration())
+                .map(model_assets::ModelAssets::catalog),
             self.sound_bank.as_deref(),
         )?;
         Some((view, &mut self.server))
@@ -193,15 +195,23 @@ impl Runtime {
         qa_compat::services::EngineServices<'a>,
         Option<client_resources::ClientConnectionView<'a>>,
         Option<&'a mut renderer::SceneComposer>,
-        Option<&'a model_assets::ModelCatalog>,
+        Option<model_assets::ModelView<'a>>,
     ) {
+        let (model_loader, model_view) = match self.model_assets.as_mut() {
+            Some(owner) if owner.initial_registration() => (
+                Some(owner as &mut dyn qa_compat::services::ModelLoader),
+                None,
+            ),
+            Some(owner) => (None, Some(owner.view())),
+            None => (None, None),
+        };
         let client_connection = client.and_then(|(client, lifetime)| {
             client_resources::connection_view(
                 client,
                 lifetime,
                 &mut self.network,
                 &mut self.client_resources,
-                self.models.as_deref(),
+                model_view.map(|view| view.catalog),
                 self.sound_bank.as_deref(),
             )
         });
@@ -224,13 +234,8 @@ impl Runtime {
             ),
             None => (None, None, None),
         };
-        let model_lookup = if self.model_loader.is_none() {
-            self.models
-                .as_deref()
-                .map(|models| models as &dyn qa_compat::services::ModelLookup)
-        } else {
-            None
-        };
+        let model_lookup =
+            model_view.map(|view| view.catalog as &dyn qa_compat::services::ModelLookup);
         let services = qa_compat::services::EngineServices {
             server: &mut self.server,
             callbacks: None,
@@ -248,10 +253,7 @@ impl Runtime {
             localization: &self.localization,
             registry: &self.catalog.registry,
             names: &mut self.catalog.names,
-            model_loader: self
-                .model_loader
-                .as_mut()
-                .map(|loader| loader as &mut dyn qa_compat::services::ModelLoader),
+            model_loader,
             model_lookup,
             sound_loader: self
                 .sound_loader
@@ -267,12 +269,7 @@ impl Runtime {
             portals,
             scratch,
         };
-        (
-            services,
-            client_connection,
-            self.scene.as_mut(),
-            self.models.as_deref(),
-        )
+        (services, client_connection, self.scene.as_mut(), model_view)
     }
 
     /// Common client capacity is chosen at load; native limits belong to each connection.
@@ -313,8 +310,7 @@ impl Runtime {
         Ok(Self {
             sound_loader: None,
             sound_bank: None,
-            models: None,
-            model_loader: None,
+            model_assets: None,
             renderer_configuration: None,
             scene: None,
             client_resources: std::iter::repeat_with(|| None).take(max_clients).collect(),

@@ -1436,7 +1436,7 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
     }
     let (mut host, client) = host(Protocol::Quake2_34, 1)?;
     host.local_clients[0] = Some(client);
-    assert!(host.runtime.models.is_none());
+    assert!(host.runtime.model_assets.is_none());
     let entity = add(
         &mut host,
         Some(NativeEntity {

@@ -687,7 +687,7 @@ fn run() -> Result<(), String> {
             configured_profiles.push(profile);
         }
     }
-    host.runtime.model_loader = Some(qa_app::model_assets::ModelCatalogBuilder::new(
+    host.runtime.model_assets = Some(qa_app::model_assets::ModelAssets::new(
         assets,
         configured_profiles,
         render_world,
@@ -709,7 +709,7 @@ fn run() -> Result<(), String> {
             .model_bounds(collision.geometry, collision.index)
             .ok_or("loaded map collision model0 bounds")?;
         host.runtime
-            .model_loader
+            .model_assets
             .as_mut()
             .ok_or("missing model loader")?
             .bind_loaded_world(path, world, Some(collision.geometry), bounds)?;
@@ -782,7 +782,7 @@ fn run() -> Result<(), String> {
             std::str::from_utf8(&name).map_err(|error| format!("model precache: {error}"))?;
         let profile = profiles[source_rules as usize].ok_or("missing model profile")?;
         host.runtime
-            .model_loader
+            .model_assets
             .as_mut()
             .ok_or("missing model loader")?
             .register_request(
@@ -833,8 +833,8 @@ fn run() -> Result<(), String> {
     }
     host.configure_native_scenes(&profiles, &seat_model_profiles, width as u32, height as u32)?;
     if !host.runtime.quit {
-        // CLIENT precaches borrow the same cold asset owner as SERVER and
-        // configured profiles. Freeze it only after module registration ends.
+        // CLIENT precaches borrow the same asset owner as SERVER and
+        // configured profiles before the backend admits those resources.
         host.register_client_modules(
             &mut LiveFrame {
                 pump: &mut pump,
@@ -846,24 +846,31 @@ fn run() -> Result<(), String> {
         )?;
     }
     host.register_client_model_assets();
-    let (mut assets, models) = host
+    let models = host
         .runtime
-        .model_loader
-        .take()
-        .ok_or("missing model loader")?
-        .finish();
-    for diagnostic in &models.diagnostics {
-        host.runtime.print_event(
-            None,
-            qa_core::primitives::PrintKind::Console,
-            format_args!(
+        .model_assets
+        .as_ref()
+        .ok_or("missing model assets")?
+        .catalog();
+    let diagnostics: Vec<_> = models
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            format!(
                 "model precache {}: {}\n",
                 models.name(diagnostic.name).unwrap_or("<unknown>"),
                 diagnostic.error
-            ),
+            )
+        })
+        .collect();
+    for diagnostic in diagnostics {
+        host.runtime.print_event(
+            None,
+            qa_core::primitives::PrintKind::Console,
+            format_args!("{diagnostic}"),
         );
     }
-    host.set_model_catalog(std::sync::Arc::new(models), client_profiles);
+    host.bind_client_model_assets(client_profiles);
     let bank = qa_app::audio::finish_registration(&mut host)?;
     let mut audio = qa_app::audio::Output::open(bank, &host.runtime.vfs)?;
     let (band_cvar, cpu_bands) = if matches!(renderer_kind, Kind::Cpu) {
@@ -878,9 +885,15 @@ fn run() -> Result<(), String> {
         )
     };
     let console_rules = host.console.cvars.context().source;
+    let assets = host
+        .runtime
+        .model_assets
+        .as_mut()
+        .ok_or("missing model assets")?
+        .assets_mut();
     let console_assets = qa_app::renderer::console::ConsoleAssets::load(
         &host.runtime.vfs,
-        &mut assets,
+        assets,
         console_rules,
         palettes[console_rules as usize],
         qa_app::render_settings::image_settings(&host.console.cvars, console_rules)?,
@@ -901,7 +914,7 @@ fn run() -> Result<(), String> {
         } else {
             qa_app::renderer::console::FontAssets::load(
                 &host.runtime.vfs,
-                &mut assets,
+                assets,
                 rules,
                 palettes[rules as usize],
                 qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
@@ -909,7 +922,7 @@ fn run() -> Result<(), String> {
         };
         hud_assets[rules as usize] = Some(qa_app::renderer::hud::HudAssets::load(
             &host.runtime.vfs,
-            &mut assets,
+            assets,
             rules,
             font,
             qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
@@ -920,12 +933,12 @@ fn run() -> Result<(), String> {
     let mut effect_bindings = vec![None; effect_catalog.len() + 1];
     if let Ok(Some(palette)) = qa_app::render_settings::palette(
         &host.runtime.vfs,
-        &mut assets,
+        assets,
         qa_core::primitives::RuleSetId::Quake,
         &mut palettes,
     ) {
         let material =
-            qa_render::particles::register_point_material(&mut assets, "engine/particles/point")?;
+            qa_render::particles::register_point_material(assets, "engine/particles/point")?;
         let presentation = qa_render::scene::ParticlePresentation::Square {
             pixel_aspect: (height as f32 / width as f32) * (320.0 / 240.0),
         };
@@ -963,6 +976,11 @@ fn run() -> Result<(), String> {
     let mut scene = host.runtime.scene.take().ok_or("missing scene composer")?;
     renderer.frame(
         &mut scene,
+        host.runtime
+            .model_assets
+            .as_ref()
+            .ok_or("missing model assets")?
+            .view(),
         &host.client_views(),
         &host.client_scene_inputs(),
         &host.client_hud_inputs(),

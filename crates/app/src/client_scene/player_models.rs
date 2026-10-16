@@ -1,5 +1,5 @@
 use super::*;
-use crate::model_assets::ModelCatalogBuilder;
+use crate::model_assets::ModelAssets;
 use qa_compat::services::{ModelLoader, ModelLookup};
 use qa_core::names::compare_folded;
 use qa_gameplay::rules::appearance::PlayerModelRules;
@@ -213,7 +213,7 @@ impl PlayerBindings {
 
 enum PlayerAssets<'a> {
     Loading {
-        loader: &'a mut ModelCatalogBuilder,
+        loader: &'a mut ModelAssets,
         vfs: &'a qa_content::vfs::Vfs,
         source: RuleSetId,
     },
@@ -362,7 +362,7 @@ impl ClientModelBindings {
     pub(crate) fn register_player_models(
         &mut self,
         configs: &ConfigStrings,
-        loader: &mut ModelCatalogBuilder,
+        loader: &mut ModelAssets,
         vfs: &qa_content::vfs::Vfs,
         source: RuleSetId,
     ) -> u32 {

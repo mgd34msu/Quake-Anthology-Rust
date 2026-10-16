@@ -333,7 +333,7 @@ struct ProfileImages {
     state: Option<Result<ImagesState, String>>,
     colors: Option<PaletteColors>,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelColorId(u32);
 pub struct PaletteColors {
     pub source: PaletteId,
@@ -402,30 +402,8 @@ impl ProfileImages {
     }
 }
 
+/// The session's one model store and retained registration state.
 pub struct ModelCatalog {
-    names: NameTable,
-    files: Box<[ModelFile]>,
-    models: Box<[IndexSpan]>,
-    shader_indices: Box<[Option<u32>]>,
-    shaders: Box<[RegisteredShader]>,
-    shader_bindings: Box<[ShaderProfileBinding]>,
-    skin_indices: Box<[Option<u32>]>,
-    skins: Box<[RegisteredSkin]>,
-    registrations: Box<[RegisteredProfile]>,
-    bindings: Box<[ModelMaterials]>,
-    surfaces: Box<[SurfaceMaterials]>,
-    tags: Box<[TaggedOrientation]>,
-    worlds: Box<[IndexSpan]>,
-    inline: Box<[RegisteredInline]>,
-    capacity: ModelCapacity,
-    pub diagnostics: Box<[ModelDiagnostic]>,
-    colors: Box<[(ModelProfile, PaletteColors)]>,
-}
-
-/// Owns cold Assets until every native precache and configured presentation
-/// finishes. Parsed model bytes live only within one file's registration.
-pub struct ModelCatalogBuilder {
-    assets: Assets,
     reader: ArchiveReader,
     names: NameTable,
     files: Vec<ModelFile>,
@@ -445,9 +423,23 @@ pub struct ModelCatalogBuilder {
     inline: Box<[RegisteredInline]>,
     capacity: ModelCapacity,
     limits: ModelLimits,
-    diagnostics: Vec<ModelDiagnostic>,
+    pub diagnostics: Vec<ModelDiagnostic>,
 }
-impl ModelCatalogBuilder {
+
+/// Owns render resources and their numeric model catalog through registration
+/// and presentation. Parsed model bytes remain local to one registration.
+pub struct ModelAssets {
+    assets: Assets,
+    catalog: ModelCatalog,
+    initial_registration: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct ModelView<'a> {
+    pub assets: &'a Assets,
+    pub catalog: &'a ModelCatalog,
+}
+impl ModelAssets {
     pub fn new(
         mut assets: Assets,
         profiles: impl IntoIterator<Item = ModelProfile>,
@@ -499,39 +491,113 @@ impl ModelCatalogBuilder {
         };
         Ok(Self {
             assets,
-            reader: ArchiveReader::default(),
-            names,
-            files: vec![ModelFile::Empty],
-            models: vec![IndexSpan::default()],
-            shader_indices: vec![None],
-            shaders: Vec::new(),
-            shader_bindings: Vec::new(),
-            skin_indices: vec![None],
-            skins: Vec::new(),
-            shader_catalog: None,
-            profiles: unique,
-            registrations: Vec::new(),
-            bindings: Vec::new(),
-            surfaces: Vec::new(),
-            tags: Vec::new(),
-            worlds,
-            inline,
-            capacity,
-            limits,
-            diagnostics: Vec::new(),
+            initial_registration: true,
+            catalog: ModelCatalog {
+                reader: ArchiveReader::default(),
+                names,
+                files: vec![ModelFile::Empty],
+                models: vec![IndexSpan::default()],
+                shader_indices: vec![None],
+                shaders: Vec::new(),
+                shader_bindings: Vec::new(),
+                skin_indices: vec![None],
+                skins: Vec::new(),
+                shader_catalog: None,
+                profiles: unique,
+                registrations: Vec::new(),
+                bindings: Vec::new(),
+                surfaces: Vec::new(),
+                tags: Vec::new(),
+                worlds,
+                inline,
+                capacity,
+                limits,
+                diagnostics: Vec::new(),
+            },
         })
     }
 
+    /// All requests delegate to the same staged native precache implementation.
+    pub fn load<'a>(
+        vfs: &Vfs,
+        assets: Assets,
+        requests: impl IntoIterator<Item = ModelRequest<'a>>,
+        worlds: impl IntoIterator<Item = WorldId>,
+        limits: ModelLimits,
+    ) -> Result<Self, String> {
+        let mut pending = Vec::<Registration>::new();
+        for request in requests {
+            if request.path.is_empty() || request.path.starts_with('*') {
+                continue;
+            }
+            if pending.len() == limits.models || pending.len() == u32::MAX as usize {
+                return Err("model registration capacity".to_owned());
+            }
+            pending.push(Registration {
+                path: canonical_path(request.path),
+                profile: request.profile(),
+                required: request.required,
+            });
+        }
+        pending.sort_by(|left, right| left.path.cmp(&right.path));
+        let mut owner = Self::new(
+            assets,
+            pending.iter().map(|entry| entry.profile),
+            worlds,
+            limits,
+        )?;
+        for entry in &pending {
+            owner.register_request(
+                vfs,
+                ModelRequest {
+                    path: &entry.path,
+                    source_rules: entry.profile.source_rules,
+                    rules: entry.profile.rules,
+                    source_palette: entry.profile.source_palette,
+                    palette: entry.profile.palette,
+                    image_settings: entry.profile.image_settings,
+                    required: entry.required,
+                },
+            )?;
+        }
+        Ok(owner)
+    }
+    pub fn view(&self) -> ModelView<'_> {
+        ModelView {
+            assets: &self.assets,
+            catalog: &self.catalog,
+        }
+    }
+    pub fn assets(&self) -> &Assets {
+        &self.assets
+    }
+    pub fn assets_mut(&mut self) -> &mut Assets {
+        &mut self.assets
+    }
+    pub fn catalog(&self) -> &ModelCatalog {
+        &self.catalog
+    }
+    pub fn initial_registration(&self) -> bool {
+        self.initial_registration
+    }
+    pub fn end_initial_registration(&mut self) {
+        self.initial_registration = false;
+    }
+
     fn admit_name(&mut self, bytes: &[u8]) -> Result<NameId, CallError> {
-        let previous = self.names.len();
-        let name = self.names.intern(bytes).map_err(|_| CallError::Capacity)?;
-        if self.names.len() != previous {
-            self.files.push(ModelFile::Empty);
-            self.models.push(IndexSpan::default());
-            self.shader_indices.push(None);
-            self.skin_indices.push(None);
-            self.capacity.names = self.names.len();
-            self.capacity.name_bytes += bytes.len();
+        let previous = self.catalog.names.len();
+        let name = self
+            .catalog
+            .names
+            .intern(bytes)
+            .map_err(|_| CallError::Capacity)?;
+        if self.catalog.names.len() != previous {
+            self.catalog.files.push(ModelFile::Empty);
+            self.catalog.models.push(IndexSpan::default());
+            self.catalog.shader_indices.push(None);
+            self.catalog.skin_indices.push(None);
+            self.catalog.capacity.names = self.catalog.names.len();
+            self.catalog.capacity.name_bytes += bytes.len();
         }
         Ok(name)
     }
@@ -551,14 +617,14 @@ impl ModelCatalogBuilder {
         if !native_bounds.is_valid() {
             return Err("loaded world bounds".to_owned());
         }
-        let binding =
-            inline_binding(&self.worlds, &self.inline, world, 0).ok_or("loaded world model0")?;
+        let binding = inline_binding(&self.catalog.worlds, &self.catalog.inline, world, 0)
+            .ok_or("loaded world model0")?;
         let path = canonical_path(path);
         let name = self
             .admit_name(path.as_bytes())
             .map_err(|_| "model name capacity".to_owned())?;
-        if !matches!(self.files[name.0 as usize], ModelFile::Empty) {
-            return match self.files.get(name.0 as usize) {
+        if !matches!(self.catalog.files[name.0 as usize], ModelFile::Empty) {
+            return match self.catalog.files.get(name.0 as usize) {
                 Some(ModelFile::LoadedWorld {
                     binding: existing,
                     bounds,
@@ -572,7 +638,7 @@ impl ModelCatalogBuilder {
                 _ => Err("loaded world filename conflict".to_owned()),
             };
         }
-        self.files[name.0 as usize] = ModelFile::LoadedWorld {
+        self.catalog.files[name.0 as usize] = ModelFile::LoadedWorld {
             binding,
             bounds: native_bounds,
             collision,
@@ -588,23 +654,26 @@ impl ModelCatalogBuilder {
         }
         let path = canonical_path(request.path);
         let admission = self.ensure_file(vfs, &path);
-        let Some(name) = self.names.find(path.as_bytes()) else {
+        let Some(name) = self.catalog.names.find(path.as_bytes()) else {
             return Err(admission
                 .err()
                 .map_or_else(|| "missing registered model name".to_owned(), |e| e.message));
         };
-        if matches!(self.files[name.0 as usize], ModelFile::LoadedWorld { .. }) {
+        if matches!(
+            self.catalog.files[name.0 as usize],
+            ModelFile::LoadedWorld { .. }
+        ) {
             return Ok(());
         }
-        if self.models[name.0 as usize].count == 0
+        if self.catalog.models[name.0 as usize].count == 0
             && let Err(error) = admission
         {
             return Err(error.message);
         }
         let profile = request.profile();
-        let registration = self.models[name.0 as usize]
+        let registration = self.catalog.models[name.0 as usize]
             .range()
-            .map(|index| &self.registrations[index])
+            .map(|index| &self.catalog.registrations[index])
             .find(|entry| entry.profile == profile)
             .ok_or("unconfigured model profile")?;
         if request.required
@@ -620,8 +689,8 @@ impl ModelCatalogBuilder {
     }
 
     fn ensure_file(&mut self, vfs: &Vfs, path: &str) -> Result<Bounds, FileError> {
-        if let Some(name) = self.names.find(path.as_bytes()) {
-            let file = &self.files[name.0 as usize];
+        if let Some(name) = self.catalog.names.find(path.as_bytes()) {
+            let file = &self.catalog.files[name.0 as usize];
             if !matches!(file, ModelFile::Empty) {
                 return file.bounds().ok_or_else(|| match file {
                     ModelFile::Failed(error) => error.clone(),
@@ -633,20 +702,25 @@ impl ModelCatalogBuilder {
             }
         }
         let next = self
+            .catalog
             .registrations
             .len()
-            .checked_add(self.profiles.len())
-            .filter(|&count| count <= self.limits.models && count <= u32::MAX as usize)
+            .checked_add(self.catalog.profiles.len())
+            .filter(|&count| count <= self.catalog.limits.models && count <= u32::MAX as usize)
             .ok_or_else(|| FileError::capacity("model registration capacity"))?;
         let name = self
             .admit_name(path.as_bytes())
             .map_err(|_| FileError::capacity("model name capacity"))?;
         let span = IndexSpan {
-            first: self.registrations.len() as u32,
-            count: (next - self.registrations.len()) as u32,
+            first: self.catalog.registrations.len() as u32,
+            count: (next - self.catalog.registrations.len()) as u32,
         };
         let bytes = vfs
-            .read_file(path.as_bytes(), self.limits.file_bytes, &mut self.reader)
+            .read_file(
+                path.as_bytes(),
+                self.catalog.limits.file_bytes,
+                &mut self.catalog.reader,
+            )
             .map_err(|error| FileError {
                 kind: CallError::File,
                 message: error.to_string(),
@@ -670,7 +744,7 @@ impl ModelCatalogBuilder {
                     _ => model.bounds,
                 },
             });
-        let first_tag = self.tags.len();
+        let first_tag = self.catalog.tags.len();
         let tags = parsed
             .as_ref()
             .map_err(|error| error.message.clone())
@@ -683,9 +757,9 @@ impl ModelCatalogBuilder {
         let surface_names = match surface_names {
             Ok(names) => names,
             Err(error) => {
-                self.tags.truncate(first_tag);
-                self.capacity.tags = first_tag;
-                self.files[name.0 as usize] = ModelFile::Failed(error.clone());
+                self.catalog.tags.truncate(first_tag);
+                self.catalog.capacity.tags = first_tag;
+                self.catalog.files[name.0 as usize] = ModelFile::Failed(error.clone());
                 return Err(error);
             }
         };
@@ -697,7 +771,7 @@ impl ModelCatalogBuilder {
             self.shader_catalog(vfs);
         }
         let mut renderer_sources = 0;
-        for images in &mut self.profiles {
+        for images in &mut self.catalog.profiles {
             let registration = Registration {
                 path: path.to_owned(),
                 profile: images.profile,
@@ -718,9 +792,9 @@ impl ModelCatalogBuilder {
                                 &registration,
                                 images.model_policy,
                                 &mut meshes,
-                                self.shader_catalog.as_ref(),
-                                &mut self.capacity,
-                                self.limits,
+                                self.catalog.shader_catalog.as_ref(),
+                                &mut self.catalog.capacity,
+                                self.catalog.limits,
                             )
                         });
                     images.state = Some(Ok(temporary.into_state()));
@@ -739,15 +813,15 @@ impl ModelCatalogBuilder {
             };
             let (surfaces, error) = match result {
                 Ok(surfaces) => {
-                    let first = self.surfaces.len() as u32;
+                    let first = self.catalog.surfaces.len() as u32;
                     let count = surfaces.len() as u32;
                     for (index, skins) in surfaces.into_iter().enumerate() {
-                        self.surfaces.push(SurfaceMaterials {
+                        self.catalog.surfaces.push(SurfaceMaterials {
                             name: surface_names
                                 .as_ref()
                                 .ok_or_else(|| FileError::capacity("model surface names"))?[index],
                             skins: IndexSpan {
-                                first: self.bindings.len() as u32,
+                                first: self.catalog.bindings.len() as u32,
                                 count: skins.len() as u32,
                             },
                             wrap_skins: parsed
@@ -757,13 +831,13 @@ impl ModelCatalogBuilder {
                                 .as_ref()
                                 .is_ok_and(|model| model.format == ModelFormat::Sp2),
                         });
-                        self.bindings.extend(skins);
+                        self.catalog.bindings.extend(skins);
                     }
                     renderer_sources |= 1 << images.profile.source_rules as u8;
                     (Some(IndexSpan { first, count }), None)
                 }
                 Err(error) => {
-                    self.diagnostics.push(ModelDiagnostic {
+                    self.catalog.diagnostics.push(ModelDiagnostic {
                         name,
                         profile: images.profile,
                         error: error.clone(),
@@ -771,14 +845,14 @@ impl ModelCatalogBuilder {
                     (None, Some(error))
                 }
             };
-            self.registrations.push(RegisteredProfile {
+            self.catalog.registrations.push(RegisteredProfile {
                 profile: images.profile,
                 surfaces,
                 error,
             });
         }
-        self.models[name.0 as usize] = span;
-        self.files[name.0 as usize] = match &metadata {
+        self.catalog.models[name.0 as usize] = span;
+        self.catalog.files[name.0 as usize] = match &metadata {
             Ok(metadata) => ModelFile::Ready {
                 metadata: *metadata,
                 renderer_sources,
@@ -786,8 +860,9 @@ impl ModelCatalogBuilder {
             },
             Err(error) => ModelFile::Failed(error.clone()),
         };
-        self.capacity.registrations = self.registrations.len();
-        self.capacity.bindings = self.bindings.len() * ModelMaterialPolicy::ALL.len();
+        self.catalog.capacity.registrations = self.catalog.registrations.len();
+        self.catalog.capacity.bindings =
+            self.catalog.bindings.len() * ModelMaterialPolicy::ALL.len();
         metadata.map(|metadata| metadata.bounds)
     }
 
@@ -811,7 +886,8 @@ impl ModelCatalogBuilder {
                 })
                 .collect()
         };
-        self.names
+        self.catalog
+            .names
             .check_intern_all(raw.iter().copied())
             .map_err(|_| FileError::capacity("model surface names"))?;
         raw.into_iter()
@@ -819,7 +895,8 @@ impl ModelCatalogBuilder {
                 let name = self
                     .admit_name(raw)
                     .map_err(|_| FileError::capacity("model surface names"))?;
-                self.names
+                self.catalog
+                    .names
                     .folded(name)
                     .ok_or_else(|| FileError::capacity("model surface names"))
             })
@@ -827,7 +904,7 @@ impl ModelCatalogBuilder {
     }
 
     fn shader_catalog(&mut self, vfs: &Vfs) -> &Result<ShaderCatalog, String> {
-        self.shader_catalog.get_or_insert_with(|| {
+        self.catalog.shader_catalog.get_or_insert_with(|| {
             qa_render::material::load_catalog(vfs)
                 .map_err(|error| format!("shader scripts: {error:?}"))
         })
@@ -837,30 +914,30 @@ impl ModelCatalogBuilder {
         if model.format != ModelFormat::Md3 || model.tags_per_frame == 0 {
             return Ok(None);
         }
-        let first = self.tags.len();
+        let first = self.catalog.tags.len();
         let next = first
             .checked_add(model.tags.len())
-            .filter(|&count| count <= self.limits.tags && count <= u32::MAX as usize)
+            .filter(|&count| count <= self.catalog.limits.tags && count <= u32::MAX as usize)
             .ok_or("model tag capacity")?;
         for frame in model.tags.chunks_exact(model.tags_per_frame) {
-            let at = self.tags.len();
+            let at = self.catalog.tags.len();
             for tag in frame {
                 let name = match self.admit_name(tag.name) {
                     Ok(name) => name,
                     Err(_) => {
-                        self.tags.truncate(first);
+                        self.catalog.tags.truncate(first);
                         return Err("model tag name capacity".to_owned());
                     }
                 };
-                self.tags.push(TaggedOrientation {
+                self.catalog.tags.push(TaggedOrientation {
                     name,
                     orientation: tag.orientation,
                 });
             }
             // Preserve the original first match for duplicate names in a frame.
-            self.tags[at..].sort_by_key(|tag| tag.name.0);
+            self.catalog.tags[at..].sort_by_key(|tag| tag.name.0);
         }
-        self.capacity.tags = next;
+        self.catalog.capacity.tags = next;
         Ok(Some(TagLayout {
             samples: IndexSpan {
                 first: first as u32,
@@ -884,34 +961,43 @@ impl ModelCatalogBuilder {
         if raw.len() >= 64 {
             return Err(CallError::Text);
         }
-        if let Some(handle) = shader_handle(&self.names, &self.shader_indices, &self.shaders, raw) {
+        if let Some(handle) = shader_handle(
+            &self.catalog.names,
+            &self.catalog.shader_indices,
+            &self.catalog.shaders,
+            raw,
+        ) {
             return Ok(handle);
         }
         std::str::from_utf8(raw).map_err(|_| CallError::Text)?;
         let key = shader_key(raw);
         let count = self
+            .catalog
             .profiles
             .iter()
             .filter(|entry| entry.profile.source_rules == source)
             .count();
         let next = self
+            .catalog
             .shader_bindings
             .len()
             .checked_add(count)
-            .filter(|&n| n <= self.limits.models && n <= u32::MAX as usize)
+            .filter(|&n| n <= self.catalog.limits.models && n <= u32::MAX as usize)
             .ok_or(CallError::Capacity)?;
-        if self.shaders.len() >= self.limits.models || self.shaders.len() >= i32::MAX as usize {
+        if self.catalog.shaders.len() >= self.catalog.limits.models
+            || self.catalog.shaders.len() >= i32::MAX as usize
+        {
             return Err(CallError::Capacity);
         }
         let name = self.admit_name(key)?;
-        let group = self.names.folded(name).ok_or(CallError::Aborted)?;
-        let index = self.shaders.len() as u32;
-        self.shader_indices[group.0 as usize] = Some(index);
+        let group = self.catalog.names.folded(name).ok_or(CallError::Aborted)?;
+        let index = self.catalog.shaders.len() as u32;
+        self.catalog.shader_indices[group.0 as usize] = Some(index);
         let span = IndexSpan {
-            first: self.shader_bindings.len() as u32,
-            count: (next - self.shader_bindings.len()) as u32,
+            first: self.catalog.shader_bindings.len() as u32,
+            count: (next - self.catalog.shader_bindings.len()) as u32,
         };
-        self.shaders.push(RegisteredShader {
+        self.catalog.shaders.push(RegisteredShader {
             name,
             profiles: span,
             ready: false,
@@ -919,6 +1005,7 @@ impl ModelCatalogBuilder {
         let definition = shader_definition(self.shader_catalog(vfs), raw, mipmaps, false);
         let mut ready = false;
         for images in self
+            .catalog
             .profiles
             .iter_mut()
             .filter(|entry| entry.profile.source_rules == source)
@@ -934,7 +1021,7 @@ impl ModelCatalogBuilder {
                     Some(material)
                 }
                 Err(error) => {
-                    self.diagnostics.push(ModelDiagnostic {
+                    self.catalog.diagnostics.push(ModelDiagnostic {
                         name,
                         profile: images.profile,
                         error,
@@ -942,12 +1029,12 @@ impl ModelCatalogBuilder {
                     None
                 }
             };
-            self.shader_bindings.push(ShaderProfileBinding {
+            self.catalog.shader_bindings.push(ShaderProfileBinding {
                 profile: images.profile,
                 material,
             });
         }
-        self.shaders[index as usize].ready = ready;
+        self.catalog.shaders[index as usize].ready = ready;
         if ready {
             Ok(index as i32 + 1)
         } else {
@@ -956,11 +1043,11 @@ impl ModelCatalogBuilder {
     }
 
     fn admit_inline(&mut self, world: WorldId, index: u32) -> Result<i32, CallError> {
-        let slot = inline_slot(&self.worlds, world, index).ok_or(CallError::File)?;
-        if let Some(handle) = self.inline[slot].handle {
+        let slot = inline_slot(&self.catalog.worlds, world, index).ok_or(CallError::File)?;
+        if let Some(handle) = self.catalog.inline[slot].handle {
             return i32::try_from(handle.0).map_err(|_| CallError::Capacity);
         }
-        let binding = self.inline[slot].binding;
+        let binding = self.catalog.inline[slot].binding;
         let bounds = self
             .assets
             .world(world)
@@ -972,12 +1059,12 @@ impl ModelCatalogBuilder {
         let key = format!("\0engine:inline/{}/{}", world.0, index);
         let handle = self.admit_name(key.as_bytes())?;
         let native = i32::try_from(handle.0).map_err(|_| CallError::Capacity)?;
-        self.files[handle.0 as usize] = ModelFile::LoadedWorld {
+        self.catalog.files[handle.0 as usize] = ModelFile::LoadedWorld {
             binding,
             bounds,
             collision: None,
         };
-        self.inline[slot].handle = Some(handle);
+        self.catalog.inline[slot].handle = Some(handle);
         Ok(native)
     }
 
@@ -990,31 +1077,41 @@ impl ModelCatalogBuilder {
         }
         let path = canonical_path(std::str::from_utf8(raw).map_err(|_| CallError::Text)?);
         if let Some(handle) = skin_handle(
-            &self.names,
-            &self.skin_indices,
-            &self.skins,
+            &self.catalog.names,
+            &self.catalog.skin_indices,
+            &self.catalog.skins,
             path.as_bytes(),
             source,
         ) {
             return Ok(handle);
         }
-        if self.skins.len() >= self.limits.models || self.skins.len() >= i32::MAX as usize {
+        if self.catalog.skins.len() >= self.catalog.limits.models
+            || self.catalog.skins.len() >= i32::MAX as usize
+        {
             return Err(CallError::Capacity);
         }
         let name = self.admit_name(path.as_bytes())?;
-        let group = self.names.folded(name).ok_or(CallError::Aborted)?;
-        let index = self.skins.len() as u32;
-        self.skin_indices[group.0 as usize] = Some(index);
-        self.skins.push(RegisteredSkin {
+        let group = self.catalog.names.folded(name).ok_or(CallError::Aborted)?;
+        let index = self.catalog.skins.len() as u32;
+        self.catalog.skin_indices[group.0 as usize] = Some(index);
+        self.catalog.skins.push(RegisteredSkin {
             profiles: Vec::new(),
         });
-        let profile_count = self.profiles.len();
-        let maximum_rows =
-            self.limits.skins.saturating_sub(self.capacity.skins) / profile_count.max(1);
+        let profile_count = self.catalog.profiles.len();
+        let maximum_rows = self
+            .catalog
+            .limits
+            .skins
+            .saturating_sub(self.catalog.capacity.skins)
+            / profile_count.max(1);
         let skin_file = raw.ends_with(b".skin");
         let bytes = if skin_file {
-            vfs.read_file(path.as_bytes(), self.limits.file_bytes, &mut self.reader)
-                .map_err(|_| CallError::File)?
+            vfs.read_file(
+                path.as_bytes(),
+                self.catalog.limits.file_bytes,
+                &mut self.catalog.reader,
+            )
+            .map_err(|_| CallError::File)?
         } else {
             Vec::new()
         };
@@ -1036,19 +1133,26 @@ impl ModelCatalogBuilder {
         if rows.is_empty() {
             return Err(CallError::File);
         }
-        self.capacity.skins = rows
+        self.catalog.capacity.skins = rows
             .len()
             .checked_mul(profile_count)
-            .and_then(|count| self.capacity.skins.checked_add(count))
-            .filter(|&count| count <= self.limits.skins)
+            .and_then(|count| self.catalog.capacity.skins.checked_add(count))
+            .filter(|&count| count <= self.catalog.limits.skins)
             .ok_or(CallError::Capacity)?;
         self.shader_catalog(vfs);
         let mut mappings = Vec::with_capacity(rows.len());
         for row in rows {
             let surface = self.admit_name(row.surface)?;
-            let surface = self.names.folded(surface).ok_or(CallError::Aborted)?;
+            let surface = self
+                .catalog
+                .names
+                .folded(surface)
+                .ok_or(CallError::Aborted)?;
             let definition = shader_definition(
-                self.shader_catalog.as_ref().ok_or(CallError::Aborted)?,
+                self.catalog
+                    .shader_catalog
+                    .as_ref()
+                    .ok_or(CallError::Aborted)?,
                 row.shader,
                 true,
                 true,
@@ -1056,7 +1160,7 @@ impl ModelCatalogBuilder {
             mappings.push((surface, definition));
         }
         let mut profiles = Vec::with_capacity(profile_count);
-        for images in &mut self.profiles {
+        for images in &mut self.catalog.profiles {
             let alias = !skin_file && images.model_policy.source.indexed_external_pcx;
             let mut compiled = Vec::with_capacity(mappings.len());
             for (surface, definition) in &mappings {
@@ -1091,7 +1195,7 @@ impl ModelCatalogBuilder {
                 let materials = match result {
                     Ok(materials) => materials,
                     Err(error) => {
-                        self.diagnostics.push(ModelDiagnostic {
+                        self.catalog.diagnostics.push(ModelDiagnostic {
                             name,
                             profile: images.profile,
                             error,
@@ -1116,35 +1220,8 @@ impl ModelCatalogBuilder {
                 });
             }
         }
-        self.skins[index as usize] = RegisteredSkin { profiles };
-        Ok(self.skins[index as usize].source_handle(index as i32 + 1, source))
-    }
-
-    pub fn finish(self) -> (Assets, ModelCatalog) {
-        let catalog = ModelCatalog {
-            names: self.names,
-            files: self.files.into_boxed_slice(),
-            models: self.models.into_boxed_slice(),
-            shader_indices: self.shader_indices.into_boxed_slice(),
-            shaders: self.shaders.into_boxed_slice(),
-            shader_bindings: self.shader_bindings.into_boxed_slice(),
-            skin_indices: self.skin_indices.into_boxed_slice(),
-            skins: self.skins.into_boxed_slice(),
-            registrations: self.registrations.into_boxed_slice(),
-            bindings: self.bindings.into_boxed_slice(),
-            surfaces: self.surfaces.into_boxed_slice(),
-            tags: self.tags.into_boxed_slice(),
-            worlds: self.worlds,
-            inline: self.inline,
-            capacity: self.capacity,
-            diagnostics: self.diagnostics.into_boxed_slice(),
-            colors: self
-                .profiles
-                .into_iter()
-                .filter_map(|entry| entry.colors.map(|colors| (entry.profile, colors)))
-                .collect(),
-        };
-        (self.assets, catalog)
+        self.catalog.skins[index as usize] = RegisteredSkin { profiles };
+        Ok(self.catalog.skins[index as usize].source_handle(index as i32 + 1, source))
     }
 }
 
@@ -1357,55 +1434,10 @@ fn lerp_tag(
     };
     Some(sample(start)?.interpolate(sample(end)?, fraction))
 }
-impl ModelLookup for ModelCatalogBuilder {
-    fn file_handle(&self, path: &[u8]) -> Option<i32> {
-        model_handle(&self.names, &self.files, path, None)
+impl ModelLoader for ModelAssets {
+    fn lookup(&self) -> &dyn ModelLookup {
+        &self.catalog
     }
-    fn inline_handle(&self, world: WorldId, index: u32) -> Option<i32> {
-        inline_handle(&self.worlds, &self.inline, world, index)
-    }
-    fn model_has_tags(&self, handle: i32) -> bool {
-        model_has_tags(&self.files, handle)
-    }
-    fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding> {
-        loaded_world(&self.names, &self.files, name)
-    }
-    fn lerp_tag(
-        &self,
-        handle: i32,
-        start: i32,
-        end: i32,
-        fraction: f32,
-        name: &[u8],
-    ) -> Option<Orientation> {
-        lerp_tag(
-            &self.names,
-            &self.files,
-            &self.tags,
-            handle,
-            start,
-            end,
-            fraction,
-            name,
-        )
-    }
-    fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
-        file_lookup(&self.names, &self.files, path)?.bounds()
-    }
-    fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
-        skin_handle(&self.names, &self.skin_indices, &self.skins, name, source)
-    }
-    fn shader_handle(&self, name: &[u8]) -> Option<i32> {
-        shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
-    }
-    fn model_handle(&self, path: &[u8], source: RuleSetId) -> Option<i32> {
-        model_handle(&self.names, &self.files, path, Some(source))
-    }
-    fn model_bounds(&self, handle: i32) -> Option<Bounds> {
-        model_bounds(&self.files, handle)
-    }
-}
-impl ModelLoader for ModelCatalogBuilder {
     fn precache(
         &mut self,
         vfs: &Vfs,
@@ -1490,15 +1522,13 @@ impl ModelLookup for ModelCatalog {
 }
 impl ModelCatalog {
     pub fn color_binding(&self, profile: ModelProfile) -> Option<ModelColorId> {
-        self.colors
+        self.profiles
             .iter()
-            .position(|(key, _)| *key == profile)
+            .position(|entry| entry.profile == profile && entry.colors.is_some())
             .map(|index| ModelColorId(index as u32))
     }
     pub fn colors(&self, binding: ModelColorId) -> Option<&PaletteColors> {
-        self.colors
-            .get(binding.0 as usize)
-            .map(|(_, colors)| colors)
+        self.profiles.get(binding.0 as usize)?.colors.as_ref()
     }
     pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<MaterialId> {
         let index = usize::try_from(handle.checked_sub(1)?).ok()?;
@@ -1513,51 +1543,6 @@ impl ModelCatalog {
     pub fn shader_name(&self, handle: i32) -> Option<&[u8]> {
         let index = usize::try_from(handle.checked_sub(1)?).ok()?;
         self.names.get(self.shaders.get(index)?.name)
-    }
-    /// All requests delegate to the same staged native precache implementation.
-    pub fn load<'a>(
-        vfs: &Vfs,
-        assets: Assets,
-        requests: impl IntoIterator<Item = ModelRequest<'a>>,
-        worlds: impl IntoIterator<Item = WorldId>,
-        limits: ModelLimits,
-    ) -> Result<(Assets, Self), String> {
-        let mut pending = Vec::<Registration>::new();
-        for request in requests {
-            if request.path.is_empty() || request.path.starts_with('*') {
-                continue;
-            }
-            if pending.len() == limits.models || pending.len() == u32::MAX as usize {
-                return Err("model registration capacity".to_owned());
-            }
-            pending.push(Registration {
-                path: canonical_path(request.path),
-                profile: request.profile(),
-                required: request.required,
-            });
-        }
-        pending.sort_by(|left, right| left.path.cmp(&right.path));
-        let mut builder = ModelCatalogBuilder::new(
-            assets,
-            pending.iter().map(|entry| entry.profile),
-            worlds,
-            limits,
-        )?;
-        for entry in &pending {
-            builder.register_request(
-                vfs,
-                ModelRequest {
-                    path: &entry.path,
-                    source_rules: entry.profile.source_rules,
-                    rules: entry.profile.rules,
-                    source_palette: entry.profile.source_palette,
-                    palette: entry.profile.palette,
-                    image_settings: entry.profile.image_settings,
-                    required: entry.required,
-                },
-            )?;
-        }
-        Ok(builder.finish())
     }
     pub fn metadata(&self, path: &[u8]) -> Option<ModelMetadata> {
         match file_lookup(&self.names, &self.files, path)? {

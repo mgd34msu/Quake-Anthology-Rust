@@ -284,10 +284,20 @@ fn scene_survives_parent_resume(native: bool) {
         vec![key(DeviceId::Keyboard(10), 5, true, false)],
         vec![],
     );
+    host.runtime.model_assets = Some(
+        qa_app::model_assets::ModelAssets::new(
+            qa_render::Assets::load().unwrap(),
+            [],
+            [],
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    host.bind_client_model_assets([]);
     host.runtime.scene = Some(
         qa_app::renderer::SceneComposer::load(
             qa_render::Limits::default(),
-            qa_render::Assets::load().unwrap(),
+            host.runtime.model_assets.as_mut().unwrap().assets_mut(),
             vec![],
         )
         .unwrap()

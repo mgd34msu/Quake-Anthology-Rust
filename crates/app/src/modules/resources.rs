@@ -31,18 +31,20 @@ impl FrameHost {
                         resources.state.layout.rules,
                     ) != 0,
                 });
-            let rejected = if let Some(loader) = runtime.model_loader.as_mut() {
-                resources.state.models.register_player_models(
-                    &resources.state.configs,
-                    loader,
-                    &runtime.vfs,
-                    source,
-                )
-            } else if let Some(models) = runtime.models.as_deref() {
-                resources
-                    .state
-                    .models
-                    .refresh_player_models(&resources.state.configs, models)
+            let rejected = if let Some(owner) = runtime.model_assets.as_mut() {
+                if owner.initial_registration() {
+                    resources.state.models.register_player_models(
+                        &resources.state.configs,
+                        owner,
+                        &runtime.vfs,
+                        source,
+                    )
+                } else {
+                    resources
+                        .state
+                        .models
+                        .refresh_player_models(&resources.state.configs, owner.catalog())
+                }
             } else {
                 0
             };
@@ -352,9 +354,8 @@ impl FrameHost {
             .collect()
     }
 
-    pub fn set_model_catalog(
+    pub fn bind_client_model_assets(
         &mut self,
-        models: std::sync::Arc<crate::model_assets::ModelCatalog>,
         profiles: impl IntoIterator<
             Item = (
                 ClientId,
@@ -366,6 +367,11 @@ impl FrameHost {
             ),
         >,
     ) {
+        let Some(owner) = self.runtime.model_assets.as_mut() else {
+            return;
+        };
+        owner.end_initial_registration();
+        let models = owner.catalog();
         for resources in self.runtime.client_resources.iter_mut().flatten() {
             resources.state.models.reset();
         }
@@ -380,15 +386,14 @@ impl FrameHost {
             };
             resources.state.rejected += u64::from(resources.state.models.bind_all(
                 &resources.state.configs,
-                &models,
+                models,
                 profile,
                 world,
             ));
         }
         for resources in self.runtime.client_resources.iter_mut().flatten() {
-            resources.state.complete_static_models(&models);
+            resources.state.complete_static_models(models);
         }
-        self.runtime.models = Some(models);
     }
 
     /// A row is recorded as published only after its text lease reaches the

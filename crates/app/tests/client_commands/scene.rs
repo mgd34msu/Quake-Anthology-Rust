@@ -1,5 +1,5 @@
 use super::*;
-use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
+use qa_app::model_assets::{ModelAssets, ModelRequest};
 use qa_compat::services::{ModelLoader, ModelLookup};
 use qa_render::material::world_load::{
     LoadedWorld, LoadedWorldPresentation, WorldPresentationProfile,
@@ -337,12 +337,11 @@ pub(super) fn submissions(native: bool, ui: bool) {
     peer_profile.rules = RuleSetId::Quake2;
     peer_profile.image_settings =
         qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2);
-    host.runtime.model_loader = Some(
-        ModelCatalogBuilder::new(assets, [profile, peer_profile], [world], Default::default())
-            .unwrap(),
+    host.runtime.model_assets = Some(
+        ModelAssets::new(assets, [profile, peer_profile], [world], Default::default()).unwrap(),
     );
     host.runtime
-        .model_loader
+        .model_assets
         .as_mut()
         .unwrap()
         .bind_loaded_world(
@@ -369,11 +368,11 @@ pub(super) fn submissions(native: bool, ui: bool) {
         assert_eq!(probe(&mut host, 0, 6, 0), 0);
     } // Cold selection, before any scene owner.
     assert_eq!(probe(&mut host, 0, 0, 0), 1);
-    let (assets, models) = host.runtime.model_loader.take().unwrap().finish();
+    host.bind_client_model_assets([]);
+    let models = host.runtime.model_assets.as_ref().unwrap().catalog();
     let material = models.shader_binding(1, profile).unwrap();
     let peer_material = models.shader_binding(1, peer_profile).unwrap();
     assert_ne!(material, peer_material);
-    host.runtime.models = Some(std::sync::Arc::new(models));
     let loaded = LoadedWorld {
         world,
         presentations: vec![LoadedWorldPresentation {
@@ -391,7 +390,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
                 vertices: 6,
                 ..Default::default()
             },
-            assets,
+            host.runtime.model_assets.as_mut().unwrap().assets_mut(),
             vec![loaded],
         )
         .unwrap()
@@ -531,11 +530,14 @@ pub(super) fn ownership() {
         .into_boxed_slice(),
         diagnostics: Box::default(),
     };
+    host.runtime.model_assets =
+        Some(ModelAssets::new(assets, [], [world], Default::default()).unwrap());
+    host.bind_client_model_assets([]);
     let (renderer, scene) = Renderer::load(
         RenderContext::Cpu(configuration),
         320,
         200,
-        assets,
+        host.runtime.model_assets.as_mut().unwrap().assets_mut(),
         vec![loaded],
         Some(qa_render::cpu::RasterBands::One),
         console,
@@ -570,6 +572,7 @@ pub(super) fn ownership() {
         fn render(
             &mut self,
             scene: Option<&mut qa_app::renderer::SceneComposer>,
+            resources: Option<qa_app::model_assets::ModelView<'_>>,
             _: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
             _: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
             _: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],
@@ -577,6 +580,7 @@ pub(super) fn ownership() {
         ) {
             self.renderer.frame(
                 scene.unwrap(),
+                resources.unwrap(),
                 &self.views,
                 &std::array::from_fn(|_| None),
                 &std::array::from_fn(|_| None),
@@ -647,8 +651,8 @@ pub(super) fn entities(native: bool, ui: bool) {
         200,
     )
     .unwrap();
-    host.runtime.model_loader = Some(
-        ModelCatalogBuilder::new(
+    host.runtime.model_assets = Some(
+        ModelAssets::new(
             qa_render::Assets::load().unwrap(),
             [profile],
             [],
@@ -661,7 +665,7 @@ pub(super) fn entities(native: bool, ui: bool) {
     assert_eq!(probe(&mut host, 0, 14, model as u64), 0);
     let shader = host
         .runtime
-        .model_loader
+        .model_assets
         .as_mut()
         .unwrap()
         .register_shader(&host.runtime.vfs, b"textures/glow", RuleSetId::Quake3, true)
@@ -669,7 +673,8 @@ pub(super) fn entities(native: bool, ui: bool) {
     assert_eq!(shader, 1);
     let skin = probe(&mut host, 0, 16, 0);
     assert!(skin > 0);
-    let (assets, models) = host.runtime.model_loader.take().unwrap().finish();
+    host.bind_client_model_assets([]);
+    let models = host.runtime.model_assets.as_ref().unwrap().catalog();
     let registration = models.renderer_registration(model as i32, profile).unwrap();
     let skinned = models
         .bindings(
@@ -683,14 +688,13 @@ pub(super) fn entities(native: bool, ui: bool) {
         .unwrap()
         .collect::<Vec<_>>();
     let override_material = models.shader_binding(shader, profile).unwrap();
-    host.runtime.models = Some(std::sync::Arc::new(models));
     host.runtime.scene = Some(
         qa_app::renderer::SceneComposer::load(
             qa_render::Limits {
                 entities: 2,
                 ..Default::default()
             },
-            assets,
+            host.runtime.model_assets.as_mut().unwrap().assets_mut(),
             vec![],
         )
         .unwrap()
@@ -915,22 +919,30 @@ pub(super) fn inline_entities(native: bool) {
     assets.set_light_grid(world, Some(grid)).unwrap();
     assets.set_world_sun(world, Vec3([0., 1., 0.])).unwrap();
     let meshes = assets.models().len();
-    let mut builder =
-        ModelCatalogBuilder::new(assets, [profile], [world], Default::default()).unwrap();
+    let mut builder = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
     builder
         .bind_loaded_world("maps/probe.bsp", world, None, bounds)
         .unwrap();
-    host.runtime.model_loader = Some(builder);
+    host.runtime.model_assets = Some(builder);
     // No scene world is inferred just because geometry exists in the catalog.
     assert_eq!(probe(&mut host, 0, 19, 0), 0);
     assert_eq!(probe(&mut host, 0, 6, 0), 0);
     let model = probe(&mut host, 0, 19, 0);
     assert!(model > 0);
-    let (assets, models) = host.runtime.model_loader.take().unwrap().finish();
-    assert_eq!(assets.models().len(), meshes);
+    host.bind_client_model_assets([]);
+    let models = host.runtime.model_assets.as_ref().unwrap().catalog();
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .models()
+            .len(),
+        meshes
+    );
     assert_eq!(models.model_bounds(model as i32), Some(bounds));
     let binding = models.resolve_inline(world, 1).unwrap();
-    host.runtime.models = Some(std::sync::Arc::new(models));
     host.local_clients[0] = Some(ids[0]);
     host.local_worlds[0] = Some((world, presentation));
     host.configure_native_scenes(
@@ -951,9 +963,13 @@ pub(super) fn inline_entities(native: bool) {
         diagnostics: Box::default(),
     };
     host.runtime.scene = Some(
-        qa_app::renderer::SceneComposer::load(Default::default(), assets, vec![loaded])
-            .unwrap()
-            .0,
+        qa_app::renderer::SceneComposer::load(
+            Default::default(),
+            host.runtime.model_assets.as_mut().unwrap().assets_mut(),
+            vec![loaded],
+        )
+        .unwrap()
+        .0,
     );
     assert_eq!(probe(&mut host, 0, 19, 0), model);
     assert_eq!(probe(&mut host, 0, 14, model as u64), 0);

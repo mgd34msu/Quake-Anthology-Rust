@@ -4,7 +4,7 @@ mod support;
 use qa_app::{
     client_collision::{ClientCollision, ClientCollisionError},
     client_scene::ClientModelBindings,
-    model_assets::{ModelCatalog, ModelCatalogBuilder, ModelLimits, ModelRequest},
+    model_assets::{ModelAssets, ModelLimits, ModelRequest},
 };
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
@@ -30,7 +30,7 @@ use qa_world::collision::{
 struct Fixture {
     store: CollisionStore,
     geometry: GeometryId,
-    catalog: ModelCatalog,
+    models: ModelAssets,
     configs: ConfigStrings,
     bindings: ClientModelBindings,
     client: ClientId,
@@ -96,7 +96,7 @@ impl Fixture {
         let presentation = WorldPresentationId(assets.world(world).unwrap().presentations().first);
         let profile = ModelRequest::native("", protocol.rule_set(), None).profile();
         let mut builder =
-            ModelCatalogBuilder::new(assets, [profile], [world], ModelLimits::default()).unwrap();
+            ModelAssets::new(assets, [profile], [world], ModelLimits::default()).unwrap();
         builder
             .bind_loaded_world(
                 "maps/test.bsp",
@@ -105,7 +105,8 @@ impl Fixture {
                 store.model_bounds(geometry, 0).unwrap(),
             )
             .unwrap();
-        let (_, catalog) = builder.finish();
+        builder.end_initial_registration();
+        let catalog = builder.catalog();
         let layout = ConfigLayout::for_rules(protocol.rule_set());
         let mut configs =
             ConfigStrings::load((0..layout.count).map(|index| layout.capacity(index).unwrap()))
@@ -118,13 +119,13 @@ impl Fixture {
             .unwrap();
         let mut bindings = ClientModelBindings::load(client, layout);
         assert_eq!(
-            bindings.bind_all(&configs, &catalog, profile, Some((world, presentation))),
+            bindings.bind_all(&configs, catalog, profile, Some((world, presentation))),
             0
         );
         Self {
             store,
             geometry,
-            catalog,
+            models: builder,
             configs,
             bindings,
             client,
@@ -195,7 +196,7 @@ impl Fixture {
         assert_eq!(
             state.models.bind_all(
                 &state.configs,
-                &self.catalog,
+                self.models.catalog(),
                 ModelRequest::native("", self.protocol.rule_set(), None).profile(),
                 Some((self.world, self.presentation)),
             ),
@@ -655,7 +656,7 @@ fn queued_snapshot_collision_uses_wire_pose_while_server_moves_independently() {
         .state;
     state.models = fixture.bindings;
     state.configs = fixture.configs;
-    runtime.models = Some(std::sync::Arc::new(fixture.catalog));
+    runtime.model_assets = Some(fixture.models);
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
         runtime,
@@ -848,7 +849,7 @@ fn native_player_range<const P: usize, const E: usize>(
         (b"257", 0, false),
         (b"2", 2, true),
     ] {
-        assert!(resources.apply(index, text, Some(&fixture.catalog), None));
+        assert!(resources.apply(index, text, Some(fixture.models.catalog()), None));
         assert_eq!(resources.state.max_clients(), expected);
         view.synchronize(
             wrap(frame(1, &player, &rows)),
@@ -955,7 +956,7 @@ fn queued_client_maxclients_and_snapshots_classify_each_split_client_independent
     appearance.models[0] = ModelRef::native(ResourceNamespace::Module(ModuleId::default()), 2);
     let mut runtime = Runtime::load(2, []).unwrap();
     runtime.geometry = fixture.store;
-    runtime.models = Some(std::sync::Arc::new(fixture.catalog));
+    runtime.model_assets = Some(fixture.models);
     for (seat, resources) in resources.into_iter().enumerate() {
         let id = runtime
             .connect_local(
@@ -1081,7 +1082,7 @@ fn queued_q2_player_role_reaches_q3_collision_without_a_maxclients_row() {
     assert_eq!(appearance.native.entity_type, 0);
     let mut runtime = Runtime::load(2, []).unwrap();
     runtime.geometry = fixture.store;
-    runtime.models = Some(std::sync::Arc::new(fixture.catalog));
+    runtime.model_assets = Some(fixture.models);
     let receiver = runtime
         .connect_local(
             SeatId::FIRST,

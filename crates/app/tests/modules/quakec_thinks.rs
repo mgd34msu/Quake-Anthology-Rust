@@ -868,7 +868,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
     use qa_app::{
         client_policy::ClientPolicy,
         map::SpawnAnchor,
-        model_assets::{ModelCatalogBuilder, ModelRequest},
+        model_assets::{ModelAssets, ModelRequest},
     };
     use qa_core::configstrings::ConfigLayout;
     use qa_network::commands::packet::Protocol;
@@ -940,8 +940,8 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
         vm.image.globals[99] = spawn;
         let mut runtime = Runtime::load(1, []).unwrap();
         runtime.vfs = std::mem::take(&mut files.vfs);
-        runtime.model_loader =
-            Some(ModelCatalogBuilder::new(assets, [profile], [], Default::default()).unwrap());
+        runtime.model_assets =
+            Some(ModelAssets::new(assets, [profile], [], Default::default()).unwrap());
         let module = ModuleId(1);
         let client = runtime
             .connect_local(
@@ -1037,7 +1037,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
             .collect();
         for (source, path) in paths {
             host.runtime
-                .model_loader
+                .model_assets
                 .as_mut()
                 .unwrap()
                 .register_request(
@@ -1062,11 +1062,12 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
             for milliseconds in [0, 25, 50, 100, 200, 300] {
                 tick(&mut host, milliseconds);
             }
-            let builder = host.runtime.model_loader.as_ref().unwrap();
+            let builder = host.runtime.model_assets.as_ref().unwrap();
             if rules == RuleSetId::Quake {
                 use qa_compat::services::ModelLookup;
                 assert!(
                     builder
+                        .catalog()
                         .model_handle(b"progs/test.mdl", RuleSetId::QuakeWorld)
                         .is_none()
                 );
@@ -1079,8 +1080,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
             assert_eq!(retained.len(), 1);
             assert_eq!(retained[0].appearance.source, RuleSetId::QuakeWorld);
         }
-        let (assets, catalog) = host.runtime.model_loader.take().unwrap().finish();
-        host.set_model_catalog(Arc::new(catalog), [(client, profile, None)]);
+        host.bind_client_model_assets([(client, profile, None)]);
         for milliseconds in if receive_while_loading {
             [325, 350, 375, 400, 425, 450]
         } else {
@@ -1110,7 +1110,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
         let input = host.client_scene_inputs()[0].take().unwrap();
         let counts = input.append(
             &mut frame,
-            &assets,
+            host.runtime.model_assets.as_ref().unwrap().assets(),
             &qa_render::Refdef::default(),
             false,
             None,
@@ -1135,7 +1135,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
 
 #[test]
 fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog() {
-    use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
+    use qa_app::model_assets::{ModelAssets, ModelRequest};
     use qa_compat::services::ModelLookup;
 
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
@@ -1171,8 +1171,8 @@ fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog(
         write_vector(&mut vm, 2, b"maxs", Vec3([3.0; 3]));
         let mut runtime = Runtime::load(1, []).unwrap();
         runtime.vfs = std::mem::take(&mut files.vfs);
-        runtime.model_loader =
-            Some(ModelCatalogBuilder::new(assets, [profile], [], Default::default()).unwrap());
+        runtime.model_assets =
+            Some(ModelAssets::new(assets, [profile], [], Default::default()).unwrap());
         let module = ModuleId(1);
         let (mut request, entities) = request(
             &mut runtime,
@@ -1211,9 +1211,10 @@ fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog(
         assert_eq!(columns.mins[slot], expected_mins);
         let loaded = host
             .runtime
-            .model_loader
+            .model_assets
             .as_ref()
             .unwrap()
+            .catalog()
             .bounds(b"progs/test.mdl", rules);
         assert_eq!(loaded.is_some(), rules == RuleSetId::Quake);
         let precaches = host.model_precaches();
@@ -1229,7 +1230,7 @@ fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog(
             .collect::<Vec<_>>();
         for (path, source_rules) in &requests {
             host.runtime
-                .model_loader
+                .model_assets
                 .as_mut()
                 .unwrap()
                 .register_request(
@@ -1238,7 +1239,7 @@ fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog(
                 )
                 .unwrap();
         }
-        let (_assets, models) = host.runtime.model_loader.take().unwrap().finish();
+        let models = host.runtime.model_assets.as_ref().unwrap().catalog();
         assert_eq!(
             models.metadata(b"progs/test.mdl").unwrap().bounds,
             Bounds {
@@ -1246,7 +1247,7 @@ fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog(
                 maxs: Vec3([16.0; 3]),
             }
         );
-        host.set_model_catalog(std::sync::Arc::new(models), []);
+        host.bind_client_model_assets([]);
         files.remove("progs/test.mdl");
         host.call_module_export(
             module,
@@ -1268,7 +1269,14 @@ fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog(
             .is_err()
         );
         assert_eq!(host.module_counts(module).unwrap().traps, 1);
-        assert!(host.runtime.model_loader.is_none());
+        assert!(
+            !host
+                .runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .initial_registration()
+        );
     }
 }
 

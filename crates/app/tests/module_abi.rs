@@ -94,11 +94,11 @@ fn cgame_world_and_model_registration_keep_distinct_native_ordinals() {
 
 #[test]
 fn model_tag_calls_keep_ui_void_result_and_ignore_names_without_tag_storage() {
-    use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
+    use qa_app::model_assets::{ModelAssets, ModelRequest};
     use qa_compat::services::{ModelLoader, ModelLookup};
     let fixture = model_support::Fixture::surfaces();
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
-    let mut builder = ModelCatalogBuilder::new(
+    let mut builder = ModelAssets::new(
         qa_render::Assets::load().unwrap(),
         [profile],
         [],
@@ -108,9 +108,13 @@ fn model_tag_calls_keep_ui_void_result_and_ignore_names_without_tag_storage() {
     let handle = builder
         .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
         .unwrap();
-    let expected = builder.lerp_tag(handle, 0, 1, 0.25, b"tag_weapon").unwrap();
-    let (_, models) = builder.finish();
-    let models = std::sync::Arc::new(models);
+    let expected = builder
+        .catalog()
+        .lerp_tag(handle, 0, 1, 0.25, b"tag_weapon")
+        .unwrap();
+    builder.end_initial_registration();
+    let mut runtime = Runtime::load(1, []).unwrap();
+    runtime.model_assets = Some(builder);
     for addresses in [
         Addresses::Qvm { mask: 255 },
         Addresses::Native {
@@ -122,8 +126,6 @@ fn model_tag_calls_keep_ui_void_result_and_ignore_names_without_tag_storage() {
             abi: qa_platform::native::NativeAbi::Microsoft,
         },
     ] {
-        let mut runtime = Runtime::load(1, []).unwrap();
-        runtime.models = Some(std::sync::Arc::clone(&models));
         let mut console = Console::new(Context::default()).unwrap();
         let mut storage =
             ServiceStorage::load_native(&[(ModuleId(1), 0, RuleSetId::Quake3)], 0, &console.cvars)

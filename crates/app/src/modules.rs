@@ -1405,8 +1405,14 @@ impl FrameHost {
         self.initialize_modules(Phase::Client);
         self.client_configurations();
         // Init registers into these owners. Draw exports may use only the
-        // frozen catalogs and scene consumer, after registration completes.
-        if self.runtime.model_loader.is_some() || self.runtime.sound_loader.is_some() {
+        // published catalog and scene consumer, after registration completes.
+        if self
+            .runtime
+            .model_assets
+            .as_ref()
+            .is_some_and(|owner| owner.initial_registration())
+            || self.runtime.sound_loader.is_some()
+        {
             return;
         }
         let count = self.modules.as_ref().map_or(0, |m| m.rows.len());

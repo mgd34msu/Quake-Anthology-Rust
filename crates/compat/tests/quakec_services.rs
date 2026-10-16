@@ -996,6 +996,10 @@ impl ModelLookup for Models {
     }
 }
 impl ModelLoader for Models {
+    fn lookup(&self) -> &dyn ModelLookup {
+        self
+    }
+
     fn register_shader(
         &mut self,
         _: &qa_content::vfs::Vfs,

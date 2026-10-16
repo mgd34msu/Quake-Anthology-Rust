@@ -1,5 +1,5 @@
 use super::*;
-use qa_app::{map::collision, model_assets::ModelCatalogBuilder};
+use qa_app::{map::collision, model_assets::ModelAssets};
 use qa_compat::services::ModelLookup;
 
 #[path = "../fixtures/map_collision.rs"]
@@ -410,7 +410,7 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
     let mut assets = qa_render::Assets::load().unwrap();
     let a = model_support::world(&mut assets, 0.0);
     let b = model_support::world(&mut assets, 100.0);
-    let mut catalog = ModelCatalogBuilder::new(assets, [], [a, b], Default::default()).unwrap();
+    let mut catalog = ModelAssets::new(assets, [], [a, b], Default::default()).unwrap();
     for (name, world, geometry) in [("maps/q2.bsp", a, q2), ("maps/q3.bsp", b, q3)] {
         let bounds = host.runtime.geometry.model_bounds(geometry, 0).unwrap();
         catalog
@@ -420,7 +420,7 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
     catalog
         .bind_loaded_world("maps/render-only.bsp", a, None, Bounds::default())
         .unwrap();
-    host.runtime.model_loader = Some(catalog);
+    host.runtime.model_assets = Some(catalog);
     for seat in 0..2 {
         assert_eq!(probe(&mut host, seat, 0, 0), 0);
         assert_eq!(probe(&mut host, seat, 26, 0), 0); // No nodes: unused invalid point/handle.
@@ -505,7 +505,10 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
     if !native {
         assert_eq!(probe(&mut host, 0, 8, 0), 0); // Nonzero base masks to zero.
     }
-    let (assets, catalog) = host.runtime.model_loader.take().unwrap().finish();
+    host.bind_client_model_assets([]);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let assets = owner.assets();
+    let catalog = owner.catalog();
     assert_eq!(
         catalog.renderer_inline(render_model as i32).unwrap().world,
         b
@@ -515,7 +518,6 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
         Some(q2)
     );
     assert_eq!(assets.world(a).unwrap().geometry().models.len(), 2);
-    host.runtime.models = Some(std::sync::Arc::new(catalog));
     assert_eq!(probe(&mut host, 0, 2, 0), 0); // Frozen metadata uses same owner.
     assert_eq!(probe(&mut host, 0, 0, 0), 3);
     assert_eq!(probe(&mut host, 0, 1, 0), 0);

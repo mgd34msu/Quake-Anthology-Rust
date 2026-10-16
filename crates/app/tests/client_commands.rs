@@ -522,10 +522,24 @@ fn native_scene_calls_use_the_session_frame(program: impl Fn() -> Program) {
         lights: 2,
         ..Default::default()
     };
+    host.runtime.model_assets = Some(
+        qa_app::model_assets::ModelAssets::new(
+            qa_render::Assets::load().unwrap(),
+            [],
+            [],
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    host.bind_client_model_assets([]);
     host.runtime.scene = Some(
-        qa_app::renderer::SceneComposer::load(limits, qa_render::Assets::load().unwrap(), vec![])
-            .unwrap()
-            .0,
+        qa_app::renderer::SceneComposer::load(
+            limits,
+            host.runtime.model_assets.as_mut().unwrap().assets_mut(),
+            vec![],
+        )
+        .unwrap()
+        .0,
     );
     assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
     assert_eq!(probe(&mut host, 0, 12, 0), 0);

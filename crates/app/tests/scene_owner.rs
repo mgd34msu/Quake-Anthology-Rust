@@ -25,7 +25,7 @@ fn scene(commands: usize) -> SceneComposer {
             surfaces: 1,
             draws: 0,
         },
-        Assets::load().unwrap(),
+        &mut Assets::load().unwrap(),
         vec![],
     )
     .unwrap()
@@ -90,6 +90,7 @@ impl FrameSource for Source {
     fn render(
         &mut self,
         scene: Option<&mut SceneComposer>,
+        _: Option<qa_app::model_assets::ModelView<'_>>,
         _: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
         _: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
         _: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],

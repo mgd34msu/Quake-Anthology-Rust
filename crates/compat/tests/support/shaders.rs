@@ -40,6 +40,10 @@ impl qa_compat::services::ModelLookup for ShaderLoader {
     }
 }
 impl qa_compat::services::ModelLoader for ShaderLoader {
+    fn lookup(&self) -> &dyn qa_compat::services::ModelLookup {
+        self
+    }
+
     fn precache(
         &mut self,
         _: &qa_content::vfs::Vfs,

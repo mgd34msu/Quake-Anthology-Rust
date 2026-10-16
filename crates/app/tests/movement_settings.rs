@@ -187,7 +187,7 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
     let presentation =
         qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first);
     let profile = qa_app::model_assets::ModelRequest::native("", RuleSetId::Quake2, None).profile();
-    let mut builder = qa_app::model_assets::ModelCatalogBuilder::new(
+    let mut builder = qa_app::model_assets::ModelAssets::new(
         assets,
         [profile],
         [world],
@@ -202,7 +202,8 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
             host.runtime.geometry.model_bounds(geometry, 0).unwrap(),
         )
         .unwrap();
-    let (_, catalog) = builder.finish();
+    builder.end_initial_registration();
+    let catalog = builder.catalog();
     let resources = &mut host.runtime.client_resources[id.0 as usize]
         .as_mut()
         .unwrap()
@@ -217,14 +218,14 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
     assert_eq!(
         resources.models.bind_all(
             &resources.configs,
-            &catalog,
+            catalog,
             profile,
             Some((world, presentation)),
         ),
         0
     );
     assert_eq!(resources.models.collision_world(), Some((geometry, 0)));
-    host.runtime.models = Some(std::sync::Arc::new(catalog));
+    host.runtime.model_assets = Some(builder);
     let mut source = Source::default();
     host.frame(&mut source, true);
     source.0 = 16;

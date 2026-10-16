@@ -148,13 +148,17 @@ pub trait ModelLookup {
         name: &[u8],
     ) -> Option<Orientation>;
 }
-pub trait ModelLoader: ModelLookup {
+pub trait ModelLoader {
+    fn lookup(&self) -> &dyn ModelLookup;
+
     fn register_inline(
         &mut self,
         world: qa_render::world::WorldId,
         index: u32,
     ) -> Result<i32, CallError> {
-        self.inline_handle(world, index).ok_or(CallError::File)
+        self.lookup()
+            .inline_handle(world, index)
+            .ok_or(CallError::File)
     }
     fn register_skin(
         &mut self,
@@ -180,7 +184,9 @@ pub trait ModelLoader: ModelLookup {
         source: RuleSetId,
     ) -> Result<i32, CallError> {
         self.precache(vfs, name, source)?;
-        self.model_handle(name, source).ok_or(CallError::File)
+        self.lookup()
+            .model_handle(name, source)
+            .ok_or(CallError::File)
     }
 }
 
@@ -1420,7 +1426,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         let world = s
             .model_loader
             .as_deref()
-            .and_then(|lookup| lookup.loaded_world(name))
+            .and_then(|loader| loader.lookup().loaded_world(name))
             .or_else(|| s.model_lookup.and_then(|lookup| lookup.loaded_world(name)))
             .ok_or(CallError::Geometry)?;
         s.scene
@@ -1708,7 +1714,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     model_bounds: |s, path, rules| {
         s.model_loader
             .as_deref()
-            .and_then(|loader| loader.bounds(path, rules))
+            .and_then(|loader| loader.lookup().bounds(path, rules))
             .or_else(|| s.model_lookup.and_then(|models| models.bounds(path, rules)))
             .ok_or(CallError::Geometry)
     },
@@ -1813,7 +1819,7 @@ impl EngineServices<'_> {
     fn models(&self) -> Option<&dyn ModelLookup> {
         self.model_loader
             .as_deref()
-            .map(|loader| loader as &dyn ModelLookup)
+            .map(|loader| loader.lookup())
             .or(self.model_lookup)
     }
     /// The trace borrows spatial state while the caller may update the disjoint
