@@ -25,7 +25,7 @@ pub(super) struct PlayerBindings {
     models: IndexSpan,
     rules: PlayerModelRules,
     options: PlayerModelOptions,
-    dirty: bool,
+    pub(super) dirty: bool,
     bodies: Box<[Option<CapturedModel>]>,
     weapons: Box<[Option<CapturedModel>]>,
     weapon_rows: Box<[Option<u32>]>,

@@ -109,6 +109,7 @@ pub struct ClientModelBindings {
     world: Option<(qa_compat::services::LoadedWorldBinding, WorldPresentationId)>,
     revision: u64,
     registrations: Box<[Option<ClientModel>]>,
+    pending: qa_core::bits::BitSet,
     features: Box<[ModelFeatures]>,
     players: Option<player_models::PlayerBindings>,
     colors: Option<crate::model_assets::ModelColorId>,
@@ -123,6 +124,7 @@ impl ClientModelBindings {
             world: None,
             revision: 0,
             registrations: vec![None; range.count as usize].into_boxed_slice(),
+            pending: qa_core::bits::BitSet::empty(range.count as usize),
             features: vec![ModelFeatures::default(); range.count as usize].into_boxed_slice(),
             players: player_models::PlayerBindings::load(layout),
             colors: None,
@@ -135,6 +137,7 @@ impl ClientModelBindings {
         self.profile = None;
         self.world = None;
         self.registrations.fill(None);
+        self.pending.clear();
         self.features.fill(ModelFeatures::default());
         if let Some(players) = &mut self.players {
             players.clear();
@@ -187,6 +190,7 @@ impl ClientModelBindings {
         let ordinal = index - self.range.first as usize;
         self.revision = self.revision.wrapping_add(1);
         self.registrations[ordinal] = None;
+        self.pending.remove(ordinal);
         self.features[ordinal] = ModelFeatures::default();
         let Some(row) = configs.config(index) else {
             return false;
@@ -234,6 +238,7 @@ impl ClientModelBindings {
             });
             return true;
         }
+        self.pending.insert(ordinal);
         let Some(registration) = self
             .profile
             .and_then(|profile| models.registration(path, profile))
@@ -241,6 +246,7 @@ impl ClientModelBindings {
             return false;
         };
         self.registrations[ordinal] = Some(ClientModel::Mesh(registration));
+        self.pending.remove(ordinal);
         true
     }
 
@@ -273,6 +279,27 @@ impl ClientModelBindings {
             missing + u32::from(!self.config_changed(index, configs, models))
         });
         missing + self.refresh_player_models(configs, models) as u32
+    }
+
+    /// A cold catalog publication retries unresolved ordinals without changing
+    /// accepted configstrings or walking every row during ordinary frames.
+    pub(crate) fn admission_published(
+        &mut self,
+        configs: &ConfigStrings,
+        models: &ModelCatalog,
+    ) -> u32 {
+        let mut rejected = 0;
+        let mut ordinal = self.pending.next_set(0);
+        while let Some(index) = ordinal {
+            ordinal = self.pending.next_set(index + 1);
+            if let Some(row) = self.range.get(index) {
+                rejected += u32::from(!self.config_changed(row, configs, models));
+            }
+        }
+        if let Some(players) = &mut self.players {
+            players.dirty = true;
+        }
+        rejected + self.refresh_player_models(configs, models)
     }
 
     pub fn resolve<'a>(
@@ -451,7 +478,28 @@ impl ClientModelBindings {
     }
     pub(crate) fn complete_static(&self, entity: &mut StaticEntity, models: &ModelCatalog) {
         for slot in &mut entity.models {
-            *slot = slot.and_then(|capture| self.complete_capture(capture, models));
+            *slot = slot.and_then(|capture| {
+                self.complete_capture(capture, models).or_else(|| {
+                    let profile = self.profile?;
+                    let decoded_model = match capture.model {
+                        ModelCapture::Bound(_) => true,
+                        ModelCapture::Registered { handle, .. } => models.renderer_candidate(
+                            qa_compat::services::RendererRegistration::Model,
+                            handle,
+                            profile,
+                        ),
+                    };
+                    let decoded_skin = capture.custom_skin == 0
+                        || models.renderer_candidate(
+                            qa_compat::services::RendererRegistration::Skin,
+                            capture.custom_skin,
+                            profile,
+                        );
+                    // Keep the original identity while its decoded resources
+                    // await backend publication, even if its alias is rewritten.
+                    (decoded_model && decoded_skin).then_some(capture)
+                })
+            });
         }
     }
     fn resolve_static<'a>(

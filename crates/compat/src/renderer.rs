@@ -1,5 +1,5 @@
 //! Checked projection of the shared renderer configuration into native ABIs.
-use crate::services::CallError;
+use crate::services::{CallError, RendererRegistration};
 use qa_core::presentation::{
     RENDERER_EXTENSIONS_BYTES, RENDERER_TEXT_BYTES, RendererConfiguration,
 };
@@ -13,6 +13,10 @@ use qa_render::{
 /// The caller owns its renderer role; each invocation borrows the session's
 /// one scene owner. Guest addresses never cross this interface.
 pub trait SceneService {
+    fn registration_ready(&self, kind: RendererRegistration, handle: i32) -> bool {
+        let _ = (kind, handle);
+        false
+    }
     fn active(&self) -> bool;
     fn viewport(&self) -> Option<qa_render::Viewport>;
     fn select_world(&mut self, world: WorldId) -> Result<(), CallError>;

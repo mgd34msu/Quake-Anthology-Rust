@@ -445,21 +445,7 @@ impl Renderer {
         kind: qa_compat::services::RendererRegistration,
         handle: i32,
     ) -> Result<(), String> {
-        use qa_compat::services::RendererRegistration;
-        let valid = handle > 0
-            && match kind {
-                RendererRegistration::Model => {
-                    resources.catalog.renderer_inline(handle).is_some()
-                        || resources
-                            .catalog
-                            .renderer_registration(handle, profile)
-                            .is_some()
-                }
-                RendererRegistration::Skin => resources.catalog.renderer_skin(handle, profile),
-                RendererRegistration::Shader { .. } => {
-                    resources.catalog.shader_binding(handle, profile).is_some()
-                }
-            };
+        let valid = resources.catalog.renderer_candidate(kind, handle, profile);
         if !valid {
             return Err("renderer registration has no binding for its presentation".to_owned());
         }

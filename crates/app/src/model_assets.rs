@@ -1,13 +1,17 @@
 //! Cold model registration. Native config ordinals resolve through filenames;
 //! inline ordinals retain their explicit world and existing surface ranges.
-use qa_compat::services::{CallError, LoadedWorldBinding, ModelLoader, ModelLookup};
+use qa_compat::services::{
+    CallError, LoadedWorldBinding, ModelLoader, ModelLookup, RendererRegistration,
+};
 use qa_content::vfs::Vfs;
 use qa_core::names::{NameTable, canonical_path};
 use qa_core::primitives::{Bounds, IndexSpan, NameId, Orientation, RuleSetId};
 use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Mesh, Model, ModelFormat};
 use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSource};
-use qa_render::assets::{ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture};
+use qa_render::assets::{
+    AssetCounts, ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture,
+};
 use qa_render::material::resources::{
     ImageSettings, ImageUse, Images, ImagesState, IndexedTarget, ResourceError,
 };
@@ -236,6 +240,7 @@ struct RegisteredProfile {
     profile: ModelProfile,
     surfaces: Option<IndexSpan>,
     error: Option<String>,
+    required_assets: Option<AssetCounts>,
 }
 struct RegisteredShader {
     name: NameId,
@@ -245,6 +250,7 @@ struct RegisteredShader {
 struct ShaderProfileBinding {
     profile: ModelProfile,
     material: Option<MaterialId>,
+    required_assets: Option<AssetCounts>,
 }
 struct RegisteredSkin {
     profiles: Vec<SkinProfile>,
@@ -265,6 +271,7 @@ impl RegisteredSkin {
 struct SkinProfile {
     profile: ModelProfile,
     mappings: Box<[SkinMapping]>,
+    required_assets: Option<AssetCounts>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SkinMapping {
@@ -424,6 +431,7 @@ pub struct ModelCatalog {
     capacity: ModelCapacity,
     limits: ModelLimits,
     pub diagnostics: Vec<ModelDiagnostic>,
+    admitted_assets: Option<AssetCounts>,
 }
 
 /// Owns render resources and their numeric model catalog through registration
@@ -513,6 +521,7 @@ impl ModelAssets {
                 capacity,
                 limits,
                 diagnostics: Vec::new(),
+                admitted_assets: None,
             },
         })
     }
@@ -582,6 +591,44 @@ impl ModelAssets {
     }
     pub fn end_initial_registration(&mut self) {
         self.initial_registration = false;
+    }
+
+    /// Publish only the prefix reported by a successfully prepared backend.
+    /// Registration and source metadata alone do not establish readiness.
+    pub fn publish_admission(&mut self, counts: AssetCounts) -> Result<(), CallError> {
+        if !self.assets.counts().extends(counts)
+            || self
+                .catalog
+                .admitted_assets
+                .is_some_and(|previous| !counts.extends(previous))
+        {
+            return Err(CallError::Geometry);
+        }
+        self.catalog.admitted_assets = Some(counts);
+        for required in self
+            .catalog
+            .registrations
+            .iter_mut()
+            .map(|entry| &mut entry.required_assets)
+            .chain(
+                self.catalog
+                    .shader_bindings
+                    .iter_mut()
+                    .map(|entry| &mut entry.required_assets),
+            )
+            .chain(
+                self.catalog
+                    .skins
+                    .iter_mut()
+                    .flat_map(|skin| skin.profiles.iter_mut())
+                    .map(|entry| &mut entry.required_assets),
+            )
+        {
+            if required.is_some_and(|required| counts.contains(required)) {
+                *required = None;
+            }
+        }
+        Ok(())
     }
 
     fn admit_name(&mut self, bytes: &[u8]) -> Result<NameId, CallError> {
@@ -849,6 +896,8 @@ impl ModelAssets {
                 profile: images.profile,
                 surfaces,
                 error,
+                required_assets: (!self.initial_registration && surfaces.is_some())
+                    .then(|| self.assets.counts()),
             });
         }
         self.catalog.models[name.0 as usize] = span;
@@ -1032,6 +1081,8 @@ impl ModelAssets {
             self.catalog.shader_bindings.push(ShaderProfileBinding {
                 profile: images.profile,
                 material,
+                required_assets: (!self.initial_registration && material.is_some())
+                    .then(|| self.assets.counts()),
             });
         }
         self.catalog.shaders[index as usize].ready = ready;
@@ -1217,6 +1268,7 @@ impl ModelAssets {
                 profiles.push(SkinProfile {
                     profile: images.profile,
                     mappings: compiled.into_boxed_slice(),
+                    required_assets: (!self.initial_registration).then(|| self.assets.counts()),
                 });
             }
         }
@@ -1521,6 +1573,36 @@ impl ModelLookup for ModelCatalog {
     }
 }
 impl ModelCatalog {
+    fn admitted(&self, required: Option<AssetCounts>) -> bool {
+        required.is_none_or(|required| {
+            self.admitted_assets
+                .is_some_and(|admitted| admitted.contains(required))
+        })
+    }
+
+    /// Exact-profile decoded candidates are checked before backend preparation.
+    /// This does not publish them to rendering consumers.
+    pub fn renderer_candidate(
+        &self,
+        kind: RendererRegistration,
+        handle: i32,
+        profile: ModelProfile,
+    ) -> bool {
+        if handle <= 0 {
+            return false;
+        }
+        match kind {
+            RendererRegistration::Model => {
+                self.renderer_inline(handle).is_some()
+                    || self.renderer_model_candidate(handle, profile).is_some()
+            }
+            RendererRegistration::Skin => self.skin_profile(handle, profile).is_some(),
+            RendererRegistration::Shader { .. } => self
+                .shader_profile(handle, profile)
+                .is_some_and(|entry| entry.material.is_some()),
+        }
+    }
+
     pub fn color_binding(&self, profile: ModelProfile) -> Option<ModelColorId> {
         self.profiles
             .iter()
@@ -1531,14 +1613,18 @@ impl ModelCatalog {
         self.profiles.get(binding.0 as usize)?.colors.as_ref()
     }
     pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<MaterialId> {
+        let entry = self.shader_profile(handle, profile)?;
+        self.admitted(entry.required_assets)
+            .then_some(entry.material?)
+    }
+    fn shader_profile(&self, handle: i32, profile: ModelProfile) -> Option<&ShaderProfileBinding> {
         let index = usize::try_from(handle.checked_sub(1)?).ok()?;
         self.shaders
             .get(index)?
             .profiles
             .range()
             .map(|i| &self.shader_bindings[i])
-            .find(|entry| entry.profile == profile)?
-            .material
+            .find(|entry| entry.profile == profile)
     }
     pub fn shader_name(&self, handle: i32) -> Option<&[u8]> {
         let index = usize::try_from(handle.checked_sub(1)?).ok()?;
@@ -1554,11 +1640,18 @@ impl ModelCatalog {
     /// boundaries. A profile mismatch never selects the first same-name entry.
     pub fn registration(&self, path: &str, profile: ModelProfile) -> Option<ModelRegistrationId> {
         let name = self.names.find_path(path)?;
-        self.registration_name(name, profile)
+        self.published_registration(self.registration_name(name, profile)?)
     }
     /// Native handles already identify the interned file. Resolve their exact
     /// presentation registration without repeating filename conversion/lookup.
     pub fn renderer_registration(
+        &self,
+        handle: i32,
+        profile: ModelProfile,
+    ) -> Option<ModelRegistrationId> {
+        self.published_registration(self.renderer_model_candidate(handle, profile)?)
+    }
+    fn renderer_model_candidate(
         &self,
         handle: i32,
         profile: ModelProfile,
@@ -1569,11 +1662,27 @@ impl ModelCatalog {
     /// A logical skin handle is usable only when its selected presentation
     /// registered successfully. Other profiles cannot supply a fallback here.
     pub fn renderer_skin(&self, handle: i32, profile: ModelProfile) -> bool {
-        handle
-            .checked_sub(1)
-            .and_then(|index| usize::try_from(index).ok())
-            .and_then(|index| self.skins.get(index))
-            .is_some_and(|skin| skin.profiles.iter().any(|entry| entry.profile == profile))
+        self.skin_profile(handle, profile)
+            .is_some_and(|entry| self.admitted(entry.required_assets))
+    }
+    fn skin_profile(&self, handle: i32, profile: ModelProfile) -> Option<&SkinProfile> {
+        let index = usize::try_from(handle.checked_sub(1)?).ok()?;
+        self.skins
+            .get(index)?
+            .profiles
+            .iter()
+            .find(|entry| entry.profile == profile)
+    }
+    fn published_registration(
+        &self,
+        registration: ModelRegistrationId,
+    ) -> Option<ModelRegistrationId> {
+        self.admitted(
+            self.registrations
+                .get(registration.0 as usize)?
+                .required_assets,
+        )
+        .then_some(registration)
     }
     fn registration_name(
         &self,
@@ -1598,25 +1707,35 @@ impl ModelCatalog {
         skin: u32,
         policy: ModelMaterialPolicy,
     ) -> Option<ModelBindings<'_>> {
+        self.published_registration(registration)?;
         let span = self.registrations.get(registration.0 as usize)?.surfaces?;
+        let custom = match policy
+            .custom_skin
+            .checked_sub(1)
+            .and_then(|value| usize::try_from(value).ok())
+            .and_then(|index| self.skins.get(index))
+        {
+            Some(skin) => Some(
+                match skin.profiles.iter().find(|skin| {
+                    skin.profile == self.registrations[registration.0 as usize].profile
+                }) {
+                    Some(profile) => {
+                        if !self.admitted(profile.required_assets) {
+                            return None;
+                        }
+                        profile.mappings.as_ref()
+                    }
+                    None => &[][..],
+                },
+            ),
+            None => None,
+        };
         Some(ModelBindings {
             surfaces: &self.surfaces[span.range()],
             materials: &self.bindings,
             skin,
             policy,
-            custom: policy
-                .custom_skin
-                .checked_sub(1)
-                .and_then(|value| usize::try_from(value).ok())
-                .and_then(|index| self.skins.get(index))
-                .map(|skin| {
-                    skin.profiles
-                        .iter()
-                        .find(|skin| {
-                            skin.profile == self.registrations[registration.0 as usize].profile
-                        })
-                        .map_or(&[][..], |profile| profile.mappings.as_ref())
-                }),
+            custom,
         })
     }
     /// Cold CLIENT registration reads the same already-loaded file record.

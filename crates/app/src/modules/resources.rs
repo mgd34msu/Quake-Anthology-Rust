@@ -7,6 +7,29 @@ use qa_core::{
 };
 
 impl FrameHost {
+    pub fn publish_model_admission(
+        &mut self,
+        counts: qa_render::assets::AssetCounts,
+    ) -> Result<(), qa_compat::services::CallError> {
+        let owner = self
+            .runtime
+            .model_assets
+            .as_mut()
+            .ok_or(qa_compat::services::CallError::File)?;
+        owner.publish_admission(counts)?;
+        let catalog = owner.catalog();
+        for resources in self.runtime.client_resources.iter_mut().flatten() {
+            resources.state.rejected += u64::from(
+                resources
+                    .state
+                    .models
+                    .admission_published(&resources.state.configs, catalog),
+            );
+            resources.state.complete_static_models(catalog);
+        }
+        Ok(())
+    }
+
     pub fn register_client_model_assets(&mut self) {
         let runtime = &mut self.runtime;
         for (index, resources) in runtime.client_resources.iter_mut().enumerate() {

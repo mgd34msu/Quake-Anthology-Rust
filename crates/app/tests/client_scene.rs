@@ -2164,7 +2164,39 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
     };
     use qa_console::{commands::Console, views::Context};
     use qa_session::timing::TickRate;
-    for bound_at_receipt in [false, true] {
+    let presented = |host: &FrameHost| {
+        let ModelView { assets, catalog } = host.runtime.model_assets.as_ref().unwrap().view();
+        let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+        let client = ClientId(0);
+        let projection = EntityProjection::load(Protocol::QuakeWorld28);
+        let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
+        let player = PlayerState::default();
+        let input = ClientSceneInput {
+            client,
+            current: None,
+            previous: None,
+            projection: &projection,
+            appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
+            player_projection: &player_projection,
+            bindings: &state.models,
+            models: catalog,
+            static_entities: state.static_entities(),
+            player: &player,
+            weapon_view_angles: player.view_angles,
+            alias_roll: AliasRoll::default(),
+            interpolation: Default::default(),
+            gun_animation: None,
+            gun_previous: None,
+            view_entity: None,
+        };
+        let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+        let mut frame = frontend.begin_frame([0; 4]).unwrap();
+        let counts = input.append(&mut frame, assets, &Refdef::default(), false, None);
+        let packet = frame.finish();
+        let model = (counts.models != 0).then(|| packet.entity(0).model);
+        (counts, model)
+    };
+    for (bound_at_receipt, pending_at_receipt) in [(false, false), (true, false), (false, true)] {
         let fixture = support::Fixture::new(&[
             ("models/a.md2", support::md2()),
             ("models/b.md2", support::md2()),
@@ -2177,6 +2209,23 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
         let second = ModelRequest::native("models/b.md2", RuleSetId::Quake2, Some(palette));
         let profile = first.profile();
         let mut builder = ModelAssets::new(assets, [profile], [], ModelLimits::default()).unwrap();
+        let mut backend = pending_at_receipt.then(|| {
+            let backend = qa_render::cpu::CpuBackend::load_with_limits(
+                8,
+                8,
+                builder.assets(),
+                qa_render::cpu::CpuLimits {
+                    cache_bytes: 4096,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            builder
+                .publish_admission(backend.admitted_assets().unwrap())
+                .unwrap();
+            builder.end_initial_registration();
+            backend
+        });
         builder.register_request(&fixture.vfs, first).unwrap();
         builder.register_request(&fixture.vfs, second).unwrap();
         let client = ClientId(0);
@@ -2208,8 +2257,8 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
             assert!(resources.state.receive_static_entity(record, None, None));
             assert!(resources.apply(row, second.path.as_bytes(), Some(catalog), None));
         } else {
-            // CLIENT intake during module registration can precede final asset
-            // binding. Capture the loading catalogue's existing file handle.
+            // Receipt can precede this CLIENT's profile binding, including a
+            // logical file whose backend admission is still pending.
             assert!(
                 resources
                     .state
@@ -2217,7 +2266,40 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
             );
             assert!(resources.apply(row, second.path.as_bytes(), None, None));
         }
-        let catalog = builder.catalog();
+        let mut runtime = Runtime::load(1, []).unwrap();
+        runtime.client_resources[0] = Some(resources);
+        runtime.model_assets = Some(builder);
+        let mut host = FrameHost::load(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![],
+        )
+        .unwrap();
+        host.bind_client_model_assets([(client, profile, None)]);
+        if let Some(backend) = backend.as_mut() {
+            let owner = host.runtime.model_assets.as_ref().unwrap();
+            let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+            assert!(
+                state
+                    .models
+                    .resolve(reference(client), 0, owner.catalog(), Default::default())
+                    .is_none()
+            );
+            assert_eq!(state.static_entities().len(), 1);
+            let (counts, submitted) = presented(&host);
+            assert_eq!(
+                (counts.entities, counts.models, counts.missing_models),
+                (1, 0, 1)
+            );
+            assert!(submitted.is_none());
+            backend.prepare_assets(owner.assets()).unwrap();
+            // Backend preparation alone does not publish CLIENT readiness.
+            assert_eq!(presented(&host).0.models, 0);
+            host.publish_model_admission(backend.admitted_assets().unwrap())
+                .unwrap();
+        }
+        let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
         let first_registration = catalog.registration(first.path, profile).unwrap();
         let first_model = catalog
             .bindings(first_registration, 0, ModelMaterialPolicy::default())
@@ -2233,18 +2315,6 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
             .unwrap()
             .model;
         assert_ne!(first_model, second_model);
-        let mut runtime = Runtime::load(1, []).unwrap();
-        runtime.client_resources[0] = Some(resources);
-        runtime.model_assets = Some(builder);
-        let mut host = FrameHost::load(
-            Console::new(Context::default()).unwrap(),
-            runtime,
-            TickRate::FrameDriven,
-            vec![],
-        )
-        .unwrap();
-        host.bind_client_model_assets([(client, profile, None)]);
-        let ModelView { assets, catalog } = host.runtime.model_assets.as_ref().unwrap().view();
         let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
         assert_eq!(
             state
@@ -2261,39 +2331,16 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
                 .model,
             second_model
         );
-        let projection = EntityProjection::load(Protocol::QuakeWorld28);
-        let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
-        let player = PlayerState::default();
-        let input = ClientSceneInput {
-            client,
-            current: None,
-            previous: None,
-            projection: &projection,
-            appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
-            player_projection: &player_projection,
-            bindings: &state.models,
-            models: catalog,
-            static_entities: state.static_entities(),
-            player: &player,
-            weapon_view_angles: player.view_angles,
-            alias_roll: AliasRoll::default(),
-            interpolation: Default::default(),
-            gun_animation: None,
-            gun_previous: None,
-            view_entity: None,
-        };
-        let mut frontend = FrontEnd::load(Limits::default()).unwrap();
-        let mut frame = frontend.begin_frame([0; 4]).unwrap();
-        let counts = input.append(&mut frame, assets, &Refdef::default(), false, None);
+        let (counts, submitted) = presented(&host);
         assert_eq!(
             (counts.entities, counts.models, counts.missing_models),
             (1, 1, 0),
-            "bound={bound_at_receipt}"
+            "bound={bound_at_receipt} pending={pending_at_receipt}"
         );
         assert_eq!(
-            frame.finish().entity(0).model,
-            first_model.into(),
-            "bound={bound_at_receipt}"
+            submitted,
+            Some(first_model.into()),
+            "bound={bound_at_receipt} pending={pending_at_receipt}"
         );
     }
 }

@@ -969,6 +969,12 @@ fn run() -> Result<(), String> {
         hud_assets,
         effects,
     )?;
+    host.publish_model_admission(
+        renderer
+            .admitted_assets()
+            .ok_or("missing renderer admission")?,
+    )
+    .map_err(|error| format!("renderer admission: {error:?}"))?;
     host.runtime.scene = Some(scene);
     if matches!(renderer_kind, Kind::Cpu) {
         host.console.cvars.set_latch_active(band_cvar, true);

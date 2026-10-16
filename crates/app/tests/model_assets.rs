@@ -26,6 +26,241 @@ fn native_profile(rules: RuleSetId, palette: PaletteId) -> ModelProfile {
 }
 
 #[test]
+fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication() {
+    use qa_compat::services::RendererRegistration;
+    use qa_render::assets::{Filter, Sampler};
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    let fixture = support::Fixture::new(&[
+        ("models/test/tris.md2", support::md2()),
+        ("models/later/tris.md2", support::md2()),
+        ("models/test/skin0.pcx", support::pcx(11)),
+        ("models/test/skin1.pcx", support::pcx(22)),
+        ("players/later/skin.pcx", support::pcx(33)),
+        ("ui/later.tga", support::tga(1, 1, &[[40, 80, 120, 255]])),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
+    let mut failed_profile = profile;
+    failed_profile.image_settings.max_dimension = 0;
+    assert_eq!(failed_profile.source_rules, profile.source_rules);
+    let mut owner = ModelAssets::new(
+        assets,
+        [failed_profile, profile],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let original = owner
+        .register_model(&fixture.vfs, b"models/test/tris.md2", profile.source_rules)
+        .unwrap();
+    // Initial native registration remains usable before a backend exists.
+    let retained = owner
+        .catalog()
+        .renderer_registration(original, profile)
+        .unwrap();
+    let original_bounds = owner.catalog().model_bounds(original).unwrap();
+    let original_binding = owner
+        .catalog()
+        .bindings(retained, 0, Default::default())
+        .unwrap()
+        .next()
+        .unwrap();
+    assert!(
+        owner
+            .catalog()
+            .renderer_registration(original, failed_profile)
+            .is_none()
+    );
+    let old_image = image(
+        owner.assets(),
+        owner.catalog(),
+        "models/test/tris.md2",
+        profile,
+        0,
+    );
+    let sampler = Sampler {
+        filter: Filter::Nearest,
+        ..Default::default()
+    };
+    owner
+        .assets_mut()
+        .set_image_native_sampler(old_image, sampler)
+        .unwrap();
+    let mut backend = CpuBackend::load_with_limits(
+        8,
+        8,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 4096,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let initial = backend.admitted_assets().unwrap();
+    owner.publish_admission(initial).unwrap();
+    owner.end_initial_registration();
+
+    let later = owner
+        .register_model(&fixture.vfs, b"models/later/tris.md2", profile.source_rules)
+        .unwrap();
+    let skin = owner
+        .register_skin(
+            &fixture.vfs,
+            b"players/later/skin.pcx",
+            profile.source_rules,
+        )
+        .unwrap();
+    let shader = owner
+        .register_shader(&fixture.vfs, b"ui/later.tga", profile.source_rules, true)
+        .unwrap();
+    assert!(later > 0 && skin > 0 && shader > 0);
+    assert_eq!(
+        owner
+            .catalog()
+            .model_handle(b"models/later/tris.md2", profile.source_rules),
+        Some(later)
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .skin_handle(b"players/later/skin.pcx", profile.source_rules),
+        Some(skin)
+    );
+    assert_eq!(owner.catalog().shader_handle(b"ui/later.tga"), Some(shader));
+    // File metadata remains readable and does not grant rendering authority.
+    assert_eq!(owner.catalog().model_bounds(later), Some(original_bounds));
+    assert!(!owner.catalog().model_has_tags(later));
+    for (kind, handle) in [
+        (RendererRegistration::Model, later),
+        (RendererRegistration::Skin, skin),
+        (RendererRegistration::Shader { mipmaps: true }, shader),
+    ] {
+        assert!(owner.catalog().renderer_candidate(kind, handle, profile));
+        assert!(
+            !owner
+                .catalog()
+                .renderer_candidate(kind, handle, failed_profile)
+        );
+    }
+    let custom = ModelMaterialPolicy {
+        custom_skin: skin,
+        ..Default::default()
+    };
+    let pending = |owner: &ModelAssets| {
+        let catalog = owner.catalog();
+        assert!(
+            catalog
+                .registration("models/later/tris.md2", profile)
+                .is_none()
+        );
+        assert!(catalog.renderer_registration(later, profile).is_none());
+        assert!(!catalog.renderer_skin(skin, profile));
+        assert!(catalog.shader_binding(shader, profile).is_none());
+        assert!(catalog.bindings(retained, 0, custom).is_none());
+        assert_eq!(
+            catalog
+                .bindings(retained, 0, Default::default())
+                .unwrap()
+                .next(),
+            Some(original_binding)
+        );
+    };
+    pending(&owner);
+    // Cached cold registrations return the same logical identity, while the
+    // scene-facing APIs must continue to reject its unprepared bindings.
+    assert_eq!(
+        owner.register_model(&fixture.vfs, b"MODELS/LATER/TRIS.MD2", profile.source_rules),
+        Ok(later)
+    );
+    assert_eq!(
+        owner.register_skin(
+            &fixture.vfs,
+            b"PLAYERS/LATER/SKIN.PCX",
+            profile.source_rules
+        ),
+        Ok(skin)
+    );
+    assert_eq!(
+        owner.register_shader(&fixture.vfs, b"UI/LATER.TGA", profile.source_rules, false),
+        Ok(shader)
+    );
+    pending(&owner);
+
+    // Exercise a real backend rejection, then restore the original admitted
+    // sampler so this test does not depend on an owner rollback operation.
+    owner
+        .assets_mut()
+        .set_image_native_sampler(
+            old_image,
+            Sampler {
+                filter: Filter::Linear,
+                ..sampler
+            },
+        )
+        .unwrap();
+    assert!(backend.prepare_assets(owner.assets()).is_err());
+    assert_eq!(backend.admitted_assets(), Some(initial));
+    owner
+        .publish_admission(backend.admitted_assets().unwrap())
+        .unwrap();
+    pending(&owner);
+    owner
+        .assets_mut()
+        .set_image_native_sampler(old_image, sampler)
+        .unwrap();
+    backend.prepare_assets(owner.assets()).unwrap();
+    let admitted = backend.admitted_assets().unwrap();
+    assert_ne!(admitted, initial);
+    pending(&owner);
+    owner.publish_admission(admitted).unwrap();
+    let catalog = owner.catalog();
+    let registration = catalog.renderer_registration(later, profile).unwrap();
+    assert_eq!(
+        catalog.registration("models/later/tris.md2", profile),
+        Some(registration)
+    );
+    assert!(
+        catalog
+            .bindings(registration, 0, Default::default())
+            .is_some()
+    );
+    assert!(catalog.renderer_skin(skin, profile));
+    assert!(catalog.shader_binding(shader, profile).is_some());
+    assert!(catalog.bindings(retained, 0, custom).is_some());
+    assert_eq!(
+        catalog
+            .bindings(retained, 0, Default::default())
+            .unwrap()
+            .next(),
+        Some(original_binding)
+    );
+    assert!(
+        catalog
+            .renderer_registration(later, failed_profile)
+            .is_none()
+    );
+    assert!(!catalog.renderer_skin(skin, failed_profile));
+    assert!(catalog.shader_binding(shader, failed_profile).is_none());
+
+    // Rejected backward/oversized publications cannot revoke or invent ready IDs.
+    assert!(owner.publish_admission(initial).is_err());
+    assert!(
+        owner
+            .publish_admission(qa_render::assets::AssetCounts {
+                models: admitted.models + 1,
+                ..admitted
+            })
+            .is_err()
+    );
+    assert_eq!(
+        owner.catalog().renderer_registration(later, profile),
+        Some(registration)
+    );
+    assert!(owner.catalog().renderer_skin(skin, profile));
+}
+
+#[test]
 fn foreign_presentation_colors_bind_and_generate_missing_blends_at_load() {
     let fixture = support::Fixture::models();
     let mut assets = Assets::load().unwrap();

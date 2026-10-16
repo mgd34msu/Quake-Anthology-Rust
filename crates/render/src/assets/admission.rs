@@ -10,6 +10,23 @@ pub struct AssetCounts {
     pub presentations: usize,
     pub palettes: usize,
 }
+impl AssetCounts {
+    pub fn contains(self, required: Self) -> bool {
+        self.images >= required.images
+            && self.materials >= required.materials
+            && self.models >= required.models
+            && self.worlds >= required.worlds
+            && self.presentations >= required.presentations
+            && self.palettes >= required.palettes
+    }
+
+    pub fn extends(self, previous: Self) -> bool {
+        self.contains(previous)
+            && self.worlds == previous.worlds
+            && self.presentations == previous.presentations
+            && self.palettes == previous.palettes
+    }
+}
 
 impl Assets {
     pub fn counts(&self) -> AssetCounts {
@@ -52,17 +69,8 @@ impl AssetAdmission {
         let counts = assets.counts();
         if let Some(previous) = previous {
             let old = previous.counts;
-            if counts.worlds != old.worlds
-                || counts.presentations != old.presentations
-                || counts.palettes != old.palettes
-            {
-                return Err("renderer world or palette registrations changed");
-            }
-            if counts.models < old.models
-                || counts.images < old.images
-                || counts.materials < old.materials
-            {
-                return Err("renderer asset prefix shrank");
+            if !counts.extends(old) {
+                return Err("renderer asset prefix changed incompatibly");
             }
             if previous
                 .images

@@ -3,7 +3,7 @@ use super::SceneComposer;
 use crate::model_assets::{ModelCatalog, ModelProfile, ModelView};
 use qa_compat::{
     renderer::{EntityKind, EntitySubmission, SceneService, SceneView},
-    services::CallError,
+    services::{CallError, RendererRegistration},
 };
 use qa_core::{primitives::ModuleId, sys_events::SeatId};
 use qa_render::{
@@ -151,6 +151,35 @@ pub(crate) fn select_publisher(
     }
 }
 impl SceneService for SceneBorrow<'_> {
+    fn registration_ready(&self, kind: RendererRegistration, handle: i32) -> bool {
+        if handle <= 0 {
+            return false;
+        }
+        let (Some(target), Some(models), Some(composer)) = (
+            self.role.target.as_ref(),
+            self.models,
+            self.composer.as_deref(),
+        ) else {
+            return false;
+        };
+        match kind {
+            RendererRegistration::Model => {
+                if let Some(binding) = models.renderer_inline(handle) {
+                    target
+                        .world_presentation(&composer.scenes, binding.world)
+                        .is_some()
+                } else {
+                    models
+                        .renderer_registration(handle, target.profile)
+                        .is_some()
+                }
+            }
+            RendererRegistration::Skin => models.renderer_skin(handle, target.profile),
+            RendererRegistration::Shader { .. } => {
+                models.shader_binding(handle, target.profile).is_some()
+            }
+        }
+    }
     fn active(&self) -> bool {
         self.composer
             .as_deref()
