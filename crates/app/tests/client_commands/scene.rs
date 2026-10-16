@@ -1,3 +1,5 @@
+#[path = "../../../render/tests/support/world_surfaces.rs"]
+mod mark_world;
 use super::*;
 use qa_app::model_assets::{ModelAssets, ModelRequest};
 use qa_compat::services::{ModelLoader, ModelLookup};
@@ -44,6 +46,15 @@ const CALLS: &[(u8, &[u32])] = &[
     (87, &[0, 3, u32::MAX, 2]),
 ];
 
+const MARK_CALL: (u8, &[u32]) = (27, &[4, 640, 688, 16, 32, 8, 940]);
+fn scene_call(command: usize) -> (u8, &'static [u32]) {
+    if command == 20 {
+        MARK_CALL
+    } else {
+        CALLS[command]
+    }
+}
+
 fn data() -> [u8; 1024] {
     let mut data = [0; 1024];
     data[16..27].copy_from_slice(b"ui/pic.tga\0");
@@ -71,6 +82,16 @@ fn data() -> [u8; 1024] {
     for row in 0..8 {
         data[368 + row * 32 + 1] = 0xe0 + row as u8;
     }
+    for (index, point) in [[0f32, -2., -2.], [0., 2., -2.], [0., 2., 2.], [0., -2., 2.]]
+        .into_iter()
+        .enumerate()
+    {
+        for (axis, coordinate) in point.into_iter().enumerate() {
+            let at = 640 + index * 12 + axis * 4;
+            data[at..at + 4].copy_from_slice(&coordinate.to_le_bytes());
+        }
+    }
+    data[688..692].copy_from_slice(&2f32.to_le_bytes());
     data[880..896].copy_from_slice(b"models/test.md3\0");
     data[900..917].copy_from_slice(b"models/test.skin\0");
     data[920..923].copy_from_slice(b"*1\0");
@@ -97,7 +118,7 @@ fn data() -> [u8; 1024] {
 fn pointer_argument(command: usize, index: usize) -> bool {
     matches!(
         (command, index),
-        (0 | 1 | 3 | 6 | 8 | 12 | 13, 0) | (2 | 7 | 9, 2)
+        (0 | 1 | 3 | 6 | 8 | 12 | 13, 0) | (2 | 7 | 9, 2) | (20, 1 | 2 | 4 | 6)
     )
 }
 fn ordinal(ui: bool, value: u8) -> u8 {
@@ -121,7 +142,7 @@ fn qvm_scene(ui: bool) -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 96)];
     let mut branches = vec![];
-    for command in 0..20 {
+    for command in 0..26 {
         operations.extend([(Local, 104), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
@@ -157,7 +178,21 @@ fn qvm_scene(ui: bool) -> Program {
                 (Store4, 0),
                 (Const, 0),
             ]);
-        } else if command >= CALLS.len() {
+        } else if command >= 21 {
+            operations.extend([
+                (
+                    Const,
+                    match command {
+                        21 => 940,
+                        22 => 944,
+                        23 => 32,
+                        24 => 36,
+                        _ => 40,
+                    },
+                ),
+                (Load4, 0),
+            ]);
+        } else if command >= CALLS.len() && command != 20 {
             for (at, word) in if command == 10 {
                 [(64, 900.0f32.to_bits()), (328, 777)]
             } else {
@@ -167,7 +202,7 @@ fn qvm_scene(ui: bool) -> Program {
             }
             operations.push((Const, 0));
         } else {
-            let (number, words) = CALLS[command];
+            let (number, words) = scene_call(command);
             let ordinal = ordinal(ui, number);
             for (index, &word) in words.iter().enumerate() {
                 operations.extend([(Const, word as i32), (Arg, 8 + index as i32 * 4)]);
@@ -203,7 +238,7 @@ fn native_scene(ui: bool) -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..20)
+        &(0..26)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -218,7 +253,7 @@ fn native_scene(ui: bool) -> Program {
     let callback = vm.import_callback();
     let source = base + 0x2400;
     let mut code = vec![];
-    for command in 0..20usize {
+    for command in 0..26usize {
         code.extend([0x83, 0xf9, command as u8, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
@@ -248,7 +283,21 @@ fn native_scene(ui: bool) -> Program {
                 .to_le_bytes(),
             );
             code.extend([0x89, 0x10, 0x31, 0xc0]);
-        } else if command >= CALLS.len() {
+        } else if command >= 21 {
+            code.extend([0x48, 0xb8]);
+            code.extend(
+                (source
+                    + match command {
+                        21 => 940,
+                        22 => 944,
+                        23 => 32,
+                        24 => 36,
+                        _ => 40,
+                    })
+                .to_le_bytes(),
+            );
+            code.extend([0x8b, 0x00]);
+        } else if command >= CALLS.len() && command != 20 {
             for (at, word) in if command == 10 {
                 [(64, 900.0f32.to_bits()), (328, 777)]
             } else {
@@ -261,7 +310,7 @@ fn native_scene(ui: bool) -> Program {
             }
             code.extend([0x31, 0xc0]);
         } else {
-            let (number, arguments) = CALLS[command];
+            let (number, arguments) = scene_call(command);
             let ordinal = ordinal(ui, number);
             for (index, &argument) in arguments.iter().enumerate() {
                 let value = if pointer_argument(command, index) && argument != 0 {
@@ -301,6 +350,9 @@ fn native_scene(ui: bool) -> Program {
 }
 
 pub(super) fn submissions(native: bool, ui: bool) {
+    if !ui {
+        mark_fragments(native);
+    }
     let mut fixture = model_support::Fixture::new(&[(
         "ui/pic.tga",
         model_support::tga(2, 2, &[[80, 30, 10, 255]; 4]),
@@ -1062,4 +1114,92 @@ pub(super) fn inline_entities(native: bool) {
     assert_eq!(packet.rejected, 0);
     assert!(owner.recycle(packet).is_ok());
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+}
+
+fn mark_fragments(native: bool) {
+    use qa_render::world::{
+        SurfaceMaterial,
+        geometry::{GeometryKind, WorldModel},
+    };
+    let (mut geometry, visibility) = mark_world::inputs(1);
+    geometry.surfaces[0].kind = GeometryKind::Polygon;
+    geometry.surfaces[0].plane = Some(Plane::oriented(Vec3([-1., 0., 0.]), -1.));
+    geometry.models.push(WorldModel {
+        bounds: geometry.surfaces[0].bounds,
+        origin: Vec3::default(),
+        surfaces: IndexSpan { first: 0, count: 1 },
+    });
+    let mut assets = qa_render::Assets::load().unwrap();
+    let world = assets
+        .register_world(geometry, visibility, &[&[SurfaceMaterial::default()]])
+        .unwrap();
+    let presentation = assets.world(world).unwrap().presentations()[0];
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let (mut runtime, ids) = runtime(1);
+    let program = if native {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            native_scene(false)
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            qvm_scene(false)
+        }
+    } else {
+        qvm_scene(false)
+    };
+    let mut request = request(&mut runtime, ModuleId(1), ids[0], program);
+    request.entries = (0..26).collect();
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![request],
+    )
+    .unwrap();
+    host.local_clients[0] = Some(ids[0]);
+    host.local_worlds[0] = Some((world, presentation));
+    host.runtime.model_assets =
+        Some(ModelAssets::new(assets, [profile], [world], Default::default()).unwrap());
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
+        320,
+        200,
+    )
+    .unwrap();
+    assert_eq!(probe(&mut host, 0, 20, 0), 0); // No scene owner yet.
+    host.bind_client_model_assets([]);
+    let loaded = LoadedWorld {
+        world,
+        presentations: vec![LoadedWorldPresentation {
+            id: presentation,
+            profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            defaults: Default::default(),
+        }]
+        .into_boxed_slice(),
+        diagnostics: Box::default(),
+    };
+    host.runtime.scene = Some(
+        qa_app::renderer::SceneComposer::load(
+            qa_render::Limits::default(),
+            host.runtime.model_assets.as_mut().unwrap().assets_mut(),
+            vec![loaded],
+        )
+        .unwrap()
+        .0,
+    );
+    assert_eq!(probe(&mut host, 0, 20, 0), 0); // An unpublished suffix is not renderer authority.
+    let _backend = admit_assets(&mut host);
+    assert_eq!(probe(&mut host, 0, 20, 0), 1);
+    assert_eq!(probe(&mut host, 0, 21, 0), 0);
+    assert_eq!(probe(&mut host, 0, 22, 0), 3);
+    assert_eq!(probe(&mut host, 0, 23, 0), 1f32.to_bits());
+    assert_eq!(probe(&mut host, 0, 24, 0), (-1f32).to_bits());
+    assert_eq!(probe(&mut host, 0, 25, 0), (-1f32).to_bits());
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    println!(
+        "actual {} MarkFragments uses published selected world geometry",
+        if native { "owned-native" } else { "QVM" }
+    );
 }

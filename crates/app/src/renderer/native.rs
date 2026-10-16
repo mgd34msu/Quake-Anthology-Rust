@@ -230,6 +230,58 @@ impl SceneService for SceneBorrow<'_> {
                 .and_then(|target| target.world.map(|world| world.0))
         })
     }
+    fn mark_fragments(
+        &mut self,
+        projection: &qa_render::marks::MarkProjection,
+        max_points: usize,
+        max_fragments: usize,
+        emit: &mut dyn FnMut(
+            qa_core::primitives::IndexSpan,
+            &[qa_core::primitives::Vec3],
+        ) -> Result<(), CallError>,
+    ) -> Result<usize, CallError> {
+        let (Some(world_id), Some(target), Some(assets), Some(models)) = (
+            self.selected_world(),
+            self.role.target.as_ref(),
+            self.assets,
+            self.models,
+        ) else {
+            return Ok(0);
+        };
+        let resources = ModelView {
+            assets,
+            catalog: models,
+        };
+        let Some(presentation) = target
+            .world_presentation(resources, world_id)
+            .and_then(|entry| assets.world_presentation(entry.id))
+        else {
+            return Ok(0);
+        };
+        let Some(world) = assets.world(world_id) else {
+            return Ok(0);
+        };
+        let Some(view) = self
+            .composer
+            .as_deref_mut()
+            .and_then(|composer| composer.scenes.get_mut(world_id.0 as usize))
+            .and_then(Option::as_mut)
+            .zip(target.seat)
+            .map(|(scene, seat)| &mut scene.views[seat.index()])
+        else {
+            return Ok(0);
+        };
+        view.mark_fragments(
+            world,
+            presentation,
+            assets,
+            projection,
+            max_points,
+            max_fragments,
+            emit,
+        )
+        .map_err(CallError::from)
+    }
     fn clear(&mut self) {
         if let Some(frame) = self
             .composer

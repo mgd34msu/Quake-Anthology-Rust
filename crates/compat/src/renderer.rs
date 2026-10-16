@@ -3,7 +3,7 @@ use crate::services::{CallError, RendererRegistration};
 use qa_core::presentation::{
     RENDERER_EXTENSIONS_BYTES, RENDERER_TEXT_BYTES, RendererConfiguration,
 };
-use qa_core::primitives::{RuleSetId, Vec3};
+use qa_core::primitives::{IndexSpan, RuleSetId, Vec3};
 use qa_render::{
     Vertex,
     scene::{EntityVisibility, Light, Refdef, SceneEntity},
@@ -29,6 +29,16 @@ pub trait SceneService {
     fn viewport(&self) -> Option<qa_render::Viewport>;
     fn select_world(&mut self, world: WorldId) -> Result<(), CallError>;
     fn selected_world(&self) -> Option<WorldId>;
+    fn mark_fragments(
+        &mut self,
+        projection: &qa_render::marks::MarkProjection,
+        max_points: usize,
+        max_fragments: usize,
+        emit: &mut dyn FnMut(IndexSpan, &[Vec3]) -> Result<(), CallError>,
+    ) -> Result<usize, CallError> {
+        let _ = (projection, max_points, max_fragments, emit);
+        Ok(0)
+    }
     fn clear(&mut self);
     fn light(&mut self, light: Light) -> bool;
     fn entity(&mut self, entity: EntitySubmission) -> bool;

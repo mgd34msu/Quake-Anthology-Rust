@@ -141,6 +141,7 @@ pub struct WorldView {
     surfaces: Box<[VisibleSurface]>,
     count: usize,
     light_scratch: qa_world::visibility::SurfaceRayScratch,
+    pub(crate) marks: crate::marks::MarkScratch,
 }
 impl WorldView {
     pub fn load(world: &World) -> Self {
@@ -150,6 +151,7 @@ impl WorldView {
                 .into_boxed_slice(),
             count: 0,
             light_scratch: qa_world::visibility::SurfaceRayScratch::load(&world.visibility),
+            marks: crate::marks::MarkScratch::load(world),
         }
     }
     pub fn point_lighting(

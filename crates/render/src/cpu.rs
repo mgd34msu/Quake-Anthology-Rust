@@ -3,6 +3,7 @@
 //! Worlds use the shared edge/span scanner and native indexed surface cache.
 //! Entity/poly meshes use the shared stage evaluator and a 1/Z buffer.
 use crate::BackendStats;
+use crate::affine::clip_polygon_plane;
 use crate::assets::{
     AssetAdmission, AssetCounts, Assets, DepthFunc, Filter, Image, Material, Sampler,
     TextureIntensity, Vertex, Wrap,
@@ -1501,48 +1502,6 @@ fn clip_plane(
             vertex.finite().then_some(vertex)
         },
     )
-}
-
-fn clip_polygon_plane<N: Copy>(
-    input: &[N],
-    output: &mut [N],
-    mut distance: impl FnMut(usize, N) -> f32,
-    mut intersect: impl FnMut(N, N, f32) -> Option<N>,
-) -> Option<usize> {
-    let Some(&last) = input.last() else {
-        return Some(0);
-    };
-    let mut previous = last;
-    let mut previous_distance = distance(input.len() - 1, previous);
-    let mut count = 0;
-    for (index, &current) in input.iter().enumerate() {
-        let current_distance = distance(index, current);
-        if !current_distance.is_finite() || !previous_distance.is_finite() {
-            return None;
-        }
-        let inside = current_distance >= 0.0;
-        if inside != (previous_distance >= 0.0) {
-            if count == output.len() {
-                return None;
-            }
-            let denominator = previous_distance - current_distance;
-            if !denominator.is_finite() {
-                return None;
-            }
-            output[count] = intersect(previous, current, previous_distance / denominator)?;
-            count += 1;
-        }
-        if inside {
-            if count == output.len() {
-                return None;
-            }
-            output[count] = current;
-            count += 1;
-        }
-        previous = current;
-        previous_distance = current_distance;
-    }
-    Some(count)
 }
 
 fn culled(cull: Cull, area: f32) -> bool {

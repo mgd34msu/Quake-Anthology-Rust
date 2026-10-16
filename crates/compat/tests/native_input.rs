@@ -1172,3 +1172,6 @@ fn cgame_send_client_command_keeps_raw_text_and_returns_void_on_bounded_rejectio
         );
     }
 }
+
+#[path = "support/mark_fragments.rs"]
+mod mark_fragments;

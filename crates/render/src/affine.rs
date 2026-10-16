@@ -81,46 +81,146 @@ pub(crate) fn fit(points: [[f64; 2]; 3], values: [f64; 3]) -> [f64; 3] {
     fit3(points, values, determinant(points))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EdgeOrder {
+    CurrentNext,
+    PreviousCurrent,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PolygonSide {
+    Front,
+    Back,
+    On,
+}
+
+/// One edge walker serves source-order splitting and camera-order clipping.
+/// The caller retains its boundary classifier and intersection arithmetic.
+pub(crate) fn polygon_edges<T: Copy>(
+    points: &[T],
+    mut distance: impl FnMut(usize, T) -> f32,
+    classify: impl Fn(f32) -> Option<PolygonSide>,
+    order: EdgeOrder,
+    mut front: impl FnMut(T) -> bool,
+    mut back: impl FnMut(T) -> bool,
+    mut intersect: impl FnMut(T, T, f32, f32) -> Option<T>,
+) -> Option<()> {
+    if points.is_empty() {
+        return Some(());
+    }
+    let mut previous_index = if order == EdgeOrder::CurrentNext {
+        0
+    } else {
+        points.len() - 1
+    };
+    let mut previous = points[previous_index];
+    let mut previous_distance = distance(previous_index, previous);
+    let mut previous_side = classify(previous_distance)?;
+    for index in 0..points.len() {
+        let current_index = if order == EdgeOrder::CurrentNext {
+            (index + 1) % points.len()
+        } else {
+            index
+        };
+        let current = points[current_index];
+        let current_distance = distance(current_index, current);
+        let current_side = classify(current_distance)?;
+        if order == EdgeOrder::CurrentNext {
+            if previous_side != PolygonSide::Back && !front(previous) {
+                return None;
+            }
+            if previous_side != PolygonSide::Front && !back(previous) {
+                return None;
+            }
+        }
+        if previous_side != PolygonSide::On
+            && current_side != PolygonSide::On
+            && previous_side != current_side
+        {
+            let crossing = intersect(previous, current, previous_distance, current_distance)?;
+            if !front(crossing) || !back(crossing) {
+                return None;
+            }
+        }
+        if order == EdgeOrder::PreviousCurrent {
+            if current_side != PolygonSide::Back && !front(current) {
+                return None;
+            }
+            if current_side != PolygonSide::Front && !back(current) {
+                return None;
+            }
+        }
+        previous_index = current_index;
+        previous = points[previous_index];
+        previous_distance = current_distance;
+        previous_side = current_side;
+    }
+    Some(())
+}
+
 /// Split a polygon in source order. Callers own storage and intersection validation.
 pub(crate) fn split_polygon<T: Copy>(
     points: &[T],
     distance: impl Fn(usize, T) -> f32,
     epsilon: f32,
-    mut front: impl FnMut(T) -> bool,
-    mut back: impl FnMut(T) -> bool,
+    front: impl FnMut(T) -> bool,
+    back: impl FnMut(T) -> bool,
     intersect: impl Fn(T, T, f32) -> Option<T>,
 ) -> Option<()> {
-    let side = |distance: f32| {
-        if distance > epsilon {
-            1
-        } else if distance < -epsilon {
-            -1
-        } else {
-            0
-        }
-    };
-    for (index, &point) in points.iter().enumerate() {
-        let next_index = (index + 1) % points.len();
-        let next = points[next_index];
-        let d = distance(index, point);
-        let next_d = distance(next_index, next);
-        let current_side = side(d);
-        let next_side = side(next_d);
-        if current_side >= 0 && !front(point) {
-            return None;
-        }
-        if current_side <= 0 && !back(point) {
-            return None;
-        }
-        if current_side == 0 || next_side == 0 || current_side == next_side {
-            continue;
-        }
-        let crossing = intersect(point, next, d / (d - next_d))?;
-        if !front(crossing) || !back(crossing) {
-            return None;
-        }
-    }
-    Some(())
+    polygon_edges(
+        points,
+        distance,
+        |distance| {
+            Some(if distance > epsilon {
+                PolygonSide::Front
+            } else if distance < -epsilon {
+                PolygonSide::Back
+            } else {
+                PolygonSide::On
+            })
+        },
+        EdgeOrder::CurrentNext,
+        front,
+        back,
+        |first, second, from, to| intersect(first, second, from / (from - to)),
+    )
+}
+
+pub(crate) fn clip_polygon_plane<T: Copy>(
+    input: &[T],
+    output: &mut [T],
+    distance: impl FnMut(usize, T) -> f32,
+    mut intersect: impl FnMut(T, T, f32) -> Option<T>,
+) -> Option<usize> {
+    let mut count = 0;
+    polygon_edges(
+        input,
+        distance,
+        |distance| {
+            distance.is_finite().then_some(if distance >= 0.0 {
+                PolygonSide::Front
+            } else {
+                PolygonSide::Back
+            })
+        },
+        EdgeOrder::PreviousCurrent,
+        |point| {
+            let Some(slot) = output.get_mut(count) else {
+                return false;
+            };
+            *slot = point;
+            count += 1;
+            true
+        },
+        |_| true,
+        |first, second, from, to| {
+            let denominator = from - to;
+            if !denominator.is_finite() {
+                return None;
+            }
+            intersect(first, second, from / denominator)
+        },
+    )?;
+    Some(count)
 }
 
 #[cfg(test)]

@@ -91,7 +91,8 @@ impl LeafScratch {
     }
 }
 
-fn box_sides(bounds: Bounds, plane: Plane) -> u8 {
+/// Native box/plane side bits shared by BSP admission and world queries.
+pub fn box_sides(bounds: Bounds, plane: Plane) -> u8 {
     if let Some(axis) = plane.axis {
         let axis = axis.index();
         if plane.distance <= bounds.mins.0[axis] {

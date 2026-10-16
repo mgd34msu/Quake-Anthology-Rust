@@ -8,6 +8,7 @@ pub mod entities;
 pub mod gl;
 pub mod lighting;
 pub mod lightmap;
+pub mod marks;
 pub mod material;
 pub mod particles;
 pub mod portal;

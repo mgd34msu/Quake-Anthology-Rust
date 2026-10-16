@@ -309,6 +309,38 @@ impl VisibilityWorld {
         )
     }
 
+    /// Native box traversal over the same leaf references as render visibility.
+    /// The caller selects surface membership and bounds its own result prefix.
+    pub fn visit_box_surfaces(
+        &self,
+        bounds: Bounds,
+        scratch: &mut crate::leaves::LeafScratch,
+        mut surface: impl FnMut(u32) -> bool,
+    ) -> Result<(), VisibilityQueryError> {
+        if !bounds.is_valid() {
+            return Err(VisibilityQueryError::Origin);
+        }
+        let visited = scratch.visit(
+            self.root,
+            bounds,
+            crate::bsp::node_view(&self.planes, &self.nodes),
+            |index| {
+                let leaf = &self.leaves[index as usize];
+                for &id in &self.leaf_surfaces[leaf.surfaces.range()] {
+                    if !surface(id) {
+                        return Ok::<_, std::convert::Infallible>(false);
+                    }
+                }
+                Ok(true)
+            },
+        );
+        match visited {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(VisibilityQueryError::ScratchSize),
+            Err(never) => match never {},
+        }
+    }
+
     pub fn point_in_leaf(&self, point: Vec3, rules: PointLeafRules) -> Option<u32> {
         if !point.is_finite() {
             return None;

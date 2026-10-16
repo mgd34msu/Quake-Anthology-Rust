@@ -70,3 +70,29 @@ fn fan_iterator_keeps_polygon_anchor_and_order() {
         [[0, 1, 2], [0, 2, 3], [0, 3, 4]]
     );
 }
+
+#[test]
+fn camera_clip_keeps_zero_endpoint_duplicates_and_rejects_overflow() {
+    let points = [[-1., 0., 0.], [0., 1., 0.], [1., 0., 0.]].map(qa_core::primitives::Vec3);
+    let mut output = [qa_core::primitives::Vec3::default(); 8];
+    let count = super::clip_polygon_plane(
+        &points,
+        &mut output,
+        |_, point| point.0[0],
+        |first, second, fraction| Some(first.lerp(second, fraction)),
+    )
+    .unwrap();
+    assert_eq!(
+        &output[..count],
+        &[[0., 0., 0.], [0., 1., 0.], [0., 1., 0.], [1., 0., 0.]].map(qa_core::primitives::Vec3)
+    );
+    assert_eq!(
+        super::clip_polygon_plane(
+            &points,
+            &mut output,
+            |index, _| if index == 0 { -f32::MAX } else { f32::MAX },
+            |first, second, fraction| Some(first.lerp(second, fraction))
+        ),
+        None
+    );
+}

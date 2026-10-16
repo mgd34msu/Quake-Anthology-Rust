@@ -139,7 +139,7 @@ impl ClipGraph {
                 self.count = 0;
                 return Some(0);
             }
-            self.count = super::super::clip_polygon_plane(
+            self.count = crate::affine::clip_polygon_plane(
                 &self.input[..self.count],
                 &mut self.output,
                 |index, _| self.distances[index],

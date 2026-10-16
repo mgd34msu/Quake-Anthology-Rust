@@ -632,6 +632,7 @@ const fn client() -> CallTable {
     t.entries[24] = scalar!(client_collision_contents::<true>);
     t.entries[25] = scalar!(client_collision_trace::<false, false>);
     t.entries[26] = scalar!(client_collision_trace::<true, false>);
+    t.entries[27] = scalar!(client_mark_fragments);
     t.entries[82] = scalar!(client_collision_temp::<true>);
     t.entries[83] = scalar!(client_collision_trace::<false, true>);
     t.entries[84] = scalar!(client_collision_trace::<true, true>);
@@ -2626,6 +2627,61 @@ fn command_append(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text = c.memory.cstring(c.pointer(0)?)?;
     (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
     Ok(0)
+}
+fn client_mark_fragments(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let count = c.arg(0)? as u32 as i32;
+    let max_points = c.arg(3)? as u32 as i32;
+    let max_fragments = c.arg(5)? as u32 as i32;
+    if count <= 0 || max_points <= 0 || max_fragments <= 0 {
+        return Ok(0);
+    }
+    let count = count as usize;
+    let max_points = max_points as usize;
+    let max_fragments = max_fragments as usize;
+    let input = c.required_pointer(1)?;
+    let direction = c.required_pointer(2)?;
+    let output = c.required_pointer(4)?;
+    let fragments = c.required_pointer(6)?;
+    c.memory
+        .read(input, count.checked_mul(12).ok_or(CallError::Memory)?)?;
+    c.memory
+        .read(output, max_points.checked_mul(12).ok_or(CallError::Memory)?)?;
+    c.memory.read(
+        fragments,
+        max_fragments.checked_mul(8).ok_or(CallError::Memory)?,
+    )?;
+    let projection =
+        qa_render::marks::MarkProjection::prepare(count, c.memory.read_vec3(direction)?, |index| {
+            c.memory
+                .read_vec3(input + index as u64 * 12)
+                .map_err(CallError::from)
+        })
+        .map_err(CallError::from)?;
+    let mut fragment = 0;
+    let returned = (ENGINE_CALLS.mark_fragments)(
+        c.services,
+        &projection,
+        max_points,
+        max_fragments,
+        &mut |span, points| {
+            if fragment >= max_fragments
+                || !span.fits(max_points)
+                || span.count as usize != points.len()
+            {
+                return Err(CallError::Memory);
+            }
+            let target = fragments + fragment as u64 * 8;
+            c.memory.write_word(target, span.first as i32)?;
+            c.memory.write_word(target + 4, span.count as i32)?;
+            for (index, &point) in points.iter().enumerate() {
+                c.memory
+                    .write_vec3(output + (span.first as u64 + index as u64) * 12, point)?;
+            }
+            fragment += 1;
+            Ok(())
+        },
+    )?;
+    Ok(returned as u64)
 }
 fn client_command_registration<const REMOVE: bool>(
     c: &mut Invocation<'_, '_, '_>,

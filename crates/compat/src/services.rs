@@ -80,6 +80,15 @@ impl From<crate::memory::MemoryError> for CallError {
         Self::Memory
     }
 }
+impl From<qa_render::marks::MarkError<CallError>> for CallError {
+    fn from(error: qa_render::marks::MarkError<CallError>) -> Self {
+        match error {
+            qa_render::marks::MarkError::Boundary(error) => error,
+            qa_render::marks::MarkError::Invalid => Self::Geometry,
+            qa_render::marks::MarkError::Scratch => Self::Capacity,
+        }
+    }
+}
 impl From<qa_session::clients::ClientInfoError> for CallError {
     fn from(error: qa_session::clients::ClientInfoError) -> Self {
         match error {
@@ -1184,6 +1193,13 @@ pub struct EngineCallTable {
         BodyTraceMode,
     ) -> Result<Trace, CallError>,
     pub render_world: fn(&mut EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
+    pub mark_fragments: fn(
+        &mut EngineServices<'_>,
+        &qa_render::marks::MarkProjection,
+        usize,
+        usize,
+        &mut dyn FnMut(IndexSpan, &[Vec3]) -> Result<(), CallError>,
+    ) -> Result<usize, CallError>,
     pub clear_scene: fn(&mut EngineServices<'_>),
     pub add_light: fn(&mut EngineServices<'_>, qa_render::scene::Light) -> bool,
     pub add_entity: fn(&mut EngineServices<'_>, crate::renderer::EntitySubmission) -> bool,
@@ -1459,6 +1475,11 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .ok_or(CallError::Geometry)?
             .select_world(world.render)?;
         Ok(world.render.0)
+    },
+    mark_fragments: |s, projection, max_points, max_fragments, emit| {
+        s.scene.as_deref_mut().map_or(Ok(0), |scene| {
+            scene.mark_fragments(projection, max_points, max_fragments, emit)
+        })
     },
     clear_scene: |s| {
         if let Some(scene) = s.scene.as_deref_mut() {
