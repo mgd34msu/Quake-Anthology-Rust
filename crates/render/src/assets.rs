@@ -1418,18 +1418,18 @@ impl Assets {
         id: WorldId,
         compile: impl FnOnce(
             &mut Self,
-            &crate::material::world_load::WorldMaterialSource,
+            &mut crate::material::world_load::WorldMaterialSource,
         ) -> Result<T, crate::material::world_load::WorldMaterialError>,
     ) -> Result<T, crate::material::world_load::WorldMaterialError> {
         use crate::material::world_load::WorldMaterialError;
-        let source = self
+        let mut source = self
             .worlds
             .get_mut(id.0 as usize)
             .and_then(|world| world.material_source.take())
             .ok_or(WorldMaterialError::Boundary(
                 "world has no retained material source",
             ))?;
-        let result = compile(self, &source);
+        let result = compile(self, &mut source);
         // The compiler contains no external callback. Restore the same cold
         // recipe before any result reaches caller staging/backend admission.
         self.worlds[id.0 as usize].material_source = Some(source);

@@ -88,6 +88,16 @@ impl ImageSettings {
     }
 }
 
+/// Exact image preparation inputs, projected from a caller's full profile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageProfile {
+    pub source_rules: RuleSetId,
+    pub presentation_rules: RuleSetId,
+    pub source_palette: Option<PaletteId>,
+    pub target_palette: Option<PaletteId>,
+    pub image_settings: ImageSettings,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageRole {
     Surface,
@@ -139,6 +149,16 @@ pub struct ImageConflict {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImageRecipe {
+    Embedded {
+        source: u32,
+        palette: PaletteId,
+        cutout: bool,
+    },
+    LayeredSky {
+        source: u32,
+        palette: PaletteId,
+        overlay: bool,
+    },
     NativeDefault {
         indexed: Option<IndexedTarget>,
     },
@@ -506,6 +526,10 @@ impl ImagesState {
         self.conflicts.truncate(mark.conflicts);
     }
 
+    pub(crate) fn clear_conflicts(&mut self) {
+        self.conflicts.clear();
+    }
+
     pub fn new(
         source_rules: RuleSetId,
         presentation_rules: RuleSetId,
@@ -549,6 +573,11 @@ impl ImagesState {
         indexed: Option<IndexedTarget>,
         existing: Option<ImageId>,
     ) -> Result<ResolvedImage, ResourceError> {
+        if let Some(id) = existing {
+            assets
+                .image(id)
+                .ok_or(ResourceError::Asset("missing native default image"))?;
+        }
         let key = ImageKey {
             name: assets
                 .intern_name("*default")
@@ -556,11 +585,7 @@ impl ImagesState {
             recipe: ImageRecipe::NativeDefault { indexed },
         };
         if let Some(index) = self.find(key) {
-            let resolved = self.resolved[index].1;
-            if existing.is_some_and(|image| image != resolved.id) {
-                return Err(ResourceError::Asset("native default image changed"));
-            }
-            return Ok(resolved);
+            return Ok(self.resolved[index].1);
         }
         let usage = ImageUse {
             role: ImageRole::NativeDefault,
@@ -568,9 +593,6 @@ impl ImagesState {
             ..ImageUse::default()
         };
         let id = if let Some(id) = existing {
-            assets
-                .image(id)
-                .ok_or(ResourceError::Asset("missing native default image"))?;
             id
         } else {
             let mut rgba = RgbaImage {
@@ -697,6 +719,9 @@ impl<'a> Images<'a> {
     }
     pub fn into_state(self) -> ImagesState {
         self.state
+    }
+    pub(crate) fn state_assets(&mut self) -> (&mut ImagesState, &mut Assets) {
+        (&mut self.state, self.assets)
     }
     /// Optional native registrations discard only their uncommitted resource suffix.
     pub(crate) fn try_registration<T, E: From<ResourceError>>(
@@ -908,6 +933,115 @@ impl<'a> Images<'a> {
 
     pub fn embedded(
         &mut self,
+        source: u32,
+        mip: &MipTexture<'_>,
+        palette: PaletteId,
+        cutout: bool,
+    ) -> Result<ImageId, ResourceError> {
+        let key = ImageKey {
+            name: self
+                .assets
+                .intern_resource_name(mip.name)
+                .map_err(ResourceError::Asset)?,
+            recipe: ImageRecipe::Embedded {
+                source,
+                palette,
+                cutout,
+            },
+        };
+        if let Some(index) = self.find(key) {
+            let id = self.state.resolved[index].1.id;
+            let image = self
+                .assets
+                .image(id)
+                .ok_or(ResourceError::Asset("missing embedded image"))?;
+            if image.width != mip.width || image.height != mip.height {
+                return Err(ResourceError::Asset("embedded image dimensions changed"));
+            }
+            return Ok(id);
+        }
+        let id = self.upload_embedded(mip, palette, cutout)?;
+        self.remember(key, id, ImageUse::default());
+        Ok(id)
+    }
+    pub(crate) fn layered_sky(
+        &mut self,
+        source: u32,
+        mip: &MipTexture<'_>,
+        palette: PaletteId,
+    ) -> Result<[ImageId; 2], ResourceError> {
+        if mip.width != 256 || mip.height != 128 {
+            return Err(ResourceError::Asset("native layered sky dimensions"));
+        }
+        let name = self
+            .assets
+            .intern_resource_name(mip.name)
+            .map_err(ResourceError::Asset)?;
+        let keys = [false, true].map(|overlay| ImageKey {
+            name,
+            recipe: ImageRecipe::LayeredSky {
+                source,
+                palette,
+                overlay,
+            },
+        });
+        let cached = keys.map(|key| self.find(key).map(|index| self.state.resolved[index].1.id));
+        if let [Some(opaque), Some(masked)] = cached {
+            return Ok([opaque, masked]);
+        }
+        let colors = self
+            .assets
+            .palette(palette)
+            .ok_or(ResourceError::Asset("missing sky palette"))?;
+        let layers = crate::sky::split_layered_sky(mip.levels[0], &colors.rgba_table())
+            .map_err(ResourceError::Asset)?;
+        let corrected =
+            crate::sky::split_layered_sky(mip.levels[0], &self.corrected_palette(palette)?)
+                .map_err(ResourceError::Asset)?;
+        let usage = ImageUse {
+            role: ImageRole::LayeredSky,
+            sampler: Sampler {
+                mipmaps: false,
+                ..Sampler::default()
+            },
+            allow_picmip: false,
+        };
+        let params = self.upload_params(usage)?;
+        let mut ids = [ImageId(0); 2];
+        for (index, (raw, corrected, indices, transparent)) in [
+            (
+                &layers.opaque_rgba,
+                &corrected.opaque_rgba,
+                &layers.opaque_indices,
+                None,
+            ),
+            (
+                &layers.masked_rgba,
+                &corrected.masked_rgba,
+                &layers.masked_indices,
+                Some(0),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            ids[index] = if let Some(id) = cached[index] {
+                id
+            } else {
+                let texture = IndexedTexture::load_base(128, 128, indices, transparent)
+                    .map_err(ResourceError::Asset)?;
+                let id = self.register_indexed_rgba(128, 128, raw, texture, palette)?;
+                self.assets
+                    .prepare_image_with_rgba(id, corrected, params)
+                    .map_err(ResourceError::Asset)?;
+                self.remember(keys[index], id, usage);
+                id
+            };
+        }
+        Ok(ids)
+    }
+    fn upload_embedded(
+        &mut self,
         mip: &MipTexture<'_>,
         palette: PaletteId,
         cutout: bool,
@@ -963,7 +1097,7 @@ impl<'a> Images<'a> {
         }
         let bytes = read_file(self.vfs, name.as_bytes(), &mut self.state.reader)?;
         let mip = MipTexture::parse(&bytes, qa_formats::image::MipFormat::Wal)?;
-        let id = self.embedded(&mip, palette, cutout)?;
+        let id = self.upload_embedded(&mip, palette, cutout)?;
         self.remember(key, id, ImageUse::default());
         Ok(id)
     }

@@ -51,6 +51,18 @@ impl Assets {
             world
                 .presentations
                 .retain(|id| (id.0 as usize) < retained.presentations);
+            if let Some(source) = &mut world.material_source {
+                let profiles: Vec<_> = world
+                    .presentations
+                    .iter()
+                    .filter_map(|id| {
+                        self.presentations[id.0 as usize]
+                            .profile
+                            .map(|entry| entry.0)
+                    })
+                    .collect();
+                source.prune_images(retained.images, &profiles);
+            }
         }
         self.models.truncate(retained.models);
         for index in (retained.shader_bindings..self.shader_bindings.len()).rev() {

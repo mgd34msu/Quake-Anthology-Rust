@@ -96,14 +96,6 @@ impl RegistrationVariant {
     }
 }
 
-fn same_image_profile(first: ModelProfile, second: ModelProfile) -> bool {
-    first.source_rules == second.source_rules
-        && first.rules == second.rules
-        && first.source_palette == second.source_palette
-        && first.palette == second.palette
-        && first.image_settings == second.image_settings
-}
-
 fn with_image_owner<T>(
     profiles: &mut [ProfileImages],
     index: usize,
@@ -624,7 +616,7 @@ impl ProfileImages {
         assets: &mut Assets,
     ) -> Result<(Self, Option<qa_render::assets::PreparedPaletteTranslucency>), String> {
         if let Some((index, owner)) = previous.iter().enumerate().find(|(_, owner)| {
-            owner.image_owner.is_none() && same_image_profile(owner.profile, profile)
+            owner.image_owner.is_none() && owner.profile.image_profile() == profile.image_profile()
         }) {
             return Ok((
                 Self {

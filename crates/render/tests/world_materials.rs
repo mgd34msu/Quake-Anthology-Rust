@@ -2322,3 +2322,462 @@ fn world_profiles_normalize_lighting_before_the_fullscreen_finish_guard() -> Res
     std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
     Ok(())
 }
+
+#[test]
+fn finish_and_guard_appends_reuse_raster_images_for_every_source_family() -> Result<(), String> {
+    use qa_render::material::world_load::append_world_presentation;
+    for family in [1, 2, 3] {
+        let root = resources(&format!("retained-images-{family}"))?;
+        let vfs = mount(&root)?;
+        let mut bytes = map_bytes(family);
+        if family == 3 {
+            bytes[8 + 14 * 8 + 4..8 + 14 * 8 + 8].copy_from_slice(&0u32.to_le_bytes());
+            bytes.truncate(8 + 17 * 8);
+        }
+        let mut map = if family == 3 {
+            modern_map(&bytes)?
+        } else {
+            legacy_map(&bytes, family)?
+        };
+        for face in &mut map.faces {
+            face.lighting_offset = -1;
+        }
+        for surface in &mut map.surfaces {
+            surface.lightmap = -1;
+        }
+        let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+        let loaded = load_native_world(
+            &vfs,
+            &map,
+            &mut assets,
+            RuleSetId::Quake3,
+            Default::default(),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        let original = loaded.presentations[0];
+        let image = surface_image(&assets, original.id);
+        let pixels = assets.image(image).unwrap().rgba.to_vec();
+        let revision = assets.image(image).unwrap().preparation_revision;
+        let image_count = assets.counts().images;
+        for path in if family == 2 {
+            vec!["textures/wall.wal", "textures/other.wal"]
+        } else if family == 3 {
+            vec!["textures/modern.tga"]
+        } else {
+            vec![]
+        } {
+            std::fs::remove_file(root.join(path)).map_err(|error| error.to_string())?;
+        }
+        for (vertex_light, fullbright, ui_fullscreen) in [
+            (false, false, true),
+            (true, false, false),
+            (true, false, true),
+            (false, true, false),
+        ] {
+            let mut profile = original.profile;
+            profile.finish.vertex_light = vertex_light;
+            profile.finish.fullbright = fullbright;
+            vfs.take_lookup_count();
+            let appended = append_world_presentation(
+                &vfs,
+                &mut assets,
+                loaded.world,
+                profile.into(),
+                ui_fullscreen,
+            )
+            .map_err(|error| format!("family {family}: {error:?}"))?
+            .presentations[0];
+            let material = assets
+                .material(
+                    assets
+                        .shader_binding(assets.surface_shader(appended.id, 0).unwrap())
+                        .unwrap()
+                        .material,
+                )
+                .unwrap();
+            assert!(
+                material
+                    .stages
+                    .iter()
+                    .any(|stage| stage.texture == StageTexture::Image(image)),
+                "family {family} retains its exact raster image"
+            );
+            assert_eq!(
+                assets.counts().images,
+                image_count,
+                "unlit finish changes do not upload images"
+            );
+            assert_eq!(assets.image(image).unwrap().rgba.as_ref(), pixels);
+            assert_eq!(assets.image(image).unwrap().preparation_revision, revision);
+            assert_eq!(
+                vfs.take_lookup_count(),
+                0,
+                "retained image lookup must not reread a missing raster"
+            );
+        }
+        std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[test]
+fn q1_embedded_and_split_sky_recipes_reuse_images_across_finish_profiles() -> Result<(), String> {
+    use qa_render::{assets::Sky, material::world_load::append_world_presentation};
+    let root = resources("retained-embedded-sky")?;
+    let vfs = mount(&root)?;
+    let bytes = map_bytes(1);
+    let mut map = legacy_map(&bytes, 1)?;
+    for face in &mut map.faces {
+        face.lighting_offset = -1;
+    }
+    let mut sky_base = vec![10; 256 * 128];
+    for row in sky_base.chunks_exact_mut(256) {
+        row[..128].fill(0);
+        row[128..].fill(11);
+    }
+    let sky_mips = [
+        sky_base,
+        vec![10; 128 * 64],
+        vec![10; 64 * 32],
+        vec![10; 32 * 16],
+    ];
+    map.textures[1] = Some(MipTexture {
+        name: b"sky-retained",
+        width: 256,
+        height: 128,
+        shift: 0,
+        levels: [&sky_mips[0], &sky_mips[1], &sky_mips[2], &sky_mips[3]],
+        animation: &[],
+        flags: 0,
+        contents: 0,
+        value: 0,
+    });
+    map.texture_info[1].name = b"sky-retained";
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let loaded = load_native_world(
+        &vfs,
+        &map,
+        &mut assets,
+        RuleSetId::Quake3,
+        Default::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let original = loaded.presentations[0];
+    let base = surface_image(&assets, original.id);
+    let sky = |assets: &Assets, presentation| {
+        let material = assets
+            .material(
+                assets
+                    .shader_binding(assets.surface_shader(presentation, 1).unwrap())
+                    .unwrap()
+                    .material,
+            )
+            .unwrap();
+        let Sky::Layered { images, .. } = material.settings.sky.unwrap() else {
+            panic!("native layered sky")
+        };
+        images
+    };
+    let layers = sky(&assets, original.id);
+    assert_ne!(layers[0], layers[1]);
+    let retained = [base, layers[0], layers[1]].map(|id| {
+        (
+            id,
+            assets.image(id).unwrap().rgba.to_vec(),
+            assets.image(id).unwrap().preparation_revision,
+        )
+    });
+    let image_count = assets.counts().images;
+    for (detail_textures, vertex_light, ui_fullscreen) in [
+        (false, false, false),
+        (false, true, false),
+        (false, true, true),
+    ] {
+        let mut profile = original.profile;
+        profile.finish.detail_textures = detail_textures;
+        profile.finish.vertex_light = vertex_light;
+        vfs.take_lookup_count();
+        let candidate = append_world_presentation(
+            &vfs,
+            &mut assets,
+            loaded.world,
+            profile.into(),
+            ui_fullscreen,
+        )
+        .map_err(|error| format!("{error:?}"))?
+        .presentations[0];
+        assert_eq!(surface_image(&assets, candidate.id), base);
+        assert_eq!(sky(&assets, candidate.id), layers);
+        assert_eq!(assets.counts().images, image_count);
+        assert_eq!(vfs.take_lookup_count(), 0);
+        for (id, pixels, revision) in &retained {
+            assert_eq!(assets.image(*id).unwrap().rgba.as_ref(), pixels);
+            assert_eq!(assets.image(*id).unwrap().preparation_revision, *revision);
+        }
+    }
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn discarded_world_image_policy_retries_from_source_without_dangling_image_ids()
+-> Result<(), String> {
+    use qa_render::material::world_load::append_world_presentation;
+    let root = resources("retained-policy-rollback")?;
+    let vfs = mount(&root)?;
+    let mut bytes = map_bytes(3);
+    bytes[8 + 14 * 8 + 4..8 + 14 * 8 + 8].copy_from_slice(&0u32.to_le_bytes());
+    bytes.truncate(8 + 17 * 8);
+    let mut map = modern_map(&bytes)?;
+    map.surfaces[0].lightmap = -1;
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let loaded = load_native_world(
+        &vfs,
+        &map,
+        &mut assets,
+        RuleSetId::Quake3,
+        Default::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let original = loaded.presentations[0];
+    let image = surface_image(&assets, original.id);
+    let pixels = assets.image(image).unwrap().rgba.to_vec();
+    let prefix = assets.counts();
+    let mut profile = original.profile;
+    profile.image_settings.picmip += 1;
+    let rejected =
+        append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), false)
+            .map_err(|error| format!("{error:?}"))?
+            .presentations[0];
+    let rejected_image = surface_image(&assets, rejected.id);
+    let rejected_pixels = assets.image(rejected_image).unwrap().rgba.to_vec();
+    assert_ne!(rejected_image, image);
+    assets
+        .discard_registration_suffix(prefix)
+        .map_err(str::to_owned)?;
+    assert_eq!(assets.counts(), prefix);
+    assert!(assets.image(rejected_image).is_none());
+    assert_eq!(
+        assets.world(loaded.world).unwrap().presentations(),
+        [original.id]
+    );
+    let mut changed =
+        std::fs::read(root.join("textures/modern.tga")).map_err(|error| error.to_string())?;
+    for pixel in changed[18..].chunks_exact_mut(3) {
+        pixel.copy_from_slice(&[7, 17, 137]);
+    }
+    std::fs::write(root.join("textures/modern.tga"), changed).map_err(|error| error.to_string())?;
+    vfs.take_lookup_count();
+    let retry = append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), false)
+        .map_err(|error| format!("{error:?}"))?
+        .presentations[0];
+    let retry_image = surface_image(&assets, retry.id);
+    assert_eq!(retry.id, rejected.id);
+    assert_eq!(retry_image, rejected_image);
+    assert_ne!(
+        assets.image(retry_image).unwrap().rgba.as_ref(),
+        rejected_pixels
+    );
+    assert!(
+        vfs.take_lookup_count() > 0,
+        "discarded policy must not retain unpublished cache entries"
+    );
+    assert_eq!(assets.image(image).unwrap().rgba.as_ref(), pixels);
+    let counts = assets.counts();
+    vfs.take_lookup_count();
+    let cached = append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), false)
+        .map_err(|error| format!("{error:?}"))?
+        .presentations[0];
+    assert_eq!(cached, retry);
+    assert_eq!(assets.counts(), counts);
+    assert_eq!(vfs.take_lookup_count(), 0);
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn vertex_world_omits_native_pages_but_fullbright_keeps_real_generic_page_zero()
+-> Result<(), String> {
+    use qa_render::{
+        material::world_load::{
+            NamedShaderLighting, append_world_presentation, compile_named_shader,
+        },
+        shader::{ShaderSource, parse_sources},
+        world::geometry::LightSource,
+    };
+    let root = resources("retained-native-pages")?;
+    let vfs = mount(&root)?;
+    let bytes = map_bytes(3);
+    let map = modern_map(&bytes)?;
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let mut vertex = WorldPresentationProfile::native(RuleSetId::Quake3, None);
+    vertex.finish.vertex_light = true;
+    let loaded = load_world(
+        &vfs,
+        &map,
+        &mut assets,
+        None,
+        &[vertex.into()],
+        Default::default(),
+        false,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let vertex_id = loaded.presentations[0].id;
+    assert_eq!(
+        assets.world_presentation(vertex_id).unwrap().native_page0(),
+        None
+    );
+    assert!(
+        assets
+            .images()
+            .iter()
+            .all(|image| (image.width, image.height) != (128, 128))
+    );
+    let raster = surface_image(&assets, vertex_id);
+    let images = assets.counts().images;
+    let mut fullbright = vertex;
+    fullbright.finish.vertex_light = false;
+    fullbright.finish.fullbright = true;
+    let appended =
+        append_world_presentation(&vfs, &mut assets, loaded.world, fullbright.into(), false)
+            .map_err(|error| format!("{error:?}"))?
+            .presentations[0];
+    let presentation = assets.world_presentation(appended.id).unwrap();
+    let page = presentation
+        .native_page0()
+        .ok_or("fullbright native page zero")?;
+    assert_eq!(
+        presentation.shader_registrations()[0].requested,
+        LightSource::White
+    );
+    let material = assets
+        .material(
+            assets
+                .shader_binding(presentation.surface_shader(0).unwrap())
+                .unwrap()
+                .material,
+        )
+        .unwrap();
+    assert!(
+        material
+            .stages
+            .iter()
+            .any(|stage| stage.texture == StageTexture::Image(raster))
+    );
+    assert_eq!(assets.counts().images, images + 1);
+    assert_eq!(
+        (
+            assets.image(page).unwrap().width,
+            assets.image(page).unwrap().height
+        ),
+        (128, 128)
+    );
+    assert_eq!(&assets.image(page).unwrap().rgba[..4], &[255; 4]);
+    let catalog = parse_sources(&[ShaderSource {
+        name: "generic-page.shader",
+        bytes: b"generic/page { { map $lightmap } { map $whiteimage blendFunc filter } }",
+    }]);
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake3,
+        RuleSetId::Quake3,
+        fullbright.image_settings,
+        None,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let generic = compile_named_shader(
+        &catalog,
+        b"generic/page",
+        true,
+        NamedShaderLighting {
+            source: LightSource::Page(0),
+            lightmap: page,
+        },
+        fullbright.finish.compile(false),
+        &mut images,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    drop(images);
+    assert_eq!(generic.requested, LightSource::Page(0));
+    assert_eq!(generic.finished, LightSource::Page(0));
+    assert_eq!(
+        assets.shader_binding(generic.shader).unwrap().lightmap,
+        page
+    );
+    assert_eq!(
+        assets.world_presentation(vertex_id).unwrap().native_page0(),
+        None
+    );
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn retained_world_images_report_only_the_current_compile_flag_conflicts() -> Result<(), String> {
+    use qa_render::material::world_load::append_world_presentation;
+    let root = resources("retained-image-conflicts")?;
+    std::fs::write(root.join("scripts/flags.shader"), b"textures/modern { { map textures/modern } }\ntextures/otherflags { nomipmaps { map textures/modern } }").map_err(|error| error.to_string())?;
+    let vfs = mount(&root)?;
+    let mut bytes = map_bytes(3);
+    bytes[8 + 14 * 8 + 4..8 + 14 * 8 + 8].copy_from_slice(&0u32.to_le_bytes());
+    bytes.truncate(8 + 17 * 8);
+    let mut map = modern_map(&bytes)?;
+    map.surfaces[0].lightmap = -1;
+    map.shaders.push(Shader {
+        name: b"textures/otherflags",
+        surface_flags: 0,
+        content_flags: 0,
+    });
+    map.surfaces.push(Surface {
+        shader: Some(1),
+        ..map.surfaces[0]
+    });
+    map.leaf_faces.push(1);
+    map.leaves[0].faces.count = 2;
+    map.models[0].faces.count = 2;
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let loaded = load_native_world(
+        &vfs,
+        &map,
+        &mut assets,
+        RuleSetId::Quake3,
+        Default::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let conflicts = |loaded: &LoadedWorld| {
+        loaded
+            .diagnostics
+            .iter()
+            .filter(|text| text.starts_with("native first-image flags retained:"))
+            .count()
+    };
+    assert_eq!(conflicts(&loaded), 1);
+    let original = loaded.presentations[0];
+    let image = surface_image(&assets, original.id);
+    let image_count = assets.counts().images;
+    std::fs::remove_file(root.join("textures/modern.tga")).map_err(|error| error.to_string())?;
+    let mut profile = original.profile;
+    profile.finish.detail_textures = false;
+    vfs.take_lookup_count();
+    let appended =
+        append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), false)
+            .map_err(|error| format!("{error:?}"))?;
+    assert_eq!(
+        conflicts(&appended),
+        1,
+        "prior compilation notices are not replayed"
+    );
+    assert_eq!(surface_image(&assets, appended.presentations[0].id), image);
+    assert_eq!(assets.counts().images, image_count);
+    assert_eq!(vfs.take_lookup_count(), 0);
+    let cached = append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), false)
+        .map_err(|error| format!("{error:?}"))?;
+    assert_eq!(
+        conflicts(&cached),
+        0,
+        "a presentation hit performs no compilation"
+    );
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}

@@ -1,7 +1,10 @@
 //! Registration provenance and lifetime identities shared by every renderer caller.
 use crate::{
     PaletteId,
-    material::{MaterialFinishPolicy, resources::ImageSettings},
+    material::{
+        MaterialFinishPolicy,
+        resources::{ImageProfile, ImageSettings},
+    },
 };
 use qa_core::primitives::{ClientId, EntityId, ModuleId, NameId, RuleSetId};
 
@@ -14,6 +17,17 @@ pub struct ModelProfile {
     pub palette: Option<PaletteId>,
     pub image_settings: ImageSettings,
     pub finish: MaterialFinishPolicy,
+}
+impl ModelProfile {
+    pub fn image_profile(self) -> ImageProfile {
+        ImageProfile {
+            source_rules: self.source_rules,
+            presentation_rules: self.rules,
+            source_palette: self.source_palette,
+            target_palette: self.palette,
+            image_settings: self.image_settings,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

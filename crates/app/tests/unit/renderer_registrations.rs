@@ -157,6 +157,179 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
 }
 
 #[test]
+fn finish_refresh_reuses_world_images_after_backend_rejection() {
+    use qa_render::material::{MaterialFinishPolicy, world_load::WorldPresentationProfile};
+
+    let fixture = support::Fixture::new(&[("maps/finish.bsp", support::world_map(16.0))]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = ModelProfile {
+        source_rules: RuleSetId::Quake,
+        rules: RuleSetId::Quake3,
+        source_palette: Some(palette),
+        palette: None,
+        image_settings: ImageSettings::native(RuleSetId::Quake3),
+        finish: MaterialFinishPolicy::default(),
+    };
+    let loaded = crate::map::read(&fixture.vfs, "finish")
+        .unwrap()
+        .load(
+            &fixture.vfs,
+            &mut assets,
+            &mut qa_world::collision::CollisionStore::new(),
+            Some(palette),
+            &[WorldPresentationProfile::native(profile.rules, None).into()],
+            Default::default(),
+            false,
+        )
+        .unwrap();
+    let world = loaded.render.world;
+    let previous = loaded.render.presentations[0];
+    let owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let (mut owner, mut cpu) = publish(owner);
+    let retained = owner.assets().counts();
+    let finish = MaterialFinishPolicy {
+        detail_textures: false,
+        ..profile.finish
+    };
+    let candidate = Cell::new(None);
+    let rejected: Result<(), String> = owner.image_transaction(None, |owner, _| {
+        owner.refresh_images(
+            &fixture.vfs,
+            &[profile],
+            &[(world, previous.id)],
+            [None; 5],
+            finish,
+            false,
+            |assets| {
+                if assets.counts().presentations == retained.presentations {
+                    return Ok(());
+                }
+                assert_eq!(assets.counts().images, retained.images);
+                candidate.set(Some(assets.world(world).unwrap().presentations()[1]));
+                let prepared = CpuBackend::load_with_assets(8, 8, assets).unwrap();
+                assert_eq!(prepared.admitted_assets(), Some(assets.counts()));
+                Err("reject staged renderer".to_owned())
+            },
+        )?;
+        Ok(())
+    });
+    assert!(rejected.unwrap_err().contains("reject staged renderer"));
+    assert_eq!(owner.assets().counts(), retained);
+    assert_eq!(cpu.admitted_assets(), Some(retained));
+    assert_eq!(
+        owner.assets().world(world).unwrap().presentations(),
+        &[previous.id]
+    );
+
+    let refresh = owner
+        .image_transaction(None, |owner, _| {
+            owner.refresh_images(
+                &fixture.vfs,
+                &[profile],
+                &[(world, previous.id)],
+                [None; 5],
+                finish,
+                false,
+                |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+            )
+        })
+        .unwrap();
+    let selected = refresh.presentation(world, previous.id).unwrap();
+    assert_eq!(Some(selected.id), candidate.get());
+    assert_eq!(selected.profile.finish, finish);
+    assert_eq!(owner.assets().counts().images, retained.images);
+    assert_eq!(cpu.admitted_assets(), Some(owner.assets().counts()));
+    assert_eq!(
+        owner.assets().world_presentation_registration(previous.id),
+        Some(previous)
+    );
+}
+
+#[test]
+fn initial_worlds_keep_their_own_default_image_when_the_catalog_adopts_a_peer() {
+    use qa_render::material::world_load::WorldPresentationProfile;
+
+    let fixture = support::Fixture::new(&[
+        ("maps/default.bsp", support::world_map(16.0)),
+        (
+            "textures/wall.tga",
+            support::tga(2, 2, &[[19, 37, 71, 255]; 4]),
+        ),
+        (
+            "scripts/default.shader",
+            b"textures/wall { { map textures/wall.tga } }".to_vec(),
+        ),
+    ]);
+    let profile = profile(RuleSetId::Quake3);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let mut collision = qa_world::collision::CollisionStore::new();
+    let worlds = std::array::from_fn::<_, 2, _>(|_| {
+        crate::map::read(&fixture.vfs, "default")
+            .unwrap()
+            .load(
+                &fixture.vfs,
+                &mut assets,
+                &mut collision,
+                Some(palette),
+                &[WorldPresentationProfile::native(profile.rules, None).into()],
+                Default::default(),
+                false,
+            )
+            .unwrap()
+            .render
+    });
+    let default_image = |assets: &Assets, world: WorldPresentationId| {
+        let default = assets
+            .world_presentation(world)
+            .unwrap()
+            .native_default()
+            .unwrap();
+        assets
+            .material(assets.shader_binding(default).unwrap().material)
+            .unwrap()
+            .stages[0]
+            .texture
+    };
+    let images = worlds
+        .each_ref()
+        .map(|world| default_image(&assets, world.presentations[0].id));
+    assert_ne!(images[0], images[1]);
+    let owner = ModelAssets::new(
+        assets,
+        [profile],
+        worlds.each_ref().map(|world| world.world),
+        Default::default(),
+    )
+    .unwrap();
+    let (mut owner, mut cpu) = publish(owner);
+    let world = worlds[1].world;
+    let previous = worlds[1].presentations[0];
+    let mut finish = profile.finish;
+    finish.detail_textures = false;
+    let refresh = owner
+        .image_transaction(None, |owner, _| {
+            owner.refresh_images(
+                &fixture.vfs,
+                &[profile],
+                &[(world, previous.id)],
+                [None; 5],
+                finish,
+                false,
+                |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+            )
+        })
+        .unwrap();
+    let selected = refresh.presentation(world, previous.id).unwrap();
+    assert_eq!(default_image(owner.assets(), selected.id), images[1]);
+    assert_eq!(
+        default_image(owner.assets(), worlds[0].presentations[0].id),
+        images[0]
+    );
+}
+
+#[test]
 fn pair_publishes_once_then_uses_both_cached_handles_without_io() {
     let fixture = shader_fixture();
     let profile = profile(RuleSetId::Quake3);

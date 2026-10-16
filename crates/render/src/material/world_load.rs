@@ -4,8 +4,8 @@ use super::{
     finish::{BundleImage, ShaderSlot, finish_material},
     load_catalog,
     resources::{
-        ImageRole, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget, ResolvedImage,
-        ResourceError,
+        ImageProfile, ImageRole, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget,
+        ResolvedImage, ResourceError,
     },
 };
 use crate::{
@@ -24,8 +24,8 @@ use crate::{
         AlphaFunc, AlphaGen, BlendFactor, Cull, Deform, RgbGen, ShaderCatalog, ShaderDef,
         StageBlend, TexCoordGen, canonical_path,
     },
-    sky::{CloudSphere, LayeredSphere, split_layered_sky},
-    surface_cache::{IndexedLighting, IndexedTexture},
+    sky::{CloudSphere, LayeredSphere},
+    surface_cache::IndexedLighting,
     world::{
         PreparedShader, SurfaceMaterial, WorldId, WorldLighting, WorldPresentationId,
         WorldPresentationInput, WorldRenderSettings,
@@ -165,6 +165,19 @@ impl PartialEq for WorldPresentationProfile {
     }
 }
 impl WorldPresentationProfile {
+    fn image_profile(
+        self,
+        source_rules: RuleSetId,
+        source_palette: Option<crate::PaletteId>,
+    ) -> ImageProfile {
+        ImageProfile {
+            source_rules,
+            presentation_rules: self.rules,
+            source_palette,
+            target_palette: self.indexed_palette,
+            image_settings: self.image_settings,
+        }
+    }
     pub fn native(rules: RuleSetId, indexed_palette: Option<crate::PaletteId>) -> Self {
         Self {
             rules,
@@ -262,6 +275,10 @@ struct MaterialSurface {
     light_source: LightSource,
     no_draw: bool,
 }
+struct WorldImages {
+    profile: ImageProfile,
+    state: Option<ImagesState>,
+}
 /// Authored cold inputs retained once after the BSP boundary. Geometry can be
 /// rebuilt without rereading the BSP; visibility and collision stay separately owned.
 pub(crate) struct WorldMaterialSource {
@@ -277,8 +294,78 @@ pub(crate) struct WorldMaterialSource {
     legacy_kinds: Vec<(bool, bool)>,
     layout: LightmapLayout,
     catalog: ShaderCatalog,
+    images: Vec<WorldImages>,
 }
 impl WorldMaterialSource {
+    pub(crate) fn prune_images(&mut self, images: usize, profiles: &[WorldPresentationProfile]) {
+        let source_rules = self.rules;
+        let source_palette = self.palette;
+        self.images.retain_mut(|entry| {
+            if !profiles
+                .iter()
+                .any(|profile| profile.image_profile(source_rules, source_palette) == entry.profile)
+            {
+                return false;
+            }
+            if let Some(state) = &mut entry.state {
+                state.rollback_registration(state.registration_mark(), images);
+                state.clear_conflicts();
+            }
+            true
+        });
+    }
+    fn with_images<T>(
+        &mut self,
+        vfs: &Vfs,
+        assets: &mut Assets,
+        profile: WorldPresentationProfile,
+        compile: impl FnOnce(&Self, &mut Images<'_>) -> Result<T, WorldMaterialError>,
+    ) -> Result<T, WorldMaterialError> {
+        let key = profile.image_profile(self.rules, self.palette);
+        let previous = self.images.len();
+        let index = if let Some(index) = self.images.iter().position(|entry| entry.profile == key) {
+            index
+        } else {
+            let mut state = ImagesState::new(
+                self.rules,
+                profile.rules,
+                profile.image_settings,
+                self.palette.zip(profile.indexed_palette),
+            )?;
+            state.set_raster_target(
+                assets,
+                profile.indexed_palette.map(|palette| IndexedTarget {
+                    palette,
+                    transparent_index: Some(255),
+                }),
+            )?;
+            self.images.push(WorldImages {
+                profile: key,
+                state: Some(state),
+            });
+            previous
+        };
+        let state = self.images[index]
+            .state
+            .take()
+            .ok_or(WorldMaterialError::Boundary(
+                "world images already borrowed",
+            ))?;
+        let retained = assets.counts();
+        let mark = state.registration_mark();
+        let mut images = Images::from_state(vfs, assets, state);
+        let result = compile(self, &mut images);
+        let mut state = images.into_state();
+        if result.is_err() {
+            state.rollback_registration(mark, retained.images);
+        }
+        state.clear_conflicts();
+        self.images[index].state = Some(state);
+        if result.is_err() {
+            self.images.truncate(previous);
+        }
+        result
+    }
     pub(crate) fn geometry_options(&self) -> GeometryOptions {
         self.options.geometry
     }
@@ -383,6 +470,7 @@ impl WorldMaterialSource {
             legacy_kinds,
             layout,
             catalog: load_catalog(vfs).map_err(WorldMaterialError::Catalog)?,
+            images: Vec::new(),
         })
     }
 }
@@ -422,13 +510,17 @@ fn prepare_presentation(
             modulate: profile.q2_modulate,
         }
     };
-    let pages = prepare_lightmap_pages(
-        geometry,
-        &source.layout,
-        &source.options,
-        &defaults.lightstyles,
-        conversion,
-    )?;
+    let pages = if profile.finish.vertex_light {
+        Vec::new()
+    } else {
+        prepare_lightmap_pages(
+            geometry,
+            &source.layout,
+            &source.options,
+            &defaults.lightstyles,
+            conversion,
+        )?
+    };
     Ok(PreparedPresentation {
         defaults,
         conversion,
@@ -438,25 +530,33 @@ fn prepare_presentation(
 fn compile_profile(
     vfs: &Vfs,
     assets: &mut Assets,
-    source: &WorldMaterialSource,
+    source: &mut WorldMaterialSource,
     request: WorldPresentationRequest,
     prepared: PreparedPresentation,
     ui_fullscreen: bool,
     diagnostics: &mut Vec<String>,
 ) -> Result<(CompiledPresentation, PresentationDefaults), WorldMaterialError> {
     let policy = request.profile.finish.compile(ui_fullscreen);
-    let lightmaps = register_lightmap_pages(assets, &source.layout, prepared.pages)?;
-    let bindings = compile_presentation(
-        vfs,
-        source,
-        assets,
-        request,
-        policy,
-        &source.layout.regions,
-        &lightmaps.surfaces,
-        prepared.conversion,
-        diagnostics,
-    )?;
+    let lightmaps = if request.profile.finish.vertex_light {
+        RegisteredLightmaps {
+            surfaces: vec![None; source.surfaces.len()],
+            native_page0: None,
+        }
+    } else {
+        register_lightmap_pages(assets, &source.layout, prepared.pages)?
+    };
+    let bindings = source.with_images(vfs, assets, request.profile, |source, images| {
+        compile_presentation(
+            source,
+            images,
+            request,
+            policy,
+            &source.layout.regions,
+            &lightmaps.surfaces,
+            prepared.conversion,
+            diagnostics,
+        )
+    })?;
     Ok((
         CompiledPresentation {
             surfaces: bindings.0,
@@ -580,7 +680,7 @@ pub fn load_world(
             )?;
         }
     }
-    let source = WorldMaterialSource::load(
+    let mut source = WorldMaterialSource::load(
         vfs,
         map,
         assets,
@@ -621,7 +721,7 @@ pub fn load_world(
         let (bindings, presentation) = compile_profile(
             vfs,
             assets,
-            &source,
+            &mut source,
             request,
             prepared,
             ui_fullscreen,
@@ -824,9 +924,8 @@ fn presentation_defaults(
     reason = "One cold converter receives the shared geometry and atlas plus an explicit exact resource profile."
 )]
 fn compile_presentation(
-    vfs: &Vfs,
     source: &WorldMaterialSource,
-    assets: &mut Assets,
+    images: &mut Images<'_>,
     request: WorldPresentationRequest,
     policy: ShaderCompilePolicy,
     regions: &[Option<AtlasRegion>],
@@ -848,7 +947,8 @@ fn compile_presentation(
     let catalog = &source.catalog;
     // Copy only cold name bytes to end the arena borrow before Images appends.
     let name = |id| {
-        assets
+        images
+            .assets
             .resource_name(id)
             .map(Vec::from)
             .ok_or(WorldMaterialError::Boundary("missing material source name"))
@@ -901,26 +1001,13 @@ fn compile_presentation(
             catalog.find_canonical(&name)
         })
         .collect::<Vec<_>>();
-    let presentation_rules = profile.rules;
-    let mut image_state = ImagesState::new(
-        geometry_source,
-        presentation_rules,
-        profile.image_settings,
-        palette.zip(profile.indexed_palette),
-    )?;
-    image_state.set_raster_target(
-        assets,
-        profile.indexed_palette.map(|palette| IndexedTarget {
-            palette,
-            transparent_index: Some(255),
-        }),
-    )?;
     let native_default = if geometry_source == RuleSetId::Quake3
         || request.native_default.is_some()
         || definitions.iter().any(Option::is_some)
     {
+        let (state, assets) = images.state_assets();
         Some(native_default_shader(
-            &mut image_state,
+            state,
             assets,
             profile.indexed_palette.map(|palette| IndexedTarget {
                 palette,
@@ -932,16 +1019,16 @@ fn compile_presentation(
     } else {
         None
     };
-    let mut images = Images::from_state(vfs, assets, image_state);
     let mut textures = Vec::with_capacity(mips.len());
     let mut layered_skies = Vec::with_capacity(mips.len());
     if matches!(geometry_source, RuleSetId::Quake) {
-        for texture in &mips {
+        for (index, texture) in mips.iter().enumerate() {
             textures.push(match texture {
                 // R_InitSky uploads the two split layers directly, rather
                 // than uploading the original 256x128 texture as a surface.
                 Some(mip) if legacy_sky_name(&mip.name) => ImageId(0),
                 Some(mip) => images.embedded(
+                    index as u32,
                     mip,
                     palette.ok_or(WorldMaterialError::Boundary("missing legacy palette"))?,
                     mip.name.starts_with(b"{"),
@@ -950,9 +1037,10 @@ fn compile_presentation(
             });
             layered_skies.push(match texture {
                 Some(mip) if legacy_sky_name(&mip.name) => Some(load_layered_sky(
+                    index as u32,
                     mip,
                     palette.ok_or(WorldMaterialError::Boundary("missing sky palette"))?,
-                    &mut images,
+                    images,
                 )?),
                 _ => None,
             });
@@ -969,7 +1057,7 @@ fn compile_presentation(
                 lightmap: ImageId(0),
             },
             policy,
-            &mut images,
+            images,
             diagnostics,
         )?;
         if let Some(registration) = registration {
@@ -1028,7 +1116,7 @@ fn compile_presentation(
                     lightmap,
                 },
                 policy,
-                &mut images,
+                images,
                 diagnostics,
             )?;
             if let Some(registration) = registration {
@@ -1103,7 +1191,7 @@ fn compile_presentation(
                 outer_box: Some(load_indexed_box(
                     &options.sky_environment,
                     palette.ok_or(WorldMaterialError::Boundary("missing sky palette"))?,
-                    &mut images,
+                    images,
                 )?),
                 inner_box: None,
                 clouds: CloudSphere::native(512.0),
@@ -1145,7 +1233,7 @@ fn compile_presentation(
         let material = if let Some(definition) = definition {
             let compiled = compile_definition(
                 definition,
-                &mut images,
+                images,
                 NamedShaderLighting {
                     source: requested,
                     lightmap,
@@ -1177,7 +1265,7 @@ fn compile_presentation(
                         lightmap,
                     },
                     policy,
-                    &mut images,
+                    images,
                 )?;
                 let material = registration.shader.material;
                 named_registration = Some(registration);
@@ -1191,7 +1279,7 @@ fn compile_presentation(
                     kind,
                     requested,
                     legacy_sky,
-                    &mut images,
+                    images,
                 )?
             }
         };
@@ -1644,7 +1732,7 @@ pub fn native_default_shader(
     existing: Option<ShaderBindingId>,
     policy: ShaderCompilePolicy,
 ) -> Result<ShaderBindingId, WorldMaterialError> {
-    let image = existing
+    let hinted_image = existing
         .map(|id| {
             let binding = assets
                 .shader_binding(id)
@@ -1671,7 +1759,7 @@ pub fn native_default_shader(
             }
         })
         .transpose()?;
-    let image = state.native_default_image(assets, indexed, image)?;
+    let image = state.native_default_image(assets, indexed, hinted_image)?;
     let material = finish_material(
         "<default>",
         vec![ShaderSlot::from_stage(Stage {
@@ -1692,7 +1780,7 @@ pub fn native_default_shader(
     let shader = assets
         .register_shader_binding(ShaderBinding::material(material, LightSource::None))
         .map_err(WorldMaterialError::Boundary)?;
-    if existing.is_some_and(|existing| existing != shader) {
+    if hinted_image == Some(image.id) && existing.is_some_and(|existing| existing != shader) {
         return Err(WorldMaterialError::Boundary(
             "native default policy changed",
         ));
@@ -2356,50 +2444,13 @@ fn legacy_material(
 }
 
 fn load_layered_sky(
+    source: u32,
     mip: &qa_formats::image::MipTexture<'_>,
     palette: crate::PaletteId,
     images: &mut Images<'_>,
 ) -> Result<Sky, WorldMaterialError> {
-    if mip.width != 256 || mip.height != 128 {
-        return Err(WorldMaterialError::Boundary(
-            "native layered sky dimensions",
-        ));
-    }
-    let colors = images
-        .assets
-        .palette(palette)
-        .ok_or(WorldMaterialError::Boundary("missing sky palette"))?;
-    let palette_colors = colors.rgba_table();
-    let layers =
-        split_layered_sky(mip.levels[0], &palette_colors).map_err(WorldMaterialError::Boundary)?;
-    let corrected = split_layered_sky(mip.levels[0], &images.corrected_palette(palette)?)
-        .map_err(WorldMaterialError::Boundary)?;
-    let opaque = IndexedTexture::load_base(128, 128, &layers.opaque_indices, None)
-        .map_err(WorldMaterialError::Boundary)?;
-    let masked = IndexedTexture::load_base(128, 128, &layers.masked_indices, Some(0))
-        .map_err(WorldMaterialError::Boundary)?;
-    let ids = [
-        images.register_indexed_rgba(128, 128, &layers.opaque_rgba, opaque, palette)?,
-        images.register_indexed_rgba(128, 128, &layers.masked_rgba, masked, palette)?,
-    ];
-    let params = images.upload_params(ImageUse {
-        role: ImageRole::LayeredSky,
-        sampler: Sampler {
-            mipmaps: false,
-            ..Sampler::default()
-        },
-        allow_picmip: false,
-    })?;
-    images
-        .assets
-        .prepare_image_with_rgba(ids[0], &corrected.opaque_rgba, params)
-        .map_err(WorldMaterialError::Boundary)?;
-    images
-        .assets
-        .prepare_image_with_rgba(ids[1], &corrected.masked_rgba, params)
-        .map_err(WorldMaterialError::Boundary)?;
     Ok(Sky::Layered {
-        images: ids,
+        images: images.layered_sky(source, mip, palette)?,
         sphere: LayeredSphere::NATIVE,
     })
 }
