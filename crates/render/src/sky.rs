@@ -4,9 +4,36 @@
 //! quake/WinQuake/d_sky.c D_Sky_uv_To_st; quake-2/ref_gl/gl_warp.c
 //! DrawSkyPolygon/ClipSkyPolygon/MakeSkyVec; quake-iii-arena/code/renderer/
 //! tr_sky.c R_InitSkyTexCoords/MakeSkyVec/ClipSkyPolygon.
-use crate::assets::{Assets, CubeSkyParams, ImageId, MaterialId, Stage, StageTexture, Vertex};
+use crate::assets::{
+    Assets, CubeSkyParams, ImageId, MaterialId, ShaderBinding, Stage, StageTexture, Vertex,
+};
 use crate::scene::{CommandList, DrawItem, Span};
 use qa_core::{math, primitives::Vec3};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SkyKey {
+    binding: ShaderBinding,
+    time_offset: u32,
+    entity: Option<u32>,
+}
+impl SkyKey {
+    pub(crate) fn for_item(item: DrawItem, list: &CommandList, assets: &Assets) -> Option<Self> {
+        let shader = crate::scene::item_shader(list, assets, item)?;
+        let entity = match item.kind {
+            crate::scene::DrawKind::Surface => list.surface(item.index).entity,
+            crate::scene::DrawKind::Entity => Some(item.index),
+            crate::scene::DrawKind::Poly => list.poly(item.index).entity,
+        };
+        Some(Self {
+            binding: shader.resources(assets)?,
+            time_offset: shader.time_offset().to_bits(),
+            entity,
+        })
+    }
+    pub(crate) fn material(self) -> MaterialId {
+        self.binding.material
+    }
+}
 
 pub(crate) enum SkySubmission {
     Begin(DrawItem),
@@ -30,22 +57,22 @@ pub(crate) fn for_each_sky_triangle(
     list: &CommandList,
     draws: Span,
     assets: &Assets,
-    mut visit: impl FnMut(MaterialId, SkySubmission) -> bool,
+    mut visit: impl FnMut(SkyKey, SkySubmission) -> bool,
 ) {
     for &item in list.draws(draws) {
-        let Some(material) = item_material(item, list, assets) else {
+        let Some(key) = SkyKey::for_item(item, list, assets) else {
             continue;
         };
-        if !visit(material, SkySubmission::Begin(item)) {
+        if !visit(key, SkySubmission::Begin(item)) {
             continue;
         }
         if !crate::scene::for_each_triangle(list, item, assets, |vertices| {
             visit(
-                material,
+                key,
                 SkySubmission::Triangle(vertices.map(|vertex| vertex.position)),
             );
         }) {
-            visit(material, SkySubmission::MissingSurface);
+            visit(key, SkySubmission::MissingSurface);
         }
     }
 }
@@ -644,41 +671,82 @@ impl Default for ClipPolygon {
 
 pub(crate) struct SkyBatches {
     clips: Box<[SkyClip]>,
+    keys: Box<[Option<SkyKey>]>,
+    next: Box<[Option<usize>]>,
+    heads: Box<[Option<usize>]>,
     touched: qa_core::stamps::StampSet,
     drawn: qa_core::stamps::StampSet,
+    count: usize,
 }
 impl SkyBatches {
-    pub(crate) fn new(count: usize) -> Self {
+    pub(crate) fn new(materials: usize, capacity: usize) -> Self {
         Self {
-            clips: (0..count)
+            clips: (0..capacity)
                 .map(|_| SkyClip::new())
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
-            touched: qa_core::stamps::StampSet::new(count),
-            drawn: qa_core::stamps::StampSet::new(count),
+            keys: vec![None; capacity].into_boxed_slice(),
+            next: vec![None; capacity].into_boxed_slice(),
+            heads: vec![None; materials].into_boxed_slice(),
+            touched: qa_core::stamps::StampSet::new(materials),
+            drawn: qa_core::stamps::StampSet::new(capacity),
+            count: 0,
         }
+    }
+    pub(crate) fn capacity(&self) -> usize {
+        self.clips.len()
     }
     pub(crate) fn bytes(&self) -> usize {
         std::mem::size_of_val(&*self.clips)
+            + std::mem::size_of_val(&*self.keys)
+            + std::mem::size_of_val(&*self.next)
+            + std::mem::size_of_val(&*self.heads)
             + (self.touched.len() + self.drawn.len()) * std::mem::size_of::<u32>()
     }
     pub(crate) fn begin_frame(&mut self) {
         self.touched.begin();
         self.drawn.begin();
+        self.count = 0;
     }
-    pub(crate) fn clip_mut(&mut self, index: usize) -> Option<&mut SkyClip> {
-        let clip = self.clips.get_mut(index)?;
-        if !self.touched.test_and_set(index) {
-            clip.clear();
-        }
-        Some(clip)
-    }
-    pub(crate) fn take_for_draw(&mut self, index: usize) -> Option<[FaceBounds; 6]> {
-        let clip = self.clips.get(index)?;
-        if !self.touched.contains(index) || self.drawn.test_and_set(index) {
+    fn find(&self, key: SkyKey) -> Option<usize> {
+        let material = key.material().0 as usize;
+        let mut current = *self.heads.get(material)?;
+        if !self.touched.contains(material) {
             return None;
         }
-        let bounds = *clip.bounds();
+        while let Some(index) = current {
+            if self.keys[index] == Some(key) {
+                return Some(index);
+            }
+            current = self.next[index];
+        }
+        None
+    }
+    pub(crate) fn clip_mut(&mut self, key: SkyKey) -> Option<&mut SkyClip> {
+        if let Some(index) = self.find(key) {
+            return self.clips.get_mut(index);
+        }
+        let material = key.material().0 as usize;
+        if material >= self.heads.len() || self.count == self.clips.len() {
+            return None;
+        }
+        if !self.touched.test_and_set(material) {
+            self.heads[material] = None;
+        }
+        let index = self.count;
+        self.count += 1;
+        self.keys[index] = Some(key);
+        self.next[index] = self.heads[material];
+        self.heads[material] = Some(index);
+        self.clips[index].clear();
+        self.clips.get_mut(index)
+    }
+    pub(crate) fn take_for_draw(&mut self, key: SkyKey) -> Option<[FaceBounds; 6]> {
+        let index = self.find(key)?;
+        if self.drawn.test_and_set(index) {
+            return None;
+        }
+        let bounds = *self.clips[index].bounds();
         bounds.iter().any(|bound| bound.visible()).then_some(bounds)
     }
 }

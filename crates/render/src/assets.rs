@@ -662,6 +662,9 @@ impl Assets {
     pub fn find_name(&self, path: &str) -> Option<NameId> {
         self.names.find_path(path)
     }
+    pub fn find_shader_name(&self, raw: &[u8]) -> Option<NameId> {
+        self.names.find_folded(crate::shader::registration_key(raw))
+    }
     pub fn register_image(
         &mut self,
         width: u32,

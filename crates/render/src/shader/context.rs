@@ -8,6 +8,8 @@ pub struct ShaderNodeId(pub u32);
 struct Node {
     registration: ShaderRegistration,
     next: Option<ShaderNodeId>,
+    remapped: Option<ShaderNodeId>,
+    time_offset: f32,
 }
 pub struct ShaderContext {
     heads: Box<[Option<ShaderNodeId>]>,
@@ -41,6 +43,41 @@ impl ShaderContext {
     }
     pub fn node(&self, id: ShaderNodeId) -> Option<&ShaderRegistration> {
         self.nodes.get(id.0 as usize).map(|node| &node.registration)
+    }
+    pub fn latest(&self, key: NameId) -> Option<ShaderNodeId> {
+        *self.heads.get(key.0 as usize)?
+    }
+    /// Native remaps select one target pointer, never a transitive name rule.
+    pub fn resolved_node(&self, source: ShaderNodeId) -> Option<(ShaderNodeId, f32)> {
+        let target = self
+            .nodes
+            .get(source.0 as usize)?
+            .remapped
+            .unwrap_or(source);
+        Some((target, self.nodes.get(target.0 as usize)?.time_offset))
+    }
+    pub fn remap_existing(
+        &mut self,
+        key: NameId,
+        target: ShaderNodeId,
+        offset: Option<f32>,
+    ) -> Result<(), &'static str> {
+        self.nodes
+            .get(target.0 as usize)
+            .ok_or("shader remap target")?;
+        let mut next = self.latest(key).ok_or("shader remap source")?;
+        loop {
+            let node = &mut self.nodes[next.0 as usize];
+            node.remapped = (next != target).then_some(target);
+            match node.next {
+                Some(id) => next = id,
+                None => break,
+            }
+        }
+        if let Some(offset) = offset {
+            self.nodes[target.0 as usize].time_offset = offset;
+        }
+        Ok(())
     }
     pub fn sun_direction(&self) -> Vec3 {
         self.sun_direction
@@ -115,6 +152,8 @@ impl ShaderContextAppend<'_> {
         self.context.nodes.push(Node {
             registration,
             next: *head,
+            remapped: None,
+            time_offset: 0.0,
         });
         *head = Some(id);
         if let Some(sun) = registration.sun {

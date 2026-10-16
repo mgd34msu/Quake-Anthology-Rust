@@ -307,6 +307,7 @@ pub struct FrameHost {
     pub close_aborted: u64,
     pub close_without_transport: u64,
     pub developer: CvarHandle,
+    pub(crate) renderer_smp: Option<CvarHandle>,
     pub local_clients: [Option<ClientId>; SeatId::COUNT],
     pub(crate) connection_commands: [qa_core::primitives::NameId; 3],
     /// A seat's world/presentation choice is independent of its physics rules.
@@ -681,6 +682,7 @@ impl FrameHost {
         let particle_gravity = console.cvars.find("g_gravity").ok_or("missing g_gravity")?;
         let mouse_enabled = console.cvars.find("in_mouse").ok_or("missing in_mouse")?;
         let developer = console.cvars.find("developer").ok_or("missing developer")?;
+        let renderer_smp = console.cvars.find("r_smp");
         let maxfps = console
             .cvars
             .find("com_maxfps")
@@ -823,6 +825,7 @@ impl FrameHost {
             close_aborted: 0,
             close_without_transport: 0,
             developer,
+            renderer_smp,
             local_clients: [None; SeatId::COUNT],
             connection_commands,
             local_worlds: [None; SeatId::COUNT],

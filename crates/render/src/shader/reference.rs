@@ -64,12 +64,7 @@ impl ShaderView<'_> {
             self.native
                 .resource_nodes(context, ShaderResource::Graphic(registration.key))
         });
-        self.choice(
-            choice,
-            std::slice::from_ref(registration),
-            nodes,
-            default,
-        )
+        self.choice(choice, std::slice::from_ref(registration), nodes, default)
     }
     pub fn choice(
         self,
@@ -121,6 +116,7 @@ pub struct ResolvedShader {
     time_offset: f32,
     cache_compatible: bool,
     surface_lighting: Option<ShaderBindingId>,
+    preserve_converted_body: bool,
 }
 impl ResolvedShader {
     pub fn select(
@@ -128,6 +124,7 @@ impl ResolvedShader {
         source: ShaderBindingId,
         target: ShaderBindingId,
         time_offset: f32,
+        preserve_converted_body: bool,
     ) -> Option<Self> {
         let source_material = assets.material(assets.shader_binding(source)?.material)?;
         assets.material(assets.shader_binding(target)?.material)?;
@@ -135,6 +132,7 @@ impl ResolvedShader {
             binding: target,
             surface_lighting: None,
             time_offset,
+            preserve_converted_body,
             cache_compatible: source == target
                 && source_material.settings.time_offset.to_bits() == time_offset.to_bits(),
         })
@@ -249,7 +247,7 @@ impl ShaderRef {
                     .material(assets.shader_binding(binding)?.material)?
                     .settings
                     .time_offset;
-                ResolvedShader::select(assets, binding, binding, offset)
+                ResolvedShader::select(assets, binding, binding, offset, true)
             }
             Self::Native(reference) => native.resolve(reference, assets),
             Self::Surface {
@@ -259,9 +257,10 @@ impl ShaderRef {
             } => {
                 let mut shader = native.resolve(reference, assets)?;
                 if let Some(body) = body
-                    && shader.binding() == native.source(reference)?.shader
+                    && shader.preserve_converted_body
                 {
-                    shader = ResolvedShader::select(assets, body, body, shader.time_offset())?;
+                    shader =
+                        ResolvedShader::select(assets, body, body, shader.time_offset(), true)?;
                 }
                 shader.for_surface(assets, lighting)
             }

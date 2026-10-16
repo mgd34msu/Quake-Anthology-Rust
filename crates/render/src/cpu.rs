@@ -893,6 +893,7 @@ impl CpuBackend {
                 rank,
                 list,
                 assets,
+                &self.evaluator,
                 self.frame.buffers(),
                 stats,
                 dispatch,

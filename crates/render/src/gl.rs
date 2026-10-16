@@ -12,7 +12,7 @@ use crate::scene::{
 };
 use crate::shader::reference::ResolvedShader;
 use crate::shader::{AlphaGen, RgbGen, StageBlend};
-use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyBatches, SkyClip};
+use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyBatches, SkyClip, SkyKey};
 use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, TexCoordOp};
 use qa_core::presentation::{DisplayConfiguration, RendererConfiguration};
 use qa_core::primitives::Vec3;
@@ -602,8 +602,11 @@ impl GlBackend {
             table_texture: 0,
             evaluator: StageEvaluator::load(),
             sky_clouds: Box::new([]),
-            skies: SkyBatches::new(0),
-            dynamic: Dynamic::default(),
+            skies: SkyBatches::new(0, 0),
+            dynamic: Dynamic {
+                capacity: dynamic_vertices,
+                ..Dynamic::default()
+            },
             state: State::default(),
             _context_thread: PhantomData,
         };
@@ -685,15 +688,36 @@ impl GlBackend {
                 );
             }
         }
+        let sky_capacity = if assets
+            .materials()
+            .iter()
+            .any(|material| matches!(material.settings.sky, Some(Sky::Cube { .. })))
+        {
+            scene
+                .unwrap_or_default()
+                .draw_capacity()
+                .ok_or("GL sky batch capacity")?
+                .max(self.skies.capacity())
+        } else {
+            0
+        };
         let Some(admission) = AssetAdmission::prepare(self.admission.as_ref(), assets)? else {
+            if sky_capacity > self.skies.capacity() {
+                self.skies = SkyBatches::new(assets.materials().len(), sky_capacity);
+            }
             return Ok(());
         };
         let lightmap_updates = self.lightmap_updates.prepare_append(assets)?;
         self.state.vao = 0;
         self.state.texture = None;
         let _bindings = UploadBindings::new(&self.gl);
-        let mut prepared =
-            PreparedAssets::prepare(&self.gl, assets, &self.textures, &self.texture_params)?;
+        let mut prepared = PreparedAssets::prepare(
+            &self.gl,
+            assets,
+            &self.textures,
+            &self.texture_params,
+            sky_capacity,
+        )?;
         std::mem::swap(&mut self.static_vao, &mut prepared.objects.static_vao);
         std::mem::swap(&mut self.model_vao, &mut prepared.objects.model_vao);
         std::mem::swap(&mut self.static_buffers, &mut prepared.objects.buffers);
@@ -939,6 +963,7 @@ impl GlBackend {
             DrawKind::Entity => self.entity(
                 list.entity(item.index),
                 shader,
+                SkyKey::for_item(item, list, assets),
                 assets,
                 projection,
                 inputs,
@@ -957,7 +982,15 @@ impl GlBackend {
                     return;
                 }
                 if matches!(settings.sky, Some(Sky::Cube { .. })) {
-                    self.draw_sky(shader, assets, projection, inputs, view.far, stats);
+                    self.draw_sky(
+                        shader,
+                        SkyKey::for_item(item, list, assets),
+                        assets,
+                        projection,
+                        inputs,
+                        view.far,
+                        stats,
+                    );
                     return;
                 }
                 let vertices = list.vertices(poly.vertices);
@@ -1095,7 +1128,7 @@ impl GlBackend {
         stats: &mut BackendStats,
     ) {
         self.skies.begin_frame();
-        crate::sky::for_each_sky_triangle(list, draws, assets, |material, submission| {
+        crate::sky::for_each_sky_triangle(list, draws, assets, |key, submission| {
             match submission {
                 crate::sky::SkySubmission::Begin(item) => {
                     if crate::scene::draw_entity(list, item)
@@ -1103,12 +1136,12 @@ impl GlBackend {
                     {
                         return false;
                     }
-                    return self.sky_clip(material, assets, stats).is_some();
+                    return self.sky_clip(key, assets, stats).is_some();
                 }
                 crate::sky::SkySubmission::Triangle(points) => {
                     if !self
                         .skies
-                        .clip_mut(material.0 as usize)
+                        .clip_mut(key)
                         .is_some_and(|clip| clip.add_polygon(&points, origin))
                     {
                         stats.rejected = stats.rejected.saturating_add(1);
@@ -1124,29 +1157,34 @@ impl GlBackend {
 
     fn sky_clip(
         &mut self,
-        material_id: MaterialId,
+        key: SkyKey,
         assets: &Assets,
         stats: &mut BackendStats,
     ) -> Option<&mut SkyClip> {
-        let material = assets.material(material_id)?;
+        let material = assets.material(key.material())?;
         if material.settings.fog.is_some()
             || !matches!(material.settings.sky, Some(Sky::Cube { .. }))
         {
             return None;
         }
-        let clip = self.skies.clip_mut(material_id.0 as usize);
+        let clip = self.skies.clip_mut(key);
         if clip.is_none() {
             stats.rejected = stats.rejected.saturating_add(1);
         }
         clip
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A sealed sky draw carries its exact batch key with the existing projection and stage inputs"
+    )]
     fn draw_sky(
         &mut self,
         shader: ResolvedShader,
+        key: Option<SkyKey>,
         assets: &Assets,
         projection: &[f32; 16],
-        inputs: DrawInputs,
+        mut inputs: DrawInputs,
         far: f32,
         stats: &mut BackendStats,
     ) {
@@ -1154,6 +1192,7 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        inputs.lightmap = binding.lightmap;
         let material_id = binding.material;
         let Some(material) = assets.material(material_id) else {
             stats.rejected = stats.rejected.saturating_add(1);
@@ -1175,7 +1214,7 @@ impl GlBackend {
         };
         let bounds = match self.scoped_sky.take() {
             Some(bounds) => bounds,
-            None => self.skies.take_for_draw(material_id.0 as usize),
+            None => key.and_then(|key| self.skies.take_for_draw(key)),
         };
         let Some(mut bounds) = bounds else {
             return;
@@ -1341,6 +1380,7 @@ impl GlBackend {
         &mut self,
         entity: &SceneEntity,
         shader: ResolvedShader,
+        key: Option<SkyKey>,
         assets: &Assets,
         projection: &[f32; 16],
         mut inputs: DrawInputs,
@@ -1384,7 +1424,7 @@ impl GlBackend {
         }
         if matches!(settings.sky, Some(Sky::Cube { .. })) {
             let inputs = inputs.entity_inputs(entity, false);
-            self.draw_sky(shader, assets, projection, inputs, far, stats);
+            self.draw_sky(shader, key, assets, projection, inputs, far, stats);
             return;
         }
         let matrix = multiply(projection, &model_matrix(entity));
@@ -1540,7 +1580,15 @@ impl GlBackend {
             let inputs = surface.entity.map_or(inputs, |index| {
                 inputs.entity_inputs(list.entity(index), false)
             });
-            self.draw_sky(shader, assets, projection, inputs, far, stats);
+            self.draw_sky(
+                shader,
+                SkyKey::for_item(item, list, assets),
+                assets,
+                projection,
+                inputs,
+                far,
+                stats,
+            );
             stats.surfaces = stats.surfaces.saturating_add(1);
             return;
         }

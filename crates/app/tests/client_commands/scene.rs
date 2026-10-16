@@ -138,6 +138,7 @@ fn ordinal(ui: bool, value: u8) -> u8 {
         37 => 18,
         38 => 19,
         41 => 22,
+        79 => 80,
         other => other,
     }
 }
@@ -148,14 +149,37 @@ fn qvm_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 96)];
     let mut branches = vec![];
-    for command in 0..26 {
+    for command in 0..29 {
         operations.extend([(Local, 104), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, 0), (Leave, 96)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if matches!(command, 12 | 13 | 16 | 19) {
+        if command == 26 {
+            // The reached malformed-string witness names the final masked byte.
+            operations.extend([(Const, 65535), (Const, 255), (Store1, 0)]);
+            for index in 0..3 {
+                operations.extend([(Local, 108 + index * 4), (Load4, 0), (Arg, 8 + index * 4)]);
+            }
+            operations.extend([(Const, -i32::from(ordinal(ui, 79)) - 1), (Call, 0)]);
+        } else if command == 27 {
+            operations.extend([
+                (Local, 108),
+                (Load4, 0),
+                (Arg, 8),
+                (Const, -i32::from(ordinal(ui, 39)) - 1),
+                (Call, 0),
+            ]);
+        } else if command == 28 {
+            operations.extend([
+                (Const, SHADER_HANDLE as i32),
+                (Local, 108),
+                (Load4, 0),
+                (Store4, 0),
+                (Const, 0),
+            ]);
+        } else if matches!(command, 12 | 13 | 16 | 19) {
             let (number, address) = match command {
                 12 => (37, 880),
                 16 => (38, 900),
@@ -267,7 +291,7 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..26)
+        &(0..29)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -282,12 +306,43 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     let callback = vm.import_callback();
     let source = base + 0x2400;
     let mut code = vec![];
-    for command in 0..26usize {
+    for command in 0..29usize {
         code.extend([0x83, 0xf9, command as u8, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
         code.extend([0x48, 0x83, 0xec, 0x58]);
-        if matches!(command, 12 | 13 | 16 | 19) {
+        if command == 26 || command == 27 {
+            let registers = if command == 26 { 3 } else { 1 };
+            for index in 0..registers {
+                code.extend(match index {
+                    0 => [0x48, 0x85, 0xd2],
+                    1 => [0x4d, 0x85, 0xc0],
+                    _ => [0x4d, 0x85, 0xc9],
+                });
+                code.extend([0x74, 13, 0x48, 0xb8]);
+                code.extend(source.to_le_bytes());
+                code.extend(match index {
+                    0 => [0x48, 0x01, 0xc2],
+                    1 => [0x49, 0x01, 0xc0],
+                    _ => [0x49, 0x01, 0xc1],
+                });
+            }
+            code.extend([
+                0xb9,
+                ordinal(ui, if command == 26 { 79 } else { 39 }),
+                0,
+                0,
+                0,
+                0x48,
+                0xb8,
+            ]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0]);
+        } else if command == 28 {
+            code.extend([0x48, 0xb8]);
+            code.extend((source + u64::from(SHADER_HANDLE)).to_le_bytes());
+            code.extend([0x89, 0x10, 0x31, 0xc0]);
+        } else if matches!(command, 12 | 13 | 16 | 19) {
             let (number, address) = match command {
                 12 => (37, 880),
                 16 => (38, 900),
@@ -624,21 +679,33 @@ fn sun_probe(
     value: u64,
     preparer: Option<&mut dyn qa_app::renderer::AssetPreparer>,
 ) -> u32 {
+    scene_words(host, module, client, command, &[value], preparer).unwrap()
+}
+
+fn scene_words(
+    host: &mut FrameHost,
+    module: ModuleId,
+    client: Option<ClientId>,
+    command: u32,
+    words: &[u64],
+    preparer: Option<&mut dyn qa_app::renderer::AssetPreparer>,
+) -> Result<u32, qa_session::dispatch::CallError> {
     host.call_module_export_with_driver(
         module,
         Export {
             client,
-            ..Export::words(CallbackId(command), &[value])
+            ..Export::words(CallbackId(command), words)
         },
         ThinkTime::Milliseconds(1),
         &mut qa_app::modules::Driver::new(preparer),
+    )?;
+    Ok(
+        match host.module_counts(module).unwrap().last_result.unwrap() {
+            ModuleResult::Qvm(value) => value as u32,
+            ModuleResult::Native(value) => value as u32,
+            _ => panic!("word module"),
+        },
     )
-    .unwrap();
-    match host.module_counts(module).unwrap().last_result.unwrap() {
-        ModuleResult::Qvm(value) => value as u32,
-        ModuleResult::Native(value) => value as u32,
-        _ => panic!("word module"),
-    }
 }
 
 fn sun_direction(host: &mut FrameHost, module: ModuleId, client: Option<ClientId>) -> Vec3 {
@@ -1714,4 +1781,739 @@ fn mark_fragments(native: bool) {
         "actual {} MarkFragments uses published selected world geometry",
         if native { "owned-native" } else { "QVM" }
     );
+}
+
+pub(super) fn remaps(native: bool) {
+    use qa_app::renderer::{
+        AssetPreparer, SceneComposer,
+        console::FontAssets,
+        hud::{HudAssets, HudView},
+    };
+    use qa_compat::services::{ModelLoader, ShaderLighting};
+    use qa_core::{
+        configstrings::{ConfigLayout, ConfigStrings},
+        events::TextStore,
+    };
+    use qa_render::{
+        cpu::{CpuBackend, CpuLimits},
+        shader::{reference::ShaderRef, registration::ShaderOwner},
+    };
+
+    struct Backend {
+        cpu: CpuBackend,
+        attempts: usize,
+        reject: bool,
+    }
+    impl AssetPreparer for Backend {
+        fn prepare_assets(
+            &mut self,
+            assets: &qa_render::Assets,
+            limits: Option<qa_render::Limits>,
+        ) -> Result<(), String> {
+            self.attempts += 1;
+            if std::mem::take(&mut self.reject) {
+                return Err("reject remap admission".into());
+            }
+            self.cpu
+                .prepare_assets(assets, limits)
+                .map_err(str::to_owned)
+        }
+    }
+    let mut fixture = model_support::Fixture::new(&[
+        ("models/test.md3", model_support::md3_surfaces()),
+        (
+            "models/test.skin",
+            b"body,textures/glow\nglow,textures/glow\n".to_vec(),
+        ),
+        (
+            "textures/body.tga",
+            model_support::tga(2, 2, &[[10, 80, 20, 255]; 4]),
+        ),
+        (
+            "textures/glow.tga",
+            model_support::tga(2, 2, &[[10, 80, 20, 255]; 4]),
+        ),
+        (
+            "remap/b.tga",
+            model_support::tga(2, 2, &[[90, 20, 10, 255]; 4]),
+        ),
+        (
+            "remap/c.tga",
+            model_support::tga(2, 2, &[[20, 30, 150, 255]; 4]),
+        ),
+        (
+            "remap/d.tga",
+            model_support::tga(2, 2, &[[60, 70, 80, 255]; 4]),
+        ),
+        (
+            "gfx/2d/bigchars.tga",
+            model_support::tga(128, 128, &vec![[255; 4]; 128 * 128]),
+        ),
+        (
+            "scripts/remap.shader",
+            br#"
+            textures/glow { cull none { map textures/glow.tga rgbGen identity } }
+            remap/b { cull none { map remap/b.tga rgbGen identity } }
+            remap/c { cull none { map remap/c.tga rgbGen identity } }
+            remap/d { cull none { map remap/d.tga rgbGen identity } }
+        "#
+            .to_vec(),
+        ),
+    ]);
+    let (mut runtime, clients) = runtime(2);
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let mut initial = data();
+    for (at, value) in [
+        (16, b"textures/glow".as_slice()),
+        (512, b"remap/b"),
+        (544, b"1.25 trailing\xff"),
+        (576, b"remap/c"),
+        (608, b""),
+        (624, b"remap/absent-a"),
+        (656, b"remap/absent-b"),
+        (944, b"remap/d"),
+        (960, b"gfx/2d/bigchars"),
+    ] {
+        initial[at..at + value.len() + 1].fill(0);
+        initial[at..at + value.len()].copy_from_slice(value);
+    }
+    // Remove the original suffix so source identity is exactly textures/glow.
+    initial[16 + b"textures/glow".len()] = 0;
+    let modules = [
+        (false, Some(clients[0]), 0),
+        (true, None, 0),
+        (false, Some(clients[1]), 1),
+    ];
+    let requests = modules
+        .iter()
+        .enumerate()
+        .map(|(index, &(ui, client, seat))| {
+            let mut row_initial = initial;
+            if index == 1 {
+                row_initial[900..924].fill(0);
+                row_initial[900..919].copy_from_slice(b"models/missing.skin");
+            }
+            let program = if native {
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                {
+                    native_scene_data(ui, &row_initial)
+                }
+                #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+                {
+                    qvm_scene_data(ui, &row_initial)
+                }
+            } else {
+                qvm_scene_data(ui, &row_initial)
+            };
+            let mut row = request(
+                &mut runtime,
+                ModuleId(index as u16 + 1),
+                client.unwrap_or(clients[0]),
+                program,
+            );
+            row.entries = (0..29).collect();
+            row.frame.client = client;
+            row.context.console.seat = SeatId::new(seat).unwrap();
+            row
+        })
+        .collect();
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    host.local_clients[..2].copy_from_slice(&[Some(clients[0]), Some(clients[1])]);
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut owner = ModelAssets::new(
+        qa_render::Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let font = FontAssets::load(
+        &host.runtime.vfs,
+        &mut owner,
+        RuleSetId::Quake3,
+        profile.image_settings,
+    )
+    .unwrap();
+    assert!(font.native);
+    let hud = HudAssets::from_font(RuleSetId::Quake3, font, 320).unwrap();
+    assert!(
+        ModelLoader::register_shader(
+            &mut owner,
+            &host.runtime.vfs,
+            b"textures/glow",
+            RuleSetId::Quake3,
+            true,
+            ShaderLighting::TwoDimensional
+        )
+        .unwrap()
+            > 0
+    );
+    let (mut scene, _) =
+        SceneComposer::load(Default::default(), owner.assets_mut(), vec![]).unwrap();
+    let staged = scene.stage_hud(hud).unwrap();
+    let limits = staged.limits();
+    staged.commit();
+    let mut backend = Backend {
+        cpu: CpuBackend::load_with_limits(
+            320,
+            200,
+            owner.assets(),
+            CpuLimits {
+                scene: limits,
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+        attempts: 0,
+        reject: false,
+    };
+    owner
+        .publish_admission(backend.cpu.admitted_assets().unwrap())
+        .unwrap();
+    owner.end_initial_registration();
+    host.runtime.model_assets = Some(owner);
+    host.runtime.scene = Some(scene);
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
+        320,
+        200,
+    )
+    .unwrap();
+    let mut handles = [0; 3];
+    for (index, &(_, client, _)) in modules.iter().enumerate() {
+        handles[index] =
+            scene_words(&mut host, ModuleId(index as u16 + 1), client, 0, &[], None).unwrap();
+        assert!(handles[index] > 0);
+    }
+    assert_eq!(
+        handles[0], handles[1],
+        "UI and cgame share logical registration"
+    );
+    let lifetime = host.runtime.server.clients[clients[0].0 as usize].entity;
+    let context = host
+        .native_shaders()
+        .context(ShaderOwner::Client(clients[0], lifetime), profile)
+        .unwrap();
+    let source_ref = ShaderRef::Native(qa_render::shader::reference::NativeShaderRef {
+        context,
+        node: qa_render::shader::context::ShaderNodeId(handles[0] - 1),
+    });
+    let source_binding = source_ref.source(host.native_shaders()).unwrap();
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    scene_words(&mut host, ModuleId(1), Some(clients[0]), 2, &[], None).unwrap();
+    scene_words(&mut host, ModuleId(1), Some(clients[0]), 3, &[], None).unwrap();
+    for (index, &(_, client, _)) in modules.iter().enumerate() {
+        scene_words(&mut host, ModuleId(index as u16 + 1), client, 4, &[], None).unwrap();
+    }
+
+    let prefix = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    backend.reject = true;
+    assert_eq!(
+        scene_words(
+            &mut host,
+            ModuleId(2),
+            None,
+            26,
+            &[944, 656, 2_147_483_647],
+            Some(&mut backend)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        prefix
+    );
+    assert_eq!(
+        source_ref
+            .resolve(
+                host.runtime.model_assets.as_ref().unwrap().assets(),
+                host.native_shaders()
+            )
+            .unwrap()
+            .binding(),
+        source_binding
+    );
+    // Retry admits the source before discovering the missing target; its prefix remains.
+    assert_eq!(
+        scene_words(
+            &mut host,
+            ModuleId(2),
+            None,
+            26,
+            &[944, 656, 2_147_483_647],
+            Some(&mut backend)
+        )
+        .unwrap(),
+        0
+    );
+    let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
+    assert!(
+        catalog
+            .shader_outcome(b"remap/d", profile, ShaderLighting::World(None))
+            .unwrap()
+            .defaulted
+            .is_none()
+    );
+    assert!(
+        catalog
+            .shader_outcome(b"remap/absent-b", profile, ShaderLighting::World(None))
+            .unwrap()
+            .defaulted
+            .is_some()
+    );
+    assert_eq!(
+        scene_words(
+            &mut host,
+            ModuleId(2),
+            None,
+            26,
+            &[624, 2_147_483_647, 2_147_483_647],
+            Some(&mut backend)
+        )
+        .unwrap(),
+        0
+    );
+    assert!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .catalog()
+            .shader_outcome(b"remap/absent-a", profile, ShaderLighting::World(None))
+            .unwrap()
+            .defaulted
+            .is_some()
+    );
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+
+    assert_eq!(
+        scene_words(
+            &mut host,
+            ModuleId(2),
+            None,
+            26,
+            &[16, 512, 544],
+            Some(&mut backend)
+        )
+        .unwrap(),
+        0
+    );
+    let selected = |host: &FrameHost| {
+        source_ref
+            .resolve(
+                host.runtime.model_assets.as_ref().unwrap().assets(),
+                host.native_shaders(),
+            )
+            .unwrap()
+    };
+    assert_eq!(selected(&host).time_offset(), 1.25);
+    let attempts = backend.attempts;
+    host.runtime.vfs.take_lookup_count();
+    assert_eq!(
+        scene_words(&mut host, ModuleId(2), None, 26, &[16, 512, 0], None).unwrap(),
+        0
+    );
+    assert_eq!(selected(&host).time_offset(), 1.25);
+    assert_eq!(
+        scene_words(&mut host, ModuleId(2), None, 26, &[16, 512, 608], None).unwrap(),
+        0
+    );
+    assert_eq!(selected(&host).time_offset(), 0.0);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.attempts, attempts);
+
+    let b = scene_words(&mut host, ModuleId(2), None, 27, &[512], Some(&mut backend)).unwrap();
+    assert!(b > 0);
+    scene_words(&mut host, ModuleId(2), None, 28, &[u64::from(b)], None).unwrap();
+    scene_words(&mut host, ModuleId(2), None, 26, &[16, 512, 544], None).unwrap();
+    let b_binding = selected(&host).binding();
+    scene_words(
+        &mut host,
+        ModuleId(2),
+        None,
+        26,
+        &[512, 576, 608],
+        Some(&mut backend),
+    )
+    .unwrap();
+    assert_eq!(
+        (selected(&host).binding(), selected(&host).time_offset()),
+        (b_binding, 1.25),
+        "one hop keeps A drawing B after B remaps C"
+    );
+    scene_words(&mut host, ModuleId(2), None, 4, &[], None).unwrap();
+
+    let values = qa_ui::values::ValueLayout::load(&[]).unwrap();
+    let mut hud_state = HudState::with_capacity(0, 0, 0, values.capacity());
+    let mut texts = TextStore::load(1, 8).unwrap();
+    hud_state.notify[0] = Some(HudLine {
+        text: texts.insert(b"A").unwrap(),
+        started_at: 0.,
+        until: 2.,
+    });
+    let layout = ConfigLayout::QUAKE3;
+    let configs =
+        ConfigStrings::load((0..layout.count).map(|i| layout.capacity(i).unwrap())).unwrap();
+    let localization = qa_content::localization::Catalog::default();
+    let mut scene = host.runtime.scene.take().unwrap();
+    let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+    let mut font_front = qa_render::FrontEnd::load(Default::default()).unwrap();
+    let mut font_frame = font_front.begin_frame([3, 5, 7, 255]).unwrap();
+    let hud_stats = scene.append_hud(
+        &mut font_frame,
+        assets,
+        HudView {
+            hud: &hud_state,
+            texts: &texts,
+            configs: &configs,
+            layout,
+            values: &values,
+            localization: &localization,
+            rules: RuleSetId::Quake3,
+            time: EventTime(0),
+            style_time: ThinkTime::Milliseconds(0),
+            server_frame: 0,
+            client: clients[0],
+            client_lifetime: lifetime,
+            style_interpolation: 0,
+            show_text: true,
+        },
+        qa_render::Refdef {
+            viewport: qa_render::Viewport {
+                width: 160,
+                height: 200,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        host.native_shaders(),
+        ShaderOwner::Client(clients[0], lifetime),
+    );
+    assert_eq!((hud_stats.glyphs, hud_stats.rejected), (1, 0));
+    host.runtime.scene = Some(scene);
+    scene_words(&mut host, ModuleId(2), None, 26, &[960, 512, 0], None).unwrap();
+    let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+    let mut font_packet = font_frame.finish();
+    let font_shader = font_packet
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            Command::Draw2d(draw) => Some(draw.shader),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        font_shader
+            .resolve(assets, host.native_shaders())
+            .unwrap()
+            .binding(),
+        b_binding,
+        "queued font follows the final native remap"
+    );
+    let mut packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
+    let native_draws: Vec<_> = packet
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            Command::Draw2d(draw) => Some(draw.shader),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(native_draws.len(), 4);
+    assert_eq!(
+        native_draws[0].source(host.native_shaders()),
+        Some(source_binding)
+    );
+    assert_eq!(
+        native_draws[0]
+            .resolve(assets, host.native_shaders())
+            .unwrap()
+            .binding(),
+        b_binding
+    );
+    assert_eq!(
+        native_draws[1]
+            .resolve(assets, host.native_shaders())
+            .unwrap()
+            .binding(),
+        b_binding
+    );
+    assert_eq!(
+        native_draws[2]
+            .resolve(assets, host.native_shaders())
+            .unwrap()
+            .binding(),
+        source_binding,
+        "peer context remains unchanged"
+    );
+    assert_ne!(
+        native_draws[3]
+            .resolve(assets, host.native_shaders())
+            .unwrap()
+            .binding(),
+        b_binding
+    );
+    let view = packet
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            Command::View(view) if view.scene.polys.count != 0 => Some(view),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(packet.draws(view.scene.draws).len(), 2);
+    assert!(packet.draws(view.scene.draws).iter().all(|draw| {
+        draw.shader
+            .unwrap()
+            .resolve(assets, host.native_shaders())
+            .unwrap()
+            .binding()
+            == b_binding
+    }));
+    packet.resolve_shaders(assets, host.native_shaders());
+    assert_eq!(backend.cpu.render(&packet, assets).rejected, 0);
+    assert_eq!(
+        backend.cpu.pixels()[10 * 320 + 30],
+        u32::from_le_bytes([20, 30, 150, 255])
+    );
+    assert_eq!(
+        backend.cpu.pixels()[10 * 320 + 190],
+        u32::from_le_bytes([10, 80, 20, 255])
+    );
+    assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
+    font_packet.resolve_shaders(assets, host.native_shaders());
+    assert_eq!(backend.cpu.render(&font_packet, assets).rejected, 0);
+    assert!(font_front.recycle(font_packet).is_ok());
+
+    // A later model shader variant starts without the old name's remap pointer.
+    let model = scene_words(
+        &mut host,
+        ModuleId(1),
+        Some(clients[0]),
+        12,
+        &[],
+        Some(&mut backend),
+    )
+    .unwrap();
+    assert!(model > 0);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let registrations = owner
+        .catalog()
+        .renderer_registrations(
+            qa_compat::services::RendererRegistration::Model,
+            model as i32,
+            profile,
+        )
+        .unwrap();
+    let resource = owner
+        .catalog()
+        .renderer_registration(model as i32, profile)
+        .unwrap();
+    let selected = owner
+        .catalog()
+        .bindings(resource, 0, Default::default())
+        .unwrap()
+        .choices()
+        .next()
+        .unwrap();
+    let nodes = host
+        .native_shaders()
+        .resource_nodes(context, selected.resource)
+        .unwrap();
+    let glow_key = owner.assets().find_shader_name(b"textures/glow").unwrap();
+    let node = registrations
+        .iter()
+        .zip(nodes)
+        .find(|(row, _)| row.key == glow_key)
+        .unwrap()
+        .1;
+    let fresh = ShaderRef::Native(qa_render::shader::reference::NativeShaderRef {
+        context,
+        node: *node,
+    });
+    assert_ne!(fresh, source_ref);
+    assert_eq!(
+        fresh
+            .resolve(owner.assets(), host.native_shaders())
+            .unwrap()
+            .binding(),
+        fresh.source(host.native_shaders()).unwrap()
+    );
+    // Physical readiness in a peer does not replace first logical registration in this client.
+    let peer_skin = scene_words(
+        &mut host,
+        ModuleId(3),
+        Some(clients[1]),
+        16,
+        &[],
+        Some(&mut backend),
+    )
+    .unwrap();
+    assert!(peer_skin > 0);
+    let peer_d = scene_words(
+        &mut host,
+        ModuleId(3),
+        Some(clients[1]),
+        27,
+        &[944],
+        Some(&mut backend),
+    )
+    .unwrap();
+    assert!(peer_d > 0);
+    let stable_prefix = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    let stable_attempts = backend.attempts;
+    let c_binding = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .catalog()
+        .shader_outcome(b"remap/c", profile, ShaderLighting::World(None))
+        .unwrap()
+        .shader;
+    for (module, client, command, args, expected, missing) in [
+        (ModuleId(1), Some(clients[0]), 16, &[][..], peer_skin, false),
+        (ModuleId(2), None, 16, &[][..], 0, true),
+        (ModuleId(1), Some(clients[0]), 27, &[944][..], peer_d, false),
+    ] {
+        if command == 27 {
+            let smp = host
+                .console
+                .cvars
+                .bind(
+                    "r_smp",
+                    Context {
+                        source: RuleSetId::Quake3,
+                        ..Context::default()
+                    },
+                )
+                .unwrap();
+            host.console.cvars.set(smp.canonical(), 1.).unwrap();
+            assert_eq!(
+                host.console
+                    .cvars
+                    .integer_in(smp.canonical(), RuleSetId::Quake3),
+                1
+            );
+        }
+        let mut shader_handle = None;
+        for first in [true, false] {
+            host.runtime.vfs.take_lookup_count();
+            assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+            scene_words(&mut host, ModuleId(2), None, 26, &[16, 512, 0], None).unwrap();
+            scene_words(&mut host, ModuleId(1), Some(clients[0]), 4, &[], None).unwrap();
+            let returned = scene_words(&mut host, module, client, command, args, None).unwrap();
+            if command == 27 {
+                if first {
+                    assert!(returned > 0);
+                    shader_handle = Some(returned);
+                } else {
+                    assert_eq!(Some(returned), shader_handle);
+                }
+            } else {
+                assert_eq!(returned, expected);
+            }
+            scene_words(&mut host, ModuleId(2), None, 26, &[16, 576, 0], None).unwrap();
+            scene_words(&mut host, ModuleId(1), Some(clients[0]), 4, &[], None).unwrap();
+            let mut packet = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
+            let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+            let pictures: Vec<_> = packet
+                .commands()
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Draw2d(draw) => Some(draw.shader),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(pictures.len(), 2);
+            assert_eq!(
+                pictures[0]
+                    .resolve(assets, host.native_shaders())
+                    .unwrap()
+                    .binding(),
+                if first { b_binding } else { c_binding },
+                "first logical registration seals queued draws; a cached repeat leaves them live"
+            );
+            assert_eq!(
+                pictures[1]
+                    .resolve(assets, host.native_shaders())
+                    .unwrap()
+                    .binding(),
+                c_binding
+            );
+            packet.resolve_shaders(assets, host.native_shaders());
+            assert_eq!(backend.cpu.render(&packet, assets).rejected, 0);
+            assert_eq!(
+                backend.cpu.pixels()[10 * 320 + 30],
+                u32::from_le_bytes([20, 30, 150, 255])
+            );
+            assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
+            assert_eq!(
+                host.runtime
+                    .model_assets
+                    .as_ref()
+                    .unwrap()
+                    .assets()
+                    .counts(),
+                stable_prefix
+            );
+            assert_eq!(backend.attempts, stable_attempts);
+            let lookups = host.runtime.vfs.take_lookup_count();
+            if missing && first {
+                assert!(lookups > 0);
+            } else {
+                assert_eq!(lookups, 0);
+            }
+        }
+    }
+    // Previously defaulted names are usable on later lookup, so these bad operands are now reached.
+    assert!(
+        scene_words(
+            &mut host,
+            ModuleId(2),
+            None,
+            26,
+            &[624, 2_147_483_647, 0],
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        scene_words(
+            &mut host,
+            ModuleId(1),
+            Some(clients[0]),
+            26,
+            &[16, 656, 2_147_483_647],
+            None
+        )
+        .is_err()
+    );
+    assert!(scene_words(&mut host, ModuleId(3), Some(clients[1]), 0, &[], None).unwrap() > 0);
+    assert_eq!(host.module_counts(ModuleId(3)).unwrap().traps, 0);
 }

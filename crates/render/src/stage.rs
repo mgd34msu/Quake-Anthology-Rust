@@ -1057,8 +1057,11 @@ impl StageEvaluator {
 }
 pub fn shader_time(settings: MaterialSettings, inputs: DrawInputs) -> f32 {
     let time = inputs.time_seconds() - inputs.entity_shader_time - settings.time_offset;
-    if let Some(clamp) = settings.clamp_time.filter(|&clamp| clamp > 0.0) {
-        time.min(clamp)
+    if let Some(clamp) = settings.clamp_time
+        && clamp != 0.0
+        && time >= clamp
+    {
+        clamp
     } else {
         time
     }

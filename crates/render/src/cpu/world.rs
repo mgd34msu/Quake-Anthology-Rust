@@ -388,6 +388,7 @@ enum PreparedDraw {
     #[default]
     External,
     Surface(IndexSpan),
+    SkyPending,
     Sky {
         boxes: IndexSpan,
         clouds: IndexSpan,
@@ -610,6 +611,12 @@ impl WorldRaster {
         let mut max_vertices = 3usize;
         let mut max_edges = 0usize;
         let mut stage_capacity = 0usize;
+        let maximum_stages = assets
+            .materials()
+            .iter()
+            .map(|material| material.stages.len())
+            .max()
+            .unwrap_or(0);
         let mut instance_capacity = PrepareCapacity::default();
         let skies: Vec<_> = assets
             .materials()
@@ -767,7 +774,7 @@ impl WorldRaster {
                     sources.push(source);
                     let stages = loops
                         .len()
-                        .checked_mul(material.stages.len())
+                        .checked_mul(maximum_stages)
                         .ok_or("world stage count overflow")?;
                     footprints[surface_index].stages = footprints[surface_index].stages.max(stages);
                     surfaces.push(SurfaceInfo {
@@ -852,31 +859,29 @@ impl WorldRaster {
         max_edges = max_edges
             .checked_add(instance_capacity.coverage)
             .ok_or("instance coverage count overflow")?;
-        let sky_boundaries = sky_count
+        let sky_boundaries = usize::from(has_sky)
             .checked_mul(super::sky::CLOUD_BOUNDARIES + super::sky::BOX_BOUNDARIES)
             .ok_or("sky polygon count overflow")?;
         boundaries = boundaries
             .checked_add(sky_boundaries)
             .ok_or("sky polygon count overflow")?;
-        for (material, sky) in assets.materials().iter().zip(&skies) {
-            if sky.enabled {
-                stage_capacity = stage_capacity
-                    .checked_add(
-                        super::sky::CLOUD_BOUNDARIES
-                            .checked_mul(material.stages.len())
-                            .and_then(|count| count.checked_add(super::sky::BOX_BOUNDARIES))
-                            .ok_or("sky stage count overflow")?,
-                    )
-                    .ok_or("sky stage count overflow")?;
-            }
+        if has_sky {
+            stage_capacity = stage_capacity
+                .checked_add(
+                    super::sky::CLOUD_BOUNDARIES
+                        .checked_mul(max_sky_stages)
+                        .and_then(|count| count.checked_add(super::sky::BOX_BOUNDARIES))
+                        .ok_or("sky stage count overflow")?,
+                )
+                .ok_or("sky stage count overflow")?;
         }
         let coverage_capacity = max_edges
             .checked_add(
-                sky_count
+                usize::from(has_sky)
                     .checked_mul(super::sky::SKY_EDGES)
                     .ok_or("sky coverage count overflow")?,
             )
-            .ok_or("world coverage count overflow")?;
+            .ok_or("sky coverage count overflow")?;
         if has_sky {
             max_vertices = max_vertices.max(10);
             max_edges = max_edges.max(super::sky::SKY_EDGES);
@@ -933,7 +938,6 @@ impl WorldRaster {
             return Err("CPU cache cannot hold a mandatory surface");
         }
         let rgba_count = rgba.len();
-        let sky_state_count = skies.len();
         let catalog = Arc::new(WorldCatalog {
             edge_capacity: max_edges.max(3),
             primitive_capacity: boundaries.max(1),
@@ -985,7 +989,10 @@ impl WorldRaster {
             rgba_prepared: vec![None; rgba_count].into_boxed_slice(),
             rgba_colors: vec![super::rgba::ProductColorCache::default(); rgba_count]
                 .into_boxed_slice(),
-            skies: crate::sky::SkyBatches::new(sky_state_count),
+            skies: crate::sky::SkyBatches::new(
+                catalog.skies.len(),
+                if has_sky { draw_capacity } else { 0 },
+            ),
             sky_stages: vec![None; max_sky_stages.max(1)].into_boxed_slice(),
             draws: vec![PreparedDraw::default(); draw_capacity].into_boxed_slice(),
             reference_base: 0,
@@ -1158,7 +1165,7 @@ impl WorldPrepare {
         list: &CommandList,
         scene: SceneRanges,
         assets: &Assets,
-        evaluator: &StageEvaluator,
+        _evaluator: &StageEvaluator,
         stats: &mut crate::BackendStats,
     ) -> bool {
         let references = list.surfaces(scene.surfaces);
@@ -1184,8 +1191,7 @@ impl WorldPrepare {
             .and_then(|source| super::sky::BackgroundDraw::prepare(source, camera, assets));
         self.opaque_count = self.geometry.primitive_count;
         for (rank, &item) in list.draws(scene.draws).iter().enumerate() {
-            self.draws[rank] =
-                self.prepare_draw(camera, item, rank as u32, list, assets, evaluator, stats);
+            self.draws[rank] = self.prepare_draw(camera, item, list, assets);
         }
         self.draw_count = list.draws(scene.draws).len();
         self.draw_base = scene.draws.first;
@@ -1225,7 +1231,7 @@ impl WorldPrepare {
         if !camera.rgb() {
             return;
         }
-        crate::sky::for_each_sky_triangle(list, scene.draws, assets, |material, submission| {
+        crate::sky::for_each_sky_triangle(list, scene.draws, assets, |key, submission| {
             match submission {
                 crate::sky::SkySubmission::Begin(item) => {
                     if crate::scene::draw_entity(list, item)
@@ -1233,7 +1239,7 @@ impl WorldPrepare {
                     {
                         return false;
                     }
-                    if !self.catalog.sky_enabled(material) {
+                    if !self.catalog.sky_enabled(key.material()) {
                         return false;
                     }
                     if item.kind == DrawKind::Surface {
@@ -1253,7 +1259,7 @@ impl WorldPrepare {
                     }
                 }
                 crate::sky::SkySubmission::Triangle(points) => {
-                    self.add_sky_polygon(material, points, camera, stats)
+                    self.add_sky_polygon(key, points, camera, stats)
                 }
                 crate::sky::SkySubmission::MissingSurface => {}
             }
@@ -1263,28 +1269,103 @@ impl WorldPrepare {
 
     fn add_sky_polygon(
         &mut self,
-        material: MaterialId,
+        key: crate::sky::SkyKey,
         points: [qa_core::primitives::Vec3; 3],
         camera: &Camera,
         stats: &mut crate::BackendStats,
     ) {
         if !self
             .skies
-            .clip_mut(material.0 as usize)
+            .clip_mut(key)
             .is_some_and(|clip| clip.add_polygon(&points, camera.refdef.origin))
         {
             self.geometry.reject(stats);
         }
     }
 
-    /// The shared draw list determines when the material's single sky draw
-    /// occurs. Source polygons from all worlds/entities/polys have already
-    /// contributed to its clip, matching native RB_StageIteratorSky.
+    /// The ordered draw borrows one sky expansion suffix until every band has
+    /// finished. Source world primitives remain in the same prepared prefix.
+    fn prepare_sky_draw(
+        &mut self,
+        camera: &Camera,
+        rank: usize,
+        list: &CommandList,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+        stats: &mut crate::BackendStats,
+    ) -> Option<PrepareCapacity> {
+        if !matches!(self.draws.get(rank), Some(PreparedDraw::SkyPending)) {
+            return None;
+        }
+        let item = *list
+            .draws(crate::scene::Span {
+                first: self.draw_base,
+                count: self.draw_count as u32,
+            })
+            .get(rank)?;
+        let before = PrepareCapacity {
+            primitives: self.geometry.primitive_count,
+            stages: self.geometry.stage_count,
+            coverage: self.geometry.coverage_count,
+        };
+        self.draws[rank] =
+            self.prepare_sky(camera, item, rank as u32, list, assets, evaluator, stats);
+        self.geometry.stats.polygons = self
+            .geometry
+            .stats
+            .polygons
+            .saturating_add((self.geometry.primitive_count - before.primitives) as u64);
+        stats.stages = stats.stages.saturating_add(
+            (self.geometry.stage_count - before.stages).min(u32::MAX as usize) as u32,
+        );
+        self.bins.rebuild(
+            camera.refdef.viewport,
+            self.policy,
+            self.opaque_count,
+            &mut self.geometry.primitives[..self.geometry.primitive_count],
+            &self.geometry.coverage[..self.geometry.coverage_count],
+        );
+        Some(before)
+    }
+    fn finish_sky_draw(&mut self, rank: usize, before: PrepareCapacity) {
+        // Dispatcher loans end before success or failure restores this prefix.
+        self.geometry.primitive_count = before.primitives;
+        self.geometry.stage_count = before.stages;
+        self.geometry.coverage_count = before.coverage;
+        self.draws[rank] = PreparedDraw::Skip;
+    }
+    fn source_draw(&self, item: DrawItem) -> PreparedDraw {
+        match item.kind {
+            DrawKind::Surface => item
+                .index
+                .checked_sub(self.reference_base)
+                .and_then(|index| self.geometry.surface_draws.get(index as usize))
+                .copied()
+                .unwrap_or(PreparedDraw::Skip),
+            _ => PreparedDraw::External,
+        }
+    }
+    fn prepare_draw(
+        &self,
+        camera: &Camera,
+        item: DrawItem,
+        list: &CommandList,
+        assets: &Assets,
+    ) -> PreparedDraw {
+        if camera.rgb()
+            && crate::sky::item_material(item, list, assets)
+                .is_some_and(|id| self.catalog.sky_enabled(id))
+        {
+            PreparedDraw::SkyPending
+        } else {
+            self.source_draw(item)
+        }
+    }
     #[expect(
         clippy::too_many_arguments,
-        reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+        reason = "Ordered sky preparation borrows the existing shared stage evaluator and expansion workspace"
     )]
-    fn prepare_draw(
+    fn prepare_sky(
         &mut self,
         camera: &Camera,
         item: DrawItem,
@@ -1294,26 +1375,15 @@ impl WorldPrepare {
         evaluator: &StageEvaluator,
         stats: &mut crate::BackendStats,
     ) -> PreparedDraw {
-        let external = match item.kind {
-            DrawKind::Surface => item
-                .index
-                .checked_sub(self.reference_base)
-                .and_then(|index| self.geometry.surface_draws.get(index as usize))
-                .copied()
-                .unwrap_or(PreparedDraw::Skip),
-            _ => PreparedDraw::External,
+        let Some(key) = crate::sky::SkyKey::for_item(item, list, assets) else {
+            return PreparedDraw::Skip;
         };
-        let Some(id) = crate::sky::item_material(item, list, assets) else {
-            return external;
-        };
-        if !self.catalog.sky_enabled(id) || !camera.rgb() {
-            return external;
-        }
+        let id = key.material();
         let entity = crate::scene::draw_entity(list, item);
         let bounds = if entity.is_some_and(|entity| entity.material_opacity.is_some()) {
             crate::sky::submission_bounds(list, item, assets, camera.refdef.origin)
         } else {
-            self.skies.take_for_draw(id.0 as usize)
+            self.skies.take_for_draw(key)
         };
         let Some(mut bounds) = bounds else {
             return PreparedDraw::Skip;
@@ -1322,9 +1392,15 @@ impl WorldPrepare {
             self.geometry.reject(stats);
             return PreparedDraw::Skip;
         };
-        let Some(settings) = crate::scene::item_shader(list, assets, item)
-            .and_then(|shader| shader.settings(assets))
-        else {
+        let Some(shader) = crate::scene::item_shader(list, assets, item) else {
+            self.geometry.reject(stats);
+            return PreparedDraw::Skip;
+        };
+        let Some(binding) = shader.resources(assets) else {
+            self.geometry.reject(stats);
+            return PreparedDraw::Skip;
+        };
+        let Some(settings) = shader.settings(assets) else {
             self.geometry.reject(stats);
             return PreparedDraw::Skip;
         };
@@ -1335,10 +1411,13 @@ impl WorldPrepare {
             ..
         }) = settings.sky
         else {
-            return external;
+            return self.source_draw(item);
         };
         bounds = crate::sky::draw_bounds(bounds, rotation);
-        let inputs = DrawInputs::for_view(&camera.refdef);
+        let inputs = DrawInputs {
+            lightmap: binding.lightmap,
+            ..DrawInputs::for_view(&camera.refdef)
+        };
         let inputs = entity.map_or(inputs, |entity| inputs.entity_inputs(entity, false));
         let old_primitive_count = self.geometry.primitive_count;
         let depth_override = params.far_depth.then_some(1.0 / camera.refdef.far);

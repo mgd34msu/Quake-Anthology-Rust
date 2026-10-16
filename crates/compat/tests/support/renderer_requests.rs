@@ -518,3 +518,58 @@ fn load_world_keeps_a_long_cached_name_out_of_the_host_request() {
         );
     }
 }
+
+#[test]
+fn remap_traps_park_raw_words_without_reading_unreached_strings_and_return_void() {
+    for addresses in modes() {
+        let mut fixture = Fixture::new();
+        let base = base(addresses);
+        // No name needs to be readable until the host operation reaches it.
+        let mut bytes = [0xff; 64];
+        let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
+        let mut engine = fixture.engine(false);
+        for (table, number) in [(&Q3_CLIENT, 79), (&Q3_UI, 80)] {
+            for arguments in [
+                [0, 0, 0],
+                [base + 1, u64::MAX, u64::MAX - 1],
+                [0x1_0000_0000, 0xffff_ffff_0000_0001, 0x8000_0000_0000_0000],
+            ] {
+                let ImportStep::Host {
+                    request:
+                        HostRequest::RemapShader {
+                            original,
+                            replacement,
+                            time_offset,
+                        },
+                    continuation,
+                } = step(
+                    &mut engine,
+                    &mut memory,
+                    addresses,
+                    table,
+                    number,
+                    &arguments,
+                )
+                .unwrap()
+                else {
+                    panic!("remap must use the shared parked host path")
+                };
+                assert_eq!([original, replacement, time_offset], arguments);
+                assert!(matches!(continuation, ImportContinuation::Return(0)));
+                assert_eq!(
+                    returned(
+                        with_call(&mut engine, &mut memory, addresses, &[], |call| {
+                            continuation.resume(call, 73)
+                        },)
+                        .unwrap()
+                    ),
+                    0
+                );
+            }
+            assert!(matches!(
+                step(&mut engine, &mut memory, addresses, table, number, &[1, 2]),
+                Err(CallError::Memory)
+            ));
+        }
+    }
+}

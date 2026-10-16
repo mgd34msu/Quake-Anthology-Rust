@@ -901,8 +901,7 @@ impl CommandList {
                 .is_some_and(|selected| std::ptr::eq(selected, surface)))
         .then_some(draw)
     }
-    /// Resolve the captured choices after every producer has finished this packet.
-    pub fn resolve_shaders(&mut self, assets: &Assets, native: &dyn NativeShaders) {
+    fn resolve_draw_shaders(&mut self, assets: &Assets, native: &dyn NativeShaders) {
         for draw in &mut self.draws[..self.draw_count] {
             draw.shader = draw
                 .shader
@@ -919,6 +918,10 @@ impl CommandList {
                 }
             }
         }
+    }
+    /// Resolve the captured choices after every producer has finished this packet.
+    pub fn resolve_shaders(&mut self, assets: &Assets, native: &dyn NativeShaders) {
+        self.resolve_draw_shaders(assets, native);
         // Keep each view's particle range stable while retiring failed choices
         // before either the procedural or material-backed consumer can draw.
         for particle in &mut self.particles[..self.particle_count] {
@@ -1242,6 +1245,11 @@ impl Frame {
     pub fn reject_submission(&mut self) -> bool {
         self.list.rejected += 1;
         false
+    }
+    /// Freeze submitted views and 2D draws at a native registration barrier.
+    /// Unsubmitted scene inputs retain their original choices for later views.
+    pub fn resolve_draw_shaders(&mut self, assets: &Assets, native: &dyn NativeShaders) {
+        self.list.resolve_draw_shaders(assets, native);
     }
     /// Built-in seats are background content. Move their newly appended command
     /// range before module views/UI in this same packet; payload indices remain

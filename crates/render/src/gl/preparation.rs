@@ -120,6 +120,7 @@ impl<'a> PreparedAssets<'a> {
         assets: &Assets,
         textures: &[u32],
         texture_params: &[TextureParams],
+        sky_capacity: usize,
     ) -> Result<Self, String> {
         let layout = MeshLayout::prepare(
             assets
@@ -173,7 +174,7 @@ impl<'a> PreparedAssets<'a> {
                 }))
                 .collect(),
             sky_clouds,
-            skies: SkyBatches::new(assets.materials().len()),
+            skies: SkyBatches::new(assets.materials().len(), sky_capacity),
         };
         check_error(gl, "before asset upload")?;
         // SAFETY: All slices are owned for this synchronous upload; checked mesh

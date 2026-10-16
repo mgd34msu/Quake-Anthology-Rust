@@ -37,11 +37,14 @@ impl NativeShaders for Reader {
     }
     fn resolve(&self, reference: NativeShaderRef, assets: &Assets) -> Option<ResolvedShader> {
         let binding = self.source(reference)?.shader;
-        let offset = assets
-            .material(assets.shader_binding(binding)?.material)?
-            .settings
-            .time_offset;
-        ResolvedShader::select(assets, binding, binding, offset)
+        let (selected, offset) = self.context.resolved_node(reference.node)?;
+        ResolvedShader::select(
+            assets,
+            binding,
+            self.context.node(selected)?.shader,
+            offset,
+            selected == reference.node,
+        )
     }
 }
 fn fixture() -> (Assets, Reader, [ShaderRef; 3]) {
@@ -135,6 +138,28 @@ fn quad() -> [Vertex; 4] {
         position,
         ..Default::default()
     })
+}
+fn rendered_pixel(assets: &Assets, reader: &Reader, shader: ShaderRef, vertices: &[Vertex]) -> u32 {
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
+    assert!(frame.add_poly(shader, vertices));
+    assert!(frame.render_scene(
+        view(),
+        &[],
+        assets,
+        ShaderView {
+            native: reader,
+            context: Some(ShaderContextId {
+                slot: 0,
+                generation: reader.generation
+            }),
+        },
+    ));
+    let mut packet = frame.finish();
+    packet.resolve_shaders(assets, reader);
+    let mut cpu = CpuBackend::load(8, 8).unwrap();
+    assert_eq!(cpu.render(&packet, assets).rejected, 0);
+    cpu.pixels()[4 * 8 + 4]
 }
 #[test]
 fn sort_keeps_exact_logical_creation_order_when_physical_bindings_repeat() {
@@ -564,26 +589,63 @@ fn converted_surface_keeps_its_body_when_the_named_history_reuses_another_varian
     });
     let mut pixels = Vec::new();
     for selected in [ShaderRef::Direct(body), shader] {
-        let mut front = FrontEnd::load(Limits::default()).unwrap();
-        let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
-        assert!(frame.add_poly(selected, &vertices));
-        assert!(frame.render_scene(
-            view(),
-            &[],
-            &assets,
-            ShaderView {
-                native: &reader,
-                context: Some(reference.context)
-            }
-        ));
-        let mut packet = frame.finish();
-        packet.resolve_shaders(&assets, &reader);
-        let mut cpu = CpuBackend::load(8, 8).unwrap();
-        assert_eq!(cpu.render(&packet, &assets).rejected, 0);
-        pixels.push(cpu.pixels()[4 * 8 + 4]);
+        pixels.push(rendered_pixel(&assets, &reader, selected, &vertices));
     }
     assert_eq!(pixels[0], u32::from_le_bytes([0, 128, 255, 255]));
     assert_eq!(pixels[1], pixels[0]);
+}
+
+#[test]
+fn same_name_remap_does_not_restore_a_converted_body_when_the_target_binding_is_equal() {
+    use qa_render::shader::reference::{ShaderChoice, ShaderDefault, ShaderOccurrence};
+    let (assets, mut reader, refs) = fixture();
+    let ShaderRef::Native(source) = refs[0] else {
+        panic!("source")
+    };
+    let ShaderRef::Native(target) = refs[2] else {
+        panic!("target")
+    };
+    assert_ne!(source.node, target.node);
+    assert_eq!(refs[0].source(&reader), refs[2].source(&reader));
+    let body = refs[1].source(&reader).unwrap();
+    let shader = ShaderView {
+        native: &reader,
+        context: Some(source.context),
+    }
+    .choice(
+        ShaderChoice::Converted {
+            binding: body,
+            occurrence: ShaderOccurrence(0),
+        },
+        &[],
+        Some(&[source.node]),
+        ShaderDefault::Named,
+    )
+    .unwrap();
+    let vertices = quad().map(|vertex| Vertex {
+        color: [0, 128, 255, 255],
+        ..vertex
+    });
+    assert_eq!(
+        rendered_pixel(&assets, &reader, shader, &vertices),
+        0xffff_8000
+    );
+    reader
+        .context
+        .remap_existing(
+            reader.context.node(source.node).unwrap().key,
+            target.node,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        rendered_pixel(&assets, &reader, shader, &vertices),
+        0xffff_ffff
+    );
+    assert_eq!(
+        rendered_pixel(&assets, &reader, refs[2], &vertices),
+        0xffff_ffff
+    );
 }
 
 #[test]
@@ -636,4 +698,387 @@ fn stale_particle_choice_drops_without_hiding_a_healthy_point() {
     assert!(!cpu.pixels().contains(&u32::from_le_bytes([255, 0, 0, 255])));
     packet.resolve_shaders(&assets, &reader);
     assert_eq!(packet.rejected, 1);
+}
+
+#[test]
+fn registration_barrier_freezes_submitted_views_but_keeps_scene_inputs_live() {
+    let (assets, mut reader, refs) = fixture();
+    let ShaderRef::Native(source) = refs[0] else {
+        panic!("source")
+    };
+    let ShaderRef::Native(target) = refs[1] else {
+        panic!("target")
+    };
+    let vertices = quad().map(|vertex| Vertex {
+        color: [0, 128, 255, 255],
+        ..vertex
+    });
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
+    assert!(frame.add_poly(refs[0], &vertices));
+    for (x, remap) in [(0, false), (4, true)] {
+        if remap {
+            let key = reader.context.node(source.node).unwrap().key;
+            reader
+                .context
+                .remap_existing(key, target.node, None)
+                .unwrap();
+        }
+        assert!(frame.render_scene(
+            Refdef {
+                viewport: Viewport {
+                    x,
+                    width: 4,
+                    ..view().viewport
+                },
+                ..view()
+            },
+            &[],
+            &assets,
+            ShaderView {
+                native: &reader,
+                context: Some(source.context)
+            },
+        ));
+        if !remap {
+            assert!(frame.add_poly(refs[0], &vertices));
+            frame.resolve_draw_shaders(&assets, &reader);
+        }
+    }
+    let mut packet = frame.finish();
+    packet.resolve_shaders(&assets, &reader);
+    let mut cpu = CpuBackend::load(8, 8).unwrap();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert_eq!(cpu.pixels()[4 * 8 + 1], u32::from_le_bytes([255; 4]));
+    assert_eq!(
+        cpu.pixels()[4 * 8 + 5],
+        u32::from_le_bytes([0, 128, 255, 255])
+    );
+}
+
+#[test]
+fn appended_target_stages_fit_the_existing_world_boundary_workspace() {
+    use qa_render::{
+        ShaderBinding, ShaderBindingId, WorldPresentationId,
+        assets::{Cull, MaterialSettings, Stage, StageTexture},
+        shader::{BlendFactor, StageBlend, context::ShaderNodeId, registration::ShaderResource},
+        world::{PreparedShader, SurfaceMaterial, VisibleSurface, WorldPresentationInput},
+    };
+    struct RemappedWorld {
+        reader: Reader,
+        presentation: WorldPresentationId,
+        nodes: [ShaderNodeId; 1],
+        target: ShaderBindingId,
+    }
+    impl NativeShaders for RemappedWorld {
+        fn source(&self, reference: NativeShaderRef) -> Option<&ShaderRegistration> {
+            self.reader.source(reference)
+        }
+        fn resolve(&self, reference: NativeShaderRef, assets: &Assets) -> Option<ResolvedShader> {
+            ResolvedShader::select(
+                assets,
+                self.source(reference)?.shader,
+                self.target,
+                0.,
+                false,
+            )
+        }
+        fn resource_nodes(
+            &self,
+            context: ShaderContextId,
+            resource: ShaderResource,
+        ) -> Option<&[ShaderNodeId]> {
+            (context
+                == (ShaderContextId {
+                    slot: 0,
+                    generation: 1,
+                })
+                && resource == ShaderResource::World(self.presentation.0))
+            .then_some(&self.nodes)
+        }
+    }
+    let mut assets = Assets::load().unwrap();
+    let red = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
+    let source_material = assets
+        .register_material(
+            "one source stage",
+            &[Stage {
+                texture: StageTexture::Image(red),
+                ..Default::default()
+            }],
+            MaterialSettings {
+                cull: Cull::None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let source = assets
+        .register_shader_binding(ShaderBinding::material(source_material, LightSource::None))
+        .unwrap();
+    let receipt = assets
+        .shader_registration(b"one source stage", source)
+        .unwrap();
+    let (mut geometry, visibility) = world_surfaces::inputs(1);
+    for vertex in &mut geometry.vertices {
+        vertex.vertex.position = vertex.vertex.position * 8.;
+    }
+    let world = assets
+        .register_world(
+            geometry,
+            visibility,
+            &[WorldPresentationInput {
+                surfaces: &[SurfaceMaterial {
+                    shader: *assets.shader_binding(source).unwrap(),
+                    texture_scale: [1.; 2],
+                }],
+                registrations: &[receipt.map_shader(|_| PreparedShader::Surface(0))],
+                native_page0: None,
+                native_default: None,
+            }],
+        )
+        .unwrap();
+    let presentation = assets.world(world).unwrap().presentations()[0];
+    let mut context = ShaderContext::load(assets.name_capacity(), 2).unwrap();
+    let mut append = context.append();
+    let nodes = [append.admit(receipt).unwrap()];
+    append.commit();
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let initial = cpu.admitted_assets().unwrap();
+    let blue = assets.register_image(1, 1, &[0, 0, 255, 255]).unwrap();
+    let black = assets.register_image(1, 1, &[0, 0, 0, 255]).unwrap();
+    let stages = std::array::from_fn::<_, 8, _>(|index| Stage {
+        texture: StageTexture::Image(if index == 0 { blue } else { black }),
+        blend: (index != 0).then_some(StageBlend {
+            source: BlendFactor::One,
+            destination: BlendFactor::One,
+        }),
+        depth_write: index == 0,
+        ..Default::default()
+    });
+    let target_material = assets
+        .register_material(
+            "eight target stages",
+            &stages,
+            MaterialSettings {
+                cull: Cull::None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let target = assets
+        .register_shader_binding(ShaderBinding::material(target_material, LightSource::None))
+        .unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
+    assert!(cpu.admitted_assets().unwrap().contains(initial));
+    let reader = RemappedWorld {
+        reader: Reader {
+            context,
+            generation: 1,
+        },
+        presentation,
+        nodes,
+        target,
+    };
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
+    assert!(frame.add_world(
+        world,
+        presentation,
+        &[VisibleSurface {
+            surface: 0,
+            depth_key: 0
+        }]
+    ));
+    assert!(frame.render_scene(
+        view(),
+        &[],
+        &assets,
+        ShaderView {
+            native: &reader,
+            context: Some(ShaderContextId {
+                slot: 0,
+                generation: 1
+            }),
+        }
+    ));
+    let mut packet = frame.finish();
+    packet.resolve_shaders(&assets, &reader);
+    let stats = cpu.render(&packet, &assets);
+    assert_eq!(stats.rejected, 0);
+    assert_eq!(stats.surfaces, 1);
+    assert_eq!(stats.stages, 8);
+    assert_eq!(
+        cpu.pixels()[4 * 8 + 4],
+        u32::from_le_bytes([0, 0, 255, 255])
+    );
+}
+
+#[test]
+fn sky_batches_keep_distinct_resolved_offsets_for_the_same_physical_body() {
+    use qa_render::shader::context::ShaderNodeId;
+    struct OffsetSky {
+        reader: Reader,
+        nodes: [ShaderNodeId; 2],
+        target: qa_render::ShaderBindingId,
+    }
+    impl NativeShaders for OffsetSky {
+        fn source(&self, reference: NativeShaderRef) -> Option<&ShaderRegistration> {
+            self.reader.source(reference)
+        }
+        fn resolve(&self, reference: NativeShaderRef, assets: &Assets) -> Option<ResolvedShader> {
+            let source = self.source(reference)?.shader;
+            let offset = if reference.node == self.nodes[0] {
+                0.
+            } else if reference.node == self.nodes[1] {
+                0.25
+            } else {
+                return None;
+            };
+            ResolvedShader::select(assets, source, self.target, offset, false)
+        }
+    }
+    let catalog = parse_sources(&[ShaderSource {
+        name: "sky-offsets.shader",
+        bytes: br#"
+        sky-source {
+            cull none
+            skyparms - 384 -
+            { map $whiteimage }
+        }
+        sky-offsets {
+            cull none
+            skyparms - 384 -
+            { map $lightmap
+              rgbGen wave sin 0.5 0.5 0 1 }
+        }
+    "#,
+    }]);
+    let mut assets = Assets::load().unwrap();
+    let green_lightmap = assets.register_image(1, 1, &[0, 255, 0, 255]).unwrap();
+    let vfs = Vfs::default();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake3,
+        RuleSetId::Quake3,
+        ImageSettings::native(RuleSetId::Quake3),
+        None,
+    )
+    .unwrap();
+    let receipt = compile_named_shader(
+        &catalog,
+        b"sky-source",
+        true,
+        NamedShaderLighting {
+            source: LightSource::Page(0),
+            lightmap: ImageId(0),
+        },
+        &mut images,
+    )
+    .unwrap();
+    let target = compile_named_shader(
+        &catalog,
+        b"sky-offsets",
+        true,
+        NamedShaderLighting {
+            source: LightSource::Page(1),
+            lightmap: green_lightmap,
+        },
+        &mut images,
+    )
+    .unwrap()
+    .shader;
+    drop(images);
+    let mut context = ShaderContext::load(assets.name_capacity(), 2).unwrap();
+    let mut append = context.append();
+    let nodes = [
+        append.admit(receipt).unwrap(),
+        append.admit(receipt).unwrap(),
+    ];
+    append.commit();
+    assert_ne!(nodes[0], nodes[1]);
+    assert_eq!(
+        context.node(nodes[0]).unwrap().shader,
+        context.node(nodes[1]).unwrap().shader
+    );
+    let reader = OffsetSky {
+        reader: Reader {
+            context,
+            generation: 1,
+        },
+        nodes,
+        target,
+    };
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
+    for (index, [left, right]) in [[8., 0.], [0., -8.]].into_iter().enumerate() {
+        let vertices = [
+            [8., left, 8.],
+            [8., right, 8.],
+            [8., right, -8.],
+            [8., left, -8.],
+        ]
+        .map(|position| Vertex {
+            position: Vec3(position),
+            ..Default::default()
+        });
+        assert!(frame.add_poly(
+            ShaderRef::Native(NativeShaderRef {
+                context: ShaderContextId {
+                    slot: 0,
+                    generation: 1
+                },
+                node: nodes[index],
+            }),
+            &vertices
+        ));
+    }
+    assert!(frame.render_scene(
+        Refdef {
+            time_ms: 250,
+            ..view()
+        },
+        &[],
+        &assets,
+        ShaderView {
+            native: &reader,
+            context: Some(ShaderContextId {
+                slot: 0,
+                generation: 1
+            }),
+        }
+    ));
+    let mut packet = frame.finish();
+    packet.resolve_shaders(&assets, &reader);
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let stats = cpu.render(&packet, &assets);
+    assert_eq!(stats.rejected, 0);
+    // Native tr_init divides the sine table's degrees by 1023. Index256 is
+    // slightly below1, so CGEN_WAVE's byte conversion yields254, then127 at0.
+    let target_material = assets
+        .material(assets.shader_binding(target).unwrap().material)
+        .unwrap();
+    let evaluator = qa_render::stage::StageEvaluator::load();
+    let colors = [0., 0.25].map(|time_offset| {
+        evaluator
+            .prepare(
+                &target_material.stages[0],
+                qa_render::assets::MaterialSettings {
+                    time_offset,
+                    ..target_material.settings
+                },
+                qa_render::stage::DrawInputs {
+                    time_ms: 250,
+                    lightmap: green_lightmap,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .uniform_color[1]
+    });
+    assert_eq!(colors, [254, 127]);
+    assert_eq!(
+        [cpu.pixels()[3 * 8 + 1], cpu.pixels()[3 * 8 + 6]],
+        colors.map(|color| u32::from_le_bytes([0, color, 0, 255]))
+    );
 }

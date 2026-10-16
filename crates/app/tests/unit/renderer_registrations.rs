@@ -669,7 +669,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         source: profile.source_rules,
         kind: RendererRegistration::Shader {
             mipmaps: true,
-            lighting: ShaderLighting::World(presentation),
+            lighting: ShaderLighting::World(Some(presentation)),
         },
         world: Some(world),
     });
@@ -791,7 +791,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         source: profile.source_rules,
         kind: RendererRegistration::Shader {
             mipmaps: true,
-            lighting: ShaderLighting::World(presentations[2]),
+            lighting: ShaderLighting::World(Some(presentations[2])),
         },
         world: Some(world),
     };
@@ -861,7 +861,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         .shader_outcome(
             missing.name,
             profile,
-            ShaderLighting::World(presentations[2]),
+            ShaderLighting::World(Some(presentations[2])),
         )
         .unwrap();
     assert_eq!(

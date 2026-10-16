@@ -68,6 +68,12 @@ impl SceneRole {
     pub(crate) fn select_world(&mut self, world: WorldId) {
         self.selected_world = Some(world);
     }
+    pub(crate) fn selected_world(&self) -> Option<WorldId> {
+        self.selected_world.or_else(|| {
+            self.target
+                .and_then(|target| target.world.map(|world| world.0))
+        })
+    }
     pub(crate) fn presentation_for(&self, world: WorldId) -> Option<WorldPresentationId> {
         self.target.and_then(|target| {
             target
@@ -206,12 +212,7 @@ impl SceneService for SceneBorrow<'_> {
         Ok(())
     }
     fn selected_world(&self) -> Option<WorldId> {
-        self.role.selected_world.or_else(|| {
-            self.role
-                .target
-                .as_ref()
-                .and_then(|target| target.world.map(|world| world.0))
-        })
+        self.role.selected_world()
     }
     fn mark_fragments(
         &mut self,

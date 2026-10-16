@@ -10,6 +10,11 @@ pub struct CallbackRequest {
 
 #[derive(Clone, Debug)]
 pub enum HostRequest {
+    RemapShader {
+        original: u64,
+        replacement: u64,
+        time_offset: u64,
+    },
     RegisterRenderer(crate::services::RendererRequest),
     SelectRendererWorld(qa_render::world::WorldId),
     CommandRegistration {

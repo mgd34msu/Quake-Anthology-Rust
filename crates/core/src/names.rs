@@ -219,9 +219,13 @@ impl NameTable {
     pub fn find_path(&self, name: &str) -> Option<NameId> {
         self.find_path_bytes(name.as_bytes())
     }
+    /// Folded path identity can exist before its canonical spelling is interned.
+    pub fn find_path_group(&self, name: &[u8]) -> Option<NameId> {
+        self.folded_bucket(name.iter().copied().map(path_byte)).1
+    }
     /// Native filenames remain byte strings; only ASCII and separators fold.
     pub fn find_path_bytes(&self, name: &[u8]) -> Option<NameId> {
-        let group = self.folded_bucket(name.iter().copied().map(path_byte)).1?;
+        let group = self.find_path_group(name)?;
         let id = self.path_ids[group.0 as usize];
         (id != u32::MAX).then_some(NameId(id))
     }

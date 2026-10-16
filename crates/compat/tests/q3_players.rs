@@ -2120,8 +2120,8 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn owned_pe64_shader_imports_borrow_only_the_parked_child_and_share_cold_dispatch() {
     use native_image::*;
-    use qa_compat::abi::Q3_CLIENT;
-    use qa_compat::native::{NamedExport, NativeCalls, Vm};
+    use qa_compat::abi::{HostRequest, Q3_CLIENT};
+    use qa_compat::native::{NamedExport, NativeCalls, Step, Vm};
     use qa_formats::program::native::{Image, LoadRole};
     use qa_platform::native::NativeScalar;
     let mut file = pe_export_fixture(64);
@@ -2180,7 +2180,54 @@ fn owned_pe64_shader_imports_borrow_only_the_parked_child_and_share_cold_dispatc
             native_player: None,
         };
         for ordinal in [0, 1] {
-            assert_eq!(vm.call(&mut calls, ordinal, &[base + 0x1800]).unwrap(), 42);
+            let mut run = vm.begin(&mut calls, ordinal, &[base + 0x1800]).unwrap();
+            let Step::Host {
+                request: HostRequest::RegisterRenderer(request),
+                pending,
+            } = vm.advance(&mut calls, &mut run).unwrap()
+            else {
+                panic!("owned shader import must park for renderer admission")
+            };
+            assert!(vm.is_active());
+            assert!(
+                vm.process.memory().is_err(),
+                "parked bytes require the import token"
+            );
+            assert_eq!(request.name.as_bytes(), b"ui/pic");
+            assert_eq!(request.source, RuleSetId::Quake3);
+            let qa_compat::services::RendererRegistration::Shader { mipmaps, lighting } =
+                request.kind
+            else {
+                panic!("shader syscall changed registration kind")
+            };
+            assert_eq!(mipmaps, ordinal == 0);
+            assert_eq!(
+                lighting,
+                qa_compat::services::ShaderLighting::TwoDimensional
+            );
+            let handle = calls
+                .services
+                .model_loader
+                .as_deref_mut()
+                .unwrap()
+                .register_shader(
+                    calls.services.vfs,
+                    request.name.as_bytes(),
+                    request.source,
+                    mipmaps,
+                    lighting,
+                )
+                .unwrap();
+            let mut pending = Some(pending);
+            let Step::Returned(value) = vm
+                .resume(&mut calls, &mut run, &mut pending, handle as u32 as u64)
+                .unwrap()
+            else {
+                panic!("shader reply must resume the original child")
+            };
+            assert_eq!(value, 42);
+            assert!(pending.is_none());
+            assert!(!vm.is_active());
         }
     }
     assert_eq!(

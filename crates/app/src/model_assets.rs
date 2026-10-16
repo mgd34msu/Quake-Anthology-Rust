@@ -683,7 +683,7 @@ pub struct ModelView<'a> {
     pub assets: &'a Assets,
     pub catalog: &'a ModelCatalog,
 }
-impl RendererAdmission<'_> {
+impl<'a> RendererAdmission<'a> {
     pub(crate) fn selected_presentation(
         self,
         selected: Option<WorldPresentationId>,
@@ -700,6 +700,9 @@ impl RendererAdmission<'_> {
         } else {
             Ok(self)
         }
+    }
+    pub(crate) fn assets(self) -> &'a Assets {
+        &self.owner.assets
     }
     pub(crate) fn budget(self) -> (usize, usize) {
         self.owner.shader_occurrence_budget()
@@ -938,12 +941,7 @@ impl RegistrationCheckpoint {
                 file_name = catalog.names.find(path.as_bytes());
             }
             RendererRegistration::Skin => {
-                let path =
-                    canonical_path(std::str::from_utf8(raw).map_err(|_| "skin name is not UTF-8")?);
-                skin_index = catalog
-                    .names
-                    .find_folded(path.as_bytes())
-                    .map(|group| (group, catalog.skin_indices[group.0 as usize]));
+                skin_index = find_skin_index(&catalog.names, &catalog.skin_indices, raw);
             }
             RendererRegistration::Shader { .. } => {
                 shader_index = find_shader_index(&catalog.names, &catalog.shader_indices, raw);
@@ -1316,7 +1314,7 @@ impl ModelAssets {
                 self.assets
                     .counts()
                     .presentations
-                    .checked_add(1)
+                    .checked_add(2)
                     .ok_or("shader lighting capacity")?,
             )
             .filter(|&count| count <= u32::MAX as usize)
@@ -1562,7 +1560,7 @@ impl ModelAssets {
             profile,
         }; N];
         for ((candidate, request), handle) in candidates.iter_mut().zip(requests).zip(handles) {
-            if handle <= 0 && !matches!(request.kind, RendererRegistration::Shader { .. }) {
+            if handle <= 0 && matches!(request.kind, RendererRegistration::Model) {
                 continue;
             }
             if handle <= 0
@@ -1596,24 +1594,40 @@ impl ModelAssets {
                     }
                 }
                 RendererRegistration::Skin => {
-                    let index =
-                        usize::try_from(handle - 1).map_err(|_| "skin shader membership")?;
-                    let rows = &self
+                    let index = if handle > 0 {
+                        usize::try_from(handle - 1).map_err(|_| "skin shader membership")?
+                    } else {
+                        let Some((_, Some(index))) = find_skin_index(
+                            &self.catalog.names,
+                            &self.catalog.skin_indices,
+                            request.name.as_ref(),
+                        ) else {
+                            continue;
+                        };
+                        index as usize
+                    };
+                    let row = self
                         .catalog
                         .skins
                         .get(index)
                         .ok_or("skin shader membership")?
-                        .profiles;
-                    let (index, row) = rows
+                        .profiles
                         .iter()
-                        .enumerate()
-                        .find(|(_, row)| row.profile == profile)
+                        .find(|row| row.profile == profile)
                         .ok_or("skin shader membership")?;
-                    let (ready, _) = row.state.ready().ok_or("skin shader membership")?;
-                    let _ = index;
+                    let registrations = match &row.state {
+                        RegistrationState::Ready { value, .. } => value.registrations.as_ref(),
+                        RegistrationState::Failed(_) => &[],
+                        RegistrationState::Unattempted => continue,
+                    };
                     RendererAdmission {
-                        resource: Some(ShaderResource::Skin(handle as u32)),
-                        registrations: &ready.registrations,
+                        resource: Some(ShaderResource::Skin(
+                            u32::try_from(index)
+                                .ok()
+                                .and_then(|index| index.checked_add(1))
+                                .ok_or("skin shader membership")?,
+                        )),
+                        registrations,
                         owner: self,
                         profile,
                     }
@@ -1634,6 +1648,54 @@ impl ModelAssets {
         }
         Ok(candidates)
     }
+    pub(crate) fn failed_skin_admission(
+        &self,
+        name: &[u8],
+        profile: ModelProfile,
+    ) -> Option<RendererAdmission<'_>> {
+        let (_, Some(index)) =
+            find_skin_index(&self.catalog.names, &self.catalog.skin_indices, name)?
+        else {
+            return None;
+        };
+        let row = self
+            .catalog
+            .skins
+            .get(index as usize)?
+            .profiles
+            .iter()
+            .find(|row| row.profile == profile)?;
+        if !matches!(row.state, RegistrationState::Failed(_)) {
+            return None;
+        }
+        let request = RendererRequest {
+            name,
+            source: profile.source_rules,
+            kind: RendererRegistration::Skin,
+            world: None,
+        };
+        let [candidate] = self
+            .registration_candidates([&request], [0], profile)
+            .ok()?;
+        Some(candidate)
+    }
+    pub(crate) fn renderer_presentation(
+        &self,
+        world: WorldId,
+        profile: ModelProfile,
+        selected: Option<WorldPresentationId>,
+    ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
+        self.view().select_world_presentation(
+            world,
+            Some(profile),
+            selected,
+            if self.initial_registration {
+                Some(self.assets.counts())
+            } else {
+                self.catalog.admitted_assets
+            },
+        )
+    }
     pub(crate) fn world_admission(
         &self,
         world: WorldId,
@@ -1641,8 +1703,7 @@ impl ModelAssets {
         selected: Option<WorldPresentationId>,
     ) -> Result<RendererAdmission<'_>, String> {
         let id = self
-            .view()
-            .select_world_presentation(world, Some(profile), selected, Some(self.assets.counts()))
+            .renderer_presentation(world, profile, selected)
             .ok_or("world shader membership")?
             .id;
         let presentation = self
@@ -1740,13 +1801,12 @@ impl ModelAssets {
                 return Err("renderer registration source/profile mismatch".to_owned());
             }
             if let RendererRegistration::Shader {
-                lighting: ShaderLighting::World(presentation),
+                lighting: ShaderLighting::World(Some(presentation)),
                 ..
             } = request.kind
             {
                 let world = request.world.ok_or("shader registration world")?;
-                self.view()
-                    .world_presentation(world, Some(profile), Some(presentation))
+                self.renderer_presentation(world, profile, Some(presentation))
                     .filter(|entry| {
                         entry.profile.rules == profile.rules
                             && entry.profile.indexed_palette == profile.palette
@@ -2666,8 +2726,8 @@ impl ModelAssets {
             return Err(CallError::Text);
         }
         let selected = match lighting {
-            ShaderLighting::TwoDimensional => None,
-            ShaderLighting::World(presentation) => Some(
+            ShaderLighting::TwoDimensional | ShaderLighting::World(None) => None,
+            ShaderLighting::World(Some(presentation)) => Some(
                 self.assets
                     .world_presentation_registration(presentation)
                     .ok_or(CallError::File)?
@@ -2706,7 +2766,7 @@ impl ModelAssets {
             .limits
             .models
             .checked_mul(self.catalog.profiles.len())
-            .and_then(|count| count.checked_mul(self.assets.counts().presentations.checked_add(1)?))
+            .and_then(|count| count.checked_mul(self.assets.counts().presentations.checked_add(2)?))
             .filter(|&n| n <= u32::MAX as usize)
             .ok_or(CallError::Capacity)?;
         let index = match cached {
@@ -2794,7 +2854,11 @@ impl ModelAssets {
                 source: LightSource::TwoDimensional,
                 lightmap: ImageId(0),
             },
-            ShaderLighting::World(presentation) => match self
+            ShaderLighting::World(None) => NamedShaderLighting {
+                source: LightSource::Vertex,
+                lightmap: ImageId(0),
+            },
+            ShaderLighting::World(Some(presentation)) => match self
                 .assets
                 .world_presentation(presentation)
                 .ok_or(CallError::File)?
@@ -3157,6 +3221,14 @@ fn find_shader_index(
     let group = names.find_folded(qa_render::shader::registration_key(raw))?;
     Some((group, indices.get(group.0 as usize).copied().flatten()))
 }
+fn find_skin_index(
+    names: &NameTable,
+    indices: &[Option<u32>],
+    raw: &[u8],
+) -> Option<(NameId, Option<u32>)> {
+    let group = names.find_path_group(raw)?;
+    Some((group, indices.get(group.0 as usize).copied().flatten()))
+}
 fn skin_handle(
     names: &NameTable,
     indices: &[Option<u32>],
@@ -3167,9 +3239,8 @@ fn skin_handle(
     if raw.is_empty() {
         return Some(0);
     }
-    let group = names.find_path_bytes(raw)?;
-    let group = names.folded(group)?;
-    let index = indices.get(group.0 as usize).copied().flatten()?;
+    let (_, index) = find_skin_index(names, indices, raw)?;
+    let index = index?;
     let skin = skins.get(index as usize)?;
     skin.source_handle(index as i32 + 1, source)
 }
@@ -3432,9 +3503,8 @@ impl ModelCatalog {
                     .cached(if public { handle } else { 0 }, self.admitted_assets)
             }
             RendererRegistration::Skin => {
-                let name = self.names.find_path_bytes(name)?;
-                let group = self.names.folded(name)?;
-                let index = self.skin_indices[group.0 as usize]?;
+                let (_, index) = find_skin_index(&self.names, &self.skin_indices, name)?;
+                let index = index?;
                 let handle = i32::try_from(index.checked_add(1)?).ok()?;
                 self.skin_profile(handle, profile)?
                     .state

@@ -280,16 +280,44 @@ impl WorldRaster {
         self.dispatch(camera, assets, buffers, BandPass::Opaque, stats, dispatch)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Ordered draw dispatch borrows the shared evaluator and exclusive band buffers"
+    )]
     pub(in crate::cpu) fn draw_run<E>(
         &mut self,
         camera: &Camera,
         rank: usize,
         list: &super::CommandList,
         assets: &Assets,
+        evaluator: &super::StageEvaluator,
         buffers: Buffers<'_>,
         stats: &mut crate::BackendStats,
         dispatch: &mut impl for<'job> FnMut(&mut [CpuJob<'job>]) -> Result<(), E>,
     ) -> Result<Option<usize>, E> {
+        if let Some(before) = self
+            .prepare
+            .prepare_sky_draw(camera, rank, list, assets, evaluator, stats)
+        {
+            let result = if matches!(self.prepare.draws[rank], PreparedDraw::Sky { .. }) {
+                self.dispatch(
+                    camera,
+                    assets,
+                    buffers,
+                    BandPass::DrawRange(IndexSpan {
+                        first: rank as u32,
+                        count: 1,
+                    }),
+                    stats,
+                    dispatch,
+                )
+            } else {
+                Ok(())
+            };
+            self.prepare.finish_sky_draw(rank, before);
+            result?;
+            return Ok(Some(rank + 1));
+        }
         let mut end = rank;
         let mut raster = false;
         while end < self.prepare.draw_count {
@@ -303,7 +331,7 @@ impl WorldRaster {
                 break;
             }
             match self.draw(end) {
-                PreparedDraw::External => break,
+                PreparedDraw::External | PreparedDraw::SkyPending => break,
                 PreparedDraw::Skip => {}
                 PreparedDraw::Surface(_) | PreparedDraw::Sky { .. } => raster = true,
             }

@@ -80,7 +80,15 @@ fn rotating_bounds_keep_native_full_cube_and_zero_rotation_visibility() {
 
 #[test]
 fn sky_batches_draw_once_per_view_and_discard_untouched_previous_bounds() {
-    let mut batches = SkyBatches::new(2);
+    let mut batches = SkyBatches::new(2, 2);
+    let key = |material| SkyKey {
+        binding: crate::ShaderBinding::material(
+            MaterialId(material),
+            crate::world::geometry::LightSource::None,
+        ),
+        time_offset: 0,
+        entity: None,
+    };
     let triangle = [
         Vec3([100.0, -10.0, -10.0]),
         Vec3([100.0, 10.0, -10.0]),
@@ -89,19 +97,19 @@ fn sky_batches_draw_once_per_view_and_discard_untouched_previous_bounds() {
     batches.begin_frame();
     assert!(
         batches
-            .clip_mut(0)
+            .clip_mut(key(0))
             .unwrap()
             .add_polygon(&triangle, Vec3::default())
     );
-    assert!(batches.take_for_draw(0).is_some());
-    assert!(batches.take_for_draw(0).is_none());
-    assert!(batches.take_for_draw(1).is_none());
-    assert!(batches.clip_mut(2).is_none());
+    assert!(batches.take_for_draw(key(0)).is_some());
+    assert!(batches.take_for_draw(key(0)).is_none());
+    assert!(batches.take_for_draw(key(1)).is_none());
+    assert!(batches.clip_mut(key(2)).is_none());
     batches.begin_frame();
-    assert!(batches.take_for_draw(0).is_none());
+    assert!(batches.take_for_draw(key(0)).is_none());
     assert!(
         batches
-            .clip_mut(0)
+            .clip_mut(key(0))
             .unwrap()
             .bounds()
             .iter()
@@ -109,11 +117,76 @@ fn sky_batches_draw_once_per_view_and_discard_untouched_previous_bounds() {
     );
     assert!(
         batches
-            .clip_mut(0)
+            .clip_mut(key(0))
             .unwrap()
             .add_polygon(&triangle, Vec3::default())
     );
-    assert!(batches.take_for_draw(0).is_some());
+    assert!(batches.take_for_draw(key(0)).is_some());
+}
+
+#[test]
+fn sky_batch_keys_keep_resource_time_and_entity_scopes_and_reuse_full_capacity() {
+    let mut batches = SkyBatches::new(1, 2);
+    let key = SkyKey {
+        binding: crate::ShaderBinding::material(
+            MaterialId(0),
+            crate::world::geometry::LightSource::None,
+        ),
+        time_offset: 0f32.to_bits(),
+        entity: None,
+    };
+    let shifted = SkyKey {
+        time_offset: 0.25f32.to_bits(),
+        ..key
+    };
+    let triangle = [
+        Vec3([100., -10., -10.]),
+        Vec3([100., 10., -10.]),
+        Vec3([100., 0., 10.]),
+    ];
+    batches.begin_frame();
+    for current in [key, shifted] {
+        assert!(
+            batches
+                .clip_mut(current)
+                .unwrap()
+                .add_polygon(&triangle, Vec3::default())
+        );
+    }
+    assert!(
+        batches
+            .clip_mut(SkyKey {
+                entity: Some(0),
+                ..key
+            })
+            .is_none()
+    );
+    assert!(
+        batches
+            .clip_mut(SkyKey {
+                time_offset: (-0f32).to_bits(),
+                ..key
+            })
+            .is_none()
+    );
+    assert!(batches.clip_mut(key).is_some());
+    assert!(batches.take_for_draw(key).is_some());
+    assert!(batches.take_for_draw(shifted).is_some());
+    assert!(batches.take_for_draw(key).is_none());
+    assert!(batches.take_for_draw(shifted).is_none());
+    batches.begin_frame();
+    assert!(batches.take_for_draw(key).is_none());
+    let reassigned = SkyKey {
+        entity: Some(0),
+        ..key
+    };
+    assert!(
+        batches
+            .clip_mut(reassigned)
+            .unwrap()
+            .add_polygon(&triangle, Vec3::default())
+    );
+    assert!(batches.take_for_draw(reassigned).is_some());
 }
 
 #[test]
@@ -423,12 +496,13 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
                 .all(|index| index == 1)
         );
         let mut actual = Vec::new();
-        for_each_sky_triangle(&list, view.scene.draws, &assets, |material, geometry| {
+        for_each_sky_triangle(&list, view.scene.draws, &assets, |key, geometry| {
             match geometry {
                 SkySubmission::Begin(_) => {}
-                SkySubmission::Triangle(points) => {
-                    actual.push((material.0, points.map(|point| point.0.map(f32::to_bits))))
-                }
+                SkySubmission::Triangle(points) => actual.push((
+                    key.material().0,
+                    points.map(|point| point.0.map(f32::to_bits)),
+                )),
                 SkySubmission::MissingSurface => {
                     panic!("registered surfaces must remain available")
                 }
@@ -558,11 +632,14 @@ fn world_sky_variants_share_geometry_and_keep_the_selected_material() {
                     && reference.presentation == presentations[profile as usize]
             }));
             let mut actual = Vec::new();
-            for_each_sky_triangle(&list, view.scene.draws, &assets, |material, geometry| {
+            for_each_sky_triangle(&list, view.scene.draws, &assets, |key, geometry| {
                 match geometry {
                     SkySubmission::Begin(_) => {}
                     SkySubmission::Triangle(triangle) => {
-                        actual.push((material.0, triangle.map(|point| point.0.map(f32::to_bits))));
+                        actual.push((
+                            key.material().0,
+                            triangle.map(|point| point.0.map(f32::to_bits)),
+                        ));
                     }
                     SkySubmission::MissingSurface => {
                         panic!("registered sky geometry must remain available")

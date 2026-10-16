@@ -232,7 +232,7 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
     fixture.vfs.take_lookup_count();
     for lighting in [
         ShaderLighting::TwoDimensional,
-        ShaderLighting::World(presentation),
+        ShaderLighting::World(Some(presentation)),
     ] {
         let cached = renderer_request(
             "UI/MISSING.jpg",

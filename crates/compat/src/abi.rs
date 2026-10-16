@@ -165,6 +165,17 @@ fn register_renderer(
         ImportContinuation::HostValue,
     ))
 }
+fn remap_shader(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+    // Keep raw words: later operands are not consumed until native lookup reaches them.
+    Ok(CallValue::Host(
+        HostRequest::RemapShader {
+            original: c.arg(0)?,
+            replacement: c.arg(1)?,
+            time_offset: c.arg(2)?,
+        },
+        ImportContinuation::Return(0),
+    ))
+}
 fn register_shader<const MIPMAPS: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<CallValue, CallError> {
@@ -669,6 +680,7 @@ const fn client() -> CallTable {
     t.entries[62] = scalar!(input::set_catchers);
     t.entries[63] = scalar!(input::get_key);
     t.entries[71] = scalar!(snap_vector);
+    t.entries[79] = value!(remap_shader);
     t.entries[80] = client_audio!(client_sound::add_loop::<true>);
     t.entries[81] = client_audio!(client_sound::stop_loop);
     t.entries[89] = scalar!(file_seek);
@@ -735,6 +747,7 @@ const fn ui() -> CallTable {
     t.entries[40] = scalar!(input::catchers);
     t.entries[41] = scalar!(input::set_catchers);
     t.entries[43] = scalar!(renderer_configuration);
+    t.entries[80] = value!(remap_shader);
     t.entries[86] = scalar!(file_seek);
     t.entries[50] = scalar!(q3_cvar_register);
     t.entries[51] = scalar!(q3_cvar_update);
@@ -1552,6 +1565,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
                             HostRequest::TouchTriggers { .. }
                             | HostRequest::ExecuteNow { .. }
                             | HostRequest::CommandRegistration { .. }
+                            | HostRequest::RemapShader { .. }
                             | HostRequest::RegisterRenderer(_)
                             | HostRequest::SelectRendererWorld(_) => {
                                 return Err(qvm::Trap::Syscall);

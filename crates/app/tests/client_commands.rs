@@ -1353,6 +1353,7 @@ fn main() {
     scene::submissions(false, false);
     scene::submissions(false, true);
     scene::ownership();
+    scene::remaps(false);
     scene::inline_entities(false);
     scene::entities(false, false);
     scene::entities(false, true);
@@ -1371,6 +1372,7 @@ fn main() {
         native_scene_calls_use_the_session_frame(native);
         scene::submissions(true, false);
         scene::submissions(true, true);
+        scene::remaps(true);
         scene::inline_entities(true);
         scene::entities(true, false);
         scene::entities(true, true);

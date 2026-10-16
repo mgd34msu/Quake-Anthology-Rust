@@ -120,7 +120,7 @@ impl WorldBand {
             return false;
         };
         match draw {
-            PreparedDraw::External => false,
+            PreparedDraw::External | PreparedDraw::SkyPending => false,
             PreparedDraw::Skip => true,
             PreparedDraw::Surface(range) => {
                 let indices = prepared.bins.range(self.selection, range);

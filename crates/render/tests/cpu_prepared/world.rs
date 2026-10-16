@@ -275,6 +275,14 @@ fn windowed(
                     );
                 }
                 for (rank, item) in list.draws(view.scene.draws).iter().enumerate() {
+                    let sky_prefix = world.prepare.prepare_sky_draw(
+                        &camera,
+                        rank,
+                        list,
+                        assets,
+                        &cpu.evaluator,
+                        &mut stats,
+                    );
                     let mut handled = None;
                     for (band, rows) in bands.iter_mut().zip(&windows) {
                         let result = band.draw_item(
@@ -289,6 +297,9 @@ fn windowed(
                             assert_eq!(previous, result);
                         }
                         handled = Some(result);
+                    }
+                    if let Some(prefix) = sky_prefix {
+                        world.prepare.finish_sky_draw(rank, prefix);
                     }
                     if handled == Some(true) {
                         continue;
@@ -1498,40 +1509,51 @@ fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
         &StageEvaluator::load(),
         &mut crate::BackendStats::default()
     ));
-    let sky_draws = raster.prepare.draws[..raster.prepare.draw_count]
-        .iter()
-        .filter_map(|draw| {
-            if let PreparedDraw::Sky { boxes, clouds } = draw {
-                Some((*boxes, *clouds))
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(sky_draws.len(), 2);
-    for (boxes, clouds) in sky_draws {
-        assert!(boxes.count > 0);
-        assert!(clouds.count > 0);
-    }
     let draws = &raster.prepare.draws[..raster.prepare.draw_count];
     assert_eq!(draws.len(), 4);
     let sky_positions = draws
         .iter()
         .enumerate()
-        .filter_map(|(rank, draw)| matches!(draw, PreparedDraw::Sky { .. }).then_some(rank))
+        .filter_map(|(rank, draw)| matches!(draw, PreparedDraw::SkyPending).then_some(rank))
         .collect::<Vec<_>>();
     let regular = draws
         .iter()
         .position(|draw| matches!(draw, PreparedDraw::Surface(_)))
         .unwrap();
-    assert!(sky_positions[0] < regular && regular < sky_positions[1]);
-    assert_eq!(
-        draws
-            .iter()
-            .filter(|draw| matches!(draw, PreparedDraw::Skip))
-            .count(),
-        1
-    );
+    let mut actual_sky_positions = Vec::new();
+    let mut sky_draws = 0;
+    let pending_skies = sky_positions.len();
+    let prefix = PrepareCapacity {
+        primitives: raster.prepare.geometry.primitive_count,
+        stages: raster.prepare.geometry.stage_count,
+        coverage: raster.prepare.geometry.coverage_count,
+    };
+    for rank in sky_positions {
+        let saved = raster
+            .prepare
+            .prepare_sky_draw(
+                &camera,
+                rank,
+                &frame,
+                &assets,
+                &StageEvaluator::load(),
+                &mut crate::BackendStats::default(),
+            )
+            .unwrap();
+        if let PreparedDraw::Sky { boxes, clouds } = raster.prepare.draws[rank] {
+            actual_sky_positions.push(rank);
+            assert!(boxes.count > 0);
+            assert!(clouds.count > 0);
+            sky_draws += 1;
+        }
+        raster.prepare.finish_sky_draw(rank, saved);
+        assert_eq!(raster.prepare.geometry.primitive_count, prefix.primitives);
+        assert_eq!(raster.prepare.geometry.stage_count, prefix.stages);
+        assert_eq!(raster.prepare.geometry.coverage_count, prefix.coverage);
+    }
+    assert_eq!(sky_draws, 2);
+    assert_eq!(pending_skies - sky_draws, 1);
+    assert!(actual_sky_positions[0] < regular && regular < actual_sky_positions[1]);
 }
 
 fn indexed_palette(assets: &mut Assets) -> crate::assets::PaletteId {
@@ -2946,8 +2968,9 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
                 Ok(())
             });
         assert_eq!(result.unwrap().rejected, 0);
-        // Opaque, then three prepared runs separated by external entity/poly.
-        assert_eq!(calls, 4);
+        // Opaque, three surface runs separated by external entity/poly, and
+        // two ordered sky batches which reuse the same expansion suffix.
+        assert_eq!(calls, 6);
         assert_eq!(
             preparations,
             usize::from(bands.count() > 1 && bands.count() <= worlds.len())
@@ -2958,8 +2981,8 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
             [
                 PreparedDraw::Skip,
                 PreparedDraw::Surface(_),
-                PreparedDraw::Sky { .. },
-                PreparedDraw::Sky { .. },
+                PreparedDraw::Skip,
+                PreparedDraw::Skip,
                 PreparedDraw::External,
                 PreparedDraw::Surface(_),
                 PreparedDraw::External,

@@ -294,3 +294,134 @@ fn world_presentations_keep_immutable_initial_suns_using_the_same_creation_rules
     assert_eq!(second.sun_direction(), rows.vertex.sun.unwrap().direction());
     assert_eq!(second.sun_light(), Vec3([20., 0., 0.]));
 }
+
+#[test]
+fn remap_updates_existing_variants_without_becoming_a_future_name_rule() {
+    let rows = registrations();
+    let mut context = ShaderContext::load(rows.names, 8).unwrap();
+    let mut append = context.append();
+    let first = append.admit(rows.page).unwrap();
+    let vertex = append.admit(rows.vertex).unwrap();
+    let repeated = append.admit(rows.page).unwrap();
+    let target = append.admit(rows.other).unwrap();
+    append.commit();
+    assert_eq!(context.latest(rows.page.key), Some(repeated));
+    let direction = context.sun_direction();
+    context
+        .remap_existing(rows.page.key, target, Some(1.25))
+        .unwrap();
+    for source in [first, vertex, repeated] {
+        assert_eq!(context.resolved_node(source), Some((target, 1.25)));
+    }
+    assert_eq!(context.sun_direction(), direction);
+    let mut append = context.append();
+    let later = append.admit(rows.page).unwrap();
+    append.commit();
+    assert_eq!(context.latest(rows.page.key), Some(later));
+    assert_eq!(context.resolved_node(later), Some((later, 0.0)));
+    assert_eq!(context.resolved_node(first), Some((target, 1.25)));
+    assert_eq!(context.sun_direction(), rows.page.sun.unwrap().direction());
+}
+
+#[test]
+fn remap_is_one_hop_and_target_offset_is_shared_by_incoming_names() {
+    let rows = registrations();
+    let mut context = ShaderContext::load(rows.names, 8).unwrap();
+    let mut append = context.append();
+    let first = append.admit(rows.page).unwrap();
+    let newest = append.admit(rows.page).unwrap();
+    let target = append.admit(rows.other).unwrap();
+    let named_default = append.admit(rows.default_page).unwrap();
+    append.commit();
+    context
+        .remap_existing(rows.page.key, target, Some(2.0))
+        .unwrap();
+    context
+        .remap_existing(rows.default_page.key, target, None)
+        .unwrap();
+    context
+        .remap_existing(rows.other.key, newest, Some(3.0))
+        .unwrap();
+    assert_eq!(context.resolved_node(first), Some((target, 2.0)));
+    assert_eq!(context.resolved_node(named_default), Some((target, 2.0)));
+    assert_eq!(context.resolved_node(target), Some((newest, 3.0)));
+
+    context
+        .remap_existing(rows.other.key, target, Some(4.0))
+        .unwrap();
+    assert_eq!(context.resolved_node(target), Some((target, 4.0)));
+    assert_eq!(context.resolved_node(first), Some((target, 4.0)));
+    assert_eq!(context.resolved_node(named_default), Some((target, 4.0)));
+
+    context.remap_existing(rows.page.key, newest, None).unwrap();
+    assert_eq!(context.resolved_node(newest), Some((newest, 3.0)));
+    assert_eq!(context.resolved_node(first), Some((newest, 3.0)));
+    assert_eq!(context.resolved_node(named_default), Some((target, 4.0)));
+}
+
+#[test]
+fn remap_validates_before_mutating_and_preserves_native_float_offsets() {
+    use qa_core::primitives::NameId;
+    use qa_render::shader::context::ShaderNodeId;
+    let rows = registrations();
+    let mut context = ShaderContext::load(rows.names, 4).unwrap();
+    let mut append = context.append();
+    let source = append.admit(rows.page).unwrap();
+    let target = append.admit(rows.other).unwrap();
+    append.commit();
+    context
+        .remap_existing(rows.page.key, target, Some(2.5))
+        .unwrap();
+    assert!(
+        context
+            .remap_existing(rows.page.key, ShaderNodeId(u32::MAX), Some(9.0))
+            .is_err()
+    );
+    assert!(
+        context
+            .remap_existing(NameId(u32::MAX), target, Some(9.0))
+            .is_err()
+    );
+    assert_eq!(context.resolved_node(source), Some((target, 2.5)));
+    for offset in [-0.0, f32::from_bits(0x7fc0_0123), f32::INFINITY] {
+        context
+            .remap_existing(rows.page.key, target, Some(offset))
+            .unwrap();
+        context.remap_existing(rows.page.key, target, None).unwrap();
+        assert_eq!(
+            context.resolved_node(source).unwrap().1.to_bits(),
+            offset.to_bits()
+        );
+    }
+    context
+        .remap_existing(rows.page.key, target, Some(0.0))
+        .unwrap();
+    assert_eq!(context.resolved_node(source).unwrap().1.to_bits(), 0);
+    context.reset();
+    assert!(context.latest(rows.page.key).is_none());
+    assert!(context.resolved_node(source).is_none());
+}
+
+#[test]
+fn raw_shader_lookup_folds_case_and_extensions_without_merging_separators() {
+    let mut rows = registrations();
+    let backslash = rows
+        .assets
+        .shader_registration(b"Textures\\Brick.tga", rows.page.shader)
+        .unwrap();
+    let slash = rows
+        .assets
+        .shader_registration(b"Textures/Brick.tga", rows.page.shader)
+        .unwrap();
+    assert_ne!(backslash.key, slash.key);
+    assert_eq!(
+        rows.assets.find_shader_name(b"TEXTURES\\BRICK.png"),
+        Some(backslash.key)
+    );
+    assert_eq!(
+        rows.assets
+            .find_shader_name(b"textures/brick.any.extension"),
+        Some(slash.key)
+    );
+    assert!(rows.assets.find_shader_name(b"textures/absent").is_none());
+}

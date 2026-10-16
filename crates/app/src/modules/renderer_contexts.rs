@@ -1,6 +1,6 @@
 //! Renderer lifetime contexts shared by CLIENT UI and cgame, independent of the frontend.
 use crate::model_assets::{ModelProfile, RendererAdmission, ShaderResource};
-use qa_core::primitives::{ClientId, EntityId, IndexSpan, Vec3};
+use qa_core::primitives::{ClientId, EntityId, IndexSpan, NameId, Vec3};
 use qa_render::shader::{
     context::{ShaderContext, ShaderContextAppend, ShaderNodeId},
     reference::{NativeShaderRef, NativeShaders, ResolvedShader, ShaderContextId},
@@ -285,6 +285,37 @@ impl Contexts {
             .uses;
         context.uses.get(span.range())
     }
+    pub(super) fn contains(
+        &self,
+        handle: Handle,
+        registration: &qa_render::ShaderRegistration,
+    ) -> bool {
+        self.get(handle).is_some_and(|context| {
+            context
+                .shaders
+                .find(registration.key, registration.requested)
+                .is_some()
+        })
+    }
+    pub(super) fn latest(&self, handle: Handle, key: NameId) -> Option<ShaderNodeId> {
+        self.get(handle)?.shaders.latest(key)
+    }
+    pub(super) fn remap(
+        &mut self,
+        handle: Handle,
+        key: NameId,
+        target: ShaderNodeId,
+        offset: Option<f32>,
+    ) -> Result<(), String> {
+        self.slots
+            .get_mut(handle.slot as usize)
+            .and_then(Option::as_mut)
+            .filter(|context| context.generation == handle.generation)
+            .ok_or("stale renderer context")?
+            .shaders
+            .remap_existing(key, target, offset)
+            .map_err(str::to_owned)
+    }
     pub fn shader(&self, context: Handle, handle: i32) -> Option<NativeShaderRef> {
         let node = ShaderNodeId(u32::try_from(handle.checked_sub(1)?).ok()?);
         self.get(context)?.shaders.node(node)?;
@@ -399,6 +430,7 @@ fn stage_entries<'a, 'r>(
         retained_resources,
         committed: false,
         shader_handle: 0,
+        shader_node: None,
     };
     for (resource, registrations) in entries {
         if let Some(resource) = resource {
@@ -443,6 +475,7 @@ fn stage_entries<'a, 'r>(
                 let shaders = append.shaders.as_mut().ok_or("renderer context append")?;
                 let node = shaders.admit(registration).map_err(str::to_owned)?;
                 let selected = shaders.node(node).ok_or("renderer shader node")?;
+                append.shader_node = Some(node);
                 append.shader_handle = if selected.defaulted.is_some() {
                     0
                 } else {
@@ -465,8 +498,13 @@ pub(crate) struct Append<'a> {
     retained_resources: usize,
     committed: bool,
     shader_handle: i32,
+    shader_node: Option<ShaderNodeId>,
 }
 impl Append<'_> {
+    pub fn shader(&self) -> Option<(ShaderNodeId, &qa_render::ShaderRegistration)> {
+        let node = self.shader_node?;
+        Some((node, self.shaders.as_ref()?.node(node)?))
+    }
     pub fn shader_handle(&self) -> i32 {
         self.shader_handle
     }
@@ -495,12 +533,11 @@ impl NativeShaders for Contexts {
         reference: NativeShaderRef,
         assets: &qa_render::Assets,
     ) -> Option<ResolvedShader> {
-        let source = self.source(reference)?.shader;
-        let offset = assets
-            .material(assets.shader_binding(source)?.material)?
-            .settings
-            .time_offset;
-        ResolvedShader::select(assets, source, source, offset)
+        let context = self.get(reference.context)?;
+        let source = context.shaders.node(reference.node)?.shader;
+        let (target, offset) = context.shaders.resolved_node(reference.node)?;
+        let binding = context.shaders.node(target)?.shader;
+        ResolvedShader::select(assets, source, binding, offset, target == reference.node)
     }
     fn context(&self, owner: Owner, profile: ModelProfile) -> Option<ShaderContextId> {
         self.find(owner, profile)

@@ -203,7 +203,7 @@ pub trait ModelLoader {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShaderLighting {
     TwoDimensional,
-    World(qa_render::world::WorldPresentationId),
+    World(Option<qa_render::world::WorldPresentationId>),
 }
 
 #[derive(Clone, Copy, Debug)]

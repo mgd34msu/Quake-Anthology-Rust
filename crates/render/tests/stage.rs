@@ -230,6 +230,36 @@ fn native_table_waves_and_animation_share_fixed_phase() {
 }
 
 #[test]
+fn native_time_clamp_preserves_unordered_time_and_nonzero_negative_clamps() {
+    use qa_render::stage::shader_time;
+    for (offset, clamp, expected) in [
+        (f32::NAN, 2.0, f32::NAN),
+        (f32::INFINITY, 2.0, f32::NEG_INFINITY),
+        (f32::NEG_INFINITY, 2.0, 2.0),
+        (0.0, -2.0, -2.0),
+        (0.0, -0.0, 1.0),
+        (0.0, f32::NAN, 1.0),
+    ] {
+        let time = shader_time(
+            MaterialSettings {
+                time_offset: offset,
+                clamp_time: Some(clamp),
+                ..Default::default()
+            },
+            DrawInputs {
+                time_ms: 1000,
+                ..Default::default()
+            },
+        );
+        if expected.is_nan() {
+            assert!(time.is_nan());
+        } else {
+            assert_eq!(time.to_bits(), expected.to_bits());
+        }
+    }
+}
+
+#[test]
 fn ordered_modifiers_preserve_native_matrix_columns() {
     let evaluator = StageEvaluator::load();
     let stage = Stage {

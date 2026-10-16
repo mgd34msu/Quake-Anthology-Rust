@@ -1,6 +1,8 @@
 //! Synchronous module calls use one load-reserved, iterative activation stack.
 use super::{Module, ModuleResult, Program, State, contacts, context, motion, native_self};
 use crate::host::FrameHost;
+use crate::model_assets::ModelProfile;
+use qa_compat::services::{RendererRegistration, RendererRequest, ShaderLighting};
 use qa_compat::{
     abi::{
         ArgumentSelection, CommandRole, HostRequest, ImportContinuation, ImportStep, QUAKEC,
@@ -14,6 +16,7 @@ use qa_console::{
     commands::{CommandReply, CommandRun, CommandStep},
     views::Context as ConsoleContext,
 };
+use qa_core::{primitives::NameId, text::FixedText};
 use qa_core::{
     primitives::{
         CallbackCall, CallbackId, ClientCallback, ClientId, CommandArgs, EntityId, ModuleId,
@@ -22,6 +25,8 @@ use qa_core::{
     sys_events::EventTime,
 };
 use qa_input::{DispatchCursor, DispatchResume, DispatchStep, InputCapture};
+use qa_render::shader::{context::ShaderNodeId, reference::ShaderContextId};
+use qa_render::world::{WorldId, WorldPresentationId};
 use qa_session::dispatch::CallOutcome;
 use std::sync::Arc;
 
@@ -168,8 +173,30 @@ struct Pending {
     point: Option<ReplyPoint>,
     operation: Operation,
 }
+#[derive(Clone, Copy)]
+struct ShaderRemap {
+    original: u64,
+    replacement: u64,
+    time_offset: u64,
+}
+#[derive(Clone, Copy)]
+struct RendererScope {
+    context: ShaderContextId,
+    profile: ModelProfile,
+    world: Option<WorldId>,
+    presentation: Option<WorldPresentationId>,
+    synchronize: bool,
+}
+struct RegisteredRenderer {
+    handle: i32,
+    shader: Option<(NameId, ShaderNodeId)>,
+}
 enum Operation {
     RegisterRenderer(Option<qa_compat::services::RendererRequest>),
+    RemapShader {
+        request: ShaderRemap,
+        waiting: bool,
+    },
     SelectRendererWorld(qa_render::world::WorldId),
     CommandRegistration {
         name: u64,
@@ -375,6 +402,7 @@ enum GuestStep {
 }
 enum OperationStep {
     Continue,
+    RemapShader(ShaderRemap),
     Call(ModuleDispatch),
     Reply(u64),
     Abort,
@@ -391,6 +419,7 @@ enum OperationStep {
 }
 enum FrameStep {
     Continue,
+    RemapShader(ShaderRemap),
     Guest(Activation),
     CommandRegistration {
         name: u64,
@@ -694,6 +723,20 @@ fn drive(
                     depth += 1;
                 }
             }
+            FrameStep::RemapShader(request) => {
+                let result = if depth == arena.len() {
+                    Err(())
+                } else if let Frame::Guest(guest) = &mut frame {
+                    remap_renderer(host, guest, request, &mut arena[depth].command, driver)
+                } else {
+                    Err(())
+                };
+                if depth < arena.len() {
+                    arena[depth].command.clear();
+                }
+                frame.child(result.map(|()| None));
+                arena[index].frame = Some(frame);
+            }
             FrameStep::CommandRegistration { name, remove } => {
                 let result = if depth == arena.len() {
                     Err(())
@@ -869,6 +912,7 @@ fn guest_step(
                 FrameStep::Continue
             }
             OperationStep::Finished(result) => FrameStep::Finished(finish(host, frame, result)),
+            OperationStep::RemapShader(request) => FrameStep::RemapShader(request),
             OperationStep::CommandRegistration { name, remove } => {
                 FrameStep::CommandRegistration { name, remove }
             }
@@ -881,6 +925,18 @@ fn guest_step(
                 HostRequest::RegisterRenderer(request) => {
                     Ok(Operation::RegisterRenderer(Some(request)))
                 }
+                HostRequest::RemapShader {
+                    original,
+                    replacement,
+                    time_offset,
+                } => Ok(Operation::RemapShader {
+                    request: ShaderRemap {
+                        original,
+                        replacement,
+                        time_offset,
+                    },
+                    waiting: false,
+                }),
                 HostRequest::SelectRendererWorld(world) => {
                     Ok(Operation::SelectRendererWorld(world))
                 }
@@ -1336,6 +1392,242 @@ fn dispatch_child(
     ))
 }
 
+fn renderer_scope(
+    host: &mut FrameHost,
+    module: ModuleId,
+    world: Option<WorldId>,
+) -> Result<RendererScope, String> {
+    let context = host.module_renderer_context(module)?;
+    let row = host.module_row(module).ok_or("missing renderer module")?;
+    Ok(RendererScope {
+        context,
+        profile: row
+            .scene_role
+            .profile()
+            .ok_or("missing renderer presentation")?,
+        world,
+        presentation: world.and_then(|world| row.scene_role.presentation_for(world)),
+        synchronize: host
+            .renderer_smp
+            .and_then(|handle| host.console.cvars.native_integer(handle, RuleSetId::Quake3))
+            .is_some_and(|value| value != 0),
+    })
+}
+fn stage_renderer<'a>(
+    contexts: &'a mut super::renderer_contexts::Contexts,
+    scene: &mut Option<crate::renderer::SceneComposer>,
+    scope: RendererScope,
+    admission: crate::model_assets::RendererAdmission<'_>,
+) -> Result<super::renderer_contexts::Append<'a>, String> {
+    let admission = admission.selected_presentation(scope.presentation)?;
+    let synchronize = match admission.resource {
+        Some(resource @ crate::model_assets::ShaderResource::Skin(_)) => {
+            contexts.resource_nodes(scope.context, resource).is_none()
+        }
+        None if scope.synchronize => admission
+            .registrations
+            .iter()
+            .any(|registration| !contexts.contains(scope.context, registration)),
+        _ => false,
+    };
+    if synchronize
+        && let Some(frame) = scene
+            .as_mut()
+            .and_then(crate::renderer::SceneComposer::frame_mut)
+    {
+        frame.resolve_draw_shaders(admission.assets(), contexts);
+    }
+    contexts.stage(scope.context, admission)
+}
+fn register_renderer(
+    host: &mut FrameHost,
+    scope: RendererScope,
+    request: &RendererRequest<impl AsRef<[u8]>>,
+    driver: &mut Driver<'_>,
+) -> Result<RegisteredRenderer, String> {
+    let result = (|| {
+        let contexts = &mut host.renderer_contexts;
+        let owner = host
+            .runtime
+            .model_assets
+            .as_mut()
+            .ok_or("missing model assets")?;
+        let scene = &mut host.runtime.scene;
+        let (handle, staged, _) = owner.prepare_registration(
+            &host.runtime.vfs,
+            request,
+            scope.profile,
+            |candidate| stage_renderer(contexts, scene, scope, candidate),
+            |assets, _| {
+                driver
+                    .preparer
+                    .as_mut()
+                    .ok_or("renderer registration has no backend")?
+                    .prepare_assets(assets, None)
+            },
+        )?;
+        let ready = RegisteredRenderer {
+            handle: if matches!(request.kind, RendererRegistration::Shader { .. }) {
+                staged.shader_handle()
+            } else {
+                handle
+            },
+            shader: staged
+                .shader()
+                .map(|(node, registration)| (registration.key, node)),
+        };
+        staged.commit();
+        Ok(ready)
+    })();
+    if result.is_err()
+        && matches!(request.kind, RendererRegistration::Skin)
+        && let Some(admission) = host
+            .runtime
+            .model_assets
+            .as_ref()
+            .and_then(|owner| owner.failed_skin_admission(request.name.as_ref(), scope.profile))
+    {
+        stage_renderer(
+            &mut host.renderer_contexts,
+            &mut host.runtime.scene,
+            scope,
+            admission,
+        )?
+        .commit();
+    }
+    if result.is_ok() {
+        host.refresh_model_consumers();
+    }
+    result
+}
+fn renderer_error(host: &mut FrameHost, error: &str) {
+    let _ = host
+        .runtime
+        .server
+        .events
+        .console_formatted(format_args!("renderer registration: {error}\n"));
+}
+fn remap_missing(host: &mut FrameHost, name: &[u8], replacement: bool) {
+    let prefix: &[u8] = if replacement {
+        b"WARNING: R_RemapShader: new shader "
+    } else {
+        b"WARNING: R_RemapShader: shader "
+    };
+    let _ = host
+        .runtime
+        .server
+        .events
+        .console_parts(&[prefix, name, b" not found\n"]);
+}
+fn remap_lookup(
+    host: &mut FrameHost,
+    scope: RendererScope,
+    name: &[u8],
+    replacement: bool,
+    driver: &mut Driver<'_>,
+) -> Option<(NameId, ShaderNodeId)> {
+    if let Some(key) = host
+        .runtime
+        .model_assets
+        .as_ref()?
+        .assets()
+        .find_shader_name(name)
+        && let Some(node) = host.renderer_contexts.latest(scope.context, key)
+    {
+        return Some((key, node));
+    }
+    if name.is_empty() {
+        remap_missing(host, name, replacement);
+        return None;
+    }
+    let result = (|| {
+        let assets = host
+            .runtime
+            .model_assets
+            .as_ref()
+            .ok_or("missing renderer assets")?;
+        let presentation = scope
+            .world
+            .map(|world| {
+                assets
+                    .renderer_presentation(world, scope.profile, scope.presentation)
+                    .map(|presentation| presentation.id)
+                    .ok_or("shader registration presentation")
+            })
+            .transpose()?;
+        let mut copied = FixedText::<64>::default();
+        copied
+            .set_bytes(name)
+            .map_err(|_| "renderer registration name length")?;
+        let request = RendererRequest {
+            name: copied,
+            source: scope.profile.source_rules,
+            kind: RendererRegistration::Shader {
+                mipmaps: true,
+                lighting: ShaderLighting::World(presentation),
+            },
+            world: scope.world,
+        };
+        register_renderer(host, scope, &request, driver)
+    })();
+    match result {
+        Ok(ready) if ready.handle > 0 => ready.shader,
+        Ok(_) => {
+            remap_missing(host, name, replacement);
+            None
+        }
+        Err(error) => {
+            renderer_error(host, &error);
+            None
+        }
+    }
+}
+fn remap_renderer(
+    host: &mut FrameHost,
+    frame: &mut Activation,
+    request: ShaderRemap,
+    scratch: &mut ParsedCommand,
+    driver: &mut Driver<'_>,
+) -> Result<(), ()> {
+    let world = host
+        .module_row(frame.start.module)
+        .and_then(|row| row.scene_role.selected_world());
+    let scope = match renderer_scope(host, frame.start.module, world) {
+        Ok(scope) => scope,
+        Err(error) => {
+            renderer_error(host, &error);
+            return Ok(());
+        }
+    };
+    if request.original == 0 {
+        return Err(());
+    }
+    capture_command(host, frame, Some(request.original), scratch)?;
+    let Some((key, _)) = remap_lookup(host, scope, scratch.raw_bytes(), false, driver) else {
+        return Ok(());
+    };
+    if request.replacement == 0 {
+        return Err(());
+    }
+    capture_command(host, frame, Some(request.replacement), scratch)?;
+    let Some((_, target)) = remap_lookup(host, scope, scratch.raw_bytes(), true, driver) else {
+        return Ok(());
+    };
+    let offset = if request.time_offset == 0 {
+        None
+    } else {
+        capture_command(host, frame, Some(request.time_offset), scratch)?;
+        Some(qa_core::text::atof_prefix_bytes(scratch.raw_bytes()).0 as f32)
+    };
+    if let Err(error) = host
+        .renderer_contexts
+        .remap(scope.context, key, target, offset)
+    {
+        renderer_error(host, &error);
+    }
+    Ok(())
+}
+
 fn operation(
     host: &mut FrameHost,
     frame: &mut Activation,
@@ -1373,67 +1665,31 @@ fn operation(
                 }
             }
         }
+        Operation::RemapShader { request, waiting } => {
+            if *waiting {
+                match child.take() {
+                    Some(Ok(_)) => OperationStep::Reply(0),
+                    Some(Err(())) => OperationStep::Abort,
+                    None => OperationStep::Continue,
+                }
+            } else {
+                *waiting = true;
+                OperationStep::RemapShader(*request)
+            }
+        }
         Operation::RegisterRenderer(request) => {
             let Some(request) = request.take() else {
                 return OperationStep::Abort;
             };
-            let result = (|| {
-                let context = host.module_renderer_context(start.module)?;
-                let row = host
-                    .module_row(start.module)
-                    .ok_or_else(|| "missing renderer module".to_owned())?;
-                let profile = row
-                    .scene_role
-                    .profile()
-                    .ok_or_else(|| "missing renderer presentation".to_owned())?;
-                let selected = request
-                    .world
-                    .and_then(|world| row.scene_role.presentation_for(world));
-                let contexts = &mut host.renderer_contexts;
-                let owner = host
-                    .runtime
-                    .model_assets
-                    .as_mut()
-                    .ok_or_else(|| "missing model assets".to_owned())?;
-                let (handle, staged, counts) = owner.prepare_registration(
-                    &host.runtime.vfs,
-                    &request,
-                    profile,
-                    |candidate| contexts.stage(context, candidate.selected_presentation(selected)?),
-                    |assets, _| {
-                        driver
-                            .preparer
-                            .as_mut()
-                            .ok_or_else(|| "renderer registration has no backend".to_owned())?
-                            .prepare_assets(assets, None)
-                    },
-                )?;
-                let result = if matches!(
-                    request.kind,
-                    qa_compat::services::RendererRegistration::Shader { .. }
-                ) {
-                    staged.shader_handle()
-                } else {
-                    handle
-                };
-                staged.commit();
-                Ok::<_, String>((result, counts))
-            })();
-            let value = match result {
-                Ok((handle, _)) => {
-                    host.refresh_model_consumers();
-                    handle as u32 as u64
-                }
+            let result = renderer_scope(host, start.module, request.world)
+                .and_then(|scope| register_renderer(host, scope, &request, driver));
+            match result {
+                Ok(ready) => OperationStep::Reply(ready.handle as u32 as u64),
                 Err(error) => {
-                    let _ = host
-                        .runtime
-                        .server
-                        .events
-                        .console_formatted(format_args!("renderer registration: {error}\n"));
-                    0
+                    renderer_error(host, &error);
+                    OperationStep::Reply(0)
                 }
-            };
-            OperationStep::Reply(value)
+            }
         }
         Operation::SelectRendererWorld(world) => {
             let result = (|| {
