@@ -875,3 +875,361 @@ fn registered_static_player_capture_waits_for_its_profile_across_peer_publicatio
         .model;
     assert_eq!(entities[0].model, body.into());
 }
+
+struct VideoSource {
+    assets: asset_frames::Source,
+    time: u64,
+    prepare_models: bool,
+    configuration: std::sync::Arc<qa_core::presentation::RendererConfiguration>,
+}
+impl qa_app::host::FrameSource for VideoSource {
+    fn video_kind(&self) -> Option<qa_app::renderer::Kind> {
+        Some(qa_app::renderer::Kind::Cpu)
+    }
+    fn prepare_video(
+        &mut self,
+        policy: qa_app::renderer::VideoPolicy,
+        assets: &Assets,
+        limits: Limits,
+    ) -> Result<qa_app::renderer::PreparedVideo, String> {
+        qa_app::renderer::PreparedVideo::cpu(
+            std::sync::Arc::clone(&self.configuration),
+            assets,
+            limits,
+            policy.cpu_bands,
+        )
+    }
+    fn publish_video(
+        &mut self,
+        candidate: qa_app::renderer::PreparedVideo,
+    ) -> Result<std::sync::Arc<qa_core::presentation::RendererConfiguration>, String> {
+        let (backend, configuration) = candidate.into_cpu()?;
+        self.assets.cpu = backend;
+        self.configuration = std::sync::Arc::clone(&configuration);
+        Ok(configuration)
+    }
+    fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
+        if self.prepare_models {
+            Some(&mut self.assets)
+        } else {
+            None
+        }
+    }
+    fn begin_frame(&mut self) -> std::time::Duration {
+        self.time += 100;
+        std::time::Duration::from_millis(self.time)
+    }
+    fn poll_events(&mut self, queue: &mut qa_core::sys_events::SysEventQueue) {
+        queue
+            .push(qa_core::sys_events::SysEvent {
+                time: qa_core::sys_events::EventTime::from_milliseconds(self.time),
+                kind: qa_core::sys_events::EventKind::Time,
+            })
+            .unwrap();
+    }
+    fn wait_time(&mut self, _: std::time::Duration) -> std::time::Duration {
+        panic!("uncapped fixture")
+    }
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+    fn present(&mut self) {}
+    fn render(
+        &mut self,
+        scene: Option<&mut qa_app::renderer::SceneComposer>,
+        resources: Option<qa_app::model_assets::ModelView<'_>>,
+        native: &dyn qa_render::shader::reference::NativeShaders,
+        _: &[Option<qa_app::host::ClientView>; qa_core::sys_events::SeatId::COUNT],
+        _: &[Option<ClientSceneInput<'_>>; qa_core::sys_events::SeatId::COUNT],
+        _: &[Option<qa_app::renderer::hud::HudView<'_>>; qa_core::sys_events::SeatId::COUNT],
+        _: qa_console::presentation::ConsoleView<'_>,
+    ) {
+        let (Some(scene), Some(resources)) = (scene, resources) else {
+            return;
+        };
+        let Some(mut packet) = scene.finish_frame() else {
+            return;
+        };
+        packet.resolve_shaders(resources.assets, native);
+        self.assets.cpu.render(&packet, resources.assets);
+        assert!(scene.recycle(packet).is_ok());
+    }
+}
+
+#[test]
+fn image_restart_remaps_captured_players_and_statics_without_following_rewritten_aliases() {
+    let rules = RuleSetId::Quake2;
+    let (_fixture, mut host, profile) =
+        loading_with_connection(rules, b"Captured\\female/red", false, true);
+    let client = host.local_clients[0].unwrap();
+    let layout = ConfigLayout::for_rules(rules);
+    let alias = layout.resources[0].get(50).unwrap();
+    let inline = layout.resources[0].get(51).unwrap();
+    let world_row = layout.resources[0].get(1).unwrap();
+    let (world, presentation) = {
+        let owner = host.runtime.model_assets.as_mut().unwrap();
+        for path in [
+            b"models/ordinary.md2".as_slice(),
+            b"models/late.md2".as_slice(),
+        ] {
+            owner
+                .register_model(&host.runtime.vfs, path, rules)
+                .unwrap();
+        }
+        let world = owner
+            .catalog()
+            .loaded_world(b"maps/player.bsp")
+            .unwrap()
+            .render;
+        let presentations = owner
+            .assets()
+            .world(world)
+            .unwrap()
+            .presentations()
+            .iter()
+            .map(|id| owner.assets().world_presentation_registration(*id).unwrap())
+            .collect::<Vec<_>>();
+        let selected = presentations[0];
+        let loaded = qa_render::material::world_load::LoadedWorld {
+            world,
+            presentations: presentations.into_boxed_slice(),
+            diagnostics: Box::default(),
+        };
+        let (scene, _) = qa_app::renderer::SceneComposer::load(
+            Limits::default(),
+            owner.assets_mut(),
+            vec![loaded],
+        )
+        .unwrap();
+        host.runtime.scene = Some(scene);
+        (world, selected)
+    };
+    let assets = asset_frames::Source::load(host.runtime.model_assets.as_ref().unwrap().assets());
+    host.publish_model_admission(assets.cpu.admitted_assets().unwrap())
+        .unwrap();
+    bind(&mut host, profile);
+    host.local_worlds[0] = Some((world, presentation.id));
+    host.local_presentations[0] = presentation.defaults;
+    host.local_presentation_rules[0] = Some(rules);
+    host.set_cpu_band_override(Some(qa_render::cpu::RasterBands::One));
+    let context = Context {
+        source: RuleSetId::Quake3,
+        ..Context::default()
+    };
+    let band = host.console.cvars.find("r_cpuBands").unwrap();
+    host.console.cvars.set_text(band, "1").unwrap();
+    let configuration = std::sync::Arc::new(qa_core::presentation::RendererConfiguration {
+        display: qa_core::presentation::DisplayConfiguration {
+            width: 64,
+            height: 48,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    host.runtime.renderer_configuration = Some(std::sync::Arc::clone(&configuration));
+    let mut source = VideoSource {
+        assets,
+        time: 0,
+        prepare_models: false,
+        configuration,
+    };
+    let player = player_record(rules, 1 << 8);
+    let ordinary = EntityRecord {
+        position: Vec3([32., 0., 0.]),
+        appearance: EntityAppearance {
+            source: rules,
+            models: [
+                ModelRef::native(ResourceNamespace::Client(client), 50),
+                None,
+                None,
+                None,
+            ],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    {
+        let owner = host.runtime.model_assets.as_ref().unwrap();
+        let resources = host.runtime.client_resources[0].as_mut().unwrap();
+        assert!(resources.apply(alias, b"models/ordinary.md2", Some(owner.catalog()), None));
+        assert!(resources.state.receive_static_entity(player, None, None));
+        assert!(resources.state.receive_static_entity(ordinary, None, None));
+        assert!(resources.apply(alias, b"models/late.md2", Some(owner.catalog()), None));
+        assert!(resources.apply(
+            layout.players.get(0).unwrap(),
+            b"Current\\male/grunt",
+            Some(owner.catalog()),
+            None
+        ));
+        assert!(resources.apply(inline, b"*1", Some(owner.catalog()), None));
+        assert!(resources.apply(
+            world_row,
+            b"maps/not-yet-accepted.bsp",
+            Some(owner.catalog()),
+            None
+        ));
+        let pending = EntityRecord {
+            appearance: EntityAppearance {
+                source: rules,
+                models: [
+                    ModelRef::native(ResourceNamespace::Client(client), 51),
+                    None,
+                    None,
+                    None,
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(resources.state.receive_static_entity(pending, None, None));
+    }
+    let before = {
+        let statics = host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .static_entities();
+        let (counts, entities) = draw(&host, rules, player, Some(statics));
+        assert_eq!((counts.models, counts.missing_models), (3, 1));
+        assert_eq!(
+            entities[0].model,
+            model(&host, profile, b"players/female/tris.md2")
+        );
+        assert_eq!(
+            entities[1].model,
+            model(&host, profile, b"players/female/w1.md2")
+        );
+        assert_eq!(
+            entities[2].model,
+            model(&host, profile, b"models/ordinary.md2")
+        );
+        entities
+    };
+    let (_, current) = draw(&host, rules, player, None);
+    assert_eq!(
+        current[0].model,
+        model(&host, profile, b"players/male/tris.md2")
+    );
+    let body_image = |host: &FrameHost, entity: &SceneEntity| {
+        let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+        let shader = entity.shader.unwrap().source(&()).unwrap();
+        let material = assets
+            .material(assets.shader_binding(shader).unwrap().material)
+            .unwrap();
+        let qa_render::assets::StageTexture::Image(id) = material.stages[0].texture else {
+            panic!("captured image")
+        };
+        let image = assets.image(id).unwrap();
+        let level = &image.prepared.as_ref().unwrap().levels[0];
+        (
+            id,
+            level.width,
+            level.height,
+            image.indexed.as_ref().unwrap().mip(0).unwrap().indices()[0],
+        )
+    };
+    let old_body = body_image(&host, &before[0]);
+    let old_ordinary = body_image(&host, &before[2]);
+    assert_eq!(old_body.3, 55);
+    assert_eq!((old_ordinary.1, old_ordinary.2), (8, 4));
+    let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+    let revision = state.models.revision();
+    let received_revision = state.configs.config(world_row).unwrap().revision;
+    let alias_revision = state.configs.config(alias).unwrap().revision;
+    host.console
+        .append("r_picmip 2\nvid_restart cpu\n", context)
+        .unwrap();
+    host.execute_commands_with_driver(&mut qa_app::modules::Driver::cache_only());
+    host.frame(&mut source, true);
+    let selected = host.local_worlds[0].unwrap();
+    let settings = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .world_presentation_registration(selected.1)
+        .unwrap()
+        .profile
+        .image_settings;
+    assert_eq!(settings.picmip, 2);
+    let next_profile = ModelProfile {
+        image_settings: settings,
+        ..profile
+    };
+    let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+    assert_eq!(state.models.revision(), revision);
+    assert_eq!(
+        state.configs.config(alias).unwrap().revision,
+        alias_revision
+    );
+    assert_eq!(
+        state.configs.config(world_row).unwrap().revision,
+        received_revision
+    );
+    assert_eq!(
+        state.configs.config(alias).unwrap().text,
+        b"models/late.md2"
+    );
+    let (counts, after) = draw(&host, rules, player, Some(state.static_entities()));
+    assert_eq!((counts.models, counts.missing_models), (3, 1));
+    assert_eq!(
+        after[0].model,
+        model(&host, next_profile, b"players/female/tris.md2")
+    );
+    assert_eq!(
+        after[1].model,
+        model(&host, next_profile, b"players/female/w1.md2")
+    );
+    assert_eq!(
+        after[2].model,
+        model(&host, next_profile, b"models/ordinary.md2")
+    );
+    assert_ne!(body_image(&host, &after[0]).0, old_body.0);
+    assert_eq!(body_image(&host, &after[0]).3, 55);
+    let prepared = body_image(&host, &after[2]);
+    assert_ne!(prepared.0, old_ordinary.0);
+    assert_eq!((prepared.1, prepared.2), (2, 1));
+    let (_, current) = draw(&host, rules, player, None);
+    assert_eq!(
+        current[0].model,
+        model(&host, next_profile, b"players/male/tris.md2")
+    );
+    assert_eq!(body_image(&host, &current[0]).3, 33);
+    let (_, live_alias) = draw(&host, rules, ordinary, None);
+    assert_eq!(
+        live_alias[0].model,
+        model(&host, next_profile, b"models/late.md2")
+    );
+
+    // A later valid model1 is a different received revision. The old pending
+    // inline static must stay pending while current inline entities can draw.
+    let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
+    assert!(host.runtime.client_resources[0].as_mut().unwrap().apply(
+        world_row,
+        b"maps/player.bsp",
+        Some(catalog),
+        None
+    ));
+    source.prepare_models = true;
+    host.frame(&mut source, true);
+    let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+    assert!(state.configs.config(world_row).unwrap().revision > received_revision);
+    let (counts, _) = draw(&host, rules, player, Some(state.static_entities()));
+    assert_eq!((counts.models, counts.missing_models), (3, 1));
+    let inline_record = EntityRecord {
+        appearance: EntityAppearance {
+            source: rules,
+            models: [
+                ModelRef::native(ResourceNamespace::Client(client), 51),
+                None,
+                None,
+                None,
+            ],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let (counts, _) = draw(&host, rules, inline_record, None);
+    assert_eq!((counts.models, counts.missing_models), (1, 0));
+}

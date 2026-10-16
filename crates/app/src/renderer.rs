@@ -459,6 +459,71 @@ impl SceneHudAppend<'_> {
         *self.target = Some(self.candidate);
     }
 }
+
+pub(crate) struct VideoGraphics {
+    console: Option<console::ConsoleAssets>,
+    hud: [Option<hud::HudAssets>; 5],
+}
+
+/// Replacement UI and capacity remain private until the video candidate commits.
+pub(crate) struct SceneVideoAppend<'a> {
+    frontend: qa_render::scene::FrontEndCapacity<'a>,
+    kind: &'a mut Kind,
+    console: &'a mut Option<console::ConsoleAssets>,
+    hud: &'a mut [Option<hud::HudAssets>; 5],
+    graphics: VideoGraphics,
+}
+impl SceneVideoAppend<'_> {
+    pub(crate) fn limits(&self) -> Limits {
+        self.frontend.limits()
+    }
+    pub(crate) fn graphic_registrations(
+        &self,
+    ) -> impl Iterator<Item = (ModelProfile, &qa_render::ShaderRegistration)> + Clone {
+        graphic_registrations(&self.graphics.console, &self.graphics.hud)
+    }
+    pub(crate) fn commit(self, kind: Kind) {
+        self.frontend.commit();
+        *self.kind = kind;
+        *self.console = self.graphics.console;
+        *self.hud = self.graphics.hud;
+    }
+}
+
+fn graphic_registrations<'a>(
+    console: &'a Option<console::ConsoleAssets>,
+    hud: &'a [Option<hud::HudAssets>; 5],
+) -> impl Iterator<Item = (ModelProfile, &'a qa_render::ShaderRegistration)> + Clone {
+    console
+        .iter()
+        .flat_map(|console| {
+            console
+                .registrations()
+                .map(move |registration| (console.profile(), registration))
+        })
+        .chain(hud.iter().flatten().flat_map(|hud| {
+            hud.registrations()
+                .map(move |registration| (hud.profile(), registration))
+        }))
+}
+
+fn validate_world_presentation(
+    assets: &Assets,
+    world: qa_render::world::WorldId,
+    entry: qa_render::material::world_load::LoadedWorldPresentation,
+) -> Result<(), String> {
+    if assets
+        .world_presentation_registration(entry.id)
+        .is_none_or(|registered| registered != entry)
+        || assets
+            .world(world)
+            .is_none_or(|world| !world.presentations().contains(&entry.id))
+    {
+        return Err("invalid appended world presentation".to_owned());
+    }
+    Ok(())
+}
+
 fn hud_command_capacity() -> Result<usize, String> {
     hud::HudAssets::command_capacity()
         .checked_mul(SeatId::COUNT)
@@ -531,17 +596,7 @@ impl SceneComposer {
     pub(crate) fn graphic_registrations(
         &self,
     ) -> impl Iterator<Item = (ModelProfile, &qa_render::ShaderRegistration)> + Clone {
-        self.console
-            .iter()
-            .flat_map(|console| {
-                console
-                    .registrations()
-                    .map(move |registration| (console.profile(), registration))
-            })
-            .chain(self.hud.iter().flatten().flat_map(|hud| {
-                hud.registrations()
-                    .map(move |registration| (hud.profile(), registration))
-            }))
+        graphic_registrations(&self.console, &self.hud)
     }
     pub(crate) fn replay_graphics(
         &self,
@@ -631,6 +686,108 @@ impl SceneComposer {
         })
     }
 
+    pub(crate) fn load_video_graphics(
+        &mut self,
+        vfs: &qa_content::vfs::Vfs,
+        owner: &mut crate::model_assets::ModelAssets,
+        refresh: &crate::model_assets::ImageRefresh,
+        width: u32,
+        height: u32,
+    ) -> Result<VideoGraphics, String> {
+        if !self.asset_stage_ready() {
+            return Err("video graphics require an idle scene".to_owned());
+        }
+        let console = self
+            .console
+            .as_ref()
+            .map(|previous| {
+                let profile = refresh.profile(previous.profile());
+                let candidate = console::ConsoleAssets::load(
+                    vfs,
+                    owner,
+                    profile.rules,
+                    profile.image_settings,
+                    width,
+                    height,
+                )?;
+                if candidate.profile() != profile {
+                    return Err("video console profile changed source".to_owned());
+                }
+                Ok(candidate)
+            })
+            .transpose()?;
+        let mut hud = std::array::from_fn(|_| None);
+        for (slot, previous) in self.hud.iter().enumerate() {
+            let Some(previous) = previous else { continue };
+            let profile = refresh.profile(previous.profile());
+            let font = console
+                .as_ref()
+                .and_then(|console| console.font_for(profile.rules))
+                .filter(|font| font.profile == profile)
+                .map_or_else(
+                    || console::FontAssets::load(vfs, owner, profile.rules, profile.image_settings),
+                    Ok,
+                )?;
+            if font.profile != profile {
+                return Err("video HUD profile changed source".to_owned());
+            }
+            hud[slot] = Some(hud::HudAssets::load(
+                vfs,
+                owner,
+                previous.rules(),
+                font,
+                width,
+            )?);
+        }
+        Ok(VideoGraphics { console, hud })
+    }
+
+    pub(crate) fn stage_video_graphics(
+        &mut self,
+        assets: &Assets,
+        graphics: VideoGraphics,
+        refresh: &crate::model_assets::ImageRefresh,
+    ) -> Result<SceneVideoAppend<'_>, String> {
+        if self.frame.is_some() {
+            return Err("scene frame is active".to_owned());
+        }
+        if self.console.is_some() != graphics.console.is_some()
+            || self
+                .hud
+                .iter()
+                .zip(&graphics.hud)
+                .any(|(old, new)| old.is_some() != new.is_some())
+            || self
+                .console
+                .as_ref()
+                .zip(graphics.console.as_ref())
+                .is_some_and(|(old, new)| old.command_capacity() != new.command_capacity())
+        {
+            return Err("video graphics changed scene layout".to_owned());
+        }
+        let mut limits = self.frontend.limits();
+        for &(world, previous, next) in &refresh.worlds {
+            if !self.has_world(world) {
+                return Err("video world has no scene scratch".to_owned());
+            }
+            let old = assets
+                .world_presentation_registration(previous)
+                .ok_or("video world presentation is unavailable")?;
+            validate_world_presentation(assets, world, old)?;
+            validate_world_presentation(assets, world, next)?;
+            let world = assets.world(world).ok_or("missing video world")?;
+            limits = scene_surface_limits(limits, world.visibility().surface_count())?;
+        }
+        let frontend = self.frontend.stage_capacity(limits)?;
+        Ok(SceneVideoAppend {
+            frontend,
+            kind: &mut self.kind,
+            console: &mut self.console,
+            hud: &mut self.hud,
+            graphics,
+        })
+    }
+
     pub fn load(
         mut limits: Limits,
         assets: &mut Assets,
@@ -715,15 +872,11 @@ impl SceneComposer {
             return Err("scene world prefix does not match appended world".to_owned());
         }
         let world = assets.world(loaded.world).ok_or("missing appended world")?;
-        if loaded.presentations.is_empty()
-            || loaded.presentations.iter().any(|entry| {
-                assets
-                    .world_presentation_registration(entry.id)
-                    .is_none_or(|presentation| presentation != *entry)
-                    || !world.presentations().contains(&entry.id)
-            })
-        {
+        if loaded.presentations.is_empty() {
             return Err("invalid appended world presentation".to_owned());
+        }
+        for &entry in &loaded.presentations {
+            validate_world_presentation(assets, loaded.world, entry)?;
         }
         let limits =
             scene_surface_limits(self.frontend.limits(), world.visibility().surface_count())?;

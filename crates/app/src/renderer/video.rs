@@ -1,4 +1,4 @@
-use super::{Backend, Context, Kind, SceneComposer, VideoPolicy};
+use super::{Backend, Context, Kind, VideoPolicy};
 use crate::host::LiveFrame;
 use qa_core::presentation::RendererConfiguration;
 use qa_platform::Window;
@@ -147,7 +147,6 @@ pub(crate) fn discard_live_video(
 pub(crate) fn publish_live_video(
     source: &mut LiveFrame<'_>,
     mut candidate: PreparedVideo,
-    scene: &mut SceneComposer,
 ) -> Result<Arc<RendererConfiguration>, String> {
     let result = (|| {
         let renderer = source
@@ -177,7 +176,6 @@ pub(crate) fn publish_live_video(
         renderer.height = candidate.configuration.display.height;
         renderer.sample = Default::default();
         renderer.draw_failed = false;
-        scene.kind = candidate.kind;
         // The old context is retired immediately, so it reclaims GPU objects.
         // Drop Rust storage without calling old GL names in the new context.
         old_backend.context_lost();

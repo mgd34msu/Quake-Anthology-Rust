@@ -41,6 +41,7 @@ mod map_start;
 mod motion;
 mod resources;
 mod trace;
+mod video;
 
 fn host_clear_feedback(runtime: &mut Runtime, client: ClientId) {
     if let Some(client) = runtime.server.clients.get_mut(client.0 as usize) {

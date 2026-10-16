@@ -46,13 +46,20 @@ impl Contexts {
         Ok(())
     }
     pub fn retain_clients(&mut self, mut live: impl FnMut(ClientId, EntityId) -> bool) {
+        self.retain_unused(|context| match context.owner {
+            Owner::Client(client, lifetime) => live(client, lifetime),
+            _ => true,
+        });
+    }
+    pub(crate) fn retain_profiles(&mut self, mut retained: impl FnMut(ModelProfile) -> bool) {
+        self.retain_unused(|context| retained(context.profile));
+    }
+    fn retain_unused(&mut self, mut retained: impl FnMut(&Context) -> bool) {
         for slot in &mut self.slots {
             let Some(context) = slot.as_ref().filter(|context| context.users == 0) else {
                 continue;
             };
-            if let Owner::Client(client, lifetime) = context.owner
-                && !live(client, lifetime)
-            {
+            if !retained(context) {
                 *slot = None;
             }
         }

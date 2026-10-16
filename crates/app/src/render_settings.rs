@@ -1,5 +1,8 @@
 //! Cold presentation settings from the one cvar table, selected per world.
-use qa_console::{cvars::Cvars, views::RuleSetId};
+use qa_console::{
+    cvars::{Cvars, View},
+    views::{Context, RuleSetId},
+};
 use qa_content::vfs::Vfs;
 use qa_render::{
     Assets,
@@ -84,14 +87,112 @@ pub fn world_profile(
     Ok(profile)
 }
 
+const IMAGE_CVARS: [&str; 7] = [
+    "r_gamma",
+    "r_intensity",
+    "r_picmip",
+    "r_roundImagesDown",
+    "r_simpleMipMaps",
+    "gl_max_size",
+    "gl_skymip",
+];
+
+/// A cold preview keeps native source defaults and pending alias conversions in
+/// the one cvar table until the replacement resources are ready to publish.
+pub(crate) struct ImageSettingsPlan {
+    settings: [Option<ImageSettings>; 5],
+    views: Vec<(View, u64)>,
+}
+impl ImageSettingsPlan {
+    pub(crate) fn prepare(
+        vars: &Cvars,
+        sources: impl IntoIterator<Item = RuleSetId>,
+    ) -> Result<Self, &'static str> {
+        let mut plan = Self {
+            settings: [None; 5],
+            views: Vec::new(),
+        };
+        for source in sources {
+            if plan.settings[source as usize].is_some() {
+                continue;
+            }
+            plan.settings[source as usize] = Some(read_image_settings(vars, source, true)?);
+            for name in IMAGE_CVARS {
+                let view = image_view(vars, source, name)?;
+                plan.views.push((view, vars.view_update_generation(view)));
+            }
+        }
+        Ok(plan)
+    }
+    pub(crate) fn selections(&self) -> [Option<ImageSettings>; 5] {
+        self.settings
+    }
+    pub(crate) fn validate(&self, vars: &Cvars) -> Result<(), &'static str> {
+        if self
+            .views
+            .iter()
+            .any(|&(view, generation)| vars.view_update_generation(view) != generation)
+        {
+            return Err("image settings changed during restart");
+        }
+        Ok(())
+    }
+    pub(crate) fn apply(&self, vars: &mut Cvars) -> Result<(), qa_console::cvars::WriteError> {
+        for (index, &(view, _)) in self.views.iter().enumerate() {
+            if self.views[..index]
+                .iter()
+                .any(|&(previous, _)| previous.canonical() == view.canonical())
+            {
+                continue;
+            }
+            vars.apply_latch(view)?;
+            vars.set_latch_active(view.canonical(), true);
+        }
+        Ok(())
+    }
+}
+fn image_view(vars: &Cvars, source: RuleSetId, name: &str) -> Result<View, &'static str> {
+    vars.bind(
+        name,
+        Context {
+            source,
+            ..Context::default()
+        },
+    )
+    .ok_or("missing image cvar")
+}
+fn image_numbers(
+    vars: &Cvars,
+    source: RuleSetId,
+    name: &str,
+    pending: bool,
+) -> Result<Option<(f32, i32)>, &'static str> {
+    let view = image_view(vars, source, name)?;
+    if pending && let Some(text) = vars.latched(view).map_err(|_| "image setting conversion")? {
+        return Ok(Some((
+            qa_console::numbers::number(text.as_str(), source),
+            qa_console::numbers::integer(text.as_str()),
+        )));
+    }
+    Ok(vars
+        .native_number(view.canonical(), source)
+        .zip(vars.native_integer(view.canonical(), source)))
+}
+
 pub fn image_settings(vars: &Cvars, source: RuleSetId) -> Result<ImageSettings, &'static str> {
+    read_image_settings(vars, source, false)
+}
+fn read_image_settings(
+    vars: &Cvars,
+    source: RuleSetId,
+    pending: bool,
+) -> Result<ImageSettings, &'static str> {
     let mut settings = ImageSettings::native(source);
     if source == RuleSetId::Quake2Rerelease {
         settings.max_dimension = upload::MAX_DIMENSION;
     }
     let number = |name, fallback| -> Result<f32, &'static str> {
-        let handle = vars.find(name).ok_or("missing image cvar")?;
-        let value = vars.native_number(handle, source).unwrap_or(fallback);
+        let value = image_numbers(vars, source, name, pending)?.map_or(fallback, |v| v.0);
         if value.is_finite() {
             Ok(value)
         } else {
@@ -99,8 +200,7 @@ pub fn image_settings(vars: &Cvars, source: RuleSetId) -> Result<ImageSettings, 
         }
     };
     let integer = |name, fallback| -> Result<i32, &'static str> {
-        let handle = vars.find(name).ok_or("missing image cvar")?;
-        Ok(vars.native_integer(handle, source).unwrap_or(fallback))
+        Ok(image_numbers(vars, source, name, pending)?.map_or(fallback, |v| v.1))
     };
     let gamma = number("r_gamma", 1.0)?;
     // tr_image.c:R_SetColorMappings clamps the native Q3 gamma value before

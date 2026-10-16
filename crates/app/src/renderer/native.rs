@@ -47,6 +47,9 @@ pub(crate) struct SceneRole {
     color: [u8; 4],
     target: Option<Target>,
 }
+pub(crate) struct SceneVideoSelection {
+    target: Option<Target>,
+}
 impl Default for SceneRole {
     fn default() -> Self {
         Self {
@@ -84,6 +87,38 @@ impl SceneRole {
     }
     pub(crate) fn profile(&self) -> Option<ModelProfile> {
         self.target.map(|target| target.profile)
+    }
+
+    pub(crate) fn world_selection(
+        &self,
+        resources: ModelView<'_>,
+    ) -> Option<(WorldId, WorldPresentationId)> {
+        let world = self.selected_world()?;
+        let presentation = self.target?.world_presentation(resources, world)?;
+        Some((world, presentation.id))
+    }
+
+    pub(crate) fn stage_video_selection(
+        &self,
+        refresh: &crate::model_assets::ImageRefresh,
+    ) -> SceneVideoSelection {
+        let mut selection = SceneVideoSelection {
+            target: self.target,
+        };
+        if let Some(target) = &mut selection.target {
+            target.profile = refresh.profile(target.profile);
+            if let Some((world, previous)) = target.world
+                && let Some(next) = refresh.presentation(world, previous)
+            {
+                target.world = Some((world, next.id));
+                target.presentation = next.defaults;
+            }
+        }
+        selection
+    }
+
+    pub(crate) fn publish_video_selection(&mut self, selection: SceneVideoSelection) {
+        self.target = selection.target;
     }
 
     pub(crate) fn configure(

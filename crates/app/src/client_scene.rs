@@ -121,6 +121,7 @@ pub(crate) use player_models::PlayerModelOptions;
 
 /// Only derived numeric asset bindings live here. Accepted entity values and
 /// history remain in the connection's existing snapshot ring.
+#[derive(Clone)]
 pub struct ClientModelBindings {
     client: ClientId,
     range: IndexSpan,
@@ -181,6 +182,224 @@ impl ClientModelBindings {
 
     pub(crate) fn profile(&self) -> Option<ModelProfile> {
         self.profile
+    }
+
+    fn image_profile_selection(profile: ModelProfile, profiles: &mut Vec<ModelProfile>) {
+        if !profiles.contains(&profile) {
+            profiles.push(profile);
+        }
+    }
+
+    fn image_world_selection(
+        world: (WorldId, WorldPresentationId),
+        worlds: &mut Vec<(WorldId, WorldPresentationId)>,
+    ) {
+        if !worlds.contains(&world) {
+            worlds.push(world);
+        }
+    }
+
+    fn model_image_selections(
+        model: ClientModel,
+        catalog: &ModelCatalog,
+        profiles: &mut Vec<ModelProfile>,
+        worlds: &mut Vec<(WorldId, WorldPresentationId)>,
+    ) {
+        match model {
+            ClientModel::Mesh(registration) => {
+                if let Some(profile) = catalog.registration_profile(registration) {
+                    Self::image_profile_selection(profile, profiles);
+                }
+            }
+            ClientModel::Inline {
+                binding,
+                presentation: Some(presentation),
+                ..
+            } => {
+                Self::image_world_selection((binding.world, presentation), worlds);
+            }
+            ClientModel::Inline {
+                presentation: None, ..
+            } => {}
+        }
+    }
+
+    fn capture_image_selections(
+        capture: CapturedModel,
+        catalog: &ModelCatalog,
+        profiles: &mut Vec<ModelProfile>,
+        worlds: &mut Vec<(WorldId, WorldPresentationId)>,
+    ) {
+        match capture.model {
+            ModelCapture::Bound(model) => {
+                Self::model_image_selections(model, catalog, profiles, worlds)
+            }
+            ModelCapture::Registered {
+                handle,
+                presentation: Some(presentation),
+            } => {
+                if let Some(binding) = catalog.renderer_inline(handle) {
+                    Self::image_world_selection((binding.world, presentation), worlds);
+                }
+            }
+            ModelCapture::Registered {
+                presentation: None, ..
+            } => {}
+        }
+    }
+
+    pub(crate) fn image_refresh_selections(
+        &self,
+        catalog: &ModelCatalog,
+        profiles: &mut Vec<ModelProfile>,
+        worlds: &mut Vec<(WorldId, WorldPresentationId)>,
+    ) {
+        if let Some(profile) = self.profile {
+            Self::image_profile_selection(profile, profiles);
+        }
+        if let Some((world, presentation)) = self.world {
+            Self::image_world_selection((world.render, presentation), worlds);
+        }
+        for model in self.registrations.iter().flatten() {
+            Self::model_image_selections(*model, catalog, profiles, worlds);
+        }
+        if let Some(players) = &self.players {
+            players.image_refresh_selections(catalog, profiles, worlds);
+        }
+    }
+
+    pub(crate) fn static_image_selections(
+        entity: &StaticEntity,
+        catalog: &ModelCatalog,
+        profiles: &mut Vec<ModelProfile>,
+        worlds: &mut Vec<(WorldId, WorldPresentationId)>,
+    ) {
+        for model in entity.models.iter().flatten() {
+            match model {
+                StaticModel::Captured(capture) => {
+                    Self::capture_image_selections(*capture, catalog, profiles, worlds)
+                }
+                StaticModel::Pending { profile, world, .. } => {
+                    if let Some(profile) = profile {
+                        Self::image_profile_selection(*profile, profiles);
+                    }
+                    if let StaticWorld::Selected(Some(world)) = world {
+                        Self::image_world_selection(*world, worlds);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn refresh_images(
+        &mut self,
+        refresh: &crate::model_assets::ImageRefresh,
+        catalog: &ModelCatalog,
+    ) -> Result<(), String> {
+        let old_profile = self.profile;
+        for model in self.registrations.iter_mut().flatten() {
+            Self::refresh_model_images(model, refresh, catalog)?;
+        }
+        if let Some(players) = &mut self.players {
+            players.refresh_images(refresh, catalog, old_profile)?;
+        }
+        if let Some((world, presentation)) = &mut self.world
+            && let Some(replacement) = refresh.presentation(world.render, *presentation)
+        {
+            *presentation = replacement.id;
+        }
+        self.profile = self.profile.map(|profile| refresh.profile(profile));
+        self.colors = self
+            .profile
+            .and_then(|profile| catalog.color_binding(profile));
+        Ok(())
+    }
+
+    fn refresh_model_images(
+        model: &mut ClientModel,
+        refresh: &crate::model_assets::ImageRefresh,
+        catalog: &ModelCatalog,
+    ) -> Result<(), String> {
+        match model {
+            ClientModel::Mesh(registration) => {
+                *registration = refresh.registration(*registration, catalog)?;
+            }
+            ClientModel::Inline {
+                binding,
+                presentation,
+                ..
+            } => {
+                if let Some(selected) = presentation
+                    && let Some(replacement) = refresh.presentation(binding.world, *selected)
+                {
+                    *selected = replacement.id;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh_capture_images(
+        capture: &mut CapturedModel,
+        refresh: &crate::model_assets::ImageRefresh,
+        catalog: &ModelCatalog,
+        profile: Option<ModelProfile>,
+    ) -> Result<(), String> {
+        let skin_profile = match capture.model {
+            ModelCapture::Bound(ClientModel::Mesh(registration)) => {
+                catalog.registration_profile(registration).or(profile)
+            }
+            _ => profile,
+        };
+        match &mut capture.model {
+            ModelCapture::Bound(model) => Self::refresh_model_images(model, refresh, catalog)?,
+            ModelCapture::Registered {
+                handle,
+                presentation,
+            } => {
+                if let Some(selected) = presentation
+                    && let Some(binding) = catalog.renderer_inline(*handle)
+                    && let Some(replacement) = refresh.presentation(binding.world, *selected)
+                {
+                    *selected = replacement.id;
+                }
+            }
+        }
+        if capture.custom_skin != 0
+            && let Some(profile) = skin_profile
+            && !catalog.renderer_candidate(
+                qa_compat::services::RendererRegistration::Skin,
+                capture.custom_skin,
+                refresh.profile(profile),
+            )
+        {
+            return Err("refreshed captured player skin is unavailable".to_owned());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn refresh_static_images(
+        &self,
+        entity: &mut StaticEntity,
+        refresh: &crate::model_assets::ImageRefresh,
+        catalog: &ModelCatalog,
+    ) -> Result<(), String> {
+        for model in entity.models.iter_mut().flatten() {
+            match model {
+                StaticModel::Captured(capture) => {
+                    Self::refresh_capture_images(capture, refresh, catalog, self.profile)?;
+                }
+                StaticModel::Pending { profile, world, .. } => {
+                    *profile = profile.map(|profile| refresh.profile(profile));
+                    if let StaticWorld::Selected(Some((world, presentation))) = world
+                        && let Some(replacement) = refresh.presentation(*world, *presentation)
+                    {
+                        *presentation = replacement.id;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn config_prepared(&mut self, index: usize) {

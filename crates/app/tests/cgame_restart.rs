@@ -769,6 +769,7 @@ struct Source {
     video_prepares: usize,
     video_publishes: usize,
     video_reject: bool,
+    video_publish_reject: bool,
     video_kinds: Vec<Option<qa_app::renderer::Kind>>,
     video_configuration: Arc<qa_core::presentation::RendererConfiguration>,
     views: Vec<(
@@ -807,9 +808,10 @@ impl FrameSource for Source {
     fn publish_video(
         &mut self,
         candidate: qa_app::renderer::PreparedVideo,
-        scene: &mut SceneComposer,
     ) -> Result<Arc<qa_core::presentation::RendererConfiguration>, String> {
-        assert!(scene.asset_stage_ready());
+        if self.video_publish_reject {
+            return Err("headless candidate publication rejected".into());
+        }
         let (cpu, configuration) = candidate.into_cpu()?;
         self.backend.cpu = cpu;
         self.video_configuration = Arc::clone(&configuration);
@@ -950,6 +952,20 @@ fn setup_renderers_with_graphics(
     [ClientId; 2],
     [EntityId; 2],
 ) {
+    setup_renderers_with_images(module, ui, graphics, false)
+}
+fn setup_renderers_with_images(
+    module: Vec<u8>,
+    ui: Option<Vec<u8>>,
+    graphics: bool,
+    image_backed: bool,
+) -> (
+    files::Fixture,
+    FrameHost,
+    Source,
+    [ClientId; 2],
+    [EntityId; 2],
+) {
     let has_ui = ui.is_some();
     let mut entries = vec![
         ("vm/restart", module),
@@ -962,10 +978,27 @@ fn setup_renderers_with_graphics(
         entries.push(("vm/ui", ui));
     }
     if graphics {
-        entries.push((
-            "scripts/engine-graphics.shader",
-            b"gfx/2d/bigchars { { map $whiteimage } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\ngraphics/after-engine { { map $whiteimage } }\ngraphics/replacement { { map $whiteimage rgbGen const ( 0.25 0.5 0.75 ) } }\n".to_vec(),
-        ));
+        let script = if image_backed {
+            b"gfx/2d/bigchars { { map textures/restart.tga } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\ngraphics/after-engine { { map textures/restart.tga } }\ngraphics/replacement { { map $whiteimage rgbGen const ( 0.25 0.5 0.75 ) } }\n".as_slice()
+        } else {
+            b"gfx/2d/bigchars { { map $whiteimage } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\ngraphics/after-engine { { map $whiteimage } }\ngraphics/replacement { { map $whiteimage rgbGen const ( 0.25 0.5 0.75 ) } }\n".as_slice()
+        };
+        entries.push(("scripts/engine-graphics.shader", script.to_vec()));
+        if image_backed {
+            let pixels = (0..64)
+                .map(|index| {
+                    let x = index % 8;
+                    let y = index / 8;
+                    [
+                        16 + x as u8 * 27,
+                        16 + y as u8 * 25,
+                        if (x + y) % 3 == 0 { 220 } else { 20 },
+                        255,
+                    ]
+                })
+                .collect::<Vec<_>>();
+            entries.push(("textures/restart.tga", files::tga(8, 8, &pixels)));
+        }
     }
     let mut fixture = files::Fixture::new(&entries);
     let mut runtime = Runtime::load(2, []).unwrap();
@@ -1133,6 +1166,7 @@ fn setup_renderers_with_graphics(
         video_prepares: 0,
         video_publishes: 0,
         video_reject: false,
+        video_publish_reject: false,
         video_kinds: Vec::new(),
         video_configuration,
         backend,
@@ -2459,10 +2493,414 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
     }
 }
 
+fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
+    use qa_render::shader::{
+        context::ShaderNodeId,
+        reference::{NativeShaderRef, ShaderRef},
+        registration::ShaderOwner,
+    };
+    let (_fixture, mut host, mut source, ids, anchors) =
+        setup_renderers_with_images(module, Some(ui), true, true);
+    queue_gamestate(&mut host, ids[0], "a", 11, false);
+    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    until_running(&mut host, &mut source);
+    queue_snapshot(&mut host, ids[0], 11, 1000);
+    queue_snapshot(&mut host, ids[1], 22, 1000);
+    source.step(&mut host);
+    let font = host
+        .runtime
+        .scene
+        .as_ref()
+        .unwrap()
+        .hud_font(RuleSetId::Quake3)
+        .unwrap();
+    let old_profile = font.profile;
+    assert_eq!(old_profile.image_settings.picmip, 1);
+    let lifetimes = ids.map(|id| host.runtime.server.clients[id.0 as usize].entity);
+    let owners =
+        std::array::from_fn::<_, 2, _>(|seat| ShaderOwner::Client(ids[seat], lifetimes[seat]));
+    let contexts = owners.map(|owner| host.native_shaders().context(owner, old_profile).unwrap());
+    let handles = [
+        ui_query(&mut host, ModuleId(3), 8).unwrap(),
+        ui_query(&mut host, ModuleId(4), 8).unwrap(),
+    ];
+    assert_eq!(handles, [4, 4]);
+    let refs = std::array::from_fn::<_, 2, _>(|seat| {
+        ShaderRef::Native(NativeShaderRef {
+            context: contexts[seat],
+            node: ShaderNodeId(handles[seat] - 1),
+        })
+    });
+    let image_body = |host: &FrameHost, shader: ShaderRef| {
+        let binding = shader.source(host.native_shaders()).unwrap();
+        let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+        let material = assets
+            .material(assets.shader_binding(binding).unwrap().material)
+            .unwrap();
+        let qa_render::assets::StageTexture::Image(image) = material.stages[0].texture else {
+            panic!("image-backed guest shader")
+        };
+        let resource = assets.image(image).unwrap();
+        let level = &resource.prepared.as_ref().unwrap().levels[0];
+        (
+            binding,
+            image,
+            resource.preparation_revision,
+            level.width,
+            level.height,
+            level.rgba.to_vec(),
+        )
+    };
+    let old_body = image_body(&host, refs[0]);
+    assert_eq!((old_body.3, old_body.4), (4, 4));
+    assert_eq!(image_body(&host, refs[1]), old_body);
+    let prefix = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    let worlds = host.local_worlds;
+    let collisions = ids.map(|id| {
+        host.runtime.client_resources[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .models
+            .collision_world()
+    });
+    let revisions = ids.map(|id| {
+        host.runtime.client_resources[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .models
+            .revision()
+    });
+    let row_revisions = ids.map(|id| {
+        let configs = &host.runtime.client_resources[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs;
+        [
+            configs.config(0).unwrap().revision,
+            configs.config(33).unwrap().revision,
+        ]
+    });
+    let connections = ids.map(|id| {
+        let connection = host.runtime.network.get(id, Endpoint::Client).unwrap();
+        (
+            connection.route,
+            connection.output,
+            connection.channel.endpoint(),
+        )
+    });
+    let context = Context {
+        source: RuleSetId::Quake3,
+        seat: SeatId::FIRST,
+        ..Context::default()
+    };
+    let picmip = host.console.cvars.bind("r_picmip", context).unwrap();
+    let markers = renderer_markers(&host);
+    let resets = source.reset_receipts;
+    source.video_reject = true;
+    host.console
+        .append("r_picmip 2\nvid_restart cpu\n", context)
+        .unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    assert_eq!(host.console.cvars.read(picmip).unwrap().as_str(), "1");
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(picmip)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "2"
+    );
+    source.step(&mut host);
+    assert_eq!((source.video_prepares, source.video_publishes), (1, 0));
+    assert_eq!(renderer_markers(&host), markers);
+    assert_eq!(source.reset_receipts, resets);
+    assert_eq!(host.console.cvars.read(picmip).unwrap().as_str(), "1");
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(picmip)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "2"
+    );
+    assert_eq!(
+        host.runtime
+            .scene
+            .as_ref()
+            .unwrap()
+            .hud_font(RuleSetId::Quake3)
+            .unwrap()
+            .profile,
+        old_profile
+    );
+    assert_eq!(host.local_worlds, worlds);
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        prefix
+    );
+    for seat in 0..2 {
+        assert_eq!(
+            host.native_shaders().context(owners[seat], old_profile),
+            Some(contexts[seat])
+        );
+        assert_eq!(image_body(&host, refs[seat]), old_body);
+    }
+
+    source.video_reject = false;
+    source.video_publish_reject = true;
+    host.console.append("vid_restart cpu\n", context).unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    source.step(&mut host);
+    until_running(&mut host, &mut source);
+    assert_eq!((source.video_prepares, source.video_publishes), (2, 0));
+    assert_eq!(&renderer_markers(&host)[markers.len()..], b"uuccUUCC");
+    assert_eq!(host.console.cvars.read(picmip).unwrap().as_str(), "1");
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(picmip)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "2"
+    );
+    assert_eq!(
+        host.runtime
+            .scene
+            .as_ref()
+            .unwrap()
+            .hud_font(RuleSetId::Quake3)
+            .unwrap()
+            .profile,
+        old_profile
+    );
+    assert_eq!(host.local_worlds, worlds);
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        prefix
+    );
+    assert_eq!(source.backend.cpu.admitted_assets(), Some(prefix));
+    for seat in 0..2 {
+        let context = host
+            .native_shaders()
+            .context(owners[seat], old_profile)
+            .unwrap();
+        assert_eq!(
+            ui_query(&mut host, ModuleId(seat as u16 + 3), 8),
+            Ok(handles[seat])
+        );
+        let shader = ShaderRef::Native(NativeShaderRef {
+            context,
+            node: ShaderNodeId(handles[seat] - 1),
+        });
+        assert_eq!(image_body(&host, shader), old_body);
+        let resources = &host.runtime.client_resources[ids[seat].0 as usize]
+            .as_ref()
+            .unwrap()
+            .state;
+        assert_eq!(resources.models.collision_world(), collisions[seat]);
+        assert_eq!(resources.models.revision(), revisions[seat]);
+        assert_eq!(
+            [
+                resources.configs.config(0).unwrap().revision,
+                resources.configs.config(33).unwrap().revision
+            ],
+            row_revisions[seat]
+        );
+    }
+    queue_snapshot(&mut host, ids[0], 11, 1500);
+    queue_snapshot(&mut host, ids[1], 22, 1500);
+    source.step(&mut host);
+    assert!(source.backend.cpu.world_stats().spans > 0);
+    assert_ne!(source.backend.cpu.pixels()[0], 0);
+    assert_eq!(
+        source.backend.cpu.pixels()[0],
+        source.backend.cpu.pixels()[32]
+    );
+
+    source.video_publish_reject = false;
+    let retry_markers = renderer_markers(&host).len();
+    host.console.append("vid_restart cpu\n", context).unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    source.step(&mut host);
+    until_running(&mut host, &mut source);
+    assert_eq!((source.video_prepares, source.video_publishes), (3, 1));
+    assert_eq!(&renderer_markers(&host)[retry_markers..], b"uuccUUCC");
+    assert_eq!(host.console.cvars.read(picmip).unwrap().as_str(), "2");
+    assert!(host.console.cvars.latched(picmip).unwrap().is_none());
+    let font = host
+        .runtime
+        .scene
+        .as_ref()
+        .unwrap()
+        .hud_font(RuleSetId::Quake3)
+        .unwrap();
+    let profile = font.profile;
+    let mut settings = old_profile.image_settings;
+    settings.picmip = 2;
+    assert_eq!(profile.image_settings, settings);
+    assert_eq!(
+        (
+            profile.source_rules,
+            profile.rules,
+            profile.source_palette,
+            profile.palette
+        ),
+        (
+            old_profile.source_rules,
+            old_profile.rules,
+            old_profile.source_palette,
+            old_profile.palette
+        )
+    );
+    let mut replacement_body = None;
+    for seat in 0..2 {
+        let module = ModuleId(seat as u16 + 1);
+        let ui = ModuleId(seat as u16 + 3);
+        assert_eq!(ui_query(&mut host, ui, 8), Ok(handles[seat]));
+        assert_eq!(query(&mut host, module, 6), Ok(handles[seat]));
+        let renewed = host
+            .native_shaders()
+            .context(owners[seat], profile)
+            .unwrap();
+        assert_ne!(renewed, contexts[seat]);
+        assert_eq!(refs[seat].source(host.native_shaders()), None);
+        let shader = ShaderRef::Native(NativeShaderRef {
+            context: renewed,
+            node: ShaderNodeId(handles[seat] - 1),
+        });
+        let body = image_body(&host, shader);
+        assert_ne!(body.0, old_body.0);
+        assert_ne!(body.1, old_body.1);
+        assert_eq!((body.3, body.4), (2, 2));
+        if let Some(expected) = &replacement_body {
+            assert_eq!(&body, expected);
+        } else {
+            replacement_body = Some(body);
+        }
+        let old_world = worlds[seat].unwrap();
+        let world = host.local_worlds[seat].unwrap();
+        assert_eq!(world.0, old_world.0);
+        assert_ne!(world.1, old_world.1);
+        let registered = host
+            .runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .world_presentation_registration(world.1)
+            .unwrap();
+        assert_eq!(registered.profile.image_settings, settings);
+        let resources = &host.runtime.client_resources[ids[seat].0 as usize]
+            .as_ref()
+            .unwrap()
+            .state;
+        assert_eq!(resources.models.collision_world(), collisions[seat]);
+        assert_eq!(resources.models.revision(), revisions[seat]);
+        assert_eq!(
+            [
+                resources.configs.config(0).unwrap().revision,
+                resources.configs.config(33).unwrap().revision
+            ],
+            row_revisions[seat]
+        );
+        assert_eq!(
+            host.runtime.server.clients[ids[seat].0 as usize].entity,
+            lifetimes[seat]
+        );
+        assert!(
+            host.runtime
+                .server
+                .entities
+                .resolve(anchors[seat])
+                .is_some()
+        );
+        let connection = host
+            .runtime
+            .network
+            .get(ids[seat], Endpoint::Client)
+            .unwrap();
+        assert_eq!(
+            (
+                connection.route,
+                connection.output,
+                connection.channel.endpoint()
+            ),
+            connections[seat]
+        );
+    }
+    let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+    assert!(assets.counts().contains(prefix));
+    let old_material = assets
+        .material(assets.shader_binding(old_body.0).unwrap().material)
+        .unwrap();
+    assert_eq!(
+        old_material.stages[0].texture,
+        qa_render::assets::StageTexture::Image(old_body.1)
+    );
+    for old_world in worlds.into_iter().flatten() {
+        assert_eq!(
+            assets
+                .world_presentation_registration(old_world.1)
+                .unwrap()
+                .profile
+                .image_settings,
+            old_profile.image_settings
+        );
+    }
+    let old_image = assets.image(old_body.1).unwrap();
+    assert_eq!(old_image.preparation_revision, old_body.2);
+    let old_level = &old_image.prepared.as_ref().unwrap().levels[0];
+    assert_eq!(
+        (old_level.width, old_level.height),
+        (old_body.3, old_body.4)
+    );
+    assert_eq!(old_level.rgba.as_ref(), old_body.5.as_slice());
+    assert_eq!(source.backend.cpu.admitted_assets(), Some(assets.counts()));
+    queue_snapshot(&mut host, ids[0], 11, 2000);
+    queue_snapshot(&mut host, ids[1], 22, 2000);
+    source.step(&mut host);
+    assert!(source.backend.cpu.world_stats().spans > 0);
+    assert_ne!(source.backend.cpu.pixels()[0], 0);
+    assert_eq!(
+        source.backend.cpu.pixels()[0],
+        source.backend.cpu.pixels()[32]
+    );
+    paint(&host, &mut source);
+    for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    verify_video_image_restart(
+        qvm_role_with_graphics(false, false, true),
+        qvm_role_with_graphics(true, false, true),
+    );
     verify_video_restart(
         qvm_role_with_graphics(false, false, true),
         qvm_role_with_graphics(true, false, true),
@@ -2478,6 +2916,10 @@ fn main() {
     println!("actual load_q3 QVM same-lifetime restart checks passed");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
+        verify_video_image_restart(
+            native_role_with_graphics(false, false, true),
+            native_role_with_graphics(true, false, true),
+        );
         verify_video_restart(
             native_role_with_graphics(false, false, true),
             native_role_with_graphics(true, false, true),

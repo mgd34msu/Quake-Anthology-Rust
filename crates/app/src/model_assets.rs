@@ -82,6 +82,58 @@ pub struct WorldRegistration {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelRegistrationId(u32);
 
+/// Immutable resource selectors prepared for one image-policy publication.
+#[derive(Default)]
+pub(crate) struct ImageRefresh {
+    pub(crate) profiles: Vec<(ModelProfile, ModelProfile)>,
+    pub(crate) worlds: Vec<(
+        WorldId,
+        WorldPresentationId,
+        qa_render::material::world_load::LoadedWorldPresentation,
+    )>,
+}
+impl ImageRefresh {
+    pub(crate) fn profile(&self, old: ModelProfile) -> ModelProfile {
+        self.profiles
+            .iter()
+            .find_map(|&(from, to)| (from == old).then_some(to))
+            .unwrap_or(old)
+    }
+    pub(crate) fn presentation(
+        &self,
+        world: WorldId,
+        old: WorldPresentationId,
+    ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
+        self.worlds
+            .iter()
+            .find_map(|&(owner, from, to)| (owner == world && from == old).then_some(to))
+    }
+    pub(crate) fn registration(
+        &self,
+        old: ModelRegistrationId,
+        catalog: &ModelCatalog,
+    ) -> Result<ModelRegistrationId, String> {
+        let entry = catalog
+            .registrations
+            .get(old.0 as usize)
+            .filter(|entry| entry.state.ready().is_some())
+            .ok_or("image refresh model registration")?;
+        let profile = self.profile(entry.profile);
+        if profile == entry.profile {
+            return Ok(old);
+        }
+        let (name, _) = catalog
+            .models
+            .iter()
+            .enumerate()
+            .find(|(_, rows)| rows.contains(&(old.0 as usize)))
+            .ok_or("image refresh model filename")?;
+        catalog
+            .registration_name(NameId(name as u32), profile)
+            .ok_or_else(|| "image refresh model unavailable".to_owned())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ModelLimits {
     pub models: usize,
@@ -668,6 +720,7 @@ pub struct ModelAssets {
     catalog: ModelCatalog,
     palettes: crate::render_settings::PaletteRegistrations,
     initial_registration: bool,
+    image_transaction_active: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -786,6 +839,7 @@ impl<'a> ModelView<'a> {
 
 struct RegistrationCheckpoint {
     assets: AssetCounts,
+    admitted_assets: Option<AssetCounts>,
     palettes: [Option<PaletteId>; 5],
     names: usize,
     capacity: ModelCapacity,
@@ -879,6 +933,7 @@ impl RegistrationCheckpoint {
             .collect::<Result<_, _>>()?;
         Ok(Self {
             assets: owner.assets.counts(),
+            admitted_assets: catalog.admitted_assets,
             palettes: owner.palettes.checkpoint(),
             names: catalog.names.len(),
             capacity: catalog.capacity,
@@ -970,8 +1025,7 @@ impl RegistrationCheckpoint {
                     .copied()
                     .filter(|&index| {
                         let binding = &catalog.shader_bindings[index];
-                        binding.profile.source_rules == request.source
-                            && matches!(binding.state, RegistrationState::Unattempted)
+                        matches!(binding.state, RegistrationState::Unattempted)
                     })
                     .collect(),
             });
@@ -1025,6 +1079,76 @@ impl RegistrationCheckpoint {
         {
             self.inline_before.push((slot, handle));
         }
+        Ok(())
+    }
+
+    fn capture_all(&mut self, owner: &ModelAssets) -> Result<(), String> {
+        let catalog = &owner.catalog;
+        for (index, file) in catalog.files.iter().enumerate() {
+            if !matches!(file, ModelFile::Empty) || !catalog.models[index].is_empty() {
+                self.capture_target(
+                    owner,
+                    &RendererRequest {
+                        name: catalog
+                            .names
+                            .get(NameId(index as u32))
+                            .ok_or("model name")?,
+                        source: RuleSetId::Quake3,
+                        kind: RendererRegistration::Model,
+                        world: None,
+                    },
+                )?;
+            }
+        }
+        for shader in &catalog.shaders {
+            self.capture_target(
+                owner,
+                &RendererRequest {
+                    name: catalog.names.get(shader.name).ok_or("shader name")?,
+                    source: RuleSetId::Quake3,
+                    kind: RendererRegistration::Shader {
+                        mipmaps: true,
+                        lighting: ShaderLighting::TwoDimensional,
+                    },
+                    world: None,
+                },
+            )?;
+        }
+        for (index, skin) in catalog.skin_indices.iter().enumerate() {
+            if skin.is_some() {
+                self.capture_target(
+                    owner,
+                    &RendererRequest {
+                        name: catalog.names.get(NameId(index as u32)).ok_or("skin name")?,
+                        source: RuleSetId::Quake3,
+                        kind: RendererRegistration::Skin,
+                        world: None,
+                    },
+                )?;
+            }
+        }
+        // Existing unbound name groups can acquire a new cached head inside
+        // the transaction, so save those numeric slots as well.
+        self.shader_indices = catalog
+            .shader_indices
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, value)| (NameId(index as u32), value))
+            .collect();
+        self.skin_indices = catalog
+            .skin_indices
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, value)| (NameId(index as u32), value))
+            .collect();
+        self.inline_before = catalog
+            .inline
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (index, entry.handle))
+            .collect();
         Ok(())
     }
 
@@ -1148,6 +1272,7 @@ impl RegistrationCheckpoint {
         for (slot, handle) in self.inline_before {
             catalog.inline[slot].handle = handle;
         }
+        catalog.admitted_assets = self.admitted_assets;
         catalog.capacity = ModelCapacity {
             names: catalog.capacity.names,
             name_bytes: catalog.capacity.name_bytes,
@@ -1244,12 +1369,13 @@ impl ModelAssets {
         profile: ModelProfile,
         name: &str,
     ) -> Result<ShaderRegistration, String> {
-        self.admit_shader(
+        self.admit_shader_profile(
             vfs,
             name.as_bytes(),
             profile.source_rules,
             true,
             ShaderLighting::TwoDimensional,
+            self.image_transaction_active.then_some(profile),
         )
         .map_err(|error| format!("graphic shader: {error:?}"))?;
         self.catalog
@@ -1392,24 +1518,7 @@ impl ModelAssets {
                 palette,
                 image_settings,
             };
-            if self
-                .catalog
-                .profiles
-                .iter()
-                .any(|entry| entry.profile == profile)
-            {
-                return Ok((profile, self.assets.counts()));
-            }
-            let blend = self.append_profile(profile)?;
-            let counts = self.assets.counts();
-            self.validate_admission(counts)
-                .map_err(|error| format!("profile publication: {error:?}"))?;
-            prepare(&self.assets)?;
-            if let Some(blend) = blend {
-                self.assets.install_palette_translucency(blend);
-            }
-            self.apply_admission(counts);
-            Ok((profile, counts))
+            self.prepare_profile_value(profile, prepare)
         })();
         match result {
             Ok(ready) => Ok(ready),
@@ -1420,6 +1529,208 @@ impl ModelAssets {
                 Err(error)
             }
         }
+    }
+
+    fn prepare_profile_value(
+        &mut self,
+        profile: ModelProfile,
+        prepare: impl FnOnce(&Assets) -> Result<(), String>,
+    ) -> Result<(ModelProfile, AssetCounts), String> {
+        if self
+            .catalog
+            .profiles
+            .iter()
+            .any(|entry| entry.profile == profile)
+        {
+            return Ok((profile, self.assets.counts()));
+        }
+        let blend = self.append_profile(profile)?;
+        let counts = self.assets.counts();
+        self.validate_admission(counts)
+            .map_err(|error| format!("profile publication: {error:?}"))?;
+        prepare(&self.assets)?;
+        if let Some(blend) = blend {
+            self.assets.install_palette_translucency(blend);
+        }
+        self.apply_admission(counts);
+        Ok((profile, counts))
+    }
+
+    /// Keep a complete cold image refresh unpublished to live callers until
+    /// its backend and frontend candidates have both committed.
+    pub(crate) fn image_transaction<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if self.image_transaction_active {
+            return Err("image refresh is already active".to_owned());
+        }
+        if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
+            return Err("image refresh requires a published resource prefix".to_owned());
+        }
+        let mut checkpoint = ProfileCheckpoint::capture(self)?;
+        checkpoint.registration.capture_all(self)?;
+        self.image_transaction_active = true;
+        let result = operation(self);
+        self.image_transaction_active = false;
+        match result {
+            Ok(ready) => Ok(ready),
+            Err(error) => {
+                checkpoint
+                    .rollback(self)
+                    .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Rebuild only the exact active image policies. Geometry, source names and
+    /// prior registration identities remain available throughout staging.
+    pub(crate) fn refresh_images(
+        &mut self,
+        vfs: &Vfs,
+        profiles: &[ModelProfile],
+        presentations: &[(WorldId, WorldPresentationId)],
+        settings: [Option<ImageSettings>; 5],
+        mut prepare: impl FnMut(&Assets) -> Result<(), String>,
+    ) -> Result<ImageRefresh, String> {
+        if !self.image_transaction_active {
+            return Err("image refresh requires its cold transaction".to_owned());
+        }
+        let mut refresh = ImageRefresh::default();
+        for &old in profiles {
+            if refresh.profiles.iter().any(|&(from, _)| from == old) {
+                continue;
+            }
+            if !self
+                .catalog
+                .profiles
+                .iter()
+                .any(|entry| entry.profile == old)
+            {
+                return Err("image refresh profile unavailable".to_owned());
+            }
+            let Some(image_settings) = settings[old.rules as usize] else {
+                continue;
+            };
+            let new = ModelProfile {
+                image_settings,
+                ..old
+            };
+            self.prepare_profile_value(new, &mut prepare)?;
+            refresh.profiles.push((old, new));
+        }
+        for &(world, old) in presentations {
+            if refresh
+                .worlds
+                .iter()
+                .any(|&(owner, from, _)| owner == world && from == old)
+            {
+                continue;
+            }
+            let previous = self
+                .assets
+                .world_presentation_registration(old)
+                .filter(|_| {
+                    self.assets
+                        .world(world)
+                        .is_some_and(|entry| entry.presentations().contains(&old))
+                })
+                .ok_or("image refresh world presentation")?;
+            let Some(image_settings) = settings[previous.profile.rules as usize] else {
+                continue;
+            };
+            let profile = refresh
+                .profiles
+                .iter()
+                .find_map(|&(from, to)| {
+                    (from.rules == previous.profile.rules
+                        && from.palette == previous.profile.indexed_palette
+                        && from.image_settings == previous.profile.image_settings)
+                        .then_some(to)
+                })
+                .ok_or("image refresh world profile")?;
+            let policy = qa_render::material::world_load::WorldPresentationProfile {
+                image_settings,
+                ..previous.profile
+            };
+            let (loaded, (), _) = self.prepare_world_presentation(
+                vfs,
+                world,
+                profile,
+                policy,
+                |_, _| Ok(()),
+                |assets, ()| prepare(assets),
+            )?;
+            let selected = *loaded
+                .presentations
+                .first()
+                .ok_or("image refresh world result")?;
+            refresh.worlds.push((world, old, selected));
+        }
+        let mut models = Vec::new();
+        for (name, rows) in self.catalog.models.iter().enumerate() {
+            for &index in rows {
+                let entry = &self.catalog.registrations[index];
+                let profile = refresh.profile(entry.profile);
+                if profile != entry.profile && entry.state.ready().is_some() {
+                    let path = self
+                        .catalog
+                        .names
+                        .get(NameId(name as u32))
+                        .ok_or("image refresh model name")?
+                        .to_vec();
+                    models.push((path, profile));
+                }
+            }
+        }
+        for (name, profile) in models {
+            let request = RendererRequest {
+                name,
+                source: profile.source_rules,
+                kind: RendererRegistration::Model,
+                world: None,
+            };
+            self.prepare_registration(
+                vfs,
+                &request,
+                profile,
+                |_| Ok(()),
+                |assets, ()| prepare(assets),
+            )?;
+        }
+        let mut skins = Vec::new();
+        for (group, index) in self.catalog.skin_indices.iter().enumerate() {
+            let Some(index) = *index else { continue };
+            for entry in &self.catalog.skins[index as usize].profiles {
+                let profile = refresh.profile(entry.profile);
+                if profile != entry.profile && entry.state.ready().is_some() {
+                    let name = self
+                        .catalog
+                        .names
+                        .get(NameId(group as u32))
+                        .ok_or("image refresh skin name")?
+                        .to_vec();
+                    skins.push((name, profile));
+                }
+            }
+        }
+        for (name, profile) in skins {
+            let request = RendererRequest {
+                name,
+                source: profile.source_rules,
+                kind: RendererRegistration::Skin,
+                world: None,
+            };
+            self.prepare_registration(
+                vfs,
+                &request,
+                profile,
+                |_| Ok(()),
+                |assets, ()| prepare(assets),
+            )?;
+        }
+        Ok(refresh)
     }
 
     pub fn new(
@@ -1454,6 +1765,7 @@ impl ModelAssets {
             assets,
             palettes: Default::default(),
             initial_registration: true,
+            image_transaction_active: false,
             catalog: ModelCatalog {
                 reader: ArchiveReader::default(),
                 names,
@@ -1854,17 +2166,36 @@ impl ModelAssets {
                     continue;
                 }
                 let raw = request.name.as_ref();
+                let selected = self.image_transaction_active.then_some(profile);
                 let handle = match request.kind {
                     RendererRegistration::Model if raw.starts_with(b"*") => request
                         .world
                         .zip(qa_core::text::inline_model_index(raw))
                         .ok_or(CallError::File)
                         .and_then(|(world, index)| self.register_inline(world, index)),
-                    RendererRegistration::Model => self.register_model(vfs, raw, request.source),
-                    RendererRegistration::Skin => self.register_skin(vfs, raw, request.source),
-                    RendererRegistration::Shader { mipmaps, lighting } => {
-                        self.register_shader(vfs, raw, request.source, mipmaps, lighting)
+                    RendererRegistration::Model => {
+                        let path =
+                            std::str::from_utf8(raw).map_err(|_| "model name is not UTF-8")?;
+                        self.ensure_file_profile(vfs, &canonical_path(path), selected)
+                            .map_err(|error| error.kind)
+                            .and_then(|_| {
+                                self.catalog
+                                    .model_handle(raw, request.source)
+                                    .ok_or(CallError::File)
+                            })
                     }
+                    RendererRegistration::Skin => {
+                        self.admit_skin_profile(vfs, raw, request.source, selected)
+                    }
+                    RendererRegistration::Shader { mipmaps, lighting } => self
+                        .admit_shader_profile(
+                            vfs,
+                            raw,
+                            request.source,
+                            mipmaps,
+                            lighting,
+                            selected,
+                        ),
                 }
                 .map_err(|error| format!("renderer registration: {error:?}"))?;
                 let candidate = match request.kind {
@@ -2303,6 +2634,15 @@ impl ModelAssets {
     }
 
     fn ensure_file(&mut self, vfs: &Vfs, path: &str) -> Result<Bounds, FileError> {
+        self.ensure_file_profile(vfs, path, None)
+    }
+
+    fn ensure_file_profile(
+        &mut self,
+        vfs: &Vfs,
+        path: &str,
+        selected: Option<ModelProfile>,
+    ) -> Result<Bounds, FileError> {
         let name = if let Some(name) = self.catalog.names.find(path.as_bytes()) {
             let file = &self.catalog.files[name.0 as usize];
             let unattempted = self.catalog.models[name.0 as usize]
@@ -2312,7 +2652,8 @@ impl ModelAssets {
                     matches!(
                         self.catalog.registrations[index].state,
                         RegistrationState::Unattempted
-                    )
+                    ) && selected
+                        .is_none_or(|profile| self.catalog.registrations[index].profile == profile)
                 });
             if !matches!(file, ModelFile::Empty)
                 && !(matches!(file, ModelFile::Ready { .. }) && unattempted)
@@ -2485,7 +2826,9 @@ impl ModelAssets {
         };
         for (profile_index, images) in self.catalog.profiles.iter_mut().enumerate() {
             let entry = &mut self.catalog.registrations[rows[profile_index]];
-            if !matches!(entry.state, RegistrationState::Unattempted) {
+            if !matches!(entry.state, RegistrationState::Unattempted)
+                || selected.is_some_and(|profile| entry.profile != profile)
+            {
                 continue;
             }
             let registration = Registration {
@@ -2719,6 +3062,18 @@ impl ModelAssets {
         mipmaps: bool,
         lighting: ShaderLighting,
     ) -> Result<i32, CallError> {
+        self.admit_shader_profile(vfs, raw, source, mipmaps, lighting, None)
+    }
+
+    fn admit_shader_profile(
+        &mut self,
+        vfs: &Vfs,
+        raw: &[u8],
+        source: RuleSetId,
+        mipmaps: bool,
+        lighting: ShaderLighting,
+        exact: Option<ModelProfile>,
+    ) -> Result<i32, CallError> {
         if raw.is_empty() {
             return Ok(0);
         }
@@ -2736,6 +3091,7 @@ impl ModelAssets {
         };
         let matches_profile = |profile: ModelProfile| {
             profile.source_rules == source
+                && exact.is_none_or(|exact| profile == exact)
                 && selected.is_none_or(|selected| {
                     profile.rules == selected.rules
                         && profile.palette == selected.indexed_palette
@@ -2982,6 +3338,16 @@ impl ModelAssets {
     }
 
     fn admit_skin(&mut self, vfs: &Vfs, raw: &[u8], source: RuleSetId) -> Result<i32, CallError> {
+        self.admit_skin_profile(vfs, raw, source, None)
+    }
+
+    fn admit_skin_profile(
+        &mut self,
+        vfs: &Vfs,
+        raw: &[u8],
+        source: RuleSetId,
+        selected: Option<ModelProfile>,
+    ) -> Result<i32, CallError> {
         if raw.is_empty() {
             return Ok(0);
         }
@@ -2989,13 +3355,23 @@ impl ModelAssets {
             return Err(CallError::Text);
         }
         let path = canonical_path(std::str::from_utf8(raw).map_err(|_| CallError::Text)?);
-        if let Some(handle) = skin_handle(
-            &self.catalog.names,
-            &self.catalog.skin_indices,
-            &self.catalog.skins,
-            path.as_bytes(),
-            source,
-        ) {
+        let cached = if let Some(profile) = selected {
+            self.catalog.registration_cached(
+                RendererRegistration::Skin,
+                path.as_bytes(),
+                profile,
+                None,
+            )
+        } else {
+            skin_handle(
+                &self.catalog.names,
+                &self.catalog.skin_indices,
+                &self.catalog.skins,
+                path.as_bytes(),
+                source,
+            )
+        };
+        if let Some(handle) = cached {
             return Ok(handle);
         }
         let name = self.admit_name(path.as_bytes())?;
@@ -3026,7 +3402,10 @@ impl ModelAssets {
         let profile_count = self.catalog.skins[index]
             .profiles
             .iter()
-            .filter(|entry| matches!(entry.state, RegistrationState::Unattempted))
+            .filter(|entry| {
+                matches!(entry.state, RegistrationState::Unattempted)
+                    && selected.is_none_or(|profile| entry.profile == profile)
+            })
             .count();
         let maximum_rows = self
             .catalog
@@ -3100,7 +3479,10 @@ impl ModelAssets {
             .profiles
             .iter_mut()
             .zip(&mut self.catalog.skins[index].profiles)
-            .filter(|(_, profile)| matches!(profile.state, RegistrationState::Unattempted))
+            .filter(|(_, profile)| {
+                matches!(profile.state, RegistrationState::Unattempted)
+                    && selected.is_none_or(|selected| profile.profile == selected)
+            })
         {
             let alias = !skin_file && images.model_policy.source.indexed_external_pcx;
             let mut compiled = Vec::with_capacity(mappings.len());
@@ -3194,9 +3576,19 @@ impl ModelAssets {
                 }
             };
         }
-        self.catalog.skins[index]
-            .source_handle(index as i32 + 1, source)
-            .ok_or(CallError::Aborted)
+        if let Some(selected) = selected {
+            self.catalog.skins[index]
+                .profiles
+                .iter()
+                .find(|entry| entry.profile == selected)
+                .and_then(|entry| entry.state.ready())
+                .map(|_| index as i32 + 1)
+                .ok_or(CallError::File)
+        } else {
+            self.catalog.skins[index]
+                .source_handle(index as i32 + 1, source)
+                .ok_or(CallError::Aborted)
+        }
     }
 }
 
@@ -3446,6 +3838,15 @@ impl ModelLookup for ModelCatalog {
     }
 }
 impl ModelCatalog {
+    pub fn profiles(&self) -> impl Iterator<Item = ModelProfile> + '_ {
+        self.profiles.iter().map(|entry| entry.profile)
+    }
+    pub(crate) fn registration_profile(&self, id: ModelRegistrationId) -> Option<ModelProfile> {
+        self.registrations
+            .get(id.0 as usize)
+            .map(|entry| entry.profile)
+    }
+
     fn admitted(&self, required: Option<AssetCounts>) -> bool {
         required.is_none_or(|required| {
             self.admitted_assets

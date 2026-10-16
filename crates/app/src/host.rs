@@ -44,7 +44,6 @@ pub trait FrameSource {
     fn publish_video(
         &mut self,
         _candidate: crate::renderer::PreparedVideo,
-        _scene: &mut crate::renderer::SceneComposer,
     ) -> Result<std::sync::Arc<qa_core::presentation::RendererConfiguration>, String> {
         Err("video restart is unavailable".into())
     }
@@ -165,9 +164,8 @@ impl FrameSource for LiveFrame<'_> {
     fn publish_video(
         &mut self,
         candidate: crate::renderer::PreparedVideo,
-        scene: &mut crate::renderer::SceneComposer,
     ) -> Result<std::sync::Arc<qa_core::presentation::RendererConfiguration>, String> {
-        crate::renderer::publish_live_video(self, candidate, scene)
+        crate::renderer::publish_live_video(self, candidate)
     }
     fn discard_video(&mut self, candidate: crate::renderer::PreparedVideo) -> Result<(), String> {
         crate::renderer::discard_live_video(self, candidate)
@@ -580,6 +578,63 @@ impl FrameHost {
     pub(crate) fn video_restart_pending(&self) -> bool {
         self.video_request.is_some() || self.video_active
     }
+    fn video_resource_selections(
+        &self,
+    ) -> Result<
+        (
+            Vec<crate::model_assets::ModelProfile>,
+            Vec<(
+                qa_render::world::WorldId,
+                qa_render::world::WorldPresentationId,
+            )>,
+        ),
+        String,
+    > {
+        let owner = self
+            .runtime
+            .model_assets
+            .as_ref()
+            .ok_or("missing model assets")?;
+        let mut profiles = Vec::new();
+        let mut presentations = Vec::new();
+        for resources in self.runtime.client_resources.iter().flatten() {
+            resources.state.image_refresh_selections(
+                owner.catalog(),
+                &mut profiles,
+                &mut presentations,
+            );
+        }
+        if let Some(scene) = &self.runtime.scene {
+            for profile in scene.graphic_profiles() {
+                if !profiles.contains(&profile) {
+                    profiles.push(profile);
+                }
+            }
+        }
+        for &world in self.local_worlds.iter().flatten() {
+            if !presentations.contains(&world) {
+                presentations.push(world);
+            }
+        }
+        self.video_image_selections(&mut profiles, &mut presentations);
+        for &(_, presentation) in &presentations {
+            let selected = owner
+                .assets()
+                .world_presentation_registration(presentation)
+                .ok_or("video world presentation is unavailable")?;
+            for profile in owner.catalog().profiles().filter(|profile| {
+                profile.rules == selected.profile.rules
+                    && profile.palette == selected.profile.indexed_palette
+                    && profile.image_settings == selected.profile.image_settings
+            }) {
+                if !profiles.contains(&profile) {
+                    profiles.push(profile);
+                }
+            }
+        }
+        Ok((profiles, presentations))
+    }
+
     fn restart_video(&mut self, source: &mut impl FrameSource) {
         let Some(request) = self.video_request else {
             return;
@@ -602,13 +657,21 @@ impl FrameHost {
             ready?;
             let serial = self.video_serial.checked_add(1).ok_or("video generation")?;
             let limits = limits.ok_or("video restart has no scene")?;
+            let (profiles, presentations) = self.video_resource_selections()?;
+            let image_plan = crate::render_settings::ImageSettingsPlan::prepare(
+                &self.console.cvars,
+                profiles.iter().map(|profile| profile.rules),
+            )?;
             let owner = self
                 .runtime
                 .model_assets
                 .as_ref()
                 .ok_or("missing model assets")?;
-            let kind = request.kind.or_else(|| source.video_kind());
-            let (cpu_bands, band_generation) = if matches!(kind, Some(crate::renderer::Kind::Cpu)) {
+            let kind = request
+                .kind
+                .or_else(|| source.video_kind())
+                .ok_or("missing active video backend")?;
+            let (cpu_bands, band_generation) = if matches!(kind, crate::renderer::Kind::Cpu) {
                 (
                     crate::renderer::pending_cpu_band_setting(
                         &self.console.cvars,
@@ -626,71 +689,202 @@ impl FrameHost {
             };
             source
                 .prepare_video(
-                    crate::renderer::VideoPolicy { kind, cpu_bands },
+                    crate::renderer::VideoPolicy {
+                        kind: Some(kind),
+                        cpu_bands,
+                    },
                     owner.assets(),
                     limits,
                 )
-                .map(|candidate| (candidate, serial, kind, band_generation))
+                .map(|candidate| {
+                    (
+                        candidate,
+                        serial,
+                        kind,
+                        band_generation,
+                        image_plan,
+                        profiles,
+                        presentations,
+                    )
+                })
         })();
-        let (mut candidate, serial, kind, band_generation) = match candidate {
-            Ok(candidate) => candidate,
-            Err(error) => {
-                let _ = self
-                    .runtime
-                    .server
-                    .events
-                    .console_formatted(format_args!("Video restart rejected: {error}\n"));
-                return;
-            }
-        };
-        self.video_active = true;
-        let prepared = self
-            .restart_client_modules(crate::modules::RendererRestart::Video, &mut source.driver())
-            .and_then(|()| {
-                if band_generation.is_some_and(|generation| {
-                    self.console
-                        .cvars
-                        .view_update_generation(self.cpu_band_view)
-                        != generation
-                }) {
-                    return Err("CPU band setting changed during restart".into());
+        let (candidate, serial, kind, band_generation, image_plan, profiles, presentations) =
+            match candidate {
+                Ok(candidate) => candidate,
+                Err(error) => {
+                    let _ = self
+                        .runtime
+                        .server
+                        .events
+                        .console_formatted(format_args!("Video restart rejected: {error}\n"));
+                    return;
                 }
-                let owner = self
-                    .runtime
-                    .model_assets
-                    .as_ref()
-                    .ok_or("missing model assets")?;
+            };
+        self.video_active = true;
+        let mut candidate = Some(candidate);
+        let stopped = self
+            .restart_client_modules(crate::modules::RendererRestart::Video, &mut source.driver());
+        let published = stopped.and_then(|()| {
+            image_plan.validate(&self.console.cvars)?;
+            if band_generation.is_some_and(|generation| {
+                self.console
+                    .cvars
+                    .view_update_generation(self.cpu_band_view)
+                    != generation
+            }) {
+                return Err("CPU band setting changed during restart".into());
+            }
+            // The sole asset owner is moved only across this cold, callback-free
+            // transaction. Restore it before any CLIENT can execute again.
+            let mut owner = self
+                .runtime
+                .model_assets
+                .take()
+                .ok_or("missing model assets")?;
+            let result = owner.image_transaction(|owner| {
                 let limits = self
                     .runtime
                     .scene
                     .as_ref()
                     .ok_or("missing scene composer")?
                     .limits();
-                candidate.prepare_assets(owner.assets(), limits)?;
-                if candidate.admitted_assets() != Some(owner.assets().counts()) {
+                let refresh = owner.refresh_images(
+                    &self.runtime.vfs,
+                    &profiles,
+                    &presentations,
+                    image_plan.selections(),
+                    |assets| {
+                        candidate
+                            .as_mut()
+                            .ok_or("replacement renderer was consumed")?
+                            .prepare_assets(assets, limits)
+                    },
+                )?;
+                let configuration = candidate
+                    .as_ref()
+                    .ok_or("replacement renderer was consumed")?
+                    .configuration();
+                let (width, height) = (configuration.display.width, configuration.display.height);
+                let scene = self
+                    .runtime
+                    .scene
+                    .as_mut()
+                    .ok_or("missing scene composer")?;
+                let graphics =
+                    scene.load_video_graphics(&self.runtime.vfs, owner, &refresh, width, height)?;
+                // Graphics use the same registration owner, so admit their final
+                // suffix before staging numeric CLIENT and shader-bank selectors.
+                let counts = owner.assets().counts();
+                candidate
+                    .as_mut()
+                    .ok_or("replacement renderer was consumed")?
+                    .prepare_assets(owner.assets(), limits)?;
+                owner
+                    .publish_admission(counts)
+                    .map_err(|error| format!("video resource publication: {error:?}"))?;
+                let mut clients = Vec::new();
+                for (index, resources) in self.runtime.client_resources.iter().enumerate() {
+                    if let Some(resources) = resources {
+                        clients.push((
+                            index,
+                            resources
+                                .state
+                                .stage_image_refresh(&refresh, owner.catalog())?,
+                        ));
+                    }
+                }
+                let roles = self.stage_video_image_roles(&refresh)?;
+                let scene = self
+                    .runtime
+                    .scene
+                    .as_mut()
+                    .ok_or("missing scene composer")?;
+                let staged = scene.stage_video_graphics(owner.assets(), graphics, &refresh)?;
+                if staged.limits() != limits {
+                    candidate
+                        .as_mut()
+                        .ok_or("replacement renderer was consumed")?
+                        .prepare_assets(owner.assets(), staged.limits())?;
+                }
+                if candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.admitted_assets())
+                    != Some(counts)
+                {
                     return Err("video restart resource prefix".into());
                 }
-                Ok(())
+                for (profile, _) in staged.graphic_registrations() {
+                    self.renderer_contexts.ensure_owner(
+                        qa_render::shader::registration::ShaderOwner::Engine,
+                        profile,
+                        owner.assets(),
+                        owner.shader_occurrence_budget(),
+                        None,
+                    )?;
+                }
+                let appends = self
+                    .renderer_contexts
+                    .stage_graphics(staged.graphic_registrations())?;
+                image_plan.validate(&self.console.cvars)?;
+                let configuration = source.publish_video(
+                    candidate
+                        .take()
+                        .ok_or("replacement renderer was consumed")?,
+                )?;
+                for append in appends {
+                    append.commit();
+                }
+                staged.commit(kind);
+                for (index, staged) in clients {
+                    if let Some(resources) = self.runtime.client_resources[index].as_mut() {
+                        resources.state.commit_image_refresh(staged);
+                    }
+                }
+                for seat in 0..SeatId::COUNT {
+                    if let Some((world, previous)) = self.local_worlds[seat]
+                        && let Some(next) = refresh.presentation(world, previous)
+                    {
+                        self.local_worlds[seat] = Some((world, next.id));
+                        self.local_presentations[seat] = next.defaults;
+                    }
+                }
+                self.commit_video_image_roles(roles);
+                Ok(configuration)
             });
-        let publication = prepared.and(
-            self.runtime
-                .scene
-                .as_mut()
-                .ok_or_else(|| "missing scene composer".to_owned()),
-        );
-        let published = match publication {
-            Ok(scene) => source.publish_video(candidate, scene),
-            Err(error) => match source.discard_video(candidate) {
-                Ok(()) => Err(error),
-                Err(discard) => Err(format!("{error}; candidate cleanup: {discard}")),
-            },
-        };
+            self.runtime.model_assets = Some(owner);
+            if result.is_err() {
+                let catalog = self
+                    .runtime
+                    .model_assets
+                    .as_ref()
+                    .map(|owner| owner.catalog());
+                self.renderer_contexts.retain_profiles(|profile| {
+                    catalog.is_some_and(|catalog| catalog.profiles().any(|entry| entry == profile))
+                });
+            }
+            result
+        });
+        if let Some(candidate) = candidate {
+            if let Err(error) = source.discard_video(candidate) {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("Video candidate cleanup: {error}\n"));
+            }
+        }
         match published {
             Ok(configuration) => {
                 self.runtime.renderer_configuration = Some(configuration);
                 self.video_serial = serial;
+                if let Err(error) = image_plan.apply(&mut self.console.cvars) {
+                    let _ =
+                        self.runtime.server.events.console_formatted(format_args!(
+                            "Image latch publication: {error:?}\n"
+                        ));
+                }
                 match kind {
-                    Some(crate::renderer::Kind::Cpu) => {
+                    crate::renderer::Kind::Cpu => {
                         if let Err(error) = self.console.cvars.apply_latch(self.cpu_band_view) {
                             let _ = self.runtime.server.events.console_formatted(format_args!(
                                 "CPU band latch publication: {error:?}\n"
@@ -700,12 +894,11 @@ impl FrameHost {
                             .cvars
                             .set_latch_active(self.cpu_band_view.canonical(), true);
                     }
-                    Some(crate::renderer::Kind::Gl) => {
+                    crate::renderer::Kind::Gl => {
                         self.console
                             .cvars
                             .set_latch_active(self.cpu_band_view.canonical(), false);
                     }
-                    None => {}
                 }
                 let _ = self
                     .runtime

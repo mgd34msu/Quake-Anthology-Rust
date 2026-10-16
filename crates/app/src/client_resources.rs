@@ -148,6 +148,11 @@ impl ReceivedWorldRequest<'_> {
     }
 }
 
+pub(crate) struct ClientImageRefresh {
+    models: ClientModelBindings,
+    statics: Box<[crate::client_scene::StaticEntity]>,
+}
+
 pub struct ResourceState {
     pub configs: ConfigStrings,
     pub models: ClientModelBindings,
@@ -756,6 +761,44 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     }
 }
 impl ResourceState {
+    pub(crate) fn image_refresh_selections(
+        &self,
+        catalog: &ModelCatalog,
+        profiles: &mut Vec<crate::model_assets::ModelProfile>,
+        worlds: &mut Vec<(
+            qa_render::world::WorldId,
+            qa_render::world::WorldPresentationId,
+        )>,
+    ) {
+        self.models
+            .image_refresh_selections(catalog, profiles, worlds);
+        for entity in &self.static_entities[..self.static_entity_count] {
+            ClientModelBindings::static_image_selections(entity, catalog, profiles, worlds);
+        }
+    }
+
+    pub(crate) fn stage_image_refresh(
+        &self,
+        refresh: &crate::model_assets::ImageRefresh,
+        catalog: &ModelCatalog,
+    ) -> Result<ClientImageRefresh, String> {
+        let mut models = self.models.clone();
+        let mut statics = self.static_entities[..self.static_entity_count]
+            .to_vec()
+            .into_boxed_slice();
+        for entity in &mut statics {
+            self.models
+                .refresh_static_images(entity, refresh, catalog)?;
+        }
+        models.refresh_images(refresh, catalog)?;
+        Ok(ClientImageRefresh { models, statics })
+    }
+
+    pub(crate) fn commit_image_refresh(&mut self, refresh: ClientImageRefresh) {
+        self.models = refresh.models;
+        self.static_entities[..refresh.statics.len()].clone_from_slice(&refresh.statics);
+    }
+
     fn world_config_row(&self) -> usize {
         if self.layout.rules == RuleSetId::Quake3 {
             ConfigLayout::Q3_SERVER_INFO

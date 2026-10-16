@@ -19,6 +19,7 @@ impl Default for PlayerModelOptions {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct PlayerBindings {
     source: RuleSetId,
     rows: IndexSpan,
@@ -49,6 +50,33 @@ impl PlayerBindings {
             weapon_rows: vec![None; rules.weapon_limit].into_boxed_slice(),
             weapon_count: 1,
         })
+    }
+    pub(super) fn image_refresh_selections(
+        &self,
+        catalog: &ModelCatalog,
+        profiles: &mut Vec<ModelProfile>,
+        worlds: &mut Vec<(WorldId, WorldPresentationId)>,
+    ) {
+        for capture in self.bodies.iter().chain(self.weapons.iter()).flatten() {
+            ClientModelBindings::capture_image_selections(*capture, catalog, profiles, worlds);
+        }
+    }
+
+    pub(super) fn refresh_images(
+        &mut self,
+        refresh: &crate::model_assets::ImageRefresh,
+        catalog: &ModelCatalog,
+        profile: Option<ModelProfile>,
+    ) -> Result<(), String> {
+        for capture in self
+            .bodies
+            .iter_mut()
+            .chain(self.weapons.iter_mut())
+            .flatten()
+        {
+            ClientModelBindings::refresh_capture_images(capture, refresh, catalog, profile)?;
+        }
+        Ok(())
     }
     pub(super) fn source(&self) -> RuleSetId {
         self.source
