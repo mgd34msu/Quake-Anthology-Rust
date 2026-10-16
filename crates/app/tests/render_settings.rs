@@ -379,3 +379,57 @@ fn material_flags_read_one_shared_renderer_policy_in_every_console_context() {
         assert!(finish.vertex_light && finish.fullbright);
     }
 }
+
+#[test]
+fn replacement_controls_apply_to_each_presentation_without_reinterpreting_mask_bits() {
+    let mut vars = vars(RuleSetId::Quake3);
+    for source in RuleSetId::ALL {
+        let settings = image_settings(&vars, source).unwrap();
+        assert_eq!(settings.override_textures, 1);
+        assert_eq!(settings.texture_overrides, u32::MAX);
+    }
+    set(
+        &mut vars,
+        RuleSetId::Quake2Rerelease,
+        "r_override_textures",
+        "2.9",
+    );
+    set(&mut vars, RuleSetId::Quake, "r_texture_overrides", "18");
+    for source in RuleSetId::ALL {
+        let settings = image_settings(&vars, source).unwrap();
+        assert_eq!(settings.override_textures, 2);
+        assert_eq!(settings.texture_overrides, 18);
+    }
+    set(&mut vars, RuleSetId::Quake3, "r_texture_overrides", "-1");
+    for source in RuleSetId::ALL {
+        assert_eq!(
+            image_settings(&vars, source).unwrap().texture_overrides,
+            u32::MAX
+        );
+    }
+}
+
+#[test]
+fn cached_image_search_view_observes_live_text_without_rebinding() {
+    use qa_app::render_settings::{image_search, image_search_view};
+    use qa_render::material::resources::ImageSearchOrder;
+    let mut vars = vars(RuleSetId::Quake);
+    let view = image_search_view(&vars).unwrap();
+    vars.reset_lookup_count();
+    assert_eq!(
+        image_search(&vars, view).unwrap(),
+        ImageSearchOrder::default()
+    );
+    vars.write(view, "source").unwrap();
+    assert_eq!(
+        image_search(&vars, view).unwrap(),
+        ImageSearchOrder::parse(b"source").unwrap()
+    );
+    vars.write(view, "").unwrap();
+    vars.reset_lookup_count();
+    assert_eq!(
+        image_search(&vars, view).unwrap(),
+        ImageSearchOrder::parse(b"").unwrap()
+    );
+    assert_eq!(vars.lookup_count(), 0);
+}

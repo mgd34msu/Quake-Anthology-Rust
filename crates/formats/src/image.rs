@@ -61,21 +61,25 @@ pub enum ImageFormat {
     Gif,
 }
 impl ImageFormat {
+    /// File suffixes and their sole decoder identity. JPEG spellings remain
+    /// separate entries because file search order selects concrete paths.
+    pub const SUFFIXES: &'static [(&'static str, Self)] = &[
+        ("lmp", Self::Lmp),
+        ("pcx", Self::Pcx),
+        ("tga", Self::Tga),
+        ("bmp", Self::Bmp),
+        ("jpg", Self::Jpeg),
+        ("jpeg", Self::Jpeg),
+        ("png", Self::Png),
+        ("gif", Self::Gif),
+    ];
+
     pub fn from_path(path: &[u8]) -> Option<Self> {
         let ext = path.rsplit(|&b| b == b'.').next()?;
-        [
-            (b"lmp".as_slice(), Self::Lmp),
-            (b"pcx", Self::Pcx),
-            (b"tga", Self::Tga),
-            (b"bmp", Self::Bmp),
-            (b"jpg", Self::Jpeg),
-            (b"jpeg", Self::Jpeg),
-            (b"png", Self::Png),
-            (b"gif", Self::Gif),
-        ]
-        .into_iter()
-        .find(|(name, _)| ext.eq_ignore_ascii_case(name))
-        .map(|(_, format)| format)
+        Self::SUFFIXES
+            .iter()
+            .find(|(name, _)| ext.eq_ignore_ascii_case(name.as_bytes()))
+            .map(|&(_, format)| format)
     }
 }
 pub fn decode(

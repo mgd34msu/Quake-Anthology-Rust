@@ -1285,7 +1285,8 @@ fn compile_presentation(
                 .assets
                 .image(image)
                 .ok_or(WorldMaterialError::Boundary("missing registered texture"))?;
-            let scale = [1.0 / texture.width as f32, 1.0 / texture.height as f32];
+            let [width, height] = texture.logical_size();
+            let scale = [1.0 / width as f32, 1.0 / height as f32];
             (name, image, scale, surface.source_flags)
         } else {
             let shader_index = surface

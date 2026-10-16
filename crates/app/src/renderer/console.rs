@@ -8,7 +8,7 @@ use qa_render::{
     Assets, CpuPresentation, Draw2d, Frame, PaletteId, Refdef, ShaderBinding, ShaderBindingId,
     Viewport,
     assets::{AlphaTest, DepthFunc, Filter, MaterialSettings, Sampler, Stage, StageTexture, Wrap},
-    material::resources::{ImageSettings, ImageUse, Images},
+    material::resources::{ImageRole, ImageSettings, ImageUse, Images},
     shader::{AlphaGen, Cull, RgbGen, StageBlend},
     surface_cache::IndexedLighting,
     world::geometry::LightSource,
@@ -362,7 +362,7 @@ impl FontAssets {
             )
         } else {
             owner.graphic_images(vfs, profile, |images| {
-                register_font(images, vfs, rules, profile.palette)
+                register_font(images, rules, profile.palette)
             })
         };
         let mut registration = None;
@@ -409,7 +409,6 @@ impl FontAssets {
 }
 fn register_font(
     images: &mut Images<'_>,
-    vfs: &Vfs,
     rules: RuleSetId,
     palette: Option<PaletteId>,
 ) -> Result<ShaderRegistration, String> {
@@ -422,6 +421,7 @@ fn register_font(
                 palette,
                 Some(0),
                 ImageUse {
+                    role: ImageRole::Font,
                     sampler: bitmap_sampler(),
                     ..ImageUse::pic()
                 },
@@ -429,29 +429,6 @@ fn register_font(
             .map_err(|error| format!("{error:?}"))?;
         return bitmap_shader(images, "console/conchars", image.id, image.sampler, None)
             .map_err(str::to_owned);
-    }
-    if rules == RuleSetId::Quake2Rerelease && vfs.open(b"pics/conchars.png").is_some() {
-        let image = images
-            .raster(
-                "pics/conchars.png",
-                ImageUse {
-                    sampler: bitmap_sampler(),
-                    ..ImageUse::pic()
-                },
-                Some(qa_render::material::resources::IndexedTarget {
-                    palette,
-                    transparent_index: Some(255),
-                }),
-            )
-            .map_err(|error| format!("{error:?}"))?;
-        return bitmap_shader(
-            images,
-            "pics/conchars.png",
-            image.id,
-            image.sampler,
-            Some(StageBlend::ALPHA),
-        )
-        .map_err(str::to_owned);
     }
     let sampler = bitmap_sampler();
     let image = images
@@ -461,6 +438,7 @@ fn register_font(
             Some(255),
             None,
             ImageUse {
+                role: ImageRole::Font,
                 sampler,
                 ..ImageUse::pic()
             },
@@ -482,6 +460,19 @@ pub(crate) fn bitmap_shader(
     sampler: Sampler,
     blend: Option<StageBlend>,
 ) -> Result<ShaderRegistration, &'static str> {
+    let blend = blend.or_else(|| {
+        images.assets.image(image).and_then(|image| {
+            (image
+                .indexed
+                .as_ref()
+                .is_some_and(|texture| texture.transparent_index().is_some())
+                && image
+                    .rgba
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[3] != 0 && pixel[3] != 255))
+            .then_some(StageBlend::ALPHA)
+        })
+    });
     let material = images.assets.register_material(
         name,
         &[Stage {

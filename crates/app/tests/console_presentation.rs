@@ -23,6 +23,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[path = "console_presentation/late_hud.rs"]
 mod late_hud;
+#[path = "console_presentation/replacements.rs"]
+mod replacements;
 
 #[test]
 fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {

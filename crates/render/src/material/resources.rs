@@ -9,6 +9,9 @@ use qa_formats::image::{
     AlphaFringe, Colormap, DecodedImage, ImageFormat, IndexedImage, MipTexture, Palette,
     PaletteOptions, RgbaImage, Wad, WadImage, decode,
 };
+mod search;
+pub use search::ImageSearchOrder;
+use search::{SelectedFile, SourceFormat};
 
 #[derive(Debug)]
 pub enum ResourceError {
@@ -52,6 +55,8 @@ pub struct ImageSettings {
     pub max_dimension: u32,
     /// Native Q2 gl_skymip affects sky UV bounds, not its upload mip chain.
     pub sky_mip: bool,
+    pub override_textures: i32,
+    pub texture_overrides: u32,
 }
 impl PartialEq for ImageSettings {
     fn eq(&self, other: &Self) -> bool {
@@ -65,6 +70,8 @@ impl PartialEq for ImageSettings {
             && self.simple_mipmaps == other.simple_mipmaps
             && self.max_dimension == other.max_dimension
             && self.sky_mip == other.sky_mip
+            && self.override_textures == other.override_textures
+            && self.texture_overrides == other.texture_overrides
     }
 }
 impl ImageSettings {
@@ -84,6 +91,8 @@ impl ImageSettings {
                 _ => upload::MAX_DIMENSION,
             },
             sky_mip: false,
+            override_textures: 1,
+            texture_overrides: u32::MAX,
         }
     }
 }
@@ -103,6 +112,9 @@ pub enum ImageRole {
     Surface,
     NativeDefault,
     Pic,
+    Font,
+    Skin,
+    Sprite,
     LayeredSky,
     CubeSky,
     Lightmap,
@@ -189,6 +201,7 @@ enum ImageRecipe {
     Raster {
         rules: RuleSetId,
         indexed: Option<IndexedTarget>,
+        role: Option<u32>,
     },
 }
 
@@ -281,7 +294,7 @@ impl ImageRecipes {
     fn effective_use(&self, mut usage: ImageUse) -> ImageUse {
         if matches!(
             usage.role,
-            ImageRole::Pic | ImageRole::LayeredSky | ImageRole::Lightmap
+            ImageRole::Pic | ImageRole::Font | ImageRole::LayeredSky | ImageRole::Lightmap
         ) || (matches!(self.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
             && usage.role == ImageRole::CubeSky)
         {
@@ -675,8 +688,69 @@ impl ImagesState {
         first..first + count
     }
     fn find(&self, key: ImageKey) -> Option<usize> {
-        self.named_range(key.name)
-            .find(|&index| self.resolved[index].0 == key)
+        self.named_range(key.name).find(|&index| {
+            let old = self.resolved[index].0;
+            old == key
+                || self.source_rules == RuleSetId::Quake2Rerelease
+                    && self
+                        .file_identity(key.recipe)
+                        .is_some_and(|identity| self.file_identity(old.recipe) == Some(identity))
+        })
+    }
+    fn file_identity(
+        &self,
+        recipe: ImageRecipe,
+    ) -> Option<(u32, Option<PaletteId>, Option<IndexedTarget>)> {
+        let indexed = |palette, transparent_index| {
+            let target = self
+                .indexed_remap
+                .as_ref()
+                .filter(|remap| remap.source == palette)
+                .map_or(palette, |remap| remap.target);
+            (
+                Some(palette),
+                Some(IndexedTarget {
+                    palette: target,
+                    transparent_index,
+                }),
+            )
+        };
+        let (role, source, target) = match recipe {
+            ImageRecipe::Pcx {
+                palette,
+                transparent_index,
+                usage,
+                ..
+            }
+            | ImageRecipe::Lmp {
+                palette,
+                transparent_index,
+                usage,
+            } => {
+                let (source, target) = indexed(palette, transparent_index);
+                (usage.role.override_bit()?, source, target)
+            }
+            ImageRecipe::Wal { palette, cutout } => {
+                let (source, target) = indexed(palette, cutout.then_some(255));
+                (ImageRole::Surface.override_bit()?, source, target)
+            }
+            ImageRecipe::Raster {
+                indexed: target,
+                role,
+                ..
+            } => {
+                let source = target.map(|target| self.source_palette(target.palette));
+                (role?, source, target)
+            }
+            _ => return None,
+        };
+        Some((role, source, target))
+    }
+    fn source_palette(&self, target: PaletteId) -> PaletteId {
+        self.indexed_remap
+            .as_ref()
+            .filter(|remap| remap.target == target)
+            .map_or(target, |remap| remap.source)
     }
     fn remember(&mut self, key: ImageKey, id: ImageId, usage: ImageUse) -> ResolvedImage {
         let usage = self.recipes.effective_use(usage);
@@ -697,6 +771,242 @@ pub struct Images<'a> {
     state: ImagesState,
 }
 impl<'a> Images<'a> {
+    pub fn set_search_order(&mut self, order: ImageSearchOrder) {
+        self.assets.set_image_search_order(order);
+    }
+    fn file_name(&mut self, name: &str) -> Result<NameId, ResourceError> {
+        let name = if self.state.source_rules == RuleSetId::Quake2Rerelease {
+            search::stem(name)
+        } else {
+            name
+        };
+        self.assets.intern_name(name).map_err(ResourceError::Asset)
+    }
+    fn select_file(
+        &self,
+        name: &str,
+        usage: ImageUse,
+        rgba_override: Option<&str>,
+        embedded: bool,
+    ) -> Result<Option<SelectedFile>, ResourceError> {
+        let name = qa_core::names::canonical_path(name);
+        let rgba_override = rgba_override.map(qa_core::names::canonical_path);
+        self.assets.image_search_order().select(
+            self.vfs,
+            &name,
+            self.state.source_rules,
+            self.state.recipes.settings,
+            usage,
+            rgba_override.as_deref(),
+            embedded,
+        )
+    }
+    fn native_texture(
+        &mut self,
+        name: &str,
+        format: SourceFormat,
+        transparent: Option<u8>,
+    ) -> Result<IndexedTexture, ResourceError> {
+        let bytes = if format == SourceFormat::Raster(ImageFormat::Lmp) {
+            read_file_with_limit(
+                self.vfs,
+                name.as_bytes(),
+                INDEXED_PIC_FILE_LIMIT,
+                &mut self.state.reader,
+            )?
+        } else {
+            read_file(self.vfs, name.as_bytes(), &mut self.state.reader)?
+        };
+        if format == SourceFormat::Wal {
+            let mip = MipTexture::parse(&bytes, qa_formats::image::MipFormat::Wal)?;
+            return IndexedTexture::load_masked(mip.width, mip.height, mip.levels, transparent)
+                .map_err(ResourceError::Asset);
+        }
+        let SourceFormat::Raster(format) = format else {
+            return Err(ResourceError::Asset("unknown indexed image format"));
+        };
+        let source = if format == ImageFormat::Pcx {
+            RuleSetId::Quake2
+        } else {
+            self.state.source_rules
+        };
+        let DecodedImage::Indexed(image) = decode(&bytes, format, source.lineage())? else {
+            return Err(ResourceError::Asset("image must retain source indices"));
+        };
+        IndexedTexture::load_base(image.width, image.height, &image.indices, transparent)
+            .map_err(ResourceError::Asset)
+    }
+    fn rgba_file(
+        &mut self,
+        selected: &SelectedFile,
+        palette: Option<PaletteId>,
+    ) -> Result<RgbaImage, ResourceError> {
+        let bytes = read_file(self.vfs, selected.path.as_bytes(), &mut self.state.reader)?;
+        let indexed;
+        let image = match selected.format {
+            SourceFormat::Wal => {
+                let mip = MipTexture::parse(&bytes, qa_formats::image::MipFormat::Wal)?;
+                indexed = IndexedImage {
+                    width: mip.width,
+                    height: mip.height,
+                    indices: std::borrow::Cow::Borrowed(mip.levels[0]),
+                    palette: None,
+                };
+                &indexed
+            }
+            SourceFormat::Raster(format) => {
+                match decode(&bytes, format, self.state.source_rules.lineage())? {
+                    DecodedImage::Rgba(image) => return Ok(image),
+                    DecodedImage::Indexed(image) => {
+                        indexed = image;
+                        &indexed
+                    }
+                }
+            }
+        };
+        let colors = palette.and_then(|palette| self.assets.palette(palette));
+        let global = colors.map(|colors| Palette(Box::new(colors.rgba_table())));
+        let palette = if matches!(
+            self.state.source_rules,
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+        ) {
+            global.as_ref().or(image.palette.as_ref())
+        } else {
+            image.palette.as_ref().or(global.as_ref())
+        }
+        .ok_or(ResourceError::Asset("image has no palette"))?;
+        Ok(image.expand(palette, &PaletteOptions::default())?)
+    }
+    fn texture_rgba(
+        &self,
+        texture: &IndexedTexture,
+        palette: PaletteId,
+        native_fringe: bool,
+    ) -> Result<RgbaImage, ResourceError> {
+        let base = texture
+            .mip(0)
+            .ok_or(ResourceError::Asset("missing indexed base mip"))?;
+        let colors = self
+            .assets
+            .palette(palette)
+            .ok_or(ResourceError::Asset("missing image palette"))?;
+        Ok(IndexedImage {
+            width: base.width,
+            height: base.height,
+            indices: std::borrow::Cow::Borrowed(base.indices()),
+            palette: None,
+        }
+        .expand(
+            &Palette(Box::new(colors.rgba_table())),
+            &PaletteOptions {
+                transparent_index: if native_fringe {
+                    Some(255)
+                } else {
+                    texture.transparent_index()
+                },
+                fringe: if native_fringe {
+                    AlphaFringe::NativeNeighbors
+                } else {
+                    AlphaFringe::KeepPalette
+                },
+                ..PaletteOptions::default()
+            },
+        )?)
+    }
+    fn indexed_file(
+        &mut self,
+        key: ImageKey,
+        name: &str,
+        format: SourceFormat,
+        palette: PaletteId,
+        transparent: Option<u8>,
+        rgba_override: Option<&str>,
+        usage: ImageUse,
+    ) -> Result<ResolvedImage, ResourceError> {
+        let selected = self
+            .select_file(name, usage, rgba_override, false)?
+            .ok_or_else(|| ResourceError::Missing(name.to_owned()))?;
+        let original = qa_core::names::canonical_path(name);
+        let original_selected = selected.path == original && selected.format == format;
+        let texture = if original_selected {
+            Some(self.native_texture(&original, format, transparent)?)
+        } else if self.vfs.open(original.as_bytes()).is_some() {
+            // An unselected original is only optional software/dimension data.
+            // A broken original cannot invalidate a valid replacement.
+            self.native_texture(&original, format, transparent).ok()
+        } else {
+            None
+        };
+        let rgba = if original_selected {
+            None
+        } else {
+            Some(self.rgba_file(&selected, Some(palette))?)
+        };
+        let native_fringe = format.native_fringe(self.state.recipes.rules);
+        self.finish_indexed(
+            key,
+            texture,
+            rgba,
+            palette,
+            transparent,
+            usage,
+            native_fringe,
+        )
+    }
+    fn finish_indexed(
+        &mut self,
+        key: ImageKey,
+        texture: Option<IndexedTexture>,
+        rgba: Option<RgbaImage>,
+        palette: PaletteId,
+        transparent: Option<u8>,
+        usage: ImageUse,
+        native_fringe: bool,
+    ) -> Result<ResolvedImage, ResourceError> {
+        let texture_palette = if texture.is_some() {
+            palette
+        } else {
+            self.state
+                .indexed_remap
+                .as_ref()
+                .map_or(palette, |remap| remap.target)
+        };
+        let id = if let Some(rgba) = rgba {
+            let texture = if let Some(texture) = texture {
+                texture
+            } else {
+                let colors = self
+                    .assets
+                    .palette(texture_palette)
+                    .ok_or(ResourceError::Asset("missing image palette"))?;
+                rgba_texture(&rgba, colors, transparent)?
+            };
+            let id = self.register_indexed_rgba(
+                rgba.width,
+                rgba.height,
+                &rgba.pixels,
+                texture,
+                texture_palette,
+            )?;
+            self.prepare(id, usage, None)?;
+            id
+        } else {
+            let texture = texture.ok_or(ResourceError::Asset("missing native image"))?;
+            let gl_pixels = if native_fringe {
+                Some(self.texture_rgba(&texture, palette, true)?)
+            } else {
+                None
+            };
+            let id = self.register_indexed(texture, palette)?;
+            self.prepare(
+                id,
+                usage,
+                gl_pixels.as_ref().map(|image| image.pixels.as_slice()),
+            )?;
+            id
+        };
+        Ok(self.remember(key, id, usage))
+    }
     /// Decode using source provenance, then upload with the presentation role.
     /// An optional source/target palette pair remaps software indices at load;
     /// native equal pairs retain exact original bytes and source RGBA.
@@ -955,14 +1265,37 @@ impl<'a> Images<'a> {
                 .assets
                 .image(id)
                 .ok_or(ResourceError::Asset("missing embedded image"))?;
-            if image.width != mip.width || image.height != mip.height {
+            if image.logical_size() != [mip.width, mip.height] {
                 return Err(ResourceError::Asset("embedded image dimensions changed"));
             }
             return Ok(id);
         }
-        let id = self.upload_embedded(mip, palette, cutout)?;
-        self.remember(key, id, ImageUse::default());
-        Ok(id)
+        let replacement = if let Ok(name) = std::str::from_utf8(mip.name) {
+            self.select_file(&format!("textures/{name}"), ImageUse::default(), None, true)?
+        } else {
+            None
+        };
+        let rgba = replacement
+            .as_ref()
+            .map(|selected| self.rgba_file(selected, Some(palette)))
+            .transpose()?;
+        let texture = IndexedTexture::load(mip.width, mip.height, mip.levels, cutout)
+            .map_err(ResourceError::Asset)?;
+        let native_fringe = matches!(
+            self.state.recipes.rules,
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+        );
+        Ok(self
+            .finish_indexed(
+                key,
+                Some(texture),
+                rgba,
+                palette,
+                cutout.then_some(255),
+                ImageUse::default(),
+                native_fringe,
+            )?
+            .id)
     }
     pub(crate) fn layered_sky(
         &mut self,
@@ -1040,45 +1373,6 @@ impl<'a> Images<'a> {
         }
         Ok(ids)
     }
-    fn upload_embedded(
-        &mut self,
-        mip: &MipTexture<'_>,
-        palette: PaletteId,
-        cutout: bool,
-    ) -> Result<ImageId, ResourceError> {
-        let texture = IndexedTexture::load(mip.width, mip.height, mip.levels, cutout)
-            .map_err(ResourceError::Asset)?;
-        let gl_pixels = if matches!(
-            self.state.recipes.rules,
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-        ) {
-            let colors = self
-                .assets
-                .palette(palette)
-                .ok_or(ResourceError::Asset("missing image palette"))?;
-            let image = IndexedImage {
-                width: mip.width,
-                height: mip.height,
-                indices: std::borrow::Cow::Borrowed(mip.levels[0]),
-                palette: None,
-            };
-            let rgba = image.expand(
-                &Palette(Box::new(colors.rgba_table())),
-                &PaletteOptions {
-                    transparent_index: Some(255),
-                    fringe: AlphaFringe::NativeNeighbors,
-                    ..PaletteOptions::default()
-                },
-            )?;
-            upload::validate_dimensions(rgba.width, rgba.height)?;
-            Some(rgba.pixels)
-        } else {
-            None
-        };
-        let id = self.register_indexed(texture, palette)?;
-        self.prepare(id, ImageUse::default(), gl_pixels.as_deref())?;
-        Ok(id)
-    }
     pub fn wal(
         &mut self,
         name: &str,
@@ -1086,20 +1380,23 @@ impl<'a> Images<'a> {
         cutout: bool,
     ) -> Result<ImageId, ResourceError> {
         let key = ImageKey {
-            name: self
-                .assets
-                .intern_name(name)
-                .map_err(ResourceError::Asset)?,
+            name: self.file_name(name)?,
             recipe: ImageRecipe::Wal { palette, cutout },
         };
         if let Some(index) = self.find(key) {
             return Ok(self.state.resolved[index].1.id);
         }
-        let bytes = read_file(self.vfs, name.as_bytes(), &mut self.state.reader)?;
-        let mip = MipTexture::parse(&bytes, qa_formats::image::MipFormat::Wal)?;
-        let id = self.upload_embedded(&mip, palette, cutout)?;
-        self.remember(key, id, ImageUse::default());
-        Ok(id)
+        Ok(self
+            .indexed_file(
+                key,
+                name,
+                SourceFormat::Wal,
+                palette,
+                cutout.then_some(255),
+                None,
+                ImageUse::default(),
+            )?
+            .id)
     }
     /// Native qpic files retain exact indices and the explicitly selected
     /// global palette. File admission matches the existing console loader.
@@ -1111,10 +1408,7 @@ impl<'a> Images<'a> {
         usage: ImageUse,
     ) -> Result<ResolvedImage, ResourceError> {
         let key = ImageKey {
-            name: self
-                .assets
-                .intern_name(name)
-                .map_err(ResourceError::Asset)?,
+            name: self.file_name(name)?,
             recipe: ImageRecipe::Lmp {
                 palette,
                 transparent_index,
@@ -1124,18 +1418,15 @@ impl<'a> Images<'a> {
         if let Some(index) = self.find(key) {
             return Ok(self.state.resolved[index].1);
         }
-        let bytes = read_file_with_limit(
-            self.vfs,
-            name.as_bytes(),
-            INDEXED_PIC_FILE_LIMIT,
-            &mut self.state.reader,
-        )?;
-        let DecodedImage::Indexed(image) =
-            decode(&bytes, ImageFormat::Lmp, self.state.source_rules.lineage())?
-        else {
-            return Err(ResourceError::Asset("qpic resource must retain indices"));
-        };
-        self.indexed_pic(key, &image, palette, transparent_index, usage)
+        self.indexed_file(
+            key,
+            name,
+            SourceFormat::Raster(ImageFormat::Lmp),
+            palette,
+            transparent_index,
+            None,
+            usage,
+        )
     }
     /// WAD lookup uses its native folded lump names. Recipe identities retain
     /// the requested raw bytes separately from the canonical archive path.
@@ -1165,37 +1456,46 @@ impl<'a> Images<'a> {
         if let Some(index) = self.find(key) {
             return Ok(self.state.resolved[index].1);
         }
-        let bytes = read_file_with_limit(
-            self.vfs,
-            name.as_bytes(),
-            INDEXED_PIC_FILE_LIMIT,
-            &mut self.state.reader,
-        )?;
-        let wad = Wad::parse(&bytes)?;
-        let index = wad
-            .find(lump)
-            .ok_or(ResourceError::Asset("missing indexed WAD lump"))?;
-        let WadImage::Image(image) = wad.image(index)? else {
-            return Err(ResourceError::Asset(
-                "WAD resource is not an indexed bitmap",
-            ));
+        let replacement = if let Ok(lump_name) = std::str::from_utf8(lump) {
+            let archive = qa_core::names::canonical_path(name);
+            self.select_file(
+                &format!("{}/{lump_name}", search::stem(&archive)),
+                usage,
+                None,
+                true,
+            )?
+        } else {
+            None
         };
-        self.indexed_pic(key, &image, palette, transparent_index, usage)
-    }
-    fn indexed_pic(
-        &mut self,
-        key: ImageKey,
-        image: &IndexedImage<'_>,
-        palette: PaletteId,
-        transparent_index: Option<u8>,
-        usage: ImageUse,
-    ) -> Result<ResolvedImage, ResourceError> {
-        let texture =
+        let texture = (|| {
+            let bytes = read_file_with_limit(
+                self.vfs,
+                name.as_bytes(),
+                INDEXED_PIC_FILE_LIMIT,
+                &mut self.state.reader,
+            )?;
+            let wad = Wad::parse(&bytes)?;
+            let index = wad
+                .find(lump)
+                .ok_or(ResourceError::Asset("missing indexed WAD lump"))?;
+            let WadImage::Image(image) = wad.image(index)? else {
+                return Err(ResourceError::Asset(
+                    "WAD resource is not an indexed bitmap",
+                ));
+            };
             IndexedTexture::load_base(image.width, image.height, &image.indices, transparent_index)
-                .map_err(ResourceError::Asset)?;
-        let id = self.register_indexed(texture, palette)?;
-        self.prepare(id, usage, None)?;
-        Ok(self.remember(key, id, usage))
+                .map_err(ResourceError::Asset)
+        })();
+        let texture = if replacement.is_some() {
+            texture.ok()
+        } else {
+            Some(texture?)
+        };
+        let rgba = replacement
+            .as_ref()
+            .map(|selected| self.rgba_file(selected, Some(palette)))
+            .transpose()?;
+        self.finish_indexed(key, texture, rgba, palette, transparent_index, usage, false)
     }
     /// Retain original PCX indices and select the presentation's global palette.
     /// A separate native RGBA resource supplies GL pixels (Q2 sky TGA). If the
@@ -1211,10 +1511,7 @@ impl<'a> Images<'a> {
         usage: ImageUse,
     ) -> Result<ImageId, ResourceError> {
         let key = ImageKey {
-            name: self
-                .assets
-                .intern_name(name)
-                .map_err(ResourceError::Asset)?,
+            name: self.file_name(name)?,
             recipe: ImageRecipe::Pcx {
                 palette,
                 transparent_index,
@@ -1228,88 +1525,17 @@ impl<'a> Images<'a> {
         if let Some(index) = self.find(key) {
             return Ok(self.state.resolved[index].1.id);
         }
-        let bytes = self
-            .vfs
-            .open(name.as_bytes())
-            .map(|_| read_file(self.vfs, name.as_bytes(), &mut self.state.reader))
-            .transpose()?;
-        let decoded = if let Some(bytes) = &bytes {
-            let DecodedImage::Indexed(decoded) =
-                decode(bytes, ImageFormat::Pcx, RuleSetId::Quake2.lineage())?
-            else {
-                return Err(ResourceError::Asset("PCX resource must retain indices"));
-            };
-            Some(decoded)
-        } else {
-            None
-        };
-        let rgba = if let Some(path) =
-            rgba_override.filter(|path| self.vfs.open(path.as_bytes()).is_some())
-        {
-            let format = ImageFormat::from_path(path.as_bytes())
-                .ok_or(ResourceError::Asset("unknown RGBA override format"))?;
-            let bytes = read_file(self.vfs, path.as_bytes(), &mut self.state.reader)?;
-            let DecodedImage::Rgba(rgba) = decode(&bytes, format, RuleSetId::Quake2.lineage())?
-            else {
-                return Err(ResourceError::Asset(
-                    "RGBA override must have original color pixels",
-                ));
-            };
-            Some(rgba)
-        } else {
-            None
-        };
-        let texture_palette = if decoded.is_none() {
-            self.state
-                .indexed_remap
-                .as_ref()
-                .map_or(palette, |remap| remap.target)
-        } else {
-            palette
-        };
-        let colors = self
-            .assets
-            .palette(texture_palette)
-            .ok_or(ResourceError::Asset("missing image palette"))?;
-        let texture = if let Some(decoded) = &decoded {
-            IndexedTexture::load_base(
-                decoded.width,
-                decoded.height,
-                &decoded.indices,
+        Ok(self
+            .indexed_file(
+                key,
+                name,
+                SourceFormat::Raster(ImageFormat::Pcx),
+                palette,
                 transparent_index,
-            )
-            .map_err(ResourceError::Asset)?
-        } else if let Some(rgba) = &rgba {
-            rgba_texture(rgba, colors, transparent_index)?
-        } else {
-            return Err(ResourceError::Missing(name.to_owned()));
-        };
-        let mut gl_pixels = None;
-        let id = if let Some(rgba) = rgba {
-            self.register_indexed_rgba(
-                rgba.width,
-                rgba.height,
-                &rgba.pixels,
-                texture,
-                texture_palette,
+                rgba_override,
+                usage,
             )?
-        } else {
-            let decoded = decoded.ok_or(ResourceError::Asset("missing indexed image"))?;
-            let rgba = decoded.expand(
-                &Palette(Box::new(colors.rgba_table())),
-                &PaletteOptions {
-                    transparent_index: Some(255),
-                    fringe: AlphaFringe::NativeNeighbors,
-                    ..PaletteOptions::default()
-                },
-            )?;
-            upload::validate_dimensions(rgba.width, rgba.height)?;
-            gl_pixels = Some(rgba.pixels);
-            self.register_indexed(texture, palette)?
-        };
-        self.prepare(id, usage, gl_pixels.as_deref())?;
-        self.remember(key, id, usage);
-        Ok(id)
+            .id)
     }
     /// Native sky fallback reuses the generated builtin and its first upload policy.
     pub(crate) fn native_default_image(&mut self) -> Result<ResolvedImage, ResourceError> {
@@ -1335,10 +1561,7 @@ impl<'a> Images<'a> {
         indexed: Option<IndexedTarget>,
     ) -> Result<ResolvedImage, ResourceError> {
         let rules = self.state.source_rules;
-        let name_id = self
-            .assets
-            .intern_name(name)
-            .map_err(ResourceError::Asset)?;
+        let name_id = self.file_name(name)?;
         let opaque = indexed.map(|target| IndexedTarget {
             transparent_index: None,
             ..target
@@ -1365,59 +1588,59 @@ impl<'a> Images<'a> {
         }
         let key = ImageKey {
             name: name_id,
-            recipe: ImageRecipe::Raster { rules, indexed },
+            recipe: ImageRecipe::Raster {
+                rules,
+                indexed,
+                role: (rules == RuleSetId::Quake2Rerelease)
+                    .then(|| usage.role.override_bit())
+                    .flatten(),
+            },
         };
         if let Some(resolved) = self.state.cached_use(key, usage) {
             return Ok(resolved);
         }
-        let canonical = self
-            .assets
-            .name(key.name)
-            .ok_or(ResourceError::Asset("missing image name"))?
-            .to_owned();
-        let known = ImageFormat::from_path(canonical.as_bytes());
-        let candidates = if known.is_some() {
-            let jpeg = canonical
-                .strip_suffix(".tga")
-                .map(|stem| format!("{stem}.jpg"));
-            [Some(canonical.clone()), jpeg]
-        } else {
-            [
-                Some(format!("{canonical}.tga")),
-                Some(format!("{canonical}.jpg")),
-            ]
-        };
-        let mut selected = None;
-        for path in candidates.into_iter().flatten() {
-            if self.vfs.open(path.as_bytes()).is_some() {
-                selected = Some(path);
-                break;
-            }
+        if let Some(target) = indexed
+            && let Some(format) = SourceFormat::from_path(name)
+            && format.retains_indices(rules)
+        {
+            return self.indexed_file(
+                key,
+                name,
+                format,
+                self.state.source_palette(target.palette),
+                target.transparent_index,
+                None,
+                usage,
+            );
         }
-        let path = selected.ok_or(ResourceError::Missing(canonical))?;
-        let bytes = read_file(self.vfs, path.as_bytes(), &mut self.state.reader)?;
-        let format = ImageFormat::from_path(path.as_bytes())
-            .ok_or(ResourceError::Asset("unknown image format"))?;
-        // Native Q2 pics/skins ignore their embedded PCX palette and retain
-        // indices for the selected global palette. Generic RGBA expansion
-        // cannot preserve that contract; callers need an indexed-PCX path.
+        let selected = self
+            .select_file(name, usage, None, false)?
+            .ok_or_else(|| ResourceError::Missing(name.to_owned()))?;
+        if let Some(target) = indexed
+            && selected.format.retains_indices(rules)
+        {
+            let texture =
+                self.native_texture(&selected.path, selected.format, target.transparent_index)?;
+            let native_fringe = selected.format.native_fringe(self.state.recipes.rules);
+            return self.finish_indexed(
+                key,
+                Some(texture),
+                None,
+                self.state.source_palette(target.palette),
+                target.transparent_index,
+                usage,
+                native_fringe,
+            );
+        }
         if matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
-            && format == ImageFormat::Pcx
+            && selected.format == SourceFormat::Raster(ImageFormat::Pcx)
+            && indexed.is_none()
         {
             return Err(ResourceError::Asset(
                 "Q2 PCX requires indexed palette registration",
             ));
         }
-        let rgba = match decode(&bytes, format, rules.lineage())? {
-            DecodedImage::Rgba(image) => image,
-            DecodedImage::Indexed(image) => {
-                let palette: &Palette = image
-                    .palette
-                    .as_ref()
-                    .ok_or(ResourceError::Asset("raster has no palette"))?;
-                image.expand(palette, &PaletteOptions::default())?
-            }
-        };
+        let rgba = self.rgba_file(&selected, indexed.map(|target| target.palette))?;
         let id = if let Some(target) = indexed {
             let colors = self
                 .assets

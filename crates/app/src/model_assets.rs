@@ -14,7 +14,7 @@ use qa_render::assets::{
     AssetCounts, ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture,
 };
 use qa_render::material::resources::{
-    ImageRegistrationMark, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget,
+    ImageRegistrationMark, ImageRole, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget,
     ResourceError,
 };
 use qa_render::material::world_load::{
@@ -5376,8 +5376,15 @@ fn register_sprites(
         if !matches!(sprite.image, Image::External(_)) {
             return Err("SP2 frame requires an external image".to_owned());
         }
-        let image = model_image(sprite.image, images, registration.profile, true, Some(255))
-            .map_err(|error| format!("sprite image: {error:?}"))?;
+        let image = model_image(
+            sprite.image,
+            images,
+            registration.profile,
+            ImageRole::Sprite,
+            true,
+            Some(255),
+        )
+        .map_err(|error| format!("sprite image: {error:?}"))?;
         let mut variants = [ShaderBindingId(0); 4];
         for material_policy in ModelMaterialPolicy::ALL {
             let material = images.assets.register_material(
@@ -5456,10 +5463,14 @@ fn model_image(
     image: Image<'_>,
     images: &mut Images<'_>,
     options: ModelProfile,
+    role: ImageRole,
     indexed_external_pcx: bool,
     transparent: Option<u8>,
 ) -> Result<ImageId, ResourceError> {
-    let usage = ImageUse::default();
+    let usage = ImageUse {
+        role,
+        ..ImageUse::default()
+    };
     Ok(match image {
         Image::Indexed {
             width,
@@ -5530,6 +5541,7 @@ fn alias_materials(
             *skin,
             images,
             options,
+            ImageRole::Skin,
             model_policy.source.indexed_external_pcx,
             None,
         );

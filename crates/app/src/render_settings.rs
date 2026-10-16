@@ -11,7 +11,7 @@ use qa_render::{
     assets::{PaletteId, upload},
     material::{
         MaterialFinishPolicy,
-        resources::{ImageSettings, PaletteSource, ResourceError, load_palette},
+        resources::{ImageSearchOrder, ImageSettings, PaletteSource, ResourceError, load_palette},
         world_load::WorldPresentationProfile,
     },
     world::{WorldLighting, WorldRenderSettings},
@@ -170,7 +170,7 @@ fn read_subdivisions(vars: &Cvars, pending: bool) -> Result<f32, &'static str> {
     }
 }
 
-const IMAGE_CVARS: [&str; 7] = [
+const IMAGE_CVARS: [&str; 9] = [
     "r_gamma",
     "r_intensity",
     "r_picmip",
@@ -178,6 +178,8 @@ const IMAGE_CVARS: [&str; 7] = [
     "r_simpleMipMaps",
     "gl_max_size",
     "gl_skymip",
+    "r_override_textures",
+    "r_texture_overrides",
 ];
 
 /// A cold preview keeps native source defaults and pending alias conversions in
@@ -258,6 +260,19 @@ fn setting_view(vars: &Cvars, source: RuleSetId, name: &str) -> Result<View, &'s
         },
     )
     .ok_or("missing render cvar")
+}
+
+/// Cache the global image finder control once; source-specific fallback stays
+/// with the resource's existing source policy.
+pub fn image_search_view(vars: &Cvars) -> Result<View, &'static str> {
+    setting_view(vars, RuleSetId::Quake2Rerelease, "r_texture_formats")
+}
+
+pub fn image_search(vars: &Cvars, view: View) -> Result<ImageSearchOrder, &'static str> {
+    let text = vars
+        .read(view)
+        .map_err(|_| "image format setting conversion")?;
+    ImageSearchOrder::parse(text.as_str().as_bytes()).map_err(|_| "invalid image format list")
 }
 
 pub(crate) fn model_lod_views(vars: &Cvars) -> Result<[View; 2], &'static str> {
@@ -373,5 +388,8 @@ fn read_image_settings(
     }
     settings.max_dimension = maximum as u32;
     settings.sky_mip = number("gl_skymip", u8::from(settings.sky_mip) as f32)? != 0.0;
+    settings.override_textures = integer("r_override_textures", settings.override_textures)?;
+    settings.texture_overrides =
+        integer("r_texture_overrides", settings.texture_overrides as i32)? as u32;
     Ok(settings)
 }

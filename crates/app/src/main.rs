@@ -479,6 +479,10 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
     }
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
+    assets.set_image_search_order(qa_app::render_settings::image_search(
+        &console.cvars,
+        qa_app::render_settings::image_search_view(&console.cvars)?,
+    )?);
     let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
     if let Some((input, policy)) = staged_map {
         let virtual_name = input

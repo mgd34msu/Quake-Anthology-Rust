@@ -11,6 +11,9 @@ use qa_render::{
 use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+#[path = "resources/image_search.rs"]
+mod image_search;
+
 #[test]
 fn detached_image_state_keeps_recipe_ids_native_flags_and_conflict_history() {
     let root = Fixture::new();
@@ -531,7 +534,10 @@ fn indexed_pcx_uses_selected_global_palette_and_explicit_mask() {
         &mut assets,
         RuleSetId::Quake2,
         RuleSetId::Quake2,
-        ImageSettings::native(qa_core::primitives::RuleSetId::Quake2),
+        ImageSettings {
+            override_textures: 0,
+            ..ImageSettings::native(RuleSetId::Quake2)
+        },
         None,
     )
     .unwrap();

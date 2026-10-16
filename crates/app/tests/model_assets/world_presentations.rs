@@ -52,6 +52,10 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
     ]);
     let fixture = support::Fixture::new(&entries);
     let mut assets = Assets::load().unwrap();
+    // This fixture proves retained embedded data without external replacements.
+    assets.set_image_search_order(
+        qa_render::material::resources::ImageSearchOrder::parse(b"").unwrap(),
+    );
     let palette = support::palette(&mut assets);
     let profile = native_profile(RuleSetId::Quake, palette);
     let mut geometry = CollisionStore::new();
@@ -353,6 +357,10 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
 fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_recipe_for_retry() {
     let fixture = support::Fixture::new(&[("maps/first.bsp", support::world_map(8.))]);
     let mut assets = Assets::load().unwrap();
+    // This fixture proves retained embedded data without external replacements.
+    assets.set_image_search_order(
+        qa_render::material::resources::ImageSearchOrder::parse(b"").unwrap(),
+    );
     let palette = support::palette(&mut assets);
     let original_profile = native_profile(RuleSetId::Quake, palette);
     let mut geometry = CollisionStore::new();

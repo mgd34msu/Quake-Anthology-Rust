@@ -151,6 +151,15 @@ pub struct Image {
     /// leave this unset and use the material stage's explicit sampler.
     pub native_sampler: Option<Sampler>,
 }
+impl Image {
+    /// Software/native dimensions remain independent of a GL replacement.
+    pub fn logical_size(&self) -> [u32; 2] {
+        self.indexed
+            .as_ref()
+            .and_then(|texture| texture.mip(0))
+            .map_or([self.width, self.height], |mip| [mip.width, mip.height])
+    }
+}
 /// All frame-time texture choices are numeric. Lightmap is resolved from the
 /// surface binding, so a script material is shared across atlas pages/worlds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -567,6 +576,7 @@ impl ModelFrames<'_> {
 }
 pub struct Assets {
     names: NameTable,
+    image_search_order: crate::material::resources::ImageSearchOrder,
     images: Vec<Image>,
     materials: Vec<Material>,
     shader_bindings: Vec<ShaderBinding>,
@@ -605,6 +615,7 @@ impl Assets {
         let white = names.find_path("*white").ok_or(NamesError::Capacity)?;
         Ok(Self {
             names,
+            image_search_order: crate::material::resources::ImageSearchOrder::default(),
             images: vec![Image {
                 width: 1,
                 height: 1,
@@ -652,6 +663,13 @@ impl Assets {
         self.names
             .intern_path(path)
             .map_err(|_| "asset name table full")
+    }
+    /// Live search policy affects cold misses without replacing existing images.
+    pub fn set_image_search_order(&mut self, order: crate::material::resources::ImageSearchOrder) {
+        self.image_search_order = order;
+    }
+    pub(crate) fn image_search_order(&self) -> crate::material::resources::ImageSearchOrder {
+        self.image_search_order
     }
     /// Lump names are byte identities, not paths. Their decoder owns native
     /// folded lookup; slash conversion must not merge distinct lump names.

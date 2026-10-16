@@ -9,6 +9,7 @@ use qa_core::{
     primitives::{NameId, RuleSetId},
     text::FixedText,
 };
+use qa_formats::image::ImageFormat;
 use qa_render::{Assets, Draw2d, Frame, ShaderBindingId, Viewport, material::resources::ImageUse};
 use qa_render::{ShaderRegistration, shader::reference::ShaderView};
 use std::fmt::Write;
@@ -41,11 +42,15 @@ impl Pictures {
             .files()
             .filter_map(|(_, path)| {
                 let path = std::str::from_utf8(path).ok()?;
-                (path.ends_with(".pcx")
-                    && (path.starts_with("pics/")
+                if ImageFormat::from_path(path.as_bytes())? == ImageFormat::Lmp
+                    || !(path.starts_with("pics/")
                         || path.starts_with("players/")
-                        || path.starts_with("tags/")))
-                .then_some(path)
+                        || path.starts_with("tags/"))
+                {
+                    return None;
+                }
+                let (base, _) = path.rsplit_once('.')?;
+                Some(format!("{base}.pcx"))
             })
             .collect();
         paths.sort_unstable();
@@ -54,7 +59,7 @@ impl Pictures {
             for path in paths {
                 let loaded = images
                     .indexed_pcx(
-                        path,
+                        &path,
                         palette,
                         Some(255),
                         None,
@@ -65,11 +70,11 @@ impl Pictures {
                     )
                     .map_err(|e| format!("{e:?}"))
                     .and_then(|image| {
-                        bitmap_shader(images, path, image, bitmap_sampler(), None)
+                        bitmap_shader(images, &path, image, bitmap_sampler(), None)
                             .map_err(str::to_owned)
                     });
                 match loaded {
-                    Ok(shader) => result.register_receipt(images.assets, path, shader)?,
+                    Ok(shader) => result.register_receipt(images.assets, &path, shader)?,
                     Err(error) => {
                         qa_console::logger::console(format_args!("HUD picture {path}: {error}\n"))
                     }
@@ -112,7 +117,7 @@ impl Pictures {
                 }
             })
             .ok_or("HUD picture needs an image shader")?;
-        let size = [image.width, image.height];
+        let size = image.logical_size();
         let picture = Picture { shader, size };
         let name = assets.intern_name(path).map_err(str::to_owned)?;
         match self
