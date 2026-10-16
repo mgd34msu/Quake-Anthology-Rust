@@ -1,6 +1,16 @@
 use super::{read::*, *};
 use crate::text::Tokens;
-use qa_core::math::{cross, normalized, rotate_quaternion};
+use qa_core::math::{cross, normalized, quaternion_from_xyz, rotate_quaternion};
+
+mod animation;
+pub use animation::{Md5Animation, Md5AnimationFrame, Md5HierarchyJoint, Md5ScaleDiagnostic};
+
+fn header<'a>(t: &mut Tokens<'a>) -> Result<&'a [u8], FormatError> {
+    t.require(b"MD5Version")?;
+    t.integer(10, 10)?;
+    t.require(b"commandline")?;
+    t.value()
+}
 
 fn vector(t: &mut Tokens<'_>) -> Result<Vec3, FormatError> {
     t.require(b"(")?;
@@ -27,12 +37,7 @@ fn record(t: &mut Tokens<'_>, label: &[u8], seen: &mut [bool]) -> Result<usize, 
 }
 pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, FormatError> {
     let mut t = Tokens::new(bytes);
-    t.require(b"MD5Version")?;
-    if t.integer(10, 10)? != 10 {
-        return Err(FormatError::Unsupported);
-    }
-    t.require(b"commandline")?;
-    m.command_line = t.value()?;
+    m.command_line = header(&mut t)?;
     let bones = count(&mut t, b"numJoints", 256)?;
     let meshes = count(&mut t, b"numMeshes", 32)?;
     if bones == 0 || meshes == 0 {
@@ -45,15 +50,12 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
         let name = t.value()?;
         let parent = t.integer(-1, bones as i32 - 1)?;
         let position = vector(&mut t)?;
-        let q = vector(&mut t)?.0;
-        let d = 1.0 - q[0] * q[0] - q[1] * q[1] - q[2] * q[2];
-        finite(d)?;
-        let w = if d < 0.0 { 0.0 } else { -d.sqrt() };
+        let orientation = quaternion_from_xyz(vector(&mut t)?).ok_or(FormatError::InvalidValue)?;
         m.bones.push(Bone {
             name,
             parent: (parent >= 0).then_some(parent as u32),
             position,
-            orientation: [q[0], q[1], q[2], w],
+            orientation,
         });
     }
     t.require(b"}")?;

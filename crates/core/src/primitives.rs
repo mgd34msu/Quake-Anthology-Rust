@@ -146,6 +146,23 @@ impl Orientation {
     }
 }
 
+/// A skeletal joint pose, in the local or model space selected by its owner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JointPose {
+    pub position: Vec3,
+    pub orientation: [f32; 4],
+    pub scale: Vec3,
+}
+impl Default for JointPose {
+    fn default() -> Self {
+        Self {
+            position: Vec3::default(),
+            orientation: [0.0, 0.0, 0.0, 1.0],
+            scale: Vec3([1.0; 3]),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
     X,

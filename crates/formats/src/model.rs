@@ -8,8 +8,9 @@ mod read;
 pub mod skin;
 
 use crate::FormatError;
-pub use qa_core::primitives::IndexSpan;
+pub use md5::{Md5Animation, Md5AnimationFrame, Md5HierarchyJoint, Md5ScaleDiagnostic};
 use qa_core::primitives::{Bounds, Orientation, Vec3};
+pub use qa_core::primitives::{IndexSpan, JointPose};
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -328,9 +328,37 @@ pub fn inverse_transform_point(origin: Vec3, axes: [Vec3; 3], point: Vec3) -> Ve
     Vec3(axes.map(|axis| delta.dot(axis)))
 }
 
+/// MD5 stores XYZ and reconstructs the negative W, preserving native rounding
+/// and negative zero when XYZ has unit length.
+pub fn quaternion_from_xyz(xyz: Vec3) -> Option<[f32; 4]> {
+    let [x, y, z] = xyz.0;
+    let d = 1.0 - x * x - y * y - z * z;
+    d.is_finite()
+        .then(|| [x, y, z, if d < 0.0 { 0.0 } else { -d.sqrt() }])
+}
+
+pub fn multiply_quaternion(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[0] * b[3] + a[3] * b[0] + a[1] * b[2] - a[2] * b[1],
+        a[1] * b[3] + a[3] * b[1] + a[2] * b[0] - a[0] * b[2],
+        a[2] * b[3] + a[3] * b[2] + a[0] * b[1] - a[1] * b[0],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
+}
+
+pub fn normalize_quaternion(q: [f32; 4]) -> [f32; 4] {
+    let length = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if length == 0.0 {
+        q
+    } else {
+        let inverse = 1.0 / length;
+        q.map(|value| value * inverse)
+    }
+}
+
 /// A quaternion rotation, shared by skeletal file conversion and deformation.
 pub fn rotate_quaternion(q: [f32; 4], p: Vec3) -> Vec3 {
-    let dot = q[0] * p.0[0] + q[1] * p.0[1] + q[2] * p.0[2];
+    let dot = Vec3([q[0], q[1], q[2]]).dot(p);
     let scalar = q[3] * q[3] - q[0] * q[0] - q[1] * q[1] - q[2] * q[2];
     Vec3([
         scalar * p.0[0] + 2.0 * (q[0] * dot + q[3] * (q[1] * p.0[2] - q[2] * p.0[1])),

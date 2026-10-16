@@ -9,6 +9,7 @@ pub struct Tokens<'a> {
     limit: usize,
     quoted_escapes: bool,
     comma: bool,
+    quoted: bool,
 }
 impl<'a> Tokens<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
@@ -21,6 +22,7 @@ impl<'a> Tokens<'a> {
             limit: usize::MAX,
             quoted_escapes: false,
             comma: false,
+            quoted: false,
         }
     }
     pub fn entity(
@@ -38,6 +40,7 @@ impl<'a> Tokens<'a> {
             limit,
             quoted_escapes: false,
             comma: false,
+            quoted: false,
         }
     }
     /// Whitespace/quoted data words, with paths and punctuation kept literal.
@@ -51,6 +54,16 @@ impl<'a> Tokens<'a> {
         self.quoted_escapes = true;
         self
     }
+    pub(crate) fn json(bytes: &'a [u8]) -> Self {
+        Self {
+            punctuation: b"{}[]:,",
+            quoted_escapes: true,
+            ..Self::words(bytes)
+        }
+    }
+    pub(crate) fn was_quoted(&self) -> bool {
+        self.quoted
+    }
     pub fn comma(bytes: &'a [u8]) -> Self {
         Self {
             comma: true,
@@ -63,6 +76,7 @@ impl<'a> Tokens<'a> {
         byte <= 32 || (self.comma && byte >= 128)
     }
     pub fn next(&mut self) -> Result<Option<&'a [u8]>, FormatError> {
+        self.quoted = false;
         loop {
             while self.bytes.get(self.at).is_some_and(|&b| self.whitespace(b)) {
                 self.at += 1;
@@ -86,6 +100,7 @@ impl<'a> Tokens<'a> {
         let start = self.at;
         self.at += 1;
         if first == b'"' {
+            self.quoted = true;
             let mut length = 0;
             loop {
                 match self.bytes.get(self.at + length) {
