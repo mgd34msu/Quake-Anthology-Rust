@@ -239,10 +239,21 @@ pub enum Q1GlScale {
 
 /// Arithmetic selected once at the lighting boundary, independently of the
 /// view's movement, protocol and module identities.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum LightmapConversion {
     Scalar(Q1GlScale),
     Rgb { modulate: f32 },
+}
+impl PartialEq for LightmapConversion {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Scalar(first), Self::Scalar(second)) => first == second,
+            (Self::Rgb { modulate: first }, Self::Rgb { modulate: second }) => {
+                first.to_bits() == second.to_bits()
+            }
+            _ => false,
+        }
+    }
 }
 impl LightmapConversion {
     pub(crate) fn referenced_styles(
@@ -301,11 +312,17 @@ fn active_style_count(ids: &[u8; 4]) -> usize {
     ids.iter().take_while(|&&id| id != 255).count()
 }
 
-/// GPU atlas residency remembers the weights for each presentation's surfaces.
+#[derive(Clone, Copy)]
+enum AtlasResidency {
+    Owner(Option<[LightStyle; 4]>),
+    Alias(usize),
+}
+
+/// GPU atlas residency remembers the weights for each physical styled region.
 /// Geometry and samples stay in the world's existing immutable Assets storage.
 pub struct AtlasUpdates {
     offsets: Box<[usize]>,
-    styles: Box<[Option<[LightStyle; 4]>]>,
+    styles: Box<[AtlasResidency]>,
     rgb: Box<[u8]>,
     rgba: Box<[u8]>,
 }
@@ -314,6 +331,8 @@ impl AtlasUpdates {
     /// cold append preparation extends the same residency owner.
     pub fn load(assets: &crate::Assets) -> Result<Self, &'static str> {
         let mut offsets = Vec::with_capacity(assets.world_presentations().len());
+        let mut styles = Vec::new();
+        let mut owners = std::collections::BTreeMap::new();
         let mut region_edges = Vec::new();
         let mut count = 0usize;
         let mut bytes = 0usize;
@@ -321,10 +340,12 @@ impl AtlasUpdates {
             let world = assets
                 .world(presentation.world())
                 .ok_or("invalid GL styled world")?;
-            offsets.push(count);
+            let first = count;
+            offsets.push(first);
             count = count
                 .checked_add(world.geometry().surfaces.len())
                 .ok_or("GL styled surface count overflow")?;
+            styles.resize(count, AtlasResidency::Owner(None));
             for (surface_index, surface) in world.geometry().surfaces.iter().enumerate() {
                 let binding = assets
                     .shader_binding(
@@ -333,9 +354,9 @@ impl AtlasUpdates {
                             .ok_or("invalid GL styled binding")?,
                     )
                     .ok_or("invalid GL styled binding")?;
-                if binding.lightmap_conversion.is_none() {
+                let Some(conversion) = binding.lightmap_conversion else {
                     continue;
-                }
+                };
                 let Some(region) = binding.lightmap_region else {
                     return Err("GL styled surface has no atlas region");
                 };
@@ -354,6 +375,25 @@ impl AtlasUpdates {
                     check_samples(region.width, region.height, active, samples.as_flattened())
                         .map_err(|_| "GL styled surface has invalid samples")?;
                 bytes = bytes.max(required);
+                let key = (
+                    binding.lightmap.0,
+                    region.page,
+                    region.page_size,
+                    region.x,
+                    region.y,
+                    region.width,
+                    region.height,
+                );
+                let index = first + surface_index;
+                let source = (presentation.world(), surface_index, conversion);
+                if let Some(&(previous_source, owner)) = owners.get(&key) {
+                    if previous_source != source {
+                        return Err("GL styled atlas regions overlap");
+                    }
+                    styles[index] = AtlasResidency::Alias(owner);
+                    continue;
+                }
+                owners.insert(key, (source, index));
                 // Assets already admitted these rectangle bounds. Track starts
                 // and ends; ties retire an old rectangle before admitting the
                 // next, so adjacent texels retain independent ownership.
@@ -394,7 +434,7 @@ impl AtlasUpdates {
             .ok_or("GL lightmap scratch size overflow")?;
         Ok(Self {
             offsets: offsets.into_boxed_slice(),
-            styles: vec![None; count].into_boxed_slice(),
+            styles: styles.into_boxed_slice(),
             rgb: vec![0; bytes].into_boxed_slice(),
             rgba: vec![0; rgba_bytes].into_boxed_slice(),
         })
@@ -416,11 +456,18 @@ impl AtlasUpdates {
         {
             return Err("GL styled presentation prefix changed");
         }
-        candidate
+        let prefix = candidate
             .styles
             .get_mut(..self.styles.len())
-            .ok_or("GL styled surface prefix shrank")?
-            .copy_from_slice(&self.styles);
+            .ok_or("GL styled surface prefix shrank")?;
+        for (candidate, &previous) in prefix.iter_mut().zip(self.styles.iter()) {
+            match (&*candidate, previous) {
+                (AtlasResidency::Owner(_), AtlasResidency::Owner(_)) => *candidate = previous,
+                (AtlasResidency::Alias(current), AtlasResidency::Alias(old)) if *current == old => {
+                }
+                _ => return Err("GL styled residency prefix changed"),
+            }
+        }
         Ok(Some(candidate))
     }
 
@@ -460,10 +507,21 @@ impl AtlasUpdates {
             .get(presentation_id.0 as usize)
             .and_then(|offset| offset.checked_add(surface_id as usize))
             .ok_or("invalid GL style residency index")?;
-        let last = self
+        let owner = match self
             .styles
-            .get_mut(index)
-            .ok_or("invalid GL style residency index")?;
+            .get(index)
+            .ok_or("invalid GL style residency index")?
+        {
+            AtlasResidency::Owner(_) => index,
+            AtlasResidency::Alias(owner) => *owner,
+        };
+        let AtlasResidency::Owner(last) = self
+            .styles
+            .get_mut(owner)
+            .ok_or("invalid GL style residency owner")?
+        else {
+            return Err("invalid GL style residency alias");
+        };
         let (selected, count) = conversion.referenced_styles(surface.styles, styles);
         if *last == Some(selected) {
             return Ok(false);

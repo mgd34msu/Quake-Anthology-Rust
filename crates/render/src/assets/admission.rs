@@ -52,16 +52,12 @@ impl Assets {
                 .presentations
                 .retain(|id| (id.0 as usize) < retained.presentations);
             if let Some(source) = &mut world.material_source {
-                let profiles: Vec<_> = world
+                let presentations: Vec<_> = world
                     .presentations
                     .iter()
-                    .filter_map(|id| {
-                        self.presentations[id.0 as usize]
-                            .profile
-                            .map(|entry| entry.0)
-                    })
+                    .map(|id| &self.presentations[id.0 as usize])
                     .collect();
-                source.prune_images(retained.images, &profiles);
+                source.prune_registration(retained.images, &presentations);
             }
         }
         self.models.truncate(retained.models);

@@ -2781,3 +2781,139 @@ fn retained_world_images_report_only_the_current_compile_flag_conflicts() -> Res
     std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
     Ok(())
 }
+
+#[test]
+fn physical_lightmap_recipes_ignore_raster_finish_and_palette_policies() -> Result<(), String> {
+    use qa_render::{lightmap::Q1GlScale, material::world_load::append_world_presentation};
+    for family in [1, 2, 3] {
+        let root = resources(&format!("physical-lightmap-recipes-{family}"))?;
+        let vfs = mount(&root)?;
+        let bytes = map_bytes(family);
+        let map = if family == 3 {
+            modern_map(&bytes)?
+        } else {
+            legacy_map(&bytes, family)?
+        };
+        let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+        let loaded = load_native_world(
+            &vfs,
+            &map,
+            &mut assets,
+            RuleSetId::Quake3,
+            Default::default(),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        let original = loaded.presentations[0];
+        let binding = |assets: &Assets, presentation| {
+            *assets
+                .shader_binding(assets.surface_shader(presentation, 0).unwrap())
+                .unwrap()
+        };
+        let first = binding(&assets, original.id);
+        assert_ne!(first.lightmap, ImageId(0));
+        assert_eq!(first.lightmap_region.is_some(), family != 3);
+        let pixels = assets.image(first.lightmap).unwrap().rgba.to_vec();
+        let revision = assets.image(first.lightmap).unwrap().preparation_revision;
+        let target_palette = load_palette(
+            &vfs,
+            &mut assets,
+            PaletteSource::native(RuleSetId::Quake).unwrap(),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        let mut profiles = [original.profile; 3];
+        profiles[0].finish.detail_textures = false;
+        profiles[1].image_settings.picmip += 1;
+        profiles[2].indexed_palette = Some(target_palette);
+        for profile in profiles {
+            let variant =
+                append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), false)
+                    .map_err(|error| format!("family {family}: {error:?}"))?
+                    .presentations[0];
+            let current = binding(&assets, variant.id);
+            assert_eq!(
+                current.lightmap, first.lightmap,
+                "family {family} shares its physical recipe"
+            );
+            assert_eq!(current.lightmap_region, first.lightmap_region);
+            assert_eq!(current.lightmap_conversion, first.lightmap_conversion);
+            assert_eq!(assets.image(first.lightmap).unwrap().rgba.as_ref(), pixels);
+            assert_eq!(
+                assets.image(first.lightmap).unwrap().preparation_revision,
+                revision
+            );
+            if family == 3 {
+                assert_eq!(
+                    assets
+                        .world_presentation(variant.id)
+                        .unwrap()
+                        .native_page0(),
+                    Some(first.lightmap)
+                );
+            }
+            let counts = assets.counts();
+            vfs.take_lookup_count();
+            let cached =
+                append_world_presentation(&vfs, &mut assets, loaded.world, profile.into(), true)
+                    .map_err(|error| format!("{error:?}"))?
+                    .presentations[0];
+            assert_eq!(
+                cached, variant,
+                "guard is irrelevant without vertex collapse"
+            );
+            assert_eq!(assets.counts(), counts);
+            assert_eq!(vfs.take_lookup_count(), 0);
+        }
+        let prefix = assets.counts();
+        let mut changed = original.profile;
+        changed.q1_gl_scale = Q1GlScale::Standard;
+        changed.q2_modulate = 2.0;
+        vfs.take_lookup_count();
+        let rejected =
+            append_world_presentation(&vfs, &mut assets, loaded.world, changed.into(), false)
+                .map_err(|error| format!("{error:?}"))?
+                .presentations[0];
+        let candidate = binding(&assets, rejected.id);
+        if family == 3 {
+            assert_eq!(
+                candidate.lightmap, first.lightmap,
+                "native pages ignore legacy conversion knobs"
+            );
+        } else {
+            assert_ne!(candidate.lightmap, first.lightmap);
+            assert_ne!(
+                assets.image(candidate.lightmap).unwrap().rgba.as_ref(),
+                pixels
+            );
+        }
+        assert_eq!(
+            vfs.take_lookup_count(),
+            0,
+            "the warmed raster policy needs no lookup for a lightmap recipe change"
+        );
+        let candidate_pixels = assets.image(candidate.lightmap).unwrap().rgba.to_vec();
+        assets
+            .discard_registration_suffix(prefix)
+            .map_err(str::to_owned)?;
+        assert_eq!(assets.counts(), prefix);
+        assert_eq!(assets.image(first.lightmap).unwrap().rgba.as_ref(), pixels);
+        if family != 3 {
+            assert!(assets.image(candidate.lightmap).is_none());
+        }
+        vfs.take_lookup_count();
+        let retry =
+            append_world_presentation(&vfs, &mut assets, loaded.world, changed.into(), false)
+                .map_err(|error| format!("{error:?}"))?
+                .presentations[0];
+        assert_eq!(retry.id, rejected.id);
+        let retried = binding(&assets, retry.id);
+        assert_eq!(retried.lightmap, candidate.lightmap);
+        assert_eq!(
+            assets.image(retried.lightmap).unwrap().rgba.as_ref(),
+            candidate_pixels
+        );
+        assert_eq!(assets.image(first.lightmap).unwrap().rgba.as_ref(), pixels);
+        assert_eq!(vfs.take_lookup_count(), 0);
+        std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}

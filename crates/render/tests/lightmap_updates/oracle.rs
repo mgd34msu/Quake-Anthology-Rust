@@ -26,6 +26,15 @@ fn fixture_variants(
     variants: &[(ImageId, AtlasRegion, Option<LightmapConversion>)],
     samples: [[u8; 3]; 2],
 ) -> WorldId {
+    fixture_variants_with_surface_count(assets, variants, samples, 1)
+}
+
+fn fixture_variants_with_surface_count(
+    assets: &mut qa_render::Assets,
+    variants: &[(ImageId, AtlasRegion, Option<LightmapConversion>)],
+    samples: [[u8; 3]; 2],
+    surface_count: u32,
+) -> WorldId {
     let (_, region, conversion) = variants[0];
     let bounds = Bounds {
         mins: Vec3([4.0, -1.0, -1.0]),
@@ -36,7 +45,7 @@ fn fixture_variants(
         origin: Vec3::default(),
         surfaces: Span { first: 0, count: 1 },
     };
-    let geometry = WorldGeometry {
+    let mut geometry = WorldGeometry {
         partition: GeometryPartition::Unpartitioned,
         world_has_lightdata: true,
         vertices: [[4.0, -1.0, -1.0], [4.0, 1.0, -1.0], [4.0, 0.0, 1.0]]
@@ -96,6 +105,16 @@ fn fixture_variants(
         models: vec![model, model],
         patch_stats: PatchStats::default(),
     };
+    let surface = geometry.surfaces[0].clone();
+    geometry
+        .surfaces
+        .extend((1..surface_count).map(|source_id| WorldSurface {
+            source_id,
+            ..surface.clone()
+        }));
+    for model in &mut geometry.models {
+        model.surfaces.count = surface_count;
+    }
     let visibility = VisibilityWorld::load(
         vec![],
         vec![],
@@ -104,10 +123,13 @@ fn fixture_variants(
             area: None,
             solid: false,
             bounds,
-            surfaces: Span { first: 0, count: 1 },
+            surfaces: Span {
+                first: 0,
+                count: surface_count,
+            },
         }],
-        vec![0],
-        1,
+        (0..surface_count).collect(),
+        surface_count as usize,
         -1,
         PvsRows::all_visible(0),
     )
@@ -115,16 +137,19 @@ fn fixture_variants(
     let materials = variants
         .iter()
         .map(|&(image, region, conversion)| {
-            [SurfaceMaterial {
-                shader: qa_render::ShaderBinding {
-                    lightmap: image,
-                    lightmap_region: Some(region),
-                    lightmap_conversion: conversion,
-                    light_source: qa_render::world::geometry::LightSource::Samples,
-                    ..(SurfaceMaterial::default()).shader
-                },
-                ..SurfaceMaterial::default()
-            }]
+            vec![
+                SurfaceMaterial {
+                    shader: qa_render::ShaderBinding {
+                        lightmap: image,
+                        lightmap_region: Some(region),
+                        lightmap_conversion: conversion,
+                        light_source: qa_render::world::geometry::LightSource::Samples,
+                        ..(SurfaceMaterial::default()).shader
+                    },
+                    ..SurfaceMaterial::default()
+                };
+                surface_count as usize
+            ]
         })
         .collect::<Vec<_>>();
     let bindings = materials
@@ -155,7 +180,7 @@ fn region(x: u32) -> AtlasRegion {
 }
 
 #[test]
-fn dynamic_atlas_ownership_rejects_aliases_and_overlap_but_admits_adjacent_regions() {
+fn dynamic_atlas_ownership_rejects_cross_world_aliases_and_overlap_but_admits_adjacent_regions() {
     for (a, b, admitted) in [
         (region(1), region(1), false),
         (
@@ -524,7 +549,7 @@ fn one_world_variants_keep_conversion_uploads_and_residency_independent() {
 }
 
 #[test]
-fn presentation_variants_cannot_alias_mutable_atlas_texels() {
+fn different_conversion_variants_cannot_alias_mutable_atlas_texels() {
     let mut assets = qa_render::Assets::load().unwrap();
     let image = assets.register_image(4, 4, &[0; 64]).unwrap();
     fixture_variants(
@@ -716,5 +741,161 @@ fn rejected_atlas_append_preserves_the_old_owner_and_allows_a_clean_retry() {
     assert!(matches!(
         candidate.prepare_append(&assets),
         Err("GL styled presentation prefix shrank")
+    ));
+}
+
+#[test]
+fn exact_presentation_aliases_share_the_actual_style_residency_across_appends() {
+    let mut assets = qa_render::Assets::load().unwrap();
+    let image = assets.register_image(4, 4, &[23; 64]).unwrap();
+    let target = region(0);
+    let conversion = Some(LightmapConversion::Scalar(Q1GlScale::Standard));
+    let world = fixture_variants(
+        &mut assets,
+        &[(image, target, conversion); 2],
+        [[20, 40, 80], [10, 20, 40]],
+    );
+    let presentations = assets.world(world).unwrap().presentations();
+    let (first, alias) = (presentations[0], presentations[1]);
+    let mut updates = AtlasUpdates::load(&assets).unwrap();
+    let mut a = [LightStyle::default(); 256];
+    a[0].indexed_scale = 128;
+    let mut b = a;
+    b[0].indexed_scale = 256;
+    b[3].indexed_scale = 128;
+    let mut uploaded = Vec::new();
+    for (presentation, styles, expected) in [
+        (first, a, [20, 40, 80, 255]),
+        (alias, b, [25, 50, 100, 255]),
+        (first, a, [20, 40, 80, 255]),
+    ] {
+        assert!(
+            updates
+                .refresh(presentation, 0, &styles, &assets, |id, rect, pixels| {
+                    assert_eq!(id, image);
+                    assert_eq!(rect, target);
+                    assert_eq!(pixels, expected);
+                    uploaded.push(pixels.to_vec());
+                    true
+                })
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        uploaded.len(),
+        3,
+        "A/B/A must restore the texels actually resident in the shared image"
+    );
+    assert!(
+        !updates
+            .refresh(alias, 0, &a, &assets, |_, _, _| panic!(
+                "the alias already contains A"
+            ))
+            .unwrap()
+    );
+    assert!(
+        updates
+            .refresh(alias, 0, &b, &assets, |_, _, pixels| {
+                assert_eq!(pixels, [25, 50, 100, 255]);
+                false
+            })
+            .is_err()
+    );
+    assert!(
+        !updates
+            .refresh(first, 0, &a, &assets, |_, _, _| panic!(
+                "rejection changed residency"
+            ))
+            .unwrap()
+    );
+    assert!(
+        updates
+            .refresh(alias, 0, &b, &assets, |_, _, pixels| {
+                assert_eq!(pixels, [25, 50, 100, 255]);
+                true
+            })
+            .unwrap()
+    );
+    assert!(
+        !updates
+            .refresh(first, 0, &b, &assets, |_, _, _| panic!(
+                "owner did not observe alias upload"
+            ))
+            .unwrap()
+    );
+    let (_, appended) = fixture(
+        &mut assets,
+        image,
+        region(1),
+        conversion,
+        [[32; 3], [16; 3]],
+    );
+    let mut candidate = updates.prepare_append(&assets).unwrap().unwrap();
+    for presentation in [first, alias] {
+        assert!(
+            !candidate
+                .refresh(presentation, 0, &b, &assets, |_, _, _| panic!(
+                    "append lost the shared owner state"
+                ))
+                .unwrap()
+        );
+    }
+    assert!(
+        updates
+            .refresh(appended, 0, &a, &assets, |_, _, _| panic!(
+                "uncommitted append reached upload"
+            ))
+            .is_err()
+    );
+    assert!(
+        candidate
+            .refresh(appended, 0, &a, &assets, |id, rect, pixels| {
+                assert_eq!(id, image);
+                assert_eq!(rect, region(1));
+                assert_eq!(pixels, [32, 32, 32, 255]);
+                true
+            })
+            .unwrap()
+    );
+    assert!(
+        candidate
+            .refresh(first, 0, &a, &assets, |_, _, pixels| {
+                assert_eq!(pixels, [20, 40, 80, 255]);
+                true
+            })
+            .unwrap()
+    );
+    assert!(
+        !candidate
+            .refresh(alias, 0, &a, &assets, |_, _, _| panic!(
+                "alias topology was not preserved"
+            ))
+            .unwrap()
+    );
+    assert!(candidate.prepare_append(&assets).unwrap().is_none());
+    assert_eq!(
+        assets.image(image).unwrap().rgba.as_ref(),
+        &[23; 64],
+        "uploads never mutate admitted source pixels"
+    );
+}
+
+#[test]
+fn identical_rectangles_for_different_source_surfaces_are_not_aliases() {
+    let mut assets = qa_render::Assets::load().unwrap();
+    let image = assets.register_image(4, 4, &[0; 64]).unwrap();
+    fixture_variants_with_surface_count(
+        &mut assets,
+        &[(
+            image,
+            region(0),
+            Some(LightmapConversion::Scalar(Q1GlScale::Standard)),
+        )],
+        [[16; 3], [0; 3]],
+        2,
+    );
+    assert!(matches!(
+        AtlasUpdates::load(&assets),
+        Err("GL styled atlas regions overlap")
     ));
 }

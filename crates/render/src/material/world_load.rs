@@ -27,8 +27,8 @@ use crate::{
     sky::{CloudSphere, LayeredSphere},
     surface_cache::IndexedLighting,
     world::{
-        PreparedShader, SurfaceMaterial, WorldId, WorldLighting, WorldPresentationId,
-        WorldPresentationInput, WorldRenderSettings,
+        PreparedShader, SurfaceMaterial, WorldId, WorldLighting, WorldPresentation,
+        WorldPresentationId, WorldPresentationInput, WorldRenderSettings,
         geometry::{
             GeometryError, GeometryOptions, LightSource, WorldGeometry,
             grid::{GridFan, GridOptions, subdivide_surface},
@@ -279,6 +279,21 @@ struct WorldImages {
     profile: ImageProfile,
     state: Option<ImagesState>,
 }
+#[derive(Clone, PartialEq)]
+enum LightmapRecipe {
+    NativePages {
+        shift: i8,
+    },
+    Samples {
+        conversion: LightmapConversion,
+        styles: Box<[(u8, [u32; 3], u16)]>,
+    },
+}
+struct WorldLightmaps {
+    recipe: LightmapRecipe,
+    pages: Box<[ImageId]>,
+    native_page0: Option<ImageId>,
+}
 /// Authored cold inputs retained once after the BSP boundary. Geometry can be
 /// rebuilt without rereading the BSP; visibility and collision stay separately owned.
 pub(crate) struct WorldMaterialSource {
@@ -295,14 +310,20 @@ pub(crate) struct WorldMaterialSource {
     layout: LightmapLayout,
     catalog: ShaderCatalog,
     images: Vec<WorldImages>,
+    lightmaps: Vec<WorldLightmaps>,
 }
 impl WorldMaterialSource {
-    pub(crate) fn prune_images(&mut self, images: usize, profiles: &[WorldPresentationProfile]) {
+    pub(crate) fn prune_registration(
+        &mut self,
+        images: usize,
+        presentations: &[&WorldPresentation],
+    ) {
         let source_rules = self.rules;
         let source_palette = self.palette;
         self.images.retain_mut(|entry| {
-            if !profiles
+            if !presentations
                 .iter()
+                .filter_map(|presentation| presentation.profile.as_ref().map(|entry| entry.0))
                 .any(|profile| profile.image_profile(source_rules, source_palette) == entry.profile)
             {
                 return false;
@@ -312,6 +333,27 @@ impl WorldMaterialSource {
                 state.clear_conflicts();
             }
             true
+        });
+        let layout = &self.layout;
+        let recipes: Vec<_> = presentations
+            .iter()
+            .filter_map(|presentation| {
+                let (profile, defaults, lighting, _) = presentation.profile.as_ref()?;
+                lightmap_recipe(
+                    layout,
+                    *profile,
+                    &defaults.lightstyles,
+                    *lighting,
+                    lightmap_conversion(source_rules, *profile),
+                )
+                .map(|recipe| (recipe, presentation.native_page0()))
+            })
+            .collect();
+        self.lightmaps.retain(|entry| {
+            entry.pages.iter().all(|id| (id.0 as usize) < images)
+                && recipes
+                    .iter()
+                    .any(|(recipe, page0)| *page0 == entry.native_page0 && *recipe == entry.recipe)
         });
     }
     fn with_images<T>(
@@ -471,6 +513,7 @@ impl WorldMaterialSource {
             layout,
             catalog: load_catalog(vfs).map_err(WorldMaterialError::Catalog)?,
             images: Vec::new(),
+            lightmaps: Vec::new(),
         })
     }
 }
@@ -495,7 +538,54 @@ impl CompiledPresentation {
 struct PreparedPresentation {
     defaults: PresentationDefaults,
     conversion: LightmapConversion,
-    pages: Vec<Vec<u8>>,
+    recipe: Option<LightmapRecipe>,
+    pages: PreparedLightmaps,
+}
+enum PreparedLightmaps {
+    Unavailable,
+    Cached(Box<[ImageId]>),
+    Pending(Vec<Vec<u8>>),
+}
+fn lightmap_conversion(source: RuleSetId, profile: WorldPresentationProfile) -> LightmapConversion {
+    if matches!(source, RuleSetId::Quake) {
+        LightmapConversion::Scalar(profile.q1_gl_scale)
+    } else {
+        LightmapConversion::Rgb {
+            modulate: profile.q2_modulate,
+        }
+    }
+}
+fn lightmap_recipe(
+    layout: &LightmapLayout,
+    profile: WorldPresentationProfile,
+    styles: &[LightStyle; 256],
+    lighting: WorldLighting,
+    conversion: LightmapConversion,
+) -> Option<LightmapRecipe> {
+    if profile.finish.vertex_light || layout.atlas.pages().is_empty() {
+        return None;
+    }
+    Some(if layout.native_pages {
+        LightmapRecipe::NativePages {
+            shift: lighting.shift(),
+        }
+    } else {
+        LightmapRecipe::Samples {
+            conversion,
+            styles: layout
+                .styles
+                .iter()
+                .map(|&id| {
+                    let (selected, _) = conversion.referenced_styles([id, 255, 255, 255], styles);
+                    (
+                        id,
+                        selected[0].rgb.map(f32::to_bits),
+                        selected[0].indexed_scale,
+                    )
+                })
+                .collect(),
+        }
+    })
 }
 fn prepare_presentation(
     geometry: &WorldGeometry,
@@ -503,27 +593,37 @@ fn prepare_presentation(
     profile: WorldPresentationProfile,
 ) -> Result<PreparedPresentation, WorldMaterialError> {
     let defaults = presentation_defaults(profile, &source.options);
-    let conversion = if matches!(source.rules, RuleSetId::Quake) {
-        LightmapConversion::Scalar(profile.q1_gl_scale)
-    } else {
-        LightmapConversion::Rgb {
-            modulate: profile.q2_modulate,
+    let conversion = lightmap_conversion(source.rules, profile);
+    let recipe = lightmap_recipe(
+        &source.layout,
+        profile,
+        &defaults.lightstyles,
+        source.options.lighting,
+        conversion,
+    );
+    let pages = if let Some(recipe) = &recipe {
+        if let Some(registered) = source
+            .lightmaps
+            .iter()
+            .find(|entry| &entry.recipe == recipe)
+        {
+            PreparedLightmaps::Cached(registered.pages.clone())
+        } else {
+            PreparedLightmaps::Pending(prepare_lightmap_pages(
+                geometry,
+                &source.layout,
+                &source.options,
+                &defaults.lightstyles,
+                conversion,
+            )?)
         }
-    };
-    let pages = if profile.finish.vertex_light {
-        Vec::new()
     } else {
-        prepare_lightmap_pages(
-            geometry,
-            &source.layout,
-            &source.options,
-            &defaults.lightstyles,
-            conversion,
-        )?
+        PreparedLightmaps::Unavailable
     };
     Ok(PreparedPresentation {
         defaults,
         conversion,
+        recipe,
         pages,
     })
 }
@@ -537,13 +637,25 @@ fn compile_profile(
     diagnostics: &mut Vec<String>,
 ) -> Result<(CompiledPresentation, PresentationDefaults), WorldMaterialError> {
     let policy = request.profile.finish.compile(ui_fullscreen);
-    let lightmaps = if request.profile.finish.vertex_light {
-        RegisteredLightmaps {
+    let previous = source.lightmaps.len();
+    let lightmaps = match prepared.pages {
+        PreparedLightmaps::Unavailable => RegisteredLightmaps {
+            pages: Box::new([]),
             surfaces: vec![None; source.surfaces.len()],
             native_page0: None,
+        },
+        PreparedLightmaps::Cached(pages) => registered_lightmaps(&source.layout, pages),
+        PreparedLightmaps::Pending(pages) => {
+            let registered = register_lightmap_pages(assets, &source.layout, pages)?;
+            if let Some(recipe) = prepared.recipe {
+                source.lightmaps.push(WorldLightmaps {
+                    recipe,
+                    pages: registered.pages.clone(),
+                    native_page0: registered.native_page0,
+                });
+            }
+            registered
         }
-    } else {
-        register_lightmap_pages(assets, &source.layout, prepared.pages)?
     };
     let bindings = source.with_images(vfs, assets, request.profile, |source, images| {
         compile_presentation(
@@ -556,7 +668,14 @@ fn compile_profile(
             prepared.conversion,
             diagnostics,
         )
-    })?;
+    });
+    let bindings = match bindings {
+        Ok(bindings) => bindings,
+        Err(error) => {
+            source.lightmaps.truncate(previous);
+            return Err(error);
+        }
+    };
     Ok((
         CompiledPresentation {
             surfaces: bindings.0,
@@ -1403,8 +1522,10 @@ struct LightmapLayout {
     regions: Vec<Option<AtlasRegion>>,
     native_page0: Option<AtlasRegion>,
     native_pages: bool,
+    styles: Box<[u8]>,
 }
 struct RegisteredLightmaps {
+    pages: Box<[ImageId]>,
     surfaces: Vec<Option<ImageId>>,
     native_page0: Option<ImageId>,
 }
@@ -1440,6 +1561,7 @@ fn prepare_lightmap_layout(
     }
     let mut atlas = AtlasBuilder::load(page_size, 4096)?;
     let mut regions = vec![None; geometry.surfaces.len()];
+    let mut styles = Vec::new();
     let mut page_regions: Vec<(u32, AtlasRegion)> = Vec::new();
     for surface in &geometry.surfaces {
         if surface.no_draw {
@@ -1462,6 +1584,7 @@ fn prepare_lightmap_layout(
                 ));
             }
             LightSource::Samples => {
+                styles.extend(surface.styles.into_iter().take_while(|&id| id != 255));
                 let [width, height] = surface.lightmap_grid;
                 let blank = vec![0; crate::lightmap::rgb_bytes(width, height)?];
                 atlas.insert(width, height, &blank)?
@@ -1516,11 +1639,14 @@ fn prepare_lightmap_layout(
             height: page_size,
         })
     };
+    styles.sort_unstable();
+    styles.dedup();
     Ok(LightmapLayout {
         atlas,
         regions,
         native_page0,
         native_pages,
+        styles: styles.into_boxed_slice(),
     })
 }
 
@@ -1609,14 +1735,21 @@ fn register_lightmap_pages(
             .map_err(WorldMaterialError::Boundary)?;
         ids.push(id);
     }
-    Ok(RegisteredLightmaps {
+    Ok(registered_lightmaps(layout, ids.into_boxed_slice()))
+}
+
+fn registered_lightmaps(layout: &LightmapLayout, pages: Box<[ImageId]>) -> RegisteredLightmaps {
+    RegisteredLightmaps {
         surfaces: layout
             .regions
             .iter()
-            .map(|region| region.map(|r| ids[r.page as usize]))
+            .map(|region| region.map(|r| pages[r.page as usize]))
             .collect(),
-        native_page0: layout.native_page0.map(|region| ids[region.page as usize]),
-    })
+        native_page0: layout
+            .native_page0
+            .map(|region| pages[region.page as usize]),
+        pages,
+    }
 }
 
 fn write_lightmap_region(

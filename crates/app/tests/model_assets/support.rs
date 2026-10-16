@@ -11,6 +11,10 @@ pub mod brushlist;
 /// Parsed Q1 world with one embedded-texture face and two authored clip models.
 /// No spawn entity is needed by a receiving CLIENT.
 pub fn world_map(size: f32) -> Vec<u8> {
+    world_map_with_lumps(size, |_| {})
+}
+
+pub fn world_map_with_lumps(size: f32, edit: impl FnOnce(&mut [Vec<u8>])) -> Vec<u8> {
     let brushes = [
         brushlist::chunk(0, &[brushlist::SourceBrush::cube(0.0, -2)]),
         brushlist::chunk(1, &[brushlist::SourceBrush::cube(10.0, -2)]),
@@ -86,6 +90,7 @@ pub fn world_map(size: f32) -> Vec<u8> {
         for model in 0..2 {
             lumps[14][model * 64 + 60..model * 64 + 64].copy_from_slice(&1i32.to_le_bytes());
         }
+        edit(lumps);
     })
 }
 

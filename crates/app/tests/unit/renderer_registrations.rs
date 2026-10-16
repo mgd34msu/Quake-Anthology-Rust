@@ -160,7 +160,12 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
 fn finish_refresh_reuses_world_images_after_backend_rejection() {
     use qa_render::material::{MaterialFinishPolicy, world_load::WorldPresentationProfile};
 
-    let fixture = support::Fixture::new(&[("maps/finish.bsp", support::world_map(16.0))]);
+    let bytes = support::world_map_with_lumps(16.0, |lumps| {
+        lumps[7][12] = 0;
+        lumps[7][16..20].copy_from_slice(&0i32.to_le_bytes());
+        lumps[8] = vec![96; 9];
+    });
+    let fixture = support::Fixture::new(&[("maps/finish.bsp", bytes)]);
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let profile = ModelProfile {
