@@ -226,6 +226,7 @@ fn replacing_client_resources_tears_down_then_reconnects_after_consumption() {
     start(&mut source, runtime.sound_bank().unwrap(), client, old);
     let protocol = Protocol::QuakeWorld28;
     let replacement = NativeConnection {
+        phase: qa_network::ingress::ConnectionPhase::Connected,
         route: Route {
             socket: Endpoint::Server.socket(),
             peer: Peer::Loopback(client),

@@ -846,6 +846,7 @@ impl FrameHost {
             self.dispatch_output(source, &mut result);
             return result;
         }
+        self.flush_client_connect_requests(source);
         self.client_configurations(&mut crate::modules::Driver::new(source.asset_preparer()));
         self.register_client_model_assets(source.asset_preparer());
         self.flush_nq_signon_replies();
@@ -1344,7 +1345,7 @@ impl FrameHost {
         }
     }
 
-    fn local_seat(
+    pub(crate) fn local_seat(
         &self,
         seat: usize,
     ) -> Option<(
@@ -1355,6 +1356,15 @@ impl FrameHost {
         let client = self.local_clients.get(seat).copied().flatten()?;
         let row = self.runtime.server.clients.get(client.0 as usize)?;
         row.connection?;
+        if !self
+            .runtime
+            .network
+            .get(client, qa_core::loopback::Endpoint::Client)?
+            .phase
+            .is_connected()
+        {
+            return None;
+        }
         if self
             .runtime
             .snapshots
@@ -1371,22 +1381,13 @@ impl FrameHost {
         !self.runtime.quit
             && self.console.cvars.integer(self.mouse_enabled) != 0
             && (self.native_input_wants_mouse()
-                || self
-                    .local_worlds
-                    .iter()
-                    .zip(self.local_clients)
-                    .enumerate()
-                    .any(|(seat, (world, client))| {
-                        self.runtime.input.key_catchers(SeatId::ALL[seat])
-                            & qa_core::sys_events::key_catchers::CONSOLE
-                            == 0
-                            && world.is_some()
-                            && client
-                                .and_then(|id| self.runtime.server.clients.get(id.0 as usize))
-                                .is_some_and(|row| {
-                                    row.connection == Some(qa_session::clients::Connection::Local)
-                                })
-                    }))
+                || self.local_worlds.iter().enumerate().any(|(seat, world)| {
+                    self.runtime.input.key_catchers(SeatId::ALL[seat])
+                        & qa_core::sys_events::key_catchers::CONSOLE
+                        == 0
+                        && world.is_some()
+                        && self.local_seat(seat).is_some()
+                }))
     }
 
     fn reject_nq_signon(&mut self, client: ClientId, reason: std::fmt::Arguments<'_>) {
@@ -1407,6 +1408,64 @@ impl FrameHost {
         }
     }
 
+    fn report_connect_rejection(events: &mut qa_core::events::EventRing, reason: &[u8]) {
+        let _ = events.console_parts(&[b"Connection rejected: ", reason, b"\n"]);
+    }
+
+    fn retire_unconnected_clients(&mut self, source: &mut impl FrameSource) {
+        for slot in 0..self.runtime.server.clients.len() {
+            let id = ClientId(slot as u32);
+            let Some(connection) = self
+                .runtime
+                .network
+                .get(id, qa_core::loopback::Endpoint::Client)
+            else {
+                continue;
+            };
+            if connection.phase.is_connected() {
+                continue;
+            }
+            let rejected = matches!(
+                connection.phase,
+                qa_network::ingress::ConnectionPhase::Rejected
+            );
+            let closed = self.runtime.snapshots[slot]
+                .as_ref()
+                .is_some_and(|binding| binding.presentation_closed())
+                || !self.runtime.server.clients[slot].is_active();
+            if rejected || closed {
+                self.disconnect_client_with_driver(
+                    id,
+                    &mut crate::modules::Driver::new(source.asset_preparer()),
+                );
+            }
+        }
+    }
+
+    fn flush_client_connect_requests(&mut self, source: &mut impl FrameSource) {
+        self.retire_unconnected_clients(source);
+        let runtime = &mut self.runtime;
+        runtime.network.send_connect_requests(
+            self.time,
+            |route, bytes| {
+                crate::transport::admit_output(
+                    &mut runtime.loopback,
+                    source,
+                    qa_core::loopback::Endpoint::Client,
+                    route,
+                    bytes,
+                )
+            },
+            |_, _, incoming| {
+                if let qa_network::ingress::Incoming::ConnectRejected { reason } = incoming {
+                    Self::report_connect_rejection(&mut runtime.server.events, reason);
+                }
+                std::ops::ControlFlow::Continue(())
+            },
+        );
+        self.retire_unconnected_clients(source);
+    }
+
     fn flush_nq_signon_reply(&mut self, client: ClientId) {
         use crate::client_resources::NqReply;
         use qa_network::{channel::TransmitError, commands::packet::Protocol};
@@ -1422,6 +1481,14 @@ impl FrameHost {
         else {
             return;
         };
+        if self
+            .runtime
+            .network
+            .get(client, qa_core::loopback::Endpoint::Client)
+            .is_none_or(|connection| !connection.phase.is_connected())
+        {
+            return;
+        }
         if self.runtime.server.clients.get(slot).is_none_or(|row| {
             row.connection != Some(qa_session::clients::Connection::Local)
                 || self.runtime.server.entities.resolve(row.entity).is_none()
@@ -1552,6 +1619,9 @@ impl FrameHost {
             else {
                 continue;
             };
+            if !connection.phase.is_connected() {
+                continue;
+            }
             let Some(protocol @ (Protocol::Quake2_34 | Protocol::Quake2Repro1038)) = connection
                 .commands
                 .as_ref()
@@ -1825,6 +1895,13 @@ impl FrameHost {
                 }
                 continue;
             };
+            if !connection.phase.is_connected() {
+                self.disconnect_client_with_driver(
+                    id,
+                    &mut crate::modules::Driver::new(source.asset_preparer()),
+                );
+                continue;
+            }
             let Some(binding) = self.runtime.snapshots[slot].as_mut() else {
                 continue;
             };
@@ -1931,6 +2008,12 @@ impl FrameHost {
             use qa_network::ingress::Incoming;
             match endpoint {
                 qa_core::loopback::Endpoint::Client => {
+                    if let Incoming::ConnectRejected { reason } = &incoming {
+                        Self::report_connect_rejection(&mut self.runtime.server.events, reason);
+                        self.disconnect_client_with_driver(id, driver);
+                        disconnected = Some(id);
+                        return std::ops::ControlFlow::Break(());
+                    }
                     if matches!(incoming, Incoming::Disconnect { .. }) {
                         self.received_client_disconnect(id);
                         return std::ops::ControlFlow::Break(());
@@ -2465,9 +2548,13 @@ impl FrameHost {
             .build_frame_with_policy(self.time, &policies);
         for (seat, command) in commands.iter_mut().enumerate() {
             if self.local_clients[seat].is_some_and(|id| {
-                self.runtime.client_resources[id.0 as usize]
-                    .as_ref()
-                    .is_some_and(|resources| resources.awaiting_nq_signon())
+                self.runtime
+                    .network
+                    .get(id, qa_core::loopback::Endpoint::Client)
+                    .is_none_or(|connection| !connection.phase.is_connected())
+                    || self.runtime.client_resources[id.0 as usize]
+                        .as_ref()
+                        .is_some_and(|resources| resources.awaiting_nq_signon())
                     || !self.runtime.server.clients[id.0 as usize].is_active()
                     || self.runtime.snapshots[id.0 as usize]
                         .as_ref()
@@ -2492,6 +2579,11 @@ impl FrameHost {
         for (seat, id) in self.local_clients.iter().enumerate() {
             if let Some(id) = id {
                 if !self.runtime.server.clients[id.0 as usize].is_active()
+                    || self
+                        .runtime
+                        .network
+                        .get(*id, qa_core::loopback::Endpoint::Client)
+                        .is_none_or(|connection| !connection.phase.is_connected())
                     || self.runtime.snapshots[id.0 as usize]
                         .as_ref()
                         .is_some_and(|binding| binding.presentation_closed())

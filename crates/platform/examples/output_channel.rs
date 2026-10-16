@@ -191,6 +191,7 @@ fn main() -> Result<(), String> {
                 client,
                 Endpoint::Server,
                 ChannelConnection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: 0,
                         peer: Peer::Socket(std::net::SocketAddr::from((

@@ -334,6 +334,7 @@ fn remote(
             id,
             Endpoint::Server,
             NativeConnection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: 0,
                     peer: Peer::Socket(([127, 0, 0, 1], port).into()),

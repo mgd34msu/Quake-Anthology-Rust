@@ -46,6 +46,7 @@ fn bind(
             ClientId(slot as u32),
             Endpoint::Server,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: 7,
                     peer: Peer::Socket(address),

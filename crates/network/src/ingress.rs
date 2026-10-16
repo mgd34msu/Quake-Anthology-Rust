@@ -1,6 +1,10 @@
 //! Connected packet routing. Physical intake remains the platform event source.
 use crate::channel::{Channel, Delivery};
-use crate::commands::connection::Commands;
+use crate::commands::{
+    connection::Commands,
+    packet::Protocol,
+    startup::{NqControl, read_nq_control, write_nq_control},
+};
 pub use qa_core::sys_events::Peer;
 use qa_core::{
     events::{NativeReceipt, OutputConsumerId},
@@ -15,7 +19,40 @@ pub struct Route {
     pub socket: u16,
     pub peer: Peer,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NqConnect {
+    submitted: u8,
+    last_submission: Option<EventTime>,
+}
+impl NqConnect {
+    pub const fn new() -> Self {
+        Self {
+            submitted: 0,
+            last_submission: None,
+        }
+    }
+}
+impl Default for NqConnect {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionPhase {
+    Connecting(NqConnect),
+    Connected,
+    Rejected,
+}
+impl ConnectionPhase {
+    pub const fn is_connected(self) -> bool {
+        matches!(self, Self::Connected)
+    }
+}
+
 pub struct Connection {
+    pub phase: ConnectionPhase,
     pub route: Route,
     pub channel: Channel,
     /// Old ACKs retain this consumer generation across client-slot reuse.
@@ -40,18 +77,16 @@ impl Connection {
             bound == from
         }
     }
-    fn conflicts(&self, other: &Self) -> bool {
-        if self.route.socket != other.route.socket {
+    fn conflicts(&self, route: Route, qport: Option<u16>) -> bool {
+        if self.route.socket != route.socket {
             return false;
         }
-        match (self.route.peer, other.route.peer) {
-            (Peer::Socket(a), Peer::Socket(b)) => {
-                match (self.channel.routing_qport(), other.channel.routing_qport()) {
-                    (Some(a_port), Some(b_port)) => a.ip() == b.ip() && a_port == b_port,
-                    _ => a == b,
-                }
-            }
-            _ => self.route.peer == other.route.peer,
+        match (self.route.peer, route.peer) {
+            (Peer::Socket(a), Peer::Socket(b)) => match (self.channel.routing_qport(), qport) {
+                (Some(a_port), Some(b_port)) => a.ip() == b.ip() && a_port == b_port,
+                _ => a == b,
+            },
+            _ => self.route.peer == route.peer,
         }
     }
 }
@@ -64,6 +99,12 @@ pub enum BindError {
 }
 /// Borrowed delivery callbacks never retain a packet or create another queue.
 pub enum Incoming<'a> {
+    ConnectAccepted {
+        port: u16,
+    },
+    ConnectRejected {
+        reason: &'a [u8],
+    },
     CommandString {
         protocol: crate::commands::packet::Protocol,
         sequence: Option<u32>,
@@ -203,6 +244,17 @@ impl Connections {
         if connection.channel.endpoint() != endpoint {
             return Err(BindError::Route);
         }
+        if !connection.phase.is_connected()
+            && (endpoint != Endpoint::Client
+                || !matches!(connection.route.peer, Peer::Socket(_))
+                || connection
+                    .commands
+                    .as_ref()
+                    .map(|commands| commands.protocol)
+                    != Some(Protocol::NetQuake15))
+        {
+            return Err(BindError::Route);
+        }
         if current[endpoint.index()].is_some() {
             return Err(BindError::Occupied);
         }
@@ -216,7 +268,7 @@ impl Connections {
             .iter()
             .flatten()
             .flatten()
-            .any(|c| c.conflicts(&connection))
+            .any(|c| c.conflicts(connection.route, connection.channel.routing_qport()))
         {
             return Err(BindError::Route);
         }
@@ -248,6 +300,50 @@ impl Connections {
     pub fn unbind(&mut self, client: ClientId) {
         if let Some(endpoints) = self.clients.get_mut(client.0 as usize) {
             *endpoints = [None, None];
+        }
+    }
+    /// Regenerate native requests from the existing row. Only admitted sends
+    /// consume one of the three attempts or start its 2500ms reply window.
+    pub fn send_connect_requests(
+        &mut self,
+        time: EventTime,
+        mut submit: impl FnMut(Route, &[u8]) -> bool,
+        mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>) -> ControlFlow<()>,
+    ) {
+        let mut bytes = [0; 12];
+        let Ok(length) = write_nq_control(NqControl::Connect, &mut bytes) else {
+            return;
+        };
+        for (slot, endpoints) in self.clients.iter_mut().enumerate() {
+            let Some(connection) = &mut endpoints[Endpoint::Client.index()] else {
+                continue;
+            };
+            let ConnectionPhase::Connecting(connect) = &mut connection.phase else {
+                continue;
+            };
+            if connect
+                .last_submission
+                .is_some_and(|last| time.since(last) < EventTime::from_milliseconds(2500).0)
+            {
+                continue;
+            }
+            if connect.submitted == 3 {
+                connection.phase = ConnectionPhase::Rejected;
+                if consume(
+                    ClientId(slot as u32),
+                    Endpoint::Client,
+                    Incoming::ConnectRejected {
+                        reason: b"No Response",
+                    },
+                )
+                .is_break()
+                {
+                    return;
+                }
+            } else if submit(connection.route, &bytes[..length]) {
+                connect.submitted += 1;
+                connect.last_submission = Some(time);
+            }
         }
     }
     pub fn receive(
@@ -308,6 +404,78 @@ impl Connections {
             self.unrouted += 1;
             return;
         };
+        let Some(connection) = &self.clients[client][endpoint] else {
+            return;
+        };
+        match connection.phase {
+            ConnectionPhase::Rejected => return,
+            ConnectionPhase::Connecting(connect) => {
+                // A reply is eligible only after a request actually reached
+                // transport. Its socket and full peer already matched above.
+                if connect.submitted == 0 {
+                    return;
+                }
+                let control = match read_nq_control(bytes) {
+                    Ok(control) => control,
+                    Err(_) => {
+                        self.malformed += 1;
+                        return;
+                    }
+                };
+                let incoming = match control {
+                    NqControl::Accept { port } => {
+                        let mut route = connection.route;
+                        let Peer::Socket(address) = &mut route.peer else {
+                            return;
+                        };
+                        address.set_port(port);
+                        if self
+                            .clients
+                            .iter()
+                            .enumerate()
+                            .any(|(other_client, endpoints)| {
+                                endpoints.iter().enumerate().any(|(other_endpoint, other)| {
+                                    (other_client, other_endpoint) != (client, endpoint)
+                                        && other.as_ref().is_some_and(|other| {
+                                            other.conflicts(
+                                                route,
+                                                connection.channel.routing_qport(),
+                                            )
+                                        })
+                                })
+                            })
+                        {
+                            self.malformed += 1;
+                            return;
+                        }
+                        let Some(connection) = &mut self.clients[client][endpoint] else {
+                            return;
+                        };
+                        connection.route = route;
+                        connection.phase = ConnectionPhase::Connected;
+                        Incoming::ConnectAccepted { port }
+                    }
+                    NqControl::Reject { reason } => {
+                        let Some(connection) = &mut self.clients[client][endpoint] else {
+                            return;
+                        };
+                        connection.phase = ConnectionPhase::Rejected;
+                        Incoming::ConnectRejected { reason }
+                    }
+                    NqControl::Connect => {
+                        self.malformed += 1;
+                        return;
+                    }
+                };
+                let _ = consume(
+                    ClientId(client as u32),
+                    Endpoint::from_index(endpoint),
+                    incoming,
+                );
+                return;
+            }
+            ConnectionPhase::Connected => {}
+        }
         let Some(connection) = &mut self.clients[client][endpoint] else {
             return;
         };

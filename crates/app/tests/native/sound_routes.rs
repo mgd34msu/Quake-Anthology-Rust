@@ -28,6 +28,7 @@ impl RemotePeer {
                 client,
                 Endpoint::Client,
                 qa_network::ingress::Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: qa_network::ingress::Route {
                         socket: 0,
                         peer: qa_core::sys_events::Peer::Socket(server_address),
@@ -507,6 +508,7 @@ pub(super) fn remote_native_emitters_keep_the_module_entity_channel() {
                 remote,
                 Endpoint::Server,
                 qa_network::ingress::Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: qa_network::ingress::Route {
                         socket: 0,
                         peer: qa_core::sys_events::Peer::Socket(peer.address),
@@ -1078,6 +1080,7 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
             .bind_connection(
                 remote,
                 qa_network::ingress::Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: qa_network::ingress::Route {
                         socket: 0,
                         peer: qa_core::sys_events::Peer::Socket(peer.address),
@@ -1382,6 +1385,7 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
                 remote,
                 Endpoint::Server,
                 qa_network::ingress::Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: qa_network::ingress::Route {
                         socket: 0,
                         peer: qa_core::sys_events::Peer::Socket(peer.address),

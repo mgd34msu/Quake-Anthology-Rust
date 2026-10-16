@@ -1038,6 +1038,9 @@ fn forward_command(
     else {
         return false;
     };
+    if !connection.phase.is_connected() {
+        return false;
+    }
     let Some(protocol) = connection
         .commands
         .as_ref()

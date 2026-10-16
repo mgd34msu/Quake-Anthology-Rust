@@ -1,6 +1,88 @@
 //! Borrowed native startup records enter the existing CLIENT resource rows.
 use super::{packet, packet::Protocol};
-use crate::{message::Reader, outputs::ConfigString};
+use crate::{
+    headers::datagram,
+    message::{Encoding, Reader, StringPolicy, Writer},
+    outputs::ConfigString,
+};
+
+/// NetQuake's control protocol version is independent of game protocol 15.
+#[derive(Clone, Copy)]
+pub enum NqControl<'a> {
+    Connect,
+    Accept { port: u16 },
+    Reject { reason: &'a [u8] },
+}
+
+pub fn read_nq_control(bytes: &[u8]) -> Result<NqControl<'_>, packet::Error> {
+    if !(5..=u16::MAX as usize).contains(&bytes.len()) {
+        return Err(packet::Error::Count);
+    }
+    let mut reader = Reader::new(bytes, Encoding::Bytes);
+    let header = reader.read_bits(32)?.swap_bytes();
+    if header & !0xffff != datagram::CONTROL || header & 0xffff != bytes.len() as u32 {
+        return Err(packet::Error::Context);
+    }
+    let control = match reader.read_bits(8)? {
+        1 => {
+            if reader.read_string(StringPolicy::UNSIGNED)? != b"QUAKE" || reader.read_bits(8)? != 3
+            {
+                return Err(packet::Error::Context);
+            }
+            NqControl::Connect
+        }
+        0x81 => {
+            let port = reader.read_signed(32)?;
+            if !(1..=i32::from(u16::MAX)).contains(&port) {
+                return Err(packet::Error::Count);
+            }
+            NqControl::Accept { port: port as u16 }
+        }
+        0x82 => NqControl::Reject {
+            reason: reader.read_string(StringPolicy::UNSIGNED)?,
+        },
+        _ => return Err(packet::Error::Context),
+    };
+    if reader.byte_position() != bytes.len() {
+        return Err(packet::Error::Count);
+    }
+    Ok(control)
+}
+
+pub fn write_nq_control(control: NqControl<'_>, output: &mut [u8]) -> Result<usize, packet::Error> {
+    let length = match control {
+        NqControl::Connect => 12,
+        NqControl::Accept { port: 0 } => return Err(packet::Error::Count),
+        NqControl::Accept { .. } => 9,
+        NqControl::Reject { reason } => {
+            if reason.contains(&0) {
+                return Err(packet::Error::Context);
+            }
+            reason.len().checked_add(6).ok_or(packet::Error::Count)?
+        }
+    };
+    if length > u16::MAX as usize || length > output.len() {
+        return Err(packet::Error::Count);
+    }
+    let mut writer = Writer::new(output, Encoding::Bytes);
+    writer.write_bits((datagram::CONTROL | length as u32).swap_bytes(), 32)?;
+    match control {
+        NqControl::Connect => {
+            writer.write_bits(1, 8)?;
+            writer.write_string(StringPolicy::UNSIGNED, b"QUAKE")?;
+            writer.write_bits(3, 8)?;
+        }
+        NqControl::Accept { port } => {
+            writer.write_bits(0x81, 8)?;
+            writer.write_bits(u32::from(port), 32)?;
+        }
+        NqControl::Reject { reason } => {
+            writer.write_bits(0x82, 8)?;
+            writer.write_string(StringPolicy::UNSIGNED, reason)?;
+        }
+    }
+    Ok(writer.size())
+}
 
 #[derive(Clone)]
 pub struct NqServerInfo<'a> {

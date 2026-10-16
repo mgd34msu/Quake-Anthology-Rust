@@ -31,6 +31,7 @@ fn q2_native_ack_survives_a_rejected_fragment_body() -> Result<(), String> {
             client,
             Endpoint::Server,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: Endpoint::Server.socket(),
                     peer: Peer::Loopback(client),
@@ -89,6 +90,7 @@ fn q2_native_ack_survives_a_rejected_fragment_body() -> Result<(), String> {
 
 fn connection(socket: u16, peer: Peer, endpoint: Endpoint) -> Result<Connection, String> {
     Ok(Connection {
+        phase: qa_network::ingress::ConnectionPhase::Connected,
         route: Route { socket, peer },
         channel: Channel::load(channel::QUAKEWORLD, endpoint, 1450, 16)
             .map_err(|e| e.to_string())?,
@@ -278,6 +280,7 @@ fn negotiated_repro_bind_uses_channel_compatibility() -> Result<(), String> {
                 ClientId(0),
                 Endpoint::Server,
                 Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: 7,
                         peer: Peer::Socket("127.0.0.1:27910".parse().map_err(|e| format!("{e}"))?),
@@ -321,6 +324,7 @@ fn native_qports_isolate_shared_addresses_and_update_only_the_selected_peer() ->
                     ClientId(slot as u32),
                     Endpoint::Server,
                     Connection {
+                        phase: qa_network::ingress::ConnectionPhase::Connected,
                         route: Route {
                             socket: 7,
                             peer: Peer::Socket(address),
@@ -442,6 +446,7 @@ fn omitted_qport_and_client_receivers_keep_exact_socket_routes() -> Result<(), S
                 ClientId(0),
                 endpoint,
                 Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: 7,
                         peer: original,
@@ -531,6 +536,7 @@ fn qport_routing_keeps_native_ack_receipts_with_the_selected_peer() -> Result<()
                     ClientId(slot as u32),
                     Endpoint::Server,
                     Connection {
+                        phase: qa_network::ingress::ConnectionPhase::Connected,
                         route: Route {
                             socket: 7,
                             peer: address,
@@ -614,6 +620,7 @@ fn translated_ipv6_port_preserves_registered_scope_and_flow() -> Result<(), Stri
             ClientId(0),
             Endpoint::Server,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: 7,
                     peer: Peer::Socket(bound.into()),
@@ -682,6 +689,7 @@ fn mixed_header_offsets_cannot_route_an_exact_peer_to_another_protocol() -> Resu
                 ClientId(slot),
                 Endpoint::Server,
                 Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: 7,
                         peer: Peer::Socket(std::net::SocketAddr::from(([127, 0, 0, 1], port))),

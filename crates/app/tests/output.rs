@@ -389,6 +389,7 @@ fn stalled_peer_progress(unsent: bool) {
                 client,
                 qa_core::loopback::Endpoint::Server,
                 qa_network::ingress::Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: qa_network::ingress::Route {
                         socket: 0,
                         peer: Peer::Socket(

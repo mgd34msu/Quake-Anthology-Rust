@@ -3,11 +3,8 @@ use qa_app::{
     host::{FrameHost, FrameSource},
 };
 use qa_console::{commands::Console, views::Context};
-use qa_core::{
-    primitives::ModuleId,
-    sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
-};
-use qa_session::{clients::Connection, timing::TickRate};
+use qa_core::sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue};
+use qa_session::timing::TickRate;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -81,14 +78,31 @@ fn host() -> FrameHost {
     )
     .unwrap()
 }
-fn connect(host: &mut FrameHost) -> qa_core::primitives::ClientId {
+fn connect(host: &mut FrameHost, seat: SeatId) -> qa_core::primitives::ClientId {
     let client = host
         .runtime
-        .server
-        .connect(Connection::Local, ModuleId(1), None)
+        .connect_local(
+            seat,
+            qa_app::map::SpawnAnchor {
+                position: Default::default(),
+                angles: Default::default(),
+                entity: 0,
+                fixture_fallback: false,
+            },
+            qa_app::client_policy::ClientPolicy::select(
+                Some(qa_core::primitives::RuleSetId::Quake),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap(),
+            qa_network::commands::packet::Protocol::NetQuake15,
+            seat.index() as u32,
+        )
         .unwrap();
-    host.local_clients[0] = Some(client);
-    host.local_worlds[0] = Some((
+    host.local_clients[seat.index()] = Some(client);
+    host.local_worlds[seat.index()] = Some((
         qa_render::world::WorldId(0),
         qa_render::world::WorldPresentationId(0),
     ));
@@ -101,11 +115,11 @@ fn capture_requires_connected_game_input_and_releases_after_disconnect() {
     let mut source = Source::default();
     host.frame(&mut source, true);
     assert_eq!(source.requests, [false, false]);
-    let client = connect(&mut host);
+    let client = connect(&mut host, SeatId::FIRST);
     source.requests.clear();
     host.frame(&mut source, true);
     assert_eq!(source.requests, [true, true]);
-    assert!(host.runtime.server.disconnect(client));
+    assert!(host.runtime.disconnect_client(client));
     source.requests.clear();
     host.frame(&mut source, true);
     assert_eq!(source.requests, [false, false]);
@@ -115,7 +129,7 @@ fn capture_requires_connected_game_input_and_releases_after_disconnect() {
 #[test]
 fn first_intake_console_change_applies_at_second_intake_without_an_extra_poll() {
     let mut host = host();
-    connect(&mut host);
+    connect(&mut host, SeatId::FIRST);
     let mut source = Source {
         disable_on_first: true,
         ..Source::default()
@@ -128,7 +142,7 @@ fn first_intake_console_change_applies_at_second_intake_without_an_extra_poll() 
 #[test]
 fn quit_requests_release_before_returning() {
     let mut host = host();
-    connect(&mut host);
+    connect(&mut host, SeatId::FIRST);
     host.console
         .append_line("quit", Context::default())
         .unwrap();
@@ -142,7 +156,7 @@ fn quit_requests_release_before_returning() {
 #[test]
 fn window_console_releases_capture_at_the_existing_second_intake() {
     let mut host = host();
-    connect(&mut host);
+    connect(&mut host, SeatId::FIRST);
     host.console
         .append_line("toggleconsole", Context::default())
         .unwrap();
@@ -159,14 +173,8 @@ fn window_console_releases_capture_at_the_existing_second_intake() {
 #[test]
 fn one_seat_console_keeps_another_seats_assigned_mouse_captured_and_aiming() {
     let mut host = host();
-    connect(&mut host);
-    let peer = host
-        .runtime
-        .server
-        .connect(Connection::Local, ModuleId(2), None)
-        .unwrap();
-    host.local_clients[1] = Some(peer);
-    host.local_worlds[1] = host.local_worlds[0];
+    connect(&mut host, SeatId::FIRST);
+    let peer = connect(&mut host, SeatId::new(1).unwrap());
     assert!(
         host.runtime
             .input

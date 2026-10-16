@@ -134,6 +134,7 @@ fn literal_static_entities_traverse_native_channel_in_service_order_without_snap
                 ClientId(0),
                 Endpoint::Client,
                 Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: Endpoint::Client.socket(),
                         peer: Peer::Loopback(ClientId(0)),

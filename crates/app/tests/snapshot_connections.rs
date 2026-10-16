@@ -1,3 +1,6 @@
+#[path = "support/frame_source.rs"]
+mod frame_source;
+
 #[path = "model_assets/support.rs"]
 #[allow(dead_code)]
 mod assets_support;
@@ -17,7 +20,7 @@ use qa_core::{loopback::Endpoint, primitives::*, sys_events::*};
 use qa_network::{
     channel::Channel,
     commands::{connection::Commands, packet::Protocol},
-    ingress::{Connection as NativeConnection, Connections, Route},
+    ingress::{Connection as NativeConnection, ConnectionPhase, Connections, NqConnect, Route},
     snapshots::ReceivedFrame,
 };
 use qa_session::{clients::Connection, timing::TickRate};
@@ -128,6 +131,7 @@ impl RemoteReceiver {
                 client,
                 Endpoint::Client,
                 NativeConnection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: 0,
                         peer: PeerAddress::server(),
@@ -295,6 +299,7 @@ fn host(protocol: Protocol) -> (FrameHost, ClientId, ClientId, RemoteReceiver) {
         .bind_connection(
             remote,
             NativeConnection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: 0,
                     peer: PeerAddress::remote(),
@@ -2921,6 +2926,7 @@ fn queued_netquake_required_model_waits_without_backend_then_closes_on_real_cold
 
 fn accepted_connection(protocol: Protocol) -> NativeConnection {
     NativeConnection {
+        phase: qa_network::ingress::ConnectionPhase::Connected,
         route: Route {
             socket: 0,
             peer: Peer::Socket(([127, 0, 0, 1], REMOTE).into()),
@@ -2932,8 +2938,9 @@ fn accepted_connection(protocol: Protocol) -> NativeConnection {
     }
 }
 
-fn accepted_netquake_host(
+fn socket_netquake_host(
     binding: NativePlayerBinding,
+    phase: ConnectionPhase,
 ) -> (FrameHost, ClientId, ClientId, Channel) {
     let mut runtime = Runtime::load(2, []).unwrap();
     let policy = ClientPolicy::select(
@@ -2958,13 +2965,10 @@ fn accepted_netquake_host(
             5,
         )
         .unwrap();
+    let mut connection = accepted_connection(Protocol::NetQuake15);
+    connection.phase = phase;
     let remote = runtime
-        .connect_accepted_client(
-            SeatId::new(1).unwrap(),
-            policy,
-            binding,
-            accepted_connection(Protocol::NetQuake15),
-        )
+        .connect_client(SeatId::new(1).unwrap(), policy, binding, connection)
         .unwrap();
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
@@ -3053,7 +3057,7 @@ fn nq_admission_snapshot(rows: &[(u32, Vec3)]) -> Vec<u8> {
 #[test]
 fn accepted_socket_client_assigns_only_the_initial_player_and_keeps_cameras_independent() {
     let (mut host, local, remote, mut server) =
-        accepted_netquake_host(NativePlayerBinding::Awaiting);
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
     let entity = host.runtime.server.clients[remote.0 as usize].entity;
     let server_origin = host.runtime.server.clients[remote.0 as usize]
         .player
@@ -3148,7 +3152,8 @@ fn accepted_socket_client_assigns_only_the_initial_player_and_keeps_cameras_inde
 
 #[test]
 fn accepted_netquake_replacement_reopens_assignment_but_never_guesses_from_updates() {
-    let (mut host, _, remote, mut server) = accepted_netquake_host(NativePlayerBinding::Awaiting);
+    let (mut host, _, remote, mut server) =
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
     let mut bytes = nq_server_info(b"first", &[b"maps/ready.bsp", b"*1"], &[]);
     bytes.extend([5, 6, 0, 25, 1]);
     bytes.extend(nq_admission_snapshot(&[(6, Vec3([100., 0., 40.]))]));
@@ -3205,7 +3210,7 @@ fn accepted_netquake_replacement_reopens_assignment_but_never_guesses_from_updat
 fn accepted_netquake_rejects_invalid_or_missing_initial_assignment_without_harming_local_peer() {
     for entity in [None, Some(0u16), Some(17), Some(u16::MAX)] {
         let (mut host, local, remote, mut server) =
-            accepted_netquake_host(NativePlayerBinding::Awaiting);
+            socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
         let local_lifetime = host.runtime.server.clients[local.0 as usize].entity;
         let mut bytes = nq_server_info(b"invalid assignment", &[b"maps/ready.bsp"], &[]);
         if let Some(entity) = entity {
@@ -3229,7 +3234,7 @@ fn accepted_netquake_rejects_invalid_or_missing_initial_assignment_without_harmi
     // An explicitly supplied physical identity permits an initial custom
     // camera without treating that camera as a player assignment.
     let (mut host, _, remote, mut server) =
-        accepted_netquake_host(NativePlayerBinding::Supplied(5));
+        socket_netquake_host(NativePlayerBinding::Supplied(5), ConnectionPhase::Connected);
     let mut bytes = nq_server_info(b"custom camera", &[b"maps/ready.bsp", b"*1"], &[]);
     bytes.extend([5, 42, 0, 25, 1]);
     bytes.extend(nq_admission_snapshot(&[
@@ -3256,7 +3261,8 @@ fn accepted_netquake_rejects_invalid_or_missing_initial_assignment_without_harmi
 
 #[test]
 fn accepted_client_setup_preserves_owned_seats_and_requires_native_assignment_capability() {
-    let (mut host, local, remote, _) = accepted_netquake_host(NativePlayerBinding::Awaiting);
+    let (mut host, local, remote, _) =
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
     let lifetime = host.runtime.server.clients[local.0 as usize].entity;
     let owner = host.runtime.server.clients[local.0 as usize].output;
     let position = Vec3([123., 456., 789.]);
@@ -3267,7 +3273,7 @@ fn accepted_client_setup_preserves_owned_seats_and_requires_native_assignment_ca
     let policy = ClientPolicy::select(Some(RuleSetId::Quake), None, None, None, None).unwrap();
     assert!(
         host.runtime
-            .connect_accepted_client(
+            .connect_client(
                 SeatId::FIRST,
                 policy,
                 NativePlayerBinding::Awaiting,
@@ -3310,7 +3316,7 @@ fn accepted_client_setup_preserves_owned_seats_and_requires_native_assignment_ca
         ),
     ] {
         let mut runtime = Runtime::load(1, []).unwrap();
-        let result = runtime.connect_accepted_client(
+        let result = runtime.connect_client(
             SeatId::FIRST,
             policy,
             binding,
@@ -3339,7 +3345,8 @@ fn accepted_client_setup_preserves_owned_seats_and_requires_native_assignment_ca
 
 #[test]
 fn accepted_client_stays_unlinked_while_the_local_server_peer_advances() {
-    let (mut host, local, remote, _) = accepted_netquake_host(NativePlayerBinding::Awaiting);
+    let (mut host, local, remote, _) =
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
     let geometry = host.runtime.client_resources[local.0 as usize]
         .as_ref()
         .unwrap()
@@ -3440,7 +3447,8 @@ fn accepted_client_stays_unlinked_while_the_local_server_peer_advances() {
 #[test]
 fn accepted_client_hud_receives_only_its_wire_prints_and_client_publications() {
     use qa_compat::services::{ENGINE_CALLS, ServiceStorage};
-    let (mut host, local, remote, mut peer) = accepted_netquake_host(NativePlayerBinding::Awaiting);
+    let (mut host, local, remote, mut peer) =
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
     let mut storage = ServiceStorage::load(&[], 0, &host.console.cvars).unwrap();
     let mut scratch = host.runtime.geometry.scratch();
     {
@@ -3536,4 +3544,245 @@ fn accepted_client_hud_receives_only_its_wire_prints_and_client_publications() {
         7
     );
     assert!(host.runtime.server.events.is_empty());
+}
+
+fn connect_frame(
+    host: &mut FrameHost,
+    source: &mut frame_source::Sink,
+    milliseconds: u64,
+) -> qa_app::host::FrameResult {
+    host.queue
+        .push(SysEvent {
+            time: EventTime::from_milliseconds(milliseconds),
+            kind: EventKind::Time,
+        })
+        .unwrap();
+    host.frame(source, true)
+}
+
+#[test]
+fn pending_socket_connect_keeps_one_client_and_uses_the_accepted_port_for_signon() {
+    let (mut host, healthy, client, mut server) = socket_netquake_host(
+        NativePlayerBinding::Supplied(5),
+        ConnectionPhase::Connecting(NqConnect::new()),
+    );
+    let lifetime = host.runtime.server.clients[client.0 as usize].entity;
+    let output = host.runtime.server.clients[client.0 as usize].output;
+    assert!(host.client_views()[1].is_none());
+    let route = host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .route;
+    let Peer::Socket(address) = route.peer else {
+        panic!("socket fixture");
+    };
+    let mut source = frame_source::Sink {
+        // Pacing samples are deliberately unrelated to the queued timeline.
+        time: EventTime::from_milliseconds(100_000),
+        reject: Some(address),
+        ..Default::default()
+    };
+    assert!(!host.runtime.send_client_command(
+        client,
+        &UserCmd {
+            duration_ms: 20,
+            movement: [320., 0., 0.],
+            ..Default::default()
+        },
+        EventTime::default(),
+        &mut source,
+    ));
+    assert!(source.packets.is_empty());
+    let first = connect_frame(&mut host, &mut source, 100);
+    assert_eq!(first.commands[1].movement, [0.; 3]);
+    assert_eq!(first.commands[1].duration_ms, 0);
+    assert_eq!(host.time, EventTime::from_milliseconds(100));
+    assert_eq!(source.packets.len(), 1);
+    assert!(!source.packets[0].admitted);
+    source.reject = None;
+    connect_frame(&mut host, &mut source, 101);
+    assert_eq!(source.packets.len(), 2);
+    assert!(source.packets[1].admitted);
+    assert_eq!(source.packets[1].bytes, b"\x80\0\0\x0c\x01QUAKE\0\x03");
+    assert_eq!(source.packets[1].to, address);
+    let commands = host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .commands
+        .as_ref()
+        .unwrap();
+    assert_eq!(commands.history().unwrap().number(), 0);
+    // The unrelated platform sample must not cause the 2500ms retry to fire.
+    assert!(connect_frame(&mut host, &mut source, 2600).server_ticks > 0);
+    assert_eq!(source.packets.len(), 2);
+    let mut accept = vec![0x80, 0, 0, 9, 0x81];
+    accept.extend_from_slice(&i32::from(SERVER).to_le_bytes());
+    host.queue
+        .push(SysEvent {
+            time: EventTime::from_milliseconds(2600),
+            kind: EventKind::Packet {
+                socket: route.socket,
+                from: route.peer,
+                bytes: &accept,
+            },
+        })
+        .unwrap();
+    host.drain(&mut Default::default());
+    let connection = host.runtime.network.get(client, Endpoint::Client).unwrap();
+    assert!(connection.phase.is_connected());
+    let Peer::Socket(accepted) = connection.route.peer else {
+        panic!("socket fixture")
+    };
+    assert_eq!(accepted.port(), SERVER);
+    assert_eq!(accepted.ip(), address.ip());
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize].entity,
+        lifetime
+    );
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize].output,
+        output
+    );
+    assert!(host.runtime.network.get(client, Endpoint::Server).is_none());
+    let before_header = source.packets.len();
+    let position = host.runtime.prediction[1].player.body.position;
+    let waiting = connect_frame(&mut host, &mut source, 2610);
+    assert_eq!(waiting.commands[1].movement, [0.; 3]);
+    assert_eq!(waiting.commands[1].duration_ms, 0);
+    assert_eq!(host.runtime.prediction[1].player.body.position, position);
+    assert_eq!(source.packets.len(), before_header);
+    assert_eq!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number(),
+        0
+    );
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .nq_signon_stage(),
+        Some(0)
+    );
+    let mut header = nq_server_info(b"connected", &[b"maps/ready.bsp", b"*1"], &[]);
+    header.extend([5, 6, 0, 25, 1]);
+    queue_accepted_netquake(&mut host, client, &mut server, &header);
+    let begin = source.packets.len();
+    connect_frame(&mut host, &mut source, 2620);
+    // The presentation reset is consumed at the end of the ordinary frame;
+    // the next frame can admit prespawn through the same reliable channel.
+    connect_frame(&mut host, &mut source, 2640);
+    let mut prespawn = false;
+    for attempt in &source.packets[begin..] {
+        assert_eq!(attempt.to, accepted);
+        assert_eq!(attempt.socket, route.socket);
+        if let qa_network::channel::Delivery::Payload(bytes) =
+            server.receive(&attempt.bytes, host.time).unwrap().delivery
+        {
+            assert_eq!(bytes, b"\x04prespawn\0");
+            prespawn = true;
+        }
+    }
+    assert!(
+        prespawn,
+        "stage {:?}, world {:?}, attempts {:?}",
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .nq_signon_stage(),
+        host.local_worlds[1],
+        &source.packets[begin..]
+    );
+    assert!(host.runtime.server.clients[healthy.0 as usize].is_server_active());
+    assert!(
+        host.runtime
+            .network
+            .get(healthy, Endpoint::Client)
+            .unwrap()
+            .commands
+            .as_ref()
+            .unwrap()
+            .history()
+            .unwrap()
+            .number()
+            > 0
+    );
+}
+
+#[test]
+fn connecting_client_timeout_and_reject_retire_only_that_client() {
+    for reject in [false, true] {
+        let (mut host, healthy, client, _) = socket_netquake_host(
+            NativePlayerBinding::Awaiting,
+            ConnectionPhase::Connecting(NqConnect::new()),
+        );
+        let healthy_lifetime = host.runtime.server.clients[healthy.0 as usize].entity;
+        let route = host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .route;
+        let mut source = frame_source::Sink::default();
+        connect_frame(&mut host, &mut source, 0);
+        if reject {
+            let reply = b"\x80\0\0\x0a\x82full\0";
+            host.queue
+                .push(SysEvent {
+                    time: EventTime::from_milliseconds(1),
+                    kind: EventKind::Packet {
+                        socket: route.socket,
+                        from: route.peer,
+                        bytes: reply,
+                    },
+                })
+                .unwrap();
+            host.drain(&mut Default::default());
+            connect_frame(&mut host, &mut source, 40);
+            assert_eq!(source.packets.len(), 1);
+        } else {
+            for time in [2499, 2500, 4999, 5000, 7499] {
+                connect_frame(&mut host, &mut source, time);
+                assert!(host.runtime.network.get(client, Endpoint::Client).is_some());
+            }
+            connect_frame(&mut host, &mut source, 7500);
+            assert_eq!(source.packets.len(), 3);
+        }
+        assert!(host.runtime.network.get(client, Endpoint::Client).is_none());
+        assert!(host.runtime.snapshots[client.0 as usize].is_none());
+        assert!(
+            host.runtime.server.clients[client.0 as usize]
+                .connection
+                .is_none()
+        );
+        assert_eq!(
+            host.runtime.server.clients[healthy.0 as usize].entity,
+            healthy_lifetime
+        );
+        assert!(host.runtime.server.clients[healthy.0 as usize].is_server_active());
+        assert!(
+            host.runtime
+                .network
+                .get(healthy, Endpoint::Client)
+                .unwrap()
+                .commands
+                .as_ref()
+                .unwrap()
+                .history()
+                .unwrap()
+                .number()
+                > 0
+        );
+    }
 }

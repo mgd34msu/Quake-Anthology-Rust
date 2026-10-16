@@ -322,6 +322,7 @@ fn rejected_remote_particle_keeps_local_receipt_and_provider_ticks_running() {
         .bind_connection(
             remote,
             NativeConnection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: 0,
                     peer: Peer::Socket(([127, 0, 0, 1], REMOTE_PORT).into()),

@@ -284,6 +284,7 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
             ClientId(0),
             Endpoint::Client,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: Endpoint::Client.socket(),
                     peer: Peer::Loopback(ClientId(0)),
@@ -748,6 +749,7 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
             ClientId(0),
             Endpoint::Client,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: Endpoint::Client.socket(),
                     peer: Peer::Loopback(ClientId(0)),
@@ -1194,6 +1196,7 @@ fn byte_connection(protocol: Protocol) -> Result<(Channel, Commands, Connections
             ClientId(0),
             Endpoint::Client,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: Endpoint::Client.socket(),
                     peer: Peer::Loopback(ClientId(0)),

@@ -210,6 +210,7 @@ fn run(
                 ClientId(slot),
                 Endpoint::Server,
                 ChannelConnection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: 0,
                         peer: Peer::Socket(SocketAddr::from(([127, 0, 0, 1], 1000 + slot as u16))),

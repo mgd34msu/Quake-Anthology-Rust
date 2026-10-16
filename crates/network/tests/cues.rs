@@ -655,6 +655,7 @@ fn connected_channel_delivers_cues_in_order_and_continues_to_the_next_service() 
                 client,
                 Endpoint::Client,
                 Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: Endpoint::Client.socket(),
                         peer: Peer::Loopback(client),
@@ -720,6 +721,7 @@ fn framed_nq_qw_dynamic_sound_intake_continues_to_the_following_print() {
                 client,
                 Endpoint::Client,
                 Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: Endpoint::Client.socket(),
                         peer: Peer::Loopback(client),

@@ -379,6 +379,7 @@ fn ingress_dispatches_command_batches_synchronously_and_preserves_nq_frame_polic
                 client,
                 Endpoint::Server,
                 Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: Endpoint::Server.socket(),
                         peer: Peer::Loopback(client),

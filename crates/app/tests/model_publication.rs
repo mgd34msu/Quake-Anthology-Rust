@@ -171,6 +171,7 @@ impl Harness {
             .bind_connection(
                 client,
                 NativeConnection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: Route {
                         socket: 0,
                         peer: Peer::Socket(([127, 0, 0, 1], PORT).into()),
@@ -229,6 +230,7 @@ impl Harness {
             client,
             Endpoint::Client,
             NativeConnection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: 0,
                     peer: Peer::Socket(([127, 0, 0, 1], PORT + 1).into()),

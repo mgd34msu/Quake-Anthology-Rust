@@ -458,6 +458,7 @@ impl Runtime {
                 qa_core::loopback::Endpoint::Server,
             ] {
                 let connection = qa_network::ingress::Connection {
+                    phase: qa_network::ingress::ConnectionPhase::Connected,
                     route: qa_network::ingress::Route {
                         socket: endpoint.socket(),
                         peer: qa_core::sys_events::Peer::Loopback(id),
@@ -492,9 +493,9 @@ impl Runtime {
         result
     }
 
-    /// Admit an already accepted native socket CLIENT. Transport negotiation
-    /// supplies the channel; no local SERVER endpoint or actor is created.
-    pub fn connect_accepted_client(
+    /// Reserve one native socket CLIENT through negotiation and signon. The
+    /// supplied phase owns transport progress; no SERVER actor is created.
+    pub fn connect_client(
         &mut self,
         seat: qa_core::sys_events::SeatId,
         policy: client_policy::ClientPolicy,
@@ -504,7 +505,7 @@ impl Runtime {
         if connection.channel.endpoint() != qa_core::loopback::Endpoint::Client
             || !matches!(connection.route.peer, qa_core::sys_events::Peer::Socket(_))
         {
-            return Err("accepted CLIENT requires a socket channel".into());
+            return Err("CLIENT requires a socket channel".into());
         }
         let id = self.reserve_client_seat(seat, policy, qa_core::loopback::Endpoint::Client)?;
         if let Err(error) = self.bind_connection(id, connection, native_player, Some(seat)) {
@@ -743,6 +744,10 @@ impl Runtime {
         use qa_core::loopback::Endpoint;
         let slot = id.0 as usize;
         let endpoint = connection.channel.endpoint();
+        let connecting = matches!(
+            connection.phase,
+            qa_network::ingress::ConnectionPhase::Connecting(_)
+        );
         if self.network.get(id, endpoint).is_some() {
             if self.client_resources.get(slot).is_some_and(Option::is_some) {
                 self.disconnect_client(id);
@@ -804,7 +809,10 @@ impl Runtime {
         self.network
             .bind(id, endpoint, connection)
             .map_err(|error| format!("native channel {error:?}"))?;
-        if let Some((binding, resources, collision)) = prepared {
+        if let Some((binding, mut resources, collision)) = prepared {
+            if connecting && let Some(resources) = resources.as_mut() {
+                resources.begin_nq_signon();
+            }
             self.snapshots[slot] = Some(binding);
             self.client_resources[slot] = resources;
             self.client_collision[slot] = collision;
@@ -848,6 +856,9 @@ impl Runtime {
         else {
             return false;
         };
+        if !connection.phase.is_connected() {
+            return false;
+        }
         let Some(commands) = &mut connection.commands else {
             return false;
         };

@@ -1535,14 +1535,13 @@ impl FrameHost {
                 {
                     let Some(_) = self
                         .runtime
-                        .server
-                        .clients
+                        .snapshots
                         .get(id.0 as usize)
-                        .filter(|client| {
-                            client.connection.is_some()
-                                && !self.runtime.snapshots[id.0 as usize]
-                                    .as_ref()
-                                    .is_some_and(|binding| binding.presentation_closed())
+                        .and_then(Option::as_ref)
+                        .and_then(|binding| binding.seat())
+                        .and_then(|seat| self.local_seat(seat.index()))
+                        .filter(|(actual, client, _)| {
+                            *actual == id
                                 && client.entity == lifetime
                                 && self.runtime.server.entities.resolve(lifetime).is_some()
                         })

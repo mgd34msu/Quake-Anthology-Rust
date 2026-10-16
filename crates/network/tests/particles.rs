@@ -164,6 +164,7 @@ fn connected_client() -> Connections {
             ClientId(0),
             Endpoint::Client,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: Endpoint::Client.socket(),
                     peer: Peer::Loopback(ClientId(0)),

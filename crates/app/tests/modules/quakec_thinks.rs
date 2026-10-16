@@ -7549,6 +7549,7 @@ fn qw_remote_output_overflow_retires_the_connection_and_retains_its_native_body(
         .bind_connection(
             client,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: 0,
                     peer: Peer::Socket("127.0.0.1:2000".parse().unwrap()),

@@ -200,6 +200,9 @@ impl ClientResources {
     pub fn nq_signon_stage(&self) -> Option<u8> {
         self.nq_signon.as_ref().map(|signon| signon.stage)
     }
+    pub(crate) fn begin_nq_signon(&mut self) {
+        self.nq_signon = Some(NqSignon::default());
+    }
     pub(crate) fn nq_assignment_max_clients(&self) -> Option<u8> {
         (self.nq_signon.as_ref()?.stage == 0)
             .then_some(self.state.server_info.as_ref()?.max_clients)
@@ -282,7 +285,7 @@ impl ClientResources {
         let mut level_name = qa_core::text::FixedText::default();
         // The checked native string policy admits at most this buffer's size.
         let _ = level_name.set_bytes(info.level_name);
-        self.nq_signon = Some(NqSignon::default());
+        self.begin_nq_signon();
         self.state.server_info = Some(ReceivedServerInfo {
             max_clients: info.max_clients,
             game_type: info.game_type,
@@ -363,6 +366,9 @@ pub(crate) fn connection_view<'a>(
     catalog: Option<&'a ModelCatalog>,
 ) -> Option<ClientConnectionView<'a>> {
     let connection = network.get_mut(client, qa_core::loopback::Endpoint::Client)?;
+    if !connection.phase.is_connected() {
+        return None;
+    }
     let channel = &mut connection.channel;
     let commands = connection.commands.as_mut()?;
     let resources = resources.get_mut(client.0 as usize)?.as_mut()?;

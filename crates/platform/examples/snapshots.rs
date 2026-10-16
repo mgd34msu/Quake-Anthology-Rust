@@ -440,6 +440,7 @@ fn connected_heap() -> Result<(), String> {
             ClientId(0),
             Endpoint::Client,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 pending_output: None,
                 route: Route {
                     socket: Endpoint::Client.socket(),
@@ -641,6 +642,7 @@ fn connected_qw_heap() -> Result<(), String> {
             ClientId(0),
             Endpoint::Client,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: Endpoint::Client.socket(),
                     peer: Peer::Loopback(ClientId(0)),
@@ -888,6 +890,7 @@ fn connected_nq_heap() -> Result<(), String> {
             ClientId(0),
             Endpoint::Client,
             Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 pending_output: None,
                 route: Route {
                     socket: Endpoint::Client.socket(),

@@ -56,6 +56,7 @@ fn main() -> Result<(), String> {
                     client,
                     endpoint,
                     Connection {
+                        phase: qa_network::ingress::ConnectionPhase::Connected,
                         route: Route {
                             socket: endpoint.socket(),
                             peer: Peer::Loopback(client),

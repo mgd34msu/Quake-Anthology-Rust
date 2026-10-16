@@ -360,6 +360,7 @@ fn blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ti
         .bind_connection(
             stalled,
             NativeConnection {
+                phase: qa_network::ingress::ConnectionPhase::Connected,
                 route: Route {
                     socket: 19,
                     peer: Peer::Socket("127.0.0.1:27511".parse().unwrap()),

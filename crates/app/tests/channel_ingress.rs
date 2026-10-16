@@ -61,6 +61,7 @@ fn host(policy: Policy) -> Result<(FrameHost, [ClientId; 2]), String> {
                     *id,
                     endpoint,
                     ChannelConnection {
+                        phase: qa_network::ingress::ConnectionPhase::Connected,
                         route: Route {
                             socket: endpoint.socket(),
                             peer: Peer::Loopback(*id),
